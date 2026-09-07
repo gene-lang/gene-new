@@ -1,16 +1,16 @@
 # Gene → TypeScript: a front-end compilation target
 
-Status: **implemented through P5.** Tier 0 printers, the bigint decision,
-shared macro expansion/provenance, the web semantic IR, readable TS/ESM and
-declaration artifacts, checked interop, the P3 language/data/runtime breadth,
-structured async/cancellation, the generated DOM subset, and an interactive
-Gene component are in the tree. The shared conformance manifest has 57 VM/web
-cases plus adversarial cancellation and DOM runners. Deliberate exclusions in
-§4.2 remain exclusions, not unfinished fallbacks.
-Related: `docs/wasm.md` (Target A is
-implemented and is the competing answer), `docs/proposals/jit-pipeline.md`
-(the precedent for "a decidable subset gets its own backend"),
-`docs/design.md` §7/§10/§11/§15.
+**Status:** implemented through the P6 embedded-web slice. The compiler emits
+ESM, TypeScript, declarations, and source maps for the supported web profile.
+Shared fixtures cover values, calls, Self, optional parameters, collections,
+modules, and the checked runtime; dedicated runners cover async cancellation,
+DOM components, and embedded-module lifecycle. The
+[web profile](web-profile.md) is the current supported-surface contract, and the
+[coverage ledger](reports/web-conformance.md) links executable evidence.
+
+Related: [wasm VM](wasm.md), [future JIT](proposals/jit-pipeline.md), and the
+[language reference](reference/README.md). Later design alternatives and explicit
+exclusions below do not expand the implemented profile.
 
 ---
 
@@ -175,7 +175,7 @@ validators, and stream adapters. Those are semantics, not conveniences. So
 every accepted feature must be classified as **native lowering** (compiles to
 plain TS, zero import), **runtime helper** (pulls a named, measured, individually
 tree-shakeable export from `@gene/rt`), or **rejected**. A feature with no
-bounded helper is rejected. `jit-pipeline.md` establishes the pattern: an
+bounded helper is rejected. `proposals/jit-pipeline.md` establishes the pattern: an
 eligibility predicate, checked at a known point, routing a subset elsewhere.
 
 ### 4.2 Eligibility
@@ -292,7 +292,7 @@ read → sugars → quasiquote → macro expansion → declaration collection
 ```
 
 This refactor has independent value for the LSP (`src/gene/lsp/`) and for
-diagnostics — but **not** for the JIT: `jit-pipeline.md` takes GIR → HIR, so
+diagnostics — but **not** for the JIT: `proposals/jit-pipeline.md` takes GIR → HIR, so
 claiming P1 as JIT groundwork would require changing that plan too. Do not
 count it.
 
@@ -372,7 +372,7 @@ JS has one `number`. Three options:
 **Decision implemented: B (`Int` → `bigint`, `F64` → `number`).** The gating
 prototype measured the JSON and arithmetic costs and found C′ too restrictive
 for even the exact-integer seed fixture. The reproducible results are published
-in `transpile-numbers.md`. Two things shaped the experiment:
+in `reports/web-numeric-spike.md`. Two things shaped the experiment:
 
 - **JSON is part of the decision, not a detail.** `JSON.parse` returns
   `number`, erasing integer lexical kind and precision; `JSON.stringify`
@@ -988,7 +988,7 @@ So the harness has a prerequisite of its own:
    It is never permission for an *accepted* program to produce a different
    result. There is no third state and no silent skipping.
 5. New language features state their profile status when they land, the same way
-   `docs/design.md` must be updated.
+   the focused spec and feature reference must be updated.
 6. A `nimble transpile_spec` task, wired into `nimble verify`.
 7. **A performance gate, not just a size gate.** Semantic agreement and bundle
    bytes are necessary and insufficient in this repository. Record, for fixed
@@ -1226,7 +1226,7 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
 
 1. ~~**Where does the `web` profile check live?**~~ **Settled:** a distinct
    whole-module analysis over the shared expanded tree, before emission.
-   `jit-pipeline.md` puts JIT
+   `proposals/jit-pipeline.md` puts JIT
    eligibility at function-definition time. This one is whole-module and must
    run before emission — probably a distinct pass over the expanded tree, with
    diagnostics that name the rejected form *and* its rejection reason from §4.2.
@@ -1237,7 +1237,7 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
    checked wrappers at the JS boundary.
 3. ~~**The numeric representation (§4.5).**~~ **Settled: B.** `Int` is
    `bigint`; the fixed benchmark and JSON cost are published in
-   `transpile-numbers.md`.
+   `reports/web-numeric-spike.md`.
 4. ~~**How much of `@gene/std` is actually needed** before a real component is
    writable?~~ **Settled for P5:** the emitted, tree-shaken portable subset is
    string/URL/HTML/JSON helpers, node anatomy, size, and stream

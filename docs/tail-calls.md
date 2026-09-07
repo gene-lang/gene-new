@@ -1,32 +1,11 @@
 # Proper tail calls
 
-A design for Gene.
-
-> **Implementation status (2026-08-31): In progress**
->
-> - [x] Stage 0 — durable baseline, counters, and fallback diagnostics (focused tests pass)
-> - [x] Stage 1 — compiler tail proof and GIR v3 (focused tests pass)
-> - [x] Stage 2 — shared bytecode call entry (focused tests pass)
-> - [x] Stage 3 — redundant return-policy proofs (focused tests pass)
-> - [x] Stage 4 — sends, protocol messages, and custom `Callable` (focused tests pass)
-> - [x] Stage 5 — transparent match arms (focused and release/ORC probes pass)
-> - [ ] Stage 6 — final verification
->   - [x] bounded trace window and elision diagnostics
->   - [x] normative design/spec documentation
->   - [ ] repository-wide `test` and `verify` gates
->
-> A box is checked only after its implementation and stage-specific tests pass.
-> The final status becomes **Complete** only after the repository's required
-> `test`, `spec`, `perf`, `wasm`, and broad `verify` gates pass.
->
-> Current evidence: focused ORC and atomic-ARC TCO suites, GIR round-trip,
-> `nimble spec`, `nimble perf`, and final `nimble wasm` pass. The repository-wide
-> `test`/`verify` status remains open because unrelated, previously documented
-> AI-agent state-store tests fail when the store backend is unavailable;
-> the same test fails identically on pre-TCO commit `7faa2f4` in an isolated
-> clean temp directory. The
-> threaded async-filesystem capability and one legacy RC wildcard fixture also
-> fail independently of TCO.
+**Status:** implemented for tail-elidable bytecode call chains, including
+functions, sends, protocol messages, Callable values, and transparent match
+arms. Return checks, cleanup, retained scopes, and context restoration can keep
+a frame. See [the call contract](spec/calls.md) and `tests/test_vm.nim`.
+The [dated rollout record](reports/tail-call-rollout.md) preserves the original
+verification history without treating its checklist as current status.
 
 The goal is to make tail-recursive functions and messages a reliable iteration
 tool without changing return adaptation, checked-error, scope, construction, or
@@ -52,10 +31,10 @@ while matching the continuation and scope ownership that the VM actually has.
 
 ---
 
-## 1. Current state, measured
+## 1. Historical baseline and measured implementation
 
-Gene already has three partial mechanisms, but they do not add up to a language
-contract. Exploratory probes (`tmp/probe*.gene`, measured with
+Before the general tail-call implementation, Gene had three partial mechanisms.
+Historical exploratory probes (`tmp/probe*.gene`, measured with
 `/usr/bin/time -l`, Apple Silicon, 2026-08-29) produced:
 
 | shape | depth | peak RSS | verdict |
@@ -902,7 +881,7 @@ layout assumptions.
 
 ---
 
-## 7. Draft contract text for `docs/design.md`
+## 7. Contract summary
 
 > ### Tail calls
 >

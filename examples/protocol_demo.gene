@@ -1,7 +1,7 @@
 #!/usr/bin/env gene run
 # =============================================================================
 # Types, protocols, messages, inheritance, and Self
-# See docs/core.md and docs/proposals/self-type.md.
+# See docs/core.md and docs/self-type.md.
 #
 # Demonstrates:
 #   - inherited type-direct messages and explicit message overrides

@@ -3,8 +3,8 @@
 > **Status (2026-09-05): Revised lazy-stage contract; accepted and implemented**
 >
 > This document specifies the `->` value pipeline and its per-item `=>`
-> delimiter. `docs/design.md` defines `;` as head-folding reader sugar with no
-> `_` slot behavior. This proposal does not change it.
+> delimiter. [Reader syntax](reference/syntax.md) defines `;` as head-folding
+> sugar with no `_` slot behavior. The [call contract](spec/calls.md) is normative.
 >
 > Pipeline examples use ordinary `gene` fences and are checked by the
 > repository documentation contract.
@@ -130,7 +130,7 @@ pipeline_stage = spacing, ( "->" | "=>" ), spacing, stage_segment ;
 stage_segment  = form, { form } ;
 ```
 
-The normative surface is integrated into `docs/design.md`. The required
+The normative surface is integrated into `docs/spec/calls.md`. The required
 lexical distinctions are:
 
 - a whole `->` or `=>` atom inside a node is the pipeline delimiter;
@@ -702,7 +702,7 @@ it as something else. `~name` stays an ordinary glued symbol and the
 
 ## 15. Implementation outcome
 
-1. **Surface contract:** complete in `docs/design.md` and
+1. **Surface contract:** complete in `docs/spec/calls.md` and
    `docs/spec/calls.md`; `;` remains independent head-folding sugar.
 2. **Reader representation:** complete. The reader emits `vkPipeline`, owns
    props/meta/source locations and a delimiter kind per stage, requires a

@@ -16,8 +16,9 @@ The contract is split by subsystem:
 
 `tests/spec_runner.nim` is the executable form of this contract. When a rule
 marked implemented disagrees with that suite, the suite has temporary
-precedence and the prose must be fixed. `docs/design.md` is architecture and
-rationale; `docs/proposals/` and explicitly deferred material are
+precedence and the prose must be fixed. `docs/design.md` is the concise
+architecture overview, with details in `docs/reference/`;
+`docs/proposals/` and explicitly deferred material are
 non-normative.
 
 Run `nimble spec` after changing any rule. The compiler-head inventory in

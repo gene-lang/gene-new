@@ -1,5 +1,5 @@
 """Model-native unit tokenization and the matched canonical-`.gene`-byte
-control -- docs/proposals/reversible-ai-native-program-format.md, "First
+control -- docs/archive/reversible-program-format.md, "First
 model-pilot unit recommendation" and "Model-training study" (the matched
 control must differ from the treatment only in its input/output head).
 

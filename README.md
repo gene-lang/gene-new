@@ -7,11 +7,9 @@ XML/HTML, and Ruby/Smalltalk.
 
 Gene has **one syntactic and semantic unit: the node**. A node can be read as
 data, code, type/shape, or selector/navigation plan, so code is data and data is
-code. The full language direction — callable-first evaluation, slash selectors,
-streams/generators, typed recoverable errors, gradual typing, structured
-concurrency, and a stable native ABI — is specified under
-[`docs/spec/`](docs/spec/README.md). [`docs/design.md`](docs/design.md) retains
-architecture, rationale, and deferred directions.
+code. The [implemented specification](docs/spec/README.md) defines the language
+contract. The [design overview](docs/design.md) explains the main choices, and
+the [documentation index](docs/README.md) links detailed guides and references.
 
 > **Status: active implementation.** APIs and the language surface are still
 > evolving. What is implemented today is summarized in
@@ -48,7 +46,10 @@ participates in equality or hashing.
 - **Gradual nominal types** — schema-validated construction, single
   inheritance, and checked boundaries for parameters, returns, and numeric/C
   ABI values.
-- **Protocols** with nominal dispatch, scoped visibility, and `derive`.
+- **Protocols** with nominal dispatch, scoped visibility, declaration-bound
+  `Self`, explicit overrides, and `derive`.
+- **Packages and builds** — workspace manifests, dependency solving, lockfiles,
+  immutable source stores, and cached pure-Gene build artifacts.
 - **Typed recoverable errors** — `fail`, `^errors` rows, `try/catch/ensure`,
   kept distinct from `panic`.
 - **Streams and generators** as lazy pull combinators; a function containing
@@ -92,7 +93,7 @@ Evaluate an expression, or run a file:
 ```console
 $ ./bin/gene eval '(+ 1 2)'
 3
-$ ./bin/gene eval '(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)'
+$ ./bin/gene eval '(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)'
 55
 $ echo '(fn main [args] ($println "Hello," args/0) nil)' > demo.gene
 $ ./bin/gene run demo.gene Gene
@@ -106,6 +107,16 @@ is a complete web application — routes, SQLite, HTML, CSS, and browser
 behavior — in one file. [`examples/cordis`](examples/cordis) is a tested
 Gene-native plugin runtime with spatial services, deterministic effects,
 sandboxed composition, and recoverable hot reload.
+
+## Documentation
+
+- [Start here](docs/README.md): contracts, feature guides, tools, and backends.
+- [Design overview](docs/design.md): concise architecture and rationale.
+- [Language reference](docs/reference/README.md): detailed numbered chapters.
+- [Implementation status](docs/implementation-status.md): supported features and limits.
+- [Authority contract](docs/spec/authority.md): permissions, eval, and sandbox boundaries.
+- [Proposals](docs/proposals/README.md): future work; [reports](docs/reports/README.md)
+  and [archive](docs/archive/README.md) preserve dated evidence and retired designs.
 
 ### Other commands
 
@@ -137,7 +148,11 @@ src/
     native_api.nim    Nim-facing native/FFI boundary
     lsp/ tui/ viewer/ editor and terminal front ends
 docs/spec/            normative implemented language contract
-docs/design.md        architecture, rationale, and deferred directions
+docs/design.md        concise design overview
+docs/reference/       detailed language chapters
+docs/proposals/       future designs and research
+docs/reports/         verification and measurements
+docs/archive/         retired designs and historical plans
 examples/             runnable programs, including the showcase and todo app
 tests/                unit tests + executable language specs
 benchmarks/           release-mode core benchmarks

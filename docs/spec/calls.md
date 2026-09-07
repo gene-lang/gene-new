@@ -208,7 +208,7 @@ segment before the first delimiter is a single form. Multiple direct slots,
 empty stages, syntax-call stages, a multi-form leading segment, and mixing
 `->`/`=>` with `;` at one parenthesis depth are errors; `->` and `=>` mix with
 each other. `;` remains head-folding reader sugar and has no slot behavior.
-See `docs/design.md §2.7` and `docs/proposals/pipeline.md`.
+See `docs/reference/syntax.md §2.7` and `docs/pipelines.md`.
 
 MVP compiler-dispatched heads:
 

@@ -14,7 +14,7 @@ or receiver type. Every other impl is module-local unless explicitly exported
 and explicitly imported.
 
 This design replaced the activation/visibility rules previously stated in
-`docs/design.md` §10/§10.1 and refines protocol conformance and message
+`docs/reference/protocols.md` §10/§10.1 and refines protocol conformance and message
 resolution in `docs/core.md` §3.5/§9.
 
 ## 1. Model
@@ -46,7 +46,7 @@ No layer silently overrides another.
 ## 2. Message resolution
 
 An unqualified send `(x .m)` reaches only the receiver's type-direct messages,
-walking nominal parents (`docs/design.md` §3). It never reaches a protocol impl, so a send
+walking nominal parents (`docs/reference/calls.md` §3). It never reaches a protocol impl, so a send
 site carries no protocol candidate set and simple-name ambiguity cannot arise
 from one.
 
@@ -278,7 +278,7 @@ The experimental `typed_native` C backend is not closed-world and does not yet
 carry the epoch guard. It refuses to lower a send whose message is declared by
 any overlay-only impl in the compiling module, which makes it sound within a
 module; a cross-module overlay installed after compilation is a known,
-accepted limitation (`docs/proposals/native-type.md` Part II).
+accepted limitation (`docs/native-types.md` Part II).
 
 The reverse index adds no send-hot-path work. Protocol-typed aggregate
 boundaries are separate: `nimble perf` must cover repeated same-scope and
@@ -309,5 +309,5 @@ Add or amend executable specs for:
 - guarded direct-call invalidation after activation/reload; and
 - absence of individual module unload in MVP.
 
-`docs/design.md` §10/§10.1 and the conformance and dispatch text in
+`docs/reference/protocols.md` §10/§10.1 and the conformance and dispatch text in
 `docs/core.md` §3.5/§9 must stay consistent with this file.

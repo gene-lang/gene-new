@@ -1,5 +1,5 @@
 # Run from the repository root:
-#   bin/gene run examples/capabilities/05_env.gene
+#   bin/gene run examples/capabilities/07_env.gene
 # Env bindings supply values; capability rows limit external operations.
 # The default CLI context can read the repository's README.md.
 

@@ -1,8 +1,8 @@
 # Capability examples
 
-Six runnable programs for `docs/proposals/capabilities.md`. Each one shows a
-denial as well as a success, because a capability system you only ever see
-succeed teaches you nothing about where its edges are.
+Seven programs illustrate the [implemented authority contract](../../docs/spec/authority.md).
+The [capability reference](../../docs/capabilities.md) explains provider and
+propagation details. The examples show both successful operations and denials.
 
 Build the CLI first:
 
@@ -174,6 +174,21 @@ depend on it.
 
 ---
 
+## 7. Env bindings and retained ceilings
+
+```bash
+$G run 07_env.gene
+```
+
+This example separates lexical bindings from operation permission. An omitted
+Env row inherits the evaluator context; an empty row selects no external
+permissions. Extending an Env preserves its parent's ceiling. A saved broad
+Env cannot restore grants inside an empty context, and escaped evaluated
+closures retain the effective intersection. The example also checks an actual
+denied read and restoration of the caller context.
+
+---
+
 ## Cleaning up
 
 ```bash
@@ -182,6 +197,7 @@ rm -rf out reports "/tmp/gene_cap_demo.txt"
 
 ## Where to read more
 
-- `docs/proposals/capabilities.md` §5.1 (host root and `--allow_*`), §5.3.1
+- [Authority contract](../../docs/spec/authority.md).
+- [Capability reference](../../docs/capabilities.md) §5.1 (host root and `--allow_*`), §5.3.1
   (import-site ceilings), §5.0.2 (`^require_strict_dependencies`), §5.6
   (call-site attenuation), §7.5 (path confinement).

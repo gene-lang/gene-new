@@ -458,7 +458,7 @@ type
     # a host module with host authority (see `loadSandboxedModule`).
     sandboxShared: HashSet[string]
     currentModuleDir: string
-    # --- packages (docs/proposals/package.md) --------------------------------
+    # --- packages (docs/packages.md) --------------------------------
     #
     # `appPackage` is the application package selected at startup — either the
     # nearest ancestor `package.gene` or a synthesized ad-hoc package. It
@@ -494,7 +494,7 @@ type
     serdeValueOrigins: Table[uint64, tuple[module, path: string]]
     serdeOriginBuiltinsDone: bool
     serdeOriginModules: HashSet[string]
-    # Generated web assets (docs/proposals/transpile.md §4.12). The
+    # Generated web assets (docs/web-compilation.md §4.12). The
     # *Application* owns them, not the Server and not the process: a block is
     # compiled while a module loads, which happens here, and the composition
     # operation takes no server. So every Server this application starts
@@ -8572,7 +8572,7 @@ proc userStore*(app: Application): string =
   app.userStoreRoot
 
 # ---------------------------------------------------------------------------
-# Package resolution (docs/proposals/package.md §7-§9)
+# Package resolution (docs/packages.md §7-§9)
 # ---------------------------------------------------------------------------
 
 proc packageForImport(app: Application, importer: Package,

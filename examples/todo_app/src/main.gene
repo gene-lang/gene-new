@@ -21,12 +21,12 @@
 # browser behavior. No build command, no bundler, no hand-written JavaScript.
 # The `web_module` block below is compiled to a browser module while this
 # module loads, and served from a content-addressed route the application owns
-# (docs/proposals/transpile.md §4.12).
+# (docs/web-compilation.md §4.12).
 #
 # The one thing outside this file is `gene/utils`, a sibling package holding
 # the form-decoding helpers every form-posting app needs and nothing this app
 # owns. It is declared in package.gene as a `^path` dependency, so a fresh
-# clone resolves it with no install step (docs/proposals/package.md §8).
+# clone resolves it with no install step (docs/packages.md §8).
 #
 # The store functions only speak the Db protocol (exec/query/execute), so
 # swapping in db/postgres means changing `open` and the SQL placeholder
@@ -47,7 +47,7 @@
 (import $db/sqlite [open DbError Db])
 # Form decoding and field validation are not todo-specific, so they live in a
 # sibling package rather than at the bottom of this file. `"."` is that
-# package's entry module (docs/proposals/package.md §10); the dependency is
+# package's entry module (docs/packages.md §10); the dependency is
 # declared in package.gene, and only a declared dependency can be imported.
 (import [with_str with_int] from "." ^pkg "utils")
 

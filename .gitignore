@@ -64,6 +64,11 @@ coverage/
 tmp/
 *.tmp
 archive/
+# Documentation evidence and retired design notes are source, not generated output.
+!docs/reports/
+!docs/reports/**
+!docs/archive/
+!docs/archive/**
 examples/ai_agent/logs/
 examples/ai_agent/home/
 *.vsix

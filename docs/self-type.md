@@ -1,6 +1,6 @@
 # Gene Self Type Design
 
-**Status:** Implemented in the compiler, VM, and web backend. See [implementation verification](self-type-verification.md).
+**Status:** Implemented in the compiler, VM, and web backend. See [implementation verification](reports/self-type-verification.md).
 
 **Date:** 2026-09-05
 
@@ -12,13 +12,13 @@
 
 ## 1. Decision
 
-Gene should make `Self` in type annotations **declaration-bound**, while preserving dynamic message dispatch.
+`Self` in type annotations is **declaration-bound**, while message dispatch remains dynamic.
 
 > The receiver's runtime type selects the implementation. The method's declared contract determines which arguments that implementation must accept.
 
 These are separate operations. Inheriting a method must not narrow its argument contract merely because the actual receiver belongs to a subtype.
 
-The proposed rules are:
+The implemented rules are:
 
 | Context | Meaning of `Self` |
 | --- | --- |
@@ -867,7 +867,7 @@ The compatibility changes are intentional: inherited `Self` contracts remain sta
 | A universal fallback uses abstract protocol `Self`. | Reject the universal declaration in the MVP; use a concrete/Self-independent contract or a non-universal protocol with explicit conformances. |
 | `Self` is used as an exact-runtime-type test. | Use an explicit value-level identity policy or a distinct narrower operation. |
 
-Implementation work should proceed in this order:
+The implementation is organized around these responsibilities:
 
 1. Define per-protocol conformance bindings, type-direct replacement intent, impl modes, effective body-source records, and readiness dependencies.
 2. Validate flag placement/literal values and expanded annotations, prohibit contextual `Self` in newly supplied replacement signatures in both impl modes, and enforce the universal-protocol restriction.
@@ -876,11 +876,11 @@ Implementation work should proceed in this order:
 5. Integrate source recomposition and compatibility checks with scoped activation, overlays, and reload, including ancestry-aware dependency discovery and existing unit barriers.
 6. Update diagnostics, executable tests, and backend checks together.
 
-Repository integration points are `docs/design.md` sections on types, protocols, and `Self`; `docs/spec/types.md`; `docs/spec/protocols.md`; `docs/core.md`; `docs/scoped-impls.md`; and the corresponding protocol/type suites. Replace runtime-relative narrowing examples and update the existing deferral of partial impl composition to describe this controlled inheritance form. Earlier drafts of this proposal's per-message protocol markers and missing-marker activation errors are superseded by impl modes and their source/binding dependencies.
+Repository integration points are the `docs/reference/types.md` and `docs/reference/protocols.md` chapters; `docs/spec/types.md`; `docs/spec/protocols.md`; `docs/core.md`; `docs/scoped-impls.md`; and the corresponding protocol/type suites. Replace runtime-relative narrowing examples and update the existing deferral of partial impl composition to describe this controlled inheritance form. Earlier drafts of this proposal's per-message protocol markers and missing-marker activation errors are superseded by impl modes and their source/binding dependencies.
 
-No implementation or test-suite execution is claimed by this document.
+Implementation and test evidence is recorded in [the verification report](reports/self-type-verification.md).
 
-## 14. Suggested specification text
+## 14. Contract summary
 
 > `Self` in a concrete type or implementation declaration denotes that declaration's receiver type wherever that annotation is permitted. Each non-universal protocol identity has its own abstract `Self` parameter, bound when its conformance is introduced. Protocol inheritance preserves established bindings and binds newly introduced identities to the introducing receiver; requirements and defaults use their declaring protocol's binding. Repeated inheritance paths to the same identity must agree. Inheritance never rebinds an established `Self` to the receiver's runtime subtype.
 >
@@ -896,10 +896,10 @@ For the MVP, “satisfy the inherited resolved contract” uses Gene's exact cal
 
 ## References
 
-This proposal consolidates the Gene design discussions of 2026-09-05 and 2026-09-06. Repository paths below identify the discussed contracts and integration points; they are not assertions that this proposal has already been implemented.
+This implemented design consolidates the Gene discussions of 2026-09-05 and 2026-09-06. Repository paths below identify the contracts and integration points; the verification report records implementation evidence.
 
-- **[R1]** `docs/design.md` — runtime-relative `Self` example, receiver/type distinctions, node heads, and message-expression syntax.
+- **[R1]** `docs/reference/types.md` and `docs/reference/protocols.md` — declaration-bound Self, receiver/type distinctions, and message-expression syntax.
 - **[R2]** `docs/spec/types.md` — nominal inheritance, inherited field contracts, and exact type-direct override signatures in the documented MVP.
 - **[R3]** `docs/spec/protocols.md` and `docs/core.md` — protocol conformance, inherited message identities, defaults, and dispatch.
 - **[R4]** `docs/scoped-impls.md` — lexical implementation visibility, nearest-receiver selection, conformance scopes, transactional activation/reload, and live-overlay caveats.
-- **[R5]** `src/gene/compiler.nim` (`compileAlias`, `implMessageProto`), `src/gene/reader.nim` (true-flag sugar), and `src/gene/vm.nim` (`callableSignatureMismatch`, the three-argument `validateCallableSignature`, `capabilityContractCompatible`, `registerImpl`, `activateStagedImpls`, and `opEval`) — current implementation integration points inspected for this proposal, not claims that the proposed readiness or binding model already exists.
+- **[R5]** `src/gene/compiler.nim` (`compileAlias`, `implMessageProto`), `src/gene/reader.nim` (true-flag sugar), and `src/gene/vm.nim` (`callableSignatureMismatch`, the three-argument `validateCallableSignature`, `capabilityContractCompatible`, `registerImpl`, `activateStagedImpls`, and `opEval`) — implementation integration points; the verification report describes the supported readiness and binding behavior.

@@ -1,166 +1,71 @@
 # Implementation status
 
-**Status date:** 2026-09-07
+**Updated:** 2026-09-07. This is a navigation summary of the current tree;
+[focused specs](spec/README.md) define the implemented contract. Dated benchmark
+and verification results live in [reports](reports/README.md).
 
-The current VM implements the reader/value/printer pipeline, callable-first
-bytecode execution, runtime fexprs and template macros, selectors and streams,
-the generic collection operations (design §6.2: `$map`/`$filter`/`$take`/
-`$into`/`$each` and their bare sends dispatch on the receiver's type; the
-eager `List`/`Map`/`Set` methods answer in their own kind, a user type joins
-the generic by declaring the message, and a missing method is the send path's
-`MessageError` for every spelling), gradual nominal types,
-protocols/derivation with scoped impl visibility
-(canonical/scoped/overlay, `import_impl`, transactional reload —
-`docs/scoped-impls.md`), structured tasks/channels/actors, module/eval
-overlays, inherited capability contexts with provider-checked attenuation,
-native roots/calls, typed FFI
-boundaries, `^repr native_wrapper` types (design §16.6),
-serialization, the experimental `gene runurl` URL-module entry
-(design §15.9), and the AI-agent support libraries, whose `ai_agent` example
-driver is archived.
+## Implemented surfaces
 
-The [implemented authority contract](spec/authority.md) separates name
-visibility, operation permission, resource origins, and execution policy.
-Eval intersects its invoker context with retained Env/parent ceilings; escaped
-eval callables keep that intersection. Capability proposal acceptance criteria
-are not a blanket sandbox guarantee.
+| Area | Current support | Details |
+| --- | --- | --- |
+| Values and syntax | Node projections, reader/printer, mutable and shallow immutable collections, selectors, and sequenced pipelines | [Reader](spec/reader.md), [pipelines](pipelines.md) |
+| Calls and control | Eager calls, messages, checked Callable views, template macros, named fexprs, and tail-elidable call chains | [Calls](spec/calls.md), [macros/fexprs](macro-design.md), [tail calls](tail-calls.md) |
+| Types and protocols | Nominal schemas, constructors, inheritance, gradual checks, declaration-bound Self, explicit overrides, and scoped implementation visibility | [Types](spec/types.md), [Self](self-type.md), [scoped impls](scoped-impls.md) |
+| Absence and collections | Nil-admitting fixed parameters default to nil; map normalizes void; filter_map drops void; missing field lookup remains distinct | [Nil/void](spec/nil-void.md) |
+| Authority and eval | Provider-backed contexts, attenuation, module/import ceilings, Env-parent intersections, retained eval closures, and execution limits | [Authority contract](spec/authority.md), [provider reference](capabilities.md) |
+| Packages | Format-1 workspaces/manifests, deterministic dependency solving, lockfiles, multiple versions, git/path/local-registry sources, immutable stores, vendoring, and cache GC | [Packages](packages.md), `tests/test_package.nim` |
+| Package builds | System-library discovery, pure-Gene target graphs, source snapshots, deterministic derivations, artifact reuse, and parallel library builds | [Builds](package-builds.md), `tests/test_build.nim` |
+| Concurrency | Cooperative fibers, scoped tasks, channels, actors, cancellation, timers, and an experimental bounded worker lane | [Concurrency](spec/concurrency.md) |
+| Services and persistence | HTTP event loop, routing, actor-pool dispatch, WebSockets, HTTP client, logging, serialization, stores, and filesystem watching | [Stdlib](stdlib.md), [HTTP server](http-server.md), [persistence](persistence.md) |
+| Application events | Event/Bus/Subscription, nominal matching, publication policies, and recording/composite sinks with lane ownership | [Events](events.md) |
+| Web backend | Checked web subset through P6: TS/ESM/declarations/source maps, interop, macros, types/protocols, collections, streams, async cancellation, DOM, and embedded web_module lifecycle | [Web profile](web-profile.md), [compilation](web-compilation.md) |
+| Native interop | Rooted native API, typed FFI, managed wrappers, and experimental typed-native C lowering with dynamic entry/ownership adapters | [Native types](native-types.md), [native examples](../examples/native/README.md) |
+| Tools | Formatter, LSP, structural viewer, module documentation, package commands, and wasm-hosted VM | [Documentation index](README.md) |
 
-A separate existing limitation remains: evaluating a nominal type with methods
-and invoking an instance method can hang. The authority review reproduced this
-on the unchanged runtime as well. Eval retention coverage currently uses
-functions and generators; it does not establish correctness of that type path.
+The web profile supports eager map/filter_map/filter for Lists, PropMaps, and
+Maps, plus lazy Streams. Unsupported constructs are rejected explicitly;
+full VM behavior does not silently fall back to generated JavaScript.
 
-Cordis prerequisites are implemented. `Task/join` exposes repeatable
-`TaskOutcome` data without consuming `await`; `runtime/require_root_lane`
-provides a typed ownership assertion; sandbox transactions prepare, atomically
-commit, discard, graph, and release bounded module generations; and `fs/watch`
-provides a capability-gated bounded polling watcher with rename pairing,
-recursive no-follow traversal, explicit overflow, and cancellable receives.
+The typed-native backend remains experimental. Pure-Gene package builds do not
+imply native recipe/link support. Direct protocol-send overlay guards are
+module-local; cross-module overlays over AOT-compiled types remain a known
+limitation. Loaded AOT libraries remain pinned for process lifetime.
 
-Application foundations include packed fixed-width numeric buffers with checked
-writes and direct byte bridges, and `runtime/bind_call` for policy-bound
-invocations without an application-generated eval wrapper. Call spreads retain
-named props, and dynamic execution budgets propagate through scope-free calls
-and message application. The web profile now supports map iteration, consistent
-integer lengths, idempotent numeric conversions, checked numeric-buffer
-operations, named defaults, and explicit declaration re-exports. Cordis uses
-the binding API; Miclone's mod imports its vocabulary through one public facade.
-Measured results, validation, and known retention failures are recorded in
-[Application foundations](proposals/application-foundations.md).
+## Applications exercising the runtime
 
-The normative implemented surface lives in `docs/spec/` and is checked by
-`nimble spec`. Unit and integration coverage runs with `nimble test`; broad
-runtime verification uses `nimble verify`.
+- [Cordis](../examples/cordis/README.md) uses nominal service/hook keys, exact
+  realms, lifecycle transactions, policy-bound calls, sandbox generations,
+  persistence, filesystem watching, and HMR.
+- [Miclone](../examples/miclone/README.md) exercises packed buffers, shared VM/web
+  contracts, protocol dispatch, numerical code, and a browser client.
+- [Todo app](../examples/todo_app/src/main.gene) combines routing, SQLite, HTML,
+  CSS, and embedded browser code in one authored source file.
 
-The front-end transpilation proposal is implemented through its P6 embedded
-web-module slice.
-`gene/html/render` is the shared node-to-text edge, and `gene/css` supplies
-ordered declaration/rule data, nested/media rendering, deterministic scoped
-classes, and scoped keyframes. `examples/todo_app/src/main.gene` uses these APIs
-instead of local renderers or raw CSS strings. A backend-neutral fixture
-manifest and canonical result envelope run
-under `nimble transpile_spec`; the fixed bigint/JSON spike runs under
-`nimble transpile_perf`. `gene build --target web` analyzes the deliberately
-bounded `web` profile into a separate semantic IR and emits readable ES2022,
-TypeScript declarations/source, and direct Gene source maps over a closed
-acyclic module graph. Exact `Int` uses `bigint`. The profile covers macros,
-state/control flow, matching, paths/selectors, structural maps and nodes,
-nominal types/enums/protocols, checked errors, streams, portable stdlib calls,
-structured tasks/cancellation, static namespaces, and generated DOM bindings.
-The eager collection methods of design §6.2 remain VM-only: the profile
-compiles the stream-shaped pipeline (`to_stream` then the stream operations)
-and rejects an eager receiver at compile time (`docs/web-profile.md`).
-Checked JS exports/imports, callbacks, method edges, and an interactive Gene
-component exercise the ABI. `derive` deliberately remains VM-only; fexprs,
-runtime eval, actors/channels, native FFI, capabilities, scoped impl imports,
-threads, and deep persistent freeze/thaw receive explicit profile diagnostics.
+[Application foundations](reports/application-foundations.md) records the
+cross-application changes and their measured validation.
 
-A `web_module` block embeds a web-profile source unit inside an ordinary
-module, so a complete page — server logic, HTML, CSS, and browser behavior — is
-one authored file with no build step, bundler, or hand-written JavaScript.
-`gene run examples/todo_app/src/main.gene` serves a page whose delegated click
-handler was authored in that same file and enhances existing server-rendered
-rows. The block's forms keep their original positions rather than being
-reprinted and re-read, so diagnostics and source maps name the lines the author
-wrote; it sees the web prelude and its own declarations only, so it cannot
-close over a database handle or a request. Compilation happens once per module
-version behind the `compile_web_asset` seam, never per request. The owning
-`Application` holds the resulting immutable assets and their content-addressed
-routes, which every `Server` it starts answers; `$web/script` and
-`$web/stylesheet` return finished nodes, and referring to an asset is what
-publishes it. Source maps carry only the embedded block, so server source never
-enters a browser artifact. `nimble transpile_spec` runs the lifecycle suite.
+## Known limits and deferred work
 
-The experimental `typed_native` C backend (`gene compile --target c`,
-`docs/proposals/native-type.md` Part II) lowers native-pointer parameters,
-field access, and direct typed calls, and its dynamic boundary is now
-connected in both directions: `aot/load` opens a compiled library and binds
-its `^native_entry` functions and `ffi/fn` wrappers as ordinary callables, so
-Gene code can call compiled machine code and managed wrappers cross the seam
-with borrow/transfer/copy ownership. The lowerable subset covers field access,
-locals, direct/FFI/protocol calls, arithmetic, comparisons, `if`, `while`, and
-block statements.
+- **Eval-defined types:** evaluating a nominal type with methods and invoking
+  an instance method can hang; the authority review reproduced this on the
+  unchanged runtime. Current eval-retention coverage uses functions/generators.
+- **Retention and concurrency:** some mixed scope/closure cycles remain outside
+  the runtime's collection support. AtomicArc does not provide ORC cycle
+  collection. See the dated [retention findings](reports/application-foundations.md).
+  Production M:N lifecycle/load balancing remains future work.
+- **Package distribution:** hosted registry transport, publication/signing,
+  native/resource build recipes, mixed images, and full application installation
+  remain future work. Lockfiles, local registry sources, and multiple installed
+  source versions are already implemented.
+- **Runtime event instrumentation:** events phases 2–4 are not implemented.
+  The withdrawn producer can be recovered from commit `0eb4989` if that work
+  resumes. The phase-1 native EventSink error-row declaration gap remains.
+- **Language and backends:** static effect checking, full hygienic compile-time
+  function macros, static enum exhaustiveness, unrestricted foreign callbacks,
+  JIT, and broader AOT support remain deferred. Existing controlled impl-level
+  inheritance is implemented; it is not arbitrary partial impl composition.
 
-The boundary enforces the same contracts the interpreter's FFI path does — the
-generated wrappers call those converters rather than a parallel set — and ABI
-compatibility is verified rather than assumed: a library declares every native
-type it transitively depends on with layout and declaration fingerprints, `load`
-rejects a mismatch before binding anything, and an incompatible redeclaration
-after load makes already-bound callables refuse.
-
-It remains experimental. Direct protocol sends are guarded only within the
-compiling module, so a cross-module overlay over an AOT-compiled type is a
-known limitation, and there is no `gene build` producing a linked artifact —
-that waits on package and dependency support, since what to link against is a
-dependency-graph question. `examples/native` drives `cc` from a shell script
-meanwhile. Loaded AOT libraries are pinned for the process lifetime, because
-their callables and release shims can outlive any individual call.
-
-Package support is shipped through `docs/proposals/package.md` Stage 3: ad-hoc
-and regular application packages discovered from the nearest ancestor
-`package.gene`, data-only manifests, the application and user stores with
-deterministic precedence, two-phase exact-version resolution, `^pkg` imports
-with per-package module boundaries, package/module identity as the module-cache
-key, and `gene pkg show|locate|graph|install`. Hosted registries, semver
-solving, lockfiles, content addressing, publishing, and multiple installed
-versions of one name are not.
-
-The application event bus (`docs/events.md` phase 1) is implemented:
-`gene/event` supplies the `Event` root, `Bus`, `Subscription`, `PublishResult`,
-`Matcher`, `exact`, the `ErrorPolicy` enum, the `EventSink` protocol, and the
-recording/null/composite sinks, with nominal parent matching over compact type
-ids, copy-based deep-freeze on publish, snapshot dispatch, and both error
-policies. The runtime instrumentation half — phases 2-4, `runtime/EventStream`
-and the `runtime/...` event families, category configuration, emission sites,
-and safe-point draining — is **not** implemented. An unfinished producer was
-committed to `src/gene/` in 0eb4989 without ever being included or compiled and
-has been withdrawn; recover it with
-`git show 0eb4989:src/gene/runtime_events.nim` before restarting that work.
-
-Lane ownership (§9.1) *is* enforced: a bus records the lane that created it and
-refuses operations from another with `SubscriptionError`. That is not redundant
-with the bus not being `Send` — sendability stops a bus being transferred, but
-an embedding host thread calling in through `native_api` transfers nothing. The
-remaining phase-1 gap is that `EventSink:emit` implements but cannot *declare*
-its `^errors [EventPublishError]` row, because natively registered protocols
-have no per-message error types.
-
-`examples/cordis` is an implemented Gene-native plugin runtime exercising the
-runtime primitives above: nominal service/hook keys, exact realms, dependency
-epochs, serialized lifecycle transitions, effect-owned tasks/timers/actors,
-bounded plugin invocation, data-only incremental and prospective staged
-composition, sandbox-generation ownership, include persistence, candidate-swap
-and stop/start HMR, filesystem watching, and post-commit recovery diagnostics.
-Its package test target and live HMR probe are the executable contract for
-`examples/cordis/docs/design.md`.
-
-Deferred work is explicitly non-normative. Major deferred areas include package
-registries and lockfiles, static effect rows, full hygienic compile-time
-function macros, partial protocol impl composition, static enum exhaustiveness,
-arbitrary escaping foreign callbacks/foreign-thread VM entry, JIT, and AOT
-beyond the experimental backend described above.
-
-For the AI agent, typed tools, event tracing, persistence, gateway surfaces,
-cancellation, and the embedded terminal are shipped. The next packaging slice
-should use host/CLI root contexts and declaration or call-site attenuation.
-`main` arguments carry program data, not capability grants.
+See [proposals](proposals/README.md) for future designs. Reference documents
+outside that directory identify deferred extensions in their own status text.
+This summary does not promote historical acceptance criteria into sandbox,
+performance, or production-readiness guarantees.

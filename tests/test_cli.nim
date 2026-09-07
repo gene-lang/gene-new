@@ -2203,7 +2203,7 @@ suite "cli — Gene package builds":
     check "[OK] tests/one.gene" in ran.output
     check "tests/two.gene" notin ran.output
 
-suite "cli — gene pkg (docs/proposals/package.md §11)":
+suite "cli — gene pkg (docs/packages.md §11)":
   proc pkgCliDir(): string =
     result = cliDir / "pkg"
     removeDir(result)

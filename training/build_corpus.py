@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Training corpus pipeline -- docs/proposals/reversible-ai-native-program-format.md
+"""Training corpus pipeline -- docs/archive/reversible-program-format.md
 "Training corpus pipeline":
 
     generated .gene

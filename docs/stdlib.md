@@ -600,7 +600,7 @@ than silently merging styles.
 
 Places compiler-generated browser assets in a page. This is the entire
 author-facing surface for embedded web modules
-(`docs/proposals/transpile.md` §4.12); everything else — JavaScript, source
+(`docs/web-compilation.md` §4.12); everything else — JavaScript, source
 maps, content hashes, dependency URLs, the route table — stays behind it.
 
 ```gene
@@ -662,7 +662,7 @@ Acceptance:
 
 The server is single-process and cooperative: a non-blocking event loop on the
 scheduler thread with task_per_request handler fibers (originally a blocking
-accept loop; upgraded per `docs/proposals/async-http-server.md` Phase 1). The
+accept loop; upgraded per `docs/http-server.md` Phase 1). The
 API stays capability-shaped so richer backends can replace it.
 
 Types:
@@ -694,7 +694,7 @@ Functions:
 - `serve : Server, Fn -> Nil ^errors [HttpError]`
 
 `serve` runs a readiness-driven event loop with **task_per_request dispatch**
-(the first slice of `docs/proposals/async-http-server.md`): each parsed
+(the first slice of `docs/http-server.md`): each parsed
 request runs the handler as a scheduler fiber settling a pending `Task`, so a
 handler that `sleep`s/`await`s parks without stalling other connections.
 Non-fiber callables fall back to an inline call. Connections are
@@ -932,7 +932,7 @@ library behavior is fixed by this target.
 ## `gene/aot` — loading natively compiled modules
 
 Experimental, alongside the `typed_native` C backend
-(`docs/proposals/native-type.md` Part II).
+(`docs/native-types.md` Part II).
 
 - `load` — open a shared library produced from `gene compile --target c` and
   return a map of `name -> callable`.

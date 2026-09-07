@@ -4595,7 +4595,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
     ## `(const name value)` / `(const name : T value)` where `value` is a
     ## literal, and the same shapes spelled `let`. Only literals qualify: the
-    ## profile has no module-initialization phase (docs/proposals/transpile.md
+    ## profile has no module-initialization phase (docs/web-compilation.md
     ## §2), and a computed initializer would need the ordering and cycle
     ## contract that phase was excluded to avoid. A literal has no such hazard,
     ## so it lowers to a plain JS `const`.

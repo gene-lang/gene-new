@@ -1,7 +1,7 @@
 # Authority, evaluation, and sandbox boundaries
 
 **Status:** normative for the implemented VM surface described here. The
-[capability proposal](../proposals/capabilities.md) records broader design and
+[capability proposal](../capabilities.md) records broader design and
 deferred work; it is not a claim that every proposed boundary is implemented.
 
 ## Separate the layers
@@ -95,7 +95,7 @@ Use `^bindings` for ordinary values and a selector list for capability selection
 (eval (quote input) ^in e) # "hello"
 ```
 
-Runnable examples: [Env ceilings](../../examples/capabilities/05_env.gene)
+Runnable examples: [Env ceilings](../../examples/capabilities/07_env.gene)
 and [call-site attenuation](../../examples/capabilities/04_with_capabilities.gene).
 
 An ordinary `Env` overlays explicit bindings, parent bindings, imports, and

@@ -603,7 +603,7 @@ usable by a future Gene-level or web frontend.
 Existing Gene-level behavior is a compatibility requirement: the AI-agent TUI
 tests for cancellation, input history, paging, mouse wheel, resize, paste, and
 word wrapping must continue to pass. If the public `curses` namespace changes,
-update its executable surface contract in `docs/design.md`; internal extraction
+update its executable surface contract in `docs/stdlib.md` and the specs; internal extraction
 alone should not require a language-surface change.
 
 Windows can use a later backend. The first version should compile the command

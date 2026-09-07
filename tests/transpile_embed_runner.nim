@@ -1,5 +1,5 @@
 ## Embedded web modules: the lifecycle, not the internals
-## (docs/proposals/transpile.md §4.12 "Acceptance").
+## (docs/web-compilation.md §4.12 "Acceptance").
 ##
 ## These exercise the interfaces an application actually touches — load a
 ## module, ask the application what it publishes, fetch it by URL — because the

@@ -1,5 +1,11 @@
 # Native-backed types: managed wrappers and typed-native pointers
 
+**Status:** managed wrappers and the experimental typed-native C backend are
+implemented. Native build/recipe integration and cross-module AOT overlay
+guards remain limited. The dated sections below retain measurements and
+explicit deferred work; [implementation status](implementation-status.md)
+summarizes the current supported slice.
+
 Gene needs two representations at two different execution layers:
 
 - **managed wrappers** are ordinary dynamic Gene values and remain the default;
@@ -11,8 +17,8 @@ path belongs in native code generation, where exact representations are already
 known.
 
 Here **typed-native** names a compiler representation/backend only. It is not a
-system-library requirement (`package-build.md` §8), a generic native build
-artifact, or the `mixed` application-image mode in `distribution.md`; those
+system-library requirement (`package-builds.md` §8), a generic native build
+artifact, or the `mixed` application-image mode in `proposals/distribution.md`; those
 modules consume this backend only when their own contracts explicitly say so.
 
 ---
@@ -46,8 +52,9 @@ alone would be exactly the second wrapper-specific mutability mechanism item 3
 forbids. Until it lands, wrapper metadata that must change after construction
 holds a `Cell`, as the in-tree session types do.
 
-The sections below describe the state that motivated the work; §16.6 of
-`docs/design.md` is the current contract.
+The sections below preserve the motivation and measurements. See the
+[native boundary contract](spec/modules.md), [native interop reference](reference/native-interop.md),
+and current status at the top of this document.
 
 ## 1. Representation
 
@@ -250,30 +257,14 @@ specialized send and only earns that cost once the backend leaves experimental
 status. Until then the limitation is: do not install a cross-module overlay
 over a type whose module has been AOT-compiled.
 
-### Build integration deferred (decided 2026-07-28)
+### Build integration: implemented discovery, deferred native recipes
 
-There is no `gene build` producing a linked artifact; `examples/native` drives
-`cc` from a shell script. That is deliberate and waits on package and
-dependency support.
-
-**Update:** the package prototype models Gene dependencies only — there is
-still no declaration for a native library, its
-headers, or its link metadata, which is exactly the graph this deferral named.
-`package-build.md` now separates two deliverables: its Phase 0
-`system_library` resolver removes hardcoded native discovery from the existing
-experimental harness, while its Phases 1-3 produce managed, linked `gene build`
-artifacts. Phase 0 unblocks package-aware experimentation; Phase 3 completes
-the build integration deferred here.
-
-A build command's whole job is deciding what to compile and what to link
-against, and both answers come from the dependency graph — which libraries a
-module needs, where their headers and archives live, and what the compiled
-output may assume is already present. Building it against today's flat model
-would bake in an answer that package support would immediately invalidate, and
-the shell script is a perfectly honest stand-in until then.
-
-The lowerable subset now covers field access, locals, direct/FFI/protocol
-calls, arithmetic, comparisons, `if`, `while`, and block statements.
+System-library declarations/discovery and the pure-Gene build engine are
+implemented in [package builds](package-builds.md). Native/resource recipes,
+linking typed-native outputs into mixed application images, and full install
+assembly remain deferred. `examples/native` still drives the experimental C
+backend through its shell harness. The backend and the package build engine
+are separate implementation surfaces.
 
 ## 5. Goal and scope
 

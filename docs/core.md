@@ -6,14 +6,14 @@ deferred and open-question sections are non-normative.
 **Scope:** protocols, messages, dispatch, protocol-local derivation, the two
 inheritance axes (the type-parent `:` header and protocol `^inherit`), type-direct messages,
 dot-send resolution semantics, and dispatch on scalar/singleton
-receivers (including `Nil`). Extends `docs/design.md §10`. Formerly
+receivers (including `Nil`). Extends `docs/reference/protocols.md §10`. Formerly
 `docs/protocol-design.md`, which replaced `docs/proposals/inheritance.md`.
 
-The base protocol/message/derive model (no inheritance) is implemented and
-stable — see `docs/design.md §10` for the unchanged core. This document adds
-protocol inheritance, type-direct messages, and receiver-directed message
-resolution as one design, so they are reviewed and built together instead of
-as follow-on patches.
+The base protocol/message/derive model, protocol inheritance, type-direct
+messages, and receiver-directed resolution are implemented. This supplement
+collects their shared design and implementation rationale; the focused
+[protocol contract](spec/protocols.md) and [Self reference](self-type.md) govern
+current behavior. Deferred extensions remain marked separately.
 
 ---
 
@@ -29,7 +29,7 @@ as follow-on patches.
 ```
 
 - Message dispatch is on the receiver's runtime type, not literal node head
-  identity — this already holds for scalars (`docs/design.md §1.1`) and
+  identity — this already holds for scalars (`docs/reference/syntax.md §1.1`) and
   extends unchanged to inheritance and `Nil` below.
 - Messages are ordinary callable values. A protocol message is always sent
   qualified — `(item .ToHtml:to_html)` — which is unambiguous by construction.
@@ -73,8 +73,8 @@ Gene has two independent inheritance axes, and both are needed:
 | | `type Dog : Animal` | `protocol Ord ^inherit [Comparable]` |
 |---|---|---|
 | composes | props/body, type-direct messages, protocol impls | behavioral contracts |
-| parents | exactly one (`docs/design.md §7.3`) | any number, left-to-right |
-| requires shared data shape? | yes, by construction | no — sharing behavior across *unrelated* data shapes is the reason protocols exist (`docs/design.md §0`) |
+| parents | exactly one (`docs/reference/types.md §7.3`) | any number, left-to-right |
+| requires shared data shape? | yes, by construction | no — sharing behavior across *unrelated* data shapes is the reason protocols exist (`docs/design.md`) |
 
 ### 2.1 Implemented rule: protocol impl lookup walks the type-parent chain
 
@@ -501,7 +501,7 @@ same module both defining a message with the same name (say, `Dog:speak` and
 `Cat:speak`) would collide as duplicate bindings of the same bare name.
 **Type-direct messages are namespaced under their declaring type instead** —
 `Box:get` is a qualified name resolved exactly like `Stream:next` or
-`Color:red` (`docs/design.md §2.1`), never a bare binding in the enclosing
+`Color:red` (`docs/reference/syntax.md §2.1`), never a bare binding in the enclosing
 scope. This is what lets unrelated types define same-named messages without
 collision, and it's why dot sends need the resolution rule in §9.
 
@@ -591,7 +591,7 @@ Writing a receiver inside an inline impl is an error (`(impl A for T …)` insid
    in the type's own message table — `TypeData`/`TypeProto` gains a
    name→function member table — rather than binding it in the enclosing
    scope.
-3. Qualified-name resolution (`docs/design.md §2.1`, already handling
+3. Qualified-name resolution (`docs/reference/syntax.md §2.1`, already handling
    `Stream:next`-style lookups) is extended to also check this per-type
    message table.
 4. Dot sends use receiver-first resolution (§9), walking the parent chain against this
@@ -681,7 +681,7 @@ those defaults without a per-type impl:
 ```
 
 Without the attribute, even a fully-defaulted protocol requires an explicit
-impl. `Node` in `docs/design.md §1.2-1.3` is a concrete built-in *type*, not a
+impl. `Node` in `docs/reference/syntax.md §1.2-1.3` is a concrete built-in *type*, not a
 protocol and not an exception to this rule — universal node anatomy is a
 statement about projections, not about protocol conformance.
 
@@ -708,9 +708,9 @@ face, a scalar's being its kind's type. `(impl P for Nil …)` and `(nil .P:m)`
 both work.
 
 `Nil` is already an ordinary nominal type under `Any` in the MVP hierarchy
-(`docs/design.md §7.2`, settled at `§21`). Message dispatch is defined on the
+(`docs/reference/types.md §7.2`, settled at `§21`). Message dispatch is defined on the
 receiver's *runtime type*, and a scalar's runtime type is what its node head
-now projects (`docs/design.md §1.3`: `($head 42)` is `Int`). So:
+now projects (`docs/reference/syntax.md §1.3`: `($head 42)` is `Int`). So:
 
 ```gene
 (impl ToHtml for Nil
@@ -734,11 +734,11 @@ not itself a nominal dispatch target.
 
 ## 11. MVP scope and implementation order
 
-Base protocols (`docs/design.md §10`, no inheritance) are already
+Base protocols (`docs/reference/protocols.md §10`, no inheritance) are already
 implemented and stable, and sit at implementation-order item 13; base
 `^derive` plumbing is item 9 of the readiness checklist. Protocol-local
 `derive` more broadly is sequenced at implementation-order item 16
-(`docs/design.md §19`). The work below builds on both.
+(`docs/archive/initial-implementation-plan.md §19`). The work below builds on both.
 
 **Implemented (`protocol-inheritance` branch):**
 

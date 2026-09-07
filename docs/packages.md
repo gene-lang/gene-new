@@ -1,13 +1,16 @@
 # Gene package organization and dependency management
 
-**Status:** greenfield end-state design proposal; implementation begins only
-after approval
+**Status:** format-1 package management is implemented: workspace manifests,
+deterministic solving, lockfiles, immutable stores, git/path/workspace and local
+registry sources, multiple versions, vendoring, and cache GC. Hosted registry
+transport and publication remain deferred. See `src/gene/package.nim`,
+`tests/test_package.nim`, and the [module contract](spec/modules.md).
 
 **Scope:** package organization, manifests, dependency resolution, lockfiles,
 package stores, vendoring, publication, and runtime package identity
 
-**Related:** `package-build.md` defines builds and installation;
-`distribution.md` defines application images and standalone executables.
+**Related:** `package-builds.md` defines builds and installation;
+`proposals/distribution.md` defines application images and standalone executables.
 
 **Revision date:** 2026-08-01
 
@@ -15,14 +18,12 @@ package stores, vendoring, publication, and runtime package identity
 
 This proposal resolves Gene source packages only. A system dependency, native
 build artifact, typed-native compiler backend, and mixed application image are
-distinct concepts owned by `package-build.md`, `native-type.md`, and
-`distribution.md`; none changes source package identity or resolution.
+distinct concepts owned by `package-builds.md`, `native-types.md`, and
+`proposals/distribution.md`; none changes source package identity or resolution.
 
-## 0. Prototype status
+## 0. Implemented format and migration history
 
-The tree contains an earlier package prototype, but this is a greenfield
-contract. The prototype is implementation evidence, not a compatibility
-surface. Format-1 implementation replaces its manifest reader, dependency
+Format 1 replaced the earlier package prototype's manifest reader, dependency
 model, store layout, import rules, and package commands directly. There is no
 legacy adapter, migration command, dual-read period, old-store conversion, or
 deprecated CLI alias in the end-state design.
@@ -50,7 +51,7 @@ downstream caller.
 
 ## 1. Decision summary
 
-Gene should have one package model for libraries, applications, and packages
+Gene has one package model for libraries, applications, and packages
 that contain both. The important decisions are:
 
 - A package is a source and dependency unit. Library and application targets
@@ -381,9 +382,9 @@ standard-library path and has different reader semantics.
 | `^singleton` | no | `false` | Package instances may not coexist in one graph |
 | `^tests` | no | `nil` | Package test source root |
 | `^files` | no | default set below | Publication and source-tree file selection |
-| `^profiles` | no | `{}` | Custom build profiles defined by `package-build.md` |
-| `^build` | no | `[]` | Build recipes defined by `package-build.md` |
-| `^system_dependencies` | no | `{}` | Host ABI requirements defined by `package-build.md` |
+| `^profiles` | no | `{}` | Custom build profiles defined by `package-builds.md` |
+| `^build` | no | `[]` | Build recipes defined by `package-builds.md` |
+| `^system_dependencies` | no | `{}` | Host ABI requirements defined by `package-builds.md` |
 
 At least one of `^library` or `^applications` is required for publication.
 Local regular packages may temporarily omit both while being initialized.
@@ -1014,7 +1015,7 @@ already carry the required digests.
 
 Application targets may be present in a source package, but end-user
 installation uses the application build and installation design in
-`package-build.md`. A `.gpkg` is source, not an installed application and not a
+`package-builds.md`. A `.gpkg` is source, not an installed application and not a
 `.gapp` application image.
 
 A library publication that replaces `^workspace true` may proceed only when
@@ -1070,7 +1071,7 @@ Package commands manage source and the resolved graph:
 
 `gene build`, `gene test`, `gene run`, `gene install`, and `gene uninstall`
 consume package-manager results but are not package-resolution subcommands.
-Their behavior is defined in `package-build.md`.
+Their behavior is defined in `package-builds.md`.
 
 From a workspace root, `gene pkg init packages/pkg1 --lib` creates the member
 and registers it in `^workspace.^members`. `gene pkg add
@@ -1240,5 +1241,5 @@ The following can arrive later without changing the package model:
 
 Build recipes, native/system dependencies, binary artifacts, application
 images, and installed application layouts are specified in
-`package-build.md`; they are deliberately not overloaded into source package
+`package-builds.md`; they are deliberately not overloaded into source package
 resolution.

@@ -511,7 +511,7 @@ type
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
-  ## typed_native AOT boundary (docs/proposals/native-type.md §6.4).
+  ## typed_native AOT boundary (docs/native-types.md §6.4).
   ##
   ## The generated C never dereferences `GeneValue`, `GeneCall`, or
   ## `GeneContext` — it only passes them to helpers — so these are their real

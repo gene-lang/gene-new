@@ -193,7 +193,7 @@ $ ./bin/gene run --allow_read_dir /etc app.gene
 The pre-entry grant options are `--allow_read_dir`, `--allow_write_dir`, and
 `--allow_read_write_dir`. `with_capabilities` narrows the active set inside a
 block, and `$check_capabilities` asserts one is held. `examples/capabilities/`
-holds six worked cases; `docs/proposals/capabilities.md` is the full model.
+holds six worked cases; `docs/capabilities.md` is the full model.
 
 ## Eval
 

@@ -1,10 +1,13 @@
 # Events, pub/sub, and optional runtime instrumentation
 
-Status: proposal
+**Status:** the phase-1 application event bus is implemented, including nominal
+matching, publication/error policies, subscriptions, sinks, and lane ownership.
+Runtime event production and instrumentation (phases 2–4) remain design work.
+See [implementation status](implementation-status.md) for current limits.
 
 ## 1. Recommendation
 
-Gene should provide:
+This design separates:
 
 1. a general-purpose `event` library for application pub/sub; and
 2. an optional runtime event producer controlled by runtime configuration.
@@ -369,7 +372,7 @@ benefit:
    `*`. The reader emits a deliberately *context-neutral* path node (design
    §2.1), so an expression-vs-import distinction for one segment spelling would
    put context-sensitivity back where the reader keeps it out. Separately,
-   `docs/proposals/capabilities.md` §1 defines `fs/*` as a projection of the
+   `docs/capabilities.md` §1 defines `fs/*` as a projection of the
    parent's current context — "inherit the filesystem grants my parent has made
    available," explicitly *not* "everything under `fs`" — which is close to the
    opposite of what a family wildcard would mean here.
@@ -1005,7 +1008,7 @@ you enable is the family you receive" as the design intent, not something
 already specified for every row in the table above.
 
 The `capability` category is reserved but **not implementable yet**.
-`docs/proposals/capabilities.md` §15 lists four audit event *kinds* — grant
+`docs/capabilities.md` §15 lists four audit event *kinds* — grant
 creation, entry and call-site attenuation, denied selector resolution, native
 operation use — but defines no concrete event shapes, and its §19 still defers
 whether audit hooks are built in at all. Until that proposal defines

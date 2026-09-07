@@ -1,6 +1,6 @@
 # Self type implementation verification
 
-Implemented on 2026-09-07 against [the approved design](self-type.md).
+Implemented on 2026-09-07 against [the approved design](../self-type.md).
 
 The compiler retains override intent and source annotation provenance. The VM
 resolves declaration and conformance contracts, tracks forward dependencies,
@@ -8,7 +8,8 @@ and recomposes inherited bodies when visibility changes. Web protocol defaults
 compile in their defining module and receive immutable conformance validators.
 Both backends use `src/gene/type_contracts.nim` for callable compatibility.
 
-GIR artifacts use format **8**. Older artifacts must be rebuilt; the decoder
+This verification recorded GIR format **8**; subsequent nil/void work moved
+the current format to **9**. Older artifacts must be rebuilt; the decoder
 rejects runtime-only Self bindings and declaration state in serialized code.
 
 ## Semantic coverage

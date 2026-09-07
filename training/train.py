@@ -1,6 +1,6 @@
 """Training loop for either study arm -- run twice with the same config and
 `--arm units` vs `--arm bytes` to produce the matched comparison
-docs/proposals/reversible-ai-native-program-format.md's Model-training
+docs/archive/reversible-program-format.md's Model-training
 study needs. This script does not, by itself, constitute that study: it is
 the mechanism the study runs on. The pre-registered gates (99% memorization
 on a tiny corpus, 99% structural validity, semantic pass rate, the

@@ -3,8 +3,8 @@
 Status: design proposal. Not implemented. Review comments from 2026-07-29 are
 incorporated into the normative design below.
 
-This proposal builds on `native-type.md` for native representations and ABI
-contracts, `scoped-impls.md` for specialization validity, and `wasm.md` for a
+This proposal builds on `../native-types.md` for native representations and ABI
+contracts, `../scoped-impls.md` for specialization validity, and `../wasm.md` for a
 possible future Gene-to-wasm adapter.
 
 ## 1. Goal
@@ -698,7 +698,7 @@ All nine comments were accepted. Their resolutions live in §§2.1, 3.1–3.4,
 to lowerable ordinary code; runtime fexpr execution itself is ineligible.
 
 Written immediately after hardening the `typed_native` dynamic boundary
-(`native-type.md` §6.4, commits `058e054..33edca4`), so §§3–4 and §7 here are
+(`../native-types.md` §6.4, commits `058e054..33edca4`), so §§3–4 and §7 here are
 checked against code rather than recalled.
 
 The central decision — one `lower_native`, with a successfully produced plan

@@ -1,6 +1,6 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene concurrency tour (docs/design.md §6, §13)
+# Gene concurrency tour (docs/reference/selectors-and-streams.md §6, §13)
 #
 # Demonstrates the runtime foundation: structured tasks, typed bounded
 # channels, actors, and the cancellation/ensure contract. Each section is

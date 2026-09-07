@@ -779,7 +779,7 @@ when not defined(geneWasm):
   # --- web: placing generated assets in a page ---------------------------------
   #
   # The whole author-facing surface for embedded web modules
-  # (docs/proposals/transpile.md §4.12). Two things: a composition operation
+  # (docs/web-compilation.md §4.12). Two things: a composition operation
   # that returns a finished node, and the base those nodes' URLs are built from.
   # Application code never sees JavaScript, a source map, a hash, or a route
   # table — and cannot forget to publish one, because referring to an asset is
@@ -864,7 +864,7 @@ when not defined(geneWasm):
 
 # CSS is ordered node data. Declarations deliberately live in the body rather
 # than a PropTable: duplicate fallbacks and interleaving with nested rules are
-# observable CSS semantics (docs/proposals/transpile.md §3.1).
+# observable CSS semantics (docs/web-compilation.md §3.1).
 proc cssNode(head: string, body: openArray[Value]): Value =
   newNode(newSym(head), body = @body)
 
@@ -7515,7 +7515,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   retainResourceCapabilities(scope, store, newCapabilityContext([grant]))
   store
 
-## typed_native AOT loading (docs/proposals/native-type.md §6.4).
+## typed_native AOT loading (docs/native-types.md §6.4).
 ##
 ## `aot_runtime.nim` exports the C helpers a generated module calls; this is
 ## the other half — opening such a module and binding its entries so ordinary

@@ -33,5 +33,5 @@
 - `props`, `body`, and `meta` return detached shallow snapshots. Nested values
   retain identity. Deep freeze, Send checks, and serialization traverse meta.
 
-Canonical grammar and rationale remain in `docs/design.md` §§1–2; this file
+Canonical grammar and rationale are in `docs/reference/syntax.md` §§1–2; this file
 states which portion is implemented and normative.

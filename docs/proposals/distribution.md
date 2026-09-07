@@ -6,7 +6,7 @@ package/build proposals; pre-implementation
 **Scope:** application images and executable distribution for simple and
 complex Gene applications
 
-**Builds on:** `package.md` for exact package graphs and `package-build.md` for
+**Builds on:** `../packages.md` for exact package graphs and `../package-builds.md` for
 planning, artifacts, assembly, and installation. If older dependency/build
 wording in this document conflicts with those proposals, they take precedence.
 **Revision date:** 2026-08-01
@@ -45,7 +45,7 @@ A running Gene program. At startup, Gene creates an `Application`, loads the ent
 ### Package
 
 A source, identity, and dependency unit that declares library/application
-targets. Its exact model and resolution semantics are defined by `package.md`.
+targets. Its exact model and resolution semantics are defined by `../packages.md`.
 
 ### Module
 
@@ -307,7 +307,7 @@ The manifest should include:
 `source_lock_digest` identifies the exact source resolution consumed by the
 build. `package_graph_digest` identifies the image graph after mutable
 workspace/path nodes have been frozen to source-tree digests. The graph blob is
-Canonical Gene Data v1 from `package.md` §6.3 and is itself covered by the image
+Canonical Gene Data v1 from `../packages.md` §6.3 and is itself covered by the image
 content index.
 
 Use `^targets` rather than a single top-level `^target` for images that may contain multiple target-specific native artifacts. A singular target field is acceptable only for a fully target-specific image or executable metadata wrapper.
@@ -388,7 +388,7 @@ possible. The difference is where modules and resources are loaded from.
 
 ## 8. Assembly input
 
-This document begins at the `Assembler` seam defined by `package-build.md`.
+This document begins at the `Assembler` seam defined by `../package-builds.md`.
 The assembler receives an `AssemblyRequest` and verified `BuildResult`; it does
 not discover packages, resolve imports, compile modules, execute recipes, or
 choose toolchains. Its input already identifies the application target,
@@ -396,8 +396,8 @@ profile, mode, target triples, frozen source snapshots, artifacts, and source
 lock digest.
 
 The same interface accepts an ad-hoc application or a regular package target.
-How those roots become a `BuildResult` belongs to `package.md` and
-`package-build.md`; the image format does not encode a second build path for
+How those roots become a `BuildResult` belongs to `../packages.md` and
+`../package-builds.md`; the image format does not encode a second build path for
 single-file programs.
 
 ---
@@ -627,7 +627,7 @@ temporary directory
 
 This section uses **native artifact** to mean target machine code already
 produced or selected by `BuildEngine`. It does not define typed Gene lowering
-(`native-type.md`) or system-library discovery (`package-build.md` §8).
+(`../native-types.md`) or system-library discovery (`../package-builds.md` §8).
 Native artifacts are target-specific.
 
 The image may contain:
@@ -656,8 +656,8 @@ A standalone executable is target-specific even if its GIR modules are portable.
 ## 15. Mixed-code image records
 
 This section uses **mixed image** to mean an image containing GIR plus eligible
-typed Gene machine-code artifacts. `native-type.md` owns the compiler backend;
-`package-build.md` owns eligibility, compilation, link planning, and target
+typed Gene machine-code artifacts. `../native-types.md` owns the compiler backend;
+`../package-builds.md` owns eligibility, compilation, link planning, and target
 selection. The distribution reader only validates and exposes the records.
 
 Modes:
@@ -701,7 +701,7 @@ reader rejects a mixed record whose fallback is absent.
 ## 16. Target records and launchers
 
 This document records target-specific content; it does not define
-cross-compilation. `package-build.md` owns target/toolchain selection and emits
+cross-compilation. `../package-builds.md` owns target/toolchain selection and emits
 one verified artifact set per target. A standalone launcher names exactly one
 OS/architecture/runtime environment, while a bundle may index several.
 
@@ -870,7 +870,7 @@ modify installed applications.
 
 ## 20. Command ownership
 
-This document defines no command names or flags. `package-build.md` §13 is the
+This document defines no command names or flags. `../package-builds.md` §13 is the
 single command-surface contract for building, packing, running, inspecting,
 verifying, signing, bundling, and installing application artifacts. Image
 readers/writers expose internal interfaces used by those commands; they do not
@@ -923,7 +923,7 @@ an increment only when its consumer exists:
 
 Each increment adds behavior behind `Assembler.assemble`; it does not add a
 parallel resolver, build planner, or command surface. Exact implementation
-tasks and acceptance tests live in `package-build.md` once the corresponding
+tasks and acceptance tests live in `../package-builds.md` once the corresponding
 demand gate is open.
 
 ---
@@ -951,7 +951,7 @@ the effective `debug_info` level is `none`.
 
 Embed the exact frozen package-instance graph from §10 in format 1. Registry,
 SemVer, workspace, lockfile, and multiple-version semantics are not deferred or
-redefined by the image format; `package.md` owns them. The image stores their
+redefined by the image format; `../packages.md` owns them. The image stores their
 resolved result and never invokes them at load time.
 
 ### 23.5 Resource compression

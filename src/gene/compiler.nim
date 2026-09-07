@@ -3139,7 +3139,7 @@ proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
   ## deferred because it needs a boxed dynamic fallback per specialized send,
   ## which only earns its cost once this backend is no longer experimental.
   ## Until then a cross-module overlay over an AOT-compiled type is a known
-  ## limitation, documented in docs/proposals/native-type.md.
+  ## limitation, documented in docs/native-types.md.
   if messageName in c.overlayImplMessages:
     return (nil, NIL, NIL)
   for impl in c.chunk.implProtos:
@@ -4948,7 +4948,7 @@ proc parseImportSpec*(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
     raise newException(GeneError, "expected import form")
   # The allow-list stays closed and exhaustive: `^export` selects re-export,
-  # `^pkg` selects a package (docs/proposals/package.md §9), `^as` names its
+  # `^pkg` selects a package (docs/packages.md §9), `^as` names its
   # own removal, and everything else is an error.
   for key, value in node.props:
     case key

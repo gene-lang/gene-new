@@ -1,7 +1,7 @@
 # Brief: generate 1000 Gene corpus examples
 
 You are generating training-corpus examples for the reversible AI-native
-program format study (`docs/proposals/reversible-ai-native-program-format.md`).
+program format study (`docs/archive/reversible-program-format.md`).
 Read this whole file before writing any code. Work in
 `/Users/gcao/gene-workspace/gene-new`.
 

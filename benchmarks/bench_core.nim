@@ -23,7 +23,7 @@ proc benchTypedNativeLoad(record: ptr BenchNativeRecord): int64 {.inline.} =
 proc benchGeneratedCFieldLoad(iterations: int) =
   ## Time the C the backend actually emits.
   ##
-  ## §10 of docs/proposals/native-type.md gates this feature on the emitted
+  ## §10 of docs/native-types.md gates this feature on the emitted
   ## path being a direct load. A hand-written Nim analogue cannot answer that:
   ## it measures a different compiler's output, and it stays green even when
   ## the backend emits nothing for the function at all. Skip cleanly when no C
@@ -664,7 +664,7 @@ proc main() =
     let v = run(projectionStageChunk, projectionStageScope)
     checksum = checksum + v.intVal
 
-  # Managed wrapper cost (docs/proposals/native-type.md §4.6). The open question
+  # Managed wrapper cost (docs/native-types.md §4.6). The open question
   # is whether the shipped shape — wrapper node + prop table + CPtrData — is
   # worth replacing with one compact object, so the handle here is a real owned
   # pointer; a `Str` stand-in would allocate no CPtrData and measure the wrong

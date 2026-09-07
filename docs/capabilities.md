@@ -1,8 +1,9 @@
 # Capability propagation and attenuation
 
-**Status:** design proposal and historical rationale; partially implemented.
+**Status:** implementation reference and historical rationale for the
+provider-backed capability-context model. Deferred extensions remain explicit.
 The normative implemented contract is
-[Authority, evaluation, and sandbox boundaries](../spec/authority.md).
+[Authority, evaluation, and sandbox boundaries](spec/authority.md).
 Examples and acceptance criteria below include deferred design and must not be
 read as blanket claims about every current adapter or backend.
 
@@ -2845,7 +2846,7 @@ fingerprints where cached compilation or module reuse depends on policy.
 This is the historical migration plan from the value-based capability model.
 References to the old diagnostics and `--grant` boot order describe that
 earlier runtime. The current compatibility surface and implemented guarantees
-are recorded in [the authority contract](../spec/authority.md).
+are recorded in [the authority contract](spec/authority.md).
 
 Gene is pre-release and has no external users, so there is **no migration
 path, no deprecation window, and no compatibility shim**. Incompatible code

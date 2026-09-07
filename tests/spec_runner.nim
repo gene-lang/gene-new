@@ -7831,7 +7831,7 @@ suite "spec — modules from design":
                   newGlobalScope())
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
 
-suite "spec — packages (docs/proposals/package.md)":
+suite "spec — packages (docs/packages.md)":
   proc packagesRoot(): string =
     result = getTempDir() / "gene_spec_packages"
     removeDir(result)

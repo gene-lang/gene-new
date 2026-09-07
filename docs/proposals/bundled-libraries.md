@@ -6,8 +6,8 @@
 `genex/*` resolves to it, where the sources live at build and run time, and what
 capabilities a bundled library gets. `genex/spec` is the first consumer.
 
-**Related:** `package.md` owns *user* package resolution and stores — this
-proposal adds no package kind and changes no manifest. `capabilities.md` §14
+**Related:** `../packages.md` owns *user* package resolution and stores — this
+proposal adds no package kind and changes no manifest. `../capabilities.md` §14
 owns grants; §5 below states that bundled ≠ privileged.
 
 **Revision date:** 2026-08-13

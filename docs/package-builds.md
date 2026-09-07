@@ -1,13 +1,18 @@
 # Gene package builds and application installation
 
-**Status:** design proposal; implementation begins only after approval
+**Status:** system-dependency discovery and the pure-Gene build path are
+implemented, including target planning, source snapshots, deterministic
+derivations, artifact reuse, and parallel independent libraries. Native/resource
+recipes, mixed images, and full application installation remain deferred.
+See `src/gene/build.nim`, `tests/test_build.nim`, and
+`tests/test_system_dependency.nim`. Later phases below are design, not shipped APIs.
 
 **Scope:** build targets, build recipes, hermetic execution, artifact caching,
 native dependencies, application assembly, prebuilt artifacts, and installation
 
-**Builds on:** `package.md` for source packages and resolved graphs;
-`distribution.md` for `.gapp` images and standalone launchers;
-`native-type.md` for FFI and native layout semantics.
+**Builds on:** `packages.md` for source packages and resolved graphs;
+`proposals/distribution.md` for `.gapp` images and standalone launchers;
+`native-types.md` for FFI and native layout semantics.
 
 **Revision date:** 2026-08-01
 
@@ -16,8 +21,8 @@ native dependencies, application assembly, prebuilt artifacts, and installation
 Terminology is deliberately split: a **system dependency** is an external ABI
 requirement discovered through §8; a **native artifact** is target machine code
 consumed or produced by the build graph; the **typed-native backend** in
-`native-type.md` lowers eligible Gene code; and a **mixed image** in
-`distribution.md` packages native artifacts alongside mandatory GIR fallback.
+`native-types.md` lowers eligible Gene code; and a **mixed image** in
+`proposals/distribution.md` packages native artifacts alongside mandatory GIR fallback.
 None of these terms implies the others.
 
 ## 1. Decision summary
@@ -225,7 +230,7 @@ empty list. The initial recipe-specific properties are:
 | `command` | `^program <coordinate>`, `^args [<string> ...]`, `^inputs [<pattern> ...]`, `^outputs [<pattern> ...]` | `^env {<string>: <string>}`, `^authority [<name> ...]`, `^timeout_ms <integer>`, `^needs [...]` |
 
 Required lists are non-empty except `command.args`, which may be empty.
-Patterns use the package pattern grammar from `package.md` §5.1. Header and
+Patterns use the package pattern grammar from `packages.md` §5.1. Header and
 include paths are package-relative; public headers must be selected by
 `headers`. `standard` defaults to `c11`, `kind` to `static`, and web `format` to
 `esm`. Define and environment keys are strings because their spelling is a
@@ -386,7 +391,7 @@ reproducibility status
 ```
 
 An artifact digest hashes `gene-artifact-v1\0`, the artifact-type tag, its
-Canonical Gene Data v1 metadata (`package.md` §6.3), and a Canonical Source
+Canonical Gene Data v1 metadata (`packages.md` §6.3), and a Canonical Source
 Tree v1 payload. Artifact metadata contains only logical paths and stable
 compatibility/provenance fields; timestamps, store locations, sandbox paths,
 and installation prefixes are excluded. Typed single-file artifacts use a
@@ -551,7 +556,7 @@ select application target
 -> verify final artifact
 ```
 
-`distribution.md` owns the `.gapp` physical format, sealed/open profiles,
+`proposals/distribution.md` owns the `.gapp` physical format, sealed/open profiles,
 launcher embedding, signatures, and mixed-native policy. This proposal owns how
 package and build artifacts reach that assembler.
 
@@ -810,7 +815,7 @@ to the resulting `.gapp`.
 
 ### 16.1 The shortest path to unblocking AOT
 
-This design began from a specific blocker: `native-type.md` deferred build
+This design began from a specific blocker: `native-types.md` deferred build
 integration on 2026-07-28 because "both answers come from the dependency
 graph," and no declaration for a native library existed. The
 declaration/discovery half of that blocker is cleared by the Phase 0
@@ -834,7 +839,7 @@ deepen the implementations rather than introduce parallel build systems.
 
 ### Phase 0: native dependency declaration and discovery
 
-- Begin after the format-1 manifest reader in `package.md` Phase 1 exists.
+- Begin after the format-1 manifest reader in `packages.md` Phase 1 exists.
 - Implement the final `system_library` schema,
   `SystemDependencyResolver` interface, `pkg_config` provider, canonical result,
   and diagnostics.
@@ -858,7 +863,7 @@ deepen the implementations rather than introduce parallel build systems.
 - Keep the Phase 1 local `ArtifactStore` adapter until cross-project reuse or
   measured rebuild cost justifies the user-level content-addressed adapter;
   adding that adapter does not change `BuildEngine` or `Assembler`.
-- Integrate lock/package provenance from `package.md`.
+- Integrate lock/package provenance from `packages.md`.
 
 ### Phase 3: built-in native and resource recipes
 

@@ -2,7 +2,7 @@
 ##
 ## The JSON manifest is deliberately backend-neutral. This runner supplies the
 ## VM half of the comparison; the web backend runner consumes the same cases
-## once P2 emits its first module (docs/proposals/transpile.md §5).
+## once P2 emits its first module (docs/web-compilation.md §5).
 
 import gene/[compiler, printer, types, vm]
 import std/[json, os, strutils]

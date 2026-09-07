@@ -1,5 +1,5 @@
 """Scores a matched pilot against the *pre-registered* gates in
-docs/proposals/reversible-ai-native-program-format.md, "Model-training
+docs/archive/reversible-program-format.md, "Model-training
 study".
 
 The point of pre-registration is that the thresholds were fixed before the

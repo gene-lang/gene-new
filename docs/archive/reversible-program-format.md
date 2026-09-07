@@ -24,7 +24,7 @@ retirement** (2026-08-11) after a first matched pilot measured the modality
 at 2.2% *worse* than canonical text in nats per program -- see
 "Recommendation: retire the from-scratch model-training track" below. The
 durable format stands on its own evidence and is unaffected. The forward
-direction for Gene-plus-LLM work is `capabilities.md` §19. Non-textual program modality for training models, with
+direction for Gene-plus-LLM work is `../capabilities.md` §19. Non-textual program modality for training models, with
 a durable encoding that loads faster than `.gene` and translates back to
 canonical `.gene`.
 
@@ -229,11 +229,11 @@ model's:
 - **The generated corpus**, repurposed: reference material for a Gene skill,
   an eval set with executable oracles, and -- because all 1002 programs are
   pure computation by construction -- the natural first test corpus for the
-  capability verifier in `capabilities.md` §19.
+  capability verifier in `../capabilities.md` §19.
 - **The scoring harness**, which is what made the negative result legible
   instead of invisible.
 
-The forward direction is `capabilities.md` §19: Gene as an agent's sole
+The forward direction is `../capabilities.md` §19: Gene as an agent's sole
 action surface, under statically verified capability bounds. It needs none of
 the training work.
 
@@ -654,7 +654,7 @@ alongside `Value`, not enlarging `Value` or changing its eight-byte layout.
 
 ## Relationship to the general-intelligence research program
 
-[`general_intelligence/architecture.md`](general_intelligence/architecture.md)
+[`../proposals/general_intelligence/architecture.md`](../proposals/general_intelligence/architecture.md)
 proposes a hybrid architecture in which an LLM or small learned model
 proposes programs and Gene executes and verifies them. Its current
 experiments qualify and pilot that proposer role with off-the-shelf,

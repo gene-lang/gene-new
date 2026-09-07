@@ -1,18 +1,10 @@
 # Gene Async HTTP Server Design
 
-**Status:** Phases 1–2 (§21) implemented — event-loop serve, task_per_request
-dispatch, bounded admission (`^max_connections`, `^max_in_flight`,
-`^max_body_bytes` → 413, `^request_timeout_ms` → 504, `^overload_response`),
-status metrics; actor_pool dispatch with native-created `ReplyTo` (double send
-raises `ReplyAlreadySent`), mailbox overload → overload response,
-`^supervision (supervisor_policy ^strategy ^max_restarts ^within_ms ^events
-^dead_letter)` with restart rate limiting (§18.5); Phase 3 complete
-(`^routes` table with `:param` path captures into `req/params`, `^on_error`
-mapper, `^access_log`/`^error_log`/`^redact_headers` §17, meta-based route
-discovery §8 — declaration records carry source `@meta` as node meta and a
-`^value` prop, so the §8 pattern works as user code with `d/value` instead of
-the Namespace/lookup dance). Remaining: Phase 4 WebSocket, Phase 5 hardening.
-See `src/gene/http_server.nim` and `docs/stdlib.md`.  
+**Status:** the native HTTP event loop, request tasks, bounded admission,
+actor-pool dispatch, routes, access/error logging, and WebSocket frame/callback
+support are implemented. TLS, streaming request/response bodies, and remaining
+production hardening are deferred. See `src/gene/ext/http_server.nim`,
+`tests/test_http_server.nim`, and the [stdlib HTTP surface](stdlib.md#nethttp).  
 **Scope:** native async HTTP and WebSocket server for Gene applications  
 **Primary namespace:** `net/http`  
 **Goal:** support high-concurrency native HTTP I/O while keeping Gene request handlers simple, synchronous when possible, and isolated through tasks and actors.
@@ -113,43 +105,26 @@ The 1-arg behaviors must not change; `nimble spec` enforces them.
 
 ---
 
-## 3. Capability model
+## 3. Authority and listener ownership
 
-Starting a listener is authority. Gene should not expose ambient network bind authority.
-
-Preferred forms:
+Listening requires `net/Listen` permission in the active context. `listen`
+returns a Server resource handle; it does not mint authority from a Gene value.
+Serving an existing listener checks its retained origin restriction together
+with the invoker context. See [the authority contract](spec/authority.md).
 
 ```gene
-(fn main [args : (List Str), ^server : http/Server] : Int
-  (http/serve server
-    ^handler handle_request)
+(import $net/http [listen serve text])
+(fn handle_request [req] (text 200 "hello"))
+(fn main [args]
+  ^capabilities [(net/Listen ^host "127.0.0.1" ^port 8080)]
+  (var server (listen ^host "127.0.0.1" ^port 8080))
+  (serve server ^handler handle_request)
   0)
 ```
 
-or, when the application creates the listener:
-
-```gene
-(fn main [args : (List Str), ^net : net/Listen] : Int
-  (var server
-    (http/listen net
-      ^host "0.0.0.0"
-      ^port 8080))
-
-  (http/serve server
-    ^handler handle_request)
-
-  0)
-```
-
-Rules:
-
-```text
-$net/Listen      authority to bind/listen on network addresses
-http/Server     authority to accept requests on one listener
-http/Running    authority/handle for a running background server
-```
-
-`http/serve ^host ... ^port ...` without an explicit capability should be a convenience only in trusted scripts or tests, not the core runtime model.
+Host/CLI root policy supplies permission. `main` receives program arguments;
+it does not receive a `net/Listen` grant parameter. Server stop/close operations
+follow their resource cleanup contract.
 
 ---
 
@@ -981,13 +956,9 @@ The app image remains the canonical deployable program representation. The stand
 - Bounded admission and overload responses.
 - Basic status metrics.
 
-Capability delivery: capability injection into `main` is not yet designed
-(`docs/stdlib.md`: "Do not overload normal `gene run` until capability
-invocation is designed"). Phase 1 therefore ships with the §3 trusted-script
-convenience form (`http/listen ^host ... ^port ...` constructing its own
-capability), and switches `main` to injected `$net/Listen`/`http/Server` values
-once the launcher mechanism exists. The API shape does not change — only who
-constructs the capability.
+Authority delivery uses the host-created root context and active `net/Listen`
+checks. The earlier grant-argument design was replaced; no capability injection
+into `main` is required.
 
 ### Phase 2: actor_pool dispatch
 
@@ -1005,7 +976,7 @@ constructs the capability.
 - Error mapper.
 - Access/error logging with redaction.
 
-### Phase 4: WebSocket
+### Phase 4: WebSocket (implemented core; helpers remain design)
 
 - Upgrade support.
 - Opaque `ws/ConnRef`.
@@ -1038,9 +1009,10 @@ For most applications:
     (else
       (http/text 404 "not found"))))
 
-(fn main [args : (List Str), ^net : net/Listen] : Int
+(fn main [args : (List Str)] : Int
+  ^capabilities [(net/Listen ^host "0.0.0.0" ^port 8080)]
   (var server
-    (http/listen net ^host "0.0.0.0" ^port 8080))
+    (http/listen ^host "0.0.0.0" ^port 8080))
 
   (http/serve server
     ^dispatch task_per_request
@@ -1065,7 +1037,7 @@ native async HTTP edge
 + task_per_request default
 + actors for shared/session/serialized state
 + explicit actor_pool dispatch when desired
-+ capability-shaped server/listener API
++ owned server/listener handles checked against the active context
 + net/http as the canonical namespace
 + native-created ReplyTo for bridging to actors
 + supervision, failure events, overload metrics, and WebSocket session actors
