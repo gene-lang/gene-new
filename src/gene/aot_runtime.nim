@@ -61,6 +61,16 @@ proc geneFfiCheckArity(ctx: ptr AotContext, call: ptr AotCall,
       " argument(s), got " & $call.len)
   AotOk
 
+proc geneFfiCheckArityRange(ctx: ptr AotContext, call: ptr AotCall,
+                            minimum, maximum: csize_t, provided: ptr csize_t): cint
+                           {.exportc: "gene_ffi_check_arity_range", cdecl, dynlib.} =
+  if call == nil or provided == nil: return ctx.fail("native entry received no call")
+  if call.len < minimum or call.len > maximum:
+    return ctx.fail("native entry expects " & $minimum & ".." & $maximum &
+      " argument(s), got " & $call.len)
+  provided[] = call.len
+  AotOk
+
 ## Every scalar and string helper below delegates to the *same* converter the
 ## VM's dynamic FFI path uses. The hand-written table that used to live here
 ## disagreed with those converters at nearly every width — accepting an Int for

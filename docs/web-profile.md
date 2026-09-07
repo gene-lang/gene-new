@@ -41,9 +41,8 @@ re-exports remain outside the profile.
 `^name local : T` for a different local binding and `^name : T?` for an optional
 nil-admitting value. Named defaults use `^name : T = expression`. Defaults run
 in the callee's scope after the supplied argument expressions and may refer to
-earlier parameters. Provided nil remains nil when its type admits it; missing
-named values select the default, or nil for an optional parameter without a
-default. A literal void prop is removed by the reader. A computed Void remains
+earlier parameters. Provided nil remains nil when its type admits it; omitted
+fixed parameters select the explicit default or their implicit nil default. A literal void prop is removed by the reader. A computed Void remains
 supplied and must satisfy the target parameter type. Required names remain
 required.
 
@@ -76,12 +75,19 @@ The remaining restrictions are explicit:
 
 - Named parameters are for module functions; messages, constructors, externs,
   and inline callbacks still take positional parameters.
-- Positional declarations may not follow named declarations.
-- Functions with named parameters cannot be used as values through the
-  profile's positional `Fn` signature model.
-- Positional defaults remain outside the profile. Named defaults produce a
-  value; non-local `return`, `yield`, `break`, and `continue` in a default are
-  rejected.
+- `js/fn` describes the foreign host's fixed call shape: nullable parameters
+  remain required, and Gene default expressions are not accepted there.
+- Fixed positional and named parameters with nil-admitting annotations have
+  implicit nil defaults. Explicit defaults are supported on fixed parameters.
+  Required positionals cannot follow optional positionals; named parameters
+  may interleave with positionals.
+- A function requiring named arguments cannot satisfy a positional-only `Fn`
+  call shape. Optional named defaults can be omitted through such a shape.
+- Defaults produce values; non-local `return`, `yield`, `break`, and `continue`
+  in a default are rejected. As with bodies, only top-level functions may have
+  defaults that suspend; synchronous callbacks, methods, and constructors cannot.
+- Type aliases expand in annotation position at the Gene use site and are
+  erased from runtime imports. Generated TypeScript exposes type aliases.
 
 **Every call now accounts for every prop.** Props on a call used to be dropped
 silently — `(add 1.0 2.0 ^oops 9.0)` compiled and threw `^oops` away, while the
@@ -267,18 +273,17 @@ DOM-shaped host.
 
 ### Generic collection operations (design §6.2)
 
-The VM treats `map`, `filter`, `take`, `into`, and `each` as generic functions
-whose eager `List`/`Map` methods answer in the receiver's own kind (design
-§6.2). The profile keeps its stream-shaped surface: `map`/`filter`/`into`
-accept a `Stream` receiver, `to_stream` converts a `List` into one, and
-`take`/`each` are not portable builtins. An eager receiver reaching these
-operations is a compile-time rejection naming the missing message — never a
-lowering that only looks equivalent. The portable pipeline is therefore the
-§2.6 spelling, `(xs .to_stream; .map f; .filter p; .into [])`, which both
-backends run. Closing the gap means giving the profile eager `List` lowers
-with their representations decided first — bigint-to-number conversion for a
-`take` count, `undefined`-to-`null` for a void map result, truthiness for a
-`filter` predicate — and each decision pinned by a conformance fixture.
+The VM exposes `map`, `filter_map`, `filter`, `take`, `into`, and `each` as
+generic collection functions (design §6.2). The web profile supports `map`,
+`filter_map`, and `filter` on Lists, Streams, PropMaps, and general Maps,
+including direct sends. Eager results retain the receiver's collection kind;
+Stream results remain lazy. Sets remain outside the web profile.
+
+`to_stream` converts a List to a Stream, and `into` collects a Stream into a
+mutable List or PropMap. `take` and `each` accept Lists or Streams. Unsupported
+receiver kinds produce a compile-time error. Both backends normalize mapped
+void to nil, drop only void in `filter_map`, and use Gene truthiness for
+`filter`. Shared conformance fixtures check the resulting data.
 
 ## Deliberate exclusions
 
@@ -290,3 +295,16 @@ capability values, `import_impl`, `AtomicCell`/threads, and deep freeze/thaw.
 These features require an evaluator, scheduler, native loader, authority model,
 dynamic impl visibility, or persistent-data-structure runtime; full fidelity
 belongs to the wasm VM.
+
+### Nil, void, and mapping
+
+An omissible field's lookup type includes `Void`; a present-field pattern on a
+validated nominal receiver binds its stored-value type. Normalizing an optional
+field with `?? ... nil` produces
+the declared nilable type. Parameter omission is handled by the call binder.
+
+`map` on Lists, Streams, PropMaps, and general Maps converts callback void
+results to nil. `filter_map` drops only void results. Lists/streams preserve
+cardinality under map, and maps preserve keys. `=>` follows the same map rule;
+`yield void` remains non-emission. Generated callback result types and validators
+reflect the normalization. See [the value laws](spec/nil-void.md).

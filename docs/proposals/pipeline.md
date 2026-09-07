@@ -355,7 +355,8 @@ receivers. Its item-time guard skips message resolution and invocation. Use a
 lambda for argument expressions that must run only for each present receiver.
 Whole-value `->` guarded sends keep ordinary short-circuit argument evaluation.
 
-A callback returning void skips an item; nil remains an item. Lists, Streams,
+A callback returning void produces a nil item; nil remains an item. Use
+`-> $filter_map f` when dropping void results is intended. Lists, Streams,
 and Tasks remain single results unless an explicit operation flattens or awaits
 them. Stream-handling functions use ordinary `->` calls and may aggregate,
 return a new Stream, or return an unrelated value. There is no implicit

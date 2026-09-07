@@ -5,8 +5,9 @@ channel suites in `tests/spec_runner.nim` and `tests/test_vm.nim`.
 
 - Streams are lazy pull cursors. `has_next` is false at exhaustion;
   `peek`/`next` raise typed `EndOfStream`.
-- `void` items are skipped. Generator `return` terminates without yielding a
-  return value; natural fallthrough is equivalent.
+- Raw `void` emissions are skipped. `map` converts callback void results to nil
+  before emission; `filter_map` explicitly drops them. Generator `return`
+  terminates without yielding a return value; natural fallthrough is equivalent.
 - The first producer error is terminal, closes owned upstream resources once,
   and propagates once. Later pulls observe exhaustion.
 - Closing a suspended generator unwinds `ensure` blocks once in LIFO order.

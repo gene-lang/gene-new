@@ -156,13 +156,13 @@ suite "pipeline — prepared lazy invocation":
       [log (pending -> $into [])]
     """, "[[1 2 9] [2 3]]"
 
-  test "void drops, nil stays, and nested values do not flatten":
+  test "void becomes nil and nested mapped values do not flatten":
     pipelineCheck """
       (fn drop [x] (if (== x 1) void (if (== x 2) nil [x])))
       (let seen [])
       (fn record [x] (seen .push x) x)
       [([1 2 3] => drop => record -> $into []) seen]
-    """, "[[nil [3]] [nil [3]]]"
+    """, "[[nil nil [3]] [nil nil [3]]]"
     pipelineCheck """
       (let inner ($to_stream [7]))
       (fn wrap [x] inner)
@@ -427,7 +427,7 @@ suite "pipeline — prepared lazy invocation":
   test "skip loops retain the consuming caller's execution budget":
     pipelineCheck """
       (fn naturals [] (var n 0) (while true (yield n) (set n (+ n 1))))
-      (let pending ((naturals) => (fn [x] void)))
+      (let pending ($filter_map (naturals) (fn [x] void)))
       (let consume ($runtime/bind_call (fn [] (pending .next)) []
                     ^policy {^max_steps 100}))
       [(try (consume) false catch Any true) (pending .has_next)]

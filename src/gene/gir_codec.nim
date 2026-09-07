@@ -7,7 +7,9 @@
 import std/[algorithm, json, jsonutils, sets, tables]
 import ./[gir, printer, reader, types]
 
-const GirArtifactFormat* = 8
+# Fixed nil-admitting parameters now carry optional call-shape metadata, and
+# compile interfaces retain alias targets needed before runtime initialization.
+const GirArtifactFormat* = 9
 
 proc toJsonHook(value: Value): JsonNode =
   ## Values reachable from GIR are inert reader data. Canonical Gene text is

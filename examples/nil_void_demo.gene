@@ -1,0 +1,40 @@
+#!/usr/bin/env gene run
+# Optional arguments receive defaults; missing fields remain missing.
+# map keeps one result per input; filter_map explicitly drops void results.
+
+(fn show [label : Str value : Any] ($println $"${label}: ${value}"))
+
+(fn age_label [age : Int?] : Str
+  (if ($nil? age) "unknown" $"${age}"))
+(fn selected_age [age : Int? = 18] : Int? age)
+
+(show "Omitted argument" (age_label))
+(show "Explicit nil" (age_label nil))
+(show "Supplied age" (age_label 25))
+(show "Explicit default" (selected_age))
+(show "Nil does not select the default" (selected_age nil))
+(show "Supplied void fails Int?"
+  (try (age_label void) catch TypeError "rejected"))
+
+(type Person ^props {^age Int?})
+(fn age_of [p : Person] : Int? (?? p/age nil))
+(let missing_age (Person))
+(let nil_age (Person ^age nil))
+(show "Missing field is void" ($void? missing_age/age))
+(show "Present nil stays nil" ($nil? nil_age/age))
+(show "Getter supplies nil for missing age" (age_of missing_age))
+
+(fn keep_positive [x : Int] : (| Int Void)
+  (if (> x 0) x void))
+
+(show "Eager map" ($map [-1 2] keep_positive))                  # [nil 2]
+(show "Lazy map" ($into ($map ($to_stream [-1 2]) keep_positive) []))
+(show "Iterate pipeline" ([-1 2] => keep_positive -> $into [])) # [nil 2]
+(show "Explicit dropping" ($filter_map [-1 2] keep_positive))  # [2]
+(show "Map keeps keys" ($map {^a -1 ^b 2} keep_positive))      # {^a nil ^b 2}
+(show "filter_map drops keys" ($filter_map {^a -1 ^b 2} keep_positive))
+
+# Storage itself still treats void as deletion, independently of mapping.
+(let fields {^age 25})
+(set fields/age void)
+(show "Raw void write deletes a property" ($void? fields/age))

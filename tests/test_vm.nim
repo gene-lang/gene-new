@@ -459,7 +459,7 @@ suite "compiler — GIR emission":
     check loopCall.found
     check not loopCall.tail
 
-  test "GIR v8 round-trips tail metadata":
+  test "GIR round-trips tail metadata and rejects the previous format":
     let chunk = compileSource(
       "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
     let iface = CompileNamespaceInterface(
@@ -469,11 +469,12 @@ suite "compiler — GIR emission":
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
         compileInterface: iface)])
     let payload = encodeExecutableGir(artifact)
-    check "\"gir_format\":8" in payload
+    let formatMarker = "\"gir_format\":" & $GirArtifactFormat
+    check formatMarker in payload
     let decoded = decodeExecutableGir(payload)
     expect ValueError:
       discard decodeExecutableGir(
-        payload.replace("\"gir_format\":8", "\"gir_format\":5"))
+        payload.replace(formatMarker, "\"gir_format\":" & $(GirArtifactFormat - 1)))
     let loopFn = decoded.modules[0].chunk.functions[0]
     check loopFn.chunk.matches[0].tailResult
     var sawTailCall = false
@@ -3467,10 +3468,10 @@ suite "vm — streams":
        " (s .has_next)]",
        "[2 4 6 false]"
 
-  test "stream map skips void results":
+  test "stream map normalizes void results to nil":
     ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) void x)))) " &
-       "[(s .next) (s .has_next)]",
-       "[2 false]"
+       "[(s .next) (s .has_next) (s .next) (s .has_next)]",
+       "[nil true 2 false]"
 
   test "stream map is lazy":
     ck "(var hits ($cell 0)) " &

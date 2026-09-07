@@ -4638,7 +4638,7 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
 proc invokeStreamCallback(stream, item: Value): Value
 proc closeStreamCallback(stream: Value) {.nimcall.}
 
-proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
+proc pullMappedStream(stream: Value, dropVoid: bool): StreamPullResult =
   let savedCapabilities = activeCapabilityContext
   let savedPresence = activeCapabilityPresence
   if stream.streamCapabilityCeiling != nil and
@@ -4652,9 +4652,16 @@ proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "map item")
+    let mapped = invokeStreamCallback(stream, item)
     return StreamPullResult(has: true,
-      item: invokeStreamCallback(stream, item))
+      item: (if not dropVoid and mapped.kind == vkVoid: NIL else: mapped))
   StreamPullResult(has: false, item: NIL)
+
+proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
+  pullMappedStream(stream, false)
+
+proc pullFilterMapStream(stream: Value): StreamPullResult {.nimcall.} =
+  pullMappedStream(stream, true)
 
 proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
   let savedCapabilities = activeCapabilityContext
@@ -4719,55 +4726,59 @@ proc dispatchGenericForward(name: string, receiver: Value,
     else: declarationKind(receiver)
   raiseMessageError(name, recvTypeName, scope, false)
 
-proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  var scope: Scope = nil
-  if call != nil: scope = call.dispatchScope
+proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biFilterMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+
+proc mapCollection(args: openArray[Value], call: ptr NativeCall,
+                   dropVoid: bool): Value =
+  let name = if dropVoid: "filter_map" else: "map"
+  let callback = if dropVoid: biFilterMap else: biMap
+  let scope = if call != nil: call.dispatchScope else: nil
   if args.len == 1:
-    return newSelectorCallStage(
-      newNativeCallFn("map", biMap, acceptsNamed = false), args)
+    return newSelectorCallStage(newNativeCallFn(name, callback, acceptsNamed = false), args)
   if args.len != 2:
-    raise newException(GeneError, "map expects 1 or 2 arguments, got " & $args.len)
+    raise newException(GeneError, name & " expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
   case receiver.kind
   of vkStream:
-    result = newLazyStream(receiver, pullMapStream,
+    result = newLazyStream(receiver,
+      (if dropVoid: pullFilterMapStream else: pullMapStream),
       callable = args[1], close = closeStreamCallback,
       capabilityCeiling = activeCapabilityContext)
-  of vkList:
-    # Eager kinds answer in their own kind (§6.2). A void result keeps its
-    # position as nil (§1.6).
-    var items = newSeq[Value](receiver.listItems.len)
-    for i, item in receiver.listItems:
-      var callArgs = [item]
-      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
-      items[i] = if mapped.kind == vkVoid: NIL else: mapped
-    result = newList(items, receiver.listImmutable)
+  of vkList, vkSet:
+    var items: seq[Value]
+    let source = if receiver.kind == vkList: receiver.listItems else: receiver.setItems
+    for item in source:
+      let mapped = applyCall(args[1], [item], NamedArgs(), scope)
+      if mapped.kind == vkVoid:
+        if not dropVoid: items.add NIL
+      else: items.add mapped
+    result = if receiver.kind == vkList: newList(items, receiver.listImmutable)
+             else: buildSet(name, items)
   of vkMap:
-    # Values are mapped, keys kept. `newMap` strips void results, which is
-    # the map-entry removal rule (§1.6).
     var entries = initPropTable()
     for key, val in receiver.mapEntries:
-      var callArgs = [val]
-      entries[key] = applyCall(args[1], callArgs, NamedArgs(), scope)
+      let mapped = applyCall(args[1], [val], NamedArgs(), scope)
+      if mapped.kind == vkVoid:
+        if not dropVoid: entries[key] = NIL
+      else: entries[key] = mapped
     result = newMap(entries, receiver.mapImmutable)
   of vkHashMap:
     var entries: seq[HashMapEntry]
     for entry in receiver.hashMapEntries:
-      var callArgs = [entry.val]
-      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
-      if mapped.kind != vkVoid:
-        entries.add HashMapEntry(key: entry.key, val: mapped)
+      let mapped = applyCall(args[1], [entry.val], NamedArgs(), scope)
+      if mapped.kind == vkVoid:
+        if not dropVoid: entries.add HashMapEntry(key: entry.key, val: NIL)
+      else: entries.add HashMapEntry(key: entry.key, val: mapped)
     result = newHashMap(entries)
-  of vkSet:
-    var items: seq[Value]
-    for item in receiver.setItems:
-      var callArgs = [item]
-      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
-      if mapped.kind != vkVoid:
-        items.add mapped
-    result = newSet(items)
   else:
-    result = dispatchGenericForward("map", receiver, args[1 .. args.high], scope)
+    result = dispatchGenericForward(name, receiver, args[1 .. args.high], scope)
+
+proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  mapCollection(args, call, false)
+
+proc biFilterMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  mapCollection(args, call, true)
 
 proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   var scope: Scope = nil
@@ -7918,6 +7929,8 @@ proc buildBuiltins(app: Application): Scope =
   # message tables, and the stream namespace at once.
   let mapFn = sharedBuiltinNative("map",
     newNativeCallFn("map", biMap, acceptsNamed = false))
+  let filterMapFn = sharedBuiltinNative("filter_map",
+    newNativeCallFn("filter_map", biFilterMap, acceptsNamed = false))
   let filterFn = sharedBuiltinNative("filter",
     newNativeCallFn("filter", biFilter, acceptsNamed = false))
   let takeFn = sharedBuiltinNative("take",
@@ -7947,6 +7960,7 @@ proc buildBuiltins(app: Application): Scope =
     "last": lastFn,
     "contains?": containsFn,
     "map": mapFn,
+    "filter_map": filterMapFn,
     "filter": filterFn,
     "take": takeFn,
     "each": eachFn,
@@ -7963,6 +7977,7 @@ proc buildBuiltins(app: Application): Scope =
     "put": newNativeFn("Map/put", biMapPutBang),
     "delete": newNativeFn("Map/delete", biMapDeleteBang),
     "map": mapFn,
+    "filter_map": filterMapFn,
     "filter": filterFn,
     "each": eachFn,
     "to_pairs_stream": toPairsStreamFn})
@@ -8311,6 +8326,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("to_stream", toStreamFn)
   result.define("to_pairs_stream", toPairsStreamFn)
   result.define("map", mapFn)
+  result.define("filter_map", filterMapFn)
   result.define("filter", filterFn)
   result.define("take", takeFn)
   result.define("into", intoFn)
@@ -8338,6 +8354,7 @@ proc buildBuiltins(app: Application): Scope =
                                 acceptsNamed = false),
     "close": newNativeFn("Stream/close", biStreamClose),
     "map": mapFn,
+    "filter_map": filterMapFn,
     "filter": filterFn,
     "take": takeFn,
     "into": intoFn,
@@ -10816,6 +10833,72 @@ proc resolveDeclarationAnnotation(expr: Value, scope: Scope, selfType: Value,
 
 proc isErrorType(scope: Scope, typ: Value): bool
 
+proc parameterAdmitsNil(expr: Value, scope: Scope, depth = 0): bool =
+  ## Arity probing must not validate unrelated annotation structure early.
+  if depth > 100: raise newException(GeneError, "recursive parameter type alias")
+  if typeExprAdmitsNil(expr): return true
+  if expr.isTypeAlias:
+    return parameterAdmitsNil(expr.typeAliasExpr, scope, depth + 1)
+  if expr.kind == vkSymbol or (expr.kind == vkNode and expr.head.isSymbol("path")):
+    let alias = staticImplOperand(scope, expr)
+    if alias.isTypeAlias:
+      return parameterAdmitsNil(alias.typeAliasExpr, scope, depth + 1)
+  elif expr.kind == vkNode and expr.head.isSymbol("|"):
+    for item in expr.body:
+      if parameterAdmitsNil(item, scope, depth + 1): return true
+  false
+
+proc normalizeOptionalParameters(original: FunctionProto, scope: Scope): FunctionProto =
+  ## Resolve alias-based nil admission at declaration time, using the same
+  ## ParamDefault metadata as explicit defaults and syntactic T? parameters.
+  result = original
+  var defaults = original.paramDefaults
+  defaults.setLen(original.params.len)
+  var named = original.namedParams
+  var changed = false
+  var optional = false
+  var required = 0
+  for i in 0 ..< original.params.len:
+    if i < original.paramTypes.len and
+        parameterAdmitsNil(original.paramTypes[i], scope) and
+        not defaults[i].optional:
+      defaults[i].optional = true
+      changed = true
+    if defaults[i].optional: optional = true
+    elif optional:
+      raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
+    else: inc required
+  if optional and original.restParam.len > 0:
+    raise newException(GeneError, "rest parameter cannot follow an optional positional parameter")
+  for param in named.mitems:
+    if not param.defaultValue.optional and
+        parameterAdmitsNil(param.typeExpr, scope):
+      param.defaultValue.optional = true
+      changed = true
+  if not changed: return
+  result = FunctionProto()
+  result[] = original[]
+  result.paramDefaults = defaults
+  result.namedParams = named
+  result.requiredPositional = required
+  result.simpleCall = false
+  result.fastBindUnaryInt = false
+  result.fastBindPositionalInt = false
+  result.fastBindRequiredNamed = false
+  result.needsCallScope = true
+  result.nativeOp = ncoNone
+  result.aotExpr = NIL
+  if original.chunk != nil:
+    result.chunk = Chunk()
+    result.chunk[] = original.chunk[]
+    result.chunk.owner = result
+    result.chunk.dispatchCache = @[]
+  if original.scopelessChunk != nil:
+    result.scopelessChunk = Chunk()
+    result.scopelessChunk[] = original.scopelessChunk[]
+    result.scopelessChunk.owner = result
+    result.scopelessChunk.dispatchCache = @[]
+
 proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
                             declarationScope: Scope = nil): Value =
   if fn.kind != vkFunction or not (fn.fnCode of FunctionProto):
@@ -10829,7 +10912,7 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
     return fn
   let scope = if declarationScope != nil: declarationScope else: fn.fnScope
   let proto = FunctionProto()
-  proto[] = original[]
+  proto[] = normalizeOptionalParameters(original, scope)[]
   proto.annotationSelfBits = selfType.bits
   proto.contractResolved = true
   proto.signatureHadSelf = original.receiverSelfAnnotation
@@ -11702,6 +11785,7 @@ proc validateProtocolContract(pending: PendingProtocolContract) =
     if fn.kind != vkFunction or not (fn.fnCode of FunctionProto): continue
     let proto = FunctionProto(fn.fnCode)
     let scope = fn.fnScope
+    discard normalizeOptionalParameters(proto, scope)
     # Self stays abstract in the template. Resolve with a temporary identity
     # only to validate the remaining names; conformance assembly binds it.
     for expr in proto.paramTypes:
@@ -12293,7 +12377,7 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
       # same process-wide dispatchers the root and the type tables bind. `take`
       # is not offered: the doc's Set column covers map/filter only.
       convertMessage(scope, name,
-                     ["to_stream", "map", "filter", "each", "into"])
+                     ["to_stream", "map", "filter_map", "filter", "each", "into"])
   of vkRange:
     # `Range`'s own messages moved into its type table; `to_stream` and the
     # generic `into` are the shared pipeline entries and still come from the
@@ -15969,7 +16053,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush materializedModuleRefValue(
             scope, applySelector(selector, target))
         of opMakeFn:
-          let proto = chunk.functions[inst[].intArg]
+          let proto = normalizeOptionalParameters(chunk.functions[inst[].intArg], scope)
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
           spush newFunction(proto.name, proto.params, proto, scope,
                                 proto.checksErrors, errorTypes,
@@ -27413,6 +27497,11 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)
   (callScope, rt)
 
+proc statementCallResult(typ, value: Value): Value {.inline.} =
+  if typ.isBareVoidType: VOID
+  elif typ.isBareNilType: NIL
+  else: value
+
 proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                        proto: FunctionProto,
                        callerScope: Scope = nil): Value =
@@ -27420,7 +27509,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
   if proto.canBypassCapabilityBoundary(callee.fnScope, callerScope):
     let native = applyNativeCompiled(callee, proto, args, named)
     if native.handled:
-      return native.value
+      return statementCallResult(proto.returnType, native.value)
   if proto.simpleCall and named.len == 0:
     if args.len != positional.len:
       raise newException(GeneError,
@@ -27468,8 +27557,9 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     activeCapabilityContext = callTransition.context
     activeCapabilityPresence = callTransition.presence
     try:
-      return runPooled(proto.chunk, callScope,
-                       validateImplRequirements = proto.frameNeedsImplValidation)
+      return statementCallResult(proto.returnType,
+        runPooled(proto.chunk, callScope,
+                  validateImplRequirements = proto.frameNeedsImplValidation))
     finally:
       activeCapabilityContext = savedCapabilities
       activeCapabilityPresence = savedPresence
@@ -27520,7 +27610,9 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         raise
       raise newException(GeneError,
         "function '" & callee.fnName & "' raised an undeclared error")
-    if frameReturnType.kind != vkNil:
+    if returnType.isStatementReturnType:
+      resultValue = statementCallResult(returnType, resultValue)
+    elif frameReturnType.kind != vkNil:
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   frameReturnType, resultValue, callScope)
     resultValue

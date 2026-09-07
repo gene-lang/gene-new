@@ -2766,6 +2766,14 @@ GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call,
   return call != NULL && call->len == expected ? GENE_OK : GENE_ERROR;
 }
 
+GeneStatus gene_ffi_check_arity_range(GeneContext *ctx, const GeneCall *call,
+                                      size_t minimum, size_t maximum, size_t *provided) {
+  (void)ctx;
+  if (call == NULL || call->len < minimum || call->len > maximum) return GENE_ERROR;
+  *provided = call->len;
+  return GENE_OK;
+}
+
 GeneStatus gene_typed_native_arg_borrow(
     GeneContext *ctx, const GeneCall *call, size_t index, const char *name,
     const char *type_identity, const char *abi_identity,
@@ -2814,6 +2822,11 @@ int main(void) {
 
   if (gene_entry_round_trip(&ctx, &call, &result) != GENE_OK ||
       result.kind != 0 || copy_calls != 0) return 1;
+
+  call.len = 0;
+  if (gene_entry_round_trip(&ctx, &call, &result) != GENE_OK ||
+      result.kind != 0 || copy_calls != 0) return 4;
+  call.len = 1;
 
   CTimespec original = {42};
   arg = (GeneValue){1, &original, false,
@@ -2871,12 +2884,23 @@ int main(void) {
       "(fn maybe_seconds [t : Timespec?] : I64 (read_seconds t))",
       "typed_native function maybe_seconds cannot lower its body statically")
 
+  test "native calls fill omitted nullable parameters with NULL":
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn identity [node : Node?] : Node? node) " &
+      "(fn omitted [] : Node? (identity))")
+    let c = chunk.emitExperimentalC()
+    check "gene_native_identity(NULL)" in c
+    checkCRuns(c & "\n#include <stdio.h>\nint main(void) { puts(gene_native_omitted() == NULL ? \"nil\" : \"wrong\"); return 0; }\n",
+               "typed_native_optional_default", "nil")
+
   test "nullable typed-native stores guard before assigning":
     let chunk = compileSource(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Int64]]) " &
       "(type Timespec " &
       "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
-      "(fn maybe_set [t : Timespec? value : I64] : I64 " &
+      "(fn maybe_set [value : I64 t : Timespec?] : I64 " &
       "  (set t/tv_sec value))")
     let c = chunk.emitExperimentalC()
     check "t != NULL ? (t->tv_sec = value)" in c
@@ -2888,7 +2912,7 @@ int main(void) {
       "(type Node " &
       "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
       "(fn maybe_next [node : Node?] : Node? node/next) " &
-      "(fn maybe_set_next [node : Node? child : Node] : Node " &
+      "(fn maybe_set_next [child : Node node : Node?] : Node " &
       "  (set node/next child))")
     let c = chunk.emitExperimentalC()
     check "node != NULL ? node->next : " &
@@ -6249,8 +6273,10 @@ suite "spec — optionality lives on the type, not the key":
   test "an omitted nil-admitting named parameter binds nil":
     check_eval("(fn f [^w : Int?] [(if w 1 0) w]) (f)", "[0 nil]")
     check_eval("(fn f [^w : Int?] w) (f ^w 3)", "3")
-  test "positional parameters stay positional under nilable types":
-    check_eval("(fn f [a : Str?, b : Int] (if a b (- 0 b))) (f nil 5)", "-5")
+  test "nil-admitting positional parameters have an implicit nil default":
+    check_eval("(fn f [a : Str?] a) [(f) (f nil) (f \"x\")]", "[nil nil \"x\"]")
+    expect GeneError:
+      discard compileSource("(fn f [a : Str?, b : Int] b)")
     check_eval("(fn f [x : Int? = nil, y : Str = \"d\"] (if x \"x\" y)) (f)",
                geneString("d"))
   test "?-suffixed declaration names are loud errors with hints":
@@ -6706,9 +6732,9 @@ suite "spec — generic collection operations from design (§6.2)":
                "2")
     check_eval("([1 2] .each (fn [x] x))", "nil")
 
-  test "void results follow the container rules":
+  test "map normalizes void results before collection storage":
     check_eval("([1 2] .map (fn [x] (if (== x 1) x void)))", "[1 nil]")
-    check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v void)))", "{^a 1}")
+    check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v void)))", "{^a 1 ^b nil}")
 
   test "a receiver with no method raises the send's MessageError":
     check_eval("(try (42 .map (fn [x] x)) catch MessageError $ex/receiver_type)",

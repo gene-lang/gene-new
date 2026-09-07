@@ -14,13 +14,17 @@ key”.
   defined.
 - `(type Child : Parent ...)` declares the type's one nominal parent. A type
   without a parent omits the header: `(type Root ...)`.
-- Optionality lives on the type: a prop-schema field or named parameter whose
-  type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
-  omitted. An absent field reads as `void`; an omitted named parameter binds
+- Optionality lives on the type: a prop-schema field or fixed positional/named
+  parameter whose type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
+  omitted. An absent field reads as `void`; an omitted fixed parameter binds
   `nil`; explicit `^a nil` stores a present nil, distinguishable by pattern.
-  `Any` fields stay required. Positional parameters are optional only via
-  defaults. Declaration names ending in `?` are compile errors with a
-  rewrite hint.
+  `Any` alone stays required. Explicit defaults take precedence over implicit
+  nil defaults. Optional positional parameters must follow required ones and
+  cannot precede rest parameters. Named parameters have no ordering restriction.
+  Declaration names ending in `?` are compile errors with a
+  rewrite hint. An unchecked lookup of an omissible field includes `Void` in
+  its result type; `(?? p/age nil)` normalizes a missing `Int?` field to `Int?`.
+  See [nil/void and optional binding](nil-void.md).
 - Ctor construction pre-creates `self` with an in-progress marker. Until
   validation succeeds, it cannot be stored in
   globals/containers/cells, captured by escaping closures, spawned, sent, used

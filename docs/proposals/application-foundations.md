@@ -142,6 +142,7 @@ redesign. The default ORC build is the validated retention configuration here.
 
 General N-argument native FFI, cross-module native compilation, richer generic
 nominal types, and complete Python-level library coverage are still open work.
-Named defaults and public re-exports improve the current web subset; they do
-not make it the full VM language. Positional defaults, first-class named-function
-signatures, and named methods/constructors remain outside that profile.
+Named defaults and public re-exports improve the current web subset. Subsequent
+nil/void work added positional defaults and optional callable shapes; named
+methods and constructors remain outside that profile. See
+[the current web profile](../web-profile.md) for supported forms.

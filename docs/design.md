@@ -261,7 +261,9 @@ Container normalization:
 
 - storing `void` in a prop/map entry removes the entry;
 - storing `void` in a list/body position stores `nil`, preserving position;
-- yielding or producing `void` into a stream skips the item.
+- yielding `void` into a stream emits no item;
+- `map` converts a callback result of `void` to `nil` before storing or emitting it;
+- `filter_map` explicitly drops callback results of `void`.
 
 Examples conceptually:
 
@@ -816,7 +818,8 @@ Direct guarded item sends still prepare their fixed expressions once; a
 lambda provides per-item guarded evaluation when that is wanted.
 
 Preparation precedes conversion and happens even with empty input or a later
-`take 0`. Item calls run only when demanded, retaining nil and skipping void;
+`take 0`. Item calls run only when demanded, retaining nil and converting void
+to nil;
 List, Stream, and Task results remain individual items. A consuming `->` call
 completes before the next stage prepares. Errors are terminal on the demand
 path, preserve earlier effects, and provide no rollback.
@@ -1189,17 +1192,22 @@ x...                      # gather rest positional args
 x... : T                  # typed rest: each gathered arg is checked against T
 ```
 
-`= default` makes the parameter optional. A named parameter whose type
-explicitly admits nil (`T?`, `(? T)`, or a union containing `Nil`) is also
-optional; when omitted, the local binds `nil` — falsy and inside its own
-annotation:
+`= default` makes a fixed parameter optional. A positional or named parameter
+whose type explicitly admits nil (`T?`, `(? T)`, or a union containing `Nil`,
+including aliases expanding to these forms) also has an implicit nil default.
+An explicit default takes precedence; a supplied nil does not select a default.
+The body receives a value inside its declared type:
 
 ```gene
-^width : Int? # omitted argument binds local width to nil
+width : Int?  # omitted positional argument binds width to nil
+^width : Int? # omitted named argument binds width to nil
 ```
 
-Positional parameters stay positional: a nilable type does not change call
-arity, so an optional positional parameter uses a default (`x : Int? = nil`).
+Optional positional parameters follow all required positional parameters and
+cannot precede a rest parameter. Matching does not skip slots based on argument
+types. Named parameters have no corresponding ordering restriction. `Any` alone
+stays required. `T?` still means `T | Nil`; parameter binding supplies a default
+for omission and does not add `Void` to that type.
 Declaration names may not end in `?` — `^width? : Int` is a compile error
 pointing at the `^width : Int?` spelling.
 
@@ -1544,7 +1552,8 @@ The `Stream` methods keep the lazy contract of §6 and the close/detach rules
 of §6.1:
 
 ```text
-map              : (Stream A E, Fn [A] B) -> (Stream B E)
+map              : (Stream A E, Fn [A] B) -> (Stream N(B) E)
+filter_map       : (Stream A E, Fn [A] B) -> (Stream (B without Void) E)
 filter           : (Stream A E, Fn [A] Bool) -> (Stream A E)
 take             : (Stream A E, Int) -> (Stream A E)
 into             : (Stream A E, target) -> target
@@ -1555,7 +1564,8 @@ The eager kinds answer in their own kind:
 | call       | List        | Map                        | Set | Stream       |
 | ---------- | ----------- | -------------------------- | --- | ------------ |
 | `map f`    | List, eager | Map over values, keys kept | Set | Stream, lazy |
-| `filter p` | List, eager | Map over values, keys kept | Set | Stream, lazy |
+| `filter_map f` | List, eager | Map over values, surviving keys kept | Set | Stream, lazy |
+| `filter p` | List, eager | Map over values, surviving keys kept | Set | Stream, lazy |
 | `take n`   | List        | —                          | —   | Stream       |
 
 `to_stream` converts an eager kind to the lazy tier — `List`, `Set`, and
@@ -1568,10 +1578,23 @@ kind named by its argument: `($into s [])` builds a `List`, `($into s {})`
 builds a `PropMap` from `[K V]` pairs. `each f` runs `f` on every item and
 returns `nil`. Stream `each` and `into` close their immediate source on
 success or failure, preserving a primary failure if cleanup also fails.
-Void results follow §1.6: `nil` keeps its `List` position, a
-void value removes its `Map` entry, and a void result is skipped in a `Set`.
-A `Map`'s `map`/`filter`/`each` callback sees the value; pair-wise work goes
-through `to_pairs_stream` or `for`.
+`map` applies `N(void) = nil` and `N(v) = v` to every callback result. Lists
+and streams preserve one output per input, maps preserve their keys, and sets
+retain their ordinary deduplication. In the signature above, `N(B)` replaces
+Void with Nil in the output element type. Output boundaries still check the
+normalized value: a `(List Int)` cannot contain the resulting nil.
+
+`filter_map` drops only void results, retaining nil, false, zero, and empty
+strings. Raw map/prop writes of void still remove entries (§1.6); mapping has
+already normalized its result before storage. A map's collection callback sees
+the value; pair-wise work goes through `to_pairs_stream` or `for`.
+
+For a finite sequence and a pure, total callback, eager mapping and fully
+collecting lazy mapping produce equal data, including when the callback returns
+void. Fusion must preserve intermediate normalization:
+`map(map(xs, f), g) = map(xs, x => g(N(f(x))))` (mathematical notation).
+Evaluation timing, side effects, partial consumption, and errors still follow
+the eager or lazy evaluation contract. See `docs/spec/nil-void.md`.
 
 The reader/parser pipeline should be stream-shaped:
 
@@ -1581,7 +1604,9 @@ The reader/parser pipeline should be stream-shaped:
 → (Stream Node ParseError)
 ```
 
-Whitespace, comments, and discarded forms can produce `void`, which stream stages skip.
+Whitespace, comments, and discarded forms can produce void. Parser producers
+can omit these with `yield void`, or a transformation can use `filter_map`.
+Ordinary `map` retains them as nil.
 
 ---
 
@@ -2293,7 +2318,11 @@ accepted yet.
 Schemas are closed for props. A field whose type explicitly admits nil
 (`T?`, `(? T)`, or a union containing `Nil`) may be omitted; an absent
 field reads as `void` (falsy), while an explicit `^a nil` stores a
-present nil (pattern-distinguishable). `Any` is gradual slack, not an
+present nil (pattern-distinguishable). A lookup of an omissible field has the
+declared type union Void; the declared field type constrains a present value.
+For example, a getter returning `Int?` for a field `age : Int?` should use
+`(?? p/age nil)`; returning the raw lookup can fail when age is missing.
+`Any` is gradual slack, not an
 optionality marker: an `Any` field stays required. Field names may not
 end in `?`. Body schemas admit one final repeated field as `[A B T...]`. Open/rest prop
 schemas and generic record declarations are reserved for a later extension; the
@@ -2678,10 +2707,13 @@ The profile now takes them on **module functions**, with `^name local : T` and
 declaration order: the profile knows every callee statically, so a call's props
 are placed into their slots at analysis time. No options object, no allocation,
 and an exported function stays positionally callable from JavaScript.
-`docs/web-profile.md` states the four consequences — no named parameters on a
-`message`, `ctor`, extern, or callback; no positional parameter after a named
-one; no function-with-named-parameters used as a value; no defaults, since
-`: T?` is the spelling for optional.
+Named parameters remain limited to module functions in the web profile.
+Positionals and named parameters may interleave; optional positionals follow
+required positionals. Fixed parameters support explicit defaults, and a
+nil-admitting annotation supplies an implicit nil default. A function with
+required named arguments cannot satisfy a positional-only callable shape;
+optional named defaults may be omitted through that shape. See
+`docs/web-profile.md` for the supported callable forms and default rules.
 
 **And a call now accounts for every prop.** Props on a call were dropped
 silently — `(add 1.0 2.0 ^oops 9.0)` compiled and discarded `^oops`, while the
@@ -6112,7 +6144,7 @@ Deferred until after the first implementation slice:
 - Actor and channel boundaries require `Send`; shallow immutability alone is not sufficient.
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
-- The collection operations — `map`, `filter`, `take`, `to_stream`, `to_pairs_stream`, `into`, `each` — are generic functions (§6.2): one message identity per operation shared by the types that serve it, with the `$name` function spelling under the `gene` root. A bare send and the `$` call are the same receiver-first dispatch; there is no lexical fallback.
+- The collection operations — `map`, `filter_map`, `filter`, `take`, `to_stream`, `to_pairs_stream`, `into`, `each` — are generic functions (§6.2): one message identity per operation shared by the types that serve it, with the `$name` function spelling under the `gene` root. A bare send and the `$` call are the same receiver-first dispatch; there is no lexical fallback.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
 - Dot message sends dispatch only — no lexical fallback. `(x .f a)` resolves `f` against `x`'s **type-direct** messages, walking nominal parents; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x .P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x .%m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so a dot send never invokes an arbitrary function. Message names are not bound in the enclosing scope, so a dot descriptor and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(.f a)` means `(self .f a)` when `self` is in scope. `(super .f a)` delegates to the implementation above the enclosing type on the parent chain.

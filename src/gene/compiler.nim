@@ -147,6 +147,7 @@ type
     importedCompileEntries: Table[string, CompileInterfaceEntry]
     wildcardCandidates: Table[string, seq[StaticWildcardCandidate]]
     aliasInterfaces: Table[string, StaticAliasInterface]
+    parameterAliases: Table[string, Value]
     declaredUnitNames: HashSet[string]
     namespacePath: seq[string]
     moduleMacroExports: ref Table[string, MacroDef]
@@ -914,6 +915,7 @@ proc childCompiler(c: Compiler): Compiler =
            importedCompileEntries: c.importedCompileEntries,
            wildcardCandidates: c.wildcardCandidates,
            aliasInterfaces: c.aliasInterfaces,
+           parameterAliases: c.parameterAliases,
            declaredUnitNames: c.declaredUnitNames,
            namespacePath: c.namespacePath,
            moduleMacroExports: c.moduleMacroExports,
@@ -1189,7 +1191,23 @@ proc warnDiscardedPipeline(c: var Compiler, value: Value) =
         "use -> $each for effects or -> $into [] to collect results",
       loc: value.pipelineStages[^1].sourceLoc)
 
+proc collectParameterAliases(c: var Compiler, forms: openArray[Value], first = 0) =
+  # Only declarations in this lexical body participate. Branch-local aliases
+  # do not change a surrounding declaration's callable shape.
+  for i in first ..< forms.len:
+    let form = forms[i]
+    if form.kind == vkNode and form.body.len > 0 and form.body[0].kind == vkSymbol and
+        form.head.kind == vkSymbol and form.head.symVal in
+          ["alias", "type", "enum", "protocol", "fn", "let", "var", "const"]:
+      c.parameterAliases.del(form.body[0].symVal)
+  for i in first ..< forms.len:
+    let form = forms[i]
+    if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2 and
+        form.body[0].kind == vkSymbol:
+      c.parameterAliases[form.body[0].symVal] = form.body[1]
+
 proc compileBody(c: var Compiler, body: openArray[Value], tail = false) =
+  c.collectParameterAliases(body)
   if body.len == 0:
     c.emitConst NIL
     return
@@ -1203,6 +1221,7 @@ proc compileBody(c: var Compiler, body: openArray[Value], tail = false) =
 
 proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int,
                      tail = false) =
+  c.collectParameterAliases(body, first)
   if first > body.high:
     c.emitConst NIL
     return
@@ -1590,9 +1609,10 @@ proc isRestParam(s: string): bool =
 proc typeExprAdmitsNil*(expr: Value): bool =
   ## True when a type expression *explicitly* admits nil — `T?`, `(? ...)`,
   ## `Nil`, or a union with a nil-admitting alternative. Such a type marks an
-  ## optional prop-schema field or named parameter (omitted binds nil).
+  ## optional prop-schema field or fixed parameter (omitted binds nil).
   ## `Any` is gradual slack, not an optionality marker: an `Any` field stays
   ## required, which keeps "required but dynamic" expressible.
+  if expr.isTypeAlias: return typeExprAdmitsNil(expr.typeAliasExpr)
   case expr.kind
   of vkSymbol:
     let s = expr.symVal
@@ -1608,6 +1628,47 @@ proc typeExprAdmitsNil*(expr: Value): bool =
       false
   else:
     false
+
+proc ownInterfaceEntry(c: Compiler, name: string):
+    tuple[found: bool, entry: CompileInterfaceEntry]
+
+proc parameterTypeAdmitsNil(c: Compiler, expr: Value, shadowed: openArray[string],
+                            depth = 0): bool =
+  if depth > 100: raise newException(GeneError, "recursive parameter type alias")
+  if typeExprAdmitsNil(expr): return true
+  if expr.kind == vkSymbol and expr.symVal notin shadowed:
+    if c.parameterAliases.hasKey(expr.symVal):
+      return c.parameterTypeAdmitsNil(c.parameterAliases[expr.symVal], shadowed, depth + 1)
+    let path = expr.symVal.split('/')
+    if path.len > 1:
+      if path[0] in shadowed: return false
+      var resolved = c.ownInterfaceEntry(path[0])
+      if resolved.found:
+        for segment in path[1 .. ^1]:
+          if resolved.entry.category != cbcNamespace or
+              resolved.entry.namespace == nil or
+              not resolved.entry.namespace.entries.hasKey(segment):
+            return false
+          resolved.entry = resolved.entry.namespace.entries[segment]
+        let form = resolved.entry.typeForm
+        if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
+          return c.parameterTypeAdmitsNil(form.body[1], shadowed, depth + 1)
+        return false
+    if c.importedCompileEntries.hasKey(expr.symVal):
+      let form = c.importedCompileEntries[expr.symVal].typeForm
+      if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
+        return c.parameterTypeAdmitsNil(form.body[1], shadowed, depth + 1)
+  elif expr.kind == vkNode:
+    if expr.head.isSymbol("|"):
+      for member in expr.body:
+        if c.parameterTypeAdmitsNil(member, shadowed, depth + 1): return true
+    elif expr.head.isSymbol("path"):
+      var path: seq[string]
+      for segment in expr.body:
+        if segment.kind != vkSymbol: return false
+        path.add segment.symVal
+      return c.parameterTypeAdmitsNil(newSym(path.join("/")), shadowed, depth + 1)
+  false
 
 proc rejectOptionalSuffix(s, what, hint: string): string =
   ## `?`-suffixed declaration names are gone: optionality moved to the type
@@ -1641,7 +1702,7 @@ proc parseParamAdornment(c: Compiler, items: openArray[Value],
     else:
       break
 
-proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
+proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): ParamSpecs =
   ## Extract positional and named parameter bindings from an `[a ^name b]`
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
   ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
@@ -1680,7 +1741,7 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
           inc i
       var adornment = c.parseParamAdornment(items, i)
       if not adornment.defaultValue.optional and
-          typeExprAdmitsNil(adornment.typeExpr):
+          c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
         # ^name : T? — optional named parameter; omitted binds nil (the
         # defaultChunk stays nil, so the runtime default is NIL).
         adornment.defaultValue.optional = true
@@ -1709,17 +1770,15 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
         result.restType = restAdornment.typeExpr
         continue
       else:
-        # Positional parameters stay positional: a nil-admitting type does
-        # not make one optional (that would change call arity for signatures
-        # with a nilable middle argument). Optional positionals use a
-        # default, e.g. `x : Int? = nil`.
+        # Explicit nil-admitting parameter types supply an implicit nil default.
         let name = rejectOptionalSuffix(s, "parameter",
-          "use a default (`" & s[0 .. ^2] &
-          " : T? = nil`) for an optional positional parameter")
+          "write `" & s[0 .. ^2] & " : T?` for an optional positional parameter")
         if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
         var adornment = c.parseParamAdornment(items, i)
+        if c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
+          adornment.defaultValue.optional = true
         if adornment.defaultValue.optional:
           sawOptionalPositional = true
         elif sawOptionalPositional:
@@ -2729,6 +2788,10 @@ proc hasOptionalPositional(specs: ParamSpecs): bool =
     if defaultValue.optional:
       return true
 
+proc hasComputedPositionalDefault(specs: ParamSpecs): bool =
+  for value in specs.positionalDefaults:
+    if value.optional and value.defaultChunk != nil: return true
+
 proc nativeScalarType(expr: Value): string =
   if expr.kind != vkSymbol:
     return ""
@@ -3125,6 +3188,15 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
                                ffiFns: openArray[FfiFnProto],
                                locals: var seq[AotLocal]): bool
 
+proc acceptsAotArity(fn: FunctionProto, count: int): bool =
+  if fn == nil or count > fn.params.len or count < fn.requiredPositional: return false
+  for i in count ..< fn.params.len:
+    if i >= fn.paramDefaults.len or not fn.paramDefaults[i].optional or
+        fn.paramDefaults[i].defaultChunk != nil or i >= fn.aotParamReprs.len or
+        fn.aotParamReprs[i].kind != arkNativePtr or not fn.aotParamReprs[i].nullable:
+      return false
+  true
+
 proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                           params: openArray[string],
                           paramReprs: openArray[AotRepr],
@@ -3278,7 +3350,7 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                                          send.messageName)
     let callee = selected.fn
     if callee == nil or callee.aotExpr.kind == vkNil or
-        callee.params.len != expr.body.len - send.argsStart + 1 or
+        not callee.acceptsAotArity(expr.body.len - send.argsStart + 1) or
         callee.aotParamReprs.len != callee.params.len or
         not callee.aotParamReprs[0].aotReprAccepts(send.receiverRepr):
       return false
@@ -3297,8 +3369,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     return false
   let callee = c.localAotFunction(expr.head.symVal)
   if callee != nil:
-    if callee.params.len != expr.body.len or
-        callee.aotParamReprs.len != expr.body.len:
+    if not callee.acceptsAotArity(expr.body.len) or
+        callee.aotParamReprs.len != callee.params.len:
       return false
     ## Each argument is checked as an *expression* against the parameter's
     ## representation, not required to be a bare binding.
@@ -3666,7 +3738,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     returnType = body[start]
     inc start
 
-  var specs = c.paramSpecs(paramList)
+  var specs = c.paramSpecs(paramList, typeParams)
   # Receiver admission is supplied by dispatch. Retain the annotation's origin
   # so replacement signatures cannot hide forbidden Self through this erasure.
   let receiverSelfAnnotation = immutableSelf and specs.positional.len > 0 and
@@ -3835,7 +3907,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     let lowerBody = normalizeMessageCallTree(rawLowerBody)
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
         specs.rest.len != 0 or specs.named.len != 0 or
-        specs.hasOptionalPositional or lowerBody.kind == vkNil or
+        specs.hasComputedPositionalDefault or lowerBody.kind == vkNil or
         aotReturnRepr.kind == arkNone or
         not allAotParamsRepresentable or
         aotParamReprs.len != specs.positional.len or
@@ -5130,7 +5202,8 @@ proc collectCompileInterfaceForm(form: Value,
   of "enum", "alias":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
-      target.entries[name] = CompileInterfaceEntry(category: cbcType)
+      target.entries[name] = CompileInterfaceEntry(category: cbcType,
+        typeForm: (if form.head.isSymbol("alias"): form else: NIL))
   of "protocol":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
@@ -8128,6 +8201,7 @@ proc compileAlias(c: var Compiler, node: Value) =
     if key != "private":
       raise newException(GeneError,
         "alias got unexpected named argument: ^" & key)
+  c.parameterAliases[body[0].symVal] = body[1]
   c.emitConst(body[1])
   discard c.emit(opMakeAlias, name = body[0].symVal)
   c.emitDefineBinding(body[0].symVal, immutable = true)
@@ -9443,6 +9517,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
     for i, form in forms:
       if i < c.formLocs.len:
         c.chunk.topLevelForms.add topLevelFormInfo(form, c.formLocs[i])
+  c.collectParameterAliases(forms)
   for form in forms:
     collectMutableBindingNames(form, c.mutableBindingNames)
   var seenModuleRefs = initHashSet[string]()

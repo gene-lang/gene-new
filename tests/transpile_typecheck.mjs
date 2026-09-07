@@ -56,8 +56,8 @@ const generated = [
   join(work, "web_component.ts"),
   join(root, "web", "gene_dom.generated.d.ts"),
 ];
-// Check callable and Self contracts in both emitted surfaces, including imports.
-const contractCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => (item.id.startsWith("callable.") || item.id.startsWith("self.")) && item.profile.status === "eligible");
+// Check callable, Self, and nil/void contracts in both emitted surfaces, including imports.
+const contractCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => (item.id.startsWith("callable.") || item.id.startsWith("self.") || item.id.startsWith("nil_void.")) && item.profile.status === "eligible");
 for (const item of contractCases) {
   const name = item.id.replaceAll(".", "_");
   const caseDir = join(work, name);

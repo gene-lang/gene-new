@@ -166,7 +166,7 @@ when argument evaluation itself must be guarded per item.
 Ranges, and user types with a type-direct conversion are accepted; a Map needs
 explicit `-> $to_pairs_stream`, with `[key value]` as one item. Unsupported
 scalars and nil are not singleton or empty streams. Conversion must produce a
-Stream and must not pull items. Per-item `void` results are skipped; `nil`,
+Stream and must not pull items. Per-item `void` results become `nil`; `nil`,
 Lists, Streams, and Tasks remain individual results.
 
 Preparation can fail immediately. Callback/dispatch/boundary failures occur

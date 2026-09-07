@@ -7832,6 +7832,8 @@ proc registerStdlibNamespaces(root: Scope) =
   # returns those instances; the fresh values built here are discarded.
   stdStreamScope.define("map",
     sharedBuiltinNative("map", newNativeCallFn("map", biMap, acceptsNamed = false)))
+  stdStreamScope.define("filter_map",
+    sharedBuiltinNative("filter_map", newNativeCallFn("filter_map", biFilterMap, acceptsNamed = false)))
   stdStreamScope.define("filter",
     sharedBuiltinNative("filter", newNativeCallFn("filter", biFilter, acceptsNamed = false)))
   stdStreamScope.define("take",

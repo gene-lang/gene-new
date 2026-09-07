@@ -62,6 +62,7 @@ type
     namedTypes*: seq[WebType]
     restType*: WebType
     checkedErrors*: bool
+    optionalParams*: seq[bool] # concrete callable declaration shape; empty means required
     errorTypes*: seq[WebType]
 
   WebExprKind* = enum
@@ -205,6 +206,7 @@ type
     ownerName*: string
     defaultFactory*: string
     universalDefault*: bool
+    selfDependent*: bool
     sourceForm: Value
 
   WebProtocolDecl* = ref object
@@ -285,6 +287,8 @@ type
     impls*: seq[WebImplDecl]
     namespaces*: seq[WebNamespace]
     defaultBodies: seq[WebFunction]
+    aliases*: Table[string, WebType]
+    emittedAliases: Table[string, WebType]
 
   WebArtifacts* = object
     js*, ts*, declarations*, sourceMap*, tsSourceMap*: string
@@ -325,6 +329,7 @@ type
   WebAnalysis = ref object
     unit: SourceUnit
     signatures: Table[string, WebFunctionSig]
+    synchronousDefaults: seq[WebExpr]
     ## Module-level `let` constants, visible to every function body.
     constants: Table[string, WebConstant]
     loopDepth: int
@@ -340,6 +345,7 @@ type
     protocolImplTargets: HashSet[string]
     currentTypeName: string
     annotationSelf: WebType
+    aliases: Table[string, WebType]
     inProtocolDefault: bool
     implementations: seq[WebImplDecl]
     currentNamespace: seq[string]
@@ -510,6 +516,9 @@ proc isPath(value: Value, segments: openArray[string]): bool =
     if not value.body[i].isSym(segment): return false
   true
 
+proc callbackParamOptional(typ: WebType, i: int): bool =
+  i < typ.optionalParams.len and typ.optionalParams[i]
+
 proc sameType(a, b: WebType): bool =
   if a == nil or b == nil or a.kind != b.kind:
     return false
@@ -527,10 +536,12 @@ proc sameType(a, b: WebType): bool =
       sameType(a.params[0], b.params[0]) and sameType(a.params[1], b.params[1])
   of wtkCallback:
     if a.name != b.name: return false
-    if a.params.len != b.params.len or not sameType(a.returnType, b.returnType):
+    if a.params.len != b.params.len or a.namedKeys != b.namedKeys or
+        not sameType(a.returnType, b.returnType):
       return false
     for i in 0 ..< a.params.len:
-      if not sameType(a.params[i], b.params[i]): return false
+      if a.callbackParamOptional(i) != b.callbackParamOptional(i) or
+          not sameType(a.params[i], b.params[i]): return false
     true
   of wtkCallable:
     if a.name != b.name or a.params.len != b.params.len or a.namedKeys != b.namedKeys or
@@ -603,6 +614,37 @@ proc withoutVoid(typ: WebType): WebType =
   elif members.len == 1: members[0]
   else: WebType(kind: wtkUnion, members: members)
 
+proc normalizeMapResult(typ: WebType): WebType =
+  if typ.kind == wtkVoid: return webType(wtkNil)
+  if typ.kind == wtkUnion:
+    var normalized: seq[WebType]
+    for member in typ.members: normalized.add normalizeMapResult(member)
+    return unionType(normalized)
+  typ
+
+proc requiredWebParams(params: seq[WebParam]): int =
+  for param in params:
+    if not param.optional: inc result
+
+proc acceptsWebArity(params: seq[WebParam], count: int): bool =
+  count >= requiredWebParams(params) and count <= params.len
+
+proc requiredCallbackParams(typ: WebType): int =
+  for i in 0 ..< typ.params.len:
+    if i >= typ.optionalParams.len or not typ.optionalParams[i]: inc result
+
+proc callbackType(signature: WebFunctionSig): WebType =
+  result = WebType(kind: wtkCallback, returnType: signature.returnType)
+  if signature.namedParams.len == 0:
+    result.params = signature.params
+  else:
+    for param in signature.namedParams:
+      if not param.named:
+        result.params.add param.typ
+        result.optionalParams.add param.optional
+      elif not param.optional:
+        result.namedKeys.add param.argName
+
 proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
   if expected == nil or actual == nil or expected.kind == wtkAny or
       actual.kind == wtkNever:
@@ -639,9 +681,13 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
     of wtkCallback:
       if expected.name != "callable context" and actual.name in ["message", "selector"]:
         return false
-      if expected.params.len != actual.params.len: return false
+      if actual.namedKeys.len > 0 or expected.params.len < actual.requiredCallbackParams or
+          expected.params.len > actual.params.len: return false
       for i in 0 ..< expected.params.len:
-        if not accepts(analysis, expected.params[i], actual.params[i]): return false
+        if expected.name == "callable context":
+          if expected.params[i].kind != wtkAny and
+              not accepts(analysis, actual.params[i], expected.params[i]): return false
+        elif not accepts(analysis, expected.params[i], actual.params[i]): return false
       return accepts(analysis, expected.returnType, actual.returnType)
     of wtkMap:
       return accepts(analysis, expected.params[0], actual.params[0]) and
@@ -741,7 +787,8 @@ proc tsType(typ: WebType): string =
     parts.join(" | ")
   of wtkCallback:
     var params: seq[string]
-    for i, item in typ.params: params.add "arg" & $i & ": " & tsType(item)
+    for i, item in typ.params:
+      params.add "arg" & $i & (if typ.callbackParamOptional(i): "?" else: "") & ": " & tsType(item)
     "(" & params.join(", ") & ") => " & tsType(typ.returnType)
   of wtkCallable:
     if typ.name == "bare": "unknown" else: "GeneCallableView"
@@ -778,7 +825,9 @@ proc validatorSuffix(typ: WebType): string =
     "union_" & parts.join("_")
   of wtkCallback:
     var parts: seq[string]
-    for param in typ.params: parts.add validatorSuffix(param)
+    for i, param in typ.params:
+      parts.add (if typ.callbackParamOptional(i): "optional_" else: "") & validatorSuffix(param)
+    for key in typ.namedKeys: parts.add "required_named_" & mangleWebName(key)
     "callback_" & (if typ.name.len > 0: mangleWebName(typ.name) & "_" else: "") &
       parts.join("_") & "_to_" &
       validatorSuffix(typ.returnType)
@@ -1012,8 +1061,30 @@ proc hasBoundSelf(typ: WebType): bool =
     for item in items:
       if hasBoundSelf(item): return true
 
+proc expandWebAliases(analysis: WebAnalysis, typ: WebType, depth = 0): WebType =
+  if typ == nil: return nil
+  if depth > 100: raise webError(analysis.currentLoc, "recursive type alias")
+  if typ.kind == wtkNominal and analysis.aliases.hasKey(typ.name):
+    return analysis.expandWebAliases(analysis.aliases[typ.name], depth + 1)
+  result = WebType()
+  result[] = typ[]
+  result.item = analysis.expandWebAliases(typ.item, depth + 1)
+  result.returnType = analysis.expandWebAliases(typ.returnType, depth + 1)
+  result.restType = analysis.expandWebAliases(typ.restType, depth + 1)
+  result.params = @[]
+  for item in typ.params: result.params.add analysis.expandWebAliases(item, depth + 1)
+  result.members = @[]
+  for item in typ.members: result.members.add analysis.expandWebAliases(item, depth + 1)
+  result.namedTypes = @[]
+  for item in typ.namedTypes: result.namedTypes.add analysis.expandWebAliases(item, depth + 1)
+  result.errorTypes = @[]
+  for item in typ.errorTypes: result.errorTypes.add analysis.expandWebAliases(item, depth + 1)
+
+proc parseAbstractAnnotation(analysis: WebAnalysis, expr: Value, loc: SourceLoc): WebType =
+  analysis.expandWebAliases(parseWebType(expr, loc))
+
 proc parseAnnotation(analysis: WebAnalysis, expr: Value, loc: SourceLoc): WebType =
-  result = parseWebType(expr, loc)
+  result = analysis.parseAbstractAnnotation(expr, loc)
   if webTypeHasSelf(result):
     if analysis.annotationSelf == nil:
       raise webError(loc, "Self requires a declaring receiver type")
@@ -1043,6 +1114,22 @@ proc messageSignatureHasSelf(form: Value): bool =
   if form.body.len > 1 and sourceTypeHasSelf(form.body[1]): return true
   if form.body.len > 3 and sourceTypeHasSelf(form.body[3]): return true
   form.props.hasKey("errors") and sourceTypeHasSelf(form.props["errors"])
+
+proc signatureUsesSelf(analysis: WebAnalysis, form: Value): bool =
+  if messageSignatureHasSelf(form): return true
+  if form.body.len > 1 and form.body[1].kind == vkList:
+    let params = form.body[1].listItems
+    for i in 1 ..< params.len:
+      if params[i - 1].isSym(":") and
+          webTypeHasSelf(analysis.parseAbstractAnnotation(params[i], analysis.locFor(form))):
+        return true
+  if form.body.len > 3 and form.body[2].isSym(":") and
+      webTypeHasSelf(analysis.parseAbstractAnnotation(form.body[3], analysis.locFor(form))):
+    return true
+  if form.props.hasKey("errors") and form.props["errors"].kind == vkList:
+    for item in form.props["errors"].listItems:
+      if webTypeHasSelf(analysis.parseAbstractAnnotation(item, analysis.locFor(form))): return true
+  false
 
 proc webOverrideFlag(form: Value, loc: SourceLoc): bool =
   if not form.props.hasKey("override"): return false
@@ -1110,8 +1197,8 @@ proc webSignatureValue(analysis: WebAnalysis, params: seq[WebParam],
     else:
       proto.params.add param.sourceName
       proto.paramTypes.add typ
-      proto.paramDefaults.add ParamDefault(optional: param.hasDefault)
-      if not param.hasDefault: inc proto.requiredPositional
+      proto.paramDefaults.add ParamDefault(optional: param.optional)
+      if not param.optional: inc proto.requiredPositional
   var errors: seq[Value]
   let checked = source.kind == vkNode and source.props.hasKey("errors")
   if checked:
@@ -1170,7 +1257,8 @@ proc typeAllowsNil(typ: WebType): bool =
       if typeAllowsNil(member): return true
 
 proc parseParams(analysis: WebAnalysis, value: Value,
-                 fnLoc: SourceLoc, allowNamed = false): seq[WebParam] =
+                 fnLoc: SourceLoc, allowNamed = false, abstractSelf = false,
+                 declarationDefaults = true): seq[WebParam] =
   ## Positional parameters, and — where `allowNamed` — the `^name : T` form.
   ##
   ## The reader keeps a vector flat, so `^name` arrives as the symbol `^`
@@ -1188,7 +1276,7 @@ proc parseParams(analysis: WebAnalysis, value: Value,
   let loc = analysis.locFor(value, fnLoc)
   let items = value.listItems
   var i = 0
-  var sawNamed = false
+  var sawOptional = false
   while i < items.len:
     if items[i].isSym(","):
       inc i
@@ -1199,20 +1287,12 @@ proc parseParams(analysis: WebAnalysis, value: Value,
         raise webError(loc, "named parameters are available on web module " &
           "functions only; this declaration takes positional parameters")
       named = true
-      sawNamed = true
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise webError(loc, "named web parameter requires a name")
     let name = items[i]
     if name.kind != vkSymbol:
       raise webError(loc, "web parameters must be simple named bindings")
-    if not named and sawNamed:
-      # The VM admits either order; the profile does not, because a positional
-      # argument's slot is its position among the positional parameters and
-      # allowing them to interleave makes that ordering something a reader has
-      # to reconstruct rather than read.
-      raise webError(loc, "web positional parameter '" & name.symVal &
-        "' cannot follow a named parameter")
     var local = name.symVal
     var j = i + 1
     if named and j < items.len and items[j].kind == vkSymbol and
@@ -1226,21 +1306,26 @@ proc parseParams(analysis: WebAnalysis, value: Value,
         "exported web parameter '" & name.symVal & "' requires an annotation")
     if items[j + 1].isSym("="):
       raise webError(loc, "web parameter '" & name.symVal &
-        "' cannot have a default; annotate it `: T?` to make it optional")
-    let typ = analysis.parseAnnotation(items[j + 1], loc)
+        "' requires a type annotation before its default")
+    let typ = if abstractSelf: analysis.parseAbstractAnnotation(items[j + 1], loc)
+              else: analysis.parseAnnotation(items[j + 1], loc)
     let hasDefault = j + 2 < items.len and items[j + 2].isSym("=")
     var defaultSource = NIL
     if hasDefault:
-      if not named:
-        raise webError(loc, "web positional parameter '" & name.symVal &
-          "' cannot have a default; defaults are supported on named parameters")
+      if not declarationDefaults:
+        raise webError(loc, "js/fn parameters cannot declare Gene defaults")
       if j + 3 >= items.len or items[j + 3].isSym(","):
         raise webError(loc, "web parameter default requires a value")
       defaultSource = items[j + 3]
+    let optional = (declarationDefaults and typeAllowsNil(typ)) or hasDefault
+    if not named:
+      if not optional and sawOptional:
+        raise webError(loc, "required positional parameter cannot follow an optional positional parameter")
+      sawOptional = sawOptional or optional
     result.add WebParam(sourceName: local,
                         emittedName: mangleWebName(local), typ: typ,
                         loc: loc, named: named,
-                        optional: named and (typeAllowsNil(typ) or hasDefault),
+                        optional: optional,
                         argName: name.symVal, hasDefault: hasDefault,
                         defaultSource: defaultSource)
     i = j + (if hasDefault: 4 else: 2)
@@ -1307,7 +1392,7 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
                        emittedName: mangleWebName(form.body[0].symVal),
                        params: parseParams(analysis, form.body[1], loc,
                                            allowNamed = true),
-                       returnType: parseWebType(form.body[3], loc), loc: loc)
+                       returnType: analysis.parseAnnotation(form.body[3], loc), loc: loc)
   # `async` is not a syntactic property of one body — see `resolveAsync`.
   result.generator = containsForm(form, "yield")
 
@@ -1397,8 +1482,10 @@ proc parseWebExtern(analysis: WebAnalysis, form: Value,
     result.importName = form.props["import"].strVal
   if not isJsImportName(result.importName):
     raise webError(loc, "js/fn ^import must be a JavaScript identifier")
-  result.params = parseParams(analysis, form.body[1], loc)
-  result.returnType = parseWebType(form.body[3], loc)
+  # Foreign signatures describe the host's fixed call shape, with no Gene
+  # body/binder in which to evaluate a default.
+  result.params = parseParams(analysis, form.body[1], loc, declarationDefaults = false)
+  result.returnType = analysis.parseAnnotation(form.body[3], loc)
   result.loc = loc
 
 proc validateWebMessageName(name: string, loc: SourceLoc) =
@@ -1482,7 +1569,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       raise webError(loc, "web type member '" & member.head.symVal &
         "' is unsupported")
 
-proc parseWebEnumDecl(form: Value, loc: SourceLoc): WebEnumDecl =
+proc parseWebEnumDecl(analysis: WebAnalysis, form: Value, loc: SourceLoc): WebEnumDecl =
   if form.body.len < 2 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web enum requires a name and variants")
   rejectUnknownProps(form, loc, "enum", [])
@@ -1504,7 +1591,7 @@ proc parseWebEnumDecl(form: Value, loc: SourceLoc): WebEnumDecl =
         "enum variant " & variant.head.symVal, [])
       var payload: seq[WebType]
       for annotation in variant.body:
-        payload.add parseWebType(annotation, loc)
+        payload.add analysis.parseAnnotation(annotation, loc)
       result.variants.add WebEnumVariant(sourceName: variant.head.symVal,
         emittedName: mangleWebName(variant.head.symVal), payload: payload)
     else:
@@ -1524,14 +1611,9 @@ proc parseProtocolParams(analysis: WebAnalysis, value: Value,
       if not items[2].isSym("Self"):
         raise webError(loc, "web explicit receiver annotation must be Self")
       i = 3
-  while i < items.len:
-    if items[i].kind != vkSymbol or i + 2 >= items.len or
-        not items[i + 1].isSym(":"):
-      raise webError(loc, "web protocol parameters require annotations")
-    result.add WebParam(sourceName: items[i].symVal,
-      emittedName: mangleWebName(items[i].symVal),
-      typ: parseWebType(items[i + 2], loc), loc: loc)
-    inc i, 3
+  result = parseParams(analysis, newList(items[i .. ^1]), loc, abstractSelf = true)
+
+proc bodyAnnotationsHaveSelf(analysis: WebAnalysis, form: Value, quoteDepth = 0): bool
 
 proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
                           loc: SourceLoc): WebProtocolDecl =
@@ -1567,12 +1649,13 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
     result.messages.add WebProtocolMessage(sourceName: name,
       symbolName: "$" & result.emittedName & "$" & mangleWebName(name),
       params: parseProtocolParams(analysis, member.body[1], loc),
-      returnType: parseWebType(member.body[3], loc), loc: loc,
+      returnType: analysis.parseAbstractAnnotation(member.body[3], loc), loc: loc,
       identity: result.identity & "\x1f" & name,
       ownerIdentity: result.identity, ownerName: result.sourceName, sourceForm: member,
       defaultFactory: (if member.body.len > 4:
         "$" & result.emittedName & "$" & mangleWebName(name) & "$default" else: ""),
-      universalDefault: result.universal and member.body.len > 4)
+      universalDefault: result.universal and member.body.len > 4,
+      selfDependent: analysis.bodyAnnotationsHaveSelf(member))
   result.ownMessages = result.messages
 
 proc findProtocolMessage(declaration: WebProtocolDecl,
@@ -1636,7 +1719,7 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
     result.methods.add WebImplMethod(protocolName: result.protocolName,
       targetName: result.targetName, message: messageDecl,
       params: parseProtocolParams(analysis, member.body[1], loc),
-      returnType: parseWebType(member.body[3], loc), loc: loc,
+      returnType: analysis.parseAbstractAnnotation(member.body[3], loc), loc: loc,
       sourceForm: member)
   result.localMethods = result.methods
 
@@ -1650,20 +1733,37 @@ proc protocolIdentities(protocol: WebProtocolDecl): seq[WebProtocolDecl] =
     result.add current
     pending.add current.parents
 
-proc bodyAnnotationsHaveSelf(form: Value): bool =
+proc bodyAnnotationsHaveSelf(analysis: WebAnalysis, form: Value, quoteDepth = 0): bool =
+  if form.kind == vkList:
+    for child in form.listItems:
+      if analysis.bodyAnnotationsHaveSelf(child, quoteDepth): return true
+    return false
+  if form.kind == vkMap:
+    for _, child in form.mapEntries:
+      if analysis.bodyAnnotationsHaveSelf(child, quoteDepth): return true
+    return false
   if form.kind != vkNode: return false
-  if form.head.isSym("type"): return false # introduces a new concrete context
-  if form.head.isSym("message") and messageSignatureHasSelf(form): return true
-  if form.head.isSym("fn"):
-    for i, part in form.body:
-      if part.kind == vkList and sourceTypeHasSelf(part): return true
-      if part.isSym(":") and i + 1 < form.body.len and sourceTypeHasSelf(form.body[i + 1]):
-        return true
-  if form.head.kind == vkSymbol and form.head.symVal in ["let", "var", "const"] and
-      form.body.len > 2 and form.body[1].isSym(":") and sourceTypeHasSelf(form.body[2]):
-    return true
+  if form.head.isSym("quote"): return false
+  var nestedDepth = quoteDepth
+  if form.head.isSym("quasiquote"): inc nestedDepth
+  elif form.head.isSym("unquote") and quoteDepth > 0: dec nestedDepth
+  if quoteDepth == 0 and not form.head.isSym("quasiquote"):
+    if form.head.isSym("type"): return false
+    if form.head.isSym("message") and analysis.signatureUsesSelf(form): return true
+    if form.head.isSym("fn"):
+      for i, part in form.body:
+        if part.kind == vkList:
+          for j in 1 ..< part.listItems.len:
+            if part.listItems[j - 1].isSym(":") and webTypeHasSelf(
+                analysis.parseAbstractAnnotation(part.listItems[j], analysis.locFor(form))): return true
+        if part.isSym(":") and i + 1 < form.body.len and webTypeHasSelf(
+            analysis.parseAbstractAnnotation(form.body[i + 1], analysis.locFor(form))): return true
+    if form.head.kind == vkSymbol and form.head.symVal in ["let", "var", "const"] and
+        form.body.len > 2 and form.body[1].isSym(":") and webTypeHasSelf(
+          analysis.parseAbstractAnnotation(form.body[2], analysis.locFor(form))): return true
   for child in form.body:
-    if bodyAnnotationsHaveSelf(child): return true
+    if analysis.bodyAnnotationsHaveSelf(child, nestedDepth): return true
+  false
 
 proc resolveWebProtocols(analysis: WebAnalysis) =
   var states = initTable[string, int]()
@@ -1708,7 +1808,7 @@ proc resolveWebProtocols(analysis: WebAnalysis) =
       for message in closure:
         if message.sourceForm.kind != vkNode or message.sourceForm.body.len <= 4:
           raise webError(protocol.loc, "universal protocol messages require defaults")
-        if bodyAnnotationsHaveSelf(message.sourceForm):
+        if (message.selfDependent or analysis.bodyAnnotationsHaveSelf(message.sourceForm)):
           raise webError(protocol.loc, "universal protocol cannot depend on abstract Self")
     states[protocol.identity] = 2
     protocol.resolvedClosure = true
@@ -1799,7 +1899,7 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
       for local in impl.localMethods:
         if local.message.identity == message.identity:
           if selected != nil: raise webError(impl.loc, "duplicate impl message " & message.sourceName)
-          if ancestor != nil and messageSignatureHasSelf(local.sourceForm):
+          if ancestor != nil and analysis.signatureUsesSelf(local.sourceForm):
             raise webError(local.loc, "Self is forbidden in a replacement signature")
           local.params = bindWebParams(local.params, receiver)
           local.returnType = bindWebSelf(local.returnType, receiver)
@@ -1845,17 +1945,29 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
   for impl in analysis.implementations: assemble(impl)
 
 proc findField(analysis: WebAnalysis, typ: WebType,
-               name: string): WebType =
+               name: string, lookup = true): WebType =
   if typ == nil or typ.kind != wtkNominal or
       not analysis.typeDecls.hasKey(typ.name):
     return nil
   var declaration = analysis.typeDecls[typ.name]
   while declaration != nil:
     for field in declaration.fields:
-      if field.sourceName == name: return field.typ
+      if field.sourceName == name:
+        return (if lookup and field.optional: unionType(field.typ, webType(wtkVoid)) else: field.typ)
     if declaration.parentName.len == 0 or
         not analysis.typeDecls.hasKey(declaration.parentName): break
     declaration = analysis.typeDecls[declaration.parentName]
+
+proc pathFieldType(analysis: WebAnalysis, typ: WebType, key: string): WebType =
+  if typ.kind in {wtkNil, wtkVoid}: return webType(wtkVoid)
+  if typ.kind == wtkUnion:
+    var results: seq[WebType]
+    for member in typ.members:
+      let found = analysis.pathFieldType(member, key)
+      if found == nil: return nil
+      results.add found
+    return unionType(results)
+  analysis.findField(typ, key)
 
 proc analysisFields(analysis: WebAnalysis,
                     declaration: WebTypeDecl): seq[WebField] =
@@ -1910,7 +2022,7 @@ proc validateDirectWebMethods(analysis: WebAnalysis, declarations: seq[WebTypeDe
           (if inherited == nil: " declares ^override but has no inherited target"
            else: " requires ^override true"))
       if inherited != nil:
-        if messageSignatureHasSelf(methodDecl.sourceForm):
+        if analysis.signatureUsesSelf(methodDecl.sourceForm):
           raise webError(methodDecl.loc, "Self is forbidden in a replacement signature")
         analysis.validateWebSignature(inherited.params, methodDecl.params,
           inherited.returnType, methodDecl.returnType, inherited.sourceForm,
@@ -1949,6 +2061,22 @@ proc implFunctionName(protocolName, targetName, messageName: string): string =
 proc analyzeExpr(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding],
                  expected: WebType = nil): WebExpr
+
+proc analyzeParameterBindings(analysis: WebAnalysis, params: var seq[WebParam],
+                               bindings: var Table[string, WebBinding],
+                               allowAsync = false) =
+  var seen = initHashSet[string]()
+  for i, param in params:
+    if param.sourceName in seen:
+      raise webError(param.loc, "duplicate web parameter: " & param.sourceName)
+    seen.incl param.sourceName
+    if param.hasDefault:
+      if containsDefaultControl(param.defaultSource):
+        raise webError(param.loc, "web parameter defaults must produce a value, without non-local control flow")
+      params[i].defaultExpr = analysis.analyzeExpr(param.defaultSource, bindings, param.typ)
+      if not allowAsync:
+        analysis.synchronousDefaults.add params[i].defaultExpr
+    bindings[param.sourceName] = WebBinding(typ: param.typ)
 
 proc usesAsyncPrimitive(expr: WebExpr): bool
 
@@ -2024,10 +2152,13 @@ proc bindPattern(analysis: WebAnalysis, pattern: Value, targetType: WebType,
       bindPattern(analysis, item, itemType, bindings, mutable)
     for key, item in pattern.props:
       var fieldType = webType(wtkAny)
-      if pattern.head.kind == vkSymbol and
+      # A symbolic head also matches raw Gene nodes. Only a validated nominal
+      # receiver justifies using its schema for the extracted present value.
+      if targetType != nil and targetType.kind == wtkNominal and
+          pattern.head.kind == vkSymbol and
           analysis.typeDecls.hasKey(pattern.head.symVal):
         let resolved = analysis.findField(
-          WebType(kind: wtkNominal, name: pattern.head.symVal), key)
+          WebType(kind: wtkNominal, name: pattern.head.symVal), key, lookup = false)
         if resolved != nil: fieldType = resolved
       bindPattern(analysis, item, fieldType, bindings, mutable)
   else:
@@ -2199,9 +2330,14 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       for param in signature.namedParams:
         if not param.named: inc n
       n
-  if value.body.len != positionalCount:
+  var required = positionalCount
+  if signature.namedParams.len > 0:
+    required = 0
+    for param in signature.namedParams:
+      if not param.named and not param.optional: inc required
+  if value.body.len < required or value.body.len > positionalCount:
     raise webError(loc, "web call '" & sourceName & "' expects " &
-      $positionalCount & " positional argument(s)")
+      $required & ".." & $positionalCount & " positional argument(s)")
   # **Props on a call used to be dropped silently.** `(add 1.0 2.0 ^oops 9.0)`
   # compiled and threw `^oops` away, while the same source on the VM raised
   # "got unexpected named argument" — a divergence of exactly the class §D3.1
@@ -2241,6 +2377,9 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
   var positional = 0
   for index, param in signature.namedParams:
     if not param.named:
+      if positional >= value.body.len:
+        result.children.add WebExpr(kind: wekMissing, typ: webType(wtkVoid), loc: loc)
+        continue
       let analyzed = analysis.analyzeExpr(value.body[positional], bindings,
                                           param.typ)
       requireType(analysis, loc, analyzed.typ, param.typ,
@@ -2367,6 +2506,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
+    if protocolMessage == nil and messageName in ["map", "filter_map", "filter"] and
+        receiver.typ.kind in {wtkList, wtkStream, wtkMap, wtkPropMap}:
+      return analysis.analyzeCall(newNode(newNode(newSym("path"),
+        body = @[newSym("gene"), newSym(messageName)]),
+        body = @[value.head] & value.body[2 .. ^1]), bindings, expected)
     if protocolMessage == nil and messageName == "to_stream" and
         receiver.typ.kind in {wtkList, wtkStream}:
       if value.body.len != 2 or value.props.len != 0:
@@ -2380,7 +2524,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if protocolMessage != nil:
       protocolMessage = analysis.concreteWebMessage(receiver.typ, protocolMessage)
       if isSuper:
-        if value.body.len - 2 != protocolMessage.params.len:
+        if not acceptsWebArity(protocolMessage.params, value.body.len - 2):
           raise webError(loc, "web protocol message " & messageName &
             " expects " & $protocolMessage.params.len & " argument(s)")
         let qualifier = value.body[1].body[0]
@@ -2406,7 +2550,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           result.children.add analysis.analyzeExpr(value.body[i], bindings,
             protocolMessage.params[i - 2].typ)
         return
-      if value.body.len - 2 != protocolMessage.params.len:
+      if not acceptsWebArity(protocolMessage.params, value.body.len - 2):
         raise webError(loc, "web protocol message " & messageName &
           " expects " & $protocolMessage.params.len & " argument(s)")
       result = WebExpr(kind: wekSend, typ: protocolMessage.returnType, loc: loc,
@@ -2523,7 +2667,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if methodDecl == nil:
       raise webError(loc, "web type " & typeName(receiver.typ) &
         " has no message " & messageName)
-    if value.body.len - 2 != methodDecl.params.len:
+    if not acceptsWebArity(methodDecl.params, value.body.len - 2):
       raise webError(loc, "web message " & messageName & " expects " &
         $methodDecl.params.len & " argument(s)")
     result = WebExpr(kind: wekSend, typ: methodDecl.returnType, loc: loc,
@@ -3133,23 +3277,27 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "web to_stream expects a List or Stream")
         return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, input.typ.item),
           loc: loc, text: builtin, children: @[input])
-      of "map", "filter":
+      of "map", "filter_map", "filter":
         if value.body.len != 2:
-          raise webError(loc, "web " & builtin & " expects stream and callback")
+          raise webError(loc, "web " & builtin & " expects a collection and callback")
         let input = analysis.analyzeExpr(value.body[0], bindings)
-        if input.typ.kind != wtkStream:
-          raise webError(loc, "web " & builtin & " expects a Stream")
+        if input.typ.kind notin {wtkStream, wtkList, wtkPropMap, wtkMap}:
+          raise webError(loc, "web " & builtin & " expects a List, Map, PropMap, or Stream")
+        let inputItem = case input.typ.kind
+          of wtkList, wtkStream: input.typ.item
+          of wtkMap: input.typ.params[1]
+          else: webType(wtkAny)
         let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
-          params: @[input.typ.item],
-          returnType: if builtin == "filter": webType(wtkBool)
-                      elif expected != nil and expected.kind == wtkList:
-                        expected.item
-                      else: webType(wtkAny))
-        let callback = analysis.analyzeExpr(value.body[1], bindings,
-                                             callbackExpected)
-        let itemType = if builtin == "filter": input.typ.item
-                       else: withoutVoid(callback.typ.returnType)
-        return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, itemType),
+          params: @[inputItem], returnType: webType(wtkAny))
+        let callback = analysis.analyzeExpr(value.body[1], bindings, callbackExpected)
+        let itemType = if builtin == "filter": inputItem
+                       elif builtin == "filter_map": withoutVoid(callback.typ.returnType)
+                       else: normalizeMapResult(callback.typ.returnType)
+        let resultType = case input.typ.kind
+          of wtkMap: WebType(kind: wtkMap, params: @[input.typ.params[0], itemType])
+          of wtkPropMap: webType(wtkPropMap)
+          else: webType(input.typ.kind, itemType)
+        return WebExpr(kind: wekBuiltin, typ: resultType,
           loc: loc, text: builtin, children: @[input, callback])
       of "each":
         if value.body.len != 2:
@@ -3295,7 +3443,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       findProtocolMessage(protocol, value.body[1].symVal))
     var callbackType = WebType(kind: wtkCallback, name: "message",
       params: @[webType(wtkAny)], returnType: messageDecl.returnType)
-    for param in messageDecl.params: callbackType.params.add param.typ
+    callbackType.optionalParams = @[false]
+    for param in messageDecl.params:
+      callbackType.params.add param.typ
+      callbackType.optionalParams.add param.optional
     if expected != nil and expected.kind == wtkCallback and
         expected.name == "callable context" and
         expected.params.len == callbackType.params.len and
@@ -3370,8 +3521,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if qualified and analysis.signatures.hasKey(qualifiedName):
       let signature = analysis.signatures[qualifiedName]
       return WebExpr(kind: wekBinding,
-        typ: WebType(kind: wtkCallback, params: signature.params,
-          returnType: signature.returnType),
+        typ: callbackType(signature),
         loc: loc, text: signature.valueName)
     if value.body.len == 2 and value.body[0].kind == vkSymbol and
         value.body[1].kind == vkSymbol and
@@ -3402,15 +3552,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       result.typ = baseType.item
     elif baseType.kind == wtkNominal and baseType.name == "Call":
       result.typ = if expected != nil: expected else: webType(wtkAny)
-    elif baseType.kind == wtkNominal and result.keys.len == 1:
+    elif baseType.kind in {wtkNominal, wtkUnion} and result.keys.len == 1:
       if result.keys[0].len > 0 and
           result.keys[0].allCharsInSet({'0'..'9'}):
         result.typ = analysis.findBodyType(baseType, parseInt(result.keys[0]))
       else:
-        result.typ = analysis.findField(baseType, result.keys[0])
+        result.typ = analysis.pathFieldType(baseType, result.keys[0])
       if result.typ == nil:
-        raise webError(loc, "web type " & baseType.name & " has no field " &
+        raise webError(loc, "web type " & typeName(baseType) & " has no field " &
           result.keys[0])
+    elif baseType.kind == wtkNominal and result.keys.len > 1:
+      var current = baseType
+      for key in result.keys:
+        if key.len == 0: current = webType(wtkAny)
+        else:
+          let found = analysis.pathFieldType(current, key)
+          current = if found == nil: webType(wtkAny) else: found
+      result.typ = current
     elif expected != nil:
       result.typ = expected
     else:
@@ -3450,7 +3608,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if constructor == nil:
       raise webError(loc, "web type " & declaration.sourceName &
         " has no constructor")
-    if value.body.len - 1 != constructor.params.len:
+    if not acceptsWebArity(constructor.params, value.body.len - 1):
       raise webError(loc, "web constructor " & declaration.sourceName &
         " expects " & $constructor.params.len & " argument(s)")
     result = WebExpr(kind: wekNew,
@@ -3572,7 +3730,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       raise webError(loc,
         "web callback cannot be a generator: name it and use (fn name ...)")
     analysis.validateCallableProps(value, loc, "callback")
-    let params =
+    var params =
       if inferred: inferredParams(analysis, value.body[0], expected, loc)
       else: parseParams(analysis, value.body[0], loc)
     let returnType =
@@ -3582,15 +3740,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     # Copied, not shared: the body may shadow and rebind freely, and those
     # bindings must not escape into the enclosing scope.
     var inner = copyBindings(bindings)
-    var seen = initHashSet[string]()
-    for param in params:
-      if param.sourceName in seen:
-        raise webError(param.loc,
-          "duplicate web callback parameter: " & param.sourceName)
-      seen.incl param.sourceName
-      # A parameter shadowing an enclosing binding is ordinary lexical scoping,
-      # and JS gives the arrow function the same rule.
-      inner[param.sourceName] = WebBinding(typ: param.typ)
+    analysis.analyzeParameterBindings(params, inner)
     let savedReturn = analysis.currentReturn
     analysis.currentReturn = returnType
     var bodyForms: seq[Value]
@@ -3608,14 +3758,19 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       raise webError(loc,
         "web callback cannot await: Callback types carry no asyncness")
     var callbackType = webType(wtkCallback)
-    for param in params: callbackType.params.add param.typ
+    for param in params:
+      callbackType.params.add param.typ
+      callbackType.optionalParams.add param.optional
     callbackType.returnType =
       if inferred and returnType.kind == wtkAny and
           not containsForm(value, "return"):
         body.typ
       else: returnType
+    var children = @[body]
+    for param in params:
+      if param.defaultExpr != nil: children.add param.defaultExpr
     return WebExpr(kind: wekLambda, typ: callbackType, loc: loc,
-                   params: params, children: @[body])
+                   params: params, children: children)
   if name == "do":
     return analysis.analyzeSequence(value.body, bindings, expected, loc)
   if name in ["let", "var"]:
@@ -3958,6 +4113,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       else: left.typ
     return WebExpr(kind: wekBinary, typ: resultType, loc: loc, text: name,
                    children: @[left, right])
+  if analysis.aliases.hasKey(name):
+    raise webError(loc, "type alias '" & name & "' is not constructible")
   if analysis.typeDecls.hasKey(name):
     let declaration = analysis.typeDecls[name]
     result = WebExpr(kind: wekNew,
@@ -3965,7 +4122,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       text: declaration.emittedName, immutable: value.nodeImmutable)
     var seen = initHashSet[string]()
     for key, fieldValue in value.props:
-      let fieldType = analysis.findField(result.typ, key)
+      var fieldType: WebType
+      for field in analysis.analysisFields(declaration):
+        if field.sourceName == key: fieldType = field.typ
       if fieldType == nil:
         raise webError(loc, "unknown field ^" & key & " for web type " & name)
       seen.incl key
@@ -3999,6 +4158,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     signature = WebFunctionSig(params: bindings[name].typ.params,
       returnType: bindings[name].typ.returnType,
       callName: mangleWebName(name), valueName: mangleWebName(name))
+    if bindings[name].typ.optionalParams.anyIt(it):
+      for i, typ in bindings[name].typ.params:
+        signature.namedParams.add WebParam(typ: typ, optional: bindings[name].typ.optionalParams[i])
   else:
     raise webError(loc, "call to unknown or unsupported web function: " & name)
   result = analysis.analyzeKnownCall(value, bindings, expected, resolvedName,
@@ -4091,6 +4253,12 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
     result = WebExpr(kind: wekInt, typ: webType(wtkInt), loc: loc,
                      text: value.intToString)
   of vkSymbol:
+    if '/' in value.symVal and not bindings.hasKey(value.symVal):
+      let parts = value.symVal.split('/')
+      if parts.len > 1 and bindings.hasKey(parts[0]):
+        return analysis.analyzeExpr(newNode(newSym("path"), body = parts.mapIt(newSym(it))),
+                                    bindings, expected)
+
     if bindings.hasKey(value.symVal):
       result = WebExpr(kind: wekBinding, typ: bindings[value.symVal].typ, loc: loc,
                        text: mangleWebName(value.symVal))
@@ -4101,7 +4269,7 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       # which is precisely the call the VM refuses ("expects 0..0 argument(s),
       # got 1"). Reaching the callee by name is the only way to supply a named
       # argument, so a reference that leaves the name behind is rejected here.
-      if signature.namedParams.len > 0 and
+      if signature.namedParams.anyIt(it.named and not it.optional) and
           (expected == nil or expected.kind != wtkCallable):
         raise webError(loc, "web function '" & value.symVal &
           "' declares named parameters and cannot be used as a value; " &
@@ -4113,8 +4281,7 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       analysis.functionValueRefs.add WebFunctionValueRef(name: value.symVal,
                                                          loc: loc)
       result = WebExpr(kind: wekBinding,
-        typ: WebType(kind: wtkCallback, params: signature.params,
-                     returnType: signature.returnType),
+        typ: callbackType(signature),
         loc: loc, text: signature.valueName)
     elif analysis.constants.hasKey(value.symVal):
       let constant = analysis.constants[value.symVal]
@@ -4226,6 +4393,13 @@ proc usesAsyncPrimitive(expr: WebExpr): bool =
     if usesAsyncPrimitive(child): return true
 
 proc checkFunctionValueRefs(analysis: WebAnalysis) =
+  # Forward callees' asyncness is settled now. Defaults run inside the same
+  # synchronous callable as its body and cannot introduce an implicit await.
+  for defaultExpr in analysis.synchronousDefaults:
+    if awaitsAtRuntime(defaultExpr):
+      raise webError(defaultExpr.loc,
+        "web async parameter defaults are limited to top-level functions")
+  analysis.synchronousDefaults.setLen(0)
   for reference in analysis.functionValueRefs:
     if analysis.signatures.hasKey(reference.name) and
         analysis.signatures[reference.name].async:
@@ -4300,13 +4474,14 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
                                macroExports: var Table[string, MacroDef],
                                embedded = false,
     importedConstants: Table[string, WebConstant] =
-      initTable[string, WebConstant]()): WebModule =
+      initTable[string, WebConstant](),
+    importedAliases: Table[string, WebType] = initTable[string, WebType]()): WebModule =
   let frontEnd = expandSourceUnitMacros(unit, importedMacros)
   macroExports = frontEnd.macroExports
   var analysis = WebAnalysis(
     unit: frontEnd.expanded,
     signatures: imported,
-    constants: importedConstants,
+    constants: importedConstants, aliases: importedAliases,
     typeDecls: importedTypes,
     enumDecls: importedEnums,
     protocolDecls: importedProtocols,
@@ -4346,6 +4521,21 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   # initialization order for.
   for name, constant in importedConstants:
     result.constants.add constant
+  var aliasNames: seq[string]
+  for i in 1 ..< analysis.unit.forms.len:
+    let form = analysis.unit.forms[i]
+    if form.kind == vkNode and form.head.isSym("alias"):
+      let loc = analysis.locFor(form, analysis.unit.formLocs[i])
+      if form.body.len != 2 or form.body[0].kind != vkSymbol:
+        raise webError(loc, "alias requires a name and one type expression")
+      rejectUnknownProps(form, loc, "alias", [])
+      let name = form.body[0].symVal
+      if name == "Self" or analysis.aliases.hasKey(name) or analysis.typeDecls.hasKey(name):
+        raise webError(loc, "duplicate or reserved type alias: " & name)
+      analysis.aliases[name] = parseWebType(form.body[1], loc)
+      aliasNames.add name
+  for name in aliasNames:
+    result.aliases[name] = analysis.aliases[name]
   # Declaration names and schemas are collected before executable bodies so
   # annotations, construction, recursion, and sends resolve independent of
   # source order.
@@ -4360,7 +4550,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.typeDecls[declaration.sourceName] = declaration
       result.types.add declaration
     elif form.head.symVal == "enum":
-      let declaration = parseWebEnumDecl(form, loc)
+      let declaration = parseWebEnumDecl(analysis, form, loc)
       if analysis.enumDecls.hasKey(declaration.sourceName):
         raise webError(loc, "duplicate web enum: " & declaration.sourceName)
       analysis.enumDecls[declaration.sourceName] = declaration
@@ -4426,7 +4616,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if body.len == 4:
       if not body[1].isSym(":"):
         raise webError(loc, "web " & keyword & " type annotation requires ':'")
-      declared = parseWebType(body[2], loc)
+      declared = analysis.parseAnnotation(body[2], loc)
       valueIndex = 3
     var empty = initTable[string, WebBinding]()
     let value = analysis.analyzeExpr(body[valueIndex], empty, declared)
@@ -4466,7 +4656,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     var anyNamed = false
     for param in fn.params:
       paramTypes.add param.typ
-      if param.named: anyNamed = true
+      if param.named or param.optional: anyNamed = true
     analysis.signatures[fn.sourceName] = WebFunctionSig(
       params: paramTypes,
       namedParams: (if anyNamed: fn.params else: @[]),
@@ -4542,13 +4732,19 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
           if not macros.hasKey(selection.sourceName):
             runtimeSelections.add selection
         webImport.selections = runtimeSelections
+      var runtimeSelections: seq[WebImportSelection]
+      for selection in webImport.selections:
+        if importedAliases.hasKey(selection.localName):
+          if webImport.reexport: result.aliases[selection.localName] = importedAliases[selection.localName]
+        else: runtimeSelections.add selection
+      webImport.selections = runtimeSelections
       if webImport.selections.len > 0:
         result.imports.add webImport
       continue
     if form.head.symVal == "fn!":
       raise webError(loc,
         "fn! was removed; define a named fexpr with (fn name! ...)")
-    if form.head.symVal in ["type", "enum", "protocol", "impl"]:
+    if form.head.symVal in ["type", "enum", "protocol", "impl", "alias"]:
       continue
     case form.head.symVal
     of "derive":
@@ -4578,16 +4774,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     analysis.currentReturn = header.fn.returnType
     analysis.currentNamespace = header.fn.namespacePath
     analysis.currentFunction = header.fn.sourceName
-    for i, param in header.fn.params:
-      if bindings.hasKey(param.sourceName):
-        raise webError(param.loc, "duplicate web parameter: " & param.sourceName)
-      if param.hasDefault:
-        if containsDefaultControl(param.defaultSource):
-          raise webError(param.loc,
-            "web parameter defaults must produce a value, without non-local control flow")
-        header.fn.params[i].defaultExpr =
-          analysis.analyzeExpr(param.defaultSource, bindings, param.typ)
-      bindings[param.sourceName] = WebBinding(typ: param.typ)
+    analysis.analyzeParameterBindings(header.fn.params, bindings, allowAsync = true)
     if header.fn.generator:
       if header.fn.returnType.kind != wtkStream:
         raise webError(header.fn.loc,
@@ -4624,11 +4811,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   for declaration in result.types:
     let selfType = WebType(kind: wtkNominal, name: declaration.sourceName)
     analysis.annotationSelf = selfType
+    analysis.currentTypeName = declaration.sourceName
     for methodDecl in declaration.methods:
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
-      for param in methodDecl.params:
-        bindings[param.sourceName] = WebBinding(typ: param.typ)
+      analysis.analyzeParameterBindings(methodDecl.params, bindings)
       var forms: seq[Value]
       for i in 4 ..< methodDecl.sourceForm.body.len:
         forms.add methodDecl.sourceForm.body[i]
@@ -4648,8 +4835,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if declaration.constructor != nil:
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
-      for param in declaration.constructor.params:
-        bindings[param.sourceName] = WebBinding(typ: param.typ)
+      analysis.analyzeParameterBindings(declaration.constructor.params, bindings)
       var forms: seq[Value]
       for i in 1 ..< declaration.constructor.sourceForm.body.len:
         forms.add declaration.constructor.sourceForm.body[i]
@@ -4674,7 +4860,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.inProtocolDefault = true
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
-      for param in fn.params: bindings[param.sourceName] = WebBinding(typ: param.typ)
+      analysis.analyzeParameterBindings(fn.params, bindings)
       var forms: seq[Value]
       for i in 4 ..< message.sourceForm.body.len: forms.add message.sourceForm.body[i]
       fn.body = analysis.analyzeSequence(forms, bindings, nil, message.loc)
@@ -4690,11 +4876,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     for implMethod in implementation.methods:
       if implMethod.inheritedTargetName.len > 0 or implMethod.defaultBody: continue
       analysis.annotationSelf = implMethod.annotationSelf
+      analysis.currentTypeName = implementation.targetName
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ:
         (if implMethod.defaultBody: implMethod.annotationSelf else: selfType))
-      for param in implMethod.params:
-        bindings[param.sourceName] = WebBinding(typ: param.typ)
+      analysis.analyzeParameterBindings(implMethod.params, bindings)
       var forms: seq[Value]
       for i in 4 ..< implMethod.sourceForm.body.len:
         forms.add implMethod.sourceForm.body[i]
@@ -4718,6 +4904,10 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   analysis.currentReturn = nil
   analysis.currentTypeName = ""
   analysis.annotationSelf = nil
+  # Gene exports retain raw alias templates for use-site expansion. TypeScript
+  # needs the local expansion so erased alias imports do not leave free names.
+  for name, target in result.aliases:
+    result.emittedAliases[name] = analysis.expandWebAliases(target)
 
 proc analyzeWebModuleWithImports(source, sourcePath: string,
                                  imported: Table[string, WebFunctionSig],
@@ -4728,10 +4918,11 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
                                    Table[string, MacroDef]],
                                  macroExports: var Table[string, MacroDef],
     importedConstants: Table[string, WebConstant] =
-      initTable[string, WebConstant]()): WebModule =
+      initTable[string, WebConstant](),
+    importedAliases: Table[string, WebType] = initTable[string, WebType]()): WebModule =
   analyzeWebUnitWithImports(readAllWithLocs(source, sourcePath), sourcePath,
     imported, importedTypes, importedEnums, importedProtocols, importedMacros,
-    macroExports, importedConstants = importedConstants)
+    macroExports, importedConstants = importedConstants, importedAliases = importedAliases)
 
 proc analyzeWebModule*(source, sourcePath: string): WebModule =
   var macroExports: Table[string, MacroDef]
@@ -4951,7 +5142,8 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
       # what lets `$ex/message` read the same value here. Listed
       # props must be present (extra props in the data are ignored) and the body
       # must match exactly.
-      let nodeTest = "($gene_is_node(" & target & ") && " & target &
+      let nodeTarget = if emitter.typescript: "(" & target & " as any)" else: target
+      let nodeTest = "($gene_is_node(" & target & ") && " & nodeTarget &
         ".head === Symbol.for(" & jsString(pattern.head.symVal) & "))"
       var tests: seq[string]
       if pattern.head.symVal in emitter.nominalTypes:
@@ -5011,6 +5203,46 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
     return "(" & alternatives.join(" || ") & ")"
   raise newException(WebProfileError,
     "unsupported web catch error type: " & errorType.print())
+
+proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string
+
+proc emitFixedParameterBindings(emitter: var WebEmitter, params: seq[WebParam],
+                                 label: string, arguments = "arguments", offset = 0) =
+  var missing: seq[string]
+  for i, param in params:
+    let check = validatorName(param.typ) & "(" & param.emittedName & ", " &
+      jsString(label & " argument " & param.sourceName) & ")"
+    if param.optional:
+      let omitted = emitter.temp()
+      missing.add omitted
+      emitter.line("const " & omitted & " = " & arguments & ".length <= " & $(i + offset) &
+        " || $gene_is_missing(" & param.emittedName & ");")
+      emitter.line("if (!" & omitted & ") " & param.emittedName & " = " & check & ";")
+    else:
+      missing.add ""
+      emitter.line(param.emittedName & " = " & check & ";")
+  for i, param in params:
+    if not param.optional: continue
+    emitter.line("if (" & missing[i] & ") {")
+    inc emitter.indent
+    let value = if param.hasDefault: emitter.emitExpr(param.defaultExpr) else: "null"
+    emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" & value &
+      ", " & jsString(label & " default " & param.sourceName) & ");")
+    dec emitter.indent
+    emitter.line("}")
+    if emitter.typescript:
+      emitter.line(param.emittedName & " = " & param.emittedName & " as " & tsType(param.typ) & ";")
+
+proc emitCheckedReturn(emitter: var WebEmitter, typ: WebType, body, label: string) =
+  if typ.isStatementType:
+    emitter.line("void " & body & ";")
+    emitter.line("return " & statementUnit(typ) & ";")
+  else:
+    emitter.line("return " & validatorName(typ) & "(" & body & ", " & jsString(label) & ");")
+
+proc fixedParamDeclaration(param: WebParam, typescript: bool): string =
+  param.emittedName & (if typescript:
+    (if param.optional: "?" else: "") & ": " & tsType(param.typ) else: "")
 
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   case expr.kind
@@ -5391,6 +5623,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "node/body": arguments[0] & ".body"
     of "to_stream": "new GeneStream(" & arguments[0] & ".slice()[Symbol.iterator]())"
     of "map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
+    of "filter_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ", true)"
     of "filter": "$gene_stream_filter(" & arguments[0] & ", " & arguments[1] & ")"
     of "take": "$gene_stream_take(" & arguments[0] & ", " & arguments[1] & ")"
     of "into": "$gene_stream_into(" & arguments[0] & ", " & arguments[1] & ")"
@@ -5637,7 +5870,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     let dispatch = receiver & "?.[" & expr.text & "]" &
       (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "")
     "$gene_message_value((" & params.join(", ") & ") => (" & dispatch & ").call(" & receiver &
-      (if args.len > 0: ", " & args.join(", ") else: "") & "))"
+      (if args.len > 0: ", " & args.join(", ") else: "") & "), " & $expr.typ.requiredCallbackParams & ")"
   of wekSetPath:
     var container = emitter.emitExpr(expr.children[0])
     var dynamicIndex = 1
@@ -5798,6 +6031,30 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekDomRender:
     "$gene_dom_render(" & emitter.emitExpr(expr.children[0]) & ")"
   of wekLambda:
+    if expr.params.anyIt(it.optional):
+      let target = emitter.temp()
+      let arguments = emitter.temp()
+      emitter.line("const " & target & " = (..." & arguments &
+        (if emitter.typescript: ": any[]" else: "") & ")" &
+        (if emitter.typescript: ": " & tsType(expr.typ.returnType) else: "") & " => {")
+      inc emitter.indent
+      for i, param in expr.params:
+        emitter.line("let " & param.emittedName & (if emitter.typescript: ": any" else: "") &
+          " = " & arguments & "[" & $i & "];")
+      emitter.emitFixedParameterBindings(expr.params, "callback", arguments)
+      let previousReturn = emitter.currentReturnType
+      emitter.currentReturnType = expr.typ.returnType
+      let value = emitter.emitExpr(expr.children[0])
+      emitter.currentReturnType = previousReturn
+      emitter.emitCheckedReturn(expr.typ.returnType, value, "callback return")
+      dec emitter.indent
+      emitter.line("};")
+      var order: seq[string]
+      for i in 0 ..< expr.params.len: order.add $i
+      emitter.line("Object.defineProperty(" & target & ", Symbol.for(\"gene.callable_shape\"), { value: { positionals: " &
+        $expr.params.len & ", required: " & $requiredWebParams(expr.params) &
+        ", names: [], order: [" & order.join(", ") & "] } });")
+      return target
     # An arrow function, so `this` is not rebound — a Gene callback has no
     # receiver, and `function` would silently give it one at a DOM call site.
     # Statements the body needs are emitted into the arrow's own block rather
@@ -5814,7 +6071,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     emitter.lineLocs = @[]
     let savedIndent = emitter.indent
     emitter.indent = savedIndent + 1
+    emitter.emitFixedParameterBindings(expr.params, "callback")
+    let previousReturn = emitter.currentReturnType
+    emitter.currentReturnType = expr.typ.returnType
     let bodyValue = emitter.emitExpr(expr.children[0])
+    emitter.currentReturnType = previousReturn
     let bodyLines = emitter.lines
     let bodyLocs = emitter.lineLocs
     emitter.indent = savedIndent
@@ -5822,7 +6083,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     emitter.lineLocs = savedLocs
     if bodyLines.len == 0:
       # A pure expression body needs no block, and no statement slot.
-      signature & " => " & bodyValue
+      signature & " => " & (if expr.typ.returnType.isStatementType:
+        "(" & bodyValue & ", " & statementUnit(expr.typ.returnType) & ")" else: bodyValue)
     else:
       # The body needed statements, so the arrow is bound to a temp and the
       # call site names it. Always a `const`, never a patched-up line: the
@@ -5834,10 +6096,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         emitter.lines.add text
         emitter.lineLocs.add bodyLocs[i]
       inc emitter.indent
-      if expr.typ.returnType.kind == wtkVoid:
-        emitter.line("void " & bodyValue & ";")
-      else:
-        emitter.line("return " & bodyValue & ";")
+      emitter.emitCheckedReturn(expr.typ.returnType, bodyValue, "callback return")
       dec emitter.indent
       emitter.line("};")
       target
@@ -5956,12 +6215,13 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   emitter.currentLoc = previousLoc
 
   var wrapperParams: seq[string]
-  for param in fn.params:
+  for i, param in fn.params:
     let annotation = if emitter.typescript:
-      ": " & (if param.named: "(" & tsType(param.typ) & ") | undefined"
+      ": " & (if param.named or param.optional: "(" & tsType(param.typ) & ") | undefined"
               else: tsType(param.typ))
       else: ""
-    wrapperParams.add param.emittedName & annotation
+    wrapperParams.add param.emittedName &
+      (if emitter.typescript and param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & annotation
   let wrapperReturn = if fn.async and emitter.typescript:
                         ": Promise<" & tsType(fn.returnType) & ">"
                       else: returnAnnotation
@@ -5976,7 +6236,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   for index, param in fn.params:
     let checked = validatorName(param.typ) & "(" & param.emittedName &
       ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ")"
-    if param.named:
+    if param.named or param.optional:
       let missing = emitter.temp()
       omitted.add missing
       emitter.line("const " & missing & " = arguments.length <= " & $index &
@@ -5986,9 +6246,9 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
       omitted.add ""
       emitter.line(param.emittedName & " = " & checked & ";")
     checkedArgs.add param.emittedName &
-      (if emitter.typescript and param.named: " as " & tsType(param.typ) else: "")
+      (if emitter.typescript and (param.named or param.optional): " as " & tsType(param.typ) else: "")
   for index, param in fn.params:
-    if not param.named: continue
+    if not param.named and not param.optional: continue
     emitter.line("if (" & omitted[index] & ") {")
     inc emitter.indent
     if param.hasDefault:
@@ -6013,7 +6273,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   dec emitter.indent
   emitter.line("}")
   var order, names: seq[string]
-  var positional = 0
+  var positional, required = 0
   for param in fn.params:
     if param.named:
       order.add jsString(param.argName)
@@ -6021,9 +6281,10 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
     else:
       order.add $positional
       inc positional
+      if not param.optional: inc required
   emitter.line("Object.defineProperty(" & fn.emittedName &
     ", Symbol.for(\"gene.callable_shape\"), { value: { positionals: " &
-    $positional & ", names: [" & names.join(", ") & "], order: [" &
+    $positional & ", required: " & $required & ", names: [" & names.join(", ") & "], order: [" &
     order.join(", ") & "] } });")
   emitter.line()
 
@@ -6057,12 +6318,24 @@ iterator expressionRoots(module: WebModule): WebExpr =
     if fn.body != nil: yield fn.body
   for declaration in module.types:
     for methodDecl in declaration.methods:
+      for param in methodDecl.params:
+        if param.defaultExpr != nil: yield param.defaultExpr
       if methodDecl.body != nil: yield methodDecl.body
-    if declaration.constructor != nil and declaration.constructor.body != nil:
-      yield declaration.constructor.body
+    if declaration.constructor != nil:
+      for param in declaration.constructor.params:
+        if param.defaultExpr != nil: yield param.defaultExpr
+      if declaration.constructor.body != nil: yield declaration.constructor.body
   for implementation in module.impls:
     for implMethod in implementation.methods:
+      for param in implMethod.params:
+        if param.defaultExpr != nil: yield param.defaultExpr
       if implMethod.body != nil: yield implMethod.body
+
+proc usesOptionalParameters(expr: WebExpr): bool =
+  if expr == nil: return false
+  if expr.params.anyIt(it.optional): return true
+  for child in expr.children:
+    if usesOptionalParameters(child): return true
 
 proc moduleAny(module: WebModule, predicate: proc(expr: WebExpr): bool): bool =
   for root in module.expressionRoots:
@@ -6347,7 +6620,10 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
   # compiled and type-checked cleanly.
   proc collectFromChecks(expr: WebExpr, types: var seq[WebType]) =
     if expr == nil: return
-    if expr.kind == wekCheck: collectValidatorTypes(expr.typ, types)
+    if expr.kind in {wekCheck, wekLambda}: collectValidatorTypes(expr.typ, types)
+    for param in expr.params:
+      collectValidatorTypes(param.typ, types)
+      collectFromChecks(param.defaultExpr, types)
     for child in expr.children: collectFromChecks(child, types)
   for root in module.expressionRoots: collectFromChecks(root, types)
   let errorParams =
@@ -6673,7 +6949,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
       for implMethod in implementation.methods:
         var params: seq[string]
         for param in implMethod.params:
-          params.add param.emittedName & ": " & tsType(param.typ)
+          params.add fixedParamDeclaration(param, true)
         emitter.line("declare readonly [" & implMethod.message.symbolName &
           "]: (" & params.join(", ") & ") => " &
           tsType(implMethod.returnType) & ";")
@@ -6745,12 +7021,12 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
   if constructor != nil:
     var params: seq[string]
     for param in constructor.params:
-      params.add param.emittedName &
-        (if emitter.typescript: ": " & tsType(param.typ) else: "")
+      params.add fixedParamDeclaration(param, emitter.typescript)
     emitter.line("static $gene_new(" & params.join(", ") & ")" &
       (if emitter.typescript: ": " & declaration.emittedName else: "") & " {")
     inc emitter.indent
     emitter.line("const self = new " & declaration.emittedName & "({}, [], true);")
+    emitter.emitFixedParameterBindings(constructor.params, declaration.sourceName & "/ctor")
     let body = emitter.emitExpr(constructor.body)
     emitter.line("void " & body & ";")
     # Construction is over: drop the marker, then check the schema once. This
@@ -6764,21 +7040,19 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
   for methodDecl in declaration.methods:
     var params: seq[string]
     for param in methodDecl.params:
-      params.add param.emittedName &
-        (if emitter.typescript: ": " & tsType(param.typ) else: "")
+      params.add fixedParamDeclaration(param, emitter.typescript)
     emitter.line(methodDecl.emittedName & "(" & params.join(", ") & ")" &
       (if emitter.typescript: ": " & tsType(methodDecl.returnType) else: "") & " {")
     inc emitter.indent
     emitter.line("const self = this;")
-    for param in methodDecl.params:
-      emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
-        param.emittedName & ", " &
-        jsString(declaration.sourceName & "." & methodDecl.sourceName &
-          " argument " & param.sourceName) & ");")
+    emitter.emitFixedParameterBindings(methodDecl.params,
+      declaration.sourceName & "." & methodDecl.sourceName)
+    let previousReturn = emitter.currentReturnType
+    emitter.currentReturnType = methodDecl.returnType
     let body = emitter.emitExpr(methodDecl.body)
-    emitter.line("return " & validatorName(methodDecl.returnType) & "(" & body &
-      ", " & jsString(declaration.sourceName & "." & methodDecl.sourceName &
-        " return") & ");")
+    emitter.currentReturnType = previousReturn
+    emitter.emitCheckedReturn(methodDecl.returnType, body,
+      declaration.sourceName & "." & methodDecl.sourceName & " return")
     dec emitter.indent
     emitter.line("}")
   dec emitter.indent
@@ -6829,20 +7103,17 @@ proc emitDefaultFactory(emitter: var WebEmitter, module: WebModule, fn: WebFunct
   var params: seq[string]
   if emitter.typescript: params.add "this: unknown"
   for param in fn.params:
-    params.add param.emittedName & (if emitter.typescript: ": " & tsType(param.typ) else: "")
+    params.add fixedParamDeclaration(param, emitter.typescript)
   emitter.line("return function(" & params.join(", ") & ")" &
     (if emitter.typescript: ": " & tsType(fn.returnType) else: "") & " {")
   inc emitter.indent
   emitter.line("const self = this;")
-  for param in fn.params:
-    emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
-      param.emittedName & ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ");")
+  emitter.emitFixedParameterBindings(fn.params, fn.sourceName)
   let oldReturn = emitter.currentReturnType
   emitter.currentReturnType = fn.returnType
   let body = emitter.emitExpr(fn.body)
   emitter.currentReturnType = oldReturn
-  emitter.line("return " & validatorName(fn.returnType) & "(" & body & ", " &
-    jsString(fn.sourceName & " return") & ");")
+  emitter.emitCheckedReturn(fn.returnType, body, fn.sourceName & " return")
   dec emitter.indent
   emitter.line("};")
   dec emitter.indent
@@ -6862,7 +7133,7 @@ proc emitProtocolDeclaration(emitter: var WebEmitter,
     for messageDecl in declaration.messages:
       var params: seq[string]
       for param in messageDecl.params:
-        params.add param.emittedName & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
+        params.add param.emittedName & (if param.optional: "?" else: "") & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
       emitter.line("[" & messageDecl.symbolName & "](" &
         params.join(", ") & "): " &
         tsType(bindWebSelf(messageDecl.returnType, webType(wtkAny))) & ";")
@@ -6918,8 +7189,7 @@ proc emitImplDeclaration(emitter: var WebEmitter,
     elif emitter.typescript:
       params.add "this: " & mangleWebName(implementation.targetName)
     for param in implMethod.params:
-      params.add param.emittedName &
-        (if emitter.typescript: ": " & tsType(param.typ) else: "")
+      params.add fixedParamDeclaration(param, emitter.typescript)
     if builtinTarget:
       emitter.line("function " & implFunctionName(implementation.protocolName,
         implementation.targetName, implMethod.message.sourceName) & "(" &
@@ -6933,16 +7203,15 @@ proc emitImplDeclaration(emitter: var WebEmitter,
         (if emitter.typescript: ": " & tsType(implMethod.returnType) else: "") & " {")
     inc emitter.indent
     if not builtinTarget: emitter.line("const self = this;")
-    for param in implMethod.params:
-      emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
-        param.emittedName & ", " &
-        jsString(implementation.protocolName & ":" &
-          implMethod.message.sourceName & " argument " & param.sourceName) &
-        ");")
+    emitter.emitFixedParameterBindings(implMethod.params,
+      implementation.protocolName & ":" & implMethod.message.sourceName,
+      offset = (if builtinTarget: 1 else: 0))
+    let previousReturn = emitter.currentReturnType
+    emitter.currentReturnType = implMethod.returnType
     let body = emitter.emitExpr(implMethod.body)
-    emitter.line("return " & validatorName(implMethod.returnType) & "(" & body &
-      ", " & jsString(implementation.protocolName & ":" &
-        implMethod.message.sourceName & " return") & ");")
+    emitter.currentReturnType = previousReturn
+    emitter.emitCheckedReturn(implMethod.returnType, body,
+      implementation.protocolName & ":" & implMethod.message.sourceName & " return")
     dec emitter.indent
     emitter.line(if builtinTarget: "}" else: "} });")
   if implementation.methods.len > 0: emitter.line()
@@ -6953,7 +7222,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("export const $gene_callable_apply = Symbol.for(\"gene.Callable.apply\");")
   emitter.line("const $gene_callable_shape = Symbol.for(\"gene.callable_shape\");")
   emitter.line("function $gene_is_callable(value" & a & ") { return typeof value === \"function\" || (value != null && (value[Symbol.for(\"gene.callable_view\")] === true || typeof value[$gene_callable_apply] === \"function\")); }")
-  emitter.line("function $gene_message_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.message_value\"), { value: true }); return value; }")
+  emitter.line("function $gene_message_value(value" & a & ", required = value.length) { Object.defineProperty(value, Symbol.for(\"gene.message_value\"), { value: true }); if (required < value.length) Object.defineProperty(value, $gene_callable_shape, { value: { positionals: value.length, required, names: [], order: Array.from({length: value.length}, (_, i) => i) } }); return value; }")
   emitter.line("function $gene_selector_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.selector_value\"), { value: true }); return value; }")
   emitter.line("function $gene_invoke_callable(target" & a & ", parts" & arr & ", supplied" & a & " = {}, site" & a & " = null, splices" & arr & " = [])" & a & " {")
   inc emitter.indent
@@ -6965,7 +7234,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   inc emitter.indent
   emitter.line("if (target.prototype && typeof target.prototype.$gene_validate === \"function\") return new target(named, args);")
   emitter.line("const shape = target[$gene_callable_shape];")
-  emitter.line("if (shape) { if (args.length !== shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }); for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }); return target(...shape.order.map((entry" & a & ") => typeof entry === \"number\" ? args[entry] : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing)); }")
+  emitter.line("if (shape) { if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }); for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }); return target(...shape.order.map((entry" & a & ") => typeof entry === \"number\" ? (entry < args.length ? args[entry] : $gene_missing) : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing)); }")
   emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument\" });")
   emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + target.length + \" positional arguments\" });")
   emitter.line("return target(...args);")
@@ -7033,6 +7302,10 @@ proc emitModule(module: WebModule, typescript: bool,
         for selection in imported.selections:
           names.add mangleWebName(selection.localName)
         emitter.line("export { " & names.join(", ") & " };")
+  if typescript:
+    for name, target in module.emittedAliases:
+      emitter.line("export type " & mangleWebName(name) & " = " &
+        tsType(bindWebSelf(target, webType(wtkAny))) & ";")
   for extern in module.externs:
     emitter.currentLoc = extern.loc
     emitter.line("import { " & extern.importName & " as " &
@@ -7052,9 +7325,16 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekCallableCall, wekMessage, wekSelector}) or
     moduleUsesTypeKind(module, wtkStream) or
     module.functions.anyIt(it.generator) or
-    moduleUsesBuiltin(module, ["to_stream", "map", "filter", "take", "into", "each"]) or
+    moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter", "take", "into", "each"]) or
     module.impls.anyIt(it.protocolName == "Callable")
-  let needsMissing = needsCallable or moduleUsesExprKind(module, {wekMissing}) or
+  var needsOptional = (module.functions & module.defaultBodies).anyIt(it.params.anyIt(it.optional))
+  for typ in module.types:
+    for msg in typ.methods: needsOptional = needsOptional or msg.params.anyIt(it.optional)
+    if typ.constructor != nil: needsOptional = needsOptional or typ.constructor.params.anyIt(it.optional)
+  for impl in module.impls:
+    for msg in impl.methods: needsOptional = needsOptional or msg.params.anyIt(it.optional)
+  needsOptional = needsOptional or module.moduleAny(usesOptionalParameters)
+  let needsMissing = needsCallable or needsOptional or moduleUsesExprKind(module, {wekMissing}) or
     module.functions.anyIt(it.params.anyIt(it.named))
   if needsMissing:
     let a = if typescript: ": any" else: ""
@@ -7072,7 +7352,7 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath}) or
     moduleUsesTypeKind(module, wtkBuffer) or
     moduleExprUsesTypeKind(module, wtkBuffer)
-  needsNode = needsCallable or moduleUsesTypeKind(module, wtkNode) or
+  needsNode = needsCallable or needsMissing or moduleUsesTypeKind(module, wtkNode) or
     moduleUsesExprKind(module, {wekNode, wekSend}) or
     needsIntDivisor or needsF64Divisor or # the divisor guards raise a Gene node
     needsIndex                            # and so does the index-range guard
@@ -7101,7 +7381,7 @@ proc emitModule(module: WebModule, typescript: bool,
   let needsNodeBrand = needsNode or needsPath or needsDom or needsPatternFields
   for fn in module.functions:
     if fn.generator: needsStream = true
-  if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "take", "into", "each"]):
+  if moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter", "take", "into", "each"]):
     needsStream = true
   if needsAsync or needsGeneCatch:
     # Cancellation is branded with a registry symbol, not a `kind` string: a
@@ -7140,7 +7420,7 @@ proc emitModule(module: WebModule, typescript: bool,
       "Object.prototype.hasOwnProperty.call(value" &
       (if typescript: " as object" else: "") & ", key); }")
     emitter.line("function $gene_field(" & valueParam & ", " & keyParam & ")" &
-      (if typescript: ": unknown" else: "") &
+      (if typescript: ": any" else: "") &
       " { return $gene_is_node(value) ? value.props[key] : (value" &
       (if typescript: " as Record<string, unknown>" else: "") & ")[key]; }")
     emitter.line("function $gene_body_of(" & valueParam & ")" &
@@ -7388,18 +7668,26 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
-    if moduleUsesBuiltin(module, ["map", "filter", "take", "into", "each"]):
+    if moduleUsesBuiltin(module, ["map", "filter_map", "filter", "take", "into", "each"]):
       let anyType = if typescript: ": any" else: ""
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
-        anyType & ")" & anyType & " {")
+        anyType & ", dropVoid = false)" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* mapped() { while (source.has_next()) yield $gene_invoke_callable(mapper, [source.next()]); } return new GeneStream(mapped(), source);")
+      emitter.line("const mapValue = (item" & anyType & ") => { const value = $gene_invoke_callable(mapper, [item]); return value === undefined && !dropVoid ? null : value; };")
+      emitter.line("if (Array.isArray(source)) { const result" & anyType & " = []; for (const item of source) { const mapped = mapValue(item); if (mapped !== undefined) result.push(mapped); } return Object.isFrozen(source) ? Object.freeze(result) : result; }")
+      if moduleUsesTypeKind(module, wtkMap) or moduleExprUsesTypeKind(module, wtkMap):
+        emitter.line("if (source?.$gene_map === true) { const entries" &
+          (if typescript: ": Array<[any, any]>" else: "") &
+          " = []; for (const [key, item] of source) { const mapped = mapValue(item); if (mapped !== undefined) entries.push([key, mapped]); } return new GeneMap(entries); }")
+      if moduleUsesTypeKind(module, wtkPropMap) or moduleExprUsesTypeKind(module, wtkPropMap):
+        emitter.line("if (!source?.has_next) { const entries" & anyType & " = []; for (const [key, item] of $gene_prop_pairs(source)) { const mapped = mapValue(item); if (mapped !== undefined) entries.push([Symbol.keyFor(key), mapped]); } const result = $gene_prop_map(entries); return Object.isFrozen(source) ? Object.freeze(result) : result; }")
+      emitter.line("function* mapped() { while (source.has_next()) yield mapValue(source.next()); } return new GeneStream(mapped(), source);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_filter(source" & anyType &
         ", predicate" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* filtered() { while (source.has_next()) { const item = source.next(); const keep = $gene_invoke_callable(predicate, [item]); if (keep !== false && keep != null) yield item; } } return new GeneStream(filtered(), source);")
+      emitter.line("return $gene_stream_map(source, (item" & anyType & ") => { const keep = $gene_invoke_callable(predicate, [item]); return keep !== false && keep != null ? item : undefined; }, true);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_take(source" & anyType & ", count" &
@@ -8087,6 +8375,9 @@ proc emitModule(module: WebModule, typescript: bool,
 
 proc emitDeclarations(module: WebModule): string =
   result.add "// Generated Gene web-profile declarations (TypeScript 5.9.2).\n"
+  for name, target in module.emittedAliases:
+    result.add "export type " & mangleWebName(name) & " = " &
+      tsType(bindWebSelf(target, webType(wtkAny))) & ";\n"
   if moduleUsesTypeKind(module, wtkCallable):
     result.add "export declare class GeneCallableView {\n"
     result.add "  invoke(args: unknown[], named?: Record<string, unknown>, site?: unknown): unknown;\n"
@@ -8165,7 +8456,7 @@ proc emitDeclarations(module: WebModule): string =
     for messageDecl in declaration.messages:
       var params: seq[string]
       for param in messageDecl.params:
-        params.add param.emittedName & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
+        params.add param.emittedName & (if param.optional: "?" else: "") & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
       result.add "  readonly [" & messageDecl.symbolName & "]: (" &
         params.join(", ") & ") => " & tsType(bindWebSelf(messageDecl.returnType, webType(wtkAny))) & ";\n"
     result.add "}\n"
@@ -8198,7 +8489,7 @@ proc emitDeclarations(module: WebModule): string =
       for implMethod in implementation.methods:
         var params: seq[string]
         for param in implMethod.params:
-          params.add param.emittedName & ": " & tsType(param.typ)
+          params.add fixedParamDeclaration(param, true)
         result.add "  readonly [" & implMethod.message.symbolName & "]: (" &
           params.join(", ") & ") => " & tsType(implMethod.returnType) & ";\n"
     result.add "  constructor(fields?: Record<string, unknown>, body?: unknown[], $in_progress?: boolean, immutable?: boolean);\n"
@@ -8206,22 +8497,22 @@ proc emitDeclarations(module: WebModule): string =
     if constructor != nil:
       var params: seq[string]
       for param in constructor.params:
-        params.add param.emittedName & ": " & tsType(param.typ)
+        params.add fixedParamDeclaration(param, true)
       result.add "  static $gene_new(" & params.join(", ") & "): " &
         declaration.emittedName & ";\n"
     for methodDecl in declaration.methods:
       var params: seq[string]
       for param in methodDecl.params:
-        params.add param.emittedName & ": " & tsType(param.typ)
+        params.add fixedParamDeclaration(param, true)
       result.add "  " & methodDecl.emittedName & "(" & params.join(", ") &
         "): " & tsType(methodDecl.returnType) & ";\n"
     result.add "}\n"
   for fn in module.functions:
     if not fn.publicExport: continue
     var params: seq[string]
-    for param in fn.params:
-      params.add param.emittedName & ": " &
-        (if param.named: "(" & tsType(param.typ) & ") | undefined"
+    for i, param in fn.params:
+      params.add param.emittedName & (if param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & ": " &
+        (if param.named or param.optional: "(" & tsType(param.typ) & ") | undefined"
          else: tsType(param.typ))
     result.add "export declare function " & fn.emittedName & "(" &
       params.join(", ") & "): " &
@@ -8233,9 +8524,9 @@ proc emitDeclarations(module: WebModule): string =
       ": Readonly<{\n"
     for fn in namespace.functions:
       var params: seq[string]
-      for param in fn.params:
-        params.add param.emittedName & ": " &
-          (if param.named: "(" & tsType(param.typ) & ") | undefined"
+      for i, param in fn.params:
+        params.add param.emittedName & (if param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & ": " &
+          (if param.named or param.optional: "(" & tsType(param.typ) & ") | undefined"
            else: tsType(param.typ))
       result.add "  " & mangleWebName(fn.sourceName.split('/')[^1]) & ": (" &
         params.join(", ") & ") => " &
@@ -8579,6 +8870,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
     for constant in module.constants:
       if not constant.imported and constant.sourceName == name:
         return (module, name)
+    if module.aliases.hasKey(name): return (module, name)
     for declaration in module.types:
       if declaration.sourceName == name: return (module, name)
     for declaration in module.enums:
@@ -8609,7 +8901,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                  aliases: Table[string, string]): WebType =
     if typ == nil: return nil
     result = WebType(kind: typ.kind, name: typ.name,
-      namedKeys: typ.namedKeys, checkedErrors: typ.checkedErrors)
+      namedKeys: typ.namedKeys, checkedErrors: typ.checkedErrors, optionalParams: typ.optionalParams)
     if typ.kind == wtkNominal:
       result.name = aliases.getOrDefault(typeOrigin(owner, typ.name), typ.name)
     result.item = remapType(typ.item, owner, aliases)
@@ -8650,6 +8942,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
     var imported = initTable[string, WebFunctionSig]()
     var importedTypes = initTable[string, WebTypeDecl]()
     var importedConstants = initTable[string, WebConstant]()
+    var importedAliases = initTable[string, WebType]()
     var importedEnums = initTable[string, WebEnumDecl]()
     var importedProtocols = initTable[string, WebProtocolDecl]()
     var importedMacros = initTable[string, Table[string, MacroDef]]()
@@ -8678,6 +8971,9 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
         let resolved = resolveExport(importedModule, selection.sourceName)
         let dependency = resolved.owner
         let resolvedName = resolved.name
+        if dependency.aliases.hasKey(resolvedName):
+          importedAliases[selection.localName] = dependency.aliases[resolvedName]
+          continue
         var found: WebFunction = nil
         for fn in dependency.functions:
           if fn.sourceName == resolvedName:
@@ -8703,6 +8999,9 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
             if declaration.sourceName == resolvedName:
               let bodySchema = allBodySchema(dependency, declaration)
               var implementedProtocols: seq[string]
+              for visible in dependency.visibleProtocols:
+                protocolAliases[visible.sourceName] = typeAliases.getOrDefault(
+                  typeOrigin(dependency, visible.sourceName), visible.sourceName)
               for protocolName in allImplementedProtocols(dependency,
                                                           declaration):
                 implementedProtocols.add protocolAliases.getOrDefault(
@@ -8787,6 +9086,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                   ownerIdentity: messageDecl.ownerIdentity, ownerName: messageDecl.ownerName,
                   sourceForm: messageDecl.sourceForm,
                   universalDefault: messageDecl.universalDefault,
+                  selfDependent: messageDecl.selfDependent,
                   defaultFactory: (if messageDecl.defaultFactory.len == 0: "" else:
                     mangleWebName(selection.localName) & ".$defaults[" & jsString(messageDecl.identity) & "]"))
                 if messageDecl.ownerIdentity == declaration.identity:
@@ -8804,7 +9104,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
         let mappedParams = remapParams(found.params, dependency, typeAliases)
         for param in mappedParams:
           paramTypes.add param.typ
-          if param.named: anyNamed = true
+          if param.named or param.optional: anyNamed = true
         # The named parameters travel with the import. Without this an imported
         # `^`-taking function looks positional at every call site outside its
         # own module, which is every call site that matters for an API — and
@@ -8822,7 +9122,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                                              importedTypes, importedEnums,
                                              importedProtocols,
                                              importedMacros, macroExports,
-                                             importedConstants)
+                                             importedConstants, importedAliases)
     let base = splitFile(path).name
     if basenames.hasKey(base) and basenames[base] != path:
       raise newException(WebProfileError,

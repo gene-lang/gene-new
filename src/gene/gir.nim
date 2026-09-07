@@ -1534,6 +1534,7 @@ proc aotCType(repr: AotRepr, names: FfiStructCNames): string =
   of arkNone: ""
 
 type AotCFunction = object
+  optionalNilTail: int
   cName: string
   paramCount: int
   cType: string
@@ -1819,6 +1820,9 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
                                       locals)
         else:
           args.add emitAotCExpr(arg, params, paramReprs, available, locals)
+      if args.len < callee.paramCount - callee.optionalNilTail:
+        return aotLoweringGap(expr, "missing required native argument")
+      while args.len < callee.paramCount: args.add "NULL"
       callee.cName & "(" & args.join(", ") & ")"
     else:
       aotLoweringGap(expr,
@@ -1867,7 +1871,11 @@ proc emitAotCSend(expr: Value, params: openArray[string],
   var args = @[cIdent(expr.head.symVal, "receiver")]
   for i in 2 ..< expr.body.len:
     args.add emitAotCExpr(expr.body[i], params, paramReprs, available, locals)
-  (true, available[key].cName & "(" & args.join(", ") & ")")
+  let callee = available[key]
+  if args.len < callee.paramCount - callee.optionalNilTail:
+    discard aotLoweringGap(expr, "missing required native message argument")
+  while args.len < callee.paramCount: args.add "NULL"
+  (true, callee.cName & "(" & args.join(", ") & ")")
 
 proc emitAotCStatement(lines: var seq[string], statement: Value,
                        indent: string, fn: FunctionProto,
@@ -2377,6 +2385,14 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
 proc nativeEntryName(fnName, fallback: string): string =
   "gene_entry_" & cIdent(fnName, fallback)
 
+proc aotOptionalNilTail(fn: FunctionProto): int =
+  for i in countdown(fn.params.high, 0):
+    if i >= fn.paramDefaults.len or not fn.paramDefaults[i].optional or
+        fn.paramDefaults[i].defaultChunk != nil or i >= fn.aotParamReprs.len or
+        fn.aotParamReprs[i].kind != arkNativePtr or not fn.aotParamReprs[i].nullable:
+      break
+    inc result
+
 proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
                     nativeName, entryName: string,
                     structNames: FfiStructCNames) =
@@ -2442,8 +2458,14 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
     lines.add ""
   lines.add "GeneStatus " & entryName &
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
-  lines.add "  GeneStatus status = gene_ffi_check_arity(ctx, call, " &
-    $fn.params.len & ");"
+  let optionalTail = fn.aotOptionalNilTail
+  if optionalTail > 0:
+    lines.add "  size_t provided = 0;"
+    lines.add "  GeneStatus status = gene_ffi_check_arity_range(ctx, call, " &
+      $(fn.params.len - optionalTail) & ", " & $fn.params.len & ", &provided);"
+  else:
+    lines.add "  GeneStatus status = gene_ffi_check_arity(ctx, call, " &
+      $fn.params.len & ");"
   lines.add "  if (status != GENE_OK) return status;"
   var callArgs: seq[string]
   # Declare every acquisition slot before the first fallible conversion so the
@@ -2472,6 +2494,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
   for i, param in fn.params:
     let name = cIdent(param, "arg" & $i)
     let repr = fn.aotParamReprs[i]
+    if i >= fn.params.len - optionalTail:
+      lines.add "  if (provided > " & $i & ") {"
     case repr.kind
     of arkI64:
       lines.add "  status = gene_ffi_arg_int64(ctx, call, " & $i & ", " &
@@ -2531,6 +2555,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
         rawName & ";"
     of arkNone:
       discard
+    if i >= fn.params.len - optionalTail:
+      lines.add "  }"
   let nativeCall = nativeName & "(" & callArgs.join(", ") & ")"
   case fn.aotReturnRepr.kind
   of arkI64:
@@ -2914,7 +2940,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       emitAotCBody(lines, fn, available, structNames)
       lines.add "}"
       lines.add ""
-      let target = AotCFunction(cName: cName, paramCount: fn.params.len,
+      let target = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
                                 cType: cType)
       let receiverIdentity = fn.aotParamReprs[0].nativeType.identity
       available[aotSendKey(receiverIdentity, protocolName, message.name)] = target
@@ -2945,6 +2971,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       var fnAvailable = available
       fnAvailable[fn.name] = AotCFunction(cName: cName,
                                           paramCount: fn.params.len,
+                                          optionalNilTail: fn.aotOptionalNilTail,
                                           cType: cType)
       emitAotCBody(lines, fn, fnAvailable, structNames)
       lines.add "}"
@@ -2954,7 +2981,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         else: ""
       if entryName.len > 0:
         addNativeEntry(lines, fn, cName, entryName, structNames)
-      available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len,
+      available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
                                         cType: cType)
       moduleFns.add AotModuleFunction(geneName: fn.name, cName: cName,
                                       entryName: entryName,
@@ -3310,6 +3337,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "extern GeneStatus gene_typed_native_result_transfer(GeneContext *ctx, void *value, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeReleaseFn release, GeneValue *out);",
     "extern GeneStatus gene_typed_native_result_copy(GeneContext *ctx, const void *value, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeCopyFn copy, GeneTypedNativeReleaseFn release, GeneValue *out);",
     "extern GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call, size_t expected);",
+    "extern GeneStatus gene_ffi_check_arity_range(GeneContext *ctx, const GeneCall *call, size_t minimum, size_t maximum, size_t *provided);",
     "extern GeneStatus gene_ffi_arg_int8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int8_t *out);",
     "extern GeneStatus gene_ffi_arg_uint8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint8_t *out);",
     "extern GeneStatus gene_ffi_arg_int16(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int16_t *out);",
