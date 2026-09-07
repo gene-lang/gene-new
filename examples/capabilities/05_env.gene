@@ -1,0 +1,40 @@
+# Run from the repository root:
+#   bin/gene run examples/capabilities/05_env.gene
+# Env bindings supply values; capability rows limit external operations.
+# The default CLI context can read the repository's README.md.
+
+(mod cap_env ^capabilities [fs/*])
+
+(fn show [label : Str value : Any]
+  ($println $"${label}: ${value}"))
+
+(fn main [args]
+  (let path "README.md")
+  (let plain (env ^bindings {^input "hello"}))
+  (let saved (env ^capabilities [fs/*]))
+  (let empty (env ^capabilities []))
+  (let extended (empty .extend {^input "hello"}))
+  (let can_read (quote (check_capabilities (fs/ReadFile path))))
+
+  (show "Explicit name binding" (eval (quote input) ^in plain)) # hello
+  (show "Omitted row inherits the evaluator" (eval can_read ^in plain)) # true
+  (show "Explicit empty row" (eval can_read ^in empty))                 # false
+  (show "Extending keeps the parent ceiling" (eval can_read ^in extended)) # false
+
+  # saved was created with filesystem access. Its retained ceiling cannot
+  # replace the empty context active at this evaluation.
+  (show "Broad Env inside an empty context"
+    (with_capabilities [] (eval can_read ^in saved))) # false
+  (show "The actual read is denied too"
+    (try
+      (with_capabilities []
+        (eval (quote ($fs/read_text path)) ^in saved))
+      catch MissingCapability "denied"))
+
+  # Code created in eval retains the effective intersection when it escapes.
+  (let retained
+    (with_capabilities []
+      (eval (quote (fn [] (check_capabilities (fs/ReadFile path)))) ^in saved)))
+  (show "Escaped eval closure keeps its ceiling" (retained)) # false
+  (show "Caller context is restored" (check_capabilities (fs/ReadFile path))) # true
+  0)

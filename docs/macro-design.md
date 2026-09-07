@@ -122,10 +122,15 @@ They do not appear in the parameter vector because the caller does not supply
 them as ordinary arguments. The declared parameters bind `syntax_call`'s raw
 syntax payload.
 
-`caller_env` is authority. It resolves the caller's lexical bindings, imports,
+`caller_env` grants access to caller values. It resolves lexical bindings, imports,
 module namespace, and built-ins. Evaluation uses a fresh overlay and cannot
 directly create or rebind bindings in the original caller scope. Declarations
 made by evaluated code belong to that evaluation.
+
+This is lexical access, distinct from permission to perform external operations.
+`eval` also runs under the active capability context and any retained Env
+ceilings; supplying a function or handle as a binding does not bypass its
+operation checks. See [the authority contract](spec/authority.md).
 
 **Current VM behavior:** `set` against a copied caller binding succeeds within
 the evaluation copy. It leaves the original caller binding unchanged, and a
@@ -173,8 +178,9 @@ explicit and selective:
   (caller_env .snapshot ["config"]))
 ```
 
-This returns a durable `Env` containing `config`, not the caller's full
-authority.
+This returns a durable `Env` containing the selected `config` binding with no
+evaluation-site lexical fallback. Snapshotting names does not mint external
+capability grants; evaluating the snapshot still uses the evaluator's context.
 
 ## 5. Runtime call envelopes
 

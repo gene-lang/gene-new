@@ -1,6 +1,10 @@
 # Capability propagation and attenuation
 
-Status: proposal
+**Status:** design proposal and historical rationale; partially implemented.
+The normative implemented contract is
+[Authority, evaluation, and sandbox boundaries](../spec/authority.md).
+Examples and acceptance criteria below include deferred design and must not be
+read as blanket claims about every current adapter or backend.
 
 ## 1. Summary
 
@@ -1938,8 +1942,8 @@ Capability context follows dynamic execution:
 - synchronous calls inherit the current selected context;
 - a spawned task captures the context active at the spawn point;
 - task-local attenuation does not mutate the spawning task;
-- callbacks execute with the context deliberately attached by the registering
-  API, not whatever context happens to be active later;
+- retained callbacks intersect the ceiling attached by the registering API
+  with the invoker's active context; plain closures follow ordinary call rules;
 - context is restored after returns, errors, cancellation, and non-local
   control flow.
 
@@ -2763,19 +2767,23 @@ reproduction across batches and a mechanism, not one number.
 
 ## 14. Environments, evaluation, and macros
 
-If an `Env` exposes `^capabilities`, its value must be a validated
-`CapabilityContext` or a selector list resolved against the creator's
-current context. Assigning an arbitrary map or Gene value must not create
-grants.
+The implemented `Env ^capabilities` selector-list form resolves against the
+creator's active context. Contexts and grants are not Gene values. A legacy
+map form supplies a name-binding overlay only; it mints no grants, and new
+code should use `^bindings` for those values.
 
 Evaluated code runs under both:
 
-- the target environment's lexical bindings; and
+- the target environment's lexical bindings over the evaluation-site scope
+  (or a closed named snapshot); and
 - an explicit capability context no broader than the evaluator's active
   context.
 
-The default should be the intersection of those contexts. An explicit
-`with_capabilities` can narrow it further.
+Evaluation intersects its active context with every retained selector ceiling
+in the Env parent chain. An omitted row adds no ceiling; `[]` selects none.
+`Env/extend` preserves parent restrictions, and escaped evaluated callables
+retain the effective intersection. An explicit `with_capabilities` can narrow
+it further. See the implemented authority contract for coverage and limits.
 
 Macros and compile-time execution use a separate compile-time capability
 context. Runtime grants do not automatically become compiler grants.
@@ -2833,6 +2841,11 @@ Canonical selector forms should participate in module and interface
 fingerprints where cached compilation or module reuse depends on policy.
 
 ## 17. Implementation plan
+
+This is the historical migration plan from the value-based capability model.
+References to the old diagnostics and `--grant` boot order describe that
+earlier runtime. The current compatibility surface and implemented guarantees
+are recorded in [the authority contract](../spec/authority.md).
 
 Gene is pre-release and has no external users, so there is **no migration
 path, no deprecation window, and no compatibility shim**. Incompatible code

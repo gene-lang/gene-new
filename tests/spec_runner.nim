@@ -7717,7 +7717,7 @@ suite "spec — Env and eval from design":
                "catch CompileError $ex/message)",
                "\"eval cannot use import; add imports to Env\"")
 
-  test "eval sees explicit Env capability values":
+  test "the legacy Env capabilities map supplies name bindings":
     check_eval("(var e (env ^bindings {^fs \"binding\"} " &
                "           ^capabilities {^fs \"capability\" ^net \"closed\"})) " &
                "[(eval (quote fs) ^in e) (eval (quote net) ^in e)]",

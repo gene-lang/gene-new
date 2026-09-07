@@ -6,6 +6,7 @@ The contract is split by subsystem:
 
 - [Reader and values](reader.md)
 - [Calls, selectors, control, and eval](calls.md)
+- [Authority, evaluation, and sandbox boundaries](authority.md)
 - [Types, construction, and mutation](types.md)
 - [Nil, void, optional binding, and mapping](nil-void.md)
 - [Protocols and message dispatch](protocols.md)

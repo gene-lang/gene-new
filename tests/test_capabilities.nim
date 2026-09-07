@@ -2,7 +2,7 @@ import gene/capabilities
 import gene/fs_capabilities
 import gene/host_capabilities
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[options, os, strutils, tables, unittest]
+import std/[options, os, strutils, tables, tempfiles, unittest]
 
 type
   TestDirProvider = ref object of CapabilityProvider
@@ -67,6 +67,21 @@ proc newApplicationRootedAt(root: string): Application =
 proc facadeSchema(name: string, hasStringBody = true): string =
   capabilityFacadeSchemaHash(name, bodySchema =
     (if hasStringBody: newList(@[newSym("Str")]) else: NIL))
+
+proc evalAuthorityProbe(source: string): string =
+  let root = createTempDir("gene-eval-authority-", "")
+  defer: removeDir(root)
+  let first = root / "first.txt"
+  let second = root / "second.txt"
+  writeFile(first, "first")
+  writeFile(second, "second")
+  let app = newApplication(root)
+  app.setRootCapabilities(newCapabilityContext(
+    @[app.filesystemCapabilities.grantReadDir(root)]))
+  let scope = newGlobalScope(app)
+  scope.define("first", newStr(first))
+  scope.define("second", newStr(second))
+  run(compileSource(source), scope).print()
 
 suite "capability providers":
   test "provider admission is exclusive and frozen before program code":
@@ -1091,7 +1106,7 @@ suite "capability call boundaries":
       """), scope)
     check not fileExists(root / "other.md")
 
-  test "static transitions are cached and invalidated by revocation":
+  test "static transitions respect revocation with optional caching":
     let app = newApplication()
     let scope = newGlobalScope(app)
     let chunk = compileSource("""
@@ -1104,7 +1119,11 @@ suite "capability call boundaries":
     check guarded.call(@[], @[], @[], scope).intVal == 7
     let proto = FunctionProto(guarded.fnCode)
     let cached = proto.capabilityCacheTransition.context
-    check cached != nil
+    when compileOption("threads") and defined(gcAtomicArc):
+      # Shared proto transition caching is disabled on this execution path.
+      check cached == nil
+    else:
+      check cached != nil
     check guarded.call(@[], @[], @[], scope).intVal == 7
     check proto.capabilityCacheTransition.context == cached
 
@@ -1119,6 +1138,112 @@ suite "capability call boundaries":
     check app.capabilities.capabilityEpoch > epoch
     expect GeneError:
       discard guarded.call(@[], @[], @[], scope)
+
+suite "eval capability ceilings":
+  test "a retained Env cannot restore authority removed by its evaluator":
+    check evalAuthorityProbe("""
+      (let saved (env ^capabilities [fs/*]))
+      [(try
+         (with_capabilities []
+           (eval (quote ($fs/read_text first)) ^in saved))
+         catch MissingCapability "denied")
+       (eval (quote ($fs/read_text first)) ^in saved)]
+    """) == "[\"denied\" \"first\"]"
+
+  test "both the Env and evaluator constrain the exact permitted resource":
+    check evalAuthorityProbe("""
+      (let broad (env ^capabilities [fs/*]))
+      (let only_first (env ^capabilities [(fs/ReadFile first)]))
+      [(eval (quote ($fs/read_text first)) ^in only_first)
+       (try (eval (quote ($fs/read_text second)) ^in only_first)
+         catch MissingCapability "denied")
+       (with_capabilities [(fs/ReadFile first)]
+         (eval (quote ($fs/read_text first)) ^in broad))
+       (try
+         (with_capabilities [(fs/ReadFile first)]
+           (eval (quote ($fs/read_text second)) ^in broad))
+         catch MissingCapability "denied")]
+    """) == "[\"first\" \"denied\" \"first\" \"denied\"]"
+
+  test "omitted rows inherit dynamically and explicit rows retain creation limits":
+    check evalAuthorityProbe("""
+      (let plain (env ^bindings {^input 1}))
+      (let empty (env ^capabilities []))
+      (let captured (with_capabilities [] (env ^capabilities [fs/*])))
+      [(eval (quote (check_capabilities (fs/ReadFile first))) ^in plain)
+       (with_capabilities []
+         (eval (quote (check_capabilities (fs/ReadFile first))) ^in plain))
+       (eval (quote (check_capabilities (fs/ReadFile first))) ^in empty)
+       (eval (quote (check_capabilities (fs/ReadFile first))) ^in captured)]
+    """) == "[true false false false]"
+
+  test "extending an Env cannot remove its parent's capability ceiling":
+    check evalAuthorityProbe("""
+      (let parent (env ^capabilities []))
+      (let extended (parent .extend {^input 1}))
+      (let reselected (env ^parent parent ^capabilities [fs/*]))
+      [(try (eval (quote ($fs/read_text first)) ^in extended)
+         catch MissingCapability "denied")
+       (try (eval (quote ($fs/read_text first)) ^in reselected)
+         catch MissingCapability "denied")]
+    """) == "[\"denied\" \"denied\"]"
+
+  test "escaped eval closures retain the intersected creation ceiling":
+    check evalAuthorityProbe("""
+      (let saved (env ^capabilities [fs/*]))
+      (let code (quote (fn [path] ($fs/read_text path))))
+      (let broad (eval code ^in saved))
+      (let limited (with_capabilities [(fs/ReadFile first)] (eval code ^in saved)))
+      [(limited first)
+       (try (limited second) catch MissingCapability "denied")
+       (try (with_capabilities [] (broad first)) catch MissingCapability "denied")
+       (broad second)]
+    """) == "[\"first\" \"denied\" \"denied\" \"second\"]"
+
+  test "nested eval and suspended generators preserve the effective ceiling":
+    check evalAuthorityProbe("""
+      (let saved (env ^capabilities [fs/*]))
+      (let rows
+        (with_capabilities [(fs/ReadFile first)]
+          (eval (quote
+            (do
+              (fn produce []
+                (yield ($fs/read_text first))
+                (yield ($fs/read_text second)))
+              (produce))) ^in saved)))
+      [(try
+         (with_capabilities []
+           (eval (quote (eval (quote ($fs/read_text first)) ^in saved)) ^in saved))
+         catch MissingCapability "denied")
+       (rows .next)
+       (try (rows .next) catch MissingCapability "denied")
+       ($fs/read_text second)]
+    """) == "[\"denied\" \"first\" \"denied\" \"second\"]"
+
+  test "nested eval closures retain ceilings through calls and spawn":
+    check evalAuthorityProbe("""
+      (let saved (env ^capabilities [(fs/ReadFile first)]))
+      (let factory (eval (quote (fn [] (fn [path : Str = second] ($fs/read_text path)))) ^in saved))
+      (let nested (factory))
+      [(nested first)
+       (try (nested) catch MissingCapability "denied")
+       (scope (await (spawn
+         (try (nested second) catch MissingCapability "denied"))))]
+    """) == "[\"first\" \"denied\" \"denied\"]"
+
+  test "closing an eval generator restores its caller's context":
+    check evalAuthorityProbe("""
+      (let closed ($cell false))
+      (let saved (env ^capabilities [(fs/ReadFile first)]))
+      (let rows (eval (quote
+        (do (fn produce []
+              (try (yield ($fs/read_text first))
+                ensure (closed .set (check_capabilities (fs/ReadFile first)))))
+            (produce))) ^in saved))
+      (let value (rows .next))
+      (rows .close)
+      [value (closed .get) ($fs/read_text second)]
+    """) == "[\"first\" true \"second\"]"
 
 suite "application and module ceilings":
   test "an imported module ceiling intersects the caller context":

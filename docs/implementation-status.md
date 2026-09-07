@@ -1,6 +1,6 @@
 # Implementation status
 
-**Status date:** 2026-09-04
+**Status date:** 2026-09-07
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
@@ -12,11 +12,23 @@ the generic by declaring the message, and a missing method is the send path's
 protocols/derivation with scoped impl visibility
 (canonical/scoped/overlay, `import_impl`, transactional reload —
 `docs/scoped-impls.md`), structured tasks/channels/actors, module/eval
-overlays, explicit capability values, native roots/calls, typed FFI
+overlays, inherited capability contexts with provider-checked attenuation,
+native roots/calls, typed FFI
 boundaries, `^repr native_wrapper` types (design §16.6),
 serialization, the experimental `gene runurl` URL-module entry
 (design §15.9), and the AI-agent support libraries, whose `ai_agent` example
 driver is archived.
+
+The [implemented authority contract](spec/authority.md) separates name
+visibility, operation permission, resource origins, and execution policy.
+Eval intersects its invoker context with retained Env/parent ceilings; escaped
+eval callables keep that intersection. Capability proposal acceptance criteria
+are not a blanket sandbox guarantee.
+
+A separate existing limitation remains: evaluating a nominal type with methods
+and invoking an instance method can hang. The authority review reproduced this
+on the unchanged runtime as well. Eval retention coverage currently uses
+functions and generators; it does not establish correctness of that type path.
 
 Cordis prerequisites are implemented. `Task/join` exposes repeatable
 `TaskOutcome` data without consuming `await`; `runtime/require_root_lane`
@@ -150,5 +162,5 @@ beyond the experimental backend described above.
 
 For the AI agent, typed tools, event tracing, persistence, gateway surfaces,
 cancellation, and the embedded terminal are shipped. The next packaging slice
-is migrating its current built-in capability reads to explicit named `main`
-grants now supported by `gene run` and `GeneCall`.
+should use host/CLI root contexts and declaration or call-site attenuation.
+`main` arguments carry program data, not capability grants.

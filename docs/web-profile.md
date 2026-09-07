@@ -291,7 +291,7 @@ The compiler gives dedicated diagnostics for explicit fexprs/`caller_env`, runti
 `eval`, `derive` (which remains VM module-initialization behavior, and is
 rejected as the `^derive` property as well as the standalone form), actors,
 channels and supervisors, native FFI, `^repr native_wrapper`/`^native`,
-capability values, `import_impl`, `AtomicCell`/threads, and deep freeze/thaw.
+VM capability-context enforcement, `import_impl`, `AtomicCell`/threads, and deep freeze/thaw.
 These features require an evaluator, scheduler, native loader, authority model,
 dynamic impl visibility, or persistent-data-structure runtime; full fidelity
 belongs to the wasm VM.

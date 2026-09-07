@@ -3,6 +3,10 @@
 **Status:** normative and implemented. Executable coverage: module, macro,
 entrypoint, serde, native API, and CLI suites.
 
+[Authority, evaluation, and sandbox boundaries](authority.md) defines the
+shared security contract. Namespace exposure, resource permissions, and
+execution policy are separate controls.
+
 - Each run owns an Application, one selected application package, a load-once
   module cache keyed by `<package_identity>::<module_path>`, and a root
   namespace. Compile-time macro artifacts and runtime module initialization
@@ -53,6 +57,8 @@ entrypoint, serde, native API, and CLI suites.
   and compile-interface digests, runtime/compile dependency phases, and
   `^owned false` reference nodes for admitted shared modules.
 - `$runtime/load_sandboxed` remains the non-transactional compatibility path.
+  Its `grants` strings select namespace exposure; they do not mint resource
+  capabilities. The active context still authorizes operations.
   Sandboxed code cannot create or manage either kind of sandbox load, even when
   the `runtime` namespace was granted accidentally.
 - Runtime `declarations` exposes only bindings with real runtime `^value`;

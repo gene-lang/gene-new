@@ -19,6 +19,10 @@ callees must be message values. Invalid callees are rejected before send
 arguments run; message names may not end in `!`, and there is no lexical
 callable fallback.
 
+Name access and permission for external effects are distinct. All these call
+forms use the [authority contract](authority.md); a caller binding, imported
+function, or retained handle cannot substitute for the active capability checks.
+
 Call and `new` spreads merge the operand's anatomy: List elements become
 positionals, PropMap entries become named arguments, and a node contributes
 both props and body while dropping its head. A spliced prop replaces an

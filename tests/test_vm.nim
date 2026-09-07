@@ -2052,7 +2052,7 @@ suite "vm — env and eval":
        "(eval (quote x) ^in child)",
        "20"
 
-  test "eval sees explicit Env capabilities":
+  test "the legacy Env capabilities map supplies name bindings":
     ck "(var e (env ^capabilities {^fs \"sandbox\"})) " &
        "(eval (quote fs) ^in e)",
        "\"sandbox\""

@@ -37,7 +37,7 @@ This draft reflects the current direction:
 - `Stream`/generators for lazy processing;
 - stream-based parser design;
 - typed recoverable errors with `^errors` and `try/catch/ensure`;
-- runtime capability values, but **no static `^effects` system in MVP**;
+- runtime capability contexts, but **no static `^effects` system in MVP**;
 - protocol-local derivation through `^impl`, `^derive`, and protocol `derive` forms;
 - explicit named fexprs `(fn name! ...)` for Env-aware syntax calls, and `macro` for limited compile-time templates;
 - direct type construction for canonical data, plus `new`/`ctor` for constructor logic with a pre-created `self` instance;
@@ -3549,7 +3549,10 @@ The trailing `!` is enforced. Fexprs must be named and statically identifiable;
 anonymous `(fn [...] ...)` values are ordinary `Fn` values. `fn!` definition
 syntax is invalid. No other binding or message name may end in `!`.
 
-`caller_env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling an explicit fexpr implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
+Calling an explicit fexpr supplies a borrowed `CallerEnv` view of the caller's
+evaluation environment. This is access to caller names and values, distinct
+from the external-operation permissions in §14. An ordinary Env overlays the
+scope where `eval` executes; `caller_env` instead names the syntax caller:
 
 - `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
 - `caller_env` provides read-only access to the original caller bindings. Each
@@ -3562,7 +3565,10 @@ syntax is invalid. No other binding or message name may end in `!`.
   to mutate captured bindings. Read-only caller access does not make evaluation
   effect-free.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
-- Durable capture is explicit: `(caller_env .snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
+- Durable capture is explicit: `(caller_env .snapshot ["name" ...])` copies
+  exactly the named visible bindings into a closed Env. Missing or duplicate
+  names fail. Selected closures retain their captures; unlisted names are
+  absent from the snapshot. No external capability grant becomes a Gene value.
 - Calling an explicit fexpr hands it caller authority. A syntax callable
   evaluating untrusted syntax should first create a purpose-built snapshot and
   apply the evaluation policies described in §11.5.
@@ -3722,7 +3728,7 @@ local bindings
 parent Env
 optional module namespace
 explicit imports
-explicit capability values
+optional retained capability ceiling
 evaluation policy
 ```
 
@@ -3732,15 +3738,18 @@ Name resolution inside evaluated code proceeds in this order:
 2. bindings in the supplied `Env`, following its parent chain;
 3. explicitly imported modules;
 4. the optional module namespace carried by the `Env`;
-5. core built-ins.
+5. the lexical scope where `eval` executes, including its available built-ins.
 
-Evaluated code does not automatically see arbitrary caller locals. Values must be inserted into the environment or embedded while constructing a template.
+An ordinary Env adds overlays to the evaluation-site lexical scope; it does
+not hide that scope's names. A named `CallerEnv/snapshot` is a closed capture
+with no evaluation-site lexical fallback. Name visibility and operation
+permission are separate; neither form grants external authority by itself.
 
 ```gene
 (var secret "hidden")
 (var e (env ^bindings {^x 1}))
 
-(eval `secret ^in e) # CompileError: unresolved name
+(eval `secret ^in e) # => "hidden": evaluation-site lexical fallback
 
 (var e2 (env ^bindings {^secret secret}))
 (eval `secret ^in e2) # => "hidden"
@@ -3819,27 +3828,38 @@ An `Env`, its parent chain, and associated overlays participate in normal tracin
 
 Compilation failures from evaluated code are recoverable `CompileError` values. Errors raised by the evaluated program propagate normally and are dynamically errorful unless a more specific wrapper constrains them. Boundary `TypeError` values are recoverable errors. Panic, internal VM invariant failures, and native process corruption remain fatal.
 
-An `Env` is also an authority boundary. Evaluated code receives only bindings, imports, and capability values explicitly present in the environment. It receives no ambient filesystem, network, subprocess, FFI-loading, or native-compilation authority.
+An Env may retain a capability ceiling in addition to its name bindings.
+`^capabilities [...]` resolves a selector row against the creator's active
+context. Every `eval` intersects its current context with that retained ceiling
+and all parent Env ceilings. `Env/extend` cannot drop parent restrictions.
+Escaped evaluated functions keep the resulting ceiling.
 
-An evaluation policy may impose execution limits and privileged-feature controls:
+With no selector row, eval inherits the evaluator's context. `^capabilities []`
+selects no external capabilities. The legacy map form of `^capabilities` only
+adds names; use `^bindings` for those values. It does not grant or remove
+external permissions. The implemented rules and boundary tests are in
+[the authority contract](spec/authority.md).
+
+An evaluation policy may impose execution limits:
 
 ```gene
 (var policy
-  (EvalPolicy
+  {
     ^max_steps 1000000
     ^max_memory_mb 128
-    ^timeout_ms 5000
-    ^allow_ffi false
-    ^allow_native_compile false))
+    ^timeout_ms 5000})
 
 (var e
   (env
     ^bindings {^input input}
-    ^capabilities {^fs sandbox_fs}
+    ^capabilities []
     ^policy policy))
 ```
 
-Native code cannot be fully sandboxed in-process. Untrusted generated code should therefore run without FFI/native-compilation authority, or in an isolated process.
+The accepted false `allow_ffi` / `allow_native_compile` policy fields do not
+replace runtime permission checks or establish native-code isolation. The
+sandbox-generation loader (§15.10) separately rejects privileged declarations.
+Arbitrary native code cannot be confined in-process by the VM capability model.
 
 Compiled eval units may be cached using the semantic node hash, compiler version, imported module/macro versions, visible implementation set, environment-relevant compiler options, and policy. Source-location meta need not invalidate the cache unless consumed by a macro or compiler phase.
 
@@ -4287,7 +4307,9 @@ Built-in sendability rules:
 - mutable lists, maps, and nodes are not sendable by default;
 - `Cell` is not sendable;
 - `AtomicCell T` may be sendable when its implementation is thread-safe and `T` is sendable;
-- `Env`, raw FFI pointers, thread-affine handles, and capability values are not sendable unless their concrete type explicitly implements `Send`;
+- `Env`, raw FFI pointers, thread-affine handles, and capability descriptors are
+  not sendable unless their concrete type explicitly implements `Send`;
+  sealed capability grants are never Gene values;
 - generic immutable containers derive `Send` conditionally from their element/key/value types.
 
 Shallow immutability alone does not imply sendability:
@@ -4550,8 +4572,11 @@ Strict declarations make the contract explicit:
 program arguments to `main`; the pre-entry options mint host grants directly,
 while `--grant` is not an authority channel. The entry module may declare an
 application ceiling, while embedding hosts construct the root context
-directly. `with_capabilities` can attenuate one call or dynamic block. The full
-normative model is `docs/proposals/capabilities.md`.
+directly. `with_capabilities` can attenuate one call or dynamic block.
+[The normative implemented authority contract](spec/authority.md) defines the
+layers and boundary rules, including retained-context intersections and current
+CLI defaults. [The capability proposal](proposals/capabilities.md) retains
+historical rationale and deferred design, not blanket implementation claims.
 
 ---
 
@@ -4638,7 +4663,9 @@ eval/cache state
 native module registry
 ```
 
-Ordinary Gene code receives application-level authority only through explicit capability values, explicit function arguments, or an explicitly constructed `Env`.
+External-operation authority comes from the active inherited capability context.
+Ordinary arguments and Env bindings carry data, functions, or resource handles;
+they cannot mint grants or bypass the operation's active-context checks.
 
 ### 15.3 Package
 
@@ -5282,9 +5309,10 @@ libcurl binding as `net/http_client`. Design decisions:
   opt-in flag on `run` may relax this); same-origin remote imports are free;
   each cross-origin fetch prints its provenance. `https` only, with plain
   `http` allowed for localhost.
-- Remote modules receive no ambient filesystem or environment authority;
-  capabilities remain explicit values granted by the entry invocation, and
-  eval's ambient-import restriction is unchanged.
+- Remote-module operations use the entry's host-created context, module/import
+  ceilings, and normal adapter checks. A URL does not establish a deny-by-default
+  sandbox. Capability grants are runtime state, and eval's source-import
+  restriction is unchanged.
 - Compile-time macro discovery fetches dependency sources through the same
   cache, so each URL is fetched at most once per run even when compilation
   needs it before execution.
@@ -5303,9 +5331,11 @@ libcurl binding as `net/http_client`. Design decisions:
                                                     # -> module namespace
 ```
 
-Load `dir/entry` at runtime with **only** the standard-library namespaces named
-in `grants` — `["fs"]`, `["net" "db"]`, or `[]` for a module that gets
-computation and nothing else. The grantable set is the one that reaches outside
+Load `dir/entry` at runtime with **only** the selected standard-library
+namespaces directly exposed. The `grants` argument — `["fs"]`, `["net" "db"]`,
+or `[]` — selects namespace exposure, not sealed resource grants. Passed values
+and admitted shared modules also contribute reachable behavior. The selectable
+set is the one that reaches outside
 the process (`fs`, `net`, `os`, `ffi`, `db`, `store`, `terminal`, `curses`,
 `repl`, `device`, `runtime`, `serde`, `aot`, `web`, `http`); `math`, `str`,
 `json` and the rest are computation over values the module already has and are
@@ -5419,9 +5449,11 @@ the members of `gene`, so a second stdlib root would never meet it; `genex` is
 empty today, which is when that is cheap to close. An incubating root is
 withheld until its members are classified.
 
-It is a namespace boundary, not a resource one: a granted `fs` is all of `fs`,
-not a directory. The web profile has no runtime module loading and therefore no
-sandbox.
+Namespace exposure and resource permission compose: exposing `fs` makes its
+APIs nameable, and filesystem providers still check the active context for each
+operation and resource. Shared-module admission, execution limits, and atomic
+publication are additional controls. See [the authority contract](spec/authority.md).
+The web profile has no VM runtime-module or capability-context sandbox.
 
 ## 16. Foreign function interface
 
@@ -5809,21 +5841,27 @@ points precisely so an extension cannot construct a "wrapper" whose handle
 Gene code could then forge or overwrite: `newWrapper` requires a marked type
 and validates its declared schema.
 
-### 16.10 Dynamic loading and capability values
+### 16.10 Dynamic loading and active capability context
 
-Loading arbitrary native code is authority. Runtime library loading requires an explicit capability:
+Runtime library loading requires `ffi/Load` permission in the active context:
 
 ```gene
-(fn main [^native : ffi/Load] : Nil
-  (var lib (ffi/open native "./plugin.so"))
-  ...)
+(fn open_plugin [path : Str]
+  ^capabilities [(ffi/Load path)]
+  ($ffi/open path))
 ```
 
-The returned library handle grants access only to that loaded library. Symbol lookup requires possession of the handle.
+The returned library handle identifies that library and retains its origin
+restriction. Binding a symbol and invoking a dynamic FFI callable check the
+retained restriction together with the active context. Passing the handle
+does not delegate permission.
 
-Libraries linked or approved by the build/package manifest do not need runtime path authority. The manifest must record native dependencies and target-specific library names.
+Build/package native dependencies are part of the trusted build configuration;
+recording one does not turn a runtime handle into a grant. Native libraries and
+adapters remain trusted code after admission.
 
-Raw pointer manipulation may additionally require an `$ffi/Unsafe` capability in APIs that expose it. This is runtime authority evidence in MVP, not a static `^effects` row.
+Additional raw-pointer permission categories are future design. They are not
+implemented guarantees of native-code confinement; see the authority contract.
 
 ### 16.11 Callbacks and foreign threads
 
@@ -6189,7 +6227,8 @@ Deferred until after the first implementation slice:
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.
 - Raw strings and binary literals are useful but not MVP.
-- Static `^effects` rows remain deferred. Runtime capability values are explicit library/runtime objects.
+- Static `^effects` rows remain deferred. Runtime authority lives in inherited
+  capability contexts; Gene-visible capability specifications are inert requests.
 - FFI starts with generated, statically checked C wrappers and a stable opaque native ABI. Runtime-created signatures come later.
 - Native extensions use opaque `GeneValue`, explicit roots, and a versioned append-only runtime API table; Nim/VM heap layouts are never public ABI.
 - Temporary FFI marshalling is call-scoped. Retained foreign memory requires explicit pointer/buffer ownership and deterministic cleanup.
@@ -6199,6 +6238,11 @@ Deferred until after the first implementation slice:
 - Native code can call bytecode/dynamic Gene through a rooted `gene_call`-style trampoline; dynamic code calls native typed code through generated boundary adapters.
 - The first AOT backend should probably emit portable C. LLVM/JIT can follow after semantics and the native ABI stabilize.
 - Generic native code uses selective monomorphization with a boxed shared fallback.
-- `eval node ^in env` compiles into an isolated overlay and never mutates or replaces source-module bindings.
+- `eval node ^in env` compiles declarations into a separate overlay. Ordinary
+  Env evaluation still has evaluation-site lexical fallback; name access and
+  assignment follow that scope. A CallerEnv uses copies of caller bindings.
 - `Env`, captured overlays, and cycles participate in tracing GC; native retention requires normal roots.
-- Eval authority is explicit through bindings, imports, capabilities, and policy. Untrusted eval has no ambient FFI/native authority.
+- Eval name resolution, capability ceilings, and execution policy are separate.
+  An omitted selector row inherits the evaluator context; `[]` selects none.
+  Retained Env/parent ceilings intersect with the evaluator and survive escaped
+  eval calls. The implemented security contract is `docs/spec/authority.md`.

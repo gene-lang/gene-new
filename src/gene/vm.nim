@@ -1094,6 +1094,7 @@ proc newScope*(parent: Scope = nil,
     if parent != nil: parent.evalBudget
     else: nil
   Scope(application: owner, parent: parent, evalBudget: budget,
+        evalCapabilityCeiling: (if parent != nil: parent.evalCapabilityCeiling else: nil),
         moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
         moduleBase: (if parent != nil: parent.moduleBase else: nil),
         sandboxGenerationId:
@@ -8916,6 +8917,12 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
                                   CapabilityTransition =
   var parent = incoming
   var parentPresence = incomingPresence
+  # Eval overlays share the surrounding module identity for name resolution,
+  # but their retained ceiling still applies to every escaped lexical callable.
+  if lexicalScope != nil and lexicalScope.evalCapabilityCeiling != nil:
+    if parent != lexicalScope.evalCapabilityCeiling:
+      parent = intersectContexts(parent, lexicalScope.evalCapabilityCeiling)
+    parentPresence = nil
   if proto != nil and proto.boundCapabilityCeiling != nil:
     if parent != proto.boundCapabilityCeiling:
       parent = intersectContexts(parent, proto.boundCapabilityCeiling)
@@ -9050,6 +9057,8 @@ proc canBypassCapabilityBoundary(proto: FunctionProto, calleeScope,
   if proto == nil or not proto.capabilityRow.inheritsCapabilities or
       proto.boundExecutionPolicy != nil or proto.boundCapabilityCeiling != nil or
       calleeScope == nil or callerScope == nil:
+    return false
+  if calleeScope.evalCapabilityCeiling != nil:
     return false
   let calleeRoot = calleeScope.moduleRootScope()
   calleeRoot != nil and calleeRoot == callerScope.moduleRootScope()
@@ -10221,6 +10230,9 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.evalBudget =
     if parent != nil: parent.evalBudget
     else: nil
+  scope.evalCapabilityCeiling =
+    if parent != nil: parent.evalCapabilityCeiling
+    else: nil
   scope.ownsTasks = false
   scope.ownedTasks.setLen(0)
   scope.ownsActors = false
@@ -10267,6 +10279,9 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
   result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   result.evalBudget =
     if parent != nil: parent.evalBudget
+    else: nil
+  result.evalCapabilityCeiling =
+    if parent != nil: parent.evalCapabilityCeiling
     else: nil
   result.moduleExecutionPolicy = nil
   if resetSlots:
@@ -10541,6 +10556,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.moduleBase = nil
     scope.application = nil
     scope.evalBudget = nil
+    scope.evalCapabilityCeiling = nil
     scope.moduleExecutionPolicy = nil
     scope.borrowedCallerEnv = false
     scope.moduleRoot = false
@@ -10598,6 +10614,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.moduleBase = nil
   scope.application = nil
   scope.evalBudget = nil
+  scope.evalCapabilityCeiling = nil
   scope.borrowedCallerEnv = false
   if pools.callScopesLen < MaxCallScopePool:
     pools.callScopes[pools.callScopesLen] = scope
@@ -12876,6 +12893,7 @@ proc snapshotScopeChain(source: Scope,
   result.moduleRoot = source.moduleRoot
   result.moduleStatic = source.moduleStatic
   result.forceOverlayImpls = source.forceOverlayImpls
+  result.evalCapabilityCeiling = source.evalCapabilityCeiling
   result.annotationSelfType = source.annotationSelfType
   scopeMap[key] = result
   if source.slots.len > 0:
@@ -16192,23 +16210,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             except GeneError as e:
               raiseCompileError(scope, e.msg)
               newChunk()
-          # §14: "the default should be the intersection of those contexts."
-          # With no row, evaluated code inherits the evaluator's active context;
-          # with one, it gets that row — already resolved against the creating
-          # context when the Env was minted, so it can only ever be narrower.
-          # Either way it is never broader than the evaluator, which is the
-          # property §14 actually requires.
-          #
-          # Sealing is still expressible, and is now something a program says
-          # rather than something it gets by omission: `^capabilities []`
-          # resolves to the empty context and hands evaluated code nothing.
-          let granted =
-            if env.kind == vkEnv and env.envCapabilityContext != nil:
-              env.envCapabilityContext
-            elif capabilityContext != nil:
-              capabilityContext
-            else:
-              newCapabilityContext()
+          # A retained Env context is a ceiling, never replacement authority.
+          # It was resolved against the creator, who may have held more than
+          # this evaluator. Parent ceilings survive Env/extend and ^parent.
+          # With no retained row, eval inherits the active context; an explicit
+          # empty row denies external effects. Escaped code retains this meet.
+          var granted =
+            if capabilityContext != nil: capabilityContext
+            else: newCapabilityContext()
+          if env.kind == vkEnv:
+            for itemEnv in envChain(env):
+              let ceiling = itemEnv.envCapabilityContext
+              if ceiling != nil and ceiling != granted:
+                granted = intersectContexts(granted, ceiling)
           pushFrame()
           installCapabilityTransition(
             CapabilityTransition(context: granted, presence: nil))
@@ -20158,6 +20172,11 @@ proc generatorFiber(stream: Value): Fiber =
   Fiber(continuation)
 
 proc closeGeneratorStream(stream: Value) {.nimcall.} =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   let fiber = stream.generatorFiber
   if fiber == nil:
     return
@@ -20184,6 +20203,11 @@ proc closeGeneratorStream(stream: Value) {.nimcall.} =
         "generator close did not finish cleanup")
 
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
     return StreamPullResult(has: false, item: NIL)

@@ -251,19 +251,18 @@ The rule that "every new host power is a capability value" applies:
   which is both the policy and the audit trail.
 - **MVP has no import escape hatch at all.** A post-MVP
   `(serde/read s ^import [...])` allowlist may be added, but because module
-  loading is authority, it must be gated by an explicit module-loading
-  capability value (e.g. `Module/Load`), not by a bare flag:
-
-  ```gene
-  (serde/read text ^load module_load_cap ^import ["a/b"])   ; post-MVP shape
-  ```
+  loading is an external effect, a future extension must define the loader
+  policy and active-context permission checks. An allowlist alone must not
+  authorize loading. There is no implemented `Module/Load` grant argument.
 
   There is no "auto-import whatever the payload mentions" mode, ever.
 - **Restore hooks are policy-gated** (§7): plain `serde/read` performs only
   reference resolution and direct typed-data construction — it executes no
   user code. `^allow_restore` opts trusted callers into `serde_restore`.
-- Deserialized payloads can never contain capability values (§3), so a
-  payload cannot smuggle authority regardless of resolver policy.
+- Sealed capability grants are never Gene values and cannot be deserialized.
+  Resolved functions and resources still obey active-context and retained-ceiling
+  checks; resolver policy and trusted restore hooks remain separate controls.
+  See [the authority contract](spec/authority.md).
 
 Resolution failures, arity/shape mismatches, unknown control tags, policy
 violations, and version-envelope mismatches are all `SerdeError` with

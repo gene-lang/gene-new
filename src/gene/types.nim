@@ -468,12 +468,9 @@ type
     implValidationEpoch*: uint64
     implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
-    ## Ambient authority for an eval overlay root (capabilities.md §14). An
-    ## eval scope is its own module root with no `this_mod`, so a call made from
-    ## evaluated code crosses a module boundary and would resolve its ceiling to
-    ## nothing. This carries the Env's granted context so the boundary intersects
-    ## against what the program actually handed over. Nil keeps the default of
-    ## no ambient authority.
+    ## Effective context retained by an eval overlay and its lexical children,
+    ## independently of module identity. Escaped callables intersect this with
+    ## the invoker's active context. Nil means no additional lexical ceiling.
     evalCapabilityCeiling*: CapabilityContext
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
@@ -817,7 +814,8 @@ type
     ## The ambient authority evaluated code runs under (capabilities.md §14).
     ## Distinct from `capabilities` above, which is the *binding* overlay: one
     ## decides which names exist, this one decides what they are allowed to do.
-    ## Nil means the historical default — evaluated code gets nothing.
+    ## Nil adds no ceiling: eval inherits its active context, intersecting any
+    ## retained parent Env ceilings. An explicit empty context denies effects.
     capabilityContext: CapabilityContext
     ## A closed capture: evaluating in it must NOT see the scope the `eval` is
     ## written in. `caller_env .snapshot [...]` sets it, because a snapshot

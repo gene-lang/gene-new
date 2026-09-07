@@ -533,9 +533,11 @@ sealed release app -> omit full source maps, keep minimal stack-trace metadata
 
 ## 12. Runtime capabilities in packaged apps
 
-A packaged executable should not imply ambient authority.
-
-Filesystem, network, subprocess, FFI loading, and writable directories should still be represented through explicit runtime capability values.
+Packaging must not itself mint authority. Filesystem, network, subprocess, and
+native-loading permissions follow the host-created capability context and its
+declaration/call-site ceilings. Ordinary arguments carry data, not grants.
+The current native CLI has compatibility root grants; packaging does not imply
+a deny-by-default sandbox. See [the implemented authority contract](../spec/authority.md).
 
 Examples:
 
