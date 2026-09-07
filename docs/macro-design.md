@@ -54,6 +54,12 @@ A named `fn` ending in `!` declares an fexpr:
   ($println "hi"))
 ```
 
+This `unless!` illustrates choosing when to evaluate syntax. Each `eval` has
+its own binding and control-flow scope: it cannot directly rebind caller
+variables or target the caller's function or loop. For an `unless` with ordinary
+lexical control flow, use the template macro in §6. The runnable
+[fexpr demo](../examples/fexpr_demo.gene) shows both forms.
+
 The removed `(fn! ...)` form is an error. Anonymous functions remain ordinary
 eager `Fn` values; there is no anonymous fexpr form. This puts the special
 evaluation property on the callable's visible binding and call sites.
@@ -117,9 +123,45 @@ them as ordinary arguments. The declared parameters bind `syntax_call`'s raw
 syntax payload.
 
 `caller_env` is authority. It resolves the caller's lexical bindings, imports,
-module namespace, and built-ins. Code evaluated in it cannot create or rebind
-bindings in the caller's scope, although reachable mutable values can still be
-mutated.
+module namespace, and built-ins. Evaluation uses a fresh overlay and cannot
+directly create or rebind bindings in the original caller scope. Declarations
+made by evaluated code belong to that evaluation.
+
+**Current VM behavior:** `set` against a copied caller binding succeeds within
+the evaluation copy. It leaves the original caller binding unchanged, and a
+later `eval` gets a fresh copy:
+
+```gene
+(var x 0)
+(unless! false
+  (set x 1)
+  x)                 # => 1, inside this evaluation
+x                    # => 0, in the caller
+```
+
+The current VM does not reject this assignment. Requiring an error for writes
+to copied caller bindings would be a separate language change.
+
+Read-only caller bindings do not imply effect-free evaluation. Reachable
+mutable values such as Cells and buffers retain their identity. Calling a
+caller-defined closure can also mutate bindings captured by that closure:
+
+```gene
+(var counter ($cell 0))
+(unless! false (counter .set 1))
+(counter .get)       # => 1
+```
+
+An `eval` receives names and values, but no enclosing function-return or loop
+targets. `return` must target a function defined within the evaluated syntax;
+`break` and `continue` must target a loop within that syntax. Without a valid
+local target, these forms raise `CompileError` when `eval` compiles them, even
+if the fexpr was called inside a function or loop. Syntax that the fexpr does
+not evaluate does not reach this compilation step.
+
+A `return` in the fexpr's own function body still returns from that fexpr.
+It does not return from the caller. Functions and loops introduced by evaluated
+syntax use their ordinary local control-flow rules.
 
 The view is valid only for the dynamic extent of the fexpr call. It is not
 `Send` or serializable and cannot escape through a return, error payload,
@@ -173,6 +215,27 @@ calls need not retain argument syntax.
 (when ready? (start))
 ```
 
+Template macros extend ordinary lexical syntax. Name resolution and control
+flow follow the expanded code. For a conventional `unless`:
+
+```gene
+(macro unless [cond body...]
+  `(if_not %cond %body...))
+
+(var x 0)
+(unless false (set x 1))
+x                    # => 1
+
+(fn early []
+  (unless false (return 9))
+  42)
+(early)              # => 9
+```
+
+This template introduces no function or loop, so the caller's lexical targets
+remain available. A template that introduces a function or loop must account
+for the resulting scopes.
+
 Macro arguments are syntax nodes. Parameters may destructure syntax patterns
 and may use named, default, typed, and rest positions. The MVP body is exactly
 one syntax-producing expression, normally quasiquote. Arbitrary compile-time
@@ -208,12 +271,13 @@ hygiene and an explicit low-level capture API remain future work.
 
 ## 8. Choosing a mechanism
 
-Use an explicit fexpr for runtime control of evaluation, lazy arguments,
-runtime DSLs, or code that deliberately evaluates under `CallerEnv`/`Env`
-authority.
+Use an explicit fexpr for custom evaluation strategies, lazy arguments, and
+runtime DSLs with explicitly bounded `CallerEnv`/`Env` access. Its evaluated
+syntax has its own binding and control-flow scope.
 
-Use a macro for a small compile-time surface rewrite that should become normal
-Gene before name resolution, checking, tooling, or AOT lowering.
+Use a template macro to extend ordinary lexical syntax and control flow through
+a small compile-time rewrite. Its expansion becomes normal Gene before name
+resolution, checking, tooling, or AOT lowering.
 
 Use a core special form only for a primitive compiler semantic. Use a protocol
 message for eager receiver-based behavior. These categories do not fall back
@@ -224,6 +288,8 @@ to one another.
 - Fexprs are named `(fn name! ...)` declarations; `fn!` is rejected.
 - Only `(name! ...)` selects syntax-preserving invocation.
 - `caller_env` and `syntax_call` are implicit and read-only.
+- Evaluated syntax cannot target caller `return`, `break`, or `continue`.
+- `set` on copied caller bindings currently updates only the evaluation copy.
 - Held fexprs have runtime type `Fexpr` but ordinary calls reject them.
 - Macro names and message names cannot end in `!`.
 - Mutation APIs use ordinary snake_case names.

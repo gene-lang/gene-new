@@ -1,0 +1,73 @@
+#!/usr/bin/env gene run
+# Run: bin/gene run examples/fexpr_demo.gene
+# Fexprs interpret syntax at runtime. Macros expand into lexical code.
+
+(fn show [label : Str value : Any] ($println $"${label}: ${value}"))
+
+(fn unless! [cond body...]
+  (if_not (eval cond ^in caller_env)
+    (eval `(do %body...) ^in caller_env)))
+
+(macro unless [cond body...]
+  `(if_not %cond %body...))
+
+(show "Selected syntax" (unless! false "evaluated"))
+(show "Skipped syntax" (unless! true (return 99))) # nil; no eval occurs
+
+# Current VM behavior: a copied caller binding can be assigned within eval.
+# This assignment is confined to that evaluation and leaves caller x intact.
+(var x 0)
+(show "Inside the evaluation copy" (unless! false (set x 1) x)) # 1
+(show "Caller binding after fexpr" x)                          # 0
+(show "Next evaluation sees caller binding" (unless! false x)) # 0
+(unless false (set x 2))
+(show "Caller binding after macro" x)                          # 2
+
+# Reachable mutable values retain their identities.
+(var counter ($cell 0))
+(unless! false (counter .set 1))
+(show "Shared Cell after fexpr" (counter .get)) # 1
+
+# A closure keeps its own captured binding authority when called via eval.
+(fn update_x [] (set x 3))
+(unless! false (update_x))
+(show "Caller binding after closure call" x) # 3
+
+# Caller control-flow targets do not cross the eval boundary.
+(fn caller_return []
+  (unless! false (return 9))
+  42)
+(show "Caller return through fexpr"
+  (try (caller_return) catch CompileError "rejected"))
+(show "Caller break through fexpr"
+  (try (for item in [1] (unless! false (break)))
+    catch CompileError "rejected"))
+(show "Caller continue through fexpr"
+  (try (for item in [1] (unless! false (continue)))
+    catch CompileError "rejected"))
+
+# The evaluated syntax can introduce its own function and loop targets.
+(show "Return within evaluated function"
+  (unless! false
+    (fn local_result [] (return 7))
+    (local_result))) # 7
+(show "Break and continue within evaluated loop"
+  (unless! false
+    (var local_total 0)
+    (for item in [1 2 3 4]
+      (if (== item 1) (continue))
+      (if (== item 4) (break))
+      (set local_total (+ local_total item)))
+    local_total)) # 5
+
+# This macro introduces no function or loop, so caller targets remain lexical.
+(fn macro_return []
+  (unless false (return 9))
+  42)
+(show "Caller return through macro" (macro_return)) # 9
+(var macro_total 0)
+(for item in [1 2 3 4]
+  (unless (!= item 1) (continue))
+  (unless (!= item 4) (break))
+  (set macro_total (+ macro_total item)))
+(show "Caller break and continue through macro" macro_total) # 5

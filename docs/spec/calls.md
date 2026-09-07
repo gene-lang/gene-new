@@ -26,6 +26,29 @@ earlier named value with the same key. Use `$body` explicitly when only a
 node's positional contents are wanted. Named properties must not disappear
 merely because a call uses a spread.
 
+## Fexpr evaluation boundaries
+
+Fexprs choose how to interpret syntax at runtime. Template macros expand into
+ordinary lexical syntax; binding and control flow follow the resulting code.
+The two mechanisms have different evaluation boundaries:
+
+- Each `eval` through `caller_env` uses a fresh evaluation copy. Direct binding
+  writes cannot change the original caller scope, and evaluated declarations
+  stay local to that evaluation.
+- The current VM permits `set` on a copied caller binding, updating only the
+  evaluation copy. It does not currently reject the assignment. A subsequent
+  `eval` starts from the caller bindings again.
+- Mutable values and invoked closures retain their existing effects. A Cell
+  can be mutated, and a closure may rebind variables it already captures.
+- `eval` carries no enclosing caller function-return or loop targets. `return`
+  requires a function within the evaluated syntax; `break` and `continue`
+  require a loop within it. An absent local target raises `CompileError` when
+  that syntax is compiled by `eval`. Unevaluated syntax does not reach this check.
+
+The fexpr's own body and functions or loops inside evaluated syntax follow
+ordinary local control-flow rules. See [the fexpr and macro guide](../macro-design.md)
+and the runnable [fexpr demo](../../examples/fexpr_demo.gene).
+
 ## Direct message calls and checked callable signatures
 
 `(P:msg receiver args...)` normalizes to `(receiver .P:msg args...)`.

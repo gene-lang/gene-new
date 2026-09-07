@@ -3518,6 +3518,19 @@ caller, then decides what to evaluate.
     (eval `(do %body...) ^in caller_env)))
 ```
 
+This example selects when syntax is evaluated. Each `eval` has its own binding
+and control-flow scope; it does not provide an ordinary lexical `unless`:
+
+```gene
+(var x 0)
+(unless! false (set x 1)) # current VM: updates an evaluation copy
+x                         # => 0
+```
+
+Use a template macro (§11.2) when the body needs to assign caller variables or
+use the caller's enclosing function or loop targets. See the
+[fexpr demo](../examples/fexpr_demo.gene) for both forms.
+
 The declaration creates an `Fexpr` runtime value (§3).
 Its parameter vector matches raw syntax nodes, not evaluated argument values.
 Inside its body, the implementation provides read-only implicit bindings:
@@ -3539,12 +3552,28 @@ syntax is invalid. No other binding or message name may end in `!`.
 `caller_env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling an explicit fexpr implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
 
 - `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
-- `caller_env` is a read-only view for name resolution. Code evaluated `^in caller_env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
+- `caller_env` provides read-only access to the original caller bindings. Each
+  `eval` materializes a fresh evaluation copy; declarations stay in the evaluated
+  unit. The current VM permits `set` on copied bindings, but these writes affect
+  only that evaluation and are discarded afterward. Rejecting such assignments
+  would be a separate language change.
+- Reachable mutable values — Cells, buffers, actors — retain their identities
+  and can still be mutated. Invoked closures retain their existing authority
+  to mutate captured bindings. Read-only caller access does not make evaluation
+  effect-free.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
 - Durable capture is explicit: `(caller_env .snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
 - Calling an explicit fexpr hands it caller authority. A syntax callable
   evaluating untrusted syntax should first create a purpose-built snapshot and
   apply the evaluation policies described in §11.5.
+
+`eval` does not inherit the caller's function-return or loop targets. `return`
+requires a function defined within the evaluated syntax; `break` and `continue`
+require a loop within that syntax. A missing local target is a `CompileError`
+when the syntax is evaluated, even if the fexpr call is inside a function or
+loop. Control forms in the fexpr's own body follow that body's ordinary lexical
+rules. [The fexpr contract](macro-design.md#4-invocation-context) describes the
+binding and control boundaries together.
 
 For example, this durable environment contains `config` but not `secret`:
 
@@ -3562,7 +3591,7 @@ with a `SyntaxCall` and a fresh borrowed `CallerEnv`.
 
 Use an explicit fexpr for:
 
-- custom control flow;
+- custom evaluation strategies;
 - lazy arguments;
 - runtime DSLs;
 - test/configuration languages;
@@ -3582,6 +3611,12 @@ compile-time expansion.
 (macro when [cond, body...]
   `(if_yes %cond %body...))
 ```
+
+Template macros extend ordinary lexical syntax and control flow. The expanded
+code determines the bindings and the targets of `return`, `break`, and
+`continue`. A conditional template introduces no new function or loop, so its
+body can use the caller's targets; a template that introduces those constructs
+must account for their scopes.
 
 Macro names are ordinary `snake_case` names and may not end in `!`; the marker
 is reserved for runtime fexpr invocation.
