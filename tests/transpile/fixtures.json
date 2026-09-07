@@ -3632,6 +3632,308 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "self.inherited_input",
+      "source": "(protocol Eq (message eq [other : Self] : Bool))\n(type Dog ^props {}) (impl Eq for Dog (message eq [other : Self] : Bool true))\n(type Pup : Dog ^props {}) (fn compare [a : Dog b : Dog] : Bool (a .Eq:eq b)) (fn run [] : Bool (compare (Pup) (Dog))) (run)",
+      "web_source": "(mod self_inherited_input ^profile web) (protocol Eq (message eq [other : Self] : Bool))\n(type Dog ^props {}) (impl Eq for Dog (message eq [other : Self] : Bool true))\n(type Pup : Dog ^props {}) (fn compare [a : Dog b : Dog] : Bool (a .Eq:eq b)) (fn run [] : Bool (compare (Pup) (Dog)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.direct_override",
+      "source": "(type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^override false)) (fn run [] : Bool (Self:accepts (Pup) (Dog))) (run)",
+      "web_source": "(mod self_direct_override ^profile web) (type Dog ^props {} (message accepts [other : Self] : Bool true))\n(type Pup : Dog ^props {} (message accepts [other : Dog] : Bool ^^override false)) (fn run [] : Bool (Self:accepts (Pup) (Dog)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": false
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.impl_modes",
+      "source": "(protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited ^^override (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)]) (run)",
+      "web_source": "(mod self_impl_modes ^profile web) (protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited ^^override (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "3"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "5"
+          },
+          {
+            "kind": "int",
+            "value": "9"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.mixed_default",
+      "source": "(protocol P (message copy [] : Self))\n(protocol Q ^inherit [P] (message special_copy [] : Self (self .P:copy)))\n(type Dog ^props {}) (impl P for Dog (message copy [] : Self self))\n(type Pup : Dog ^props {}) (impl Q for Pup ^^override (message P:copy [] : Dog (Dog))) (fn run [] : Str (try (do ((Pup) .Q:special_copy) \"unchecked\") catch TypeError \"checked\")) (run)",
+      "web_source": "(mod self_mixed_default ^profile web) (protocol P (message copy [] : Self))\n(protocol Q ^inherit [P] (message special_copy [] : Self (self .P:copy)))\n(type Dog ^props {}) (impl P for Dog (message copy [] : Self self))\n(type Pup : Dog ^props {}) (impl Q for Pup ^^override (message P:copy [] : Dog (Dog))) (fn run [] : Str (try (do ((Pup) .Q:special_copy) \"unchecked\") catch TypeError \"checked\"))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "checked"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.inherited_closure",
+      "source": "(type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true)))\n(type Pup : Dog ^props {}) (fn run [] : Bool (let f ((Pup) .checker)) (f (Dog))) (run)",
+      "web_source": "(mod self_inherited_closure ^profile web) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true)))\n(type Pup : Dog ^props {}) (fn run [] : Bool (let f ((Pup) .checker)) (f (Dog)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.builtin_identity",
+      "source": "(protocol Eq (message eq [other : Self] : Bool)) (impl Eq for Str (message eq [other : Str] : Bool (== self other))) (fn run [] : Bool (\"a\" .Eq:eq \"a\")) (run)",
+      "web_source": "(mod self_builtin_identity ^profile web) (protocol Eq (message eq [other : Self] : Bool)) (impl Eq for Str (message eq [other : Str] : Bool (== self other))) (fn run [] : Bool (\"a\" .Eq:eq \"a\"))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.missing_direct_flag",
+      "source": "(type Base ^props {} (message value [] : Int 1)) (type Child : Base ^props {} (message value [] : Int 2))",
+      "web_source": "(mod self_missing_direct_flag ^profile web) (type Base ^props {} (message value [] : Int 1)) (type Child : Base ^props {} (message value [] : Int 2))",
+      "expected_error": "override",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "Violates the shared declaration contract.",
+        "diagnostic": "override"
+      }
+    },
+    {
+      "id": "self.forbidden_replacement_self",
+      "source": "(type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^override true))",
+      "web_source": "(mod self_forbidden_replacement_self ^profile web) (type Base ^props {} (message value [x : Self] : Bool true)) (type Child : Base ^props {} (message value [x : Self] : Bool ^^override true))",
+      "expected_error": "Self",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "Violates the shared declaration contract.",
+        "diagnostic": "Self"
+      }
+    },
+    {
+      "id": "self.imported_impl",
+      "source": "(protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true)) (type Pup : Dog ^props {}) (impl Eq for Pup ^^override (message eq [other : Dog] : Bool false)) ((Pup) .Eq:label)",
+      "web_source": "(mod self_imported_impl ^profile web) (import [Eq Dog : Canine] from \"./provider.gene\") (type Pup : Canine ^props {}) (impl Eq for Pup ^^override (message eq [other : Canine] : Bool false)) (fn run [] : Str ((Pup) .Eq:label))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "base"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true))"
+      }
+    },
+    {
+      "id": "self.imported_closure",
+      "source": "(protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true)) (type Pup : Dog ^props {}) (let f ((Pup) .checker)) (f (Dog))",
+      "web_source": "(mod self_imported_closure ^profile web) (import [Dog : Canine] from \"./provider.gene\") (type Pup : Canine ^props {}) (fn run [] : Bool (let f ((Pup) .checker)) (f (Canine)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true))"
+      }
+    },
+    {
+      "id": "self.imported_default_scope",
+      "source": "(ns origin (fn private_label [x : Any] : Str \"source\") (protocol P (message label [other : Self] : Str (let mine : Self self) (private_label mine)))) (import origin [P]) (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) ((Item) .P:label (Item))",
+      "web_source": "(mod self_imported_default_scope ^profile web) (import [P] from \"./provider.gene\") (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label (Item)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "source"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (fn private_label [x : Any] : Str \"source\") (protocol P (message label [other : Self] : Str (let mine : Self self) (private_label mine)))"
+      }
+    },
+    {
+      "id": "self.universal_message_syntax",
+      "source": "(protocol U ^^universal (message value [] : Int (Self:value self))) (type Box ^props {} (message value [] : Int 7)) ((Box) .U:value)",
+      "web_source": "(mod self_universal_message_syntax ^profile web) (protocol U ^^universal (message value [] : Int (Self:value self))) (type Box ^props {} (message value [] : Int 7)) (fn run [] : Int ((Box) .U:value))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.default_type_collision",
+      "source": "(ns origin (type Item ^props {} (message value [] : Str \"provider\")) (fn private_label [] : Str ((Item) .value)) (protocol P (message label [] : Str (private_label)))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label)) (run)",
+      "web_source": "(mod self_default_type_collision ^profile web) (import [P] from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "provider"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Item ^props {} (message value [] : Str \"provider\")) (fn private_label [] : Str ((Item) .value)) (protocol P (message label [] : Str (private_label)))"
+      }
+    },
+    {
+      "id": "self.default_nested_binding",
+      "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeError \"checked\")]) (run)",
+      "web_source": "(mod self_default_nested_binding ^profile web) (import [P] from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeError \"checked\")])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "provider"
+          },
+          {
+            "kind": "str",
+            "value": "checked"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))"
+      }
+    },
+    {
+      "id": "self.imported_universal_value",
+      "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin [U]) (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box))) (run)",
+      "web_source": "(mod self_imported_universal_value ^profile web) (import [U] from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "fallback"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (protocol U ^^universal (message label [] : Str \"fallback\"))"
+      }
+    },
+    {
+      "id": "self.universal_builtin",
+      "source": "(protocol U ^^universal (message label [] : Str \"fallback\")) (fn run [] : Str (\"hello\" .U:label)) (run)",
+      "web_source": "(mod self_universal_builtin ^profile web) (protocol U ^^universal (message label [] : Str \"fallback\")) (fn run [] : Str (\"hello\" .U:label))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "fallback"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "self.default_inherited_boundary",
+      "source": "(protocol P (message check [other : Self] : Bool true)) (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn compare [x : Any] : Bool ((Pup) .P:check x)) (fn run [] : (List Bool) [(compare (Dog)) (try (compare (Other)) catch TypeError false)]) (run)",
+      "web_source": "(mod self_default_inherited_boundary ^profile web) (protocol P (message check [other : Self] : Bool true)) (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn compare [x : Any] : Bool ((Pup) .P:check x)) (fn run [] : (List Bool) [(compare (Dog)) (try (compare (Other)) catch TypeError false)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

@@ -136,14 +136,35 @@ An impl of child protocol `Q ^inherit [P]` supplies inherited `P` message
 identities. `impl P for T` and `impl Q for T` therefore conflict at the same
 receiver and are rejected when the second registration becomes visible, even
 if the program never sends the overlapping message. Marker ancestors with no
-messages do not conflict. Impl registrations at different receiver depths are
-legal; the nearest receiver wins only within the same message identity.
+messages do not conflict. Impl registrations at different receiver depths must
+preserve shared conformance `Self` bindings and resolved callable contracts;
+the nearest receiver wins only within the same message identity.
+
+`^^override` on an impl selects ancestor-body reuse. Omitted messages retain
+applicable ancestor implementations before protocol defaults are considered.
+A complete impl without the flag assembles local/default bodies and still
+preserves inherited contracts. Reused entries retain their source declaration
+scope and `super` origin, so importing a composed impl does not reselect its
+bodies from the caller's scope.
+
+Static forward impl declarations participate in readiness checks before their
+bodies can run. An initialized child can wait for a known forward ancestor, but
+an affected send reports `declaration not ready` instead of using a temporary
+binding or falling back past a pending provider. Conditional/computed/derived
+registrations count only when executed. Eval groups remain lexical overlays;
+they do not acquire module-wide canonical publication.
 
 Base-scope conflicts are detected when a module scope is assembled. A reverse
 index from `(receiver, message identity)` to loaded module scopes lets later
 canonical activation check scoped registrations without scanning all modules.
 The index is intentionally not keyed by simple name: unrelated `A/render` and
 `B/render` may coexist, with ambiguity only in a send that knows both.
+
+Dependency discovery also covers ancestor/descendant receiver relationships,
+protocol binding identities (including markers), and composed body sources.
+Later visibility cannot silently change an established binding. A complete
+child impl is not invalid merely because it lacks an impl flag; binding and
+signature conflicts remain errors in either mode.
 
 Overlay scopes are not globally enumerable. Registration rejects conflicts
 already visible to the overlay, but a later canonical activation may conflict
@@ -225,6 +246,12 @@ hiding, or renaming that pair while it has importers rejects reload. Changing
 its transitive message identities revalidates every importer. Success commits
 registrations, importer references, indexes, caches, and one new activation
 epoch atomically; failure preserves the old state.
+
+The prospective transaction recomposes inherited entries when source providers
+change and propagates those entries through scoped imports. A lost inherited
+source cannot silently become a protocol default or an untracked stale copy.
+Live overlays revalidate and recompose at the affected lookup before body entry,
+because they are outside the enumerable transaction.
 
 Live overlays are outside this transaction. Reload can succeed and later make
 an overlay send ambiguous, or make a later conformance check fail for an

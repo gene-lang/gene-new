@@ -4,7 +4,7 @@
 ## mutate GIR; unsupported forms fail while building the IR, before emission.
 
 import std/[algorithm, json, os, sequtils, sets, strutils, tables]
-import ./[compiler, printer, reader, types]
+import ./[compiler, gir, printer, reader, types, type_contracts]
 
 type
   WebProfileError* = object of CatchableError
@@ -90,6 +90,7 @@ type
     keys*: seq[string]
     patterns*: seq[Value]
     params*: seq[WebParam]     # wekLambda: the inline callback's parameters
+    defaultFactory*: string
     argumentOrder*: seq[int]  # named-call evaluation order, before slot reordering
 
   WebParam* = object
@@ -156,6 +157,8 @@ type
     body*: WebExpr
     loc*: SourceLoc
     sourceForm: Value
+    declaresOverride*: bool
+    annotationSelf*: WebType
 
   WebConstructor* = ref object
     params*: seq[WebParam]
@@ -174,6 +177,8 @@ type
     methods*: seq[WebMethod]
     constructor*: WebConstructor
     implementedProtocols*: seq[string]
+    protocolBindings*: Table[string, WebType]
+    protocolMethods*: seq[WebImplMethod]
     implementsError*: bool
     loc*: SourceLoc
 
@@ -195,12 +200,24 @@ type
     params*: seq[WebParam]
     returnType*: WebType
     loc*: SourceLoc
+    identity*: string
+    ownerIdentity*: string
+    ownerName*: string
+    defaultFactory*: string
+    universalDefault*: bool
+    sourceForm: Value
 
   WebProtocolDecl* = ref object
     sourceName*: string
     emittedName*: string
     messages*: seq[WebProtocolMessage]
     loc*: SourceLoc
+    identity*: string
+    ownMessages*: seq[WebProtocolMessage]
+    parentNames*: seq[string]
+    parents*: seq[WebProtocolDecl]
+    universal*: bool
+    resolvedClosure*: bool
 
   WebImplMethod* = ref object
     protocolName*: string
@@ -211,12 +228,19 @@ type
     body*: WebExpr
     loc*: SourceLoc
     sourceForm: Value
+    inheritedTargetName*: string
+    defaultBody*: bool
+    annotationSelf*: WebType
 
   WebImplDecl* = ref object
     protocolName*: string
     targetName*: string
     methods*: seq[WebImplMethod]
     loc*: SourceLoc
+    inheritBodies*: bool
+    localMethods*: seq[WebImplMethod]
+    bindings*: Table[string, WebType]
+    assembled*: bool
 
   WebConstant* = ref object
     sourceName*: string
@@ -260,6 +284,7 @@ type
     visibleProtocols*: seq[WebProtocolDecl]
     impls*: seq[WebImplDecl]
     namespaces*: seq[WebNamespace]
+    defaultBodies: seq[WebFunction]
 
   WebArtifacts* = object
     js*, ts*, declarations*, sourceMap*, tsSourceMap*: string
@@ -314,6 +339,9 @@ type
     errorTypes: HashSet[string]
     protocolImplTargets: HashSet[string]
     currentTypeName: string
+    annotationSelf: WebType
+    inProtocolDefault: bool
+    implementations: seq[WebImplDecl]
     currentNamespace: seq[string]
     currentFunction: string
     # Nearest enclosing form the analyzer has descended through, so a
@@ -486,6 +514,8 @@ proc sameType(a, b: WebType): bool =
   if a == nil or b == nil or a.kind != b.kind:
     return false
   case a.kind
+  of wtkAny:
+    a.name == b.name
   of wtkList:
     sameType(a.item, b.item)
   of wtkTask, wtkStream:
@@ -596,9 +626,12 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
       analysis.typeDecls.hasKey(expected.name) and
       analysis.typeDecls.hasKey(actual.name):
     let expectedOrigin = analysis.typeDecls[expected.name].originId
-    if expectedOrigin.len > 0 and
-        expectedOrigin == analysis.typeDecls[actual.name].originId:
-      return true
+    var current = actual.name
+    while analysis.typeDecls.hasKey(current):
+      let declaration = analysis.typeDecls[current]
+      if current == expected.name or (expectedOrigin.len > 0 and
+          expectedOrigin == declaration.originId): return true
+      current = declaration.parentName
   if expected.kind == actual.kind:
     case expected.kind
     of wtkList, wtkTask, wtkStream:
@@ -616,6 +649,7 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
     else: discard
   if expected.kind == wtkNominal and
       analysis.protocolDecls.hasKey(expected.name):
+    if analysis.protocolDecls[expected.name].universal: return true
     var target = case actual.kind
       of wtkNominal: actual.name
       of wtkNil: "Nil"
@@ -672,6 +706,7 @@ proc typeName(typ: WebType): string =
     "(Callable [" & params.join(" ") & "] " & typeName(typ.returnType) & ")"
 
 proc mangleWebName*(name: string): string
+proc jsString(value: string): string
 
 proc tsType(typ: WebType): string =
   case typ.kind
@@ -720,7 +755,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkSym: "sym"
   of wtkInt: "int"
   of wtkF64: "f64"
-  of wtkAny: "any"
+  of wtkAny: (if typ.name == "bound Self": "bound_self" else: "any")
   of wtkNever: "never"
   of wtkList: "list_" & validatorSuffix(typ.item)
   of wtkPropMap: "prop_map"
@@ -943,6 +978,165 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     return WebType(kind: wtkNominal, name: value.head.symVal)
   raise webError(loc, "unsupported web type annotation: " & value.print())
 
+proc webTypeHasSelf(typ: WebType): bool =
+  if typ == nil: return false
+  if typ.kind == wtkNominal and typ.name == "Self": return true
+  if webTypeHasSelf(typ.item) or webTypeHasSelf(typ.returnType) or
+      webTypeHasSelf(typ.restType): return true
+  for types in [typ.params, typ.members, typ.namedTypes, typ.errorTypes]:
+    for item in types:
+      if webTypeHasSelf(item): return true
+
+proc bindWebSelf(typ, selfType: WebType): WebType =
+  if typ == nil or not webTypeHasSelf(typ): return typ
+  if typ.kind == wtkNominal and typ.name == "Self": return selfType
+  result = WebType()
+  result[] = typ[]
+  result.item = bindWebSelf(typ.item, selfType)
+  result.returnType = bindWebSelf(typ.returnType, selfType)
+  result.restType = bindWebSelf(typ.restType, selfType)
+  result.params = @[]
+  for item in typ.params: result.params.add bindWebSelf(item, selfType)
+  result.members = @[]
+  for item in typ.members: result.members.add bindWebSelf(item, selfType)
+  result.namedTypes = @[]
+  for item in typ.namedTypes: result.namedTypes.add bindWebSelf(item, selfType)
+  result.errorTypes = @[]
+  for item in typ.errorTypes: result.errorTypes.add bindWebSelf(item, selfType)
+
+proc hasBoundSelf(typ: WebType): bool =
+  if typ == nil: return false
+  if typ.kind == wtkAny and typ.name == "bound Self": return true
+  if hasBoundSelf(typ.item) or hasBoundSelf(typ.returnType) or hasBoundSelf(typ.restType): return true
+  for items in [typ.params, typ.members, typ.namedTypes, typ.errorTypes]:
+    for item in items:
+      if hasBoundSelf(item): return true
+
+proc parseAnnotation(analysis: WebAnalysis, expr: Value, loc: SourceLoc): WebType =
+  result = parseWebType(expr, loc)
+  if webTypeHasSelf(result):
+    if analysis.annotationSelf == nil:
+      raise webError(loc, "Self requires a declaring receiver type")
+    result = bindWebSelf(result, analysis.annotationSelf)
+
+proc sourceTypeHasSelf(expr: Value): bool =
+  case expr.kind
+  of vkSymbol: expr.symVal in ["Self", "Self?"]
+  of vkNode:
+    if sourceTypeHasSelf(expr.head): return true
+    for item in expr.body:
+      if sourceTypeHasSelf(item): return true
+    for _, item in expr.props:
+      if sourceTypeHasSelf(item): return true
+    false
+  of vkList:
+    for item in expr.listItems:
+      if sourceTypeHasSelf(item): return true
+    false
+  of vkMap:
+    for _, item in expr.mapEntries:
+      if sourceTypeHasSelf(item): return true
+    false
+  else: false
+
+proc messageSignatureHasSelf(form: Value): bool =
+  if form.body.len > 1 and sourceTypeHasSelf(form.body[1]): return true
+  if form.body.len > 3 and sourceTypeHasSelf(form.body[3]): return true
+  form.props.hasKey("errors") and sourceTypeHasSelf(form.props["errors"])
+
+proc webOverrideFlag(form: Value, loc: SourceLoc): bool =
+  if not form.props.hasKey("override"): return false
+  if form.props["override"].kind != vkBool:
+    raise webError(loc, "^override requires a literal Bool")
+  form.props["override"].boolVal
+
+proc contractTypeValue(analysis: WebAnalysis, typ: WebType): Value =
+  ## Reify only signature metadata, then use the same exact comparator as GIR.
+  ## Nominal identities include their defining module rather than an alias name.
+  if typ == nil: return NIL
+  case typ.kind
+  of wtkNominal:
+    if analysis.typeDecls.hasKey(typ.name):
+      let decl = analysis.typeDecls[typ.name]
+      return newSym("nominal:" & (if decl.originId.len > 0: decl.originId else: typ.name))
+    if analysis.protocolDecls.hasKey(typ.name):
+      return newSym("protocol:" & analysis.protocolDecls[typ.name].identity)
+    newSym(typ.name)
+  of wtkList, wtkTask, wtkStream:
+    let head = case typ.kind
+      of wtkList: "List"
+      of wtkTask: "Task"
+      else: "Stream"
+    var body = @[contractTypeValue(analysis, typ.item)]
+    for error in typ.errorTypes: body.add contractTypeValue(analysis, error)
+    newNode(newSym(head), body = body)
+  of wtkUnion:
+    var members: seq[Value]
+    for item in typ.members: members.add contractTypeValue(analysis, item)
+    newNode(newSym("|"), body = members)
+  of wtkMap:
+    newNode(newSym("Map"), body = @[
+      contractTypeValue(analysis, typ.params[0]), contractTypeValue(analysis, typ.params[1])])
+  of wtkCallable, wtkCallback:
+    var parameters: seq[Value]
+    for item in typ.params: parameters.add contractTypeValue(analysis, item)
+    if typ.restType != nil:
+      parameters.add newNode(newSym("..."), body = @[contractTypeValue(analysis, typ.restType)])
+    var props = initPropTable()
+    if typ.namedKeys.len > 0:
+      var named = initPropTable()
+      for i, key in typ.namedKeys: named[key] = contractTypeValue(analysis, typ.namedTypes[i])
+      props["named"] = newMap(named)
+    if typ.checkedErrors:
+      var errors: seq[Value]
+      for item in typ.errorTypes: errors.add contractTypeValue(analysis, item)
+      props["errors"] = newList(errors)
+    newNode(newSym(if typ.kind == wtkCallable: "Callable" else: typ.name),
+      body = @[newList(parameters), contractTypeValue(analysis, typ.returnType)], props = props)
+  else:
+    newSym(typeName(typ))
+
+proc webSignatureValue(analysis: WebAnalysis, params: seq[WebParam],
+                       returnType: WebType, source: Value, loc: SourceLoc,
+                       selfType: WebType): Value =
+  let proto = FunctionProto(name: "message", sourceLoc: loc,
+    params: @["self"], paramTypes: @[NIL], paramDefaults: @[ParamDefault()],
+    requiredPositional: 1, returnType: contractTypeValue(analysis, returnType))
+  for param in params:
+    let typ = contractTypeValue(analysis, param.typ)
+    if param.named:
+      proto.namedParams.add NamedParam(arg: param.argName, local: param.sourceName,
+        typeExpr: typ, defaultValue: ParamDefault(optional: param.optional))
+    else:
+      proto.params.add param.sourceName
+      proto.paramTypes.add typ
+      proto.paramDefaults.add ParamDefault(optional: param.hasDefault)
+      if not param.hasDefault: inc proto.requiredPositional
+  var errors: seq[Value]
+  let checked = source.kind == vkNode and source.props.hasKey("errors")
+  if checked:
+    for error in source.props["errors"].listItems:
+      errors.add contractTypeValue(analysis, bindWebSelf(parseWebType(error, loc), selfType))
+  newFunction("message", proto.params, proto, nil, checked, errors)
+
+proc validateWebSignature(analysis: WebAnalysis, expectedParams, actualParams: seq[WebParam],
+                          expectedResult, actualResult: WebType,
+                          expectedSource, actualSource: Value, loc: SourceLoc,
+                          expectedSelf, actualSelf: WebType, label: string) =
+  let expected = webSignatureValue(analysis, expectedParams, expectedResult,
+                                   expectedSource, loc, expectedSelf)
+  let actual = webSignatureValue(analysis, actualParams, actualResult,
+                                 actualSource, loc, actualSelf)
+  let mismatch = callableSignatureMismatch(expected, actual)
+  if mismatch.len > 0:
+    raise webError(loc, label & " has incompatible " & mismatch)
+
+proc bindWebParams(params: seq[WebParam], selfType: WebType): seq[WebParam] =
+  for param in params:
+    var bound = param
+    bound.typ = bindWebSelf(param.typ, selfType)
+    result.add bound
+
 proc mangleWebName*(name: string): string =
   for c in name:
     case c
@@ -1033,7 +1227,7 @@ proc parseParams(analysis: WebAnalysis, value: Value,
     if items[j + 1].isSym("="):
       raise webError(loc, "web parameter '" & name.symVal &
         "' cannot have a default; annotate it `: T?` to make it optional")
-    let typ = parseWebType(items[j + 1], loc)
+    let typ = analysis.parseAnnotation(items[j + 1], loc)
     let hasDefault = j + 2 < items.len and items[j + 2].isSym("=")
     var defaultSource = NIL
     if hasDefault:
@@ -1118,8 +1312,9 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
   result.generator = containsForm(form, "yield")
 
 proc validateCallableProps(analysis: WebAnalysis, form: Value,
-                           loc: SourceLoc, label: string) =
-  rejectUnknownProps(form, loc, label, ["errors"])
+                           loc: SourceLoc, label: string, allowOverride = false) =
+  rejectUnknownProps(form, loc, label,
+    (if allowOverride: @["errors", "override"] else: @["errors"]))
   if not form.props.hasKey("errors"): return
   let row = form.props["errors"]
   if row.kind != vkList:
@@ -1127,7 +1322,7 @@ proc validateCallableProps(analysis: WebAnalysis, form: Value,
   var seen = initHashSet[string]()
   for item in row.listItems:
     if item.isSym(","): continue
-    let typ = parseWebType(item, loc)
+    let typ = analysis.parseAnnotation(item, loc)
     if typ.kind == wtkNever: continue
     if typ.kind != wtkNominal:
       raise webError(loc, label & " ^errors entries must name Error types")
@@ -1211,13 +1406,22 @@ proc validateWebMessageName(name: string, loc: SourceLoc) =
     raise webError(loc,
       "message names may not end in !; trailing ! is reserved for fexpr calls")
 
+proc parseProtocolParams(analysis: WebAnalysis, value: Value,
+                         loc: SourceLoc): seq[WebParam]
+
 proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
                       loc: SourceLoc): WebTypeDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web type requires a name")
   rejectUnknownProps(form, loc, "type", ["props", "body"])
   result = WebTypeDecl(sourceName: form.body[0].symVal,
-    emittedName: mangleWebName(form.body[0].symVal), loc: loc)
+    emittedName: mangleWebName(form.body[0].symVal), loc: loc,
+    originId: loc.sourceName & "\x1f" & form.body[0].symVal)
+  if result.sourceName == "Self": raise webError(loc, "Self is reserved")
+  let selfType = WebType(kind: wtkNominal, name: result.sourceName)
+  let savedSelf = analysis.annotationSelf
+  analysis.annotationSelf = selfType
+  defer: analysis.annotationSelf = savedSelf
   var memberStart = 1
   if form.body.len > 1 and form.body[1].isSym(":"):
     if form.body.len < 3:
@@ -1231,7 +1435,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
     if fields.kind != vkMap:
       raise webError(loc, "web type ^props must be a property map")
     for name, annotation in fields.mapEntries:
-      let typ = parseWebType(annotation, loc)
+      let typ = analysis.parseAnnotation(annotation, loc)
       result.fields.add WebField(sourceName: name,
         emittedName: mangleWebName(name), typ: typ,
         optional: typeAllowsNil(typ))
@@ -1246,12 +1450,12 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       if annotation.kind == vkSymbol and annotation.symVal.endsWith("..."):
         if result.bodyRest != nil or i != annotations.high:
           raise webError(loc, "web type ^body accepts one final repeated type")
-        result.bodyRest = parseWebType(
+        result.bodyRest = analysis.parseAnnotation(
           newSym(annotation.symVal[0 .. ^4]), loc)
       else:
         if result.bodyRest != nil:
           raise webError(loc, "web type ^body repeated type must be final")
-        result.bodyFields.add parseWebType(annotation, loc)
+        result.bodyFields.add analysis.parseAnnotation(annotation, loc)
   for i in memberStart ..< form.body.len:
     let member = form.body[i]
     if member.kind != vkNode or member.head.kind != vkSymbol:
@@ -1269,9 +1473,10 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       validateWebMessageName(member.body[0].symVal, loc)
       let methodDecl = WebMethod(sourceName: member.body[0].symVal,
         emittedName: mangleWebName(member.body[0].symVal),
-        params: parseParams(analysis, member.body[1], loc),
-        returnType: parseWebType(member.body[3], loc), loc: loc,
-        sourceForm: member)
+        params: bindWebParams(parseProtocolParams(analysis, member.body[1], loc), selfType),
+        returnType: analysis.parseAnnotation(member.body[3], loc), loc: loc,
+        sourceForm: member, declaresOverride: webOverrideFlag(member, loc),
+        annotationSelf: selfType)
       result.methods.add methodDecl
     else:
       raise webError(loc, "web type member '" & member.head.symVal &
@@ -1313,7 +1518,12 @@ proc parseProtocolParams(analysis: WebAnalysis, value: Value,
   for item in value.listItems:
     if not item.isSym(","): items.add item
   var i = 0
-  if items.len > 0 and items[0].isSym("self"): inc i
+  if items.len > 0 and items[0].isSym("self"):
+    inc i
+    if items.len >= 3 and items[1].isSym(":"):
+      if not items[2].isSym("Self"):
+        raise webError(loc, "web explicit receiver annotation must be Self")
+      i = 3
   while i < items.len:
     if items[i].kind != vkSymbol or i + 2 >= items.len or
         not items[i + 1].isSym(":"):
@@ -1327,9 +1537,22 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
                           loc: SourceLoc): WebProtocolDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web protocol requires a name")
-  rejectUnknownProps(form, loc, "protocol", [])
+  rejectUnknownProps(form, loc, "protocol", ["inherit", "universal"])
   result = WebProtocolDecl(sourceName: form.body[0].symVal,
-    emittedName: mangleWebName(form.body[0].symVal), loc: loc)
+    emittedName: mangleWebName(form.body[0].symVal), loc: loc,
+    identity: loc.sourceName & "\x1f" & form.body[0].symVal)
+  if result.sourceName == "Self": raise webError(loc, "Self is reserved")
+  if form.props.hasKey("inherit"):
+    if form.props["inherit"].kind != vkList:
+      raise webError(loc, "protocol ^inherit requires a list")
+    for parent in form.props["inherit"].listItems:
+      if parent.kind != vkSymbol:
+        raise webError(loc, "web protocol parents must be statically named")
+      result.parentNames.add parent.symVal
+  if form.props.hasKey("universal"):
+    if form.props["universal"].kind != vkBool:
+      raise webError(loc, "protocol ^universal requires a literal Bool")
+    result.universal = form.props["universal"].boolVal
   for i in 1 ..< form.body.len:
     let member = form.body[i]
     if member.kind != vkNode or not member.head.isSym("message") or
@@ -1344,12 +1567,24 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
     result.messages.add WebProtocolMessage(sourceName: name,
       symbolName: "$" & result.emittedName & "$" & mangleWebName(name),
       params: parseProtocolParams(analysis, member.body[1], loc),
-      returnType: parseWebType(member.body[3], loc), loc: loc)
+      returnType: parseWebType(member.body[3], loc), loc: loc,
+      identity: result.identity & "\x1f" & name,
+      ownerIdentity: result.identity, ownerName: result.sourceName, sourceForm: member,
+      defaultFactory: (if member.body.len > 4:
+        "$" & result.emittedName & "$" & mangleWebName(name) & "$default" else: ""),
+      universalDefault: result.universal and member.body.len > 4)
+  result.ownMessages = result.messages
 
 proc findProtocolMessage(declaration: WebProtocolDecl,
                          name: string): WebProtocolMessage =
+  for message in declaration.ownMessages:
+    if message.sourceName == name: return message
   for messageDecl in declaration.messages:
-    if messageDecl.sourceName == name: return messageDecl
+    if messageDecl.sourceName == name:
+      if result != nil:
+        raise newException(WebProfileError, "ambiguous web protocol message " & name)
+      result = messageDecl
+  if result != nil: return
   raise newException(WebProfileError,
     "web protocol " & declaration.sourceName & " has no message " & name)
 
@@ -1358,9 +1593,9 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
   if form.body.len < 3 or form.body[0].kind != vkSymbol or
       not form.body[1].isSym("for") or form.body[2].kind != vkSymbol:
     raise webError(loc, "web impl requires `impl Protocol for Type`")
-  rejectUnknownProps(form, loc, "impl", [])
+  rejectUnknownProps(form, loc, "impl", ["override"])
   result = WebImplDecl(protocolName: form.body[0].symVal,
-    targetName: form.body[2].symVal, loc: loc)
+    targetName: form.body[2].symVal, loc: loc, inheritBodies: webOverrideFlag(form, loc))
   if not analysis.protocolDecls.hasKey(result.protocolName):
     raise webError(loc, "unknown web protocol: " & result.protocolName)
   if not analysis.typeDecls.hasKey(result.targetName) and
@@ -1371,16 +1606,243 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
   for i in 3 ..< form.body.len:
     let member = form.body[i]
     if member.kind != vkNode or not member.head.isSym("message") or
-        member.body.len < 5 or member.body[0].kind != vkSymbol or
+        member.body.len < 5 or
         member.body[1].kind != vkList or not member.body[2].isSym(":"):
       raise webError(loc, "web impl accepts message definitions")
-    validateWebMessageName(member.body[0].symVal, loc)
-    let messageDecl = findProtocolMessage(protocol, member.body[0].symVal)
+    rejectUnknownProps(member, loc, "impl message", ["errors"])
+    var messageDecl: WebProtocolMessage
+    if member.body[0].kind == vkSymbol:
+      validateWebMessageName(member.body[0].symVal, loc)
+      for candidate in protocol.messages:
+        if candidate.sourceName == member.body[0].symVal:
+          if messageDecl != nil:
+            raise webError(loc, "ambiguous impl message; qualify its protocol identity")
+          messageDecl = candidate
+      if messageDecl == nil:
+        raise webError(loc, "unknown impl message " & member.body[0].symVal)
+    elif member.body[0].kind == vkNode and member.body[0].head.isSym("msg") and
+        member.body[0].body.len == 2:
+      let ownerName = member.body[0].body[0].symVal
+      let messageName = member.body[0].body[1].symVal
+      if not analysis.protocolDecls.hasKey(ownerName):
+        raise webError(loc, "unknown message protocol " & ownerName)
+      let qualified = findProtocolMessage(analysis.protocolDecls[ownerName], messageName)
+      for candidate in protocol.messages:
+        if candidate.identity == qualified.identity: messageDecl = candidate
+      if messageDecl == nil:
+        raise webError(loc, "message is outside the implemented protocol closure")
+    else:
+      raise webError(loc, "web impl message must have a static name")
     result.methods.add WebImplMethod(protocolName: result.protocolName,
       targetName: result.targetName, message: messageDecl,
       params: parseProtocolParams(analysis, member.body[1], loc),
       returnType: parseWebType(member.body[3], loc), loc: loc,
       sourceForm: member)
+  result.localMethods = result.methods
+
+proc protocolIdentities(protocol: WebProtocolDecl): seq[WebProtocolDecl] =
+  var pending = @[protocol]
+  var seen = initHashSet[string]()
+  while pending.len > 0:
+    let current = pending.pop()
+    if current.identity in seen: continue
+    seen.incl current.identity
+    result.add current
+    pending.add current.parents
+
+proc bodyAnnotationsHaveSelf(form: Value): bool =
+  if form.kind != vkNode: return false
+  if form.head.isSym("type"): return false # introduces a new concrete context
+  if form.head.isSym("message") and messageSignatureHasSelf(form): return true
+  if form.head.isSym("fn"):
+    for i, part in form.body:
+      if part.kind == vkList and sourceTypeHasSelf(part): return true
+      if part.isSym(":") and i + 1 < form.body.len and sourceTypeHasSelf(form.body[i + 1]):
+        return true
+  if form.head.kind == vkSymbol and form.head.symVal in ["let", "var", "const"] and
+      form.body.len > 2 and form.body[1].isSym(":") and sourceTypeHasSelf(form.body[2]):
+    return true
+  for child in form.body:
+    if bodyAnnotationsHaveSelf(child): return true
+
+proc resolveWebProtocols(analysis: WebAnalysis) =
+  var states = initTable[string, int]()
+  proc resolve(protocol: WebProtocolDecl) =
+    if protocol.identity.len == 0: protocol.identity = "builtin:" & protocol.sourceName
+    if states.getOrDefault(protocol.identity) == 2: return
+    if protocol.resolvedClosure:
+      states[protocol.identity] = 2
+      return
+    if states.getOrDefault(protocol.identity) == 1:
+      raise webError(protocol.loc, "circular protocol inheritance")
+    states[protocol.identity] = 1
+    for name in protocol.parentNames:
+      if not analysis.protocolDecls.hasKey(name):
+        raise webError(protocol.loc, "unknown protocol parent " & name)
+      protocol.parents.add analysis.protocolDecls[name]
+    var closure: seq[WebProtocolMessage]
+    var seen = initHashSet[string]()
+    for parent in protocol.parents:
+      resolve(parent)
+      for message in parent.messages:
+        if message.identity notin seen:
+          seen.incl message.identity
+          closure.add message
+    if protocol.ownMessages.len == 0 and protocol.parentNames.len == 0 and
+        protocol.parents.len == 0:
+      protocol.ownMessages = protocol.messages
+    var ownNames = initHashSet[string]()
+    for message in protocol.ownMessages:
+      if message.sourceName in ownNames:
+        raise webError(message.loc, "duplicate protocol message " & message.sourceName)
+      ownNames.incl message.sourceName
+      if message.identity.len == 0:
+        message.identity = protocol.identity & "\x1f" & message.sourceName
+        message.ownerIdentity = protocol.identity
+        message.ownerName = protocol.sourceName
+      if message.identity notin seen:
+        seen.incl message.identity
+        closure.add message
+    protocol.messages = closure
+    if protocol.universal:
+      for message in closure:
+        if message.sourceForm.kind != vkNode or message.sourceForm.body.len <= 4:
+          raise webError(protocol.loc, "universal protocol messages require defaults")
+        if bodyAnnotationsHaveSelf(message.sourceForm):
+          raise webError(protocol.loc, "universal protocol cannot depend on abstract Self")
+    states[protocol.identity] = 2
+    protocol.resolvedClosure = true
+  for _, protocol in analysis.protocolDecls: resolve(protocol)
+
+proc webReceiverType(name: string): WebType =
+  case name
+  of "Nil": webType(wtkNil)
+  of "Str": webType(wtkStr)
+  of "List": webType(wtkList, webType(wtkAny))
+  else: WebType(kind: wtkNominal, name: name)
+
+proc inheritedWebMethod(analysis: WebAnalysis, receiverName, identity: string): WebImplMethod =
+  var name = receiverName
+  while analysis.typeDecls.hasKey(name):
+    for methodDecl in analysis.typeDecls[name].protocolMethods:
+      if methodDecl.message.identity == identity: return methodDecl
+    name = analysis.typeDecls[name].parentName
+
+proc concreteWebMessage(analysis: WebAnalysis, receiver: WebType,
+                        message: WebProtocolMessage): WebProtocolMessage =
+  result = WebProtocolMessage()
+  result[] = message[]
+  let name = case receiver.kind
+    of wtkNominal: receiver.name
+    of wtkNil: "Nil"
+    of wtkStr: "Str"
+    of wtkList: "List"
+    else: ""
+  var provider = inheritedWebMethod(analysis, name, message.identity)
+  if provider == nil:
+    for impl in analysis.implementations:
+      if impl.targetName == name:
+        for candidate in impl.methods:
+          if candidate.message.identity == message.identity: provider = candidate
+  if provider != nil:
+    result.params = provider.params
+    result.returnType = provider.returnType
+  else:
+    # An existential/opaque receiver supplies no concrete Self proof at this
+    # call site. The selected implementation's own emitted boundaries still
+    # enforce its retained concrete contract on every invocation.
+    result.params = bindWebParams(message.params, webType(wtkAny))
+    result.returnType = bindWebSelf(message.returnType, webType(wtkAny))
+
+proc resolveWebImplementations(analysis: WebAnalysis) =
+  var active = initHashSet[string]()
+  var pairs = initHashSet[string]()
+  for impl in analysis.implementations:
+    let key = analysis.protocolDecls[impl.protocolName].identity & "\x1f" &
+      contractTypeValue(analysis, webReceiverType(impl.targetName)).print()
+    if key in pairs: raise webError(impl.loc, "duplicate impl " & impl.protocolName)
+    pairs.incl key
+  proc assemble(impl: WebImplDecl) =
+    if impl.assembled: return
+    let key = impl.protocolName & "\x1f" & impl.targetName
+    if key in active: raise webError(impl.loc, "circular impl inheritance")
+    active.incl key
+    let protocol = analysis.protocolDecls[impl.protocolName]
+    let receiver = webReceiverType(impl.targetName)
+    let parentName = if analysis.typeDecls.hasKey(impl.targetName):
+      analysis.typeDecls[impl.targetName].parentName else: ""
+    var parent = parentName
+    var inheritedBindings = initTable[string, WebType]()
+    while analysis.typeDecls.hasKey(parent):
+      for candidate in analysis.implementations:
+        if candidate.targetName == parent: assemble(candidate)
+      for identity, binding in analysis.typeDecls[parent].protocolBindings:
+        if inheritedBindings.hasKey(identity) and
+            not signatureTypeEqual(contractTypeValue(analysis, inheritedBindings[identity]),
+                                   contractTypeValue(analysis, binding)):
+          raise webError(impl.loc, "incompatible inherited Self bindings")
+        inheritedBindings[identity] = binding
+      parent = analysis.typeDecls[parent].parentName
+    for identity in protocolIdentities(protocol):
+      impl.bindings[identity.identity] = inheritedBindings.getOrDefault(identity.identity,
+        (if identity.universal: nil else: receiver))
+      analysis.protocolImplTargets.incl(identity.sourceName & "\x1f" & impl.targetName)
+    impl.methods = @[]
+    var hasAncestor = false
+    for message in protocol.messages:
+      let ancestor = inheritedWebMethod(analysis, parentName, message.identity)
+      if ancestor != nil: hasAncestor = true
+      let bound = impl.bindings.getOrDefault(message.ownerIdentity, receiver)
+      let requiredParams = bindWebParams(message.params, bound)
+      let requiredResult = bindWebSelf(message.returnType, bound)
+      var selected: WebImplMethod
+      for local in impl.localMethods:
+        if local.message.identity == message.identity:
+          if selected != nil: raise webError(impl.loc, "duplicate impl message " & message.sourceName)
+          if ancestor != nil and messageSignatureHasSelf(local.sourceForm):
+            raise webError(local.loc, "Self is forbidden in a replacement signature")
+          local.params = bindWebParams(local.params, receiver)
+          local.returnType = bindWebSelf(local.returnType, receiver)
+          local.annotationSelf = receiver
+          selected = local
+      if selected == nil and impl.inheritBodies and ancestor != nil:
+        selected = WebImplMethod(protocolName: impl.protocolName, targetName: impl.targetName,
+          message: message, params: ancestor.params, returnType: ancestor.returnType,
+          sourceForm: ancestor.sourceForm, inheritedTargetName: parentName,
+          annotationSelf: ancestor.annotationSelf, loc: impl.loc)
+      if selected == nil and message.sourceForm.kind == vkNode and message.sourceForm.body.len > 4:
+        selected = WebImplMethod(protocolName: impl.protocolName, targetName: impl.targetName,
+          message: message, params: requiredParams, returnType: requiredResult,
+          sourceForm: message.sourceForm, defaultBody: true, annotationSelf: bound, loc: impl.loc)
+      if selected == nil:
+        raise webError(impl.loc, "impl is missing message " & message.sourceName)
+      if message.sourceForm.kind == vkNode:
+        analysis.validateWebSignature(requiredParams, selected.params, requiredResult,
+          selected.returnType, message.sourceForm, selected.sourceForm, impl.loc,
+          bound, selected.annotationSelf, "impl " & impl.protocolName & " for " & impl.targetName)
+      if ancestor != nil:
+        analysis.validateWebSignature(ancestor.params, selected.params, ancestor.returnType,
+          selected.returnType, ancestor.sourceForm, selected.sourceForm, impl.loc,
+          ancestor.annotationSelf, selected.annotationSelf, "inherited message " & message.sourceName)
+      impl.methods.add selected
+    if impl.inheritBodies and not hasAncestor:
+      raise webError(impl.loc, "inheriting impl has no applicable ancestor message provider")
+    if analysis.typeDecls.hasKey(impl.targetName):
+      let typ = analysis.typeDecls[impl.targetName]
+      for methodDecl in impl.methods:
+        for existing in typ.protocolMethods:
+          if existing.message.identity == methodDecl.message.identity:
+            raise webError(impl.loc, "conflicting impl message " & methodDecl.message.sourceName)
+        typ.protocolMethods.add methodDecl
+      for identity, binding in impl.bindings:
+        if typ.protocolBindings.hasKey(identity) and
+            not signatureTypeEqual(contractTypeValue(analysis, typ.protocolBindings[identity]),
+                                   contractTypeValue(analysis, binding)):
+          raise webError(impl.loc, "conflicting protocol Self bindings")
+        typ.protocolBindings[identity] = binding
+    impl.assembled = true
+    active.excl key
+  for impl in analysis.implementations: assemble(impl)
 
 proc findField(analysis: WebAnalysis, typ: WebType,
                name: string): WebType =
@@ -1433,6 +1895,28 @@ proc findMethod(analysis: WebAnalysis, typ: WebType,
     if declaration.parentName.len == 0 or
         not analysis.typeDecls.hasKey(declaration.parentName): break
     declaration = analysis.typeDecls[declaration.parentName]
+
+proc validateDirectWebMethods(analysis: WebAnalysis, declarations: seq[WebTypeDecl]) =
+  for declaration in declarations:
+    var seen = initHashSet[string]()
+    for methodDecl in declaration.methods:
+      if methodDecl.sourceName in seen:
+        raise webError(methodDecl.loc, "duplicate type message " & methodDecl.sourceName)
+      seen.incl methodDecl.sourceName
+      let inherited = analysis.findMethod(webReceiverType(declaration.parentName),
+                                           methodDecl.sourceName)
+      if (inherited != nil) != methodDecl.declaresOverride:
+        raise webError(methodDecl.loc, methodDecl.sourceName &
+          (if inherited == nil: " declares ^override but has no inherited target"
+           else: " requires ^override true"))
+      if inherited != nil:
+        if messageSignatureHasSelf(methodDecl.sourceForm):
+          raise webError(methodDecl.loc, "Self is forbidden in a replacement signature")
+        analysis.validateWebSignature(inherited.params, methodDecl.params,
+          inherited.returnType, methodDecl.returnType, inherited.sourceForm,
+          methodDecl.sourceForm, methodDecl.loc,
+          inherited.annotationSelf, webReceiverType(declaration.sourceName),
+          "type message " & declaration.sourceName & "/" & methodDecl.sourceName)
 
 proc findConstructor(analysis: WebAnalysis,
                      declaration: WebTypeDecl): WebConstructor =
@@ -1894,6 +2378,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                        analysis.findMethod(receiver.typ, messageName)
                      else: nil
     if protocolMessage != nil:
+      protocolMessage = analysis.concreteWebMessage(receiver.typ, protocolMessage)
       if isSuper:
         if value.body.len - 2 != protocolMessage.params.len:
           raise webError(loc, "web protocol message " & messageName &
@@ -1926,24 +2411,22 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           " expects " & $protocolMessage.params.len & " argument(s)")
       result = WebExpr(kind: wekSend, typ: protocolMessage.returnType, loc: loc,
         text: messageName, keys: @[protocolMessage.symbolName],
+        defaultFactory: (if protocolMessage.universalDefault: protocolMessage.defaultFactory else: ""),
         boolValue: value.body[0].isSym("?~"), children: @[receiver])
       let builtinTarget = builtinImplTarget(receiver.typ)
       if builtinTarget.len > 0:
         let qualifier = value.body[1].body[0]
         let protocolName = if qualifier.kind == vkSymbol: qualifier.symVal else: ""
-        if protocolName.len == 0 or
-            protocolName & "\x1f" & builtinTarget notin analysis.protocolImplTargets:
+        if protocolName & "\x1f" & builtinTarget in analysis.protocolImplTargets:
+          result.keys = @[
+            implFunctionName(protocolName, builtinTarget, messageName), "$builtin"]
+          result.external = true
+        elif not protocolMessage.universalDefault:
           raise webError(loc, "web builtin " & builtinTarget &
             " has no visible impl for protocol " & protocolName)
-        result.keys = @[
-          implFunctionName(protocolName, builtinTarget, messageName), "$builtin"]
-        result.external = true
       for i in 2 ..< value.body.len:
-        var paramType = protocolMessage.params[i - 2].typ
-        if paramType.kind == wtkNominal and paramType.name == "Self":
-          paramType = receiver.typ
         result.children.add analysis.analyzeExpr(value.body[i], bindings,
-                                                  paramType)
+                                                  protocolMessage.params[i - 2].typ)
       return
     if methodDecl == nil and receiver.typ.kind == wtkStream and
         messageName in ["has_next", "peek", "next", "close"]:
@@ -2030,6 +2513,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType,
         loc: loc)
+    if methodDecl == nil and analysis.inProtocolDefault and receiver.typ.kind == wtkAny:
+      result = WebExpr(kind: wekSend, typ: webType(wtkAny), loc: loc,
+        text: messageName, keys: @[jsString(mangleWebName(messageName))],
+        boolValue: value.body[0].isSym("?~"), children: @[receiver])
+      for i in 2 ..< value.body.len:
+        result.children.add analysis.analyzeExpr(value.body[i], bindings)
+      return
     if methodDecl == nil:
       raise webError(loc, "web type " & typeName(receiver.typ) &
         " has no message " & messageName)
@@ -2799,7 +3289,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         not analysis.protocolDecls.hasKey(value.body[0].symVal):
       raise webError(loc, "web message value requires static Protocol:message")
     let protocol = analysis.protocolDecls[value.body[0].symVal]
-    let messageDecl = findProtocolMessage(protocol, value.body[1].symVal)
+    let receiverType = if expected != nil and expected.params.len > 0:
+      expected.params[0] else: webType(wtkAny)
+    let messageDecl = analysis.concreteWebMessage(receiverType,
+      findProtocolMessage(protocol, value.body[1].symVal))
     var callbackType = WebType(kind: wtkCallback, name: "message",
       params: @[webType(wtkAny)], returnType: messageDecl.returnType)
     for param in messageDecl.params: callbackType.params.add param.typ
@@ -2809,7 +3302,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         accepts(analysis, expected.returnType, callbackType.returnType):
       callbackType = expected
     return WebExpr(kind: wekMessage, typ: callbackType, loc: loc,
-      text: messageDecl.symbolName, paramTypes: callbackType.params)
+      text: messageDecl.symbolName, paramTypes: callbackType.params,
+      defaultFactory: (if messageDecl.universalDefault: messageDecl.defaultFactory else: ""))
   if name == "quote":
     if value.body.len != 1:
       raise webError(loc, "web quote expects one datum")
@@ -3084,7 +3578,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let returnType =
       if inferred and expected.kind == wtkCallable: webType(wtkAny)
       elif inferred: expected.returnType
-      else: parseWebType(value.body[2], loc)
+      else: analysis.parseAnnotation(value.body[2], loc)
     # Copied, not shared: the body may shadow and rebind freely, and those
     # bindings must not escape into the enclosing scope.
     var inner = copyBindings(bindings)
@@ -3134,7 +3628,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if value.body.len == 4:
       if not value.body[1].isSym(":"):
         raise webError(loc, "web " & name & " annotation requires `:`")
-      declared = parseWebType(value.body[2], loc)
+      declared = analysis.parseAnnotation(value.body[2], loc)
       initializerIndex = 3
     let initializer = analysis.analyzeExpr(value.body[initializerIndex],
                                             bindings, declared)
@@ -3705,7 +4199,8 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
   if expected != nil:
     if expected.kind == wtkCallable:
       result = WebExpr(kind: wekCheck, typ: expected, loc: loc, children: @[result])
-    elif result.typ.kind == wtkAny and expected.kind != wtkAny:
+    elif hasBoundSelf(expected) or
+        (result.typ.kind == wtkAny and expected.kind != wtkAny):
       result = WebExpr(kind: wekCheck, typ: expected, loc: loc,
         children: @[result])
     requireType(analysis, loc, result.typ, expected, "web expression")
@@ -3879,6 +4374,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   for _, declaration in analysis.protocolDecls:
     if declaration.sourceName != "Error":
       result.visibleProtocols.add declaration
+  analysis.resolveWebProtocols()
+  analysis.validateDirectWebMethods(result.types)
   for _, declaration in analysis.typeDecls:
     result.visibleTypes.add declaration
   for _, declaration in analysis.enumDecls:
@@ -3901,6 +4398,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       elif analysis.typeDecls.hasKey(implementation.targetName):
         analysis.typeDecls[implementation.targetName].implementedProtocols.add(
           implementation.protocolName)
+  analysis.implementations = result.impls
+  analysis.resolveWebImplementations()
   var headers: seq[tuple[form: Value, fn: WebFunction]]
   let moduleResult = result
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
@@ -4124,6 +4623,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   analysis.currentNamespace = @[]
   for declaration in result.types:
     let selfType = WebType(kind: wtkNominal, name: declaration.sourceName)
+    analysis.annotationSelf = selfType
     for methodDecl in declaration.methods:
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
@@ -4135,7 +4635,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.currentReturn = methodDecl.returnType
       analysis.currentTypeName = declaration.sourceName
       analysis.validateCallableProps(methodDecl.sourceForm, methodDecl.loc,
-        "message " & methodDecl.sourceName)
+        "message " & methodDecl.sourceName, allowOverride = true)
       methodDecl.body = analysis.analyzeSequence(forms, bindings,
         (if methodDecl.returnType.isStatementType: nil
          else: methodDecl.returnType), methodDecl.loc)
@@ -4161,6 +4661,26 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         nil, declaration.constructor.loc)
       rejectAsyncBody(declaration.constructor.body,
         declaration.constructor.loc, "constructor " & declaration.sourceName)
+  for protocol in result.protocols:
+    for message in protocol.ownMessages:
+      if message.defaultFactory.len == 0: continue
+      let selfType = WebType(kind: wtkAny, name: "bound Self")
+      let fn = WebFunction(sourceName: protocol.sourceName & ":" & message.sourceName,
+        emittedName: message.defaultFactory, params: bindWebParams(message.params, selfType),
+        returnType: bindWebSelf(message.returnType, selfType), loc: message.loc)
+      analysis.annotationSelf = (if protocol.universal: nil else: selfType)
+      analysis.currentReturn = fn.returnType
+      analysis.currentTypeName = ""
+      analysis.inProtocolDefault = true
+      var bindings = initTable[string, WebBinding]()
+      bindings["self"] = WebBinding(typ: selfType)
+      for param in fn.params: bindings[param.sourceName] = WebBinding(typ: param.typ)
+      var forms: seq[Value]
+      for i in 4 ..< message.sourceForm.body.len: forms.add message.sourceForm.body[i]
+      fn.body = analysis.analyzeSequence(forms, bindings, nil, message.loc)
+      rejectAsyncBody(fn.body, message.loc, "protocol default " & fn.sourceName)
+      result.defaultBodies.add fn
+      analysis.inProtocolDefault = false
   for implementation in result.impls:
     let selfType = case implementation.targetName
       of "Nil": webType(wtkNil)
@@ -4168,8 +4688,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       of "List": webType(wtkList, webType(wtkAny))
       else: WebType(kind: wtkNominal, name: implementation.targetName)
     for implMethod in implementation.methods:
+      if implMethod.inheritedTargetName.len > 0 or implMethod.defaultBody: continue
+      analysis.annotationSelf = implMethod.annotationSelf
       var bindings = initTable[string, WebBinding]()
-      bindings["self"] = WebBinding(typ: selfType)
+      bindings["self"] = WebBinding(typ:
+        (if implMethod.defaultBody: implMethod.annotationSelf else: selfType))
       for param in implMethod.params:
         bindings[param.sourceName] = WebBinding(typ: param.typ)
       var forms: seq[Value]
@@ -4180,9 +4703,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.validateCallableProps(implMethod.sourceForm, implMethod.loc,
         "protocol message " & implMethod.message.sourceName)
       implMethod.body = analysis.analyzeSequence(forms, bindings,
-        (if implMethod.returnType.isStatementType: nil
+        (if implMethod.returnType.isStatementType or implMethod.defaultBody: nil
          else: implMethod.returnType), implMethod.loc)
-      if not implMethod.returnType.isStatementType:
+      if not implMethod.returnType.isStatementType and not implMethod.defaultBody:
         requireType(analysis, implMethod.loc, implMethod.body.typ,
                     implMethod.returnType,
                     "return of protocol message " &
@@ -4194,6 +4717,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   analysis.checkFunctionValueRefs()
   analysis.currentReturn = nil
   analysis.currentTypeName = ""
+  analysis.annotationSelf = nil
 
 proc analyzeWebModuleWithImports(source, sourcePath: string,
                                  imported: Table[string, WebFunctionSig],
@@ -5110,8 +5634,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       params.add name & (if emitter.typescript: ": " & tsType(typ) else: "")
       if i > 0: args.add name
     let receiver = if emitter.typescript: "($receiver as any)" else: "$receiver"
-    "$gene_message_value((" & params.join(", ") & ") => " & receiver & "[" & expr.text & "](" &
-      args.join(", ") & "))"
+    let dispatch = receiver & "?.[" & expr.text & "]" &
+      (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "")
+    "$gene_message_value((" & params.join(", ") & ") => (" & dispatch & ").call(" & receiver &
+      (if args.len > 0: ", " & args.join(", ") else: "") & "))"
   of wekSetPath:
     var container = emitter.emitExpr(expr.children[0])
     var dynamicIndex = 1
@@ -5159,7 +5685,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     if expr.keys.len == 1:
       resolvedMethod = emitter.temp()
       let target = if emitter.typescript: "(" & receiver & " as any)" else: receiver
-      emitter.line("const " & resolvedMethod & " = " & target & "?.[" & expr.keys[0] & "];")
+      emitter.line("const " & resolvedMethod & " = " & target & "?.[" & expr.keys[0] & "]" &
+        (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "") & ";")
       emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageError\"), { message: \"no applicable message implementation\" });")
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
@@ -5524,7 +6051,7 @@ iterator expressionRoots(module: WebModule): WebExpr =
   ## prerequisites — which runtime classes, helpers, and validators a module
   ## needs — are all "does any expression anywhere do X", so they share this one
   ## definition of "anywhere" rather than each restating it.
-  for fn in module.functions:
+  for fn in module.functions & module.defaultBodies:
     for param in fn.params:
       if param.defaultExpr != nil: yield param.defaultExpr
     if fn.body != nil: yield fn.body
@@ -5700,7 +6227,7 @@ proc exprUsesTypeKind(expr: WebExpr, kind: WebTypeKind): bool =
     if exprUsesTypeKind(child, kind): return true
 
 proc moduleUsesTypeKind(module: WebModule, kind: WebTypeKind): bool =
-  for fn in module.functions:
+  for fn in module.functions & module.defaultBodies:
     if containsTypeKind(fn.returnType, kind): return true
     for param in fn.params:
       if containsTypeKind(param.typ, kind): return true
@@ -5784,9 +6311,9 @@ proc emitStructuralEquality(emitter: var WebEmitter,
   emitter.line("}")
   emitter.line()
 
-proc emitValidators(emitter: var WebEmitter, module: WebModule) =
+proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = false) =
   var types: seq[WebType]
-  for fn in module.functions:
+  for fn in module.functions & module.defaultBodies:
     for param in fn.params: collectValidatorTypes(param.typ, types)
     collectValidatorTypes(fn.returnType, types)
   for extern in module.externs:
@@ -5811,6 +6338,8 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
     for implMethod in implementation.methods:
       for param in implMethod.params: collectValidatorTypes(param.typ, types)
       collectValidatorTypes(implMethod.returnType, types)
+      if implMethod.defaultBody and implMethod.annotationSelf != nil:
+        collectValidatorTypes(implMethod.annotationSelf, types)
   # Declarations are not the whole story: the analyzer inserts a `wekCheck`
   # wherever an `Any` reaches a typed boundary, and that check calls a
   # validator no signature mentions. Missing it emitted a call to a helper the
@@ -5832,6 +6361,9 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
   emitter.line("}")
   emitter.line()
   for typ in types:
+    if hasBoundSelf(typ) != boundOnly: continue
+    # The leaf validator is the factory argument; composite validators close over it.
+    if typ.kind == wtkAny and typ.name == "bound Self": continue
     let valueParams =
       if emitter.typescript: "value: unknown, where: string"
       else: "value, where"
@@ -6070,6 +6602,33 @@ proc allImplementedProtocols(module: WebModule,
   for protocolName in declaration.implementedProtocols:
     if protocolName notin result: result.add protocolName
 
+proc typeLineage(module: WebModule, declaration: WebTypeDecl): seq[WebTypeDecl] =
+  var current = declaration
+  while current != nil:
+    result.add current
+    let parentName = current.parentName
+    current = nil
+    for candidate in module.visibleTypes:
+      if candidate.sourceName == parentName:
+        current = candidate
+        break
+
+proc allTypeMethods(module: WebModule, declaration: WebTypeDecl): seq[WebMethod] =
+  var seen = initHashSet[string]()
+  for ancestor in typeLineage(module, declaration):
+    for methodDecl in ancestor.methods:
+      if methodDecl.sourceName notin seen:
+        seen.incl methodDecl.sourceName
+        result.add methodDecl
+
+proc allProtocolMethods(module: WebModule, declaration: WebTypeDecl): seq[WebImplMethod] =
+  var seen = initHashSet[string]()
+  for ancestor in typeLineage(module, declaration):
+    for methodDecl in ancestor.protocolMethods:
+      if methodDecl.message.identity notin seen:
+        seen.incl methodDecl.message.identity
+        result.add methodDecl
+
 proc allBodySchema(module: WebModule,
                    declaration: WebTypeDecl): tuple[
                      fixed: seq[WebType], rest: WebType] =
@@ -6259,10 +6818,41 @@ proc emitEnumDeclaration(emitter: var WebEmitter,
   emitter.line("});")
   emitter.line()
 
+proc emitDefaultFactory(emitter: var WebEmitter, module: WebModule, fn: WebFunction) =
+  emitter.currentLoc = fn.loc
+  emitter.line("function " & fn.emittedName & "($gene_check_bound_self" &
+    (if emitter.typescript: ": (value: unknown, where: string) => unknown" else: "") &
+    " = value => value) {")
+  inc emitter.indent
+  emitter.emitValidators(WebModule(defaultBodies: @[fn], visibleTypes: module.visibleTypes,
+    visibleEnums: module.visibleEnums, visibleProtocols: module.visibleProtocols), boundOnly = true)
+  var params: seq[string]
+  if emitter.typescript: params.add "this: unknown"
+  for param in fn.params:
+    params.add param.emittedName & (if emitter.typescript: ": " & tsType(param.typ) else: "")
+  emitter.line("return function(" & params.join(", ") & ")" &
+    (if emitter.typescript: ": " & tsType(fn.returnType) else: "") & " {")
+  inc emitter.indent
+  emitter.line("const self = this;")
+  for param in fn.params:
+    emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
+      param.emittedName & ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ");")
+  let oldReturn = emitter.currentReturnType
+  emitter.currentReturnType = fn.returnType
+  let body = emitter.emitExpr(fn.body)
+  emitter.currentReturnType = oldReturn
+  emitter.line("return " & validatorName(fn.returnType) & "(" & body & ", " &
+    jsString(fn.sourceName & " return") & ");")
+  dec emitter.indent
+  emitter.line("};")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line()
+
 proc emitProtocolDeclaration(emitter: var WebEmitter,
                              declaration: WebProtocolDecl) =
   emitter.currentLoc = declaration.loc
-  for messageDecl in declaration.messages:
+  for messageDecl in declaration.ownMessages:
     if declaration.sourceName != "Callable":
       emitter.line("export const " & messageDecl.symbolName & " = Symbol(" &
         jsString(declaration.sourceName & ":" & messageDecl.sourceName) & ");")
@@ -6272,9 +6862,10 @@ proc emitProtocolDeclaration(emitter: var WebEmitter,
     for messageDecl in declaration.messages:
       var params: seq[string]
       for param in messageDecl.params:
-        params.add param.emittedName & ": " & tsType(param.typ)
-      emitter.line("readonly [" & messageDecl.symbolName & "]: (" &
-        params.join(", ") & ") => " & tsType(messageDecl.returnType) & ";")
+        params.add param.emittedName & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
+      emitter.line("[" & messageDecl.symbolName & "](" &
+        params.join(", ") & "): " &
+        tsType(bindWebSelf(messageDecl.returnType, webType(wtkAny))) & ";")
     dec emitter.indent
     emitter.line("}")
   if declaration.messages.len > 0:
@@ -6282,6 +6873,11 @@ proc emitProtocolDeclaration(emitter: var WebEmitter,
     for messageDecl in declaration.messages:
       members.add(mangleWebName(messageDecl.sourceName) & ": " &
         messageDecl.symbolName)
+    var defaults: seq[string]
+    for message in declaration.messages:
+      if message.defaultFactory.len > 0:
+        defaults.add jsString(message.identity) & ": " & message.defaultFactory
+    members.add "$defaults: Object.freeze({" & defaults.join(", ") & "})"
     emitter.line("export const " & declaration.emittedName &
       " = Object.freeze({" & members.join(", ") & "});")
   if declaration.messages.len > 0: emitter.line()
@@ -6291,6 +6887,27 @@ proc emitImplDeclaration(emitter: var WebEmitter,
   emitter.currentLoc = implementation.loc
   let builtinTarget = implementation.targetName in ["Nil", "Str", "List"]
   for implMethod in implementation.methods:
+    if implMethod.defaultBody:
+      let bound = if implMethod.annotationSelf == nil: "" else: validatorName(implMethod.annotationSelf)
+      let factoryCall = implMethod.message.defaultFactory & "(" & bound & ")"
+      if builtinTarget:
+        let fnName = implFunctionName(implementation.protocolName, implementation.targetName,
+          implMethod.message.sourceName)
+        emitter.line("const " & fnName & "$body = " & factoryCall & ";")
+        emitter.line("function " & fnName & "(self" & (if emitter.typescript: ": any" else: "") &
+          ", ...args" & (if emitter.typescript: ": any[]" else: "") & ") { return " &
+          fnName & "$body.apply(self, args" & (if emitter.typescript: " as any" else: "") & "); }")
+      else:
+        emitter.line("Object.defineProperty(" & mangleWebName(implementation.targetName) &
+          ".prototype, " & implMethod.message.symbolName &
+          ", { configurable: false, value: " & factoryCall & " });")
+      continue
+    if implMethod.inheritedTargetName.len > 0:
+      emitter.line("Object.defineProperty(" & mangleWebName(implementation.targetName) &
+        ".prototype, " & implMethod.message.symbolName & ", { configurable: false, value: " &
+        mangleWebName(implMethod.inheritedTargetName) & ".prototype[" &
+        implMethod.message.symbolName & "] });")
+      continue
     var params: seq[string]
     if builtinTarget:
       let selfType = case implementation.targetName
@@ -7352,10 +7969,19 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("}")
     emitter.line()
   if needsCallable: emitter.emitCallableRuntime()
+  for fn in module.defaultBodies:
+    emitter.emitDefaultFactory(module, fn)
   for declaration in module.enums:
     emitter.emitEnumDeclaration(declaration)
-  for declaration in module.protocols:
+  var emittedProtocols = initHashSet[string]()
+  proc emitProtocolAndParents(declaration: WebProtocolDecl) =
+    if declaration.identity in emittedProtocols: return
+    for parent in declaration.parents:
+      if parent in module.protocols: emitProtocolAndParents(parent)
+    emittedProtocols.incl declaration.identity
     emitter.emitProtocolDeclaration(declaration)
+  for declaration in module.protocols:
+    emitProtocolAndParents(declaration)
   var emittedTypes = initHashSet[string]()
   var visitingTypes = initHashSet[string]()
   proc emitTypeAndParent(declaration: WebTypeDecl) =
@@ -7385,8 +8011,19 @@ proc emitModule(module: WebModule, typescript: bool,
     emittedTypes.incl declaration.sourceName
   for declaration in module.types:
     emitTypeAndParent(declaration)
-  for implementation in module.impls:
+  var emittedImpls = initHashSet[pointer]()
+  proc emitImplAndSources(implementation: WebImplDecl) =
+    let key = cast[pointer](implementation)
+    if key in emittedImpls: return
+    for methodDecl in implementation.methods:
+      if methodDecl.inheritedTargetName.len > 0:
+        for ancestor in module.impls:
+          if ancestor.targetName == methodDecl.inheritedTargetName:
+            emitImplAndSources(ancestor)
+    emittedImpls.incl key
     emitter.emitImplDeclaration(implementation)
+  for implementation in module.impls:
+    emitImplAndSources(implementation)
   if moduleUsesPatternMatching(module):
     emitter.line("class GeneMatchError extends Error {")
     inc emitter.indent
@@ -7528,11 +8165,11 @@ proc emitDeclarations(module: WebModule): string =
     for messageDecl in declaration.messages:
       var params: seq[string]
       for param in messageDecl.params:
-        params.add param.emittedName & ": " & tsType(param.typ)
+        params.add param.emittedName & ": " & tsType(bindWebSelf(param.typ, webType(wtkAny)))
       result.add "  readonly [" & messageDecl.symbolName & "]: (" &
-        params.join(", ") & ") => " & tsType(messageDecl.returnType) & ";\n"
+        params.join(", ") & ") => " & tsType(bindWebSelf(messageDecl.returnType, webType(wtkAny))) & ";\n"
     result.add "}\n"
-    for messageDecl in declaration.messages:
+    for messageDecl in declaration.ownMessages:
       result.add "export declare const " & messageDecl.symbolName &
         ": unique symbol;\n"
     if declaration.messages.len > 0:
@@ -7541,7 +8178,12 @@ proc emitDeclarations(module: WebModule): string =
       for messageDecl in declaration.messages:
         result.add "  " & mangleWebName(messageDecl.sourceName) & ": typeof " &
           messageDecl.symbolName & ";\n"
-      result.add "}>;\n"
+      result.add "  $defaults: Readonly<{\n"
+      for message in declaration.messages:
+        if message.defaultFactory.len == 0: continue
+        result.add "    " & jsString(message.identity) &
+          ": (checkSelf?: (value: unknown, where: string) => unknown) => (this: unknown, ...args: any[]) => any;\n"
+      result.add "  }>;\n}>;\n"
   for declaration in module.types:
     result.add "export declare class " & declaration.emittedName &
       (if declaration.parentName.len > 0:
@@ -7966,13 +8608,17 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
   proc remapType(typ: WebType, owner: WebModule,
                  aliases: Table[string, string]): WebType =
     if typ == nil: return nil
-    result = WebType(kind: typ.kind, name: typ.name)
+    result = WebType(kind: typ.kind, name: typ.name,
+      namedKeys: typ.namedKeys, checkedErrors: typ.checkedErrors)
     if typ.kind == wtkNominal:
       result.name = aliases.getOrDefault(typeOrigin(owner, typ.name), typ.name)
     result.item = remapType(typ.item, owner, aliases)
     result.returnType = remapType(typ.returnType, owner, aliases)
+    result.restType = remapType(typ.restType, owner, aliases)
     for param in typ.params: result.params.add remapType(param, owner, aliases)
     for member in typ.members: result.members.add remapType(member, owner, aliases)
+    for item in typ.namedTypes: result.namedTypes.add remapType(item, owner, aliases)
+    for item in typ.errorTypes: result.errorTypes.add remapType(item, owner, aliases)
 
   proc remapParams(params: seq[WebParam], owner: WebModule,
                    aliases: Table[string, string]): seq[WebParam] =
@@ -8068,13 +8714,28 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
               for field in bodySchema.fixed:
                 bodyFields.add remapType(field, dependency, typeAliases)
               var methods: seq[WebMethod]
-              for methodDecl in declaration.methods:
+              for methodDecl in allTypeMethods(dependency, declaration):
                 methods.add WebMethod(sourceName: methodDecl.sourceName,
                   emittedName: methodDecl.emittedName,
                   params: remapParams(methodDecl.params, dependency, typeAliases),
                   returnType: remapType(methodDecl.returnType, dependency, typeAliases),
                   body: methodDecl.body, loc: methodDecl.loc,
-                  sourceForm: methodDecl.sourceForm)
+                  sourceForm: methodDecl.sourceForm,
+                  declaresOverride: methodDecl.declaresOverride,
+                  annotationSelf: remapType(methodDecl.annotationSelf, dependency, typeAliases))
+              var protocolMethods: seq[WebImplMethod]
+              for methodDecl in allProtocolMethods(dependency, declaration):
+                protocolMethods.add WebImplMethod(protocolName: methodDecl.protocolName,
+                  targetName: selection.localName, message: methodDecl.message,
+                  params: remapParams(methodDecl.params, dependency, typeAliases),
+                  returnType: remapType(methodDecl.returnType, dependency, typeAliases),
+                  annotationSelf: remapType(methodDecl.annotationSelf, dependency, typeAliases),
+                  body: methodDecl.body, sourceForm: methodDecl.sourceForm, loc: methodDecl.loc)
+              var protocolBindings = initTable[string, WebType]()
+              for ancestor in typeLineage(dependency, declaration):
+                for identity, binding in ancestor.protocolBindings:
+                  if not protocolBindings.hasKey(identity):
+                    protocolBindings[identity] = remapType(binding, dependency, typeAliases)
               let originalCtor = inheritedConstructor(dependency, declaration)
               let constructor = if originalCtor == nil: nil
                 else: WebConstructor(params: remapParams(originalCtor.params,
@@ -8089,6 +8750,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                 bodyRest: remapType(bodySchema.rest, dependency, typeAliases),
                 methods: methods, constructor: constructor,
                 implementedProtocols: implementedProtocols,
+                protocolMethods: protocolMethods, protocolBindings: protocolBindings,
                 implementsError: declaration.implementsError,
                 loc: spec.loc)
               foundDeclaration = true
@@ -8111,7 +8773,9 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
             if declaration.sourceName == resolvedName:
               let importedProtocol = WebProtocolDecl(
                 sourceName: selection.localName,
-                emittedName: mangleWebName(selection.localName), loc: spec.loc)
+                emittedName: mangleWebName(selection.localName), loc: spec.loc,
+                identity: declaration.identity, parents: declaration.parents,
+                universal: declaration.universal, resolvedClosure: true)
               for messageDecl in declaration.messages:
                 importedProtocol.messages.add WebProtocolMessage(
                   sourceName: messageDecl.sourceName,
@@ -8119,7 +8783,14 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                     mangleWebName(messageDecl.sourceName),
                   params: remapParams(messageDecl.params, dependency, typeAliases),
                   returnType: remapType(messageDecl.returnType, dependency, typeAliases),
-                  loc: spec.loc)
+                  loc: spec.loc, identity: messageDecl.identity,
+                  ownerIdentity: messageDecl.ownerIdentity, ownerName: messageDecl.ownerName,
+                  sourceForm: messageDecl.sourceForm,
+                  universalDefault: messageDecl.universalDefault,
+                  defaultFactory: (if messageDecl.defaultFactory.len == 0: "" else:
+                    mangleWebName(selection.localName) & ".$defaults[" & jsString(messageDecl.identity) & "]"))
+                if messageDecl.ownerIdentity == declaration.identity:
+                  importedProtocol.ownMessages.add importedProtocol.messages[^1]
               importedProtocols[selection.localName] = importedProtocol
               foundDeclaration = true
           if not foundDeclaration:

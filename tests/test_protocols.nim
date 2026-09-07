@@ -595,7 +595,7 @@ suite "types — type-direct messages and sends":
     ck "(type Animal ^props {^name Str} " &
        "  (message speak [self] \"generic\")) " &
        "(type Dog : Animal ^props {} " &
-       "  (message speak [self] \"woof\")) " &
+       "  (message speak [self] ^^override \"woof\")) " &
        "(var d (Dog ^name \"Rex\")) " &
        "[(d .speak) ((Animal ^name \"Generic\") .speak)]",
        "[\"woof\" \"generic\"]"
@@ -603,18 +603,18 @@ suite "types — type-direct messages and sends":
   test "type-direct overrides preserve the inherited callable signature":
     ck "(type A ^props {} (message value [self x : Int] : Int x)) " &
        "(type B : A ^props {} " &
-       "  (message value [self x : Int] : Int (+ x 1))) " &
+       "  (message value [self x : Int] : Int ^^override (+ x 1))) " &
        "((B) .value 2)",
        "3"
     expect GeneError:
       discard runStr("(type A ^props {} " &
                      "  (message value [self x : Int] : Int x)) " &
                      "(type B : A ^props {} " &
-                     "  (message value [self x : Str] : Int 1))")
+                     "  (message value [self x : Str] : Int ^^override 1))")
     expect GeneError:
       discard runStr("(type A ^props {} (message value [self] : Int 1)) " &
                      "(type B : A ^props {} " &
-                     "  (message value [self] : Str \"x\"))")
+                     "  (message value [self] : Str ^^override \"x\"))")
 
   test "type-direct messages do not satisfy ^impl requirements":
     expect GeneError:
@@ -768,7 +768,7 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "(impl Grow for Base (message g [self] : Int 1)) " &
        "(var dv (Derived)) (fn go [] (dv .Grow:g)) " &
        "(var warm [(go) (go)]) " &
-       "(impl Grow for Derived (message g [self] : Int 2)) " &
+       "(if true (impl Grow for Derived (message g [self] : Int 2))) " &
        "[warm (go) (go)]",
        "[[1 1] 2 2]"
 

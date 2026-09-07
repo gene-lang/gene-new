@@ -3136,7 +3136,7 @@ type** on the nominal parent chain, called with `self`:
 ```gene runnable
 (type Animal ^props {} (message speak [] : Str "…"))
 (type Dog : Animal ^props {}
-  (message speak [] : Str ($ "woof; " (super .speak))))
+  (message speak [] : Str ^^override ($ "woof; " (super .speak))))
 ```
 
 `super` resolves from the *enclosing type's* parent, not the receiver's runtime
@@ -3187,12 +3187,12 @@ replacement — a send `(x .bark)`, or the value spelling `Self:bark`, which
 dispatches. Enum variants (`Direction/east`) are unaffected: they are not
 messages. Impls were already never exposed as members.
 
-`Self` is a type name in annotation position, e.g.
-`(message eq [other : Self] : Bool)`, and it means **the receiver's own type** —
-the same thing it means as a message qualifier, so the name has one rule in both
-positions. It is resolved against the receiver at the boundary, not against the
-enclosing declaration, which is what lets it work inside a protocol's default
-body where there is no enclosing type to name:
+`Self` in a type annotation is **declaration-bound**. A new method on `Dog`
+uses `Self = Dog`, including parameter, return, and nested type positions.
+A protocol has a separate abstract `Self` for each protocol identity; introducing
+a conformance binds it, and nominal inheritance preserves that binding.
+Requirements and defaults inherited through another protocol retain their own
+declaring protocol's binding. Runtime receiver dispatch still selects the body:
 
 ```gene runnable
 (protocol Eq (message eq [other : Self] : Bool))
@@ -3203,21 +3203,48 @@ body where there is no enclosing type to name:
 (var dog (Dog ^name "rex"))
 (var pup (Pup ^name "rex"))
 
-(dog .Eq:eq pup)   # true — Self is Dog, and a Pup is a Dog
-(try (pup .Eq:eq dog)
-  catch TypeError $ex/expected)   # "Self" — a Dog is not a Pup
+(dog .Eq:eq pup)   # true — the contract accepts Dog and its descendants
+(pup .Eq:eq dog)   # true — the inherited contract still accepts Dog
 ```
 
-That asymmetry is the point of a self type: the constraint follows the receiver
-down the parent chain. `Self` works in parameter, return, and nested positions
-(`(List Self)`, `Self?`), and outside a message or `ctor` body it is an error,
-because there is no receiver for it to name.
+An inherited result `: Self` declared on `Dog` promises `Dog`, even when its
+body returns the actual `Pup` receiver. It does not promise preservation of every
+future subtype. `Self` denotes ordinary nominal admission, not exact runtime
+type identity. Outside a receiver-bearing declaration or protocol-template
+context, it is invalid. `Self:msg` remains separate type-direct message syntax;
+it is never substituted with a concrete type name.
+
+Type-direct replacements require `^^override` on the message. For protocol
+implementations, `^^override` belongs on the impl and means “inherit ancestor
+bodies, replacing the supplied messages.” Omitted messages prefer inherited
+bodies over protocol defaults. A complete impl without the flag supplies its
+closure from local bodies and protocol defaults, without borrowing ancestor
+bodies. Both modes preserve inherited conformance bindings and exact callable
+signatures. Newly supplied replacement signatures name inherited types explicitly
+and cannot use contextual `Self`; body-local annotations may still use the new
+receiver declaration's `Self`.
+
+```gene
+(impl Eq for Pup ^^override
+  (message eq [other : Dog] : Bool
+    (== self/name other/name)))
+```
+
+The flag must be a literal boolean; `^^override` is sugar for `^override true`.
+False means the same as omission. An inheriting impl requires an applicable
+ancestor message provider. Flags on individual protocol messages, enclosing
+types, or protocol declarations are errors. Universal protocol requirements and
+defaults cannot depend on abstract `Self` in the MVP because their fallback has
+no introducing receiver binding. See `docs/proposals/self-type.md` for the full
+assembly, readiness, and migration rules.
 
 The legacy form that names the receiver explicitly as the first parameter
 (`[self …]`) is still accepted during migration, but `self` may not be rebound
 anywhere inside a message or `ctor` body — nested functions and pattern bindings
-included. Annotating that receiver with `[self : Self]` is a tautology and is
-accepted and discarded, so it builds the same signature as `[self]`.
+included. On a new message, `[self : Self]` has the same callable shape as
+`[self]`. Its source annotation is retained for validation: the `Self` spelling
+is forbidden in a newly supplied replacement signature, including this legacy
+receiver position.
 
 Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 

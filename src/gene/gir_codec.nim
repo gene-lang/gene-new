@@ -7,7 +7,7 @@
 import std/[algorithm, json, jsonutils, sets, tables]
 import ./[gir, printer, reader, types]
 
-const GirArtifactFormat* = 7
+const GirArtifactFormat* = 8
 
 proc toJsonHook(value: Value): JsonNode =
   ## Values reachable from GIR are inert reader data. Canonical Gene text is
@@ -101,6 +101,9 @@ proc restoreChunkOwners(root: Chunk) =
   proc restoreFunction(fn: FunctionProto) =
     if fn == nil or seenFunctions.containsOrIncl(cast[pointer](fn)):
       return
+    if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf:
+      raise newException(ValueError,
+        "encoded GIR function contains runtime-only declaration state")
     restoreChunk(fn.chunk, fn)
     restoreChunk(fn.scopelessChunk, fn)
     for defaultValue in fn.paramDefaults:

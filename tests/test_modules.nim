@@ -642,6 +642,69 @@ suite "modules — file imports":
     let replacement = app.reloadFileModule(modDir / "reload_interface.gene")
     check replacement.moduleRootNamespace.nsScope.lookup("value").print() == "2"
 
+  test "reload recomposes inherited impl entries through scoped imports":
+    writeModule("self_base.gene", """
+      (protocol P (message value [] : Int))
+      (type Base ^props {}) (type Child : Base ^props {})
+    """)
+    writeModule("self_parent.gene", """
+      (import [P Base] from "./self_base")
+      (impl P for Base ^export true (message value [] : Int 1))
+    """)
+    writeModule("self_child.gene", """
+      (import [P Base Child] from "./self_base")
+      (import_impl P for Base from "./self_parent")
+      (impl P for Child ^^override ^export true)
+    """)
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource("""
+      (import [P Child] from "./self_base")
+      (import_impl P for Child from "./self_child")
+      (fn use_child [] ((Child) .P:value))
+    """), scope)
+    check run(compileSource("(use_child)"), scope).print() == "1"
+    writeModule("self_parent.gene", """
+      (import [P Base] from "./self_base")
+      (impl P for Base ^export true (message value [] : Int 2))
+    """)
+    let epoch = app.implActivationEpoch
+    discard app.reloadFileModule(modDir / "self_parent.gene")
+    check app.implActivationEpoch == epoch + 1
+    check run(compileSource("(use_child)"), scope).print() == "2"
+    # The caller imported only the composed child pair, not the parent pair.
+    expect GeneError:
+      discard run(compileSource("(import [Base] from \"./self_base\") ((Base) .P:value)"), scope)
+
+  test "new canonical ancestor bindings cannot rewrite a scoped child conformance":
+    let app = newApplication(modDir)
+    let home = newGlobalScope(app)
+    discard run(compileSource("""
+      (protocol P (message value [] : Int))
+      (type Base ^props {}) (type Child : Base ^props {})
+    """, useLocalSlots = false), home)
+    let scope = newGlobalScope(app)
+    # Selected imports preserve these same runtime identities. This second
+    # root owns neither operand, so its static impl is scoped and indexed.
+    scope.define("P", home.lookup("P"))
+    scope.define("Child", home.lookup("Child"))
+    discard run(compileSource("(impl P for Child (message value [] : Int 7))",
+                              useLocalSlots = false), scope)
+    let epoch = app.implActivationEpoch
+    # Execute a later static unit in P's existing home, preserving both type
+    # and protocol identity. A reload that redefined P would test a different
+    # protocol and could fail for an unrelated interface change instead.
+    var rejected = false
+    try:
+      discard run(compileSource("(impl P for Base (message value [] : Int 1))",
+                                useLocalSlots = false), home)
+    except GeneError as error:
+      rejected = true
+      check "Self bindings" in error.msg
+    check rejected
+    check app.implActivationEpoch == epoch
+    check run(compileSource("((Child) .P:value)"), scope).print() == "7"
+
   test "failed module activation does not publish earlier staged impls":
     writeModule("base.gene",
       "(protocol P (message value [self] : Str)) " &

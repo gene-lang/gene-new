@@ -23,6 +23,7 @@ include test_match
 include test_errors
 include test_types
 include test_protocols
+include test_self_type
 include test_native_api
 include test_logging
 include test_cli

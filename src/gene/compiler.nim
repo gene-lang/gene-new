@@ -2690,7 +2690,7 @@ proc rejectReservedEffects(node: Value) =
 proc isNeverErrorRowEntry(value: Value): bool =
   value.kind == vkSymbol and value.symVal == "Never"
 
-proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: int] =
+proc compileErrorRow(c: var Compiler, node: Value, deferred = false): tuple[checks: bool, count: int] =
   rejectReservedEffects(node)
   if not node.props.hasKey("errors"):
     return
@@ -2710,8 +2710,12 @@ proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: i
     if duplicate:
       continue
     normalized.add errorType
+  if deferred: return # Receiver-bearing rows resolve with the signature.
   for errorType in normalized:
-    compileExpr(c, errorType)
+    # A nested callable's row uses the enclosing method's annotation context.
+    # Self has no value binding for ordinary expression compilation to load.
+    if errorType.isSymbol("Self"): c.emitConst(errorType)
+    else: compileExpr(c, errorType)
     inc result.count
 
 proc requiredPositionalCount(specs: ParamSpecs): int =
@@ -3663,15 +3667,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     inc start
 
   var specs = c.paramSpecs(paramList)
-  # `[self : Self]`, the legacy explicit-receiver form design.md §10 still
-  # accepts, annotates the receiver with its own type. That is a tautology — a
-  # receiver is always an instance of the type it dispatches as — and it is also
-  # the one place `Self` cannot be checked, because the boundary for parameter 0
-  # runs before `self` is bound. Drop it here rather than teaching the runtime a
-  # special case, so `[self : Self]` and `[self]` build the identical proto and
-  # compare equal in the impl/declaration signature check.
-  if immutableSelf and specs.positional.len > 0 and specs.positional[0] == "self" and
-      specs.positionalTypes.len > 0 and specs.positionalTypes[0].isSymbol("Self"):
+  # Receiver admission is supplied by dispatch. Retain the annotation's origin
+  # so replacement signatures cannot hide forbidden Self through this erasure.
+  let receiverSelfAnnotation = immutableSelf and specs.positional.len > 0 and
+    specs.positional[0] == "self" and specs.positionalTypes.len > 0 and
+    specs.positionalTypes[0].isSymbol("Self")
+  if receiverSelfAnnotation:
     specs.positionalTypes[0] = NIL
   var seenLocals = initTable[string, bool]()
   for local in specs.positional:
@@ -3936,6 +3937,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         fastBindRequiredNamed = false
         break
   result = FunctionProto(name: name, sourceLoc: c.currentLoc,
+                          receiverSelfAnnotation: receiverSelfAnnotation,
                          typeParams: typeParams,
                          params: specs.positional,
                          localNames: fnCompiler.localNames,
@@ -8067,13 +8069,26 @@ proc messageParamVector(paramList: Value): Value =
       items.add item
   newList(items)
 
+proc literalOverride(node: Value): bool =
+  if not node.props.hasKey("override"):
+    return false
+  let flag = node.props["override"]
+  if flag.kind != vkBool:
+    raise newException(GeneError, "^override requires a literal Bool")
+  flag.boolVal
+
 proc implMessageProto(c: var Compiler, node: Value,
-                      aotSelfRepr = AotRepr()): ImplMessageProto =
+                      aotSelfRepr = AotRepr(),
+                      typeDirect = false): ImplMessageProto =
+  if not typeDirect and node.props.hasKey("override"):
+    raise newException(GeneError,
+      "^override belongs on the impl, not on a protocol message")
+  let declaresOverride = if typeDirect: literalOverride(node) else: false
   let parts = messageNameParts(node)
   let displayName =
     if parts.protocolPath.len > 0: parts.protocolPath.join("/") & "/" & parts.name
     else: parts.name
-  let errorRow = compileErrorRow(c, node)
+  let errorRow = compileErrorRow(c, node, deferred = true)
   let fn = buildFunctionProto(c, displayName,
                               messageParamVector(node.body[1]),
                               node.body, 2,
@@ -8085,7 +8100,10 @@ proc implMessageProto(c: var Compiler, node: Value,
     node, fn, not node.declarationIsPrivate)
   if fn.capabilityRow.declaresCapabilities:
     fn.disableCapabilityBypasses()
+  if node.props.hasKey("errors") and node.props["errors"].kind == vkList:
+    fn.signatureErrorExprs = node.props["errors"].listItems
   ImplMessageProto(name: parts.name,
+                   declaresOverride: declaresOverride,
                    protocolPath: parts.protocolPath,
                    fn: fn)
 
@@ -8175,7 +8193,7 @@ proc compileType(c: var Compiler, node: Value) =
     rejectReservedEffects(ctorNode)
     if ctorNode.body.len == 0 or ctorNode.body[0].kind != vkList:
       raise newException(GeneError, "ctor requires a parameter vector")
-    let errorRow = compileErrorRow(c, ctorNode)
+    let errorRow = compileErrorRow(c, ctorNode, deferred = true)
     # `self` is the pre-created in-progress instance (design §7.1.1); it binds
     # like a message receiver, as an implicit leading parameter.
     var ctorParams = @[newSym("self")]
@@ -8187,6 +8205,8 @@ proc compileType(c: var Compiler, node: Value) =
                                 errorTypeCount = errorRow.count,
                                 immutableSelf = true,
                                 tailBody = false)
+    if ctorNode.props.hasKey("errors"):
+      ctorFn.signatureErrorExprs = ctorNode.props["errors"].listItems
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
   # Type-direct message bodies can delegate to `(super .m)` (design §10). Store the
@@ -8197,7 +8217,7 @@ proc compileType(c: var Compiler, node: Value) =
   c.superType = if parentExpr.kind != vkNil: newSym(name) else: NIL
   for item in messageNodes:
     rejectReservedEffects(item)
-    let mp = implMessageProto(c, item, nativeSelfRepr)
+    let mp = implMessageProto(c, item, nativeSelfRepr, typeDirect = true)
     if mp.protocolPath.len > 0:
       raise newException(GeneError,
         "type-direct message names must be simple: " &
@@ -8232,7 +8252,9 @@ proc compileType(c: var Compiler, node: Value) =
       seenImplMessages[key] = true
       implMessages.add mp
     compileExpr(c, item.body[0])
-    inlineImpls.add InlineImplProto(messages: implMessages)
+    inlineImpls.add InlineImplProto(messages: implMessages,
+                                    protocolExpr: item.body[0],
+                                    inheritBodies: literalOverride(item))
   c.superType = savedSuperType
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
@@ -8336,7 +8358,7 @@ proc compileEnum(c: var Compiler, node: Value) =
                               "from_backing"]
   for item in messageNodes:
     rejectReservedEffects(item)
-    let mp = implMessageProto(c, item)
+    let mp = implMessageProto(c, item, typeDirect = true)
     if mp.protocolPath.len > 0:
       raise newException(GeneError,
         "enum type-direct message names must be simple: " &
@@ -8368,7 +8390,9 @@ proc compileEnum(c: var Compiler, node: Value) =
       seenImplMessages[key] = true
       implMessages.add mp
     compileExpr(c, item.body[0])
-    inlineImpls.add InlineImplProto(messages: implMessages)
+    inlineImpls.add InlineImplProto(messages: implMessages,
+                                    protocolExpr: item.body[0],
+                                    inheritBodies: literalOverride(item))
 
   let hasBacking = node.props.hasKey("backing")
   let backingType = if hasBacking: node.props["backing"] else: NIL
@@ -8650,7 +8674,7 @@ proc compileImpl(c: var Compiler, node: Value) =
       "impl requires a protocol and receiver type: " &
       "(impl Protocol for Receiver ...)")
   for key in node.props.keys:
-    if key != "export":
+    if key notin ["export", "override"]:
       raise newException(GeneError,
         "impl got unexpected named argument: " & key)
   var exported = false
@@ -8693,7 +8717,8 @@ proc compileImpl(c: var Compiler, node: Value) =
                                       messages: messages,
                                       staticTopLevel: staticTopLevel,
                                       staticOperands: staticOperands,
-                                      exported: exported))
+                                      exported: exported,
+                                      inheritBodies: literalOverride(node)))
   discard c.emit(opMakeImpl, idx)
 
 proc moduleRefName(node: Value, expectedBodyLen: int): string =

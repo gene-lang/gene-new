@@ -349,6 +349,15 @@ type
     ivScoped
     ivOverlay
 
+  ProtocolSelfBinding* = object
+    protocol*: Value
+    selfType*: Value # NIL means abstract Self is unavailable (universal)
+
+  ImplBodySource* = object
+    message*: Value
+    protocol*: Value
+    receiver*: Value
+
   ProtocolImpl* = object
     protocol*: Value
     receiver*: Value
@@ -357,6 +366,13 @@ type
     exported*: bool
     originPath*: string       # defining file module; empty for program/overlay
     imported*: bool           # explicit import_impl copy in another base scope
+    inheritBodies*: bool
+    localMessages*: seq[ImplMessage]
+    selfBindings*: seq[ProtocolSelfBinding]
+    bodySources*: seq[ImplBodySource]
+    assemblyScope*: Scope # retained by imports and records outside their owning scope
+    weakAssemblyScope*: pointer # owning-scope storage back-reference
+    managedContract*: bool
 
   TypeBinding* = object
     expr*: Value
@@ -445,8 +461,12 @@ type
     simpleCallScope*: bool
     typeBoundaryToken*: TypeBoundaryToken
     typeBoundarySnapshot*: bool
+    annotationSelfType*: Value # lexical type context of the current method body
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
+    implAssembly*: RootRef # VM-owned forward declaration state, lexical for eval
+    implValidationEpoch*: uint64
+    implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
     ## Ambient authority for an eval overlay root (capabilities.md §14). An
     ## eval scope is its own module root with no `this_mod`, so a call made from
@@ -1090,6 +1110,10 @@ type
 
   TypeData = ref object of GeneObjectData
     name: string
+    contractPending: bool
+    annotationRefBits: uint64 # borrowed nominal/protocol identity in owned code
+    annotationContractName: string # canonical builtin spelling for signature equality
+    opaqueAbiAnnotation: bool
     parent: Value         # parent Type value, or NIL
     repr: TypeRepr        # representation marker (`^repr native_wrapper`);
                           # inherited through the nominal parent at newType
@@ -6815,12 +6839,121 @@ proc newTypeAlias*(name: string, expr: Value): Value =
   boxObject(TypeData(objKind: okType, name: name, parent: NIL,
                      aliasExpr: expr))
 
+proc closedAbiAnnotation*(name: string): Value =
+  ## An opaque C pointee label is not a lexical Gene type reference.
+  boxObject(TypeData(objKind: okType, name: name, parent: NIL,
+    aliasExpr: newSym(name), opaqueAbiAnnotation: true))
+
+proc isOpaqueAbiAnnotation*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).opaqueAbiAnnotation
+
+proc borrowedTypeAnnotation*(typ: Value, canonicalName = ""): Value =
+  ## Declaration-owned code must not create Type -> method -> Type RC cycles.
+  ## These internal aliases borrow the identity rooted by the declaration's
+  ## owner/scope. closeTypeExpr expands them to owning Values whenever a type
+  ## boundary escapes into a cell, callable view, or other runtime object.
+  if typ.kind notin {vkType, vkProtocol}:
+    raise newException(GeneError, "type annotation identity must be a type or protocol")
+  boxObject(TypeData(objKind: okType,
+    name: (if typ.kind == vkType: typ.typeName else: typ.protocolName),
+    annotationRefBits: typ.bits, annotationContractName: canonicalName))
+
+proc isBorrowedTypeAnnotation*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).annotationRefBits != 0
+
+proc borrowedAnnotationContractName*(v: Value): string =
+  if v.isBorrowedTypeAnnotation: TypeData(objData(v)).annotationContractName else: ""
+
 proc isTypeAlias*(v: Value): bool {.inline.} =
   v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
-    TypeData(objData(v)).aliasExpr.kind != vkNil
+    (TypeData(objData(v)).aliasExpr.kind != vkNil or
+     TypeData(objData(v)).annotationRefBits != 0)
 
 proc typeAliasExpr*(v: Value): Value {.inline.} =
-  TypeData(objData(v)).aliasExpr
+  let data = TypeData(objData(v))
+  if data.annotationRefBits != 0:
+    ownedValueFromBits(data.annotationRefBits)
+  else:
+    data.aliasExpr
+
+proc ownTypeAnnotation*(expr: Value): Value =
+  ## Retain borrowed declaration identities when reflection exports annotation
+  ## data, without changing the source spelling of ordinary builtin sugar.
+  if expr.isBorrowedTypeAnnotation:
+    return expr.typeAliasExpr
+  case expr.kind
+  of vkNode:
+    let head = ownTypeAnnotation(expr.head)
+    var changed = head.bits != expr.head.bits
+    var body: seq[Value]
+    for item in expr.body:
+      let owned = ownTypeAnnotation(item)
+      body.add owned
+      changed = changed or owned.bits != item.bits
+    var props = initPropTable()
+    for key, item in expr.props:
+      let owned = ownTypeAnnotation(item)
+      props[key] = owned
+      changed = changed or owned.bits != item.bits
+    if changed: newNode(head, body = body, props = props, meta = expr.meta,
+                         immutable = expr.nodeImmutable)
+    else: expr
+  of vkList:
+    var changed = false
+    var items: seq[Value]
+    for item in expr.listItems:
+      let owned = ownTypeAnnotation(item)
+      items.add owned
+      changed = changed or owned.bits != item.bits
+    if changed: newList(items, expr.listImmutable) else: expr
+  of vkMap:
+    var changed = false
+    var props = initPropTable()
+    for key, item in expr.mapEntries:
+      let owned = ownTypeAnnotation(item)
+      props[key] = owned
+      changed = changed or owned.bits != item.bits
+    if changed: newMap(props, expr.mapImmutable) else: expr
+  else: expr
+
+proc implAssemblyScope*(impl: ProtocolImpl): Scope =
+  if impl.assemblyScope != nil: impl.assemblyScope else: cast[Scope](impl.weakAssemblyScope)
+
+proc implForScopeStorage*(impl: ProtocolImpl, owner: Scope): ProtocolImpl =
+  result = impl
+  let source = impl.implAssemblyScope
+  if source == owner:
+    result.assemblyScope = nil
+    result.weakAssemblyScope = cast[pointer](source)
+  else:
+    result.assemblyScope = source
+    result.weakAssemblyScope = nil
+
+proc typeContractPending*(typ: Value): bool =
+  typ.tagOf == OBJECT_TAG and objData(typ).objKind == okType and
+    TypeData(objData(typ)).contractPending
+
+proc setTypeContractPending*(typ: Value, pending: bool) =
+  if typ.tagOf != OBJECT_TAG or objData(typ).objKind != okType:
+    raise newException(FieldDefect, "pending contract requires a nominal type")
+  TypeData(objData(typ)).contractPending = pending
+
+proc setTypeOwnMessages*(typ: Value, messages: sink Table[string, Value], ctor: Value) =
+  ## Complete a fresh nominal declaration before publishing its binding.
+  if objData(typ).objKind == okEnum:
+    EnumData(objData(typ)).messages = messages
+    return
+  let data = TypeData(objData(typ))
+  data.messages = messages
+  data.ctorFn = ctor
+
+proc setTypeSchemaAnnotations*(typ: Value, fields: sink seq[TypeField],
+                               bodyFields: sink seq[TypeBodyField]) =
+  let data = TypeData(objData(typ))
+  data.fields = fields
+  data.bodyFields = bodyFields
 
 proc unionTypeExpr*(members: sink seq[Value]): Value =
   ## `(| A B ...)` as a value: an *anonymous* transparent alias over the same

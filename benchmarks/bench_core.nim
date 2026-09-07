@@ -7,6 +7,7 @@
 ## Run:
 ##   nimble perf
 
+import ./bench_self_type
 import gene/ext/logging
 import gene/[compiler, equality, gir, printer, reader, types, vm]
 import std/[json, monotimes, os, osproc, strutils, tables, times]
@@ -562,7 +563,7 @@ proc main() =
     # chain, so the send pays parent lookup on top of the impl body.
     "(type Base ^props {} (message tag [] : Int 1)) " &
     "(type Derived : Base ^props {} " &
-    "  (message tag [] : Int (super .tag))) " &
+    "  (message tag [] : Int ^^override (super .tag))) " &
     "(var box (Box ^x 10)) " &
     "(var dog (Dog ^x 10)) " &
     "(var derived (Derived)) " &
@@ -897,3 +898,4 @@ proc main() =
       checksum = checksum + 1
 
 main()
+benchSelfTypeContracts()

@@ -29,6 +29,31 @@ when defined(geneRcStats):
   GC_fullCollect()
 
   suite "rc — closures and scopes (geneRcStats)":
+    test "Self contracts and declaration assemblies release their receiver identities":
+      check leakedManaged("""
+        (type A ^props {^next Self?}
+          (message copy [] : Self self)
+          (message checker [] (fn [x : Self] : Bool true)))
+        (type B : A ^props {})
+        (let b (B ^next nil))
+        (var checker (b .checker))
+        (checker (A ^next nil))
+        (set checker nil)
+        (A .fields)
+      """) == 0
+      check leakedManaged("""
+        (type A ^props {} (message check [x : Later] : Bool true))
+        (alias Later Self)
+        ((A) .check (A))
+      """) == 0
+      check leakedManaged("""
+        (fn test []
+          (type Boom ^props {} (message raise [] : Int ^errors [Self] (fail self)))
+          (impl Error for Boom)
+          (try ((Boom) .raise) catch Boom nil))
+        (test)
+      """) == 0
+
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
 

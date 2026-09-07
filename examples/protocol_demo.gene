@@ -1,33 +1,27 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Types, protocols, messages, and inheritance (docs/core.md)
+# Types, protocols, messages, inheritance, and Self
+# See docs/core.md and docs/proposals/self-type.md.
 #
 # Demonstrates:
-#   - type declarations, single type inheritance (`: Parent`), and type-direct
-#     messages (docs/core.md §8)
-#   - protocol declarations and impl; impl lookup walking a type's parent chain
-#     (docs/core.md §2.1)
-#   - protocol inheritance (^inherit): single parent, and multiple unrelated
-#     parents with same-named messages disambiguated by qualified identity
-#     (docs/core.md §3)
-#   - structural subtyping: implementing a child protocol satisfies every
-#     ^inherit ancestor for a ^impl [...] requirement (docs/core.md §3.5)
-#   - message sends: bare (x .name) reaches a type-direct message; a protocol
-#     message is always qualified, (x .Protocol:name); (.name) sends to self
-#     (docs/core.md §9)
+#   - inherited type-direct messages and explicit message overrides
+#   - inline impls, protocol inheritance, and same-named message identities
+#   - declaration-bound Self in parameters, results, and nested functions
+#   - inheriting impls (^^override) versus complete impls (no flag)
+#   - per-protocol Self bindings and default-body result checks
+#   - universal defaults and callable message values
 #
-# Note: message names are not lexical bindings (docs/core.md §1) and a message
-# identity is not callable — behavior is reached with a dot send, never with a bare
-# call like (name x) or (Protocol:name x).
+# Bare (x .name) and (Self:name x) reach type-direct messages.
+# (x .Protocol:name) and (Protocol:name x) reach a protocol message.
+# Message names are not automatically bound as bare functions named `name`.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# A base type carrying a type-direct message, and a protocol implemented only
-# on that base type. Dog inherits both through its declared parent.
+# 1. Type inheritance and a protocol implemented on the parent.
 # -----------------------------------------------------------------------------
 
 (type Animal ^props {^name Str}
-  (message greet [] $"${self/name} looks up"))
+  (message greet [] : Str $"${self/name} looks up"))
 
 (protocol Describable
   (message describe [] : Str))
@@ -35,47 +29,35 @@
 (impl Describable for Animal
   (message describe [] : Str $"a creature named ${self/name}"))
 
-# -----------------------------------------------------------------------------
-# Protocol inheritance, single parent: an impl of Ord must cover Comparable's
-# message too — the closure is flattened at protocol declaration time (§3.2).
-# -----------------------------------------------------------------------------
-
+# Ord includes Comparable's message identity. Dog introduces both conformances,
+# so Self in both protocols binds to Dog. The inline impl covers the full closure
+# and satisfies ^impl [Comparable] without a separate Comparable impl.
 (protocol Comparable
-  (message compare [other] : Int))
+  (message compare [other : Self] : Int))
 
 (protocol Ord ^inherit [Comparable]
-  (message bigger [other]))
-
-# -----------------------------------------------------------------------------
-# ^impl [Comparable] requires a visible impl by scope completion; the inline
-# `impl Ord` block satisfies it structurally (§3.5) — no separate
-# `impl Comparable for Dog` is needed. Inline impls take no receiver: the
-# enclosing type is the receiver (§8), so this is identical to writing
-# `(impl Ord for Dog ...)` after the declaration.
-# -----------------------------------------------------------------------------
+  (message bigger [other : Self] : Self))
 
 (type Dog : Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
-  (message tag [] $"${self/name} the ${self/breed}")
+  (message tag [] : Str $"${self/name} the ${self/breed}")
+  # A returned function keeps this declaration's Self = Dog, even when the
+  # checker message is inherited by Pup and called on a Pup.
+  (message checker [] : (Fn [Self] Bool)
+    (fn [other : Self] : Bool (== self/name other/name)))
   (impl Ord
-    # An impl's parameter list must match the declaration position by position,
-    # types included.
-    (message compare [other]
-      : Int
-      (- self/weight other/weight))
-    (message bigger [other]
+    (message compare [other : Self] : Int (- self/weight other/weight))
+    (message bigger [other : Self] : Self
       (if (< (self .Comparable:compare other) 0) other self))))
 
 # -----------------------------------------------------------------------------
-# Multiple unrelated parents with a same-name message: Sized/size_of and
-# Scored/size_of are distinct messages (qualified identity, §3.3). The impl
-# qualifies them; callers pick with Protocol:name.
+# 2. Unrelated same-named messages keep distinct qualified identities.
 # -----------------------------------------------------------------------------
 
 (protocol Sized
   (message size_of [] : Int))
 
 (protocol Scored
-  (message size_of [] : Int))  # same simple name, different meaning
+  (message size_of [] : Int))
 
 (protocol Summary ^inherit [Sized Scored]
   (message blurb [] : Str))
@@ -87,21 +69,144 @@
     $"${self/name}: ${(self .Sized:size_of)} lbs, score ${(self .Scored:size_of)}"))
 
 # -----------------------------------------------------------------------------
-# Run it.
+# 3. Self stays bound to Dog in the inherited Eq contract.
 # -----------------------------------------------------------------------------
 
-(var rex (Dog ^name "Rex" ^breed "Labrador" ^weight 70))
-(var fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
+# Equality in this example compares names within the Dog family.
+(protocol Eq
+  (message eq [other : Self] : Bool)
+  (message label [] : Str "protocol default"))
 
-($println (rex .greet))                  # type-direct message via parent walk (§8)
-($println (rex .tag))                    # Dog's own type-direct message
-($println (Dog/tag rex))                  # a type's message is also a member
+(impl Eq for Dog
+  (message eq [other : Self] : Bool (== self/name other/name))
+  (message label [] : Str "Dog implementation"))
 
-# A protocol message is always qualified — bare `(rex .describe)` would look
-# for a type-direct `describe` on Dog and raise MessageError (§9.1).
-($println (rex .Describable:describe))   # impl found by walking Dog's parent chain
+(type Pup : Dog ^props {}
+  # A type-direct replacement needs a message-level marker. Its signature
+  # must match Animal/greet; super enters that original parent definition.
+  (message greet [] : Str ^^override
+    $"${(super .greet)}, then wags"))
 
-($println (rex .Comparable:compare fido)) # Ord's closure includes Comparable
-($println ((rex .Ord:bigger fido) .tag)) # send chaining
+# An inheriting impl supplies replacements and copies omitted ancestor bodies.
+# Eq.Self is still Dog. The supplied replacement names Dog explicitly; Self is
+# allowed inside its body and means the new body's declaring receiver, Pup.
+(impl Eq for Pup ^^override
+  (message eq [other : Dog] : Bool
+    (let current : Self self)
+    (== current/name other/name)))
 
-($println (rex .Summary:blurb))          # qualified same-name messages (§3.3)
+(type GrandPup : Pup ^props {})
+(impl Eq for GrandPup ^^override) # An empty inheriting impl reuses every body.
+
+(type CompletePup : Dog ^props {})
+# Without ^^override, every message must have a local body or a protocol default.
+# Dog's label body is not copied, so this impl uses Eq's default label.
+# This is a new body set, but the established Eq.Self binding still remains Dog.
+(impl Eq for CompletePup
+  (message eq [other : Dog] : Bool (== self/name other/name)))
+
+(fn compare_dogs [left : Dog right : Dog] : Bool (left .Eq:eq right))
+
+# A separate nominal family gets its own Eq.Self = Point binding.
+(type Point ^props {^x Int ^y Int})
+(impl Eq for Point
+  (message eq [other : Self] : Bool
+    (&& (== self/x other/x) (== self/y other/y))))
+
+# Protocol annotations admit either family, but the selected eq body still
+# checks its concrete argument contract. They do not make Dog and Point mixable.
+(fn compare_eq_values [left : Eq right : Eq] : Bool (left .Eq:eq right))
+
+# -----------------------------------------------------------------------------
+# 4. A new child protocol can bind Self differently from its inherited parent.
+# -----------------------------------------------------------------------------
+
+(protocol Copyable
+  (message copy [] : Self))
+
+(impl Copyable for Dog
+  # Returning self exposes the difference between the declared result type
+  # (Dog) and the actual object type (which may be Pup).
+  (message copy [] : Self self))
+
+(protocol Duplicable ^inherit [Copyable]
+  (message duplicate [] : Self (self .Copyable:copy)))
+
+# Copyable.Self stays Dog; the newly introduced Duplicable.Self becomes Pup.
+# The reused copy body returns the actual Pup, satisfying duplicate's result.
+(impl Duplicable for Pup ^^override)
+
+(type FaultyPup : Dog ^props {})
+(impl Duplicable for FaultyPup ^^override
+  # Returning Dog satisfies the inherited Copyable contract. It cannot satisfy
+  # Duplicable's new Self = FaultyPup promise when the default calls this body.
+  (message Copyable:copy [] : Dog
+    (Dog ^name self/name ^breed self/breed ^weight self/weight)))
+
+# -----------------------------------------------------------------------------
+# 5. Universal defaults need no explicit impl and cannot use abstract Self in
+#    annotations. The receiver value self and Self:message syntax are allowed.
+# -----------------------------------------------------------------------------
+
+(protocol Greeting ^^universal
+  (message greeting [] : Str (Self:greet self)))
+
+# -----------------------------------------------------------------------------
+# Run the examples. Expected failures are caught so the whole demo succeeds.
+# -----------------------------------------------------------------------------
+
+(fn show [label : Str value : Any] ($println $"${label}: ${value}"))
+
+(let rex (Dog ^name "Rex" ^breed "Labrador" ^weight 70))
+(let fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
+(let puppy (Pup ^name "Rex" ^breed "Labrador" ^weight 12))
+(let grand_puppy (GrandPup ^name "Rex" ^breed "Labrador" ^weight 8))
+(let complete_puppy (CompletePup ^name "Rex" ^breed "Labrador" ^weight 12))
+(let faulty_puppy (FaultyPup ^name "Rex" ^breed "Labrador" ^weight 12))
+(let point (Point ^x 3 ^y 4))
+
+(show "Inherited type-direct message" (rex .greet))
+(show "Dog's own message" (rex .tag))
+(show "Type-direct message value" (Self:tag rex))
+(show "Inherited protocol impl" (rex .Describable:describe))
+(show "Direct override with super" (puppy .greet))
+(show "Comparable inherited through Ord" (rex .Comparable:compare fido)) # 52
+(show "Ord result followed by another send" ((rex .Ord:bigger fido) .tag))
+(show "Same name, separate identities" [(rex .Sized:size_of) (rex .Scored:size_of)]) # [70 140]
+(show "Summary" (rex .Summary:blurb))
+
+(show "All Dog/Pup pairs retain the Dog input contract"
+  [(compare_dogs rex rex) (compare_dogs rex puppy)
+   (compare_dogs puppy rex) (compare_dogs puppy puppy)]) # [true true true true]
+(show "Inheriting impl copies the ancestor label" (puppy .Eq:label)) # Dog implementation
+(show "Empty inheriting impl" (grand_puppy .Eq:label))               # Dog implementation
+(show "Complete impl uses the protocol default" (complete_puppy .Eq:label)) # protocol default
+(show "Complete impl still accepts Dog" (complete_puppy .Eq:eq rex)) # true
+(show "Unrelated conformance" (point .Eq:eq (Point ^x 3 ^y 4)))       # true
+
+(let held_eq : (Callable [Dog Dog] Bool) Eq:eq)
+(show "Held protocol message" (held_eq puppy rex)) # true
+(let check_name (puppy .checker))
+(show "Escaping checker still accepts Dog" (check_name rex)) # true
+(show "Protocol values still enforce concrete inputs"
+  (try (compare_eq_values rex point) catch TypeError "rejected Dog/Point pair"))
+
+(show "Inherited copy returns the actual Pup" (same? ($head (puppy .Copyable:copy)) Pup)) # true
+(show "Mixed-binding default accepts an actual Pup" (same? ($head (puppy .Duplicable:duplicate)) Pup)) # true
+(show "Mixed-binding default rejects a Dog result"
+  (try (faulty_puppy .Duplicable:duplicate) catch TypeError "rejected Dog result"))
+(show "Universal default dispatches the receiver's direct override" (puppy .Greeting:greeting))
+
+# Declaration mistakes to try separately (each would stop module initialization):
+#
+# (impl Eq for CompletePup)                      # Missing eq; complete mode cannot copy Dog's body.
+# (impl Eq for Point ^^override)                 # No ancestor provider; a default is not a target.
+# (impl Eq for Pup ^^override
+#   (message eq [other : Self] : Bool true))     # Replacement signatures cannot use contextual Self.
+# (impl Eq for Pup ^^override
+#   (message eq [other : Pup] : Bool true))      # Explicit narrowing also violates the inherited Dog contract.
+# (type UnmarkedPup : Dog ^props {}
+#   (message greet [] : Str "hello"))           # A direct replacement requires ^^override on the message.
+#
+# Replace the corresponding declarations above when trying an impl mistake;
+# adding another impl for an already implemented pair is itself a conflict.

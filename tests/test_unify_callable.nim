@@ -70,7 +70,7 @@ suite "unified callable — direct message syntax":
     unifyCallableCheck """
       (type Base ^props {} (message value [] 1))
       (type Child : Base
-        (message value [] (+ 1 (Self:value super))))
+        (message value [] ^^override (+ 1 (Self:value super))))
       [(Self:value (Child))
        (try (Base:value (Child)) false catch CallKindError true)]
     """, "[2 true]"

@@ -29,7 +29,14 @@ key”.
 - Successful validation clears the marker; failures run ordinary ensure/error
   unwinding without publishing the partial value.
 - Single nominal inheritance preserves parent field schemas. Type-direct
-  overrides preserve the inherited callable signature exactly in the MVP.
+  overrides require literal `^override true` (or `^^override`) on the message
+  and preserve the inherited callable signature exactly in the MVP. The flag
+  on a message without an inherited target is an error.
+  Type-position `Self` binds to the declaring receiver's identity and is
+  preserved under inheritance, including nested annotations and results.
+  Newly supplied replacement signatures cannot depend on contextual `Self`,
+  including through alias or syntax expansion; they name inherited types
+  explicitly. Body-local `Self` retains the new body's declaration context.
   Constructors are inherited by nearest-ancestor selection; they do not chain
   automatically.
 - `^repr native_wrapper` marks a type whose props hold native state (design

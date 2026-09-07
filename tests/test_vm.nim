@@ -285,7 +285,7 @@ suite "VM — proper tail calls":
       "  (message down [n] " &
       "    (if (== n 0) 0 (self .down (- n 1))))) " &
       "(type ChildWalker : ParentWalker ^props {} " &
-      "  (message down [n] (super .down n))) " &
+      "  (message down [n] ^^override (super .down n))) " &
       "((ChildWalker) .down 5000)")
     let superStats = finishTailCallStats()
     check superValue == newInt(0)
@@ -459,7 +459,7 @@ suite "compiler — GIR emission":
     check loopCall.found
     check not loopCall.tail
 
-  test "GIR v7 round-trips tail metadata":
+  test "GIR v8 round-trips tail metadata":
     let chunk = compileSource(
       "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
     let iface = CompileNamespaceInterface(
@@ -469,17 +469,34 @@ suite "compiler — GIR emission":
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
         compileInterface: iface)])
     let payload = encodeExecutableGir(artifact)
-    check "\"gir_format\":7" in payload
+    check "\"gir_format\":8" in payload
     let decoded = decodeExecutableGir(payload)
     expect ValueError:
       discard decodeExecutableGir(
-        payload.replace("\"gir_format\":7", "\"gir_format\":5"))
+        payload.replace("\"gir_format\":8", "\"gir_format\":5"))
     let loopFn = decoded.modules[0].chunk.functions[0]
     check loopFn.chunk.matches[0].tailResult
     var sawTailCall = false
     for inst in loopFn.chunk.matches[0].elseBody.instructions:
       sawTailCall = sawTailCall or inst.tail
     check sawTailCall
+
+  test "GIR rejects serialized runtime Self binding state":
+    for field in ["binding", "resolved", "provenance"]:
+      let chunk = compileSource("(fn f [x] x)")
+      let proto = chunk.functions[0]
+      case field
+      of "binding": proto.annotationSelfBits = 1
+      of "resolved": proto.contractResolved = true
+      else: proto.signatureHadSelf = true
+      let artifact = ExecutableGir(entryIdentity: "test/runtime-state",
+        modules: @[CompiledModule(identity: "test/runtime-state", chunk: chunk,
+          macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+          compileInterface: CompileNamespaceInterface(
+            entries: initTable[string, CompileInterfaceEntry]()))])
+      let encoded = encodeExecutableGir(artifact)
+      expect ValueError:
+        discard decodeExecutableGir(encoded)
 
   test "GIR values round-trip quoted pipeline syntax":
     let chunk = compileSource(

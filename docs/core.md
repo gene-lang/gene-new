@@ -226,13 +226,14 @@ for what `T` implements; a lone `^impl [C]` and an `impl C for T` elsewhere both
 register `T → {A, B, C}` in the same way. This composes with the parent walk
 rule in §2.1: `T`'s ancestors' impls contribute to the same registration.
 
-### 3.6 Reusing a separately visible ancestor impl — **deferred, not implemented** (OQ-A)
+### 3.6 Merging separate impls on the same receiver — **deferred** (OQ-A)
 
-This section describes intended future behavior. The current implementation
-deliberately rejects it: an impl body must provide every message in the
-protocol's transitive closure itself (`registerImpl` in `src/gene/vm.nim`),
-per the OQ-A recommendation to defer partial impl composition. Until OQ-A is
-revisited, treat everything below as design intent only.
+This section describes future same-receiver merging, which remains rejected.
+It is distinct from `^^override` reuse of nominal ancestor bodies (§5). A
+complete impl uses local bodies and protocol defaults; an inheriting impl may
+also reuse bodies from ancestor receiver types. Neither can borrow a separate
+impl on the same receiver to evade closure completeness or overlap checks.
+Until OQ-A is revisited, treat the same-receiver examples below as design intent.
 
 ```gene
 (impl A for T (message do_a [self] "from A impl"))
@@ -367,13 +368,12 @@ time, unchanged.
 A message may carry a default implementation in its own protocol body. If
 `impl B for T` doesn't provide `do_b`, the default is used.
 
-**Design call: implement defaults as a dispatch-table fallback, not as
-derive-style codegen.** A default body is generic over `Self` — it never
-needs a per-type copy or knowledge of `T`'s shape. At the same registration
-step described in §4, if `impl B for T` doesn't explicitly provide a defaulted
-message, register that `(protocol, type)` dispatch entry pointing at the
-**one shared default closure** rather than synthesizing a per-type `impl`
-node in the overlay.
+**Defaults use shared declaration code with a conformance environment.** Each
+protocol identity has its own declaration-bound `Self`. When an impl uses a
+default, its callable contract is resolved with that declaring protocol's
+binding while retaining the default body's lexical scope. Instantiating a
+second conformance cannot mutate the first one's binding. A default does not
+require derive-style generation of another source-level impl.
 
 This deliberately keeps defaults independent of `^derive` (§6): derive is a
 macro that inspects the `Type` value to generate type-specific code (field
@@ -389,7 +389,24 @@ impl body, a default body, or a missing-message error.
 
 Defaults do **not** establish conformance. Even when every message has a
 default, a type needs an explicit `impl`; that declaration may have an empty
-body, and registration fills its dispatch entries from the shared defaults.
+body, and registration fills its dispatch entries from the protocol defaults.
+
+An impl can explicitly inherit ancestor bodies:
+
+```gene
+(impl B for Child ^^override
+  (message do_b [] : Any ...))
+```
+
+For each qualified message identity, local bodies take precedence, then
+applicable ancestor bodies, then protocol defaults. Without `^^override`, a
+complete impl uses only local bodies and protocol defaults. Both forms preserve
+the inherited conformance bindings and exact signatures; newly supplied
+replacement signatures cannot use contextual `Self`. The flag is on the impl,
+including inline impls, and is invalid on its individual messages. Reused bodies
+retain their original scope and `super` origin, with reload dependencies on
+their source providers. This is ancestor reuse; separately declared impls on
+the same receiver still cannot be merged to evade coherence.
 This keeps empty/defaulted markers such as `Send` and `Error` from becoming
 accidentally universal. See §9.2 for the explicit universal opt-in.
 
@@ -414,7 +431,7 @@ accidentally universal. See §9.2 for the explicit universal opt-in.
 `^derive [B]` runs **only `B`'s derive form**. That form must emit one complete
 `impl B` covering `B`'s full inherited message closure; it may omit a message
 only when the message has a default (§5). Ancestor derives are not run
-implicitly, because the MVP deliberately has no partial-impl composition:
+implicitly, because the MVP does not merge separate same-receiver impls:
 running `A`'s derive separately would create an overlapping `impl A` instead
 of contributing entries to the one coherent `impl B`.
 

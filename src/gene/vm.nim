@@ -3,8 +3,9 @@
 import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, net, os,
             options, osproc, sets, strutils, tables, times, unicode]
 import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
-          host_capabilities, package, printer, reader, types]
+          host_capabilities, package, printer, reader, types, type_contracts]
 import ./ext/logging
+export type_contracts
 
 when not defined(emscripten) and not defined(geneWasm):
   import ./process_lock
@@ -352,6 +353,41 @@ type
     facade: Value
     scope: Scope
 
+  DeclarationNotReadyError = object of GeneError
+
+  PendingTypeContract = ref object
+    typ: Value
+    proto: TypeProto
+    messages: Table[string, Value]
+    ctorFn: Value
+    ready: bool
+    diagnostic: string
+
+  PendingProtocolContract = ref object
+    protocol: Value
+    ready: bool
+    diagnostic: string
+
+  StaticImplDeclaration = ref object
+    sourceKey: pointer
+    inlineIndex: int
+    proto: ImplProto
+    inlineReceiver: bool
+    initialized: bool
+    published: bool
+    candidate: ProtocolImpl
+
+  ImplAssembly = ref object of RootObj
+    scope: Scope
+    chunk: Chunk
+    declarations: seq[StaticImplDeclaration]
+    typeContracts: seq[PendingTypeContract]
+    protocolContracts: seq[PendingProtocolContract]
+    processing: bool
+    finished: bool
+
+  ImplScopeUpdate = tuple[scope: Scope, impls: seq[ProtocolImpl]]
+
   CapabilityHostConfigureProc* = proc(
     registry: CapabilityRegistry,
     filesystem: FilesystemProvider,
@@ -398,6 +434,7 @@ type
     implEpoch: uint64
     implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
     baseScopes: seq[Scope] # enumerable module/program bases for reload checks
+    activeImplAssemblies: seq[ImplAssembly] # initialization only; overlays stay lexical
     # design §D5: sandboxed module loading. `sandboxRoots` caches one restricted
     # builtins root per grant set (keyed by the sorted grant list) so that two
     # mods with the same manifest share a root rather than each building one.
@@ -722,6 +759,9 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
                              scope: Scope): bool
 proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
+proc validateLookupImpls(scope: Scope)
+proc readyTypeDirectMessage(typ: Value, name: string): Value
+proc ensureTypeContractReady(scope: Scope, typ: Value)
 proc builtinBinding(scope: Scope, name: string): Value
 proc isBuiltinCallable(value: Value): bool
 proc receiverType(value: Value): Value
@@ -1229,6 +1269,9 @@ proc ensureModuleRefEntry(scope: Scope, name: string): ModuleRefEntry =
       ModuleRefEntry(name: name, state: mrsUnresolved, value: NIL)
   root.moduleRefs.entries[name]
 
+proc prepareImplAssembly(scope: Scope, chunk: Chunk)
+proc finishImplAssembly(scope: Scope, chunk: Chunk)
+
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
   if chunk.localNames.len > 0:
     if scope.slots.len == 0:
@@ -1252,6 +1295,7 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
     scope.exportExcludedNames.incl name
   for name in chunk.moduleRefNames:
     discard scope.ensureModuleRefEntry(name)
+  scope.prepareImplAssembly(chunk)
 
 
 proc refreshCompiledUnitEntry(scope: Scope) =
@@ -4663,7 +4707,7 @@ proc dispatchGenericForward(name: string, receiver: Value,
   ## disagree about a missing method.
   let recvType = receiver.receiverType
   if recvType.kind == vkType:
-    let impl = typeDirectMessage(recvType, name)
+    let impl = readyTypeDirectMessage(recvType, name)
     if impl.kind != vkNil:
       var callArgs = newSeqOfCap[Value](rest.len + 1)
       callArgs.add receiver
@@ -7300,6 +7344,7 @@ proc constructNew(callee: Value, args: openArray[Value], named: NamedArgs,
     raise newException(GeneError,
       "type alias '" & callee.typeName & "' is not constructible; it names " &
       "the type " & callee.typeAliasExpr.print())
+  ensureTypeContractReady(dispatchScope, callee)
   let ctor = callee.typeConstructor
   if ctor.kind != vkNil:
     constructWithCtor(callee, args, named, ctor, dispatchScope, site)
@@ -7337,12 +7382,13 @@ proc biTypeFields(args: openArray[Value]): Value {.nimcall.} =
   ## language's one type vocabulary instead of inventing string descriptors.
   if args.len != 1 or args[0].kind != vkType:
     raise newException(GeneError, "Type/fields expects a Type receiver")
+  ensureTypeContractReady(args[0].typeScope, args[0])
   var fields: seq[Value]
   for field in args[0].typeFields:
     var props = initPropTable()
     props["name"] = newStr(field.name)
     props["optional"] = newBool(field.optional)
-    props["type"] = field.typeExpr
+    props["type"] = ownTypeAnnotation(field.typeExpr)
     fields.add newMap(props)
   newList(fields)
 
@@ -9706,7 +9752,7 @@ proc resolvePatternPath(path: Value, scope: Scope): Value =
       if current.isEnumType:
         current = current.enumVariantDescriptor(key)
       else:
-        let message = typeDirectMessage(current, key)
+        let message = readyTypeDirectMessage(current, key)
         current = if message.kind == vkNil: VOID else: message
     of vkNamespace:
       current = current.exportedBinding(key)
@@ -10125,6 +10171,10 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
   ## its mutable module/REPL scope. Candidate-bearing functions are compiled
   ## with needsCallScope, so this never has to mutate the lexical parent.
   scope.varsDirty = false
+  if callee.kind == vkFunction and callee.fnCode of FunctionProto:
+    let selfBits = FunctionProto(callee.fnCode).annotationSelfBits
+    if selfBits != 0:
+      scope.annotationSelfType = ownedValueFromBits(selfBits)
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.application =
@@ -10137,10 +10187,13 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.simpleCallScope = false
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
+  scope.annotationSelfType = NIL
   scope.vars.clear()
   scope.varsDirty = false
   scope.varTypes.clear()
   scope.impls.setLen(0)
+  scope.implAssembly = nil
+  scope.implValidationEpoch = 0
   scope.implOverlayRoot = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
@@ -10461,6 +10514,8 @@ proc clearDefinedCallSlots(scope: Scope) {.inline.} =
 proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope == nil:
     return
+  scope.annotationSelfType = NIL
+  scope.implAssembly = nil
   if scope.simpleCallScope:
     scope.clearDefinedCallSlots()
     if scope.slotTypes.len != 0:
@@ -10587,7 +10642,16 @@ proc captureTypeBoundaryScope(scope: Scope): Scope =
   var current = origin
   while current != nil and current != builtins:
     for impl in current.impls:
-      result.impls.add impl
+      # This is a detached conformance proof, not a live composition owner.
+      # Retaining the original assembly scope would recreate Cell -> snapshot
+      # -> original Scope -> Cell across the manual-RC/ORC boundary.
+      var proof = impl
+      proof.assemblyScope = nil
+      proof.weakAssemblyScope = nil
+      proof.localMessages = @[]
+      proof.bodySources = @[]
+      proof.managedContract = false
+      result.impls.add proof
     current = current.parent
 
 proc qualifiedMessageName(message: Value): string =
@@ -10638,135 +10702,238 @@ proc resolveImplMessage(scope: Scope, protocol: Value,
       spellings.join(", "))
   candidates[0]
 
-proc typeExprHasCommutativeHead(expr: Value): bool =
-  ## Cheap pre-test so the common annotation pays one kind check instead of a
-  ## rebuild. Only `&` and `|` have operands whose order carries no meaning.
-  if expr.kind != vkNode:
-    return false
-  if expr.head.isSymbol("&") or expr.head.isSymbol("|"):
-    return true
-  for item in expr.body:
-    if typeExprHasCommutativeHead(item):
-      return true
-  for _, item in expr.props:
-    if typeExprHasCommutativeHead(item):
-      return true
-  false
+proc lexicalSelfType(scope: Scope): Value =
+  var current = scope
+  while current != nil:
+    if current.annotationSelfType.kind != vkNil:
+      return current.annotationSelfType
+    current = current.parent
+  NIL
 
-proc sortTypeExprOperands(operands: var seq[Value]) =
-  ## Printed form is the sort key: stable within a run for every operand shape,
-  ## and identical for structurally identical operands — which is exactly the
-  ## equivalence being canonicalized. Keys are computed once rather than inside
-  ## the comparator, so an operand is printed O(n) times, not O(n log n).
-  if operands.len < 2:
-    return
-  var keyed: seq[(string, Value)]
-  for operand in operands:
-    keyed.add (operand.print(), operand)
-  keyed.sort(proc (x, y: (string, Value)): int = cmp(x[0], y[0]))
-  for i, entry in keyed:
-    operands[i] = entry[1]
+proc staticImplOperand(scope: Scope, expr: Value): Value
+proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
 
-proc canonicalTypeExpr*(expr: Value): Value =
-  ## Sort the operands of every `&`/`|` node into a stable order so two
-  ## spellings of one set compare equal. Purely structural — it resolves no
-  ## names, so it needs no scope and is safe at any phase, including impl
-  ## registration, which runs long before boundary closure.
-  if not typeExprHasCommutativeHead(expr):
-    return expr
-  var body: seq[Value]
-  for item in expr.body:
-    body.add canonicalTypeExpr(item)
-  if expr.head.isSymbol("&") or expr.head.isSymbol("|"):
-    sortTypeExprOperands(body)
-  var props = initPropTable()
-  for key, item in expr.props:
-    props[key] = canonicalTypeExpr(item)
-  var meta = initPropTable()
-  for key, item in expr.meta:
-    meta[key] = item
-  newNode(expr.head, props = props, body = body, meta = meta,
-          immutable = expr.nodeImmutable)
+proc resolveDeclarationAnnotation(expr: Value, scope: Scope, selfType: Value,
+                                  rejectSelf = false, depth = 0, abiTarget = false): Value =
+  ## Close declaration contracts once, preserving nominal identity without an
+  ## ownership cycle through the type's own method table. Alias expansion is
+  ## use-site expansion; inspect Self before replacing it with an identity.
+  if depth > 100:
+    raise newException(GeneError, "recursive type alias in declaration signature")
+  if expr.isTypeAlias:
+    if expr.isBorrowedTypeAnnotation or expr.isOpaqueAbiAnnotation:
+      return expr
+    return resolveDeclarationAnnotation(expr.typeAliasExpr, scope, selfType,
+                                        rejectSelf, depth + 1, abiTarget)
+  case expr.kind
+  of vkSymbol:
+    let name = expr.symVal
+    if name.len > 1 and name[^1] == '?':
+      let base = resolveDeclarationAnnotation(newSym(name[0 .. ^2]), scope,
+                                              selfType, rejectSelf, depth + 1, abiTarget)
+      if base.kind == vkSymbol and base.symVal == name[0 .. ^2]:
+        return expr # preserve builtin spelling in schema reflection
+      return newNode(newSym("?"), body = @[base])
+    if name == "Self":
+      if rejectSelf:
+        raise newException(GeneError, "Self is forbidden in a replacement signature")
+      if selfType.kind == vkNil:
+        raise newException(GeneError, "Self requires a declaring receiver type")
+      return borrowedTypeAnnotation(selfType,
+        if selfType.isBuiltinSurfaceType: selfType.typeName else: "")
+    let alias = staticImplOperand(scope, expr)
+    # FFI aggregate declarations bind their ABI name as a symbol. Inside a C
+    # pointee annotation that initialized symbol is already the closed target.
+    if abiTarget and alias.kind == vkSymbol and alias.symVal == expr.symVal:
+      return closedAbiAnnotation(name)
+    if abiTarget and alias.kind == vkNil:
+      # An explicit forward Gene declaration remains a dependency. Otherwise
+      # an unbound C pointee name is the existing opaque ABI label syntax.
+      var forwardDeclared = false
+      var context = scope
+      while context != nil:
+        if context.implAssembly != nil:
+          let unit = ImplAssembly(context.implAssembly).chunk
+          for instruction in unit.instructions:
+            if instruction.op == opMakeAlias and instruction.name == name:
+              forwardDeclared = true
+          for declared in unit.typeProtos:
+            if declared.name == name: forwardDeclared = true
+        context = context.parent
+      if not forwardDeclared: return closedAbiAnnotation(name)
+    if alias.isTypeAlias:
+      return resolveDeclarationAnnotation(alias, scope, selfType, rejectSelf, depth + 1, abiTarget)
+    let closed = closeTypeExpr(expr, scope)
+    if closed.bits != expr.bits:
+      return resolveDeclarationAnnotation(closed, scope, selfType,
+                                          rejectSelf, depth + 1, abiTarget)
+    if not matchesBuiltinType(name, NIL).known and name notin ["?", "|", "&", "...", "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr", "C/OwnedPtr", "C/Slice"]:
+      raise newException(DeclarationNotReadyError,
+        "declaration not ready: unresolved type annotation " & name)
+    expr
+  of vkType, vkProtocol:
+    if same(expr, selfType):
+      borrowedTypeAnnotation(expr, if expr.isBuiltinSurfaceType: expr.typeName else: "")
+    elif expr.isBuiltinSurfaceType:
+      newSym(expr.typeName)
+    else:
+      # Other declaration identities can outlive their original lexical
+      # binding. Only the owning Self edge must be borrowed to avoid a cycle.
+      expr
+  of vkNode:
+    if expr.head.isSymbol("path"):
+      let alias = staticImplOperand(scope, expr)
+      if alias.isTypeAlias:
+        return resolveDeclarationAnnotation(alias, scope, selfType, rejectSelf, depth + 1, abiTarget)
+    let closed = if expr.head.isSymbol("path"): closeTypeExpr(expr, scope) else: expr
+    if closed.bits != expr.bits:
+      return resolveDeclarationAnnotation(closed, scope, selfType,
+                                          rejectSelf, depth + 1, abiTarget)
+    let annotationHead = closeTypeExpr(expr.head, scope)
+    let pointee = annotationHead.kind == vkSymbol and annotationHead.symVal in [
+      "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr", "C/OwnedPtr", "C/Slice"]
+    var body: seq[Value]
+    for item in expr.body:
+      body.add resolveDeclarationAnnotation(item, scope, selfType, rejectSelf, depth + 1,
+                                            abiTarget = pointee)
+    var props = initPropTable()
+    for key, item in expr.props:
+      props[key] = resolveDeclarationAnnotation(item, scope, selfType, rejectSelf, depth + 1, abiTarget)
+    newNode(resolveDeclarationAnnotation(annotationHead, scope, selfType, rejectSelf, depth + 1, abiTarget),
+            body = body, props = props, meta = expr.meta, immutable = expr.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for item in expr.listItems:
+      items.add resolveDeclarationAnnotation(item, scope, selfType, rejectSelf, depth + 1, abiTarget)
+    newList(items, immutable = true)
+  of vkMap:
+    var props = initPropTable()
+    for key, item in expr.mapEntries:
+      props[key] = resolveDeclarationAnnotation(item, scope, selfType, rejectSelf, depth + 1, abiTarget)
+    newMap(props, immutable = true)
+  else:
+    expr
 
-proc typeExprEquivalent*(a, b: Value): bool =
-  ## The one semantic-equivalence test for type expressions. Used by callable
-  ## signature comparison (impl registration, before closure) and by
-  ## stored-container comparison (typed `Cell`, after closure), so operand
-  ## order cannot be significant in one place and not the other.
-  equal(canonicalTypeExpr(a), canonicalTypeExpr(b))
+proc isErrorType(scope: Scope, typ: Value): bool
 
-proc signatureTypeEqual(a, b: Value): bool =
-  ## Omitted annotations and explicit Any have the same boundary meaning.
-  let aAny = a.kind == vkNil or a.isSymbol("Any")
-  let bAny = b.kind == vkNil or b.isSymbol("Any")
-  (aAny and bAny) or typeExprEquivalent(a, b)
+proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
+                            declarationScope: Scope = nil): Value =
+  if fn.kind != vkFunction or not (fn.fnCode of FunctionProto):
+    return fn
+  let original = FunctionProto(fn.fnCode)
+  if rejectSelf and (original.receiverSelfAnnotation or original.signatureHadSelf):
+    raise newException(GeneError, "Self is forbidden in a replacement signature, including [self : Self]")
+  if original.contractResolved:
+    if original.annotationSelfBits != selfType.bits:
+      raise newException(GeneError, "cannot rebind a resolved declaration's Self")
+    return fn
+  let scope = if declarationScope != nil: declarationScope else: fn.fnScope
+  let proto = FunctionProto()
+  proto[] = original[]
+  proto.annotationSelfBits = selfType.bits
+  proto.contractResolved = true
+  proto.signatureHadSelf = original.receiverSelfAnnotation
+  proto.needsCallScope = true
+  # Chunk.owner is a cursor. A specialized function cannot share an owner
+  # pointer into a declaration prototype that may die with the input artifact.
+  if original.chunk != nil:
+    proto.chunk = Chunk()
+    proto.chunk[] = original.chunk[]
+    proto.chunk.owner = proto
+    proto.chunk.dispatchCache = @[]
+  if original.scopelessChunk != nil:
+    proto.scopelessChunk = Chunk()
+    proto.scopelessChunk[] = original.scopelessChunk[]
+    proto.scopelessChunk.owner = proto
+    proto.scopelessChunk.dispatchCache = @[]
+  proc resolve(expr: Value): Value =
+    try:
+      discard resolveDeclarationAnnotation(expr, scope, NIL, rejectSelf = true)
+    except GeneError as error:
+      if "Self" notin error.msg:
+        raise
+      proto.signatureHadSelf = true
+    resolveDeclarationAnnotation(expr, scope, selfType, rejectSelf)
+  proto.paramTypes = @[]
+  for expr in original.paramTypes:
+    proto.paramTypes.add resolve(expr)
+  proto.restType = resolve(original.restType)
+  proto.namedParams = @[]
+  for param in original.namedParams:
+    var resolved = param
+    resolved.typeExpr = resolve(param.typeExpr)
+    proto.namedParams.add resolved
+  proto.returnType = resolve(original.returnType)
+  var errors = fn.fnErrorTypes
+  for expr in original.signatureErrorExprs:
+    if expr.isSymbol("Never"): continue
+    let resolved = resolve(expr)
+    let identity = if resolved.isTypeAlias: resolved.typeAliasExpr
+                   elif resolved.kind == vkSymbol: staticImplOperand(scope, resolved)
+                   else: resolved
+    if not scope.isErrorType(identity):
+      raise newException(DeclarationNotReadyError,
+        "declaration not ready: ^errors entry " & identity.print() & " must be an Error type")
+    var duplicate = false
+    for existing in errors:
+      if signatureTypeEqual(existing, resolved): duplicate = true
+    if not duplicate:
+      errors.add (if resolved.isBorrowedTypeAnnotation: resolved else: identity)
+  proto.signatureErrorExprs = @[]
+  result = newFunction(fn.fnName, proto.params, proto, fn.fnScope,
+                       fn.fnChecksErrors, errors, fn.isSyntaxFn)
 
-proc callableSignatureMismatch(expected, actual: Value): string =
-  if expected.kind != vkFunction or actual.kind != vkFunction:
-    return "callable category"
-  if expected.isSyntaxFn != actual.isSyntaxFn:
-    return "callable category (fn versus fexpr)"
-  let expectedCode = expected.fnCode
-  let actualCode = actual.fnCode
-  if expectedCode == nil or actualCode == nil or
-      not (expectedCode of FunctionProto) or not (actualCode of FunctionProto):
-    return "callable implementation"
-  let e = FunctionProto(expectedCode)
-  let a = FunctionProto(actualCode)
-  if e.params.len != a.params.len or
-      e.requiredPositional != a.requiredPositional:
-    return "positional parameter shape"
-  if e.paramDefaults.len != a.paramDefaults.len:
-    return "positional default shape"
-  for i in 0 ..< e.paramDefaults.len:
-    if e.paramDefaults[i].optional != a.paramDefaults[i].optional:
-      return "positional default shape at parameter " & $(i + 1)
-  if e.paramTypes.len != a.paramTypes.len:
-    return "positional parameter types"
-  for i in 0 ..< e.paramTypes.len:
-    if not signatureTypeEqual(e.paramTypes[i], a.paramTypes[i]):
-      return "positional parameter type at parameter " & $(i + 1)
-  if (e.restParam.len != 0) != (a.restParam.len != 0):
-    return "rest parameter shape"
-  if e.namedParams.len != a.namedParams.len:
-    return "named parameter shape"
-  for i in 0 ..< e.namedParams.len:
-    let ep = e.namedParams[i]
-    let ap = a.namedParams[i]
-    if ep.arg != ap.arg:
-      return "named parameter name at parameter " & $(i + 1)
-    if ep.defaultValue.optional != ap.defaultValue.optional:
-      return "named parameter default shape for ^" & ep.arg
-    if not signatureTypeEqual(ep.typeExpr, ap.typeExpr):
-      return "named parameter type for ^" & ep.arg
-  if not signatureTypeEqual(e.returnType, a.returnType):
-    return "return type"
-  if expected.fnChecksErrors != actual.fnChecksErrors:
-    return "checked error row"
-  let expectedErrors = expected.fnErrorTypes
-  let actualErrors = actual.fnErrorTypes
-  if expectedErrors.len != actualErrors.len:
-    return "checked error row"
-  for i in 0 ..< expectedErrors.len:
-    if not equal(expectedErrors[i], actualErrors[i]):
-      return "checked error row"
-  ""
+proc validateUniversalSelf(proto: FunctionProto, scope: Scope) =
+  proc checkAnnotation(expr: Value) =
+    try:
+      discard resolveDeclarationAnnotation(expr, scope, NIL, rejectSelf = true)
+    except GeneError as error:
+      if "Self" in error.msg:
+        raise newException(GeneError,
+          "universal protocol requirements and defaults cannot depend on abstract Self")
+      raise
 
-proc validateCallableSignature(expected, actual: Value, label: string) =
-  let mismatch = callableSignatureMismatch(expected, actual)
-  if mismatch.len == 0:
-    return
-  let expectedProto = FunctionProto(expected.fnCode)
-  let actualProto = FunctionProto(actual.fnCode)
-  var locations = ""
-  let actualLoc = actualProto.sourceLoc.locationText()
-  let expectedLoc = expectedProto.sourceLoc.locationText()
-  if actualLoc.len > 0:
-    locations.add " at " & actualLoc
-  if expectedLoc.len > 0:
-    locations.add "; inherited/declaration at " & expectedLoc
-  raise newException(GeneError,
-    label & " has incompatible " & mismatch & locations)
+  proc checkFunction(fn: FunctionProto)
+  proc checkChunk(chunk: Chunk) =
+    if chunk == nil:
+      return
+    for instruction in chunk.instructions:
+      if instruction.op in {opCheckType, opDeclareType}:
+        checkAnnotation(chunk.constants[instruction.intArg])
+    for fn in chunk.functions:
+      checkFunction(fn)
+    for nested in chunk.subchunks:
+      checkChunk(nested)
+    for loop in chunk.forLoops:
+      checkChunk(loop.body)
+    for attempt in chunk.tries:
+      checkChunk(attempt.body)
+      for clause in attempt.catches:
+        checkChunk(clause.body)
+      checkChunk(attempt.ensureBody)
+    for match in chunk.matches:
+      for clause in match.clauses:
+        checkChunk(clause.body)
+      checkChunk(match.elseBody)
+
+  proc checkFunction(fn: FunctionProto) =
+    if fn == nil:
+      return
+    if fn.receiverSelfAnnotation:
+      checkAnnotation(newSym("Self"))
+    for expr in fn.paramTypes:
+      checkAnnotation(expr)
+    checkAnnotation(fn.restType)
+    checkAnnotation(fn.returnType)
+    for param in fn.namedParams:
+      checkAnnotation(param.typeExpr)
+      checkChunk(param.defaultValue.defaultChunk)
+    for param in fn.paramDefaults:
+      checkChunk(param.defaultChunk)
+    for expr in fn.signatureErrorExprs:
+      checkAnnotation(expr)
+    checkChunk(fn.chunk)
+  checkFunction(proto)
 
 proc moduleRootScope(scope: Scope): Scope =
   if scope != nil and scope.moduleBase != nil:
@@ -10843,6 +11010,48 @@ proc overlappingMessage(a, b: ProtocolImpl): Value =
         return left.message
   NIL
 
+proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
+  var messages = pending.messages
+  var ctorFn = pending.ctorFn
+  let typ = pending.typ
+  let proto = pending.proto
+  let parent = typ.typeParent
+  let annotationScope = newScope(scope)
+  annotationScope.vars[proto.name] = typ
+  for message in proto.messages:
+    let inherited = if parent.kind == vkType:
+      parent.typeDirectMessage(message.name) else: NIL
+    if (inherited.kind != vkNil) != message.declaresOverride:
+      raise newException(GeneError,
+        "type message " & proto.name & "/" & message.name &
+        (if inherited.kind != vkNil: " requires ^override true"
+         else: " declares ^override but has no inherited target"))
+    let resolved = resolveMessageContract(messages[message.name], typ,
+      rejectSelf = inherited.kind != vkNil, declarationScope = annotationScope)
+    if inherited.kind != vkNil:
+      validateCallableSignature(inherited, resolved,
+        "type message " & proto.name & "/" & message.name)
+    messages[message.name] = functionForScopeStorage(resolved, scope)
+  if ctorFn.kind != vkNil:
+    ctorFn = functionForScopeStorage(
+      resolveMessageContract(ctorFn, typ, declarationScope = annotationScope), scope)
+  var resolvedFields = typ.typeFields
+  let inheritedFields = if parent.kind == vkType: parent.typeFields.len else: 0
+  for i in 0 ..< inheritedFields: resolvedFields[i] = parent.typeFields[i]
+  for i in inheritedFields ..< resolvedFields.len:
+    resolvedFields[i].typeExpr = resolveDeclarationAnnotation(
+      resolvedFields[i].typeExpr, annotationScope, typ)
+  var resolvedBodyFields = typ.typeBodyFields
+  let inheritedBodyFields = if parent.kind == vkType: parent.typeBodyFields.len else: 0
+  for i in 0 ..< inheritedBodyFields: resolvedBodyFields[i] = parent.typeBodyFields[i]
+  for i in inheritedBodyFields ..< resolvedBodyFields.len:
+    resolvedBodyFields[i].typeExpr = resolveDeclarationAnnotation(
+      resolvedBodyFields[i].typeExpr, annotationScope, typ)
+  typ.setTypeOwnMessages(messages, ctorFn)
+  typ.setTypeSchemaAnnotations(resolvedFields, resolvedBodyFields)
+  typ.setTypeContractPending(false)
+  pending.ready = true
+
 proc sameImplMessages(a, b: ProtocolImpl): bool
 
 proc validateImplConflict(existing, pending: ProtocolImpl,
@@ -10861,6 +11070,20 @@ proc validateImplConflict(existing, pending: ProtocolImpl,
     raise newException(GeneError,
       "conflicting impls for message " & qualifiedMessageName(message) &
       " on " & pending.receiver.typeName)
+  if existing.receiver.bits != pending.receiver.bits and
+      (existing.receiver.typeInheritsFrom(pending.receiver) or
+       pending.receiver.typeInheritsFrom(existing.receiver)):
+    for left in existing.selfBindings:
+      for right in pending.selfBindings:
+        if same(left.protocol, right.protocol) and not same(left.selfType, right.selfType):
+          raise newException(GeneError,
+            "incompatible established Self bindings for " & left.protocol.protocolName &
+            " on " & existing.receiver.typeName & " and " & pending.receiver.typeName)
+    for left in existing.messages:
+      for right in pending.messages:
+        if same(left.message, right.message):
+          validateCallableSignature(left.fn, right.fn,
+            "inherited impl message " & qualifiedMessageName(left.message))
   false
 
 proc validateImplAgainstChain(scope: Scope, pending: ProtocolImpl,
@@ -10879,8 +11102,13 @@ proc addIndexedScope(app: Application, scope: Scope, impl: ProtocolImpl) =
   # ran `import_impl`), not just a file-module base. Dedup is safe here and makes
   # the rebuild pass — which re-calls this for scopes already listed — a no-op.
   app.trackBaseScope(scope)
+  var identities = @[impl.protocol.bits]
   for entry in impl.messages:
-    let key = (receiver: impl.receiver.bits, message: entry.message.bits)
+    identities.add entry.message.bits
+  for binding in impl.selfBindings:
+    identities.add binding.protocol.bits
+  for identity in identities:
+    let key = (receiver: impl.receiver.bits, message: identity)
     var scopes = app.implScopeIndex.getOrDefault(key)
     var present = false
     for existing in scopes:
@@ -10892,16 +11120,27 @@ proc addIndexedScope(app: Application, scope: Scope, impl: ProtocolImpl) =
       app.implScopeIndex[key] = scopes
 
 proc affectedIndexedScopes(app: Application, impl: ProtocolImpl): seq[Scope] =
+  var identities = @[impl.protocol.bits]
   for entry in impl.messages:
-    let key = (receiver: impl.receiver.bits, message: entry.message.bits)
-    for scope in app.implScopeIndex.getOrDefault(key):
-      var present = false
-      for existing in result:
-        if existing == scope:
-          present = true
-          break
-      if not present:
-        result.add scope
+    identities.add entry.message.bits
+  for binding in impl.selfBindings:
+    identities.add binding.protocol.bits
+  for identity in identities:
+    for key, scopes in app.implScopeIndex:
+      if key.message != identity:
+        continue
+      let indexedReceiver = ownedValueFromBits(key.receiver)
+      if not (indexedReceiver.typeInheritsFrom(impl.receiver) or
+              impl.receiver.typeInheritsFrom(indexedReceiver)):
+        continue
+      for scope in scopes:
+        var present = false
+        for existing in result:
+          if existing == scope:
+            present = true
+            break
+        if not present:
+          result.add scope
 
 proc literalCapabilitySpec(app: Application,
                            selector: CapabilitySelectorTemplate):
@@ -10981,9 +11220,79 @@ proc capabilityContractCompatible(app: Application, contractFn,
       return false
   true
 
-proc registerImpl(scope: Scope, protocol, receiver: Value,
+proc protocolIdentities(protocol: Value): seq[Value] =
+  var pending = @[protocol]
+  while pending.len > 0:
+    let current = pending.pop()
+    var visited = false
+    for seen in result:
+      if same(seen, current):
+        visited = true
+        break
+    if visited:
+      continue
+    result.add current
+    for parent in current.protocolParents:
+      pending.add parent
+
+proc ancestorImpls(scope: Scope, receiver: Value): seq[ProtocolImpl] =
+  var parent = receiver.typeParent
+  while parent.kind == vkType:
+    var current = scope
+    while current != nil:
+      for impl in current.impls:
+        if same(impl.receiver, parent):
+          result.add impl
+      current = current.parent
+    parent = parent.typeParent
+
+proc conformanceSelfBindings(protocol, receiver: Value,
+                             ancestors: openArray[ProtocolImpl]): seq[ProtocolSelfBinding] =
+  for identity in protocolIdentities(protocol):
+    var bound = if identity.protocolUniversal: NIL else: receiver
+    var found = false
+    for ancestor in ancestors:
+      if not ancestor.protocol.protocolIsOrInherits(identity):
+        continue
+      var inherited = if identity.protocolUniversal: NIL else: ancestor.receiver
+      for binding in ancestor.selfBindings:
+        if same(binding.protocol, identity):
+          inherited = binding.selfType
+          break
+      if found and not same(bound, inherited):
+        raise newException(GeneError,
+          "incompatible inherited Self bindings for " & identity.protocolName)
+      found = true
+      bound = inherited
+    result.add ProtocolSelfBinding(protocol: identity, selfType: bound)
+
+proc bindingFor(bindings: openArray[ProtocolSelfBinding], protocol: Value): Value =
+  for binding in bindings:
+    if same(binding.protocol, protocol):
+      return binding.selfType
+  NIL
+
+proc inheritedImplMessage(ancestors: openArray[ProtocolImpl], message: Value):
+    tuple[fn: Value, source: ImplBodySource] =
+  var receiver = NIL
+  for ancestor in ancestors:
+    if receiver.kind != vkNil and not same(ancestor.receiver, receiver):
+      break
+    for entry in ancestor.messages:
+      if same(entry.message, message):
+        if result.fn.kind != vkNil and not same(result.fn, entry.fn):
+          raise newException(GeneError,
+            "ambiguous ancestor impl for " & qualifiedMessageName(message))
+        receiver = ancestor.receiver
+        result = (entry.fn, ImplBodySource(message: message,
+          protocol: ancestor.protocol, receiver: ancestor.receiver))
+
+proc assembleImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage],
-                  visibility = ivOverlay, exported = false) =
+                  visibility = ivOverlay, exported = false,
+                  inheritBodies = false,
+                  prospectiveAncestors: seq[ProtocolImpl] = @[],
+                  useProspectiveAncestors = false): ProtocolImpl =
   if protocol.kind != vkProtocol:
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
@@ -10996,20 +11305,39 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
     raise newException(GeneError,
       "CapabilitySpec has one application-global implementation per facade; " &
       "scoped and overlay implementations are not allowed")
+  let ancestors = if useProspectiveAncestors: prospectiveAncestors
+                  else: ancestorImpls(scope, receiver)
+  let bindings = conformanceSelfBindings(protocol, receiver, ancestors)
+  let localMessages = entries
+  entries = @[]
+  var sources: seq[ImplBodySource]
+  var resolvedLocals: seq[ImplMessage]
+  var hasAncestor = false
   # Completeness is keyed by message identity. An explicit impl establishes
   # conformance; shared defaults fill only messages omitted by that impl.
   for message in protocol.protocolClosure:
+    let inherited = inheritedImplMessage(ancestors, message)
+    if inherited.fn.kind != vkNil:
+      hasAncestor = true
+    let boundSelf = bindings.bindingFor(message.protocolMessageProtocol)
+    let rawSignature = message.protocolMessageSignatureFn
+    let signatureFn = if rawSignature.kind != vkNil:
+      resolveMessageContract(rawSignature, boundSelf) else: NIL
     var count = 0
-    for entry in entries:
+    for entry in localMessages:
       if entry.message.bits == message.bits:
         inc count
-        let signatureFn = message.protocolMessageSignatureFn
+        let resolvedFn = functionForScopeStorage(
+          resolveMessageContract(entry.fn, receiver,
+            rejectSelf = inherited.fn.kind != vkNil), scope)
+        entries.add ImplMessage(message: message, fn: resolvedFn)
+        resolvedLocals.add ImplMessage(message: message, fn: resolvedFn)
         if signatureFn.kind != vkNil and not isCapabilitySpec:
-          validateCallableSignature(signatureFn, entry.fn,
+          validateCallableSignature(signatureFn, resolvedFn,
             "impl " & protocol.protocolName & " for " & receiver.typeName &
             " message " & qualifiedMessageName(message))
           if not capabilityContractCompatible(scope.application(),
-                                               signatureFn, entry.fn):
+                                               signatureFn, resolvedFn):
             raise newException(GeneError,
               "impl " & protocol.protocolName & " for " & receiver.typeName &
               " message " & qualifiedMessageName(message) &
@@ -11026,8 +11354,13 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
               "CapabilitySpec/canonicalize must declare ^capabilities []")
     if count == 0:
       let defaultFn = message.protocolMessageDefaultFn
-      if defaultFn.kind != vkNil:
-        entries.add ImplMessage(message: message, fn: defaultFn)
+      if inheritBodies and inherited.fn.kind != vkNil:
+        entries.add ImplMessage(message: message, fn: inherited.fn)
+        sources.add inherited.source
+      elif defaultFn.kind != vkNil:
+        entries.add ImplMessage(message: message, fn:
+          functionForScopeStorage(resolveMessageContract(defaultFn, boundSelf),
+                                  (if defaultFn.kind == vkFunction: defaultFn.fnScope else: scope)))
       else:
         raise newException(GeneError,
           "impl " & protocol.protocolName & " for " & receiver.typeName &
@@ -11035,41 +11368,488 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
+  if inheritBodies and not hasAncestor:
+    raise newException(GeneError,
+      "impl " & protocol.protocolName & " for " & receiver.typeName &
+      " declares ^override but has no applicable ancestor message provider")
   if exported and visibility != ivScoped:
     let label = if visibility == ivCanonical: "canonical" else: "overlay"
     raise newException(GeneError, label & " impls cannot be exported")
-  let pending = ProtocolImpl(protocol: protocol, receiver: receiver,
+  result = ProtocolImpl(protocol: protocol, receiver: receiver,
                              messages: entries, visibility: visibility,
                              exported: exported,
-                             originPath: scope.fileModulePath())
+                             originPath: scope.fileModulePath(),
+                             inheritBodies: inheritBodies, localMessages: resolvedLocals,
+                             selfBindings: bindings, bodySources: sources,
+                             managedContract: true, assemblyScope: scope)
+
+proc recomposeImplSets(app: Application, canonical: seq[ProtocolImpl],
+                       scopeUpdates: seq[ImplScopeUpdate],
+                       changes: seq[ProtocolImpl]):
+    tuple[canonical: seq[ProtocolImpl], scopes: seq[ImplScopeUpdate]] =
+  ## Build replacement records without changing live scopes or cached bodies.
+  ## Imports share one declaration's result, preserving its source context.
+  let root = app.builtinsScope()
+  var composed = initTable[tuple[scope: pointer, protocol, receiver: uint64], ProtocolImpl]()
+
+  proc affected(impl: ProtocolImpl): bool =
+    if not impl.managedContract or impl.implAssemblyScope == nil:
+      return false
+    for change in changes:
+      if not impl.receiver.typeInheritsFrom(change.receiver):
+        continue
+      for binding in impl.selfBindings:
+        if change.protocol.protocolIsOrInherits(binding.protocol):
+          return true
+      for message in impl.protocol.protocolClosure:
+        if change.protocol.protocolClosureContains(message):
+          return true
+    false
+
+  proc entriesFor(scope: Scope): seq[ProtocolImpl] =
+    if scope == root:
+      return canonical
+    for update in scopeUpdates:
+      if update.scope == scope:
+        return update.impls
+    scope.impls
+
+  proc compose(impl: ProtocolImpl): ProtocolImpl =
+    if not affected(impl):
+      return impl
+    let key = (scope: cast[pointer](impl.implAssemblyScope),
+      protocol: impl.protocol.bits, receiver: impl.receiver.bits)
+    if composed.hasKey(key):
+      result = composed[key]
+      result.imported = impl.imported
+      result.exported = impl.exported
+      return
+    var ancestors: seq[ProtocolImpl]
+    var parent = impl.receiver.typeParent
+    while parent.kind == vkType:
+      var scope = impl.implAssemblyScope
+      while scope != nil:
+        for candidate in entriesFor(scope):
+          if same(candidate.receiver, parent):
+            ancestors.add compose(candidate)
+        scope = scope.parent
+      parent = parent.typeParent
+    result = assembleImpl(impl.implAssemblyScope, impl.protocol, impl.receiver,
+      impl.localMessages, impl.visibility, impl.exported, impl.inheritBodies,
+      ancestors, useProspectiveAncestors = true)
+    for old in impl.selfBindings:
+      let fresh = result.selfBindings.bindingFor(old.protocol)
+      if not same(old.selfType, fresh):
+        raise newException(GeneError,
+          "cannot rebind established Self for " & old.protocol.protocolName &
+          " on " & impl.receiver.typeName)
+    for old in impl.bodySources:
+      var present = false
+      for fresh in result.bodySources:
+        if same(old.message, fresh.message):
+          present = true
+          break
+      if not present:
+        raise newException(GeneError,
+          "lost inherited body source for " & qualifiedMessageName(old.message) &
+          " on " & impl.receiver.typeName)
+    # The protocol's immutable default template and its binding did not
+    # change. Keep its existing wrapper so identical imports remain identical.
+    for i, entry in result.messages:
+      var isDefault = true
+      for local in result.localMessages:
+        if same(local.message, entry.message): isDefault = false
+      for source in result.bodySources:
+        if same(source.message, entry.message): isDefault = false
+      if isDefault:
+        var wasInherited = false
+        for source in impl.bodySources:
+          if same(source.message, entry.message): wasInherited = true
+        if not wasInherited:
+          for old in impl.messages:
+            if same(old.message, entry.message):
+              result.messages[i].fn = old.fn
+              break
+    result.imported = impl.imported
+    result.originPath = impl.originPath
+    composed[key] = result
+
+  for impl in canonical:
+    result.canonical.add compose(impl)
+  for update in scopeUpdates:
+    var next: seq[ProtocolImpl]
+    for impl in update.impls:
+      next.add compose(impl)
+    result.scopes.add (scope: update.scope, impls: next)
+
+proc currentImplScopeSets(app: Application, extra: Scope = nil): seq[ImplScopeUpdate] =
+  var sawExtra = false
+  for scope in app.baseScopes:
+    result.add (scope: scope, impls: scope.impls)
+    if scope == extra: sawExtra = true
+  if extra != nil and not sawExtra:
+    result.add (scope: extra, impls: extra.impls)
+
+proc commitRecomposedImpls(app: Application,
+                          recomposed: tuple[canonical: seq[ProtocolImpl],
+                                            scopes: seq[ImplScopeUpdate]]) =
+  let root = app.builtinsScope()
+  root.impls = @[]
+  for impl in recomposed.canonical: root.impls.add impl.implForScopeStorage(root)
+  for update in recomposed.scopes:
+    update.scope.impls = @[]
+    for impl in update.impls: update.scope.impls.add impl.implForScopeStorage(update.scope)
+
+proc publishImpl(scope: Scope, pending: ProtocolImpl) =
   let stage = scope.stagingRoot()
-  case visibility
+  case pending.visibility
   of ivCanonical:
     if stage != nil:
       discard stage.validateImplAgainstChain(pending)
-      stage.impls.add pending
+      stage.impls.add pending.implForScopeStorage(stage)
     else:
       let app = scope.application()
       let root = app.builtinsScope()
       discard root.validateImplAgainstChain(pending)
       for affected in app.affectedIndexedScopes(pending):
         discard affected.validateImplAgainstChain(pending)
-      root.impls.add pending
+      var canonical = root.impls
+      canonical.add pending
+      let recomposed = recomposeImplSets(app, canonical,
+        app.currentImplScopeSets(scope), @[pending])
+      app.commitRecomposedImpls(recomposed)
       inc app.implEpoch
   of ivScoped:
     let target = scope.moduleRootScope()
     if target == nil:
       raise newException(GeneError, "scoped impl requires a module scope")
     discard target.validateImplAgainstChain(pending)
-    target.impls.add pending
-    if stage == nil:
+    if stage != nil:
+      target.impls.add pending.implForScopeStorage(target)
+    else:
       let app = scope.application()
+      var prospective = app.currentImplScopeSets(target)
+      for update in prospective.mitems:
+        if update.scope == target: update.impls.add pending
+      let recomposed = recomposeImplSets(app, app.builtinsScope().impls,
+                                         prospective, @[pending])
+      app.commitRecomposedImpls(recomposed)
       app.addIndexedScope(target, pending)
       inc app.implEpoch
   of ivOverlay:
     discard scope.validateImplAgainstChain(pending)
-    scope.impls.add pending
+    scope.impls.add pending.implForScopeStorage(scope)
     inc scope.application().implEpoch
+
+proc staticImplOperand(scope: Scope, expr: Value): Value =
+  if expr.kind in {vkType, vkProtocol}:
+    return expr
+  var path: seq[string]
+  if expr.kind == vkSymbol:
+    path = expr.symVal.split('/')
+  elif expr.kind == vkNode and expr.head.isSymbol("path"):
+    for item in expr.body:
+      if item.kind != vkSymbol:
+        return NIL
+      path.add item.symVal
+  if path.len == 0 or not scope.lookupOptional(path[0], result):
+    return NIL
+  for i in 1 ..< path.len:
+    if result.kind == vkModule:
+      result = result.moduleRootNamespace
+    if result.kind != vkNamespace:
+      return NIL
+    result = result.exportedBinding(path[i])
+
+proc staticOperandShape(expr: Value): bool =
+  if expr.kind in {vkType, vkProtocol, vkSymbol}:
+    return true
+  if expr.kind != vkNode or not expr.head.isSymbol("path"):
+    return false
+  for item in expr.body:
+    if item.kind != vkSymbol:
+      return false
+  true
+
+proc prepareImplAssembly(scope: Scope, chunk: Chunk) =
+  if scope.implAssembly != nil:
+    let existing = ImplAssembly(scope.implAssembly)
+    if existing.chunk == chunk and not existing.finished:
+      return
+  var declarations: seq[StaticImplDeclaration]
+  for proto in chunk.implProtos:
+    if proto.staticTopLevel and proto.staticOperands:
+      declarations.add StaticImplDeclaration(sourceKey: cast[pointer](proto),
+        inlineIndex: -1, proto: proto)
+  for typ in chunk.typeProtos:
+    if not typ.staticTopLevel:
+      continue
+    for i, inline in typ.inlineImpls:
+      if inline.protocolExpr.staticOperandShape:
+        declarations.add StaticImplDeclaration(sourceKey: cast[pointer](typ),
+          inlineIndex: i, inlineReceiver: true,
+          proto: ImplProto(protocolExpr: inline.protocolExpr, receiverExpr: newSym(typ.name),
+            staticTopLevel: true, staticOperands: true, inheritBodies: inline.inheritBodies))
+  for typ in chunk.enumProtos:
+    if not typ.staticTopLevel:
+      continue
+    for i, inline in typ.inlineImpls:
+      if inline.protocolExpr.staticOperandShape:
+        declarations.add StaticImplDeclaration(sourceKey: cast[pointer](typ),
+          inlineIndex: i, inlineReceiver: true,
+          proto: ImplProto(protocolExpr: inline.protocolExpr, receiverExpr: newSym(typ.name),
+            staticTopLevel: true, staticOperands: true, inheritBodies: inline.inheritBodies))
+  if declarations.len == 0 and chunk.typeProtos.len == 0:
+    return
+  let assembly = ImplAssembly(scope: scope, chunk: chunk, declarations: declarations)
+  scope.implAssembly = assembly
+  if scope.moduleStatic and not scope.hasOverlayRoot and not scope.forceOverlayImpls:
+    scope.application().activeImplAssemblies.add assembly
+
+proc declarationOperands(assembly: ImplAssembly, declaration: StaticImplDeclaration):
+    tuple[protocol, receiver: Value] =
+  if declaration.initialized:
+    return (declaration.candidate.protocol, declaration.candidate.receiver)
+  (assembly.scope.staticImplOperand(declaration.proto.protocolExpr),
+   assembly.scope.staticImplOperand(declaration.proto.receiverExpr))
+
+proc relevantImplAssemblies(scope: Scope): seq[ImplAssembly] =
+  var current = scope
+  while current != nil:
+    if current.implAssembly != nil:
+      let assembly = ImplAssembly(current.implAssembly)
+      if not assembly.finished:
+        result.add assembly
+    current = current.parent
+  for assembly in scope.application().activeImplAssemblies:
+    if not assembly.finished and assembly notin result:
+      result.add assembly
+
+proc declarationVisible(scope: Scope, assembly: ImplAssembly,
+                        declaration: StaticImplDeclaration,
+                        protocol, receiver: Value): bool =
+  var current = scope
+  while current != nil:
+    if current == assembly.scope:
+      return true
+    current = current.parent
+  if protocol.kind != vkProtocol or receiver.kind != vkType:
+    # Ownership of either established identity can already prove that this is
+    # a pending canonical provider; do not let an unresolved other operand
+    # create a temporary fallback window in another module.
+    let home = assembly.scope.staticHomeRoot()
+    return home != nil and not assembly.scope.hasOverlayRoot and
+      ((receiver.kind == vkType and receiver.typeScope.staticHomeRoot() == home) or
+       (protocol.kind == vkProtocol and protocol.protocolScope.staticHomeRoot() == home))
+  let visibility = if declaration.inlineReceiver:
+    assembly.scope.classifyInlineImpl(true)
+  else:
+    assembly.scope.classifyStandaloneImpl(protocol, receiver, declaration.proto)
+  visibility == ivCanonical
+
+proc hasPendingAncestor(scope: Scope, protocol, receiver: Value,
+                        skip: StaticImplDeclaration = nil): bool =
+  for assembly in relevantImplAssemblies(scope):
+    for declaration in assembly.declarations:
+      if declaration == skip or declaration.published:
+        continue
+      let operands = declarationOperands(assembly, declaration)
+      if not declarationVisible(scope, assembly, declaration, operands.protocol, operands.receiver):
+        continue
+      if operands.receiver.kind == vkType:
+        if same(operands.receiver, receiver) or not receiver.typeInheritsFrom(operands.receiver):
+          continue
+      if operands.protocol.kind == vkProtocol:
+        var overlap = false
+        for identity in protocolIdentities(protocol):
+          if operands.protocol.protocolIsOrInherits(identity):
+            overlap = true
+        if not overlap:
+          continue
+      return true
+  false
+
+proc validateProspectiveImplPeers(scope: Scope, protocol, receiver: Value,
+                                  skip: StaticImplDeclaration = nil) =
+  # Source-order publication must not make one member of a statically known
+  # conflicting pair callable while its peer is still awaiting execution.
+  for assembly in relevantImplAssemblies(scope):
+    for declaration in assembly.declarations:
+      if declaration == skip or declaration.published: continue
+      let operands = declarationOperands(assembly, declaration)
+      if not same(operands.receiver, receiver) or operands.protocol.kind != vkProtocol:
+        continue
+      if not declarationVisible(scope, assembly, declaration, operands.protocol, operands.receiver):
+        continue
+      if same(protocol, operands.protocol):
+        raise newException(GeneError, "duplicate prospective impl " &
+          protocol.protocolName & " for " & receiver.typeName)
+      for message in protocol.protocolClosure:
+        if operands.protocol.protocolClosureContains(message):
+          raise newException(GeneError, "conflicting prospective impls for message " &
+            qualifiedMessageName(message) & " on " & receiver.typeName)
+
+proc hasPendingTypeContract(scope: Scope, typ: Value): bool =
+  if typ.kind != vkType: return false
+  for assembly in relevantImplAssemblies(scope):
+    for pending in assembly.typeContracts:
+      if not pending.ready and typ.typeInheritsFrom(pending.typ): return true
+
+proc validateProtocolContract(pending: PendingProtocolContract) =
+  let protocol = pending.protocol
+  for message in protocol.protocolClosure:
+    let fn = message.protocolMessageSignatureFn
+    if fn.kind != vkFunction or not (fn.fnCode of FunctionProto): continue
+    let proto = FunctionProto(fn.fnCode)
+    let scope = fn.fnScope
+    # Self stays abstract in the template. Resolve with a temporary identity
+    # only to validate the remaining names; conformance assembly binds it.
+    for expr in proto.paramTypes:
+      discard resolveDeclarationAnnotation(expr, scope, protocol)
+    discard resolveDeclarationAnnotation(proto.restType, scope, protocol)
+    discard resolveDeclarationAnnotation(proto.returnType, scope, protocol)
+    for param in proto.namedParams:
+      discard resolveDeclarationAnnotation(param.typeExpr, scope, protocol)
+    for expr in proto.signatureErrorExprs:
+      if expr.isSymbol("Never"): continue
+      discard resolveDeclarationAnnotation(expr, scope, protocol)
+      var concrete: Value
+      try:
+        concrete = resolveDeclarationAnnotation(expr, scope, NIL, rejectSelf = true)
+      except GeneError as error:
+        if "Self is forbidden" in error.msg: continue
+        raise
+      if concrete.isTypeAlias: concrete = concrete.typeAliasExpr
+      elif concrete.kind == vkSymbol: concrete = staticImplOperand(scope, concrete)
+      if not scope.isErrorType(concrete):
+        raise newException(DeclarationNotReadyError,
+          "declaration not ready: ^errors entries must be Error types in protocol " & protocol.protocolName)
+  pending.ready = true
+
+proc registerProtocolContract(scope: Scope, chunk: Chunk, protocol: Value) =
+  let pending = PendingProtocolContract(protocol: protocol)
+  try:
+    validateProtocolContract(pending)
+  except DeclarationNotReadyError as error:
+    pending.diagnostic = error.msg
+    if scope.implAssembly == nil:
+      scope.implAssembly = ImplAssembly(scope: scope, chunk: chunk)
+    ImplAssembly(scope.implAssembly).protocolContracts.add pending
+
+proc registerTypeContract(scope: Scope, chunk: Chunk, pending: PendingTypeContract) =
+  try:
+    if scope.hasPendingTypeContract(pending.typ.typeParent):
+      raise newException(DeclarationNotReadyError, "declaration not ready: parent type contract")
+    resolveTypeContract(scope, pending)
+  except DeclarationNotReadyError as error:
+    pending.diagnostic = error.msg
+    pending.typ.setTypeContractPending(true)
+    if scope.implAssembly == nil:
+      scope.implAssembly = ImplAssembly(scope: scope, chunk: chunk)
+    ImplAssembly(scope.implAssembly).typeContracts.add pending
+
+proc resolveImplAssembly(assembly: ImplAssembly) =
+  if assembly == nil or assembly.finished or assembly.processing:
+    return
+  assembly.processing = true
+  defer: assembly.processing = false
+  var progress = true
+  while progress:
+    progress = false
+    for pending in assembly.protocolContracts:
+      if pending.ready: continue
+      try:
+        validateProtocolContract(pending)
+        progress = true
+      except DeclarationNotReadyError as error:
+        pending.diagnostic = error.msg
+    for pending in assembly.typeContracts:
+      if pending.ready or assembly.scope.hasPendingTypeContract(pending.typ.typeParent): continue
+      try:
+        resolveTypeContract(assembly.scope, pending)
+        progress = true
+      except DeclarationNotReadyError as error:
+        pending.diagnostic = error.msg
+    for declaration in assembly.declarations:
+      if not declaration.initialized or declaration.published:
+        continue
+      let raw = declaration.candidate
+      validateProspectiveImplPeers(assembly.scope, raw.protocol, raw.receiver, declaration)
+      if hasPendingAncestor(assembly.scope, raw.protocol, raw.receiver, declaration):
+        continue
+      var resolved: ProtocolImpl
+      try:
+        resolved = assembleImpl(assembly.scope, raw.protocol, raw.receiver,
+          raw.localMessages, raw.visibility, raw.exported, raw.inheritBodies)
+      except DeclarationNotReadyError:
+        continue
+      assembly.scope.publishImpl(resolved)
+      declaration.candidate = resolved
+      declaration.published = true
+      progress = true
+
+proc ensureTypeContractReady(scope: Scope, typ: Value) =
+  if scope == nil or not typ.typeContractPending: return
+  let assemblies = relevantImplAssemblies(scope)
+  for assembly in assemblies: resolveImplAssembly(assembly)
+  for assembly in assemblies:
+    for pending in assembly.typeContracts:
+      if not pending.ready and typ.typeInheritsFrom(pending.typ):
+        raise newException(DeclarationNotReadyError,
+          pending.diagnostic & " in type " & pending.typ.typeName)
+  if typ.typeContractPending:
+    raise newException(DeclarationNotReadyError, "declaration not ready: type " & typ.typeName)
+
+proc readyTypeDirectMessage(typ: Value, name: string): Value =
+  ensureTypeContractReady(typ.typeScope, typ)
+  typeDirectMessage(typ, name)
+
+proc finishImplAssembly(scope: Scope, chunk: Chunk) =
+  if scope.implAssembly == nil:
+    return
+  let assembly = ImplAssembly(scope.implAssembly)
+  if assembly.chunk != chunk or assembly.finished:
+    return
+  resolveImplAssembly(assembly)
+  for pending in assembly.protocolContracts:
+    if not pending.ready: raise newException(GeneError, pending.diagnostic)
+  for pending in assembly.typeContracts:
+    if not pending.ready:
+      raise newException(GeneError, pending.diagnostic & " in type " & pending.typ.typeName)
+  for declaration in assembly.declarations:
+    if not declaration.published:
+      raise newException(GeneError, "declaration not ready at unit completion")
+  assembly.finished = true
+  scope.implAssembly = nil
+  let app = scope.application()
+  var active: seq[ImplAssembly]
+  for item in app.activeImplAssemblies:
+    if not item.finished:
+      active.add item
+  app.activeImplAssemblies = active
+  assembly.scope = nil
+
+proc registerImpl(scope: Scope, protocol, receiver: Value,
+                  entries: sink seq[ImplMessage],
+                  visibility = ivOverlay, exported = false,
+                  inheritBodies = false, sourceKey: pointer = nil,
+                  inlineIndex = -1) =
+  if sourceKey != nil and scope.implAssembly != nil:
+    let assembly = ImplAssembly(scope.implAssembly)
+    for declaration in assembly.declarations:
+      if declaration.sourceKey == sourceKey and declaration.inlineIndex == inlineIndex:
+        declaration.initialized = true
+        declaration.candidate = ProtocolImpl(protocol: protocol, receiver: receiver,
+          localMessages: entries, visibility: visibility, exported: exported,
+          inheritBodies: inheritBodies)
+        resolveImplAssembly(assembly)
+        return
+  validateProspectiveImplPeers(scope, protocol, receiver)
+  if hasPendingAncestor(scope, protocol, receiver):
+    raise newException(GeneError, "declaration not ready: ancestor of " &
+      protocol.protocolName & " for " & receiver.typeName)
+  scope.publishImpl(assembleImpl(scope, protocol, receiver, entries,
+                                 visibility, exported, inheritBodies))
 
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
@@ -11108,26 +11888,27 @@ proc activateStagedImpls(stage: Scope) =
   var retained: seq[ProtocolImpl]
   var changed = false
   let retainCandidateCanonical = stage.sandboxGenerationId != 0
+  var canonical = root.impls
+  for pending in stage.impls:
+    if pending.visibility == ivCanonical:
+      canonical.add pending
+    if pending.visibility != ivCanonical or retainCandidateCanonical:
+      retained.add pending
+  var prospectiveScopes = app.currentImplScopeSets(stage)
+  for update in prospectiveScopes.mitems:
+    if update.scope == stage:
+      update.impls = retained
+  let recomposed = recomposeImplSets(app, canonical, prospectiveScopes, stage.impls)
   for pending in stage.impls:
     case pending.visibility
     of ivCanonical:
-      root.impls.add pending
-      if retainCandidateCanonical:
-        # A prepared sandbox generation is not yet present in the live
-        # application registry. Retain its canonical impl on the generation's
-        # own module scope so candidate calls can dispatch before commit. The
-        # sandbox root does not inherit the application's impl table, so this
-        # copy remains the candidate's only visible one and is not ambiguous.
-        retained.add pending
       changed = true
     of ivScoped:
-      retained.add pending
       app.addIndexedScope(stage, pending)
       changed = true
     of ivOverlay:
-      retained.add pending
       changed = true
-  stage.impls = retained
+  app.commitRecomposedImpls(recomposed)
   if changed:
     inc app.implEpoch
 
@@ -11158,13 +11939,19 @@ proc importScopedImpl(importingScope, sourceScope: Scope,
     raise newException(GeneError,
       "module does not export impl " & protocol.protocolName &
       " for " & receiver.typeName)
-  var imported = selected
+  var imported = selected.implForScopeStorage(target)
   imported.exported = false
   imported.imported = true
   if target.validateImplAgainstChain(imported, identicalIsDuplicate = true):
     return
-  target.impls.add imported
   let app = target.application()
+  var prospectiveScopes = app.currentImplScopeSets(target)
+  for update in prospectiveScopes.mitems:
+    if update.scope == target:
+      update.impls.add imported
+  let recomposed = recomposeImplSets(app, app.builtinsScope().impls,
+                                     prospectiveScopes, @[imported])
+  app.commitRecomposedImpls(recomposed)
   app.addIndexedScope(target, imported)
   inc app.implEpoch
 
@@ -11323,8 +12110,9 @@ proc scopeChainContains(scope, target: Scope): bool =
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   if protocol.kind == vkProtocol and protocol.protocolUniversal:
     return true
-  if scope != nil and scope.hasVisibleImpl(protocol, typ):
-    return true
+  if scope != nil:
+    validateLookupImpls(scope)
+    if scope.hasVisibleImpl(protocol, typ): return true
   if typ.kind == vkType:
     let home = typ.typeScope.moduleRootScope()
     if home != nil and
@@ -12004,6 +12792,7 @@ proc snapshotScopeChain(source: Scope,
   result.moduleRoot = source.moduleRoot
   result.moduleStatic = source.moduleStatic
   result.forceOverlayImpls = source.forceOverlayImpls
+  result.annotationSelfType = source.annotationSelfType
   scopeMap[key] = result
   if source.slots.len > 0:
     result.slots = newSeq[Value](source.slots.len)
@@ -12021,13 +12810,17 @@ proc snapshotScopeChain(source: Scope,
     for entry in impl.messages:
       messages.add ImplMessage(message: entry.message,
                                fn: cloneForCapturedSnapshot(entry.fn, scopeMap))
-    result.impls.add ProtocolImpl(protocol: impl.protocol,
-                                  receiver: impl.receiver,
-                                  messages: messages,
-                                  visibility: impl.visibility,
-                                  exported: impl.exported,
-                                  originPath: impl.originPath,
-                                  imported: impl.imported)
+    var copied = impl
+    copied.messages = messages
+    copied.localMessages = @[]
+    for entry in impl.localMessages:
+      copied.localMessages.add ImplMessage(message: entry.message,
+        fn: cloneForCapturedSnapshot(entry.fn, scopeMap))
+    let source = impl.implAssemblyScope
+    if source != nil:
+      copied.assemblyScope = scopeMap.getOrDefault(cast[pointer](source), source)
+      copied.weakAssemblyScope = nil
+    result.impls.add copied.implForScopeStorage(result)
   result.requiredImplTypes = source.requiredImplTypes
   result.evalBudget = source.evalBudget
 
@@ -12338,6 +13131,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
           return
         app.spawnBuiltinsPublished = true
         atBuiltins = true
+    publishSpawnValue(current.annotationSelfType, seenScopes, seenValues, seenChunks)
     for i in 0 ..< current.slots.len:
       if current.slotDefined(i):
         publishSpawnValue(current.slots[i], seenScopes, seenValues, seenChunks)
@@ -12424,7 +13218,9 @@ proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
   if count > 0:
     for i in countdown(count - 1, 0):
       dec sp
-      let typ = move stack[sp]
+      var typ = move stack[sp]
+      if typ.isTypeAlias or typ.isSymbol("Self"):
+        typ = closeTypeExpr(typ, scope)
       if not scope.isErrorType(typ):
         raise newException(GeneError, "^errors entries must be Error types")
       result[i] = typ
@@ -12954,13 +13750,68 @@ proc stampSuperType(proto: FunctionProto, parent: Value): FunctionProto =
   var seen = initHashSet[pointer]()
   stampSuperTypeInPlace(result, parent, seen)
 
+proc validateLookupImpls(scope: Scope) =
+  let context = typeBoundaryScope(scope)
+  if context == nil or context.typeBoundarySnapshot:
+    return
+  let app = context.application()
+  let root = app.builtinsScope()
+  if context == root or context.implValidationEpoch == app.implEpoch or
+      context.implValidationActive:
+    return
+  context.implValidationActive = true
+  defer: context.implValidationActive = false
+  var local: seq[ProtocolImpl]
+  var current = context
+  while current != nil and current != root:
+    for impl in current.impls:
+      local.add impl
+    current = current.parent
+  for i, impl in local:
+    for j in i + 1 ..< local.len:
+      discard impl.validateImplConflict(local[j], identicalIsDuplicate = true)
+    for canonical in root.impls:
+      discard impl.validateImplConflict(canonical, identicalIsDuplicate = true)
+  var changes = root.impls
+  changes.add local
+  let recomposed = recomposeImplSets(app, root.impls,
+    @[(scope: context, impls: context.impls)], changes)
+  context.impls = @[]
+  for impl in recomposed.scopes[0].impls:
+    context.impls.add impl.implForScopeStorage(context)
+  context.implValidationEpoch = app.implEpoch
+
 proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
+  let assemblies = relevantImplAssemblies(scope)
+  for assembly in assemblies:
+    resolveImplAssembly(assembly)
+  validateLookupImpls(scope)
   var matches: seq[Value]
   var bestDepth = -1
   var current = scope
   while current != nil:
     current.collectProtocolMatches(recvType, message, bestDepth, matches)
     current = current.parent
+  for assembly in assemblies:
+    for declaration in assembly.declarations:
+      if declaration.published:
+        continue
+      let operands = declarationOperands(assembly, declaration)
+      if not declarationVisible(scope, assembly, declaration, operands.protocol, operands.receiver):
+        continue
+      if operands.protocol.kind == vkProtocol and
+          not operands.protocol.protocolClosureContains(message):
+        continue
+      if operands.receiver.kind == vkType:
+        let depth = receiverDistance(recvType, operands.receiver)
+        if depth < 0 or (bestDepth >= 0 and depth > bestDepth):
+          continue
+      let protocolName = if operands.protocol.kind == vkProtocol:
+        operands.protocol.protocolName else: message.protocolMessageProtocol.protocolName
+      let receiverName = if operands.receiver.kind == vkType:
+        operands.receiver.typeName else: declaration.proto.receiverExpr.print()
+      raise newException(GeneError,
+        "declaration not ready: " & protocolName & " for " & receiverName)
   matches.dedupeProtocolMatches()
   if matches.len > 1:
     let protocol = message.protocolMessageProtocol
@@ -13032,8 +13883,9 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
     result = resolveProtocolMessage(scope, message, receiver)
   of vkNil:
     # `Self:name` names no qualifier: the bare type-direct send.
+    ensureTypeContractReady(scope, recvType)
     if recvType.kind == vkType:
-      result = typeDirectMessage(recvType, name)
+      result = readyTypeDirectMessage(recvType, name)
     if result.kind == vkNil:
       result = builtinReceiverMessage(scope, receiver, name)
     if result.kind == vkNil:
@@ -13112,8 +13964,12 @@ when dispatchCacheEnabled:
     ## walk stops at the base without inspecting them. Cost is O(transient
     ## depth) of `.impls.len` reads; a module/eval root send scope returns at
     ## once.
+    if scope.application().activeImplAssemblies.len > 0:
+      return true
     var s = scope
     while s != nil:
+      if s.implAssembly != nil:
+        return true
       if s.moduleRoot or s.implOverlayRoot:
         return false
       if s.impls.len > 0:
@@ -14241,6 +15097,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     spush NIL
 
   template finishFrameReturn(retValue: Value) =
+    scope.finishImplAssembly(chunk)
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     trimTailTraceFrames(frames.len)
@@ -15328,12 +16185,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                  scope, messageFn.checksErrors,
                                  messageErrorTypes[i])
             messages[message.name] = functionForScopeStorage(fn, scope)
-          if parent.kind == vkType:
-            for name, messageFn in messages:
-              let inherited = parent.typeDirectMessage(name)
-              if inherited.kind != vkNil:
-                validateCallableSignature(inherited, messageFn,
-                  "type message " & proto.name & "/" & name)
           # The ctor error row compiles before the message rows, so it pops last.
           var ctorFn = NIL
           if proto.ctorFn != nil:
@@ -15354,6 +16205,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                             else: "",
                             if proto.nativeType != nil: proto.nativeType.contractFingerprint
                             else: "")
+          let pendingContract = PendingTypeContract(typ: typ, proto: proto,
+            messages: messages, ctorFn: ctorFn)
+          scope.registerTypeContract(chunk, pendingContract)
           if proto.nativeType != nil:
             registerNativeTypeIdentity(proto.nativeType.identity, typ)
           # Inline impls register exactly like standalone (impl P for T ...) forms
@@ -15375,7 +16229,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
             scope.registerImpl(inlineProtocols[i], typ, entries,
-              scope.classifyInlineImpl(proto.staticTopLevel))
+              scope.classifyInlineImpl(proto.staticTopLevel),
+              inheritBodies = inline.inheritBodies, sourceKey = cast[pointer](proto),
+              inlineIndex = i)
           let savedForceOverlay = scope.forceOverlayImpls
           if not proto.staticTopLevel:
             scope.forceOverlayImpls = true
@@ -15442,6 +16298,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           variant.hasBacking, variant.backing)
           let enumType = newEnum(proto.name, proto.typeParams, variants,
                                  proto.backingType, scope, messages)
+          let annotationScope = newScope(scope)
+          annotationScope.vars[proto.name] = enumType
+          for message in proto.messages:
+            if message.declaresOverride:
+              raise newException(GeneError,
+                "enum message " & proto.name & "/" & message.name &
+                " declares ^override but has no inherited target")
+            messages[message.name] = functionForScopeStorage(
+              resolveMessageContract(messages[message.name], enumType,
+                declarationScope = annotationScope), scope)
+          enumType.setTypeOwnMessages(messages, NIL)
           for i, inline in proto.inlineImpls:
             var entries: seq[ImplMessage]
             for j, message in inline.messages:
@@ -15454,7 +16321,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
             scope.registerImpl(inlineProtocols[i], enumType, entries,
-              scope.classifyInlineImpl(proto.staticTopLevel))
+              scope.classifyInlineImpl(proto.staticTopLevel),
+              inheritBodies = inline.inheritBodies, sourceKey = cast[pointer](proto),
+              inlineIndex = i)
           spush enumType
         of opWebModule:
           when defined(geneWasm):
@@ -15493,12 +16362,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             var fn = newFunction(message.fn.name, message.fn.params,
                                  message.fn, scope, message.fn.checksErrors,
                                  messageErrorTypes[i])
+            if proto.universal:
+              validateUniversalSelf(message.fn, scope)
+              fn = resolveMessageContract(fn, NIL)
             fn = functionForScopeStorage(fn, scope)
             signatures.add fn
             hasDefaults.add message.hasDefault
           let protocol = newProtocol(proto.name, messageNames, deriveFn,
                                      parents, signatures, hasDefaults,
                                      proto.universal, scope)
+          if proto.universal:
+            for message in protocol.protocolClosure:
+              let fn = message.protocolMessageSignatureFn
+              if fn.kind == vkFunction and fn.fnCode of FunctionProto:
+                validateUniversalSelf(FunctionProto(fn.fnCode), fn.fnScope)
+          scope.registerProtocolContract(chunk, protocol)
           # Message names are not bound in the enclosing scope (docs/core.md
           # §1, OQ-I): messages are reached via Protocol:name and sends.
           spush protocol
@@ -15543,7 +16421,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let visibility = scope.classifyStandaloneImpl(protocol, receiver,
                                                         proto)
           scope.registerImpl(protocol, receiver, entries, visibility,
-                             proto.exported)
+                             proto.exported, proto.inheritBodies,
+                             sourceKey = cast[pointer](proto))
           spush NIL
         of opMakeNamespace:
           # Run the ns body in a fresh child scope; its bindings become the
@@ -16091,6 +16970,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "' on an in-progress constructed instance")
           var callee = NIL
           let recvType = receiver.receiverType
+          ensureTypeContractReady(scope, recvType)
           # An unqualified send reaches only type-direct messages, walking the
           # parent chain (design §3/§9). Protocol messages are always qualified —
           # `(x .P:m)` — so a protocol impl is never reached by a bare name.
@@ -16103,7 +16983,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if cacheable:
                 callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
             if callee.kind == vkNil:
-              callee = typeDirectMessage(recvType, inst[].name)
+              callee = readyTypeDirectMessage(recvType, inst[].name)
               when dispatchCacheEnabled:
                 if cacheable and callee.kind != vkNil:
                   chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
@@ -16159,11 +17039,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let epoch = scope.application().implEpoch
               callee = chunk.dispatchCacheLookup(site, superType, 0'u64, epoch)
               if callee.kind == vkNil:
-                callee = typeDirectMessage(superType, inst[].name)
+                callee = readyTypeDirectMessage(superType, inst[].name)
                 if callee.kind != vkNil:
                   chunk.dispatchCacheFill(site, superType, 0'u64, epoch, callee)
             else:
-              callee = typeDirectMessage(superType, inst[].name)
+              callee = readyTypeDirectMessage(superType, inst[].name)
           if callee.kind == vkNil:
             raiseMessageError(inst[].name,
               (if superType.kind == vkType: "super " & superType.typeName
@@ -17906,6 +18786,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true,
           initialCapabilities: CapabilityContext = nil): Value =
+  let app = scope.application()
+  let outerAssemblies = app.activeImplAssemblies
+  defer:
+    # Failed initialization must not retain a declaration group or leave its
+    # incomplete candidates discoverable by later program/REPL inputs.
+    var retained: seq[ImplAssembly]
+    for assembly in app.activeImplAssemblies:
+      if assembly in outerAssemblies and not assembly.finished:
+        retained.add assembly
+      elif not assembly.finished:
+        assembly.finished = true
+        if assembly.scope != nil and assembly.scope.implAssembly == assembly:
+          assembly.scope.implAssembly = nil
+        assembly.scope = nil
+    app.activeImplAssemblies = retained
+    if scope.implAssembly != nil:
+      let assembly = ImplAssembly(scope.implAssembly)
+      if assembly.chunk == chunk:
+        assembly.finished = true
+        assembly.scope = nil
+        scope.implAssembly = nil
   if initialCapabilities == nil and scope != nil:
     var module: Value
     if not scope.lookupOptional("this_mod", module):
@@ -19385,6 +20286,10 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
 proc typeExprLabel(expr: Value): string =
   if expr.kind == vkNil:
     return "Any"
+  if expr.kind == vkType:
+    return expr.typeName
+  if expr.kind == vkProtocol:
+    return expr.protocolName
   if expr.kind == vkNode and expr.head.isSymbol("c_abi_type") and
       expr.body.len == 1 and expr.body[0].kind == vkSymbol:
     return "C/" & expr.body[0].symVal
@@ -19843,7 +20748,9 @@ proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
                     hint = "") =
-  let actual = runtimeTypeExpr(value).typeExprLabel
+  let actualType = runtimeTypeExpr(value)
+  let actual = if actualType.kind in {vkType, vkProtocol}: actualType.print()
+               else: actualType.typeExprLabel
   var message = where & " expected " & expected & ", got " & actual
   if hint.len > 0:
     message = message & "; " & hint
@@ -19932,7 +20839,6 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   e.hasErrVal = true
   raise e
 
-proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
 
 proc isInstanceOfType(value, expected: Value): bool =
   # A fixed-width numeric type refines `Int` or `Float` rather than naming a
@@ -20198,8 +21104,19 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
   ## Convert nominal type references that require lexical lookup into direct
   ## Type values before storing a boundary on an escaping runtime object. Builtin
   ## annotation names stay symbolic so hot scalar checks keep their cheap path.
+  if expr.isOpaqueAbiAnnotation: return expr
+  if expr.isTypeAlias:
+    return expandAlias(closeTypeExpr(expr.typeAliasExpr, scope))
   case expr.kind
   of vkSymbol:
+    if expr.symVal == "Self":
+      let typ = lexicalSelfType(scope)
+      if typ.kind != vkNil:
+        return typ
+      return expr
+    if expr.symVal.len > 1 and expr.symVal[^1] == '?':
+      return newNode(newSym("?"), body = @[
+        closeTypeExpr(newSym(expr.symVal[0 .. ^2]), scope)])
     let builtin = matchesBuiltinType(expr.symVal, NIL)
     let canBeLocalBuiltin = expr.symVal == "Task" or
       expr.symVal == "Channel" or
@@ -20416,6 +21333,9 @@ proc unifySigTypeExpr(expected, actual: Value, typeParams: seq[string],
                 closeTypeExpr(actual, fnScope))
 
 proc cPtrTargetMatches(expected, actual: Value, scope: Scope): bool =
+  if expected.isOpaqueAbiAnnotation:
+    let label = if actual.isOpaqueAbiAnnotation: actual.typeAliasExpr else: actual
+    return label.kind == vkSymbol and label.symVal == expected.typeAliasExpr.symVal
   let closedExpected = closeTypeExpr(expected, scope)
   if closedExpected.isAnyType:
     return true
@@ -20538,18 +21458,11 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
       # same thing, so strip the explicit root and answer identically.
       return matchesTypeExpr(newSym(name[5 .. ^1]), value, scope)
     if name == "Self":
-      # `Self` is the receiver's own type — the same meaning it carries as a
-      # message qualifier (design §10), so the name has one rule in both
-      # positions. It resolves against the receiver *in scope* rather than the
-      # enclosing declaration, which is what makes it work inside a protocol's
-      # default body, where there is no enclosing type to name.
-      var receiver: Value
-      if scope != nil and scope.lookupOptional("self", receiver):
-        let typ = receiver.receiverType
-        return typ.kind == vkType and value.isInstanceOfType(typ)
+      let typ = lexicalSelfType(scope)
+      if typ.kind == vkType:
+        return value.isInstanceOfType(typ)
       raise newException(GeneError,
-        "Self names the receiver's type, so it is only meaningful where a " &
-        "receiver is in scope — inside a message or ctor body")
+        "Self requires a declaring receiver type — inside a message or ctor body")
     # Some built-ins are both annotations/namespaces and legal nominal names in
     # user code; let local nominal declarations win for bare annotations.
     if scope != nil and
@@ -21345,7 +22258,7 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   if errVal.kind != vkNode or errVal.head.kind != vkType:
     return false
   for typ in allowed:
-    if errVal.head.isSubtypeOf(typ):
+    if errVal.head.isSubtypeOf(if typ.isTypeAlias: typ.typeAliasExpr else: typ):
       return true
   false
 
@@ -21460,7 +22373,7 @@ proc staticLookup(target, segment: Value): Value =
         if variant.kind != vkVoid:
           variant
         else:
-          let message = typeDirectMessage(target, key)
+          let message = readyTypeDirectMessage(target, key)
           if message.kind == vkNil: VOID else: message
       else:
         # `T/m` is withdrawn as a callable path (design §3, decision 4). It was
@@ -21469,7 +22382,7 @@ proc staticLookup(target, segment: Value): Value =
         # Static impl selection is `super` only now. A missing member still
         # answers VOID — only the case that used to succeed is rejected, and the
         # diagnostic names both replacements.
-        let message = typeDirectMessage(target, key)
+        let message = readyTypeDirectMessage(target, key)
         if message.kind == vkNil:
           VOID
         else:
@@ -26688,6 +27601,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   # One funnel for `(T ...)`, `construct_type`, and serde's `serde_inst`, so a
   # wrapper cannot be materialized as replayable data by any of them.
   rejectNativeWrapperConstruction(callee, "direct construction")
+  ensureTypeContractReady(callee.typeScope, callee)
   template adaptRefField(label: string, typeExpr: Value, value: Value,
                          fieldScope: Scope): Value =
     (if value.isPendingModuleRef: value
@@ -27820,27 +28734,34 @@ proc reloadFileModule*(app: Application, path: string): Value =
     canonical.validateImplCollection()
     replacementScope.validateProspectiveBase(retained, canonical)
 
-    var updatedScopes: seq[tuple[scope: Scope, impls: seq[ProtocolImpl]]]
+    var updatedScopes: seq[ImplScopeUpdate]
+    updatedScopes.add (scope: replacementScope, impls: retained)
     for scope in oldBaseScopes:
       if scope == oldScope:
         continue
-      var changed = false
       var prospective: seq[ProtocolImpl]
       for impl in scope.impls:
         if impl.imported and impl.originPath == absPath:
           prospective.add impl.reloadedImporterImpl(newScoped, absPath)
-          changed = true
         else:
           prospective.add impl
       scope.validateProspectiveBase(prospective, canonical)
-      if changed:
-        updatedScopes.add (scope: scope, impls: prospective)
+      updatedScopes.add (scope: scope, impls: prospective)
+
+    var changes = replacementScope.impls
+    for impl in oldRootImpls:
+      if impl.originPath == absPath:
+        changes.add impl
+    for impl in oldScope.impls:
+      if not impl.imported:
+        changes.add impl
+    let recomposed = recomposeImplSets(app, canonical, updatedScopes, changes)
+    recomposed.canonical.validateImplCollection()
+    for update in recomposed.scopes:
+      update.scope.validateProspectiveBase(update.impls, recomposed.canonical)
 
     # Commit. No enumerable live scope is mutated before this point.
-    app.builtinsScope().impls = canonical
-    replacementScope.impls = retained
-    for update in updatedScopes:
-      update.scope.impls = update.impls
+    app.commitRecomposedImpls(recomposed)
     app.moduleCache[identity] = replacement
     inc app.moduleEpoch
     var bases: seq[Scope]

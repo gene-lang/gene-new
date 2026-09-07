@@ -5316,12 +5316,9 @@ suite "spec — implicit self in message bodies from design §10":
                "((Box2 ^val 7) .get)",
                "7")
 
-  test "Self in annotation position is the receiver's own type":
-    # design §10. `Self` means the same thing here as it does as a message
-    # qualifier — the receiver's own type — so the name has one rule in both
-    # positions. Nothing caught this being broken because doc ```gene blocks are
-    # not executed and the two example files using it fail to run for unrelated
-    # reasons, so the spec carries it now.
+  test "Self in annotation position is declaration-bound":
+    # Type-position Self is fixed by a declaration/conformance; Self:msg
+    # remains an unbound type-direct message value.
     check_eval("(protocol Eq (message eq [other : Self] : Bool)) " &
                "(type P ^props {^a Int}) " &
                "(impl Eq for P " &
@@ -5336,24 +5333,22 @@ suite "spec — implicit self in message bodies from design §10":
                "(var p (P ^a 1)) " &
                "[(same? (p .me) p) (p .all [(P ^a 2)]) (p .maybe nil)]",
                "[true 1 true]")
-    # Resolved against the receiver, not the enclosing declaration: the
-    # constraint follows the receiver down the parent chain, so it is asymmetric.
+    # Both receiver directions retain the original Dog input contract.
     check_eval("(type Dog ^props {^n Str}) (type Pup : Dog ^props {}) " &
                "(protocol Eq (message eq [other : Self] : Bool)) " &
                "(impl Eq for Dog (message eq [other : Self] : Bool true)) " &
                "[((Dog ^n \"d\") .Eq:eq (Pup ^n \"p\")) " &
                " (try ((Pup ^n \"p\") .Eq:eq (Dog ^n \"d\")) " &
                "  catch TypeError $ex/expected)]",
-               "[true \"Self\"]")
-    # A protocol's *default* body has no enclosing type at all, which is why
-    # `Self` cannot be resolved statically.
+               "[true true]")
+    # Shared defaults get independent conformance-bound signatures.
     check_eval("(protocol Eq (message eq [other : Self] : Bool true)) " &
                "(type A ^props {^a Int}) (type B ^props {^a Int}) " &
                "(impl Eq for A) (impl Eq for B) " &
                "[((A ^a 1) .Eq:eq (A ^a 2)) " &
                " (try ((A ^a 1) .Eq:eq (B ^a 2)) " &
                "  catch TypeError $ex/expected)]",
-               "[true \"Self\"]")
+               "[true \"A\"]")
     # Annotating the receiver itself is a tautology: accepted, discarded, and
     # builds the same signature as `[self]` — which is what lets a declaration
     # spelled either way satisfy the impl compatibility check.
@@ -5364,7 +5359,7 @@ suite "spec — implicit self in message bodies from design §10":
                "\"x\"")
     # Outside a message or ctor body there is no receiver to name.
     check_runtime_error("(fn f [x : Self] x) (f 1)",
-                        "Self names the receiver's type")
+                        "Self requires a declaring receiver type")
 
   test "self is immutable inside a message body":
     # The diagnostic names the receiver rather than suggesting `var`, which is
@@ -5376,16 +5371,16 @@ suite "spec — implicit self in message bodies from design §10":
   test "super delegates to the implementation above, relative to the enclosing type":
     check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message greet [] : Str ($ \"B+\" (super .greet)))) " &
+               "  (message greet [] : Str ^^override ($ \"B+\" (super .greet)))) " &
                "(type C : B ^props {} " &
-               "  (message greet [] : Str ($ \"C+\" (super .greet)))) " &
+               "  (message greet [] : Str ^^override ($ \"C+\" (super .greet)))) " &
                "[((B) .greet) ((C) .greet)]",
                "[\"B+A\" \"C+B+A\"]")
 
   test "super passes arguments to the parent implementation":
     check_eval("(type A ^props {} (message scale [n] : Int (* n 2))) " &
                "(type B : A ^props {} " &
-               "  (message scale [n] : Int (+ (super .scale n) 1))) " &
+               "  (message scale [n] : Int ^^override (+ (super .scale n) 1))) " &
                "((B) .scale 10)",
                "21")
 
@@ -5397,7 +5392,7 @@ suite "spec — implicit self in message bodies from design §10":
   test "a type cannot qualify a super send":
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message m [] : Str (super .A:m))) " &
+               "  (message m [] : Str ^^override (super .A:m))) " &
                "(try ((B) .m) " &
                "catch CallKindError [$ex/where $ex/expected])",
                "[\"super send\" \"Protocol\"]")
@@ -5441,7 +5436,7 @@ suite "spec — implicit self in message bodies from design §10":
     # `Self:` names no qualifier, so it is exactly the bare super send.
     check_eval("(type A ^props {} (message g [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message g [] : Str ($ \"B+\" (super .Self:g)))) " &
+               "  (message g [] : Str ^^override ($ \"B+\" (super .Self:g)))) " &
                "((B) .g)",
                "\"B+A\"")
 
@@ -5460,19 +5455,19 @@ suite "spec — implicit self in message bodies from design §10":
     # the message body when the type is created.
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message m [] : Str (do (let A 1) (super .m)))) " &
+               "  (message m [] : Str ^^override (do (let A 1) (super .m)))) " &
                "((B) .m)",
                "\"A\"")
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message m [] : Str (do (let B 1) (super .m)))) " &
+               "  (message m [] : Str ^^override (do (let B 1) (super .m)))) " &
                "((B) .m)",
                "\"A\"")
 
   test "super works inside a closure nested in the message body":
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message m [] : Str (var f (fn [] (super .m))) " &
+               "  (message m [] : Str ^^override (var f (fn [] (super .m))) " &
                "                      ($ \"B+\" (f)))) " &
                "((B) .m)",
                "\"B+A\"")
@@ -9505,7 +9500,7 @@ suite "spec — qualified message spelling":
     # `Self:msg` names no type and dispatches on the runtime receiver, so an
     # override wins and one value can be applied to unrelated receiver types.
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
-               "(type Pup : Dog (message bark [] : Str \"yip\")) " &
+               "(type Pup : Dog (message bark [] : Str ^^override \"yip\")) " &
                "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
                "(var xs [(Dog) (Pup) (Cat)]) " &
                "[((Pup) .bark) ((Pup) .Self:bark) " &

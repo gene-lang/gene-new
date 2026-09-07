@@ -255,6 +255,11 @@ type
   FunctionProto* {.acyclic.} = ref object of FunctionCode
     name*: string
     sourceLoc*: SourceLoc
+    receiverSelfAnnotation*: bool # retain legacy [self : Self] provenance
+    signatureErrorExprs*: seq[Value]
+    annotationSelfBits*: uint64 # runtime-only borrowed declaring type identity
+    contractResolved*: bool
+    signatureHadSelf*: bool # provenance survives closing and recomposition
     typeParams*: seq[string]
     localNames*: seq[string]
     positionalSlots*: seq[int]
@@ -635,6 +640,7 @@ type
 
   ImplMessageProto* = object
     name*: string
+    declaresOverride*: bool # type-direct messages only
     protocolPath*: seq[string] # qualifier for (message A/do_x ...) or
                                # (message p/A/do_x ...); empty = unqualified
     fn*: FunctionProto
@@ -647,11 +653,15 @@ type
     staticOperands*: bool
     exported*: bool
 
+    inheritBodies*: bool
+
   ## An (impl P (message ...) ...) block inside a type body; the receiver is
   ## the enclosing type (docs/core.md §8). The protocol expression is compiled
   ## onto the stack alongside the message error rows.
   InlineImplProto* = object
     messages*: seq[ImplMessageProto]
+    inheritBodies*: bool
+    protocolExpr*: Value
 
   ## One `(web_module name ...)` block, captured verbatim by the compiler and
   ## compiled to a web asset by the runtime while its containing module loads.

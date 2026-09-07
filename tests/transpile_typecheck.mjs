@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,14 +56,21 @@ const generated = [
   join(work, "web_component.ts"),
   join(root, "web", "gene_dom.generated.d.ts"),
 ];
-// Check every unified-callable contract fixture in both emitted surfaces.
-const callableCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => item.id.startsWith("callable.") && item.profile.status === "eligible");
-for (const item of callableCases) {
+// Check callable and Self contracts in both emitted surfaces, including imports.
+const contractCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => (item.id.startsWith("callable.") || item.id.startsWith("self.")) && item.profile.status === "eligible");
+for (const item of contractCases) {
   const name = item.id.replaceAll(".", "_");
-  const source = join(work, name + ".gene");
+  const caseDir = join(work, name);
+  mkdirSync(caseDir);
+  const source = join(caseDir, name + ".gene");
   writeFileSync(source, item.web_source);
-  execFileSync(gene, ["build", "--target", "web", "--out-dir", work, source], { cwd: root, stdio: "pipe" });
-  generated.push(join(work, name + ".ts"), join(work, name + ".d.ts"));
+  for (const [file, contents] of Object.entries(item.web_files ?? {})) {
+    writeFileSync(join(caseDir, file), contents);
+  }
+  execFileSync(gene, ["build", "--target", "web", "--out-dir", caseDir, source], { cwd: root, stdio: "pipe" });
+  for (const file of readdirSync(caseDir)) {
+    if (file.endsWith(".ts")) generated.push(join(caseDir, file));
+  }
 }
 execFileSync(tsc, [
   "--noEmit",
