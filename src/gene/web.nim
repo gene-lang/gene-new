@@ -876,7 +876,7 @@ proc webError(loc: SourceLoc, message: string): ref WebProfileError =
 proc rejectUnknownProps(form: Value, loc: SourceLoc, label: string,
                         admitted: openArray[string]) =
   ## "Anything not admitted here is rejected before emission with a
-  ## source-located reason" (docs/web-profile.md) has to hold for declaration
+  ## source-located reason" (docs/workflows.md) has to hold for declaration
   ## properties too. Silently ignoring one turns a typo into a type with no
   ## fields and turns a documented exclusion — Gene spells derive as
   ## `^derive [P]` on the type, and `^repr native_wrapper` forbids direct
@@ -3489,7 +3489,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         rewritten.add value.body[i]
       return analysis.analyzeExpr(newNode(newSym("path"), body = rewritten),
                                   bindings, expected)
-    # `recv/.msg` is the zero-argument send `(recv .msg)` — docs/style.md
+    # `recv/.msg` is the zero-argument send `(recv .msg)` — docs/workflows.md
     # prefers it, and the reader lowers the dot segment to a compact internal
     # marker. Desugared here rather than given its own analysis so the two
     # spellings are one code path from this point down: same typing, same
@@ -4595,7 +4595,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
     ## `(const name value)` / `(const name : T value)` where `value` is a
     ## literal, and the same shapes spelled `let`. Only literals qualify: the
-    ## profile has no module-initialization phase (docs/web-compilation.md
+    ## profile has no module-initialization phase (docs/workflows.md
     ## §2), and a computed initializer would need the ordering and cycle
     ## contract that phase was excluded to avoid. A literal has no such hazard,
     ## so it lowers to a plain JS `const`.

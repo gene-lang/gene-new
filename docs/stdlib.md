@@ -1,1021 +1,202 @@
-# Standard Library Plan
+# Library recipes
 
-This document defines the standard-library work needed to build an end-to-end
-Gene web application with a SQLite backend. The goal is not to clone a large
-general-purpose stdlib immediately; it is to provide a coherent, small surface
-that makes the web app path real, testable, and stable.
+Standard libraries live under `gene`; `$str` is shorthand for `gene/str`.
+Import names when you use them repeatedly. These recipes show the common path;
+[examples](../examples/) contain larger programs.
 
-Implementation status:
+## Text and JSON
 
-- Phase 1 (`gene/stream`, `gene/node`, `gene/parse`, `str`) — implemented as
-  built-in namespaces; spec-tested in `tests/spec_runner.nim`.
-- Phase 2 (`html` rendering/escaping, ordered `css` node data with scoped class
-  generation, `url` encode/decode/parse_query/format_query with typed
-  `UrlError`) — implemented; spec-tested.
-- Phase 3 (`net/http` blocking server: `serve`, `Request`/`Response`/`Server`
-  types, `text`/`html`/`json`/`redirect`/`not_found` helpers, `HttpError`,
-  `^max_requests` for tests) — implemented; `examples/todo_app/src/main.gene` is the
-  end-to-end proof (HTML page + JSON API). Deviations from this plan: response
-  construction uses helpers or `(Response ^status N ^body s)` because type
-  constructors take named fields only; `cookie`/`set_cookie`/`static_file` are
-  not implemented yet.
-- `net/http_client` — implemented as a capability-gated, dynamically loaded
-  libcurl client. `request` returns a cancellable `Task`; `stream` returns a
-  task plus a bounded channel of raw response chunks. TLS certificate
-  verification remains enabled by libcurl. There is no link-time dependency;
-  `GENE_LIBCURL` overrides library discovery.
-- Phase 4 (databases) — implemented beyond the original SQLite-only plan: a
-  shared `Db` protocol (`exec`/`query`/`query_one`/`execute`/`transaction`/
-  `close`/`closed?`) in the `db` namespace with `db/sqlite` and `db/postgres`
-  backends. Both load their C client library at runtime via dynlib (no
-  link-time dependency; `GENE_LIBPQ` overrides the libpq path). Connections
-  are `SqliteDb`/`PostgresDb` nodes whose `^handle` is an owned C pointer
-  wired to the library close function. Rows are maps with typed values;
-  parameters are positional (`?` for sqlite, `$1` for postgres — SQL dialect
-  is not abstracted). Failures raise catchable `DbError`. `transaction` rolls
-  back on recoverable error or panic and commits on normal return. Statement
-  values, named parameters, and blob columns are not implemented.
-  `examples/todo_app/src/main.gene` persists through `db/sqlite`. Backend impls live
-  on the namespace scopes, so only importing programs pay protocol-dispatch
-  cost.
-- Phase 5 (`web/router` etc.) — not started.
-- `serde` (Gene-text serialization) — stages 1–6 implemented:
-  `serde/write_data`/`read_data`/`data?`, full `serde/write`/`read`,
-  typed refs/instances, policy-gated restore hooks, `SerdeRef`,
-  `SerdeError`, and `SerdePolicy`, per docs/serialization.md.
-- `store` (durable serde-backed persistence) — implemented with the shared
-  `Store` protocol, `StoreError`, `store/sqlite`, `store/fs`, atomic
-  hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
-  exclusive cross-process generation claims, authoritative `CURRENT`,
-  owner-only storage, and `$fs/make_dir`/`$fs/remove`/
-  `$fs/write_text_atomic`, per
-  docs/persistence.md. The `crypto/sha256` helper used by manifests
-  and content-addressed artifacts, `crypto/random_hex` for opaque credentials
-  and tickets, `crypto/secure_equal?` for credential comparison without an
-  early-exit API, and `os/process_id` used by ownership advisories are also public,
-  dependency-free primitives. `crypto/random_hex` reads the operating-system
-  cryptographic random source and is unavailable on WASM targets.
-- `fs/watch` — implemented as a capability-gated, bounded polling watcher over
-  `fs/ReadDir`. `FsWatcher/recv` suspends and reports frozen `FsChange` values
-  for create, modify, remove, rename, or `rescan_required`; recursive watches
-  do not follow symlinks, overflow is explicit, and `close` is idempotent.
-
-### Filesystem watching
-
-```gene
-(import $fs [watch FsWatcher FsChange WatcherClosed])
-(var watcher (watch "plugins" ^recursive true ^capacity 256))
-(var change watcher/.recv)
-watcher/.close
+```gene runnable
+(import $str [split trim join])
+(let names ($map (split " Ada, Grace " ",") trim))
+(join names " & ") # "Ada & Grace"
 ```
 
-`watch` requires `fs/ReadDir` for the canonical root. `recv` returns a frozen
-`FsChange` with `^kind` equal to `created`, `modified`, `removed`, `renamed`, or
-`rescan_required`; ordinary changes carry root-relative `^path`, and rename
-also carries `^from`. The queue is bounded. A scan producing more changes than
-its capacity collapses to one `rescan_required` marker instead of
-silently dropping paths. `close` drains already-buffered changes and then makes
-`recv` raise `WatcherClosed`.
-
-The polling implementation records stable filesystem identity to pair renames,
-revalidates retained authority on each receive, discovers new directories under
-a recursive root, and records symlinks without traversing them.
-
-## Goals
-
-- Keep `examples/todo_app/src/main.gene` runnable without test-only stubs.
-- Support a small server-rendered web app with routes, request parsing, HTML
-  rendering, forms, redirects, cookies, and static assets.
-- Support SQLite-backed persistence with prepared statements, transactions,
-  typed rows, and structured database errors.
-- Keep stdlib APIs ordinary Gene modules and namespace imports where possible.
-- Preserve the core language boundary: selectors read data, sends invoke
-  behavior, and capabilities make host authority explicit.
-
-## Non-Goals
-
-- Full package management, registries, or dependency solving.
-- A production async HTTP *server* stack with TLS and HTTP/2. The client can
-  negotiate either through libcurl.
-- ORM/query builder abstraction over SQL.
-- Browser client framework or reactive frontend runtime.
-- Cross-database compatibility.
-
-## Module Layout
-
-Initial modules should be available through namespace imports:
-
-```gene
-(import gene/stream [to_stream to_pairs_stream map filter take each into])
-(import gene/node [head props body meta declarations])
-(import gene/parse [parse_int read_all ParseError])
-(import gene/event [Bus Event EventSink exact])
-(import str [join split starts_with? ends_with? trim byte_size slice_bytes])
-(import html [escape attr_escape render])
-(import css [css rule decl media keyframes frame scoped class_name render])
-(import net/http [Request Response Server serve redirect])
-(import net/http_client [request stream HttpClientError])
-(import crypto [sha256 random_hex secure_equal?])
-(import os [process_id])
-(import log [Logger LogLevel new_logger log_info log_debug])
-(import curses [Screen open close dimensions draw read_input refresh_input
-                escape_pressed? next_event CursesError])
-(import sqlite [Database Statement Row SqliteError])
+```gene runnable
+(import $json [parse stringify])
+(let data (parse "{\"name\":\"Ada\",\"scores\":[3,5]}"))
+[data/name (stringify data)]
+# ["Ada" "{\"name\":\"Ada\",\"scores\":[3,5]}"]
 ```
 
-`str/slice_bytes` returns at most the requested number of UTF-8 bytes without
-splitting a character. Its zero-based start offset must itself be a UTF-8
-boundary. This is the bounded primitive used by agent-facing ranged reads.
+JSON supports objects, arrays, scalars, and escapes. Invalid input raises
+JsonError. Unsupported values, cycles, and non-finite floats are rejected.
+Use explicit conversion when crossing the web backend's Int/bigint boundary.
 
-Every one of these is also reachable under the reserved `gene` root
-(`gene/str`, `gene/net/http`, `gene/os`, …); `gene`/`genex`/`geney`/`genez` are
-reserved standard-library roots (design.md §15.6). There is no `std` namespace.
+## Files and permissions
 
-For MVP, these may be built-in namespaces registered by the runtime. File-backed
-stdlib modules can replace or wrap those namespaces later, but source programs
-should not need to change.
-
-### `log`
-
-Structured diagnostic logging is configured by the launcher and is separate
-from program output, typed errors, authoritative event/audit logs, metrics, and
-execution traces. The default route emits `warn` and `error` to stderr.
+This recipe writes a file under the launch directory:
 
 ```gene
-(import log [Logger LogLevel new_logger log_debug])
-
-(var logger
-  (new_logger "app/http" ^payload {^service "api"}))
-
-(logger .info "listening" ^payload {^port 8080})  # eager
-(log_debug logger (expensive_message)                  # lazy
-  ^payload {^request_id id})
+(import $fs [write_text read_text])
+(write_text "greeting.txt" "Hello from Gene")
+($println (read_text "greeting.txt"))
 ```
 
-`Logger` is an immutable, Send-safe native handle. `new_logger` creates names
-under `app/*`; `child` derives a descendant and `with` adds immutable base
-payload. Eager `error`/`warn`/`info`/`debug`/`trace` methods evaluate arguments
-normally. The `log_error`/`log_warn`/`log_info`/`log_debug`/`log_trace` macro
-forms evaluate the logger once and skip message/payload evaluation when
-disabled. `enabled?` accepts `LogLevel`; `emit` is the eager level-parametric
-primitive.
+The native CLI grants filesystem access under the launch directory by default.
+Additional directories can be selected before the entry file:
 
-Payloads are PropMaps/general maps with string or symbol keys and data-only
-values. Base and event payloads merge with event keys winning. Payloads are
-bounded and recursively redacted before reaching any sink; common credential
-keys are redacted by default. Programming/boundary mistakes raise normally,
-while accepted-event renderer or sink I/O failures never enter application
-control flow.
-
-`gene run --log-config path app.gene` explicitly loads a data-only config
-before the entry module. It supports hierarchical segment-aware routes,
-console/file sinks, Gene/text/JSON Lines formats, color policy, and flush policy;
-file paths are relative to the config file. Config is immutable during entry
-execution. Under wasm, console logging uses captured host output and file sinks
-are unavailable. See [the logging proposal](logging.md) for the full
-schema and performance contract.
-
-When application-selected file output is required, `new_file_logger` takes a
-logger name and path and resolves an ambient append-only `fs/WriteFile` grant,
-returning a direct one-file
-logger. It defaults to one reader-valid Gene data map per line. Pass
-`^format "json"` or `^format "jsonl"` only when JSON interoperability is
-required; `^format "text"` remains available for concise human lines. It does
-not mutate process routing and is unavailable under wasm.
-
-### `respond_to?`
-
-`($respond_to? value msg)` answers whether a bare `(value .msg)` would
-resolve. `msg` is a `Sym` or a `Str`.
-
-```gene
-(if ($respond_to? plugin "init")
-  (plugin .init))
+```sh
+gene run --allow_read_dir /path/to/data report.gene
 ```
 
-It reuses the two steps a bare send takes — the receiver's type-direct message
-table, then the built-in receiver surface — so the predicate cannot drift from
-dispatch, and built-in receivers answer it too (`($respond_to? [1 2] "size")`
-is `true`).
+Narrow permission inside the program with a declaration row or
+`with_capabilities`. A retained file/database handle cannot restore permission
+removed by the current context. See the [capability examples](../examples/capabilities/README.md)
+and [authority contract](spec/authority.md).
 
-It is the guard `?.message` is not. `?.message` guards the *receiver*: an absent receiver
-short-circuits, but a present receiver with an unknown message still raises
-`MessageError`. Use `?.message` for "there may be no receiver" and `respond_to?` for
-"there may be no message"; they compose.
+For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching is
+available through `$fs/watch`; close watchers when finished.
 
-### `event`
+## HTTP server
 
-Application pub/sub (docs/events.md). An event is an ordinary typed
-value whose parent ancestry reaches `event/Event`; its concrete nominal type is
-its identity, and that ancestry is its matching hierarchy. There is no topic
-string, no topic registry, and no global bus.
+Save this as `server.gene` and run it with `gene run server.gene`:
 
 ```gene
-(import gene/event [Bus])
-
-(type UserCreated
-  : $event/Event
-  ^props {^user_id Str})
-
-(var bus
-  (Bus))
-
-(var subscription
-  (bus .subscribe UserCreated on_user_created))
-
-(bus .publish
-  (UserCreated ^user_id "u_123"))
-
-subscription/.cancel
-```
-
-Members: the `Event` root type; `Bus`, `Subscription`, `PublishResult`, and
-`Matcher`; `exact`, a `Type -> Matcher` function; the `ErrorPolicy` enum with
-its `raise_after` and `collect` variants bound directly in the namespace; the
-`EventSink` protocol; and the `RecordingSink`, `NullSink`, and `CompositeSink`
-implementations of it.
-
-Subscribing to a type matches that type and its nominal descendants, so a family
-base type observes the whole family and `event/Event` observes everything.
-`(event/exact T)` excludes descendants, and `(| A B)` — the same union type
-expression annotations take — selects several unrelated families at once. A
-union is **one** subscription: an event matching two alternatives invokes the
-handler once, and cancelling unhooks every family it was registered under.
-That is the entire selector grammar: there is no wildcard spelling, because
-`X/*` already means the import wildcard and the capability projection, and a
-namespace that declared a `*` member would shadow multiplication inside its own
-body.
-
-`subscribe` validates the handler against the selector — a handler whose
-declared parameter type cannot accept everything the selector matches is
-rejected at the declaration site instead of failing once per non-matching event
-at the publisher. `^once true` removes the subscription after its first
-attempted delivery, whether the handler returns or raises, and it is marked
-consumed *before* the handler runs so nested publication cannot invoke it twice.
-
-`publish` deep-freezes a **copy** of the event before dispatching, so the
-publisher may keep mutating its own value afterwards and nothing it does is
-observable through the event already delivered. It returns a `PublishResult`
-(`^matched`, `^delivered`, `^failed`, `^errors`) under both error policies;
-`raise_after`, the default, additionally raises one `EventPublishError` when
-any handler failed, while `collect` leaves the failures to the publisher. A
-handler error never stops the handlers after it.
-
-Dispatch uses a snapshot: subscribing, cancelling, or closing during a
-publication affects the next one, never the one executing. Nested publication
-is allowed and depth-first, bounded by `^nesting_limit` (default 16) —
-`EventRecursionError` past it. `close` cancels every subscription, releases the
-handlers, is idempotent, and makes later `subscribe`/`publish` raise
-`EventBusClosedError`; nothing else releases a bus's handlers, since collection
-does not cancel subscriptions.
-
-`EventSink` has exactly one message, `emit`. A bus implements it by publishing
-and reporting a nonzero `failed` count as a sink failure **under either error
-policy**, so an observation bus configured with `collect` cannot be
-misconfigured into silence at the sink boundary. Filtering, buffering, retries,
-fan-out, and error policy belong behind sink implementations rather than in the
-protocol.
-
-A version 1 bus is lane-owned and synchronous: subscribe, cancel, publish, and
-the handlers all run on the owning lane. A bus records the lane that created it
-and refuses every operation from another one with `SubscriptionError`. That
-check is not redundant with the bus not being `Send`: sendability stops a bus
-being *transferred* through a channel, an actor message, or a worker-safe spawn
-capture, but an embedding host thread calling in through `native_api` transfers
-nothing and would otherwise mutate the bus concurrently with its owner. Every
-fiber on one lane shares that lane, so ordinary `spawn`/`await` code is
-unaffected. Cross-lane delivery is an explicit adapter that validates the frozen
-event and publishes it on the destination bus's lane.
-
-The runtime instrumentation half of the proposal — `runtime/EventStream` and
-the `runtime/...` event families — is not implemented yet; see
-docs/implementation-status.md.
-
-### `os`
-
-The subprocess surface separates captured execution from whole-terminal
-handoff:
-
-```gene
-(import os [executable_path exec_async exec_stream_async exec_stdio_async])
-
-# Absolute path of the currently running Gene executable.
-(var gene (executable_path))
-
-(var result
-  (await (exec_async ^cmd "sh" ^args ["-lc" "nimble test"])))
-
-# The child inherits stdin/stdout/stderr, while only this fiber waits.
-(var status
-  (await (exec_stdio_async ^cmd "vi" ^args ["notes.txt"])))
-```
-
-`exec_async` returns a cancellable `Task` yielding the same captured result map
-as `exec`. `exec_stream_async` additionally sends complete stdout lines through
-the required bounded `^stdout_chan`. `exec_stdio_async` returns a cancellable
-`Task[Int]`; its child inherits the parent streams, but waiting happens on a
-dedicated worker so unrelated fibers, HTTP sessions, and application workers
-continue. Inherited-stream children are serialized because they share one
-physical terminal and process-wide terminal signal disposition. The synchronous
-`exec_stdio` remains available for simple programs that intentionally block
-their scheduler.
-
-All subprocess entry points require `Os/Exec`. Cancellation terminates an
-active async child. `exec_stdio_async` accepts only `^cmd`, `^args`, and `^dir`;
-capturing, timeouts, and output limits do not apply to a terminal handoff.
-`executable_path` takes no arguments and returns the absolute path of the
-current Gene executable, which lets a program launch a subcommand through the
-same runtime without guessing from `PATH`.
-
-### `net/http_client`
-
-The native client is separate from the server namespace because its authority,
-error, lifetime, and streaming contracts differ:
-
-```gene
-(import net/http_client [request stream])
-
-(var response
-  (await (request ^method "POST" ^url "https://example.test/api"
-                  ^headers {^content-type "application/json"}
-                  ^body "{}" ^timeout_ms 30000 ^max_bytes 4000000)))
-
-(var transfer
-  (stream ^url "https://example.test/events"
-          ^channel_capacity 256 ^max_pending_bytes 1000000))
-```
-
-`request` returns `Task`; its value has `status`, normalized `headers`, `body`,
-`effective_url`, `truncated`, and `headers_truncated`. Non-2xx HTTP statuses are
-ordinary response data. Setup and transport failures fail the task.
-
-Synchronous setup problems raise `HttpClientError` with a `^kind` prop:
-`"unavailable"` means libcurl could not be loaded/initialized — the only case
-a caller should treat as "fall back to another transport" — while `"usage"`
-marks authority, argument, and option mistakes that must surface. Transport
-failures after the transfer starts fail the returned task and do not carry
-the `HttpClientError` type, so a fallback path can never replay a partially
-consumed stream.
-
-`stream` returns `{^task ^channel}`. The channel carries raw response chunks
-and closes before the task settles. Native callbacks only copy bytes into
-bounded shared buffers; channel delivery, SSE framing, and JSON parsing happen
-on the scheduler thread. Cancelling the task aborts the transfer. URLs are
-restricted to `http://` and `https://`, header newlines are rejected, and
-libcurl's default peer/hostname verification is not disabled.
-
-### `curses`
-
-The POSIX terminal API uses an explicitly owned `Screen`:
-
-```gene
-(import curses [open close dimensions draw next_event])
-
-(var screen (open))
-(try
-  (draw screen ^output "agent> ready" ^status "waiting" ^input "")
-  (var size (dimensions screen))
-  (var event (await (next_event screen)))
-  ensure
-    (close screen))
-```
-
-`open` requires a TTY and permits one live screen. `close` is idempotent and
-restores terminal modes; callers should still use `ensure`. `draw` is a
-non-variadic, color-coded full-screen renderer. `dimensions` returns
-`{^rows ^cols}`. `next_event` returns a cancellable `Task` and reports text as
-complete UTF-8 strings plus named enter, edit, navigation, paste-boundary,
-modified-Enter, interrupt (Ctrl-C), EOF, and resize events. Scheduler polling
-uses non-blocking `getch`, so waiting for a key does not stop other tasks. If
-ordinary typing is already queued behind a standalone Escape when the scheduler
-polls, the text byte is pushed back and delivered by the next event rather than
-being consumed as an unknown escape sequence. While a `Screen` owns
-the terminal, diagnostic console log sinks are paused to prevent out-of-band
-stdout/stderr writes from corrupting the full-screen display; file and callback
-sinks remain active.
-
-`read_input` provides the shared multiline editor with bracketed-paste and
-Unicode support. Its optional `^history` argument is a list of strings;
-Up/Down replace the current input with the previous/next entry and restore the
-draft after the newest entry. While input is active, the mouse wheel scrolls
-the transcript by three lines and PageUp/PageDown by one viewport; a
-`[SCROLL +N]` status prefix marks a view detached from the latest output.
-Transcript text word-wraps into visual rows at the current terminal width, and
-scrolling counts those wrapped rows. `refresh_input` redraws while retaining
-screen ownership. `draw`, `read_input`, and `refresh_input` also accept
-`^panes`, a list of
-`{^title Str ^output Str ^scroll Int = 0 ^focused Bool = false
-^maximized Bool = false}` maps; `draw`
-additionally accepts a non-negative `^output_scroll` visual-row offset. Pane
-scroll offsets use the same visual-row, live-tail-relative convention and a
-scrolled pane marks its title with `[SCROLL +N]`. On terminals at least 48
-columns wide, the primary transcript keeps the left side while panes are
-stacked vertically on the right; input separators, input rows, and status keep
-the full terminal width. A maximized pane occupies the full output region.
-Narrow terminals show the focused pane full-width when one is focused, and
-otherwise retain the primary transcript; hidden panes keep their state.
-`escape_pressed?`
-non-destructively checks a live screen for
-a standalone Escape, preserving queued text and terminal escape sequences so a
-caller can use it to cancel concurrent work.
-Terminal failures raise `CursesError`. The older `os/read_input`,
-`os/refresh_input`, and `os/close_input` names remain compatibility wrappers.
-
-The `repl` namespace supports both a whole interactive session and incremental
-controllers suitable for panes:
-
-```gene
-(import repl [open eval_source close])
-(var session (open (env ^bindings {^answer 42})))
-(try
-  (eval_source session "(var x answer)")  # {^status "ok" ^text "42"}
-  (eval_source session "(+ x 1)")         # {^status "ok" ^text "43"}
-  ensure
-    (close session))
-```
-
-`repl/open` creates an owned declaration-persistent evaluation scope.
-`repl/eval_source` returns `{^status ^text}` with status `ok`, `incomplete`, `error`,
-or `panic`; incomplete source is retained for the next call. `repl/close` is
-idempotent. `repl/run` remains the blocking stdin/stdout session helper.
-
-## Phase 1: Core Utility Modules
-
-### `gene/stream`
-
-Current runtime already has most stream helpers as built-ins. The stdlib module
-should export them under a stable namespace:
-
-- `to_stream`
-- `to_pairs_stream`
-- `map`
-- `filter`
-- `take`
-- `each`
-- `into`
-- `Stream/has_next`
-- `Stream/peek`
-- `Stream/next`
-- `Stream/close`
-
-Acceptance:
-
-- `examples/todo_app/src/main.gene` imports `gene/stream` successfully.
-- Stream helpers remain lazy where they are lazy today.
-- The collection operations are generic (design §6.2): a `List`/`Map` receiver
-  answers eagerly in its own kind, a `Stream` receiver stays lazy.
-- `each` consumes a stream or eager iterable for side effects and returns `nil`.
-
-### `gene/node`
-
-Expose node anatomy and module introspection:
-
-- `head`
-- `props`
-- `body`
-- `meta`
-- `declarations`
-
-Acceptance:
-
-- `this_mod/%declarations` returns declaration nodes as a stream.
-- Route discovery can filter function declarations by `@route` metadata.
-
-### `gene/parse`
-
-Initial parsing helpers:
-
-- `parse_int : Str -> Int ^errors [ParseError]`
-- `read_all : Str -> (Stream Any ParseError)`
-- `ParseError` from the existing reader error family. Reader failures expose
-  `source`, `line`, `col`, and `contexts`; each context records an opener,
-  expected closer, and opening location. Numeric conversion failures may omit
-  the location fields.
-
-`format` was removed from this namespace. Canonical source formatting is a
-tool surface, not a runtime one: it was the only thing linking the formatter
-(and transitively the LSP analyzer) into every Gene binary. Use the `gene fmt`
-CLI, which delegates to the separately built `gene-fmt`.
-
-Acceptance:
-
-- Invalid integer input is catchable as `ParseError`.
-- Delimiter diagnostics retain machine-readable source locations and open-form
-  context for the CLI, LSP, and programmatic consumers.
-- `parse_int` rejects trailing junk unless a later API explicitly permits it.
-
-### `str`
-
-String utilities needed by HTML and HTTP:
-
-- `join : (List Str), Str -> Str`
-- `split : Str, Str -> (List Str)`
-- `trim : Str -> Str`
-- `lower : Str -> Str`
-- `byte_size : Str -> Int` (UTF-8 bytes; allocation-free)
-- `slice_bytes : Str, Int, Int -> Str` (bounded UTF-8-safe byte range)
-- `starts_with? : Str, Str -> Bool`
-- `ends_with? : Str, Str -> Bool`
-- `contains? : Str, Str -> Bool`
-
-Acceptance:
-
-- `join` works as a send or normal callable in render pipelines:
-  `(items .join "")`.
-- Functions are allocation-conscious but correctness comes first for MVP.
-
-## Phase 2: HTML and URL Modules
-
-### `html`
-
-HTML should remain ordinary Gene node data until render time.
-
-Exports:
-
-- `escape : Str -> Str`
-- `attr_escape : Str -> Str`
-- `render : Node|Str|Any -> Str`
-
-Rules:
-
-- Text and attribute values use their distinct escaping contexts.
-- Attribute insertion order is output order. `nil`/`void` attrs are omitted;
-  known HTML boolean attrs render by presence, with `false` omitted.
-- Standard void elements omit an end tag and reject children.
-- `script` and `style` contents are raw text, not entity-escaped; a
-  case-insensitive closing-tag sequence is neutralized as `<\\/tag` so data
-  cannot terminate its containing element.
-- Tag and attribute names are validated before emission. Arbitrary `data-*`
-  and `aria-*` names remain valid and retain their wire spelling.
-- `nil`/`void` children render nothing, lists flatten, and other scalar values
-  use the ordinary `to_str` display contract before text escaping.
-- Raw HTML is not supported by default. Add an explicit `Html/raw` type later if
-  needed.
-
-Acceptance:
-
-- The demo renderer can move from app-local functions to `html/render`.
-- XSS-sensitive escaping tests cover text, attributes, quotes, `<`, `>`, and
-  `&`.
-
-### `css`
-
-CSS is ordered Gene node data until `render`; it is not a compiler target.
-
-```gene
-(import css [css rule decl media scoped class_name render])
-
-(var styles
-  (scoped "card"
-    (css
-      (rule "&"
-        (decl display "-webkit-box")
-        (decl display "flex")
-        (decl border_radius "14px")
-        (decl "--brand" "#18181b"))
-      (media "(max-width: 600px)"
-        (rule "&" (decl padding "12px"))))))
-```
-
-`css`, `rule`, `media`, `keyframes`, `frame`, and `scoped` construct ordinary
-nodes. `decl` is a template macro so an unbound bare symbol remains syntax:
-symbol names convert `snake_case` to CSS `kebab-case`, while a string is an
-unmodified wire name. Declarations are body nodes, preserving duplicates and
-their position relative to nested rules.
-
-`scoped` prefixes selectors with `.` plus `class_name`. An `&` in a selector
-is replaced by that scope; selectors without one are descendants. Comma lists
-are expanded as a Cartesian product without splitting commas inside brackets,
-parentheses, or strings. Local `@keyframes` names and declaration-value token
-references are suffixed consistently.
-
-The class digest is the first 48 bits of SHA-256 over the versioned,
-length-prefixed canonical form: the scope label, node heads, ordered props,
-and ordered bodies participate; node source metadata does not. Labels are
-CSS-identifier-sanitized. Rendering a sheet checks any repeated generated
-class against its full canonical form and raises on a digest collision rather
-than silently merging styles.
-
-### `web`
-
-Places compiler-generated browser assets in a page. This is the entire
-author-facing surface for embedded web modules
-(`docs/web-compilation.md` §4.12); everything else — JavaScript, source
-maps, content hashes, dependency URLs, the route table — stays behind it.
-
-```gene
-(import $web [script stylesheet])
-
-(web_module todo_client
-  (fn main [root : EventTarget] : Void
-    ($dom/add_event_listener root "click" on_click)))
-
-(fn page [] : Str
-  (render
-    `(html
-       (head %(stylesheet "todo_app" rendered_css))
-       (body
-         (main ^id "todo_root" ...)
-         %(script todo_client ^mount "todo_root")))))
-```
-
-- `script : WebAsset ^mount Str -> Node` — the complete `<script>` node.
-  Referring to the asset is what installs its routes, at module-load time, so
-  there is no route table to receive and none to forget to mount. The mount id
-  is validated here, at the composition site.
-- `stylesheet : Str -> Str -> Node` — publishes CSS as a generated route and
-  returns the `<link>` node. An inline `<style>` would need a nonce or hash on
-  every response, and a page function returning `Str` has nowhere to carry one.
-- `asset_base : -> Str` and `set_asset_base : Str -> Nil` — where this
-  application publishes, defaulting to `/__gene`. Configurable rather than a
-  process root, because an app mounted behind a proxy at `/todo/` never
-  receives a request for `/__gene/…`.
-- `set_source_maps : Bool -> Nil` — whether `.map` routes answer. Maps carry
-  only the embedded block, so this is a policy knob, not the disclosure
-  boundary.
-
-Entries are external ES modules, content-addressed, and served with
-`x-content-type-options: nosniff` and immutable caching justified by the hash.
-Publishing only ever adds routes, so a page from an earlier generation keeps
-fetching its own URLs while a newer one is published. Generated assets are
-owned by the `Application`: every `Server` it starts answers one table, and
-two applications stay isolated.
-
-### `url`
-
-Needed for request parsing and redirects:
-
-- `encode_component`
-- `decode_component ^errors [UrlError]`
-- `parse_query : Str -> (Map Str Str) ^errors [UrlError]`
-- `format_query : (Map Str Str) -> Str`
-- `UrlError ^impl [Error]`
-
-Acceptance:
-
-- `Request/params` can be produced by the HTTP server wrapper.
-- Malformed percent escapes are typed recoverable errors.
-
-## Phase 3: HTTP Server MVP
-
-### `net/http`
-
-The server is single-process and cooperative: a non-blocking event loop on the
-scheduler thread with task_per_request handler fibers (originally a blocking
-accept loop; upgraded per `docs/http-server.md` Phase 1). The
-API stays capability-shaped so richer backends can replace it.
-
-Types:
-
-```gene
-(type Request
-  ^props {^method Str
-          ^path Str
-          ^query Str
-          ^params (Map Str Str)
-          ^headers (Map Str Str)
-          ^body Str})
-
-(type Response
-  ^props {^status Int
-          ^headers? (Map Str Str)}
-  ^body [Str])
-
-(type Server
-  ^props {^host Str ^port Int})
-
-(type HttpError
-  ^props {^message Str}
-  ^impl [Error])
-```
-
-Functions:
-
-- `serve : Server, Fn -> Nil ^errors [HttpError]`
-
-`serve` runs a readiness-driven event loop with **task_per_request dispatch**
-(the first slice of `docs/http-server.md`): each parsed
-request runs the handler as a scheduler fiber settling a pending `Task`, so a
-handler that `sleep`s/`await`s parks without stalling other connections.
-Non-fiber callables fall back to an inline call. Connections are
-`connection: close`; request parsing is incremental over non-blocking sockets.
-
-Named arguments to `serve` (all optional):
-
-- `^max_requests Int` — serve N connections then return (tests/embedding);
-- `^max_connections Int` — accept cap; excess connections are shed (default 1024);
-- `^max_in_flight Int` — concurrent dispatched handlers; excess answers the
-  overload response (default 256);
-- `^max_body_bytes Int` — declared request bodies beyond this answer
-  `413 Payload Too Large`; negative disables the cap (default 10485760);
-- `^request_timeout_ms Int` — overdue handlers answer `504 Gateway Timeout`
-  and the still-running task is orphaned (default 30000);
-- `^drain_timeout_ms Int` — graceful-stop drain window for in-flight
-  requests after `(stop server)` (default 5000);
-- `^overload_response Response` — what admission-limit rejections answer
-  instead of the default `503 Service Unavailable` (rendered once at serve
-  start, e.g. `(text 503 "busy")`);
-- `^handler Fn` — the handler as a named argument instead of positional;
-- `^routes List` — route table of `(route ^method ^path ^handler)` nodes or
-  `[method path handler]` lists; unmatched requests answer 404 (mutually
-  exclusive with a handler). Paths may contain `:name` segments — `/job/:id`
-  captures the segment into `req/params` (a path capture wins over a
-  same-named query key); first matching route wins;
-- `^on_error Fn` — maps a handler's recoverable error value to a `Response`
-  (panics and cancellations stay generic 500s);
-- `^dispatch task_per_request | (actor_pool ...)` — dispatch mode;
-  `(actor_pool ^workers N ^mailbox N ^init fn ^handle fn)` runs requests as
-  `RequestMsg` values on a fixed worker-actor pool; full mailboxes answer the
-  overload response (note: a bare symbol evaluates as a lookup, so quote the
-  mode — `` ^dispatch `task_per_request ``);
-- `^supervision (supervisor_policy ...)` — worker-pool supervision
-  (actor_pool dispatch only): `` (supervisor_policy ^strategy `restart
-  ^max_restarts 10 ^within_ms 60000 ^events chan ^dead_letter chan) ``.
-  Strategy `restart` (default) rebuilds worker state with ^init under the
-  restart budget; `stop` closes the failing worker. Worker failures emit
-  `ActorFailure` values to `^events`/`^dead_letter` channels without
-  blocking the failure path;
-- `^access_log Fn` — called once per chosen response with an
-  `(AccessLog ^method ^path ^status ^ms ^headers)` record; header values
-  named by `^redact_headers` are replaced with `"[redacted]"` (defaults:
-  authorization, cookie, set-cookie). A failing log fn goes to stderr and
-  never breaks serving;
-- `^error_log Fn` — called on handler errors/panics with an
-  `(ErrorLog ^method ^path ^message ^panic)` record, before any ^on_error
-  mapping; same never-break-serving contract;
-- `^redact_headers List` — header names (case-insensitive) whose values
-  never reach access_log records.
-
-Stalled request reads answer `408 Request Timeout`; malformed requests and
-oversized headers answer `400 Bad Request` as before.
-- `Response : ^status Int, Str -> Response`
-- `text : Str -> Response`
-- `html : Str -> Response`
-- `json : Str -> Response`
-- `redirect : Str -> Response`
-- `not_found : Str -> Response`
-- `header : Response, Str, Str -> Response`
-- `set_cookie : Response, Str, Str -> Response`
-- `cookie : Request, Str -> Str|Nil`
-- `static_file : Str -> Fn`
-
-Runtime integration:
-
-- `gene run` should continue to call ordinary CLI `main` as today.
-- A separate host launcher or command can inject `Http/Server` and `Io/Write`
-  capabilities into a web entrypoint. Do not overload normal `gene run` until
-  capability invocation is designed.
-
-Acceptance:
-
-- A demo app can listen on localhost, route by `Request/path`, and return HTML.
-- Request query params populate `Request/params`.
-- Request cookies are readable and response cookies can be set.
-- Static files can be served from an explicitly provided directory.
-- Static file serving rejects `..` traversal and never serves outside that
-  directory.
-- Handler failures produce a 500 response during MVP, with stderr diagnostics.
-- Server shutdown can be process-level for MVP.
-
-## Phase 4: SQLite MVP
-
-### `sqlite`
-
-SQLite should be the first database backend because it is local, easy to test,
-and fits a single-binary story. Implementation may use a native module or FFI
-binding over `sqlite3`.
-
-Types:
-
-```gene
-(type Database)
-(type Statement)
-(type Row)
-
-(type SqliteError
-  ^props {^message Str ^code Int}
-  ^impl [Error])
-```
-
-Functions:
-
-- `open : Str -> Database ^errors [SqliteError]`
-- `close : Database -> Nil ^errors [SqliteError]`
-- `exec : Database, Str -> Nil ^errors [SqliteError]`
-- `prepare : Database, Str -> Statement ^errors [SqliteError]`
-- `query : Database, Str, params... -> (List Row) ^errors [SqliteError]`
-- `query_one : Database, Str, params... -> Row|Nil ^errors [SqliteError]`
-- `execute : Database, Str, params... -> Int ^errors [SqliteError]`
-- `transaction : Database, Fn -> Any ^errors [SqliteError]`
-- `Row/get : Row, Str -> Any`
-- `Row/to_map : Row -> Map`
-
-Parameter binding:
-
-- Support `Nil`, `Bool`, `Int`, `Float`, `Str`, and binary buffers if available.
-- Positional parameters are enough for MVP: `?`, `?1`, `?2`.
-- Named parameters can be added later.
-
-Row conversion:
-
-- SQLite integer -> `Int`
-- SQLite float -> `Float`
-- SQLite text -> `Str`
-- SQLite null -> `nil`
-- SQLite blob -> `Buffer U8` when practical; otherwise defer blobs.
-
-Safety:
-
-- Prepared statements are finalized.
-- Database handles are closed explicitly and eventually by runtime cleanup.
-- `transaction` rolls back on recoverable error or panic, commits on normal
-  return.
-- SQL syntax and constraint failures become `SqliteError`.
-- `:memory:` remains an in-memory SQLite database. A file-backed database
-  requires an exact parent `fs/ReadWriteDir` grant. The runtime reads and
-  atomically publishes a serialized SQLite image through the filesystem
-  provider instead of giving SQLite an unrestricted pathname, so SQLite
-  cannot create unmediated journal, WAL, or shared-memory sidecar files.
-- Each committed mutating operation publishes the image before returning.
-  Closing publishes once more. A reopened database therefore observes the
-  previous committed state while all path traversal, symlink, and file-mode
-  enforcement remains inside the filesystem provider.
-
-Acceptance:
-
-- Create schema, insert rows, list rows, fetch one row, update/delete rows.
-- SQL injection-safe parameter binding is covered by tests.
-- Transaction rollback test proves failed insert does not persist.
-- Multiple tests can open independent temp databases without global state leaks.
-
-## Phase 5: Web App Convenience Layer
-
-This phase should be small and optional; the low-level modules above must remain
-usable directly.
-
-### `web/router`
-
-- `route : Str, Fn -> Route`
-- `router : (List Route) -> Fn`
-- `not_found`
-- path params can wait; exact path matching is enough for MVP.
-
-### `web/session`
-
-Defer unless the first app needs login. If included:
-
-- signed cookie sessions only;
-- no encryption in MVP;
-- explicit secret capability/config.
-
-### `web/form`
-
-- parse URL-encoded form body;
-- basic field validation helpers;
-- typed errors for malformed form input.
-
-Acceptance:
-
-- A CRUD app can be written with less boilerplate than raw `net/http`.
-- Convenience layer does not hide `Request`, `Response`, or database handles.
-
-## Reference App Target
-
-The stdlib is sufficient when this app can be implemented without local stubs:
-
-```gene
-(import net/http [Request Response Server serve redirect])
-(import html [render])
-(import sqlite [open exec query execute transaction])
-(import gene/parse [parse_int ParseError])
-
-(fn init_db [db]
-  (exec db "create table if not exists notes (id integer primary key, text text not null)"))
-
-(fn list_notes [db req]
-  (var rows (query db "select id, text from notes order by id desc"))
-  (Response ^status 200 (render `(html (body ...)))))
-
-(fn create_note [db req]
-  (execute db "insert into notes(text) values (?)" req/params/text)
-  (redirect "/"))
-
-(fn main [args : (List Str)] : Int
-  (var db (open "app.db"))
-  (init_db db)
-  (serve (Server ^host "127.0.0.1" ^port 8080)
-    (fn [req]
-      (match req/path
-        (when "/" (list_notes db req))
-        (when "/notes" (create_note db req))
-        (else (Response ^status 404 "not found")))))
+(import $net/http [listen serve text])
+
+(fn handle [request]
+  (match request/path
+    (when "/" (text 200 "Hello from Gene"))
+    (else (text 404 "Not found"))))
+
+(fn main [args]
+  ^capabilities [(net/Listen ^host "127.0.0.1" ^port 8080)]
+  (let server (listen ^host "127.0.0.1" ^port 8080))
+  (serve server ^handler handle)
   0)
 ```
 
-The exact syntax can change as capability injection evolves, but the required
-library behavior is fixed by this target.
+The server supports request tasks, routing, admission limits, timeouts,
+access/error hooks, actor-pool dispatch, and WebSockets. A sleeping request
+handler can suspend without blocking the other requests. TLS and broader
+production hardening remain future work.
 
-## Implementation Order
+Use [the async-server example](../examples/async-http-server.gene) for routes,
+limits, and lifecycle control. The [Todo app](../examples/todo_app/src/main.gene)
+adds forms, SQLite, and browser behavior.
 
-1. Register stdlib namespaces for existing built-ins:
-   `gene/stream`, `gene/node`, `gene/parse`.
-2. Add `str/join`, `str/split`, and `html/escape`.
-3. Move app-local HTML rendering from `examples/todo_app/src/main.gene` into
-   `html`.
-4. Add `url` query parsing and wire it into `Request/params`.
-5. Add blocking `net/http` server capability and response helpers.
-6. Add SQLite native binding with open/close/exec/query/execute.
-7. Add transactions and prepared statement cleanup.
-8. Build a minimal SQLite-backed CRUD example.
-9. Add `web/router` only after the raw app works.
-
-## `gene/aot` — loading natively compiled modules
-
-Experimental, alongside the `typed_native` C backend
-(`docs/native-types.md` Part II).
-
-- `load` — open a shared library produced from `gene compile --target c` and
-  return a map of `name -> callable`.
+## HTTP client
 
 ```gene
-(import $aot [load])
-(var native (load "build/libscaled.dylib"))
-(native/triple 14)
+(import $net/http_client [request])
+(let response (await (request ^url "https://example.com")))
+($println response/status)
 ```
 
-`load` reads the library's exported manifests and binds two things: every
-function declared with `^native_entry`, and every `ffi/fn`'s generated
-wrapper. Calls through the returned map run compiled machine code — arguments
-are unboxed at the boundary, the compiled function runs, and the result is
-boxed back.
+`request` returns a Task. Use the streaming client operation for bounded chunk
+consumption and cancellation. Network operations require active permissions;
+host/setup errors are distinct from HTTP response status.
 
-The library must be built with `-DGENE_AOT_DYNAMIC_ENTRIES=1` so the boundary
-adapters are compiled in; they are off by default so ordinary generated C
-links without a Gene runtime. The `gene_ffi_*` helpers those adapters call are
-exported from the `gene` executable and resolve at load time.
+## SQLite
 
-Boundary rules. Every one of these is the *same* check the interpreter's own
-FFI path makes — the compiled wrappers call those converters rather than a
-parallel set, so a value accepted compiled is accepted interpreted and produces
-the same result:
+Database backends expose the shared Db protocol. Bind SQL values as parameters:
 
-- Integral arguments range-check rather than truncate: passing `200` where the
-  C signature says `int8_t` is an error. `C/UInt64`, `C/ULong` and `C/Size`
-  carry the full unsigned range in both directions.
-- A float parameter requires a `Float`, and `C/Float` range-checks. A `C/Char`
-  takes a `Char` and returns one.
-- `Str` is borrowed for the call's extent and must not be retained by foreign
-  code; `nil` and interior NULs are rejected. A returned `const char *` is
-  copied, and a NULL return is an error rather than `nil`.
-- A pointer argument is checked for pointee identity, nullability, closed state,
-  and the const/owned flavors — a pointer to an unrelated native type cannot
-  reach C code that would dereference it as a different layout.
-- `C/Slice` borrows the value's storage. `Buffer` is marshalled instead: the
-  callee writes through temporary bytes and they are copied back into the Gene
-  buffer when the call returns, so a `Buffer` parameter is an out-parameter.
-- A managed wrapper crossing in is matched against the compiled type's identity
-  — not its name — so a look-alike cannot carry a forged handle into compiled
-  code. Ownership follows the declared mode: `borrow` leaves the wrapper usable,
-  `transfer` closes it without freeing (the callee owns the pointer now), and
-  `copy` leaves the original intact.
-- A type's declaring module must be loaded before a wrapper of that type can
-  cross, since the boundary resolves the identity to a live `Type`.
+```gene runnable
+(import $db/sqlite [open Db])
+(let db (open ":memory:"))
+(try
+  (db .Db:exec "create table people (name text)")
+  (db .Db:execute "insert into people(name) values (?)" "Ada")
+  (db .Db:query "select name from people")
+  ensure (db .Db:close))
+# [{^name "Ada"}]
+```
 
-ABI compatibility is checked, not assumed. A library declares every native type
-it depends on — transitively, including types it only ever reaches by
-dereferencing a pointer field — together with a fingerprint of each one's
-layout *and* its declaration (`^abi`, `^copy`, `^release`, `^wrapper`,
-`^mutable`, `^lifecycle`, and the handle's declared type). `load` rejects a
-library whose expectations no longer match the live types, saying which part
-drifted, and binds nothing when it does. If a type is redeclared incompatibly
-*after* a library is loaded, its already-bound callables refuse the next call
-rather than running against stale offsets.
+File-backed SQLite needs filesystem permission for its database location.
+Postgres is available through `$db/postgres` with the same Db operations and
+its backend-specific connection and placeholder syntax. Do not interpolate
+untrusted values into SQL.
 
-A library built before this checking existed is rejected with a rebuild
-message. Loaded libraries stay loaded for the life of the process: their
-callables and release functions can outlive any particular call, so unloading
-one could turn a live pointer's release into a jump into freed code.
+## Serialization and persistence
 
-`examples/native` builds and runs both directions.
+For Gene data, start with the data-only serde pair:
 
-## Testing Strategy
+```gene runnable
+(import $serde [write_data read_data])
+(let original {^name "Ada" ^scores [3 5]})
+(== original (read_data (write_data original))) # true
+```
 
-- Unit tests for every pure helper.
-- Spec tests for import surface and documented examples.
-- Integration tests using temp directories and temp SQLite files.
-- HTTP tests should bind to localhost on an ephemeral port.
-- Database tests must not require network access or global state.
-- Leak tests should cover database/statement close paths once handles are native
-  resources.
+These operations do not reconstruct arbitrary functions or native resources.
+The full serde mode can resolve references against already-loaded modules;
+restore hooks require an explicit trusted opt-in.
 
-## Open Design Questions
+For durable named records, create a state directory and use a Store backend:
 
-- Should stdlib modules be built-in namespaces first, file-backed Gene modules,
-  or a hybrid where native functions are injected into file modules?
-- Should web entrypoints use ordinary `main [args]` plus explicit construction,
-  or a separate capability-injected command?
-- Should SQLite rows be maps, row objects, or both?
-- How should native resource finalization interact with the planned arena /
-  reclamation work?
-- Do `str` function names use underscores (`starts_with?`) or hyphens
-  (`starts-with?`)? Pick one convention before broad stdlib expansion.
+```gene
+(import $store/fs [open Store])
+(let state (open ^root ".state"))
+(try
+  (state .Store:put "settings" {^theme "dark"})
+  ($println (state .Store:get "settings"))
+  ensure (state .Store:close))
+```
+
+Point writes are atomic. Use checkpoint generations when several records must
+be restored together. The application chooses save timing; this does not
+replay arbitrary in-flight effects. [Cordis](../examples/cordis/README.md)
+illustrates lifecycle and persistence in an application.
+
+## Logging
+
+```gene runnable
+(import $log [new_logger log_debug])
+(let logger (new_logger "app/demo" ^payload {^component "example"}))
+(logger .info "ready" ^payload {^items 3})
+(log_debug logger $"details: ${[1 2 3]}")
+```
+
+Level methods evaluate their arguments eagerly. The `log_*` macros defer
+payload evaluation until the level is enabled. An application configures
+routes and levels; a library should use or accept a named logger. Diagnostic
+logging is separate from a durable application event log.
+
+## Application events
+
+An event's nominal type identifies its family. A bus is an explicit value:
+
+```gene runnable
+(type UserJoined : $event/Event ^props {^name Str})
+(let seen ($cell []))
+(let bus ($event/Bus))
+(bus .subscribe UserJoined
+  (fn [event] ((seen .get) .push event/name)))
+(bus .publish (UserJoined ^name "Ada"))
+(bus .close)
+(seen .get) # ["Ada"]
+```
+
+Subscriptions match nominal ancestry; cancel a subscription or close the bus
+to release handlers. Publishing creates an immutable event snapshot. Read the
+[event example](../examples/events.gene) for error policies, event families,
+and sinks. Optional VM-wide event instrumentation is not implemented.
+
+## HTML and CSS
+
+Markup is ordinary node data; render at the output boundary:
+
+```gene runnable
+(import $html [render])
+(let title "Ada & Grace")
+(render `(article (h1 %title)))
+# "<article><h1>Ada &amp; Grace</h1></article>"
+```
+
+The `$css` library supplies rules, declarations, rendering, and scoped class
+names. Embedded `web_module` code can enhance server-rendered markup; see
+[web workflows](workflows.md#web-applications).
+
+## More libraries
+
+| Need | Starting point |
+| --- | --- |
+| Collection operations | `$map`, `$filter`, `$filter_map`, `$take`, `$into`, `$each` |
+| Structured concurrency | `scope`, `spawn`, `await`, `$channel`, `$actor` |
+| Numeric data/native buffers | `$buffer` and the [native example](../examples/native/README.md) |
+| URLs and forms | `$url`; [Todo app](../examples/todo_app/src/main.gene) |
+| Command execution/environment | `$os`, subject to the active context |
+| Interactive terminals | `$terminal` / `$curses`; runtime support is platform-dependent |
+
+Use the [language guide](language.md) for call, message, and import syntax.
+Exact lifecycle and boundary rules remain in [the specification](spec/README.md).

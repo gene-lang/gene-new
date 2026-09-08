@@ -1,5 +1,5 @@
 ## Package discovery, manifests, identity, and local stores
-## (docs/packages.md).
+## (docs/workflows.md).
 ##
 ## This deep module owns discovery, the closed manifest and lock schemas,
 ## source identity, solving, immutable stores, vendoring, and GC roots. It

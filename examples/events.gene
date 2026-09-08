@@ -1,6 +1,6 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene event bus tour (docs/events.md, docs/stdlib.md `event`)
+# Gene event bus tour (docs/stdlib.md, docs/stdlib.md `event`)
 #
 # Application pub/sub. An event is an ordinary typed value whose parent
 # ancestry reaches `event/Event`: its concrete nominal type *is* its identity,

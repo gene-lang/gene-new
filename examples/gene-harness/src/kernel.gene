@@ -1227,7 +1227,7 @@
 (fn notify [h : Harness, event] : Any
   # Lifecycle events go out through the same bus, with one difference: a
   # subscriber must not be able to stall the state machine. The kernel's bus is
-  # `event/collect` (docs/events.md §8), so one raising observer cannot abort a
+  # `event/collect` (docs/stdlib.md), so one raising observer cannot abort a
   # publication and `publish` returns a `PublishResult` instead of raising. A
   # plugin system whose dependency resolution can be halted by an unrelated
   # observer is not one you can recompose at 3am.

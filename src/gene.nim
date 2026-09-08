@@ -80,7 +80,7 @@ proc usage() =
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
   echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
-  echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
+  echo "  gene lsp                run the language server over stdio (docs/workflows.md)"
 
 proc readSourceFile(path: string): string =
   if not fileExists(path):
@@ -1021,7 +1021,7 @@ proc cmdDoc(path: string) =
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# gene pkg (docs/packages.md §11)
+# gene pkg (docs/workflows.md)
 # ---------------------------------------------------------------------------
 
 type PkgCli = object

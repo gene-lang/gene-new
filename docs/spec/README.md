@@ -1,25 +1,22 @@
-# Gene implemented specification
+# Implemented specification
 
-**Status:** normative for the implemented language surface.
-
-The contract is split by subsystem:
+These files define precise behavior for contributors and advanced users.
+Start with [the language guide](../language.md) for examples and ordinary usage.
 
 - [Reader and values](reader.md)
 - [Calls, selectors, control, and eval](calls.md)
-- [Authority, evaluation, and sandbox boundaries](authority.md)
-- [Types, construction, and mutation](types.md)
-- [Nil, void, optional binding, and mapping](nil-void.md)
-- [Protocols and message dispatch](protocols.md)
-- [Streams and channels](streams.md)
-- [Tasks and actors](concurrency.md)
-- [Applications, modules, reflection, and native boundaries](modules.md)
+- [Types and construction](types.md)
+- [Nil, void, and optional binding](nil-void.md)
+- [Protocols and dispatch](protocols.md)
+- [Streams](streams.md)
+- [Tasks, channels, and actors](concurrency.md)
+- [Modules and native boundaries](modules.md)
+- [Authority and sandbox boundaries](authority.md)
 
-`tests/spec_runner.nim` is the executable form of this contract. When a rule
-marked implemented disagrees with that suite, the suite has temporary
-precedence and the prose must be fixed. `docs/design.md` is the concise
-architecture overview, with details in `docs/reference/`;
-`docs/proposals/` and explicitly deferred material are
-non-normative.
+`tests/spec_runner.nim` is the executable contract. If implemented prose and
+those tests disagree, resolve the discrepancy explicitly. Historical design
+proposals do not override current behavior.
 
-Run `nimble spec` after changing any rule. The compiler-head inventory in
-[calls.md](calls.md) is checked directly against compiler dispatch.
+The call spec's compiler-head inventory is checked against dispatch. Run
+appropriate executable specs when changing a rule. See
+[development](../development.md) for test commands and known limits.

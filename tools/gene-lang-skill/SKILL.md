@@ -6,7 +6,8 @@ description: Write, run, and debug Gene source (.gene files). Use when writing o
 # Writing Gene
 
 Gene is homoiconic and Lisp-shaped, so Lisp priors fire — and most of them are
-wrong here. `(println …)` is an undefined symbol. `(xs .map f)` needs a stream.
+wrong here. `(println …)` is an undefined symbol. Eager and lazy collections
+share map operations, with explicit consumption for streams.
 `(foo ^k 1)` in code position is a call, not data. Guessing produces code that
 reads plausibly and does not run.
 
@@ -16,7 +17,8 @@ before it goes into a file.
 ## Probe
 
 `./bin/gene eval '<source>'` evaluates and prints. It is the whole loop — sub-second,
-no file needed. Build the binary first with `nimble build` if `bin/gene` is absent.
+no file needed for an expression. Imports require a source file run with
+`gene run`. Build the binary first with `nimble build` if `bin/gene` is absent.
 
 ```console
 $ ./bin/gene eval '($println (([1 2 3] .to_stream) .into []))'
@@ -34,7 +36,7 @@ The rest of the surface:
 | `./bin/gene run f.gene [args…]` | Run top level, then call `main`. Positional args arrive as a node — `args/0` is the first. |
 | `./bin/gene fmt f.gene` | Canonical layout. Doubles as a syntax check, and shows you the idiomatic spelling of what you wrote. |
 | `./bin/gene parse f.gene` | What the reader actually built. Reach for it when a form means something you did not intend. |
-| `./bin/gene run --allow_read_dir DIR …` | Grant filesystem capability. Unqualified `$fs` calls fail with `MissingCapability` by design. |
+| `./bin/gene run --allow_read_dir DIR …` | Add filesystem access beyond the default launch-directory grant. |
 
 **Completion criterion:** every construct in the code you deliver has either
 appeared in a successful probe, or come verbatim from `examples/style_guide.gene`
@@ -88,11 +90,12 @@ not `(read path -> parse)`.
 
 **`=>` runs its stage per item.** The item, not the collection, fills the slot,
 and the stage's callee and other arguments are evaluated once before iterating.
-A pipeline never accumulates a collection between stages: a `=>` with a later
-stage maps lazily, and a **final** `=>` drains for effect and answers `nil`.
+Every `=>`, including a final stage, returns a lazy Stream. Use `$into` to
+collect or `$each` to drain effects; constructing a pipeline does not run it.
 
 ```gene
-(rows => save)                              # per row, for effect; nil
+(rows => save)                              # lazy; no save calls yet
+(rows -> $each save)                        # immediate effects; nil
 (rows => parse -> $into [])                 # lazy through parse; into collects
 (producer => step -> $take 5 -> $into [])   # endless producer, bounded result
 ```
@@ -103,8 +106,9 @@ stage maps lazily, and a **final** `=>` drains for effect and answers `nil`.
 reaches a protocol impl. There is no lexical callable fallback, so a function
 in scope is invisible to a dot send.
 
-**`map`/`filter`/`take`/`into`/`each` are stream operations.** Open a stream
-with `to_stream`, close it with `into`.
+**Collection operations have eager and lazy forms.** Map/filter/filter_map
+accept eager collections and streams. Map normalizes void to nil; filter_map
+drops only void. `to_stream` creates a cursor and `into` consumes it.
 
 **One-sided conditions omit the else arm.** `(if cond value)` already yields
 `nil` on the false path. Use `(if_not cond body…)` and `(if_yes cond body…)`
@@ -134,7 +138,8 @@ In the repository itself:
 
 - `examples/style_guide.gene` — every everyday construct, formatted canonically. The most reliable source to copy a spelling from.
 - `docs/spec/` — normative contract for the implemented surface, split by subsystem.
-- `docs/style.md` — layout rules `gene fmt` enforces.
+- `docs/language.md` — the current language guide.
+- `docs/workflows.md` — tools, project organization, and formatting conventions.
 
 Changing the *implementation* (Nim under `src/`) rather than writing Gene is a
 different job with different gates — `AGENTS.md` governs it.

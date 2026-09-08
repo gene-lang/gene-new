@@ -458,7 +458,7 @@ type
     # a host module with host authority (see `loadSandboxedModule`).
     sandboxShared: HashSet[string]
     currentModuleDir: string
-    # --- packages (docs/packages.md) --------------------------------
+    # --- packages (docs/workflows.md) --------------------------------
     #
     # `appPackage` is the application package selected at startup — either the
     # nearest ancestor `package.gene` or a synthesized ad-hoc package. It
@@ -494,7 +494,7 @@ type
     serdeValueOrigins: Table[uint64, tuple[module, path: string]]
     serdeOriginBuiltinsDone: bool
     serdeOriginModules: HashSet[string]
-    # Generated web assets (docs/web-compilation.md §4.12). The
+    # Generated web assets (docs/workflows.md). The
     # *Application* owns them, not the Server and not the process: a block is
     # compiled while a module loads, which happens here, and the composition
     # operation takes no server. So every Server this application starts
@@ -4202,7 +4202,7 @@ proc freezeValue(value: Value): Value =
       items[i] = freezeValue(item)
     # `deepFrozen` composes by construction: every child came out of a
     # recursive `freezeValue`, so it is already deep-frozen and the invariant
-    # holds without re-deriving it (docs/events.md §6.5).
+    # holds without re-deriving it (docs/stdlib.md).
     newList(items, immutable = true, deepFrozen = true)
   of vkMap:
     newMap(freezeEntries(value.mapEntries), immutable = true,
@@ -6578,7 +6578,7 @@ proc biPanic(args: openArray[Value]): Value {.nimcall.} =
 
 when defined(geneWasm):
   # Under the wasm profile there is no useful process stdout; `print`/`println`
-  # append to a per-eval buffer the host reads through the ABI (docs/wasm.md
+  # append to a per-eval buffer the host reads through the ABI (docs/workflows.md
   # §A.4 `gene_result_out_*`). `geneWasmCapture` is nil outside an eval so
   # startup prints (if any) are harmless.
   var geneWasmCapture*: ref string = nil
@@ -7573,7 +7573,7 @@ proc buildBuiltins(app: Application): Scope =
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
-  # serializes by identity reference (serde, docs/serialization.md §7).
+  # serializes by identity reference (serde, docs/stdlib.md).
   let serdeRefProtocol = newProtocol("SerdeRef", [])
   result.define("SerdeRef", serdeRefProtocol)
   let capabilityDescribeDefault = newNativeFn(
@@ -8572,7 +8572,7 @@ proc userStore*(app: Application): string =
   app.userStoreRoot
 
 # ---------------------------------------------------------------------------
-# Package resolution (docs/packages.md §7-§9)
+# Package resolution (docs/workflows.md)
 # ---------------------------------------------------------------------------
 
 proc packageForImport(app: Application, importer: Package,
@@ -10698,7 +10698,7 @@ proc qualifiedMessageName(message: Value): string =
 proc resolveImplMessage(scope: Scope, protocol: Value,
                         protocolPath: openArray[string], name: string): Value =
   ## Resolve one impl-body message name against the target protocol's closure
-  ## (docs/core.md §3.6.1). Qualified names (`A/do_x`, or `ns/A/do_x` for
+  ## (docs/spec/protocols.md). Qualified names (`A/do_x`, or `ns/A/do_x` for
   ## namespace-qualified owners) resolve through the named protocol's own
   ## messages; unqualified names must be unique in the closure.
   if protocolPath.len > 0:
@@ -12073,7 +12073,7 @@ proc checkingModulePath(scope: Scope): string =
 
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   # An impl of a protocol that ^inherits `protocol` also satisfies `protocol`
-  # (docs/core.md §3.5 — structural subtyping from the impl).
+  # (docs/spec/protocols.md — structural subtyping from the impl).
   var s = scope
   while s != nil:
     for impl in s.impls:
@@ -13933,7 +13933,7 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
   ## value passed as `self`. Starting the walk at the parent *is* "continue
   ## from above the enclosing type", because selection already keeps only
   ## providers at the nearest applicable receiver depth
-  ## (`docs/scoped-impls.md` §3.3).
+  ## (`docs/spec/protocols.md`).
   ##
   ## Deliberately a separate proc rather than a parameter on
   ## `resolveQualifiedSend`: widening that one cost 4-8% on
@@ -16309,7 +16309,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if proto.nativeType != nil:
             registerNativeTypeIdentity(proto.nativeType.identity, typ)
           # Inline impls register exactly like standalone (impl P for T ...) forms
-          # written after the type declaration (docs/core.md §8), before
+          # written after the type declaration (docs/spec/protocols.md), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
           for i, inline in proto.inlineImpls:
             var entries: seq[ImplMessage]
@@ -16475,7 +16475,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if fn.kind == vkFunction and fn.fnCode of FunctionProto:
                 validateUniversalSelf(FunctionProto(fn.fnCode), fn.fnScope)
           scope.registerProtocolContract(chunk, protocol)
-          # Message names are not bound in the enclosing scope (docs/core.md
+          # Message names are not bound in the enclosing scope (docs/spec/protocols.md
           # §1, OQ-I): messages are reached via Protocol:name and sends.
           spush protocol
         of opMakeImpl:
@@ -17053,7 +17053,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
           ip += 4
         of opResolveMessage:
-          # Receiver-first message send (docs/core.md §9.1): an unqualified send
+          # Receiver-first message send (docs/spec/protocols.md): an unqualified send
           # reaches only the receiver's type-direct messages (walking parents),
           # then the built-in type-direct surface. There is no protocol tier and
           # no lexical fallback — protocol messages are always qualified

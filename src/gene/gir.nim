@@ -86,7 +86,7 @@ type
     opCall
     opCallSplice
     opNew            # constructor keyword: type + named args + body args
-    opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
+    opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/spec/protocols.md)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's parent, push callee + self (super delegation, design §10)
     opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super .Q:m) selects against the parent, not the receiver
     opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set, design §12.1)
@@ -607,8 +607,8 @@ type
     requiredImplCount*: int
     deriveProtocolCount*: int
     deriveRequests*: seq[Value]
-    messages*: seq[ImplMessageProto] # type-direct messages (docs/core.md §8)
-    inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/core.md §8)
+    messages*: seq[ImplMessageProto] # type-direct messages (docs/spec/protocols.md)
+    inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/spec/protocols.md)
     ctorFn*: FunctionProto       # (ctor ...) body item, or nil (design §7.1.1)
 
   EnumVariantProto* = object
@@ -656,7 +656,7 @@ type
     inheritBodies*: bool
 
   ## An (impl P (message ...) ...) block inside a type body; the receiver is
-  ## the enclosing type (docs/core.md §8). The protocol expression is compiled
+  ## the enclosing type (docs/spec/protocols.md). The protocol expression is compiled
   ## onto the stack alongside the message error rows.
   InlineImplProto* = object
     messages*: seq[ImplMessageProto]
@@ -3138,7 +3138,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     " * PROTOTYPE OUTPUT — NOT LINKABLE ON ITS OWN.",
     " * Every gene_ffi_* and gene_typed_native_* helper below is declared, not",
     " * defined. No Gene runtime exports them yet: production AOT backends are",
-    " * deferred (docs/implementation-status.md), and the native C ABI they need",
+    " * deferred (docs/development.md), and the native C ABI they need",
     " * -- opaque GeneValue, root handles, native registration, and the VM",
     " * trampoline -- is design.md's step 12, which precedes native compilation.",
     " * Self-contained functions (direct field loads, typed calls between",

@@ -1,7 +1,7 @@
 # Capability examples
 
 Seven programs illustrate the [implemented authority contract](../../docs/spec/authority.md).
-The [capability reference](../../docs/capabilities.md) explains provider and
+The [capability reference](../../docs/spec/authority.md) explains provider and
 propagation details. The examples show both successful operations and denials.
 
 Build the CLI first:
@@ -198,6 +198,6 @@ rm -rf out reports "/tmp/gene_cap_demo.txt"
 ## Where to read more
 
 - [Authority contract](../../docs/spec/authority.md).
-- [Capability reference](../../docs/capabilities.md) §5.1 (host root and `--allow_*`), §5.3.1
+- [Capability reference](../../docs/spec/authority.md) §5.1 (host root and `--allow_*`), §5.3.1
   (import-site ceilings), §5.0.2 (`^require_strict_dependencies`), §5.6
   (call-site attenuation), §7.5 (path confinement).

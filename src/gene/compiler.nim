@@ -3093,7 +3093,7 @@ proc typedNativeSend(expr: Value, params: openArray[string],
   let message = expr.body[1]
   if message.kind == vkSymbol:
     ## Bare `(recv .m)` is type-direct; only a qualified `(recv .P:m)` names
-    ## a protocol message (docs/core.md §3.6.1). Resolving a bare send against
+    ## a protocol message (docs/spec/protocols.md). Resolving a bare send against
     ## protocol impls made the C backend call an impl the VM refuses to
     ## dispatch — the interpreter answers "no message 'm' on T" for the same
     ## source. Typed-native lowering has no type-direct message table, so a
@@ -3116,7 +3116,7 @@ proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
     tuple[fn: FunctionProto, protocolExpr, receiverExpr: Value] =
   ## A direct protocol call is allowed only when the winning unconditional
   ## canonical pair is statically known and no overlay is reachable
-  ## (docs/scoped-impls.md §7). An impl that is not a static top-level pair is
+  ## (docs/spec/protocols.md). An impl that is not a static top-level pair is
   ## overlay-only, and if it declares this message it may win at runtime. We
   ## cannot rank it here, so refuse to lower rather than bake in the canonical
   ## target. Receivers that do not resolve statically are treated as possible
@@ -3139,7 +3139,7 @@ proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
   ## deferred because it needs a boxed dynamic fallback per specialized send,
   ## which only earns its cost once this backend is no longer experimental.
   ## Until then a cross-module overlay over an AOT-compiled type is a known
-  ## limitation, documented in docs/native-types.md.
+  ## limitation, documented in docs/workflows.md.
   if messageName in c.overlayImplMessages:
     return (nil, NIL, NIL)
   for impl in c.chunk.implProtos:
@@ -4948,7 +4948,7 @@ proc parseImportSpec*(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
     raise newException(GeneError, "expected import form")
   # The allow-list stays closed and exhaustive: `^export` selects re-export,
-  # `^pkg` selects a package (docs/packages.md §9), `^as` names its
+  # `^pkg` selects a package (docs/workflows.md), `^as` names its
   # own removal, and everything else is an error.
   for key, value in node.props:
     case key
@@ -6525,7 +6525,7 @@ proc collectOverlayImplMessages(c: var Compiler, form: Value) =
   ##
   ## Such an impl is overlay-only and may win at runtime, so a typed_native
   ## send of that message cannot be lowered to a direct call
-  ## (docs/scoped-impls.md §7). Scanning up front rather than during
+  ## (docs/spec/protocols.md). Scanning up front rather than during
   ## compilation is what makes it order-independent: an impl inside a function
   ## body lives in a subchunk, and one written after the send has not been
   ## compiled yet, so neither is visible to a check made at the send.
@@ -7156,7 +7156,7 @@ proc sendCalleeName(callee: Value): string =
 proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
   ## The expression yielding the message value for a non-bare send. Pre-resolved
   ## `^protocol`/`^receiver` metadata names the message through its protocol
-  ## value (message names are not lexical bindings, docs/core.md §1); `%m` reads
+  ## value (message names are not lexical bindings, docs/spec/protocols.md); `%m` reads
   ## as `(unquote m)`, so unwrap it to the held value `m`.
   if node.props.hasKey("protocol") or node.props.hasKey("receiver"):
     if not (node.props.hasKey("protocol") and node.props.hasKey("receiver")):
@@ -7186,7 +7186,7 @@ proc emitOptionalReceiverGuard(c: var Compiler, optional: bool): int =
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
                  sendName: string, argsStart: int, messageExpr = NIL,
                  qualifierExpr = NIL, optional = false, tail = false) =
-  ## Message send (docs/core.md §9.1): the dot descriptor resolves
+  ## Message send (docs/spec/protocols.md): the dot descriptor resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
   ## dynamic callee (`%m` or an expression); it must evaluate to a message
@@ -7222,7 +7222,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
       # `(super .P:m)` — the protocol names the message and the nominal parent
       # selects the impl, so both reach the opcode. Selection already keeps
       # providers at the nearest applicable receiver depth
-      # (`docs/scoped-impls.md` §3.3), so resolving from the parent *is*
+      # (`docs/spec/protocols.md`), so resolving from the parent *is*
       # "continue the walk from above the enclosing type".
       compileExpr(c, qualifierExpr)
       discard c.emit(opSuperQualifiedSend, 0, name = sendName)
@@ -7289,7 +7289,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     return
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       (node.body[0].symVal == "~" or node.body[0].symVal == "?~"):
-    # (x .f a) — infix message send (docs/core.md §9.1). The optional marker is the same
+    # (x .f a) — infix message send (docs/spec/protocols.md). The optional marker is the same
     # send with one added rule: an absent receiver yields itself.
     let optional = node.body[0].symVal == "?~"
     if node.body[1].kind == vkSymbol and
@@ -7508,7 +7508,7 @@ proc compileNew(c: var Compiler, node: Value) =
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
                             tail = false) =
-  # (.f a) => (self .f a): message send to lexical self (docs/core.md §9.1).
+  # (.f a) => (self .f a): message send to lexical self (docs/spec/protocols.md).
   # `(?.f a)` is the guarded form, which matters inside an `impl P for Nil`
   # body where lexical self is itself absent.
   let spelling = if optional: "?.message" else: ".message"
@@ -8086,7 +8086,7 @@ proc validateMessageName(name: string) =
 
 proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
   ## A message name is a simple symbol, or a qualified path in impl bodies for
-  ## disambiguating same-named closure messages (docs/core.md §3.6.1):
+  ## disambiguating same-named closure messages (docs/spec/protocols.md):
   ## `Protocol/name`, or `ns/Protocol/name` for namespace-qualified owners.
   if node.kind != vkNode or not node.head.isSymbol("message"):
     raise newException(GeneError, "protocol/impl body must contain message declarations")
@@ -8211,7 +8211,7 @@ proc compileType(c: var Compiler, node: Value) =
   ##  (message name [self] ...) ...) —
   ## field annotations and protocol references are checked at runtime. Derive
   ## requests are passed to protocol-local derive forms after the type is created.
-  ## Body items after the name are type-direct messages (docs/core.md §8).
+  ## Body items after the name are type-direct messages (docs/spec/protocols.md).
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
@@ -8301,10 +8301,10 @@ proc compileType(c: var Compiler, node: Value) =
     seenMessages[mp.name] = true
     messages.add mp
   # NB: `c.superType` stays set through the inline-impl loop below. An inline
-  # impl's receiver *is* the enclosing type (docs/core.md §8), so `super` means
+  # impl's receiver *is* the enclosing type (docs/spec/protocols.md), so `super` means
   # the same thing in its message bodies as in a type-direct one; restoring
   # here left `(impl P (message m [] (super .P:m)))` unable to see the parent.
-  # Inline impls (docs/core.md §8): (impl P (message ...) ...) with the
+  # Inline impls (docs/spec/protocols.md): (impl P (message ...) ...) with the
   # receiver implied — the enclosing type. Each impl emits its message error
   # rows and then its protocol expression, in declaration order.
   var inlineImpls: seq[InlineImplProto]
@@ -8709,7 +8709,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
       compileEvaluatedListItem(c, parentExpr)
       inc parentCount
   # Message names are deliberately not bound in the enclosing scope
-  # (docs/core.md §1, OQ-I): messages are reached via their `Protocol:name`
+  # (docs/spec/protocols.md, OQ-I): messages are reached via their `Protocol:name`
   # value spelling and sends only.
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
                                               messages: messages,

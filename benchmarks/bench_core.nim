@@ -23,7 +23,7 @@ proc benchTypedNativeLoad(record: ptr BenchNativeRecord): int64 {.inline.} =
 proc benchGeneratedCFieldLoad(iterations: int) =
   ## Time the C the backend actually emits.
   ##
-  ## §10 of docs/native-types.md gates this feature on the emitted
+  ## §10 of docs/workflows.md gates this feature on the emitted
   ## path being a direct load. A hand-written Nim analogue cannot answer that:
   ## it measures a different compiler's output, and it stays green even when
   ## the backend emits nothing for the function at all. Skip cleanly when no C
@@ -572,7 +572,7 @@ proc main() =
     "(var c ($cell 10)) " &
     # Reference: a 1-arg Gene function call — the target sends aim to approach.
     "(var identity (fn [x] x))"), protocolScope)
-  # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
+  # Message names are not lexical bindings (docs/spec/protocols.md); the hot dispatch
   # path is the send form, resolved receiver-first (§9.1). Protocol messages are
   # always qualified (`box .Proto:msg`); only type-direct messages take the bare
   # name (`box .get`). The per-call-site inline cache collapses the resolution
@@ -664,7 +664,7 @@ proc main() =
     let v = run(projectionStageChunk, projectionStageScope)
     checksum = checksum + v.intVal
 
-  # Managed wrapper cost (docs/native-types.md §4.6). The open question
+  # Managed wrapper cost (docs/workflows.md). The open question
   # is whether the shipped shape — wrapper node + prop table + CPtrData — is
   # worth replacing with one compact object, so the handle here is a real owned
   # pointer; a `Str` stand-in would allocate no CPtrData and measure the wrong
@@ -835,7 +835,7 @@ proc main() =
     let v = run(matchBindChunk, bindScope)
     checksum = checksum + v.intVal + 1
 
-  # Application event bus (docs/events.md §17.3). Freeze and dispatch
+  # Application event bus (docs/stdlib.md). Freeze and dispatch
   # are reported separately and deliberately: deep-freezing a freshly
   # constructed event is O(payload) and dominates publishing a small event to
   # few handlers, so a payload-size regression must not read as a dispatch

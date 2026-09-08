@@ -5,9 +5,9 @@ go to definition, hover, workspace symbols) for the
 [Gene programming language](https://github.com/gene-lang/gene-new).
 
 Full setup, feature, and troubleshooting documentation:
-[docs/vscode-extension.md](https://github.com/gene-lang/gene-new/blob/main/docs/vscode-extension.md).
+[docs/workflows.md#editor-and-command-line-tools](https://github.com/gene-lang/gene-new/blob/main/docs/workflows.md#editor-and-command-line-tools).
 The server half is documented in
-[docs/lsp.md](https://github.com/gene-lang/gene-new/blob/main/docs/lsp.md).
+[docs/workflows.md#editor-and-command-line-tools](https://github.com/gene-lang/gene-new/blob/main/docs/workflows.md#editor-and-command-line-tools).
 
 Quick start:
 

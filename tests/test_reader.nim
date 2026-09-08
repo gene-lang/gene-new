@@ -98,7 +98,7 @@ suite "reader — sugars":
     check_read("(x; f _ y)", "((x) f _ y)")
   test "pipe with message sends":
     # Dot sends lower to one canonical representation; the compiler resolves
-    # them receiver-first (docs/core.md §9).
+    # them receiver-first (docs/spec/protocols.md).
     check_read("(xs .filter; .map f; .take 10)",
                "(((xs .filter) .map f) .take 10)")
   test "type parents use a colon header":

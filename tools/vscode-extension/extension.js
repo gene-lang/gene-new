@@ -1,4 +1,4 @@
-// Gene VS Code extension (docs/vscode-extension.md).
+// Gene VS Code extension (docs/workflows.md).
 //
 // Grammar-based highlighting works with no setup; this client additionally
 // spawns `gene lsp` (src/gene/lsp) for diagnostics, outline, go to

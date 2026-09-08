@@ -1,7 +1,7 @@
 # Typed-native SQLite example
 
 A working end-to-end use of the experimental `typed_native` C backend
-(`docs/native-types.md` Part II): Gene functions that take an unboxed
+(`docs/workflows.md#native-interop`): Gene functions that take an unboxed
 `sqlite3_stmt *` in a register and call SQLite directly, with no `GeneValue`,
 no boxing, and no runtime message resolution.
 

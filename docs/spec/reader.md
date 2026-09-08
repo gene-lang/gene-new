@@ -7,7 +7,8 @@
 - A source unit contains zero or more forms; `readAll` preserves every form.
 - Datum comments are spacing and discard exactly the next datum.
 - `#` dispatch is closed: `#(`/`#[`/`#{` open immutable literals, `#"` opens a
-  regex, `#_` is a datum comment, `#<` opens a block comment, and a line
+  regex, `#B#` / `#B16#` / `#B64#` introduce byte literals, `#Ref` / `#Deref`
+  address module references, `#_` is a datum comment, `#<` opens a block comment, and a line
   comment requires whitespace, `!`, or end of line/input after the `#`. Every
   other `#` sequence (`#a`, `#1`, `##`, …) is a read error reserved for future
   reader syntax.
@@ -32,6 +33,11 @@
   value and heap/container identity by reference.
 - `props`, `body`, and `meta` return detached shallow snapshots. Nested values
   retain identity. Deep freeze, Send checks, and serialization traverse meta.
+- `#Ref name value`, `#Deref name`, `$ref`, and `$deref` share a module-owned
+  reference namespace distinct from lexical variables. Forward structural
+  fixups preserve shared identity. Mutable cell cycles are supported; cycles
+  made only of immutable structural containers are rejected. Serde rejects
+  cyclic values rather than publishing an incomplete graph.
 
-Canonical grammar and rationale are in `docs/reference/syntax.md` §§1–2; this file
-states which portion is implemented and normative.
+See the [language guide](../language.md#values-and-bindings) for ordinary syntax
+and `tests/test_reader.nim` / module-reference suites for exact reader cases.

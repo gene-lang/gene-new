@@ -1,7 +1,7 @@
 # Control flow, errors, streams, tasks
 
 Normative contract: `docs/spec/calls.md`, `docs/spec/streams.md`,
-`docs/spec/concurrency.md`. Style contract: `docs/style.md` §"Conditional forms".
+`docs/spec/concurrency.md`. Canonical formatting fixture: `examples/style_guide.gene`.
 Everything below is probed.
 
 ## Conditionals

@@ -1,4 +1,4 @@
-// Node validation harness for the Gene wasm host ABI v0 (docs/wasm.md §A.4).
+// Node validation harness for the Gene wasm host ABI v0 (docs/workflows.md §A.4).
 //
 //   nimble wasm            # builds web/gene.js + web/gene.wasm
 //   node tests/test_wasm.mjs   # runs this

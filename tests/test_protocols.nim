@@ -17,7 +17,7 @@ suite "protocols — declarations and dispatch":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "ToName/to_name")
-    # Message names are not bound in the enclosing scope (docs/core.md §1).
+    # Message names are not bound in the enclosing scope (docs/spec/protocols.md).
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(to_name 1)")
@@ -441,7 +441,7 @@ suite "protocols — ^inherit and qualified message identity":
                      "(impl B for T (message do_b [self] : Str \"b\"))")
 
   test "same-name messages across independent parents coexist":
-    # docs/core.md §3.3: X/clash and Y/clash are distinct messages; the impl
+    # docs/spec/protocols.md: X/clash and Y/clash are distinct messages; the impl
     # qualifies them, sends use the qualified spelling, and the bare send of
     # the ambiguous simple name is a use-site error.
     ck "(protocol X (message clash [self] : Str)) " &
@@ -476,7 +476,7 @@ suite "protocols — ^inherit and qualified message identity":
                      "  (message Y:clash [self] : Str \"y\"))")
 
   test "redeclaring an inherited simple name creates a distinct message":
-    # docs/core.md §3.4: B/do_a does not override A/do_a; both are in B's
+    # docs/spec/protocols.md: B/do_a does not override A/do_a; both are in B's
     # closure and both must be implemented.
     ck "(protocol A (message do_a [self] : Str)) " &
        "(protocol B ^inherit [A] (message do_a [self] : Str)) " &
@@ -550,7 +550,7 @@ suite "types — type-direct messages and sends":
        "[7 14 7]"
 
   test "a receiver message wins over a lexical binding at send sites":
-    # docs/core.md §9.1/§9.3: receiver-first; the bare call stays lexical.
+    # docs/spec/protocols.md: receiver-first; the bare call stays lexical.
     ck "(fn get [x] \"lexical\") " &
        "(type Box ^props {^val Int} (message get [self] self/val)) " &
        "(var b (Box ^val 7)) " &

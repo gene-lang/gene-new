@@ -1,8 +1,8 @@
 # Authority, evaluation, and sandbox boundaries
 
-**Status:** normative for the implemented VM surface described here. The
-[capability proposal](../capabilities.md) records broader design and
-deferred work; it is not a claim that every proposed boundary is implemented.
+**Status:** normative for the implemented VM surface described here. For
+usage, start with [permissions and deployment](../workflows.md#permissions-and-deployment).
+[Development status](../development.md#status) records the limits of these claims.
 
 ## Separate the layers
 

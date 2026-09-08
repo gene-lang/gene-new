@@ -1,4 +1,4 @@
-## Tests for the Gene language server (docs/lsp.md):
+## Tests for the Gene language server (docs/workflows.md):
 ## unit tests over tools/lsp/analysis plus one JSON-RPC stdio e2e against the
 ## built CLI (`gene lsp`). Included by test_all.nim after test_cli, so the
 ## e2e reuses its buildGeneCli/geneExe helpers.

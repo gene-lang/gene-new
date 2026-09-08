@@ -1,134 +1,174 @@
-# Gene language design
+# Why Gene looks this way
 
-Gene is a general-purpose, gradually typed language built around one node
-model. Its syntax draws on Lisp, Clojure, XML/HTML, and Ruby/Smalltalk. The
-implementation targets ordinary scripts, services, data processing, native
-integration, and browser applications.
+Gene aims to make ordinary application code concise while keeping data,
+behavior, and evaluation explicit. Its central idea is one node representation
+that can be used as a value or interpreted as code. This page explains the
+choices through examples; the [language guide](language.md) teaches the syntax.
 
-This document explains the main design choices. The [implemented
-specification](spec/README.md) defines the contract; the [documentation
-index](README.md) points to guides, implementation references, and future work.
-Detailed numbered chapters live in the [language reference](reference/README.md).
+## Data has a simple shape
 
-## One value model
+Lists hold positions; property maps hold named fields. A node combines a head,
+properties, and a body:
 
-Every value has `head`, `props`, `body`, and `meta` projections. The same node
-representation serves as data, syntax, a pattern, or a selector plan. Reader
-sugar keeps common forms short without introducing a second data model.
+```gene runnable
+(let person {^name "Ada" ^roles ["reader" "writer"]})
+[person/name person/roles/0]
+# ["Ada" "reader"]
+```
 
-A value's anatomy and its type are distinct. `Any` admits every value; `Node`
-is a concrete type for node data. Types, protocols, and values retain nominal
-identity where the contract requires it.
+The same shape can represent syntax. Quoting a form keeps it as data:
 
-See [values and reader syntax](reference/syntax.md) and the
-[reader contract](spec/reader.md).
+```gene runnable
+(let form (quote (+ 1 2)))
+[($head form) ($body form)]
+# [+ [1 2]]
+```
 
-## Source reveals evaluation
+Every value has `head`, `props`, `body`, and `meta` projections. Metadata carries
+information such as source locations without changing structural equality.
+This lets parsers, templates, and application data use common tools.
 
-Ordinary calls evaluate their arguments eagerly. Dot sends dispatch messages
-against the receiver; protocol-qualified sends identify a protocol contract.
-They do not fall back to an arbitrary lexical function.
+## Functions stay familiar
 
-Fexprs use named `fn name!` declarations and explicit `name!` call sites. They
-interpret syntax at runtime with borrowed access to caller bindings. Template
-macros expand into ordinary lexical code before checking and execution. Their
-binding and control-flow boundaries differ.
+Calls evaluate their arguments. The last expression is the result, and type
+annotations can be added where they make a contract useful:
 
-`->` sequences whole-value pipeline stages; `=>` maps a prepared stage lazily
-over items. These are separate from `;`, which is reader head-folding sugar.
+```gene runnable
+(fn double [n : Int] : Int (* n 2))
+(double 21) # 42
+```
 
-See [calls](spec/calls.md), [fexprs and macros](macro-design.md),
-[pipelines](pipelines.md), and [proper tail calls](tail-calls.md).
+Dynamic code can coexist with typed code. A value entering an annotated
+parameter or result is checked; an annotation is more than editor information.
 
-## Types preserve contracts
+## Data and behavior compose
 
-Nominal types combine a schema, one nominal parent, and direct messages.
-Protocols add behavior across unrelated types. Inheritance preserves the
-contract callers already depend on; runtime dispatch selects the body.
+A type describes a data schema. A protocol describes behavior that unrelated
+types can provide:
 
-`Self` binds to a declaration or protocol conformance. It does not narrow an
-inherited signature to the receiver's runtime subtype. Explicit override
-intent and shared signature comparison make replacements reviewable.
+```gene runnable
+(protocol Labelled
+  (message label [] : Str))
 
-Gradual boundaries check values moving from dynamic code into annotated code.
-Direct type construction creates checked data; `new` invokes constructor
-logic with a pre-created receiver.
+(type Person ^props {^name Str})
+(impl Labelled for Person
+  (message label [] : Str self/name))
 
-See [types](spec/types.md), [protocols](spec/protocols.md), [Self](self-type.md),
-and [scoped implementations](scoped-impls.md).
+((Person ^name "Ada") .Labelled:label)
+# "Ada"
+```
 
-## Absence and state are explicit
+Direct messages belong to the type; qualified messages identify a protocol.
+Nominal inheritance preserves existing contracts. `Self` in an inherited
+signature keeps the type where that contract was declared:
 
-`nil` is a stored absence value. `void` means missing or no result, with
-normalization defined at each boundary. `T?` means `T | Nil`; fixed parameters
-with that annotation default to nil when omitted. Missing fields still read
-as void.
+```gene runnable
+(type Dog ^props {^name Str}
+  (message same_name [other : Self] : Bool
+    (== self/name other/name)))
+(type Pup : Dog ^props {})
 
-`map` converts callback void to nil; `filter_map` drops only void. Lists and
-streams preserve one result per input under map; sets retain deduplication.
+((Pup ^name "Rex") .same_name (Dog ^name "Rex"))
+# true: the inherited argument contract is still Dog
+```
 
-Mutable collections, shallow immutable literals, Cells, and AtomicCells have
-separate contracts. Immutability alone does not establish sendability.
+Replacing inherited behavior requires explicit override intent. This makes
+changes to a type family visible at the declaration.
 
-See [nil and void](spec/nil-void.md), [state](reference/state.md), and
-[streams](spec/streams.md).
+## Absence has two meanings
 
-## Concurrency has owners
+`nil` is a stored absence value. `void` reports missing data or no result.
+Optional arguments get defaults; a field lookup reports what is actually there:
 
-Tasks, channels, actors, and streams have explicit lifetime and cleanup rules.
-A scope owns its tasks. A consuming stream operation owns its upstream cleanup.
-Errors, cancellation, and normal completion preserve those obligations.
+```gene runnable
+(fn age_label [age : Int?] : Str
+  (if ($nil? age) "unknown" $"${age}"))
 
-The default runtime schedules cooperative fibers. An experimental bounded
-worker lane supports eligible tasks and actor turns. Production M:N scheduling
-and unrestricted foreign callbacks remain separate work.
+(type Person ^props {^age Int?})
+(let person (Person))
+[(age_label) ($void? person/age) (?? person/age nil)]
+# ["unknown" true nil]
+```
 
-See [concurrency](spec/concurrency.md), [concurrency rationale](reference/concurrency.md),
-and the [scheduler spike](mn-scheduler-spike.md).
+`T?` means `T | Nil`. It does not include Void. The
+[absence contract](spec/nil-void.md) states the boundary rules.
 
-## Authority is separate from visibility
+## Pipelines make data flow readable
 
-An Env supplies bindings; namespace exposure controls directly nameable APIs;
-a capability context authorizes external operations. Resource handles identify
-resources and retain origin restrictions. Execution policies impose limits.
+`->` passes a whole value to the next operation. `=>` maps a stage lazily;
+an explicit consumer decides how much work happens:
 
-A retained context is a ceiling. Evaluation and invocation intersect it with
-the current context, so a broader saved Env or callback cannot restore removed
-permissions. Ordinary CLI defaults are intended for trusted scripts; an Env
-or namespace filter alone is not a complete sandbox.
+```gene runnable
+([1 2 3 4]
+  -> $filter (fn [n] (> n 2))
+  => * 10
+  -> $into [])
+# [30 40]
+```
 
-See the [authority contract](spec/authority.md), [capability reference](capabilities.md),
-and [module lifecycle](spec/modules.md).
+`map` preserves a result for each input, converting void to nil.
+`filter_map` explicitly drops void. Streams have close and cleanup rules,
+so partial consumption has a defined lifetime.
 
-## Packages and backends share semantics
+## Tasks have a lifetime
 
-Packages own source identity and dependency graphs. Modules own runtime
-initialization and namespaces. Compile artifacts, package resolution, and
-runtime loading are separate stages, so discovering a macro need not execute
-its dependency's top level.
+A scope owns its child tasks. Normal exit waits; failure or cancellation
+cancels the remaining children and waits for cleanup:
 
-The VM is the general execution path. The web backend supports a checked,
-explicit subset and rejects unsupported forms. Typed-native compilation uses
-explicit representations and ownership adapters; it remains experimental.
-Backends must preserve the contracts of the subset they accept.
+```gene runnable
+(scope
+  (let left (spawn (+ 10 20)))
+  (let right (spawn (+ 30 40)))
+  (+ (await left) (await right)))
+# 100
+```
 
-See [packages](packages.md), [package builds](package-builds.md),
-[web compilation](web-compilation.md), [web profile](web-profile.md),
-[native types](native-types.md), and [wasm](wasm.md).
+Tasks are concurrent without promising that every task runs on a separate OS
+thread. Channels and actors add explicit communication and state ownership.
 
-## Implementation discipline
+## Syntax extension has two tools
 
-The implemented contract lives in focused specification files and executable
-specs. Feature references explain rationale, implementation seams, and known
-limits. Dated measurements are [reports](reports/README.md), not timeless
-performance claims. The [implementation status](implementation-status.md)
-separates shipped behavior from remaining work.
+A template macro expands into ordinary lexical code:
 
-New designs belong in [proposals](proposals/README.md). Once a feature ships,
-its reference belongs beside the implemented feature docs, with deferred
-extensions identified explicitly. Retired designs and obsolete rollout plans
-belong in the [archive](archive/README.md).
+```gene runnable
+(macro unless [condition body...]
+  `(if_not %condition %body...))
 
-The [reference index](reference/README.md) preserves the old chapter numbers
-used by source comments. The original implementation checklist and settled
-notes are [historical material](archive/initial-implementation-plan.md).
+(var count 0)
+(unless false (set count 1))
+count # 1
+```
+
+A named fexpr receives syntax at runtime:
+
+```gene runnable
+(fn quote_it! [form] form)
+(quote_it! (+ 1 2)) # (+ 1 2), unevaluated syntax
+```
+
+An fexpr can evaluate selected syntax through a borrowed caller environment,
+but that evaluation cannot target the caller's `return`, `break`, or `continue`.
+Use a macro when the expansion needs ordinary lexical control flow.
+
+## Visibility and permission are separate
+
+Having a function or resource handle does not grant permission for an external
+operation. The active capability context decides what an adapter may do:
+
+```gene runnable
+(with_capabilities []
+  (check_capabilities (fs/ReadFile "data.txt")))
+# false
+```
+
+Saved environments and bounded calls retain ceilings that intersect with the
+current context. An ordinary CLI run is intended for trusted scripts; an Env
+or a namespace filter alone is not a complete sandbox. See
+[the authority contract](spec/authority.md).
+
+## One language, explicit backend limits
+
+The VM is the general execution path. The browser backend checks a supported
+subset and rejects other forms. Experimental native compilation uses explicit
+representations and ownership adapters. Shared tests check the behavior each
+backend accepts; [workflows](workflows.md) explains how to use them.

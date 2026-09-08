@@ -682,7 +682,7 @@ also follow the same rules instead of inheriting JavaScript coercion.
 
 Application-foundations follow-up: named defaults (`^name : T = expression`)
 now run in the callee's scope, with supplied argument evaluation order preserved.
-The current restrictions are recorded in `docs/web-profile.md`.
+The current restrictions are recorded in `docs/workflows.md#web-applications`.
 
 
 `^name : T` was a VM-only parameter form: a module function declaring one failed
@@ -2029,7 +2029,7 @@ format two processes can disagree about.
 
 **Everything is bytes.** The design said "Gene nodes except block data", and the
 exception turned out to be the only part that was ever a choice —
-`docs/serialization.md` is a VM facility and the web profile has no reader for it,
+`docs/stdlib.md#serialization-and-persistence` is a VM facility and the web profile has no reader for it,
 so a node-encoded message could be written by the server and not read by the
 client. That is a real narrowing: a node-encoded message is self-describing and
 this is not, so a version skew is a misparse rather than a missing field. **The

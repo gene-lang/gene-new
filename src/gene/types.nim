@@ -123,7 +123,7 @@ type
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
     vkLogger    ## immutable structured diagnostic logger handle
-    vkEventBus  ## application event bus (docs/events.md §7)
+    vkEventBus  ## application event bus (docs/stdlib.md)
     vkEventSubscription ## opaque handle returned by `Bus/subscribe` (§7.1)
     vkEventMatcher ## `event/exact T` selector value (§6.3)
     vkRecordingSink ## `event/RecordingSink` — test sink recording every event
@@ -338,7 +338,7 @@ type
     meta: PropTable
 
   ## One implemented message inside a ProtocolImpl. `message` is the protocol
-  ## message value — the qualified identity (docs/core.md §3.2): two messages
+  ## message value — the qualified identity (docs/spec/protocols.md): two messages
   ## with the same simple name in different protocols are distinct entries.
   ImplMessage* = object
     message*: Value
@@ -511,7 +511,7 @@ type
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
-  ## typed_native AOT boundary (docs/native-types.md §6.4).
+  ## typed_native AOT boundary (docs/workflows.md).
   ##
   ## The generated C never dereferences `GeneValue`, `GeneCall`, or
   ## `GeneContext` — it only passes them to helpers — so these are their real
@@ -1017,7 +1017,7 @@ type
     capabilityContext: CapabilityContext
 
   EventErrorPolicy* = enum
-    ## docs/events.md §8. `eepRaiseAfter` is the default: every
+    ## docs/stdlib.md `eepRaiseAfter` is the default: every
     ## matching handler is attempted and one `EventPublishError` carries the
     ## ordered failures afterwards. `eepCollect` always returns a
     ## `PublishResult` from `publish` and leaves the failures to the publisher.
@@ -1139,7 +1139,7 @@ type
     requiredProtocols: seq[Value]
     derivedProtocols: seq[Value]
     deriveRequests: seq[Value]
-    messages: Table[string, Value] # type-direct messages (docs/core.md §8)
+    messages: Table[string, Value] # type-direct messages (docs/spec/protocols.md)
     ctorFn: Value         # (ctor ...) function value, or NIL (design §7.1.1)
     aliasExpr: Value      # transparent alias (`alias` form): the aliased type
                           # expression, or NIL for an ordinary nominal type. An
@@ -1152,7 +1152,7 @@ type
                           # whose instances are a native value kind rather than
                           # a schema of props.
     eventTypeId: int32    # compact event type id, or 0 for a non-event type
-                          # (docs/events.md §6.4). Assigned eagerly at
+                          # (docs/stdlib.md). Assigned eagerly at
                           # `newType`, so ID allocation is a declaration-phase
                           # property and no publish site races for a counter.
     eventMatchIds: seq[int32]
@@ -1197,11 +1197,11 @@ type
     messages: OrderedTable[string, Value] # own messages, keyed by local name
     deriveFn: Value
     universal: bool         # explicit ^universal conformance, never inferred
-    parents: seq[Value]      # direct ^inherit parents (docs/core.md §3)
+    parents: seq[Value]      # direct ^inherit parents (docs/spec/protocols.md)
     closure: seq[Value]      # full transitive message closure, ancestors
                              # first, deduped by message identity; same-name
                              # messages from different protocols coexist
-                             # (docs/core.md §3.2-§3.3)
+                             # (docs/spec/protocols.md)
 
   ProtocolMessageData = ref object of GeneObjectData
     name: string
@@ -6419,7 +6419,7 @@ proc loggerCapabilityContext*(v: Value): CapabilityContext =
   LoggerData(objData(v)).capabilityContext
 
 # ---------------------------------------------------------------------------
-# Application event bus storage (docs/events.md §6-§8)
+# Application event bus storage (docs/stdlib.md)
 # ---------------------------------------------------------------------------
 #
 # Only the storage lives here. Matching, dispatch, freezing, and error policy
@@ -6702,7 +6702,7 @@ proc newGeneratorStream*(code: FunctionCode, scope: Scope,
                        generatorStack: @[], generatorIp: 0))
 
 # ---------------------------------------------------------------------------
-# Compact event type identity (docs/events.md §6.4)
+# Compact event type identity (docs/stdlib.md)
 # ---------------------------------------------------------------------------
 
 var
@@ -7001,7 +7001,7 @@ proc newEnum*(name: string, typeParams: sink seq[string],
 
 proc typeDirectMessage*(v: Value, name: string): Value =
   ## Type-direct message lookup, walking the parent chain — most-derived type
-  ## wins (docs/core.md §8). Returns NIL when no type in the chain defines
+  ## wins (docs/spec/protocols.md). Returns NIL when no type in the chain defines
   ## `name`; stored messages are always functions, never NIL.
   var t = v
   while t.kind == vkType:
@@ -7058,13 +7058,13 @@ proc newProtocol*(name: string, messageNames: openArray[string],
                   signatures: openArray[Value] = [],
                   hasDefaults: openArray[bool] = [],
                   universal = false, scope: Scope = nil): Value =
-  ## `parents` are already-constructed ^inherit ancestors (docs/core.md §3).
+  ## `parents` are already-constructed ^inherit ancestors (docs/spec/protocols.md).
   ## The message closure is flattened eagerly, ancestors first, deduped by
   ## message identity. A protocol message is identified by its defining
-  ## protocol plus local name (docs/core.md §3.2): same-name messages from
+  ## protocol plus local name (docs/spec/protocols.md): same-name messages from
   ## unrelated parents coexist in the closure, and an own message may reuse
   ## an inherited simple name — it is a new distinct message, not an override
-  ## (docs/core.md §3.3-§3.4). Diamond re-inheritance contributes one entry
+  ## (docs/spec/protocols.md). Diamond re-inheritance contributes one entry
   ## because it is the same message value through two paths.
   var closure: seq[Value]
   for parent in parents:
@@ -7114,7 +7114,7 @@ proc protocolClosure*(v: Value): lent seq[Value] =
 proc protocolClosureByName*(v: Value, name: string): seq[Value] =
   ## All closure messages whose local name is `name`. More than one result
   ## means the simple name is ambiguous and needs qualification
-  ## (docs/core.md §3.3/§3.6.1).
+  ## (docs/spec/protocols.md).
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
     raise newException(FieldDefect, "value is not a Protocol")
   for message in ProtocolData(objData(v)).closure:
@@ -7131,7 +7131,7 @@ proc protocolClosureContains*(v, message: Value): bool =
 
 proc protocolIsOrInherits*(candidate, target: Value): bool =
   ## True if `candidate` is `target`, or `target` is a transitive ^inherit
-  ## ancestor of `candidate` (design docs/core.md §3.5).
+  ## ancestor of `candidate` (design docs/spec/protocols.md).
   if candidate.kind != vkProtocol or target.kind != vkProtocol:
     return false
   if candidate.bits == target.bits:
@@ -7180,7 +7180,7 @@ proc isImmutable*(v: Value): bool =
 
 proc isDeepFrozen*(v: Value): bool =
   ## "Nothing reachable from here can change" — the answer `event/Bus publish`
-  ## needs to skip a redundant freeze traversal (docs/events.md §6.5/§17.3).
+  ## needs to skip a redundant freeze traversal (docs/stdlib.md).
   ##
   ## Distinct from `isImmutable`, which `freeze_shallow` can set on a container
   ## whose children are untouched. Only the deep `freeze` builder and a

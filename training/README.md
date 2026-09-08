@@ -10,9 +10,9 @@
 >
 > Everything here is kept as a record of what was run and measured. To use it
 > again you would need to restore the format modules from git history — see the
-> RETIRED header in `docs/archive/reversible-program-format.md`.
+> RETIRED header in `docs/development.md#design-history`.
 
-Implements Steps 6-7 of `docs/archive/reversible-program-format.md`'s
+Implements Steps 6-7 of `docs/development.md#design-history`'s
 suggested sequence, on top of the durable format that used to live in
 `src/gene/program_document.nim`, `src/gene/packed_format.nim`, and
 `src/gene/document_units.nim`.

@@ -1,4 +1,4 @@
-## Gene language server (docs/lsp.md): JSON-RPC 2.0 over stdio.
+## Gene language server (docs/workflows.md): JSON-RPC 2.0 over stdio.
 ##
 ## Launched by `gene lsp`. Stdout carries ONLY framed protocol messages —
 ## never echo/println here; diagnostics about the server itself go to stderr

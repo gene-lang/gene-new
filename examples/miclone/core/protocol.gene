@@ -10,7 +10,7 @@
 #
 # §10 specifies "Gene nodes encoded with the existing serialization layer for
 # everything except block data". This encodes *everything* as bytes, because
-# the exception is the only part that was ever a choice: `docs/serialization.md`
+# the exception is the only part that was ever a choice: `docs/stdlib.md`
 # is a VM facility and the web profile has no reader for it, so a node-encoded
 # message could be written by the server and not read by the client.
 #

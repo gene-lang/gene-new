@@ -779,7 +779,7 @@ when not defined(geneWasm):
   # --- web: placing generated assets in a page ---------------------------------
   #
   # The whole author-facing surface for embedded web modules
-  # (docs/web-compilation.md §4.12). Two things: a composition operation
+  # (docs/workflows.md). Two things: a composition operation
   # that returns a finished node, and the base those nodes' URLs are built from.
   # Application code never sees JavaScript, a source map, a hash, or a route
   # table — and cannot forget to publish one, because referring to an asset is
@@ -864,7 +864,7 @@ when not defined(geneWasm):
 
 # CSS is ordered node data. Declarations deliberately live in the body rather
 # than a PropTable: duplicate fallbacks and interleaving with nested rules are
-# observable CSS semantics (docs/web-compilation.md §3.1).
+# observable CSS semantics (docs/workflows.md).
 proc cssNode(head: string, body: openArray[Value]): Value =
   newNode(newSym(head), body = @body)
 
@@ -4597,7 +4597,7 @@ defineLoggerLevelProc(biLoggerTrace, "Logger/trace", llTrace)
 
 # --- serde: Gene-text serialization, data core -------------------------------
 #
-# Stage 1 of docs/serialization.md: write_data / read_data / data?
+# Stage 1 of docs/stdlib.md: write_data / read_data / data?
 # over the data bucket, riding the canonical printer/reader. Serialized text is
 # a (serde_v1 <payload>) envelope of ordinary Gene source. Control tags are
 # underscore-named plain symbols (serde_v1, serde_float, serde_sym, serde_map,
@@ -7515,7 +7515,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   retainResourceCapabilities(scope, store, newCapabilityContext([grant]))
   store
 
-## typed_native AOT loading (docs/native-types.md §6.4).
+## typed_native AOT loading (docs/workflows.md).
 ##
 ## `aot_runtime.nim` exports the C helpers a generated module calls; this is
 ## the other half — opening such a module and binding its entries so ordinary
@@ -7781,7 +7781,7 @@ proc registerStdlibNamespaces(root: Scope) =
   let fsWatcherType = newType("FsWatcher", NIL, @[], @[], root,
                               messages = fsWatcherMessages)
   root.define("FsWatcher", fsWatcherType)
-  # Structured diagnostic logging (docs/logging.md). Logger methods
+  # Structured diagnostic logging (docs/stdlib.md). Logger methods
   # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
   # are compiler-known macros selected from this same namespace.
   let logLevel = newEnum("LogLevel", @[],
@@ -8192,7 +8192,7 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("db", newNamespace("db", dbScope))
 
   # store: durable key -> serde text over interchangeable backends
-  # (docs/persistence.md). Backend namespaces mirror db/sqlite.
+  # (docs/stdlib.md). Backend namespaces mirror db/sqlite.
   let storeError = newType("StoreError", NIL,
                            @[TypeField(name: "kind", optional: false,
                                        typeExpr: newSym("Sym"), scope: root),
@@ -8503,7 +8503,7 @@ proc registerStdlibNamespaces(root: Scope) =
   jsonScope.define("JsonError", jsonError)
   root.define("json", newNamespace("json", jsonScope))
 
-  # serde: Gene-text serialization data core (docs/serialization.md
+  # serde: Gene-text serialization data core (docs/stdlib.md
   # stage 1).
   let serdeScope = newScope(root)
   serdeScope.define("write_data",

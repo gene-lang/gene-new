@@ -764,7 +764,7 @@ suite "spec — macros from design":
                "[0 99]")
 
   test "template macros avoid introduced pattern-binder capture":
-    # docs/macro-design.md §12.5: binders introduced by a template's
+    # docs/language.md: binders introduced by a template's
     # match pattern are hygienically fresh, like var/fn binders.
     check_eval("(macro first_of [x] " &
                "  `(match %x (when [tmp] tmp))) " &
@@ -1864,7 +1864,7 @@ void point_free(CPoint *p) { free(p); }
     checkCCompiles(c, "typed_native_protocol_pointer_result")
 
   test "a bare typed-native send never resolves to a protocol impl":
-    ## Bare is type-direct, qualified is protocol (docs/core.md §3.6.1). The
+    ## Bare is type-direct, qualified is protocol (docs/spec/protocols.md). The
     ## interpreter answers "no message 'read_value' on Node" for this source,
     ## so the backend must not lower it to a direct impl call.
     check_compile_error(
@@ -1888,7 +1888,7 @@ void point_free(CPoint *p) { free(p); }
       "typed_native function read cannot lower its body statically")
 
   test "an overlay impl anywhere in the unit blocks a direct send":
-    ## docs/scoped-impls.md §7: a direct protocol call needs the winning
+    ## docs/spec/protocols.md: a direct protocol call needs the winning
     ## unconditional canonical pair with no reachable overlay. Overlay-only
     ## impls are collected before compilation, so the check does not depend on
     ## where the overlay sits or whether it precedes the send — a per-chunk
@@ -5422,7 +5422,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[\"super send\" \"Protocol\"]")
 
   test "super delegates a protocol message from the nominal parent":
-    # `docs/scoped-impls.md` §3.3 already keeps only providers at the nearest
+    # `docs/spec/protocols.md` already keeps only providers at the nearest
     # applicable receiver depth, so resolving from the parent *is* "continue the
     # walk from above the enclosing type" — no new precedence rule was needed.
     # The qualifier names the message; the parent selects the impl.
@@ -5606,7 +5606,7 @@ suite "spec — absence-guarded sends (design §3)":
                "[nil 1]")
 
   test "an optional dot send does not change what a plain dot send means for nil":
-    # docs/core.md §10: Nil is an ordinary nominal type with no dispatch
+    # docs/spec/protocols.md: Nil is an ordinary nominal type with no dispatch
     # carve-out, so a bare send still fails and an explicit impl still wins.
     check_eval(guarded &
                "(try (nil .msg) catch MessageError $ex/message)",
@@ -5753,7 +5753,7 @@ suite "spec — protocol intersection types":
                "(impl Early for G) (impl Late for G) (takes (G))",
                "\"ok\"")
 
-suite "spec — hidden impl diagnostics (docs/scoped-impls.md §4)":
+suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
   # A conformance failure must distinguish "no impl exists" from "an impl
   # exists but is not visible here", and must name the module whose scope
   # governs the check — importing anywhere else is a no-op.
@@ -7831,7 +7831,7 @@ suite "spec — modules from design":
                   newGlobalScope())
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
 
-suite "spec — packages (docs/packages.md)":
+suite "spec — packages (docs/workflows.md)":
   proc packagesRoot(): string =
     result = getTempDir() / "gene_spec_packages"
     removeDir(result)
@@ -9086,7 +9086,7 @@ suite "spec — os and json from ai-agent plan":
       "[\"hello\" true false [\"made\" \"note.txt\"]]"
 
   test "$fs/real_path resolves an existing file and a not-yet-created path":
-    ## Workspace confinement (docs/capabilities.md) resolves real paths before
+    ## Workspace confinement (docs/spec/authority.md) resolves real paths before
     ## the containment check. An existing file and a to-be-created file under
     ## the same directory must resolve to sibling absolute paths, so a `..`
     ## detour still lands inside the resolved root.
@@ -9198,7 +9198,7 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
       discard run(compileSource("({^a 1} .contains? \"a\")"),
                   newGlobalScope())
 
-suite "spec — serde data core (docs/serialization.md stage 1)":
+suite "spec — serde data core (docs/stdlib.md stage 1)":
   test "scalars and containers round-trip under structural equality":
     check_eval("(import $serde [write_data read_data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &
@@ -9619,21 +9619,24 @@ iterator geneBlocks(path: string): DocBlock =
     elif inBlock:
       cur.add line
 
+iterator documentationSources(): string =
+  ## Public entry-point examples are held to the same contract as docs/.
+  yield "README.md"
+  for path in walkDirRec("docs"):
+    if path.endsWith(".md"):
+      yield path
+
 suite "spec — documentation contract":
   test "focused normative specification files exist":
     for path in ["docs/spec/README.md", "docs/spec/reader.md",
                  "docs/spec/calls.md", "docs/spec/types.md",
                  "docs/spec/protocols.md", "docs/spec/streams.md",
                  "docs/spec/concurrency.md", "docs/spec/modules.md",
-                 "docs/implementation-status.md"]:
+                 "docs/development.md"]:
       check fileExists(path)
 
   test "referenced concrete example files exist":
-    var sources = @["README.md"]
-    for path in walkDirRec("docs"):
-      if path.endsWith(".md"):
-        sources.add path
-    for source in sources:
+    for source in documentationSources():
       let text = readFile(source)
       var at = 0
       while true:
@@ -9662,9 +9665,7 @@ suite "spec — documentation contract":
       toHashSet(@["then", "elif", "else", "when", "catch", "ensure", "ctor",
                   "message", "in", "for", "from"])
     var offenders: seq[string]
-    for path in walkDirRec("docs"):
-      if not path.endsWith(".md"):
-        continue
+    for path in documentationSources():
       let lines = readFile(path).splitLines()
       var blocks: seq[seq[string]]
       var cur: seq[string]
@@ -9743,9 +9744,7 @@ suite "spec — documentation contract":
     # and nothing noticed. Evaluation is opt-in below, because most blocks are
     # deliberately fragments.
     var offenders: seq[string]
-    for path in walkDirRec("docs"):
-      if not path.endsWith(".md"):
-        continue
+    for path in documentationSources():
       for blk in geneBlocks(path):
         try:
           discard readAll(blk.src)
@@ -9762,9 +9761,7 @@ suite "spec — documentation contract":
     # never run — marking an example is how a doc stops being prose.
     var offenders: seq[string]
     var ran = 0
-    for path in walkDirRec("docs"):
-      if not path.endsWith(".md"):
-        continue
+    for path in documentationSources():
       for blk in geneBlocks(path):
         if not blk.runnable:
           continue
@@ -9869,7 +9866,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
     check "animation-name: fade__" & digest & ";" in cssText
     check "color: fade;" in cssText
 
-suite "spec — application event bus (docs/events.md)":
+suite "spec — application event bus (docs/stdlib.md)":
   const orderFamily =
     "(ns order " &
     "  (type Event : $event/Event) " &

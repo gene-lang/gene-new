@@ -50,7 +50,7 @@ The two mechanisms have different evaluation boundaries:
   that syntax is compiled by `eval`. Unevaluated syntax does not reach this check.
 
 The fexpr's own body and functions or loops inside evaluated syntax follow
-ordinary local control-flow rules. See [the fexpr and macro guide](../macro-design.md)
+ordinary local control-flow rules. See [the fexpr and macro guide](../language.md#macros-fexprs-and-eval)
 and the runnable [fexpr demo](../../examples/fexpr_demo.gene).
 
 ## Direct message calls and checked callable signatures
@@ -208,7 +208,7 @@ segment before the first delimiter is a single form. Multiple direct slots,
 empty stages, syntax-call stages, a multi-form leading segment, and mixing
 `->`/`=>` with `;` at one parenthesis depth are errors; `->` and `=>` mix with
 each other. `;` remains head-folding reader sugar and has no slot behavior.
-See `docs/reference/syntax.md §2.7` and `docs/pipelines.md`.
+See [pipelines in the language guide](../language.md#pipelines-and-generators).
 
 MVP compiler-dispatched heads:
 

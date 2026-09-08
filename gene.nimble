@@ -25,7 +25,7 @@ task speedy, "Optimized build for maximum performance":
   exec "mkdir -p bin"
   exec "nim c -d:release --mm:orc --opt:speed --passC:\"-march=native -O3\" -o:bin/gene src/gene.nim"
 
-task wasm, "Build the wasm host-ABI module (docs/wasm.md §A.4) via Emscripten":
+task wasm, "Build the wasm host-ABI module (docs/workflows.md §A.4) via Emscripten":
   ## Requires the Emscripten SDK (`emcc` on PATH). Produces web/gene.js +
   ## web/gene.wasm exporting the text-only eval ABI, ready for the browser
   ## playground (web/index.html) and the node harness (tests/test_wasm.mjs).

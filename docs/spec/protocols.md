@@ -1,12 +1,14 @@
 # Protocol and message contract
 
-**Status:** normative and implemented. `docs/core.md` supplies detailed
-examples and rationale; its deferred/open-question sections are not normative.
+**Status:** normative and implemented. The [language guide](../language.md#protocols)
+and [protocol demo](../../examples/protocol_demo.gene) introduce the public forms.
 Executable coverage: `tests/test_protocols.nim` and protocol suites in
 `tests/spec_runner.nim`.
 
-- An explicit `impl` establishes conformance. Defaults fill omitted messages
-  only after an impl exists. Universal conformance must be explicit.
+- An explicit `impl` establishes ordinary conformance. Protocol defaults fill
+  omitted messages after that impl exists. A protocol explicitly marked
+  `^^universal` provides fallback conformance without a per-type impl; its
+  requirements/defaults must meet the universal-contract restrictions.
 - Protocol inheritance flattens qualified message identities. Satisfaction may
   walk the inheritance closure; dispatch uses the qualified message identity.
 - Every effective impl covers the full inherited message closure. A complete

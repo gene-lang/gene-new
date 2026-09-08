@@ -21,20 +21,20 @@ execution policy are separate controls.
   It differs from `this_pkg/root`, which may name an authenticated build
   snapshot. A host can use it to select its launch-directory filesystem grant
   before resolving relative data paths when it also holds other grants.
-- A manifest is exactly one map datum read as data, never executed. `^name` is
-  required and is `<owner>/<name>` in lowercase `snake_case`; unknown fields are
-  rejected; dependency forms have the literal head `dep`.
-- Named dependencies resolve `<application_root>/vendor/packages/` before
-  `~/.gene/packages/`, by constructed path rather than enumeration, and never
-  fall through past an existing application candidate. Resolution selects
-  candidates first and validates exact versions second, so
-  `PACKAGE_VERSION_CONFLICT` (two requirements) stays distinct from
-  `PACKAGE_VERSION_MISMATCH` (one requirement, one candidate) and both are
-  order-independent.
+- A format-1 manifest is exactly one map datum read as data, never executed.
+  `^name` is `<owner>/<name>` in lowercase `snake_case`; unknown fields are
+  rejected, and dependency forms have the literal head `dep`.
+- Explicit package operations resolve dependency constraints into a workspace
+  lock, preserving valid locked edges until updated. Source identity includes
+  origin and digest, so multiple versions can coexist through separate aliases.
+  Sync materializes immutable source objects. A matching vendor object takes
+  precedence over the user cache; a corrupt candidate is not silently bypassed.
 - `^pkg` on the `from` form selects a package; `"."` names that package's
   `main_module`. A regular package may import only itself and its declared
   direct dependencies. No resolved module path may leave its package root after
-  canonicalization, and package resolution never reaches the network.
+  canonicalization. Runtime imports use the materialized graph and never run
+  the solver or acquire dependencies. Explicit package acquisition follows its
+  configured source and offline policy.
 - Modules link to their owning Package, exposed as the lexical `this_pkg`
   binding beside `this_mod`.
 - Runtime imports initialize a dependency once. Compile-time macro discovery

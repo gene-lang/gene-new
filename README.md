@@ -1,179 +1,87 @@
 # Gene
 
-Gene aims to be a fast, general-purpose, gradually typed language covering the
-range of applications supported by Python. It is implemented in
-[Nim](https://nim-lang.org), with design influences from Lisp, Clojure,
-XML/HTML, and Ruby/Smalltalk.
+Gene is a general-purpose, gradually typed language implemented in Nim. It
+combines Lisp-like expressions with records, object messages, protocols, and
+readable paths through data. Code and data share the same node representation.
 
-Gene has **one syntactic and semantic unit: the node**. A node can be read as
-data, code, type/shape, or selector/navigation plan, so code is data and data is
-code. The [implemented specification](docs/spec/README.md) defines the language
-contract. The [design overview](docs/design.md) explains the main choices, and
-the [documentation index](docs/README.md) links detailed guides and references.
+Here is a complete program:
 
-> **Status: active implementation.** APIs and the language surface are still
-> evolving. What is implemented today is summarized in
-> [`docs/implementation-status.md`](docs/implementation-status.md) and locked by
-> `nimble spec`.
+```gene runnable
+(type Todo ^props {^title Str ^done Bool})
 
-## The node
+(fn unfinished_titles [todos : (List Todo)] : (List Str)
+  (todos
+    -> $filter (fn [todo] (! todo/done))
+    => (fn [todo] todo/title)
+    -> $into []))
 
-Every Gene value exposes four slots through the `Node` projection:
+(let todos
+  [(Todo ^title "Learn Gene" ^done true)
+   (Todo ^title "Write a small app" ^done false)])
 
-```text
-head   singular identity / dispatch face
-props  named side data, keyed by symbol  (^key value)
-body   ordered positional data
-meta   information about the node, ignored by value semantics  (@key value)
+($println (unfinished_titles todos))
+# ["Write a small app"]
 ```
 
-The pure projections:
+`^title` names a property, `todo/title` reads it, and `: Str` is a type
+annotation. The pipeline filters the list, maps the remaining items, and
+collects the result. Functions can also be written without annotations.
 
-```gene
-42            # bare head / scalar value
-[1 2 3]       # pure body / list
-{^a 1 ^b 2}   # pure props / map
-(t ^a 1 2 3)  # general node: head t, props {^a 1}, body [2 3]
-```
+## Try it
 
-Immutable literals use a `#` prefix (`#[1 2 3]`, `#{^a 1}`). Meta never
-participates in equality or hashing.
+Requires Nim 2 or later. From a checkout:
 
-## Highlights
-
-- **Callable-first VM** — lexical scope, closures, pattern matching and
-  destructuring, namespaces, and file-based modules.
-- **Gradual nominal types** — schema-validated construction, single
-  inheritance, and checked boundaries for parameters, returns, and numeric/C
-  ABI values.
-- **Protocols** with nominal dispatch, scoped visibility, declaration-bound
-  `Self`, explicit overrides, and `derive`.
-- **Packages and builds** — workspace manifests, dependency solving, lockfiles,
-  immutable source stores, and cached pure-Gene build artifacts.
-- **Typed recoverable errors** — `fail`, `^errors` rows, `try/catch/ensure`,
-  kept distinct from `panic`.
-- **Streams and generators** as lazy pull combinators; a function containing
-  `yield` returns a stream.
-- **Structured concurrency** — tasks, channels, and actors under supervising
-  scopes. Still experimental (see below).
-- **A batteries-light stdlib** — `html`/`css`/`url`/`json`, an event-loop HTTP
-  server and client, SQLite/Postgres behind one `Db` protocol, serialization,
-  durable stores, and structured logging.
-- **Compile to the browser** — `gene build --target web` emits readable
-  TypeScript/ESM from a statically decidable subset, and an embedded
-  `web_module` block lets one source file carry a page's server logic, HTML,
-  CSS, and browser behavior with no build step or bundler.
-- **Native interop** — a Nim-facing native API, runtime FFI, and an
-  experimental typed C backend.
-- **Tooling** — `repl`, `fmt`, `doc`, `compile`, a structural `view` browser,
-  an LSP server, and a wasm build of the VM.
-
-> **Concurrency is experimental.** Tasks run on a cooperative scheduler by
-> default: fibers yield at VM safepoints, and channel operations, actor
-> mailboxes, `await`, and `sleep` park only the current task. Threaded
-> `--mm:atomicArc --threads:on` builds can additionally run snapshot-isolated
-> tasks and sendable actor turns on a bounded worker lane (`GENE_WORKERS=N`).
-> Production M:N lifecycle and load balancing, broader async-I/O backends, and
-> stable concurrency semantics are not built yet.
-
-## Quick start
-
-Requires Nim ≥ 2.0.
-
-```bash
-# Build the CLI to ./bin/gene
+```sh
 nimble build
-
-# Or compile directly
-nim c -o:bin/gene src/gene.nim
+./bin/gene eval '(+ 1 2)'
+# 3
 ```
 
-Evaluate an expression, or run a file:
+Save the program above as `todos.gene`, then run it:
 
-```console
-$ ./bin/gene eval '(+ 1 2)'
-3
-$ ./bin/gene eval '(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)'
-55
-$ echo '(fn main [args] ($println "Hello," args/0) nil)' > demo.gene
-$ ./bin/gene run demo.gene Gene
-Hello, Gene
+```sh
+./bin/gene run todos.gene
 ```
 
-Three larger programs worth reading:
-[`examples/style_guide.gene`](examples/style_guide.gene) is an end-to-end language
-showcase, and [`examples/todo_app/src/main.gene`](examples/todo_app/src/main.gene)
-is a complete web application — routes, SQLite, HTML, CSS, and browser
-behavior — in one file. [`examples/cordis`](examples/cordis) is a tested
-Gene-native plugin runtime with spatial services, deterministic effects,
-sandboxed composition, and recoverable hot reload.
+Types can define behavior too:
 
-## Documentation
+```gene runnable
+(type Person ^props {^name Str}
+  (message greet [] : Str
+    $"Hello, ${self/name}!"))
 
-- [Start here](docs/README.md): contracts, feature guides, tools, and backends.
-- [Design overview](docs/design.md): concise architecture and rationale.
-- [Language reference](docs/reference/README.md): detailed numbered chapters.
-- [Implementation status](docs/implementation-status.md): supported features and limits.
-- [Authority contract](docs/spec/authority.md): permissions, eval, and sandbox boundaries.
-- [Proposals](docs/proposals/README.md): future work; [reports](docs/reports/README.md)
-  and [archive](docs/archive/README.md) preserve dated evidence and retired designs.
-
-### Other commands
-
-| Command | What it does |
-|---|---|
-| `gene parse <file>` | Canonical parsed forms, without executing |
-| `gene fmt <file>` | Human-oriented formatter ([`docs/style.md`](docs/style.md)) |
-| `gene compile <file>` | Compiled GIR bytecode, without running |
-| `gene doc <file>` | Module metadata, imports, and declarations |
-| `gene build --target web <file>` | TypeScript/ESM for the browser |
-| `gene view <file>` | Structural source browser; `e` opens `$EDITOR` in place |
-
-## Project layout
-
-```text
-src/
-  gene.nim            CLI entry point
-  gene/
-    reader.nim        source text  -> node values
-    printer.nim       node values  -> canonical Gene source
-    types.nim         NaN-boxed Value model + constructors/accessors
-    equality.nim      equal / same / hash
-    compiler.nim      node values  -> GIR bytecode chunks
-    gir.nim           bytecode instructions + function prototypes
-    vm.nim            stack VM + runtime
-    stdlib.nim        standard-library surface
-    http_server.nim   event-loop HTTP/WebSocket server
-    web.nim           the `web` profile: Gene -> readable TypeScript
-    native_api.nim    Nim-facing native/FFI boundary
-    lsp/ tui/ viewer/ editor and terminal front ends
-docs/spec/            normative implemented language contract
-docs/design.md        concise design overview
-docs/reference/       detailed language chapters
-docs/proposals/       future designs and research
-docs/reports/         verification and measurements
-docs/archive/         retired designs and historical plans
-examples/             runnable programs, including the showcase and todo app
-tests/                unit tests + executable language specs
-benchmarks/           release-mode core benchmarks
+(let ada (Person ^name "Ada"))
+($println (ada .greet))
+# Hello, Ada!
 ```
 
-## Development
+A dot sends a message to a receiver. Protocols let unrelated types implement
+the same behavior. Gene also provides pattern matching, lazy streams,
+structured tasks, modules, and template macros.
 
-```bash
-nimble test        # unit tests
-nimble spec        # executable language-surface specs (tracks docs/spec/)
-nimble transpile_spec  # shared VM/web-profile conformance fixtures
-nimble perf        # release-mode core benchmarks (smoke check, no thresholds)
-nimble wasm        # wasm host-ABI build (requires emcc)
-nimble leakcheck   # refcount/scope leak assertions
-nimble threadcheck # threaded atomicArc smoke checks
-nimble verify      # everything above
-```
+## Learn and build
 
-Performance is a first-class concern — value layout, reader hot paths, and
-allocation behavior are treated as performance-sensitive. See
-[`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
+| Start here | What you will find |
+| --- | --- |
+| [Language guide](docs/language.md) | Values, functions, types, protocols, collections, errors, and concurrency—with examples. |
+| [Design](docs/design.md) | The main language choices, illustrated in code. |
+| [Library recipes](docs/stdlib.md) | Strings, JSON, files, HTTP, databases, logging, and events. |
+| [Workflows](docs/workflows.md) | Scripts, packages, editor tools, browser output, and native interop. |
+
+For larger programs, read the [Todo web app](examples/todo_app/src/main.gene),
+[protocol demo](examples/protocol_demo.gene), or
+[Cordis plugin runtime](examples/cordis/README.md).
+
+## Project status
+
+Gene is under active development. The VM and a checked browser subset work;
+APIs are still evolving. Native compilation and worker-thread execution remain
+experimental. See [support and known limits](docs/development.md#status) before
+choosing a backend or relying on sandbox behavior.
+
+To contribute, see [development](docs/development.md). Exact edge-case contracts
+live in [the specification](docs/spec/README.md); they are reference material,
+not required reading for a first program.
 
 ## License
 

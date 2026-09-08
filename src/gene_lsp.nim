@@ -1,5 +1,5 @@
 ## `gene-lsp` — the Gene language server, speaking JSON-RPC over stdio
-## (docs/lsp.md).
+## (docs/workflows.md).
 ##
 ## Built as its own executable rather than linked into `gene`. `gene lsp` execs
 ## this binary, which is why the delegation is invisible to an editor: execv

@@ -188,7 +188,8 @@ omitted named parameter binds `nil`. `$absent?` covers both.
 
 ## Style contract
 
-`docs/style.md` is enforced by `gene fmt` for layout and by review for the rest.
+`examples/style_guide.gene` is the canonical formatter fixture; the conventions
+below also need review.
 The transformations `fmt` will *not* make for you:
 
 - Replacing `(if cond (do …))` with `if_yes`, or `(if cond nil …)` with `if_not`.
@@ -208,5 +209,5 @@ so review its output before adopting it wholesale:
   interpolation. Behavior is preserved (embedded quotes get escaped); only
   readability suffers.
 - A **nested map inside a list** gets its entries aligned far to the right,
-  which `docs/style.md` itself rules out ("do not vertically align arguments
-  with arbitrary spaces").
+  which conflicts with the convention against vertical argument alignment
+  using arbitrary spaces.

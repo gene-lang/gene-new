@@ -16,7 +16,7 @@
 #
 # It cost a compiler change to have it: `^name : T` was a VM-only parameter form
 # and this module compiles for both backends, so the web profile learned named
-# parameters (see `docs/web-profile.md`). That was the right way round. The
+# parameters (see `docs/workflows.md`). That was the right way round. The
 # alternative was a positional API — no better than the layer it wraps — or a
 # VM-only one, which would have retired the in-tab client.
 #
