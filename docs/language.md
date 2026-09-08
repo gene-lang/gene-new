@@ -210,6 +210,15 @@ A requested property must exist; a missing optional field does not bind nil.
 
 ### Errors and cleanup
 
+Use `$assert` to check an assumption. It returns nil on success and raises
+`AssertionError` on failure:
+
+```gene runnable
+($assert (== (+ 1 1) 2) "addition should work") # nil
+```
+
+The [testing guide](testing.md) shows example groups, fixtures, and error checks.
+
 Use typed errors for recoverable failures. `catch` binds the error as `$ex`;
 `ensure` runs cleanup on success or failure.
 

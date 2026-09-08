@@ -192,6 +192,7 @@ names. Embedded `web_module` code can enhance server-rendered markup; see
 | Need | Starting point |
 | --- | --- |
 | Collection operations | `$map`, `$filter`, `$filter_map`, `$take`, `$into`, `$each` |
+| Assertions and unit tests | `$assert` and the [`$test` framework](testing.md) |
 | Structured concurrency | `scope`, `spawn`, `await`, `$channel`, `$actor` |
 | Numeric data/native buffers | `$buffer` and the [native example](../examples/native/README.md) |
 | URLs and forms | `$url`; [Todo app](../examples/todo_app/src/main.gene) |

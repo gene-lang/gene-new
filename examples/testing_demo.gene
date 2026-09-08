@@ -1,0 +1,50 @@
+# Run with either:
+#   gene test examples/testing_demo.gene
+#   gene run examples/testing_demo.gene
+(import $test [describe context it before_each after_each assert_equal
+               assert_raises run])
+
+(fn twice [n : Int] : Int (* n 2))
+
+(type InputError ^props {^message Str})
+(impl Error for InputError)
+(fn positive [n : Int] : Int ^errors [InputError]
+  (if (> n 0) n (fail (InputError ^message "expected positive"))))
+
+(describe "arithmetic"
+  (it "doubles an integer" []
+    (assert_equal (twice 3) 6))
+
+  (it "supports a standalone assertion" []
+    #@$assert (== (twice 0) 0))
+
+  (it "reports a domain error" []
+    (let error (assert_raises (fn [] (positive 0)) InputError))
+    (assert_equal error/message "expected positive")))
+
+(describe "a list"
+  (before_each [t]
+    (set t/items []))
+
+  (after_each [t]
+    (set t/items void))
+
+  (it "starts empty" [t]
+    (assert_equal t/items []))
+
+  (context "after adding an item"
+    (before_each [t]
+      (t/items .push 7))
+
+    (it "contains that item" [t]
+      (assert_equal t/items [7])))
+
+  (it "gets a fresh fixture for the next example" [t]
+    (assert_equal t/items []))
+
+  (it "shows an explicit skip" [] ^skip "demonstration"
+    ($assert false)))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

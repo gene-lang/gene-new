@@ -86,6 +86,22 @@ Native/resource recipes, mixed application images, and full install/distribution
 work remain incomplete. Accepting a flag or a manifest field does not imply
 that every backend can build it; unsupported combinations produce diagnostics.
 
+## Testing
+
+```sh
+gene test
+gene test tests/math_spec.gene --name "adds"
+gene test examples/testing_demo.gene
+```
+
+The native runner discovers `tests/**/*_spec.gene`, collects examples, and
+reports assertion failures with source locations. See [testing](testing.md)
+for `$assert`, `describe`, `it`, fixtures, and error assertions.
+
+The existing manifest-driven test build workflow is available as
+`gene test --package [selector]`. It builds each selected `^tests` entry and
+invokes its `main`; use this mode for those package test targets.
+
 ## Editor and command-line tools
 
 `nimble build` builds the CLI and its companion tools. If you built only

@@ -22,6 +22,7 @@ include test_build
 include test_web_modules
 include test_match
 include test_errors
+include test_testing
 include test_types
 include test_protocols
 include test_self_type

@@ -6377,6 +6377,30 @@ proc builtinCssDeclMacro(): MacroDef =
       "`(gene/css/decl_value (quote %name) %value)")]
   )
 
+proc builtinTestMacro(name: string): MacroDef =
+  ## Testing declarations are ordinary template macros. The runtime receives
+  ## closures, never borrowed caller syntax/environments.
+  result.rest = "body"
+  if name in ["describe", "context"]:
+    result.params = @[MacroParam(pattern: newSym("description"))]
+    result.body = @[read(
+      "`(gene/test/register_group %description (fn [] %body...))")]
+  else:
+    if name == "it":
+      result.params.add MacroParam(pattern: newSym("description"))
+      result.named = @[MacroNamedParam(arg: "skip", pattern: newSym("skip"),
+        defaultValue: MacroDefault(optional: true, hasExpr: true,
+                                   defaultExpr: VOID))]
+    result.params.add MacroParam(pattern: newSym("params"))
+    let templateSource =
+      if name == "it":
+        "`(gene/test/register_example %description (quote %params) " &
+          "(fn %params %body...) (quote %skip))"
+      else:
+        "`(gene/test/register_hook \"" & name & "\" (quote %params) " &
+          "(fn %params %body...))"
+    result.body = @[read(templateSource)]
+
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef] =
   result = initTable[string, MacroDef]()
@@ -6389,6 +6413,11 @@ proc builtinNamespaceMacros(segments: openArray[string]):
       (segments.len == 2 and segments[0] == "gene" and
        segments[1] == "css"):
     result["decl"] = builtinCssDeclMacro()
+  elif (segments.len == 1 and segments[0] == "test") or
+      (segments.len == 2 and segments[0] == "gene" and
+       segments[1] == "test"):
+    for name in ["describe", "context", "it", "before_each", "after_each"]:
+      result[name] = builtinTestMacro(name)
 
 proc importMacro(c: var Compiler, local: string, def: MacroDef) =
   validateBindingName(local)

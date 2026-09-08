@@ -393,11 +393,32 @@ type
     filesystem: FilesystemProvider,
     host: HostCapabilityProvider): seq[CapabilityGrant] {.closure.}
 
+  TestCallback = object
+    fn: Value
+    capture: Scope # keep capture visible to ORC; fn's back-reference is weak
+    takesContext: bool
+    loc: SourceLoc
+
+  TestEntry = ref object
+    description: string
+    loc: SourceLoc
+    isGroup: bool
+    children: seq[TestEntry]
+    beforeEach, afterEach: seq[TestCallback]
+    body: TestCallback
+    skipReason: string
+
+  TestRegistry = ref object
+    roots, groups: seq[TestEntry]
+    running, collecting: bool
+    diagnostics: seq[Value]
+
   Application* = ref object of RuntimeContext
     builtins: Scope
     boundCallTemplate: FunctionProto
     streamCallbackTemplate: FunctionProto
     callableViewTemplate: FunctionProto
+    tests: TestRegistry
     # The whole standard library, i.e. the scope behind the `gene` namespace.
     # `builtins` is only the *lexical* root, which deliberately exposes almost
     # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
@@ -7540,6 +7561,8 @@ proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
 # it registers built-in surface types, so it must follow `defineBuiltinType`.
 include ./events
 
+proc registerTestingNamespace(root: Scope)
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -8373,6 +8396,7 @@ proc buildBuiltins(app: Application): Scope =
     if eachFn.kind != vkVoid:
       result.define("each", eachFn)
   registerEventNamespace(result)
+  registerTestingNamespace(result)
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
   # bare name means whatever the program binds it to, so reading a name tells
@@ -29928,3 +29952,5 @@ proc installCompiledModules*(app: Application,
       macroExports: compiled.macroExports,
       syntaxFnExports: compiled.syntaxFnExports,
       compileInterface: compiled.compileInterface)
+
+include ./testing

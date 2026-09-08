@@ -75,7 +75,8 @@ proc usage() =
   echo "  gene build [target] [options] build a package product"
   echo "  gene build --all [options] build every workspace product"
   echo "  gene build --target web [--out-dir dir] <file.gene> emit web ESM + types"
-  echo "  gene test [selector]     build and run package tests"
+  echo "  gene test [files/dirs...] [--name text] run *_spec.gene examples"
+  echo "  gene test --package [selector] build and run package test targets"
   echo "  gene clean               remove project build views and sandboxes"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
   echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
@@ -568,12 +569,12 @@ proc isDirectWebBuild(): bool =
       return true
     inc i
 
-proc parseProjectBuildCli(label = "build"): ProjectBuildCli =
+proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
   result.profile = "dev"
   result.mode = bmVm
   var profileExplicit = false
   var release = false
-  var i = 2
+  var i = first
   while i <= paramCount():
     let arg = paramStr(i)
     case arg
@@ -885,6 +886,119 @@ proc cmdProjectTest(options: ProjectBuildCli) =
     quit(1)
   except GenePanic as error:
     stderr.writeLine "Panic: " & error.msg
+    quit(1)
+  except GeneError as error:
+    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    quit(1)
+  except CatchableError as error:
+    stderr.writeLine "Error: " & error.msg
+    quit(1)
+
+type SpecTestCli = object
+  paths: seq[string]
+  name: string
+  host: RunCli
+
+proc parseSpecTestCli(): SpecTestCli =
+  var i = 2
+  var positionalOnly = false
+  while i <= paramCount():
+    let arg = paramStr(i)
+    if positionalOnly:
+      result.paths.add arg
+    elif arg == "--":
+      positionalOnly = true
+    elif arg.startsWith("--"):
+      let at = arg.find('=')
+      let option = if at < 0: arg else: arg[0..<at]
+      if option notin ["--name", "--package-root", "--allow_read_dir",
+                        "--allow_write_dir", "--allow_read_write_dir"]:
+        raise newException(ValueError, "unknown test option: " & option)
+      var value: string
+      if at >= 0:
+        value = arg[at+1..^1]
+      else:
+        inc i
+        if i > paramCount():
+          raise newException(ValueError, option & " expects a value")
+        value = paramStr(i)
+      case option
+      of "--name": result.name = value
+      of "--package-root": result.host.packageRoot = value
+      of "--allow_read_dir": result.host.allowReadDirs.add value
+      of "--allow_write_dir": result.host.allowWriteDirs.add value
+      of "--allow_read_write_dir": result.host.allowReadWriteDirs.add value
+      else: discard
+    elif arg.startsWith("-"):
+      raise newException(ValueError, "unknown test option: " & arg)
+    else:
+      result.paths.add arg
+    inc i
+
+proc discoverSpecFiles(app: Application, inputs: seq[string]): seq[string] =
+  let fs = app.filesystemCapabilities
+  let authority = app.rootCapabilities
+  var files, directories = initHashSet[string]()
+  proc visit(path: string, explicitFile = false) =
+    if not explicitFile and not dirExists(path) and
+        not path.endsWith("_spec.gene"):
+      return
+    let canonical = canonicalPath(path)
+    app.requireEntryWithinPackage(canonical)
+    if dirExists(canonical):
+      if canonical in directories: return
+      directories.incl canonical
+      for name in fs.listDir(authority, canonical):
+        visit(canonical / name)
+    elif fileExists(canonical):
+      if explicitFile or path.endsWith("_spec.gene"):
+        if not canonical.endsWith(".gene"):
+          raise newException(ValueError, "test files must end in .gene: " & path)
+        # Resolve the file through the same filesystem provider used by imports.
+        discard fs.pathExists(authority, canonical)
+        files.incl canonical
+    elif explicitFile:
+      raise newException(ValueError, "test path does not exist: " & path)
+  if inputs.len == 0:
+    if dirExists("tests"): visit("tests")
+  else:
+    for path in inputs: visit(path, true)
+  for path in files: result.add path
+  result.sort()
+
+proc cmdSpecTest(options: SpecTestCli) =
+  try:
+    let start = if options.host.packageRoot.len > 0:
+                  options.host.packageRoot
+                else: getCurrentDir()
+    if not dirExists(start):
+      raise newException(ValueError, "--package-root is not a directory: " & start)
+    let app = newApplication(start)
+    app.applyRunCapabilityPolicy(options.host)
+    let files = discoverSpecFiles(app, options.paths)
+    let scope = newGlobalScope(app)
+    scope.beginTestCollection()
+    try:
+      for path in files:
+        discard app.loadFileModule(path)
+    except ReadError as error:
+      let failure = newException(GeneError, error.msg)
+      failure.loc = error.readErrorLoc
+      scope.recordTestCollectionError(failure)
+    except GeneError as error:
+      scope.recordTestCollectionError(error)
+    finally:
+      scope.finishTestCollection()
+    let result = runTests(scope, options.name)
+    quit(int(result.props["exit_code"].intVal))
+  except ValueError as error:
+    stderr.writeLine "Error: " & error.msg
+    quit(2)
+  except GenePanic as error:
+    stderr.writeLine "Panic: " & error.msg
+    quit(1)
+  except GeneCancel as error:
+    stderr.writeLine "Cancelled: " & error.msg
     quit(1)
   except GeneError as error:
     stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
@@ -1456,7 +1570,13 @@ proc main() =
       quit(1)
   of "test":
     try:
-      cmdProjectTest(parseProjectBuildCli("test"))
+      if paramCount() >= 2 and paramStr(2) == "--package":
+        cmdProjectTest(parseProjectBuildCli("test", first = 3))
+      else:
+        cmdSpecTest(parseSpecTestCli())
+    except ValueError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(2)
     except GeneError as e:
       stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
       quit(1)

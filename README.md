@@ -67,6 +67,7 @@ structured tasks, modules, and template macros.
 | [Design](docs/design.md) | The main language choices, illustrated in code. |
 | [Library recipes](docs/stdlib.md) | Strings, JSON, files, HTTP, databases, logging, and events. |
 | [Workflows](docs/workflows.md) | Scripts, packages, editor tools, browser output, and native interop. |
+| [Testing](docs/testing.md) | Assertions and RSpec-style examples, fixtures, and reports. |
 
 For larger programs, read the [Todo web app](examples/todo_app/src/main.gene),
 [protocol demo](examples/protocol_demo.gene), or

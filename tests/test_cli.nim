@@ -2109,6 +2109,163 @@ suite "cli — gene doc":
       "- item : Int"
     ]
 
+suite "cli — example runner":
+  proc exampleCliRoot(): string =
+    result = cliDir / "example_runner"
+    if dirExists(result): removeDir(result)
+    createDir(result / "tests")
+
+  proc writeExampleFixture(root, name, source: string) =
+    createDir(parentDir(root / name))
+    writeFile(root / name, source)
+
+  proc runExamplesIn(root: string, args: openArray[string]):
+      tuple[output: string, exitCode: int] =
+    buildGeneCli()
+    let saved = getCurrentDir()
+    setCurrentDir(root)
+    try: result = runGene(args)
+    finally: setCurrentDir(saved)
+
+  test "default discovery is recursive and ordered without calling main":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "tests/z_spec.gene", """
+      (import $test [describe it])
+      (describe "z" (it "last" [] ($assert true)))
+      (fn main [] (panic "main must not run"))
+    """)
+    writeExampleFixture(root, "tests/nested/a_spec.gene", """
+      (import $test [describe it])
+      (describe "a" (it "first" [] ($assert true)))
+    """)
+    writeExampleFixture(root, "tests/helper.gene", "(panic \"not a spec\")")
+    let ran = runExamplesIn(root, ["test"])
+    check ran.exitCode == 0
+    check "2 passed, 0 failed, 0 errors, 0 skipped" in ran.output
+    check ran.output.find("a first") < ran.output.find("z last")
+
+  test "explicit files and overlapping directories register once":
+    let root = exampleCliRoot()
+    let source = "(import $test [describe it]) " &
+      "(describe \"one\" (it \"example\" [] nil))"
+    writeExampleFixture(root, "tests/one_spec.gene", source)
+    writeExampleFixture(root, "manual.gene", source)
+    var ran = runExamplesIn(root, ["test", "tests", "tests/one_spec.gene", "tests/."])
+    check ran.exitCode == 0
+    check "1 passed" in ran.output
+    ran = runExamplesIn(root, ["test", "manual.gene"])
+    check ran.exitCode == 0
+    check "1 passed" in ran.output
+    when defined(posix):
+      createSymlink(root / "tests/one_spec.gene", root / "tests/alias_spec.gene")
+      ran = runExamplesIn(root, ["test", "tests"])
+      check ran.exitCode == 0
+      check "1 passed" in ran.output
+      createSymlink(root / "manual.gene", root / "tests/manual_spec.gene")
+      ran = runExamplesIn(root, ["test", "tests"])
+      check ran.exitCode == 0
+      check "2 passed" in ran.output
+
+  test "name filtering follows collection and matches nested descriptions":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "tests/math_spec.gene", """
+      (import $test [describe context it])
+      (describe "math"
+        (context "integers"
+          (it "adds" [] ($assert true))
+          (it "fails" [] ($assert false))))
+    """)
+    writeExampleFixture(root, "tests/other_spec.gene", """
+      (import $test [describe it])
+      ($println "other module loaded")
+      (describe "other" (it "unselected" [] ($assert false)))
+    """)
+    let ran = runExamplesIn(root, ["test", "tests", "--name", "math integers adds"])
+    check ran.exitCode == 0
+    check "other module loaded" in ran.output
+    check "1 passed" in ran.output
+    check "[passed] math integers adds" in ran.output
+
+  test "failures print operands and source while cleanup and later examples run":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "tests/failure_spec.gene", """
+(import $test [describe it after_each assert_equal])
+(describe "failure"
+  (after_each [] ($println "cleaned"))
+  (it "values" []
+    (assert_equal 1 2))
+  (it "next" [] ($assert true)))
+""")
+    let ran = runExamplesIn(root, ["test"])
+    check ran.exitCode == 1
+    check "expected: 2" in ran.output
+    check "actual: 1" in ran.output
+    check "failure_spec.gene:5:" in ran.output
+    check ran.output.count("cleaned") == 2
+    check "1 passed, 1 failed, 0 errors" in ran.output
+
+  test "load failure prevents execution of the collected subset":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "tests/a_spec.gene", """
+      (import $test [describe it])
+      (describe "ready" (it "deferred" [] ($println "BODY RAN")))
+    """)
+    writeExampleFixture(root, "tests/z_spec.gene", "(unclosed")
+    let ran = runExamplesIn(root, ["test"])
+    check ran.exitCode == 1
+    check "BODY RAN" notin ran.output
+    check "collection:" in ran.output
+    check "0 passed" in ran.output
+
+  test "run during module collection and invalid registration fail":
+    let root = exampleCliRoot()
+    for source in [
+      "(import $test [describe it run]) " &
+        "(describe \"g\" (it \"e\" [] ($println \"BODY RAN\"))) (run)",
+      "(import $test [it]) (it \"outside\" [] nil)"]:
+      writeExampleFixture(root, "tests/bad_spec.gene", source)
+      let ran = runExamplesIn(root, ["test"])
+      check ran.exitCode == 1
+      check "BODY RAN" notin ran.output
+
+  test "empty selection and invalid command usage return two":
+    let root = exampleCliRoot()
+    for args in [@["test"], @["test", "--unknown"], @["test", "--name"],
+                 @["test", "missing.gene"],
+                 @["test", "--package-root", "missing-directory"]]:
+      let ran = runExamplesIn(root, args)
+      check ran.exitCode == 2
+    writeExampleFixture(root, "tests/one_spec.gene",
+      "(import $test [describe it]) (describe \"one\" (it \"example\" [] nil))")
+    let empty = runExamplesIn(root, ["test", "--name=missing"])
+    check empty.exitCode == 2
+    check "No examples selected" in empty.output
+
+  test "all skipped succeeds and direct gene run uses the same report":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "tests/skip_spec.gene", """
+      (import $test [describe it run])
+      (describe "later" (it "skipped" [] ^skip "waiting" ($assert false)))
+      (fn main [args] : Int (let result (run)) result/exit_code)
+    """)
+    for args in [@["test"], @["run", "tests/skip_spec.gene"]]:
+      let ran = runExamplesIn(root, args)
+      check ran.exitCode == 0
+      check "0 passed, 0 failed, 0 errors, 1 skipped" in ran.output
+      check "waiting" in ran.output
+
+  test "modules and imported helpers use normal package resolution":
+    let root = exampleCliRoot()
+    writeExampleFixture(root, "src/math.gene", "(fn twice [n] (* n 2))")
+    writeExampleFixture(root, "tests/math_spec.gene", """
+      (import [twice] from "../src/math.gene")
+      (import $test [describe : suite it : example])
+      (suite "math" (example "twice" [] ($assert (== (twice 3) 6))))
+    """)
+    let ran = runExamplesIn(root, ["test", "tests/math_spec.gene"])
+    check ran.exitCode == 0
+    check "1 passed" in ran.output
+
 suite "cli — Gene package builds":
   proc buildCliRoot(): string =
     result = cliDir / "package_build"
@@ -2206,7 +2363,7 @@ suite "cli — Gene package builds":
     writeBuildFixture(root / "src/index.gene", "(var answer 42)")
     writeBuildFixture(root / "tests/one.gene", "(fn main [] nil)")
     writeBuildFixture(root / "tests/two.gene", "(fn main [] nil)")
-    let ran = runBuildGeneIn(root, ["test", "one"])
+    let ran = runBuildGeneIn(root, ["test", "--package", "one"])
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "[OK] tests/one.gene" in ran.output

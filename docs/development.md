@@ -57,6 +57,9 @@ nimble test
 nimble spec
 ```
 
+Gene application tests use [`gene test`](testing.md). The Nim suites remain
+the compiler/runtime conformance and implementation tests.
+
 Additional checks depend on the change:
 
 | Task | Coverage |
