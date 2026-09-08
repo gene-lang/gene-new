@@ -8,7 +8,8 @@
 - Datum comments are spacing and discard exactly the next datum.
 - `#` dispatch is closed: `#(`/`#[`/`#{` open immutable literals, `#"` opens a
   regex, `#B#` / `#B16#` / `#B64#` introduce byte literals, `#Ref` / `#Deref`
-  address module references, `#_` is a datum comment, `#<` opens a block comment, and a line
+  address module references, `#@` wraps two forms, `#_` is a datum comment,
+  `#<` opens a block comment, and a line
   comment requires whitespace, `!`, or end of line/input after the `#`. Every
   other `#` sequence (`#a`, `#1`, `##`, …) is a read error reserved for future
   reader syntax.
@@ -41,3 +42,30 @@
 
 See the [language guide](../language.md#values-and-bindings) for ordinary syntax
 and `tests/test_reader.nim` / module-reference suites for exact reader cases.
+
+## Two-form wrapping prefix
+
+`#@ head argument` reads exactly two complete forms and produces the same
+ordinary node as `(head argument)`, including normal reader normalization.
+It is valid wherever an expression is expected: call heads/arguments, lists,
+map keys/values, property or metadata values, defaults, and interpolation.
+Operands use expression parsing even inside a flat list/parameter vector.
+
+Whitespace after the marker is optional; newlines, comments, and comma
+separators do not change operand count. Nested prefixes associate naturally:
+`#@f #@g x` reads as `(f (g x))`. `#@f x y` leaves `y` for the enclosing
+context. The reader never consults callee arity or consumes the rest of a line.
+
+Both operands are required. EOF while waiting for an operand is incomplete
+input; an enclosing closer or a property/meta/pipeline separator in its place
+is a reader error. Use parentheses for named-property or multi-argument calls.
+`# @...` retains its existing line-comment meaning.
+
+Quote keeps the expanded node as data. Compilation, evaluation order, errors,
+and return values follow the corresponding ordinary form; the prefix does not
+make println value-preserving. No runtime wrapper type or metadata is added.
+Source provenance lets the formatter preserve authored `#@` and format its
+operands, while canonical value printing uses ordinary node notation.
+
+Coverage: `tests/test_reader_wrap.nim`, source-index/LSP/CLI tests, and shared
+`reader_wrap.*` VM/web fixtures.

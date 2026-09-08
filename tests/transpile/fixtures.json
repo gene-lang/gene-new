@@ -4711,6 +4711,69 @@
         "diagnostic": "Self",
         "reason": "Violates the declaration or boundary contract."
       }
+    },
+    {
+      "id": "reader_wrap.expressions",
+      "source": "(fn twice [x : Int] : Int (* x 2)) (fn run [] : (List Int) [#@twice 21 (+ 1 #@twice 20)]) (run)",
+      "web_source": "(mod reader_wrap_expressions ^profile web) (fn twice [x : Int] : Int (* x 2)) (fn run [] : (List Int) [#@twice 21 (+ 1 #@twice 20)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "42"
+          },
+          {
+            "kind": "int",
+            "value": "41"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "reader_wrap.properties_and_defaults",
+      "source": "(fn twice [x : Int] : Int (* x 2)) (fn value [x : Int = #@twice 3] : Int x) (fn run [] : (List Int) (let obj {^x #@twice 4}) [(value) obj/x]) (run)",
+      "web_source": "(mod reader_wrap_properties_and_defaults ^profile web) (fn twice [x : Int] : Int (* x 2)) (fn value [x : Int = #@twice 3] : Int x) (fn run [] : (List Int) (let obj {^x #@twice 4}) [(value) obj/x])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "6"
+          },
+          {
+            "kind": "int",
+            "value": "8"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "reader_wrap.interpolation",
+      "source": "(fn twice [x : Int] : Int (* x 2)) (fn run [] : Str $\"answer=${#@twice 21}\") (run)",
+      "web_source": "(mod reader_wrap_interpolation ^profile web) (fn twice [x : Int] : Int (* x 2)) (fn run [] : Str $\"answer=${#@twice 21}\")",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "answer=42"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

@@ -15,9 +15,10 @@
 ## Formatted output must re-parse to the same canonical forms as the input
 ## (`tests/test_cli.nim` asserts parse-equivalence and idempotence).
 
-import std/[strutils]
+import std/[strutils, tables]
 import ../gene/[reader, types, printer]
 import ./lsp/analysis as span
+import ./source_index
 
 const MaxWidth = 100
 
@@ -63,6 +64,7 @@ proc hasInteriorComment(src: string, a, b: int): bool =
         let e = span.hashBytesLiteralEnd(src, i)
         i = (if e > 0: e else: i + 1)
       elif i + 1 < src.len and src[i + 1] in {'(', '[', '{'}: inc i
+      elif i + 1 < src.len and src[i + 1] == '@': i += 2
       else:
         # Reserved '#' forms are read errors in the reader; this raw span
         # helper stays error-tolerant and treats them like comments.
@@ -99,6 +101,55 @@ proc formSpan(src: string, startOff: int): int =
 # ---------------------------------------------------------------------------
 # Sugar-aware single-line rendering
 # ---------------------------------------------------------------------------
+
+proc formattingView(value: Value, wraps: Table[uint64, WrapSyntax]): Value =
+  ## A source-only rendering tree. Never mutate the canonical reader result or
+  ## put a spelling marker into runtime metadata. Captured operands also retain
+  ## #@ around forms normalized by the ordinary reader, such as message sends.
+  if wraps.len == 0: return value
+  if wraps.hasKey(value.bits):
+    let syntax = wraps[value.bits]
+    return newNode(newSym("#@"), body = @[
+      formattingView(syntax.head, wraps), formattingView(syntax.argument, wraps)])
+  case value.kind
+  of vkNode:
+    var props, meta = initPropTable()
+    var body: seq[Value]
+    for key, item in value.props: props[key] = formattingView(item, wraps)
+    for key, item in value.meta: meta[key] = formattingView(item, wraps)
+    for item in value.body: body.add formattingView(item, wraps)
+    newNode(formattingView(value.head, wraps), props, body, meta,
+            immutable = value.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for item in value.listItems: items.add formattingView(item, wraps)
+    newList(items, value.listImmutable)
+  of vkMap:
+    var entries = initPropTable()
+    for key, item in value.mapEntries: entries[key] = formattingView(item, wraps)
+    newMap(entries, value.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(key: formattingView(entry.key, wraps),
+                               val: formattingView(entry.val, wraps))
+    newHashMap(entries)
+  of vkPipeline:
+    var stages: seq[PipelineStage]
+    for stage in value.pipelineStages:
+      var copied = stage
+      copied.head = formattingView(stage.head, wraps)
+      copied.props = initPropTable()
+      copied.meta = initPropTable()
+      copied.body = @[]
+      for key, item in stage.props: copied.props[key] = formattingView(item, wraps)
+      for key, item in stage.meta: copied.meta[key] = formattingView(item, wraps)
+      for item in stage.body: copied.body.add formattingView(item, wraps)
+      stages.add copied
+    newPipeline(formattingView(value.pipelineInitial, wraps), stages,
+                value.pipelineImmutable)
+  else:
+    value
 
 proc oneLine(v: Value): string
 
@@ -343,6 +394,8 @@ proc oneLine(v: Value): string =
   of vkPipeline:
     valuePipelineOneLine(v)
   of vkNode:
+    if v.head.isSym("#@") and v.body.len == 2:
+      return "#@ " & oneLine(v.body[0]) & " " & oneLine(v.body[1])
     let pipeline = pipelineOneLine(v)
     if pipeline.len > 0:
       return pipeline
@@ -351,6 +404,11 @@ proc oneLine(v: Value): string =
       return send
     if not v.nodeImmutable and v.head.kind == vkSymbol:
       case v.head.symVal
+      of "#Ref":
+        if v.body.len == 2:
+          return "#Ref " & oneLine(v.body[0]) & " " & oneLine(v.body[1])
+      of "#Deref":
+        if v.body.len == 1: return "#Deref " & oneLine(v.body[0])
       of "path":
         let p = resugarPath(v)
         if p.len > 0: return p
@@ -388,6 +446,11 @@ proc oneLine(v: Value): string =
       if val.kind == vkBool and val.boolVal: sb.add "^^" & k
       else: sb.add "^" & k & " " & oneLine(val)
     sb & "}"
+  of vkHashMap:
+    var entries: seq[string]
+    for entry in v.hashMapEntries:
+      entries.add oneLine(entry.key) & " : " & oneLine(entry.val)
+    "{{" & entries.join(" ") & "}}"
   else:
     print(v)
 
@@ -419,6 +482,10 @@ proc hasMultilineString(v: Value): bool =
   of vkMap:
     for _, p in v.mapEntries:
       if hasMultilineString(p): return true
+    false
+  of vkHashMap:
+    for entry in v.hashMapEntries:
+      if hasMultilineString(entry.key) or hasMultilineString(entry.val): return true
     false
   else: false
 
@@ -554,6 +621,12 @@ proc fmtValue(v: Value, indent: int): string =
   of vkString:
     rawStr(v.strVal)
   of vkNode:
+    if v.head.isSym("#@") and v.body.len == 2:
+      return "#@ " & fmtValue(v.body[0], indent + 3) & "\n" &
+        repeat(' ', indent + 2) & fmtValue(v.body[1], indent + 2)
+    if v.head.isSym("#Ref") and v.body.len == 2:
+      return "#Ref " & oneLine(v.body[0]) & "\n" &
+        repeat(' ', indent + 2) & fmtValue(v.body[1], indent + 2)
     # Sugar wrappers stay glued to their (possibly multiline) inner form.
     if not v.nodeImmutable and v.head.kind == vkSymbol and
         v.props.len == 0 and v.body.len == 1:
@@ -625,6 +698,13 @@ proc formatSource*(src: string, sourceName = "<fmt>"): string =
   ## unparseable input (same contract as the canonical path).
   let unit = readAllWithLocs(src, sourceName)
   let starts = span.lineStarts(src)
+  var sourceEnds = initTable[int, int]()
+  if unit.wraps.len > 0:
+    # Prefix forms have no closing delimiter. The reader-backed index knows
+    # their complete operand ranges, including nested prefixes and comments.
+    let indexed = indexSource(src, sourceName)
+    for form in indexed.topLevel:
+      sourceEnds[form.span.startByte] = form.span.endByte
   var sb = ""
   var prevEnd = 0
   for i in 0 ..< unit.forms.len:
@@ -642,12 +722,12 @@ proc formatSource*(src: string, sourceName = "<fmt>"): string =
         sb.add " "
       else:
         sb.add "\n"
-    let endOff = max(formSpan(src, startOff), startOff)
+    let endOff = max(sourceEnds.getOrDefault(startOff, formSpan(src, startOff)), startOff)
     if hasInteriorComment(src, startOff + 1, max(endOff - 1, startOff + 1)):
       # Reformatting would delete comments the reader dropped: keep verbatim.
       sb.add src[startOff ..< endOff]
     else:
-      sb.add fmtValue(unit.forms[i], 0)
+      sb.add fmtValue(formattingView(unit.forms[i], unit.wraps), 0)
     prevEnd = endOff
   if src.len > prevEnd:
     emitGap(sb, src[prevEnd ..< src.len], afterForm = unit.forms.len > 0)

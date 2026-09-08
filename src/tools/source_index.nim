@@ -29,7 +29,7 @@ type
     span*: ByteSpan
     startToken*, endToken*: int  ## Half-open token range.
     immutable*: bool
-    closed*: bool                ## Containers have their source closer.
+    closed*: bool                ## Has its closer, or both #@ operands.
 
   SourceRow* = object
     syntax*: SyntaxRef
@@ -83,7 +83,7 @@ proc significant(tokens: openArray[SpannedToken], at: int): int =
 
 proc syntaxKind(token: SpannedToken): SyntaxKind =
   case token.kind
-  of tkLParen, tkHashLParen: skNode
+  of tkLParen, tkHashLParen, tkWrap: skNode
   of tkLBracket, tkHashLBracket: skList
   of tkLBrace, tkHashLBrace: skPropMap
   of tkHashMapStart: skGeneralMap
@@ -122,6 +122,29 @@ proc closingEnd(tokens: openArray[SpannedToken], start: int):
   (endToken: tokens.len, closed: false)
 
 proc formRef(doc: SourceDocument, start: int): SyntaxRef
+proc formEnd(doc: SourceDocument, start: int): int
+
+proc nextFormStart(doc: SourceDocument, start: int): int =
+  result = significant(doc.tokens, start)
+  while result < doc.tokens.len:
+    if doc.tokens[result].kind == tkComma:
+      result = significant(doc.tokens, result + 1)
+    elif doc.tokens[result].kind == tkUnderscore:
+      let discarded = nextFormStart(doc, result + 1)
+      result = significant(doc.tokens, formEnd(doc, discarded))
+    else:
+      break
+
+proc wrapEnd(doc: SourceDocument, start: int): tuple[endToken: int, closed: bool] =
+  var at = start + 1
+  for _ in 0 ..< 2:
+    at = nextFormStart(doc, at)
+    if at >= doc.tokens.len or doc.tokens[at].kind in
+        {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret, tkAt, tkAtAt,
+         tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
+      return (at, false)
+    at = formEnd(doc, at)
+  (at, true)
 
 proc formEnd(doc: SourceDocument, start: int): int =
   let at = significant(doc.tokens, start)
@@ -132,8 +155,12 @@ proc formEnd(doc: SourceDocument, start: int): int =
   of tkLParen, tkLBracket, tkLBrace, tkHashMapStart,
      tkHashLParen, tkHashLBracket, tkHashLBrace:
     closingEnd(doc.tokens, at).endToken
-  of tkBacktick, tkPercent, tkUnderscore:
-    formEnd(doc, at + 1)
+  of tkBacktick, tkPercent, tkUnderscore, tkDeref:
+    formEnd(doc, nextFormStart(doc, at + 1))
+  of tkWrap:
+    wrapEnd(doc, at).endToken
+  of tkRef:
+    formEnd(doc, nextFormStart(doc, formEnd(doc, nextFormStart(doc, at + 1))))
   of tkDollar:
     let following = significant(doc.tokens, at + 1)
     if following < doc.tokens.len and doc.tokens[following].kind == tkString and
@@ -153,7 +180,11 @@ proc formRef(doc: SourceDocument, start: int): SyntaxRef =
                      startToken: at, endToken: at)
   var finish: int
   var closed = true
-  if doc.tokens[at].kind in {tkLParen, tkLBracket, tkLBrace, tkHashMapStart,
+  if doc.tokens[at].kind == tkWrap:
+    let ending = wrapEnd(doc, at)
+    finish = ending.endToken
+    closed = ending.closed
+  elif doc.tokens[at].kind in {tkLParen, tkLBracket, tkLBrace, tkHashMapStart,
                              tkHashLParen, tkHashLBracket, tkHashLBrace}:
     let ending = closingEnd(doc.tokens, at)
     finish = ending.endToken
@@ -208,7 +239,7 @@ proc interiorBounds(doc: SourceDocument, syntax: SyntaxRef):
     tuple[first, last: int] =
   var first = syntax.startToken + 1
   var last = syntax.endToken
-  if syntax.closed:
+  if syntax.closed and doc.tokens[syntax.startToken].kind != tkWrap:
     last = syntax.endToken - 1
     if syntax.kind == skGeneralMap:
       last = syntax.endToken - 2
@@ -411,6 +442,11 @@ proc indexSource*(source: string, path = "<source>"): SourceDocument =
     let delimiterError = delimiterDiagnostic(result.tokens)
     if delimiterError.message.len > 0:
       result.diagnostics.add delimiterError
+    for i, token in result.tokens:
+      if token.kind == tkWrap and not wrapEnd(result, i).closed:
+        result.diagnostics.add SourceDiagnostic(
+          message: "#@ requires a head and an argument",
+          line: token.line, col: token.col)
     var at = 0
     while at < result.tokens.len:
       if result.tokens[at].kind in {tkLineComment, tkBlockComment}:

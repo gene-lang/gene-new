@@ -4,6 +4,7 @@
   "scopeName": "source.gene",
   "patterns": [
     { "include": "#bytes" },
+    { "include": "#wrapping-prefix" },
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#chars" },
@@ -18,6 +19,10 @@
     { "include": "#types" }
   ],
   "repository": {
+    "wrapping-prefix": {
+      "name": "keyword.operator.wrapping.gene",
+      "match": "#@"
+    },
     "bytes": {
       "comment": "Bytes literals (reader tryScanBytesLexeme): 0!binary, 0xhex, 0#base64. Listed before comments so the # of a base64 literal never reads as a line comment.",
       "name": "constant.numeric.bytes.gene",
@@ -48,7 +53,7 @@
         {
           "comment": "Every other '#' form is a reserved read error.",
           "name": "invalid.illegal.reserved-hash.gene",
-          "match": "#(?![(\\[{_<\" \\t!]|$)[^\\s()\\[\\]{}\"]*"
+          "match": "#(?![(\\[{_<@\" \\t!]|$)[^\\s()\\[\\]{}\"]*"
         }
       ]
     },

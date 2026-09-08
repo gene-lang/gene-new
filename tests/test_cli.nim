@@ -1452,6 +1452,15 @@ suite "cli — gene repl":
     check "\n41\n" in ran.output
 
 suite "cli — gene parse/fmt/compile":
+  test "wrapping println returns nil and formatting keeps the prefix":
+    let evaluated = runGene(["eval", "#@$println 42"])
+    check evaluated.exitCode == 0
+    check evaluated.output.strip() == "42\nnil"
+    let path = writeCliProgram("reader_wrap.gene", "(let x #@tap (+ 1 2))\n")
+    let formatted = runGene(["fmt", path])
+    check formatted.exitCode == 0
+    check formatted.output == "(let x #@ tap (+ 1 2))\n"
+
   setup:
     createDir(cliDir)
 

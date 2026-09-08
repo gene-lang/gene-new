@@ -14,6 +14,7 @@
 import std/[strutils, tables, unicode]
 import ../../gene/[reader, types]
 import ../source_positions
+import ../source_index as sourceIndex
 export source_positions
 
 const
@@ -216,8 +217,8 @@ proc skipCommentOrAtom(src: string, i: var int): bool =
           else:
             inc i
         true
-      of '(', '[', '{', '_':
-        false   # set/list/map literal or datum comment: not a comment token
+      of '(', '[', '{', '_', '@':
+        false   # delimiter or reader prefix, not a line comment
       else:
         # Whitespace/'!' continuations are real line comments. Reserved '#'
         # forms are read errors in the reader; this raw scanner stays
@@ -235,6 +236,11 @@ proc skipCommentOrAtom(src: string, i: var int): bool =
 proc matchingCloseOffset*(src: string, openOffset: int): int =
   ## Balanced scan from an opening (/[/{ to just past its matching close.
   ## Returns src.len when unbalanced (open form at EOF).
+  if src.continuesWith("#@", openOffset):
+    let indexed = sourceIndex.indexSource(src[openOffset .. ^1])
+    if indexed.topLevel.len > 0:
+      return openOffset + indexed.topLevel[0].span.endByte
+    return src.len
   var i = openOffset
   var depth = 0
   while i < src.len:
@@ -303,7 +309,9 @@ proc nextTokenStart(src: string, start: int): int =
         inc i
     if i >= src.len:
       break
-    if src[i] in {'(', '[', '{'} or
+    if src.continuesWith("#@", i):
+      i = matchingCloseOffset(src, i)
+    elif src[i] in {'(', '[', '{'} or
         (src[i] == '#' and i + 1 < src.len and src[i + 1] in {'(', '[', '{'}):
       i = matchingCloseOffset(src, i)
     else:
@@ -320,7 +328,9 @@ proc nameSelectionRange(src: string, starts: seq[int],
   ## The token after the head symbol — the declared name — as an LSP range.
   ## Falls back to the head token when the form has no name.
   var i = formOffset
-  if i < src.len and src[i] == '(':
+  if src.continuesWith("#@", i):
+    i += 2
+  elif i < src.len and src[i] == '(':
     inc i
   let headStart = nextTokenStart(src, i)
   let headEnd = tokenEnd(src, headStart)

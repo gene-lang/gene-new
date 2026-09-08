@@ -99,6 +99,35 @@ Annotations are optional. `: T` checks a parameter, binding, or result against
 T. Common type expressions include `Int`, `Str`, `Bool`, `(List Int)`,
 `(| Int Str)`, and `Int?`. `Any` is the gradual top type.
 
+### Wrapping an expression with #@
+
+`#@` wraps the next two complete forms as `(head argument)`. It is useful when
+temporarily adding a call around an existing expression:
+
+```text
+#@$println x       → ($println x)
+#@ (x) y           → ((x) y)
+#@f #@g x          → (f (g x))
+[1 #@f x 3]        → [1 (f x) 3]
+```
+
+Whitespace after `#@` is optional, and newlines are ordinary whitespace. The
+reader always consumes two forms: `#@f x y` leaves `y` outside the wrapper.
+Use parentheses for a call with multiple arguments or named properties.
+
+This is ordinary call syntax, so `$println` still returns nil. To print a value
+and keep using it, return it from a helper:
+
+```gene runnable
+(fn tap [value]
+  ($println value)
+  value)
+(* 2 #@tap (+ 20 1)) # prints 21; result is 42
+```
+
+The prefix also works under quote. `gene fmt` preserves `#@` while normalizing
+layout; canonical printing expands it to the ordinary parenthesized form.
+
 ### Optional, named, and rest arguments
 
 A fixed parameter admitting nil gets an implicit nil default. An explicit

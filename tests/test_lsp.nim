@@ -192,6 +192,27 @@ suite "lsp — analysis":
     check a4.symbols[0].name == "real2"
     check a4.symbols[0].selectionRange.start.character == src4.find("real2")
 
+  test "wrapping prefixes do not hide closers or consume adjacent declarations":
+    let src = "(fn one [x] #@f x)\n(fn two [] 2)"
+    let a = analyze(src)
+    check a.parsed
+    check a.symbols.len == 2
+    check a.symbols[0].range.endPos.line == 0
+    check a.symbols[0].range.endPos.character == src.find('\n')
+    check a.symbols[1].name == "two"
+    let discarded = "(fn #_ #@old name real [x] x)"
+    let b = analyze(discarded)
+    check b.parsed
+    check b.symbols[0].name == "real"
+    check b.symbols[0].selectionRange.start.character == discarded.find("real")
+    let prefixed = "#@ ns stats\n#@ protocol Named"
+    let c = analyze(prefixed)
+    check c.parsed
+    check c.symbols.len == 2
+    check c.symbols[0].name == "stats"
+    check c.symbols[0].range.endPos.character == prefixed.find('\n')
+    check c.symbols[0].selectionRange.start.character == prefixed.find("stats")
+
   test "flattenDefs carries container names and signatures":
     let a = analyze(lspSample)
     let defs = flattenDefs(a.symbols, lspSample)

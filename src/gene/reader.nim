@@ -21,6 +21,7 @@ type
     tkHashLBracket,          # #[
     tkHashLBrace,            # #{
     tkRef, tkDeref,          # #Ref #Deref
+    tkWrap,                 # #@ head argument -> (head argument)
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # removed spaced ~ surface; the parser rejects it
@@ -50,6 +51,12 @@ type
     maxDepth*: int              # 0 means unlimited
     rejectDuplicateProps*: bool
 
+  WrapSyntax* = object
+    ## Authored operands before ordinary node normalization. Tooling-only
+    ## provenance: the runtime form is just the corresponding ordinary node.
+    head*, argument*: Value
+    expanded*: Value # keeps occurrence identity alive even in a discarded datum
+
   ReadContextEntry = object
     kind: TokenKind
     line, col: int
@@ -72,6 +79,7 @@ type
     parseDepth: int
     context: ReadContextStack
     locs: Table[uint64, SourceLoc]
+    wraps: Table[uint64, WrapSyntax]
     captureTrivia: bool
     spannedTokens: seq[SpannedToken]
 
@@ -91,6 +99,7 @@ type
     forms*: seq[Value]
     formLocs*: seq[SourceLoc]
     locs*: Table[uint64, SourceLoc]
+    wraps*: Table[uint64, WrapSyntax]
 
 proc sourceLoc(tok: Token, sourceName: string): SourceLoc =
   SourceLoc(sourceName: sourceName, line: tok.line, col: tok.col)
@@ -841,6 +850,9 @@ proc tokenizeImpl(r: var Reader,
         r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
         trackDelimiter(tkHashLBrace)
       of '_': r.advance(); r.addToken(tkUnderscore, "#_", startLine, startCol, startByte)
+      of '@':
+        r.advance()
+        r.addToken(tkWrap, "#@", startLine, startCol, startByte)
       of 'R':
         if r.src.continuesWith("Ref", r.pos) and
             (r.pos + 3 >= r.src.len or not isSymbolChar(r.src[r.pos + 3])):
@@ -1087,6 +1099,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkHashLBrace: "hash_l_brace"
   of tkRef: "ref"
   of tkDeref: "deref"
+  of tkWrap: "wrap"
   of tkCaret: "caret"
   of tkCaretCaret: "caret_caret"
   of tkAt: "at"
@@ -1924,9 +1937,18 @@ proc interpolationExpressionEnd(lexeme, sourceName: string,
       "unterminated interpolation '" & $lexeme[start] & "...'")
   expressionReader.pos
 
+proc readInterpolationForm(src, sourceName: string, options: ReadOptions,
+                           wraps: var Table[uint64, WrapSyntax]): Value =
+  var inner = initReader(src, sourceName, options)
+  inner.tokenize()
+  inner.skipDatumComments()
+  result = if inner.peekKind() == tkEof: NIL else: inner.parseForm()
+  for key, syntax in inner.wraps:
+    wraps[key] = syntax
+
 proc parseInterpolatedString(lexeme, sourceName: string,
-                             line, col: int,
-                             options: ReadOptions = ReadOptions()): Value =
+                             line, col: int, options: ReadOptions,
+                             wraps: var Table[uint64, WrapSyntax]): Value =
   var body = newSeq[Value]()
   var i = 0
   var last = 0
@@ -1936,19 +1958,35 @@ proc parseInterpolatedString(lexeme, sourceName: string,
       let start = i + 1
       i = interpolationExpressionEnd(lexeme, sourceName, start, line, col)
       let exprStr = lexeme[start + 1 ..< i - 1]
-      body.add read(exprStr, sourceName, options)
+      body.add readInterpolationForm(exprStr, sourceName, options, wraps)
       last = i
     elif lexeme[i..^1].startsWith("$("):
       if i > last: body.add newStr(lexeme[last ..< i])
       let start = i + 1
       i = interpolationExpressionEnd(lexeme, sourceName, start, line, col)
       let exprStr = lexeme[start ..< i]
-      body.add read(exprStr, sourceName, options)
+      body.add readInterpolationForm(exprStr, sourceName, options, wraps)
       last = i
     else:
       inc i
   if last < lexeme.len: body.add newStr(lexeme[last..^1])
   newNode(newSym("$"), body = body)
+
+proc parseWrapOperand(r: var Reader, marker: Token, label: string): Value =
+  r.skipDatumComments()
+  while r.peekKind() == tkComma:
+    discard r.next()
+    r.skipDatumComments()
+  if r.peekKind() == tkEof:
+    raiseReadIncompleteAt(r.sourceName, marker.line, marker.col,
+      "#@ requires " & label, r.context.snapshot(r.sourceName))
+  if r.peekKind() in {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret,
+      tkAt, tkAtAt, tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
+    r.raiseReadErrorAt(r.peek(), "#@ requires " & label &
+      "; use parentheses for multiple arguments or named properties")
+  # A wrapper is an ordinary node even inside a flat parameter/list vector.
+  # Its operands use expression parsing, including paths and nested prefixes.
+  r.parseForm(inList = false)
 
 proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()
@@ -2017,6 +2055,14 @@ proc parseForm(r: var Reader, inList = false): Value =
                      body = @[desugarPath("gene/" & tok.lexeme[0..^4],
                                           r.sourceName, tok.line, tok.col)])
     finish desugarPath("gene/" & tok.lexeme, r.sourceName, tok.line, tok.col)
+  of tkWrap:
+    let head = r.parseWrapOperand(tok, "a head and an argument")
+    let argument = r.parseWrapOperand(tok, "an argument after its head")
+    let wrapped = finishNodeSegment(head, initPropTable(), @[argument],
+                                    initPropTable(), false)
+    r.wraps[wrapped.bits] = WrapSyntax(head: head, argument: argument,
+                                      expanded: wrapped)
+    finish wrapped
   of tkRef, tkDeref:
     let nameTok = r.next()
     if nameTok.kind == tkEof:
@@ -2087,7 +2133,7 @@ proc parseForm(r: var Reader, inList = false): Value =
         nextTok.col == tok.col + 1:
       let s = r.next()
       finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col,
-                                     r.options)
+                                     r.options, r.wraps)
     finish newSym("$")
   of tkRParen, tkRBracket, tkRBrace:
     r.raiseReadErrorAt(tok, "unexpected closing delimiter '" & tok.lexeme & "'")
@@ -2117,6 +2163,7 @@ proc readAllWithLocs*(src: string, sourceName = "",
     result.formLocs.add before.sourceLoc(sourceName)
   result.sourceName = sourceName
   result.locs = r.locs
+  result.wraps = move(r.wraps)
   # Moved, not copied: `initReader` already took a copy of the text and the
   # reader is finished with it here, so carrying the source on the unit costs
   # nothing beyond the copy the read already paid for. Assigning `src` instead

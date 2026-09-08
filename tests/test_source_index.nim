@@ -3,6 +3,28 @@ import gene/reader
 import tools/[source_index, source_positions]
 
 suite "source index — reader-backed occurrences":
+  test "wrapping prefixes occupy one form and expose head and argument":
+    let source = "[#@f #@g x tail]"
+    let doc = indexSource(source)
+    let rows = doc.children(doc.root)
+    check doc.diagnostics.len == 0
+    check rows.len == 2
+    check rows[0].syntax.kind == skNode
+    check rows[0].summary == "#@f #@g x"
+    let wrapped = doc.children(rows[0].syntax)
+    check wrapped.len == 2
+    check wrapped[0].label == "head"
+    check wrapped[0].summary == "f"
+    check wrapped[1].label == "0"
+    check wrapped[1].summary == "#@g x"
+    check rows[1].summary == "tail"
+
+  test "wrappers respect comments and report incomplete operands":
+    let doc = indexSource("#_ #@f x\n#@ g # comment\n y\nnext")
+    check doc.topLevel.len == 2
+    check doc.children(doc.root)[0].summary == "#@ g # comment y"
+    check indexSource("[#@f]").diagnostics.len > 0
+
   test "tokens carry exact raw spans despite cooked lexemes":
     let source = "\"a\\n\" 42 # note\n"
     let tokens = lexAllSpanned(source, includeTrivia = true)
