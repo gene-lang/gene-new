@@ -1207,7 +1207,7 @@ suite "eval capability ceilings":
         (with_capabilities [(fs/ReadFile first)]
           (eval (quote
             (do
-              (fn produce []
+              (fn ^^generator produce []
                 (yield ($fs/read_text first))
                 (yield ($fs/read_text second)))
               (produce))) ^in saved)))
@@ -1236,7 +1236,7 @@ suite "eval capability ceilings":
       (let closed ($cell false))
       (let saved (env ^capabilities [(fs/ReadFile first)]))
       (let rows (eval (quote
-        (do (fn produce []
+        (do (fn ^^generator produce []
               (try (yield ($fs/read_text first))
                 ensure (closed .set (check_capabilities (fs/ReadFile first)))))
             (produce))) ^in saved))

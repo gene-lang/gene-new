@@ -228,7 +228,7 @@ suite "pipeline — prepared lazy invocation":
   test "each closes on callback errors and preserves the original error":
     pipelineCheck """
       (let log [])
-      (fn rows []
+      (fn ^^generator rows []
         (try (yield 1) (yield 2)
          ensure (log .push "close")
                 (fail (RuntimeError ^message "cleanup"))))
@@ -426,7 +426,7 @@ suite "pipeline — prepared lazy invocation":
 
   test "skip loops retain the consuming caller's execution budget":
     pipelineCheck """
-      (fn naturals [] (var n 0) (while true (yield n) (set n (+ n 1))))
+      (fn ^^generator naturals [] (var n 0) (while true (yield n) (set n (+ n 1))))
       (let pending ($filter_map (naturals) (fn [x] void)))
       (let consume ($runtime/bind_call (fn [] (pending .next)) []
                     ^policy {^max_steps 100}))
@@ -449,7 +449,7 @@ when defined(posix):
         (let full ([1] => read))
         (let narrow (with_capabilities [] ([1] => read)))
         (let later ([1] => read))
-        (fn rows ^capabilities * [] (yield ($fs/read_text file)))
+        (fn ^^generator rows ^capabilities * [] (yield ($fs/read_text file)))
         (let producer (rows))
         (let high_source (rows))
         (let narrow_source (with_capabilities [] (high_source => (fn [x] x))))

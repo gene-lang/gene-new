@@ -56,6 +56,27 @@ proc startTestLsp(): Process =
     startProcess(exe, options = {poUsePath})
 
 suite "lsp — analysis":
+  test "generator declarations keep their name and multiline Stream signature":
+    let source = "(fn ^^generator values\n  [limit : Int]\n  : (Stream Int Never)\n  (yield limit))"
+    let parsed = analyze(source)
+    check parsed.parsed
+    let symbol = findSym(parsed.symbols, "values")
+    check symbol.detail == "generator"
+    check symbol.selectionRange.start.character == 16
+    let definitions = flattenDefs(parsed.symbols, source)
+    check "^^generator values" in definitions[0].signature
+    check "(Stream Int Never)" in definitions[0].signature
+    check "yield" notin definitions[0].signature
+    let literal = analyze("(fn ^generator true values [] (yield 1))")
+    check findSym(literal.symbols, "values").selectionRange.start.character == 20
+    for source in ["(fn values [] ^^generator (yield 1))",
+                   "(fn values [] : (Stream Int Never) ^^generator (yield 1))",
+                   "(fn values [] (yield 1) ^^generator)"]:
+      let symbols = analyze(source).symbols
+      let signature = flattenDefs(symbols, source)[0].signature
+      check "^^generator" in signature
+      check "yield" notin signature
+
   test "document symbols cover declaration forms with nesting":
     let a = analyze(lspSample)
     check a.parsed

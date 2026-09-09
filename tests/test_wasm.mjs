@@ -77,6 +77,17 @@ const cases = [
   ['(fn drop [x] (if (== x 1) void nil)) ' +
    '($into ($filter_map ($to_stream [1 2]) drop) [])', 0, "[nil]", ""],
   ['($str/join ["a" "b"] "-")', 0, '"a-b"', ""],
+  ['(fn ^^generator empty [] (return)) ((empty) .has_next)', 0, "false", ""],
+  ['(let produce (fn ^^generator [] (yield 1) (yield 2))) ' +
+   '((produce) -> $into [])', 0, "[1 2]", ""],
+  ['(type Parent ^props {^n Int} ' +
+   '(message ^^generator values [] : (Stream Int Never) (yield self/n))) ' +
+   '(type Child : Parent ^props {}) (((Child ^n 7) .values) -> $into [])',
+   0, "[7]", ""],
+  ['(fn ^^generator bad [] : (Stream Int Never) ' +
+   '(try (yield 1) ensure (fail (AssertionError ^message "cleanup")))) ' +
+   '(let s (bad)) (s .next) (try (s .close) false catch ErrorContractViolation true)',
+   0, "true", ""],
   ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +
    '(var touched ($cell false)) ' +

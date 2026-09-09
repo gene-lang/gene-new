@@ -365,10 +365,12 @@ can place it elsewhere. `=>` prepares a lazy per-item stage:
 consumption, and `$each` runs per-item effects. `;` is different: it folds calls
 into the next head and has no pipeline slot behavior.
 
-A function containing `yield` returns a Stream:
+Declare a generator with `^^generator`. Calling it returns a Stream; its body
+runs when the Stream is pulled. `yield` requires this marker, and a trailing
+`*` in the name is only a naming convention:
 
 ```gene runnable
-(fn naturals []
+(fn ^^generator naturals []
   (var n 0)
   (while true (yield n) (set n (+ n 1))))
 ((naturals) => * 2 -> $take 4 -> $into [])
@@ -378,6 +380,11 @@ A function containing `yield` returns a Stream:
 Raw `yield void` emits nothing. Stream consumers and `close` manage upstream
 cleanup; an early close runs suspended `ensure` blocks. Do not assume a lazy
 pipeline has executed because it was constructed.
+
+Messages also accept `^^generator`; inherited messages retain their execution
+kind. Ordinary functions and messages may return Streams without being
+generators. See the [generator and Stream contract](spec/streams.md) and
+[generator example](../examples/generators.gene).
 
 ## Modules
 

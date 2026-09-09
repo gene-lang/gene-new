@@ -335,7 +335,7 @@ when defined(geneRcStats):
                           "(fn go [k] ($into ($filter ($to_stream items) (mk k)) [])) " &
                           "(go \"a\")") == 0
       check leakedManaged("($freeze [1 {^a [2]}])") == 0
-      check leakedManaged("(fn gen [] (yield 1)) " &
+      check leakedManaged("(fn ^^generator gen [] (yield 1)) " &
                           "(var s (gen)) " &
                           "(s .next) " &
                           "(s .close)") == 0
@@ -460,7 +460,7 @@ when defined(geneRcStats):
         var scope = newGlobalScope()
         stream = run(compileSource(
           "(var x 41) " &
-          "(fn gen [] : (Stream Int Never) (yield (+ x 1))) " &
+          "(fn ^^generator gen [] : (Stream Int Never) (yield (+ x 1))) " &
           "(gen)"), scope)
         scope = nil
       GC_fullCollect()

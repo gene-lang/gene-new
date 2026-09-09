@@ -319,7 +319,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["loop", "continue"], "(loop (continue))")
     fixture(["repeat"], "(repeat 0 nil)")
     fixture(["for"], "(for x in [] x)")
-    fixture(["yield"], "(fn items [] (yield 1))")
+    fixture(["yield"], "(fn ^^generator items [] (yield 1))")
     fixture(["return"], "(fn early [] (return 1))")
     fixture(["try"], "(try 1 ensure nil)")
     fixture(["scope"], "(scope nil)")
@@ -505,14 +505,14 @@ suite "spec — sequenced value pipelines":
                "[4 8 12]")
 
   test "an unbounded producer flows through without materializing":
-    check_eval("(fn nat* [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
+    check_eval("(fn ^^generator nat [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
                "(fn twice [x] (* x 2)) " &
-               "((nat*) => twice -> $take 4 -> $into [])",
+               "((nat) => twice -> $take 4 -> $into [])",
                "[0 2 4 6]")
-    check_eval("(fn nat* [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
+    check_eval("(fn ^^generator nat [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
                "(var runs ($cell 0)) " &
                "(fn counted [n] (runs .update (fn [c] (+ c 1))) n) " &
-               "[((nat*) => counted -> $take 3 -> $into []) runs/.get]",
+               "[((nat) => counted -> $take 3 -> $into []) runs/.get]",
                "[[0 1 2] 3]")
 
   test "an iterate stage evaluates its callee and arguments once":
@@ -2946,7 +2946,7 @@ int main(void) {
 
   test "task-frame lowering metadata is emitted for resumable functions":
     let chunk = compileSource("(fn wait [t : (Task Int Never)] : Int (await t)) " &
-                              "(fn ints [] : (Stream Int Never) (yield 1))")
+                              "(fn ^^generator ints [] : (Stream Int Never) (yield 1))")
     check chunk.functions[0].taskFrameKind == tfkVm
     check chunk.functions[1].taskFrameKind == tfkGenerator
     check "task-frame=vm" in chunk.disassemble()
@@ -4337,7 +4337,7 @@ suite "spec — generic functions from design":
     check_eval("(fn (get key value) [m : (Map key value)] : value m/a) " &
                "(get {^a 9})",
                "9")
-    check_eval("(fn ints [] : (Stream Int Never) (yield 7)) " &
+    check_eval("(fn ^^generator ints [] : (Stream Int Never) (yield 7)) " &
                "(fn (first item err) [s : (Stream item err)] : item " &
                "  (s .next)) " &
                "(first (ints))",
@@ -6369,7 +6369,7 @@ suite "spec — streams from design":
 
   test "yield functions return lazy streams":
     check_eval("(var hits ($cell 0)) " &
-               "(fn gen [] : (Stream Int Never) " &
+               "(fn ^^generator gen [] : (Stream Int Never) " &
                "  (hits .set 1) " &
                "  (yield 10) " &
                "  (hits .set 2) " &
@@ -6384,7 +6384,7 @@ suite "spec — streams from design":
                "[0 10 1 20 2 false]")
 
   test "yield skips void and resumes while loops":
-    check_eval("(fn nums [] : (Stream Int Never) " &
+    check_eval("(fn ^^generator nums [] : (Stream Int Never) " &
                "  (var i 0) " &
                "  (while (< i 3) " &
                "    (yield (if (== i 1) void i)) " &
@@ -6399,7 +6399,7 @@ suite "spec — streams from design":
     check_eval("(var hits ($cell 0)) " &
                "(var source ($map ($to_stream [1 2 3]) " &
                "  (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
-               "(fn copy [s] : (Stream Int Never) " &
+               "(fn ^^generator copy [s] : (Stream Int Never) " &
                "  (for x in s (yield x))) " &
                "(var out (copy source)) " &
                "[hits/.get " &
@@ -6411,7 +6411,7 @@ suite "spec — streams from design":
     check_eval("(var hits ($cell 0)) " &
                "(var source ($map ($to_stream [1 2 3]) " &
                "  (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
-               "(fn take-one [s] : (Stream Int Never) " &
+               "(fn ^^generator take-one [s] : (Stream Int Never) " &
                "  (for x in s " &
                "    (if (== x 2) (then (break))) " &
                "    (yield x))) " &
@@ -6427,7 +6427,7 @@ suite "spec — streams from design":
                "     (first ($to_stream [\"bad\"])) " &
                "catch TypeError $err/where)",
                "\"Stream/next item\"")
-    check_eval("(try (fn bad [] : (Stream Int Never) (yield \"bad\")) " &
+    check_eval("(try (fn ^^generator bad [] : (Stream Int Never) (yield \"bad\")) " &
                "     (var s (bad)) " &
                "     (s .next) " &
                "catch TypeError $err/where)",
@@ -6438,7 +6438,7 @@ suite "spec — streams from design":
       discard compileSource("(yield 1)")
 
   test "yield-void skips the item but does not leave the generator":
-    check_eval("(fn skip [] : (Stream Int Never) " &
+    check_eval("(fn ^^generator skip [] : (Stream Int Never) " &
                "  (yield 1) " &
                "  (yield void) " &
                "  (yield 2)) " &
@@ -6449,7 +6449,7 @@ suite "spec — streams from design":
                "[1 2 false]")
 
   test "natural fall-through closes the generator with no item remaining":
-    check_eval("(fn two [] : (Stream Int Never) " &
+    check_eval("(fn ^^generator two [] : (Stream Int Never) " &
                "  (yield 1) " &
                "  (yield 2)) " &
                "(var s (two)) " &
@@ -6469,7 +6469,7 @@ suite "spec — streams from design":
                "     (upstream .next))]",
                "[1 2 false true 3]")
     check_eval("(var closes ($cell 0)) " &
-               "(fn source [] : (Stream Int Never) " &
+               "(fn ^^generator source [] : (Stream Int Never) " &
                "  (try (yield 1) (yield 2) " &
                "   ensure (closes .update (fn [n] (+ n 1))))) " &
                "(var upstream (source)) " &
@@ -6485,7 +6485,7 @@ suite "spec — streams from design":
                "[7 9]")
     check_eval("(var log ($cell [])) " &
                "(fn note [x] (log .update (fn [xs] [xs... x]))) " &
-               "(fn gen [] : (Stream Int Never) " &
+               "(fn ^^generator gen [] : (Stream Int Never) " &
                "  (try " &
                "    (try (yield 1) (return) " &
                "     ensure (note `inner)) " &
@@ -6499,7 +6499,7 @@ suite "spec — streams from design":
                "[done log/.get]",
                "[false [inner outer inner outer]]")
     expect GeneError:
-      discard compileSource("(fn bad [] : (Stream Int Never) " &
+      discard compileSource("(fn ^^generator bad [] : (Stream Int Never) " &
                             "  (yield 1) (return 2))")
     expect GeneError:
       discard compileSource("(return 1)")
@@ -6509,7 +6509,7 @@ suite "spec — streams from design":
                "(impl Error for Boom) " &
                "(var calls ($cell 0)) " &
                "(var closes ($cell 0)) " &
-               "(fn source [] : (Stream Int Never) " &
+               "(fn ^^generator source [] : (Stream Int Never) " &
                "  (try (yield 1) " &
                "   ensure (closes .update (fn [n] (+ n 1))))) " &
                "(var s ($map (source) " &
@@ -6525,7 +6525,7 @@ suite "spec — streams from design":
     check_eval("(type GenBoom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for GenBoom) " &
                "(var runs ($cell 0)) " &
-               "(fn bad ^errors [GenBoom] [] : (Stream Int GenBoom) " &
+               "(fn ^^generator bad ^errors [GenBoom] [] : (Stream Int GenBoom) " &
                "  (yield 1) " &
                "  (runs .update (fn [n] (+ n 1))) " &
                "  (fail (GenBoom ^message \"generator failed\"))) " &

@@ -1,2 +1,2 @@
 (mod transpile_web_stream ^profile web)
-(fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2))
+(fn ^^generator values [] : (Stream Int Never) (yield 1) (yield void) (yield 2))

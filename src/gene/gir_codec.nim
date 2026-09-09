@@ -9,7 +9,7 @@ import ./[gir, printer, reader, types]
 
 # Error summaries and strict proof dependencies retain native model identities,
 # in addition to invocation, deferred, and module-initialization contracts.
-const GirArtifactFormat* = 14
+const GirArtifactFormat* = 15
 
 proc toJsonHook(scope: Scope): JsonNode =
   if scope != nil:

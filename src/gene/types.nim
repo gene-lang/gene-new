@@ -3827,15 +3827,18 @@ proc streamHasNext*(v: Value): bool =
     if data.closed:
       return false
     try:
-      return data.source.streamHasNext()
+      result = data.source.streamHasNext()
     except CatchableError as producerError:
       try:
-        v.closeStream()
-      except CatchableError:
-        discard
-      if data.checkFailure != nil:
-        data.checkFailure(v, producerError)
+        if data.checkFailure != nil:
+          data.checkFailure(v, producerError)
+      finally:
+        try: v.closeStream()
+        except CatchableError: discard
       raise
+    if not result:
+      v.closeStream()
+    return
   data.skipStreamVoids()
   not data.closed and data.index < data.items.len
 
@@ -3850,11 +3853,11 @@ proc streamPeek*(v: Value): Value =
       return data.source.streamPeek
     except CatchableError as producerError:
       try:
-        v.closeStream()
-      except CatchableError:
-        discard
-      if data.checkFailure != nil:
-        data.checkFailure(v, producerError)
+        if data.checkFailure != nil:
+          data.checkFailure(v, producerError)
+      finally:
+        try: v.closeStream()
+        except CatchableError: discard
       raise
   data.items[data.index]
 
@@ -3874,6 +3877,11 @@ proc closeStream*(v: Value) =
   let data = streamData(v)
   if data.closed:
     return
+  defer:
+    # Closed cursors cannot produce another typed item or failure. Retiring
+    # their annotation environment also breaks owner/parameter-view cycles.
+    var retired = move data.itemScope
+    retired = nil
   data.closed = true
   data.buffered = false
   data.buffer = NIL
@@ -3902,6 +3910,8 @@ proc closeStream*(v: Value) =
   data.items.setLen(0)
   data.index = 0
   if firstError != nil:
+    if data.checkFailure != nil:
+      data.checkFailure(v, firstError)
     raise firstError
 
 proc detachStreamSource*(v: Value) =

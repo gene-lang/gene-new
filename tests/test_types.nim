@@ -1935,7 +1935,7 @@ suite "types — function boundaries":
        "\"Int\""
 
   test "generic functions infer typed stream item types":
-    ck "(fn nums [] : (Stream Int Never) (yield 4)) " &
+    ck "(fn ^^generator nums [] : (Stream Int Never) (yield 4)) " &
        "(fn (first item err) [s : (Stream item err)] : item (s .next)) " &
        "(first (nums))",
        "4"

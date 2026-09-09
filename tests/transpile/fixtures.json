@@ -1128,8 +1128,8 @@
     },
     {
       "id": "stream.yield_skip_and_pull",
-      "source": "(fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0)",
-      "web_source": "(mod stream_yield_pull ^profile web) (fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (fn run [] : Int (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0))",
+      "source": "(fn ^^generator values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0)",
+      "web_source": "(mod stream_yield_pull ^profile web) (fn ^^generator values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (fn run [] : Int (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1578,7 +1578,7 @@
     {
       "id": "rejected.async_generator",
       "source": "1",
-      "web_source": "(mod rejected_async_generator ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn numbers [] : (Stream Int Never) (yield (inner)))",
+      "web_source": "(mod rejected_async_generator ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn ^^generator numbers [] : (Stream Int Never) (yield (inner)))",
       "expected_value": {
         "kind": "int",
         "value": "1"
@@ -3370,8 +3370,8 @@
     },
     {
       "id": "callable.lazy_result",
-      "source": "(fn make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true)) (run)",
-      "web_source": "(mod callable_lazy_result ^profile web) (fn make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true))",
+      "source": "(fn ^^generator make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_lazy_result ^profile web) (fn ^^generator make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3385,8 +3385,8 @@
     },
     {
       "id": "callable.deferred_errors",
-      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)]) (run)",
-      "web_source": "(mod callable_deferred_errors ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)])",
+      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn ^^generator make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)]) (run)",
+      "web_source": "(mod callable_deferred_errors ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn ^^generator make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3448,8 +3448,8 @@
     },
     {
       "id": "callable.stream_callbacks",
-      "source": "(fn wrong [x : Int] : Any \"bad\") (fn make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true)) (run)",
-      "web_source": "(mod callable_stream_callbacks ^profile web) (fn wrong [x : Int] : Any \"bad\") (fn make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true))",
+      "source": "(fn wrong [x : Int] : Any \"bad\") (fn ^^generator make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_stream_callbacks ^profile web) (fn wrong [x : Int] : Any \"bad\") (fn ^^generator make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3608,8 +3608,8 @@
     },
     {
       "id": "callable.stream_error_contract",
-      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true)) (run)",
-      "web_source": "(mod callable_stream_error_contract ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true))",
+      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn ^^generator make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true)) (run)",
+      "web_source": "(mod callable_stream_error_contract ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn ^^generator make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -4894,6 +4894,367 @@
         "status": "eligible"
       },
       "expected_error": null
+    },
+    {
+      "id": "generator.empty",
+      "source": "(fn ^^generator empty [] : (Stream Int Never) (return)) (fn run [] : Bool (! ((empty) .has_next))) (run)",
+      "web_source": "(mod generator_empty ^profile web) (fn ^^generator empty [] : (Stream Int Never) (return)) (fn run [] : Bool (! ((empty) .has_next)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.dynamic_targets",
+      "source": "(fn eager [seen : (List Int)] : (Stream Int Never) (seen .push 2) ($to_stream [2]))\n(fn ^^generator lazy [seen : (List Int)] : (Stream Int Never) (seen .push 1) (yield 1))\n(fn invoke [f : (Callable [(List Int)] (Stream Int Never)), seen : (List Int)] : (Stream Int Never) (f seen)) (fn run [] : (List Int) (let seen : (List Int) []) (let a (invoke eager seen)) (let produce lazy) (let b (invoke produce seen))\n(let initial ($size seen)) (let first (a .next)) (let second (b .next)) [initial first second ($size seen)]) (run)",
+      "web_source": "(mod generator_dynamic_targets ^profile web) (fn eager [seen : (List Int)] : (Stream Int Never) (seen .push 2) ($to_stream [2]))\n(fn ^^generator lazy [seen : (List Int)] : (Stream Int Never) (seen .push 1) (yield 1))\n(fn invoke [f : (Callable [(List Int)] (Stream Int Never)), seen : (List Int)] : (Stream Int Never) (f seen)) (fn run [] : (List Int) (let seen : (List Int) []) (let a (invoke eager seen)) (let produce lazy) (let b (invoke produce seen))\n(let initial ($size seen)) (let first (a .next)) (let second (b .next)) [initial first second ($size seen)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.lookahead_cleanup",
+      "source": "(fn ^^generator items [seen : (List Int)] : (Stream Int Never)\n(try (seen .push 1) (yield 10) (seen .push 2) (yield 20) ensure (seen .push 3))) (fn run [] : (List Int) (let seen : (List Int) []) (let s (items seen)) (let initial ($size seen))\n(s .has_next) (let once ($size seen)) (s .peek) (s .peek) (let twice ($size seen))\n(let value (s .next)) (s .close) (s .close) [initial once twice value ($size seen)]) (run)",
+      "web_source": "(mod generator_lookahead_cleanup ^profile web) (fn ^^generator items [seen : (List Int)] : (Stream Int Never)\n(try (seen .push 1) (yield 10) (seen .push 2) (yield 20) ensure (seen .push 3))) (fn run [] : (List Int) (let seen : (List Int) []) (let s (items seen)) (let initial ($size seen))\n(s .has_next) (let once ($size seen)) (s .peek) (s .peek) (let twice ($size seen))\n(let value (s .next)) (s .close) (s .close) [initial once twice value ($size seen)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "0"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "10"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.close_unstarted",
+      "source": "(fn ^^generator items [seen : (List Int)] : (Stream Int Never)\n(try (seen .push 1) (yield 10) ensure (seen .push 2))) (fn run [] : Int (let seen : (List Int) []) (let s (items seen)) (s .close) ($size seen)) (run)",
+      "web_source": "(mod generator_close_unstarted ^profile web) (fn ^^generator items [seen : (List Int)] : (Stream Int Never)\n(try (seen .push 1) (yield 10) ensure (seen .push 2))) (fn run [] : Int (let seen : (List Int) []) (let s (items seen)) (s .close) ($size seen))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.close_row",
+      "source": "(type Cleanup ^props {^message Str}) (impl Error for Cleanup) (fn ^^generator values [] : (Stream Int Never)\n(try (yield 1) ensure (fail (Cleanup ^message \"close\")))) (fn run [] : Str (let s (values)) (s .next)\n(try (s .close) \"missing\" catch ErrorContractViolation $err/cause/message)) (run)",
+      "web_source": "(mod generator_close_row ^profile web) (type Cleanup ^props {^message Str}) (impl Error for Cleanup) (fn ^^generator values [] : (Stream Int Never)\n(try (yield 1) ensure (fail (Cleanup ^message \"close\")))) (fn run [] : Str (let s (values)) (s .next)\n(try (s .close) \"missing\" catch ErrorContractViolation $err/cause/message))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "close"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.close_first_error",
+      "source": "(type Cleanup ^props {^message Str}) (impl Error for Cleanup) (fn ^^generator values [] : (Stream Int Cleanup)\n(try (try (yield 1) ensure (fail (Cleanup ^message \"first\"))) ensure (fail (Cleanup ^message \"second\")))) (fn run [] : Str (let s (values)) (s .next) (try (s .close) \"missing\" catch Cleanup $err_msg)) (run)",
+      "web_source": "(mod generator_close_first_error ^profile web) (type Cleanup ^props {^message Str}) (impl Error for Cleanup) (fn ^^generator values [] : (Stream Int Cleanup)\n(try (try (yield 1) ensure (fail (Cleanup ^message \"first\"))) ensure (fail (Cleanup ^message \"second\")))) (fn run [] : Str (let s (values)) (s .next) (try (s .close) \"missing\" catch Cleanup $err_msg))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "first"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.close_yielding_cleanup",
+      "source": "(fn ^^generator values [seen : (List Int)] : (Stream Int Never)\n(try (yield 1) ensure (yield 99) (seen .push 2))) (fn run [] : Int (let seen : (List Int) []) (let s (values seen)) (s .next) (s .close) ($size seen)) (run)",
+      "web_source": "(mod generator_close_yielding_cleanup ^profile web) (fn ^^generator values [seen : (List Int)] : (Stream Int Never)\n(try (yield 1) ensure (yield 99) (seen .push 2))) (fn run [] : Int (let seen : (List Int) []) (let s (values seen)) (s .next) (s .close) ($size seen))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.unmarked",
+      "source": "(fn values [] : (Stream Int Never) (yield 1))",
+      "web_source": "(mod generator_unmarked ^profile web) (fn values [] : (Stream Int Never) (yield 1))",
+      "expected_value": null,
+      "expected_error": "^^generator",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "diagnostic": "^^generator",
+        "reason": "^^generator"
+      }
+    },
+    {
+      "id": "generator.invalid_flag",
+      "source": "(fn ^generator 1 values [] : (Stream Int Never) (return))",
+      "web_source": "(mod generator_invalid_flag ^profile web) (fn ^generator 1 values [] : (Stream Int Never) (return))",
+      "expected_value": null,
+      "expected_error": "literal Bool",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "diagnostic": "literal Bool",
+        "reason": "literal Bool"
+      }
+    },
+    {
+      "id": "generator.wrong_result",
+      "source": "(fn ^^generator values [] : Int (return))",
+      "web_source": "(mod generator_wrong_result ^profile web) (fn ^^generator values [] : Int (return))",
+      "expected_value": null,
+      "expected_error": "generator return annotation",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "diagnostic": "generator return annotation",
+        "reason": "generator return annotation"
+      }
+    },
+    {
+      "id": "generator.anonymous_web_rejection",
+      "source": "(fn run [] : Bool (let empty (fn ^^generator [] : (Stream Int Never) (return))) (! ((empty) .has_next))) (run)",
+      "web_source": "(mod generator_anonymous ^profile web) (fn run [] : Bool (let empty (fn ^^generator [] : (Stream Int Never) (return))) (! ((empty) .has_next)))",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "diagnostic": "web callback cannot be a generator",
+        "reason": "web callback cannot be a generator"
+      }
+    },
+    {
+      "id": "generator.message_inheritance",
+      "source": "(type Parent ^props {^n Int}\n(message ^^generator values [events : (List Int), offset : Int = (do (events .push 1) 3)] : (Stream Int Never)\n(events .push 2) (yield (+ self/n offset)))) (type Child : Parent ^props {}) (fn run [] : (List Int) (let events : (List Int) []) (let stream ((Child ^n 4) .values events))\n(let before ($size events)) (let value (stream .next)) [before value ($size events)]) (run)",
+      "web_source": "(mod generator_message_inheritance ^profile web) (type Parent ^props {^n Int}\n(message ^^generator values [events : (List Int), offset : Int = (do (events .push 1) 3)] : (Stream Int Never)\n(events .push 2) (yield (+ self/n offset)))) (type Child : Parent ^props {}) (fn run [] : (List Int) (let events : (List Int) []) (let stream ((Child ^n 4) .values events))\n(let before ($size events)) (let value (stream .next)) [before value ($size events)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "7"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.inheriting_impl",
+      "source": "(protocol Items (message values [] : (Stream Int Never)) (message label [] : Str))\n(type Parent ^props {^n Int}) (type Child : Parent ^props {})\n(impl Items for Parent (message ^^generator values [] : (Stream Int Never) (yield self/n)) (message label [] : Str \"parent\"))\n(impl Items for Child ^^override (message label [] : Str \"child\")) (fn run [] : (List Any) (let child (Child ^n 8)) [((child .Items:values) -> $into []) (child .Items:label)]) (run)",
+      "web_source": "(mod generator_inheriting_impl ^profile web) (protocol Items (message values [] : (Stream Int Never)) (message label [] : Str))\n(type Parent ^props {^n Int}) (type Child : Parent ^props {})\n(impl Items for Parent (message ^^generator values [] : (Stream Int Never) (yield self/n)) (message label [] : Str \"parent\"))\n(impl Items for Child ^^override (message label [] : Str \"child\")) (fn run [] : (List Any) (let child (Child ^n 8)) [((child .Items:values) -> $into []) (child .Items:label)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "8"
+              }
+            ]
+          },
+          {
+            "kind": "str",
+            "value": "child"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.inherited_default",
+      "source": "(protocol Items (message ^^generator values [] : (Stream Int Never) (yield 9)))\n(protocol More ^inherit [Items] (message label [] : Str \"more\"))\n(type Parent ^props {}) (type Child : Parent ^props {}) (impl More for Parent) (fn run [] : (List Any) [(((Child) .Items:values) -> $into []) ((Child) .More:label)]) (run)",
+      "web_source": "(mod generator_inherited_default ^profile web) (protocol Items (message ^^generator values [] : (Stream Int Never) (yield 9)))\n(protocol More ^inherit [Items] (message label [] : Str \"more\"))\n(type Parent ^props {}) (type Child : Parent ^props {}) (impl More for Parent) (fn run [] : (List Any) [(((Child) .Items:values) -> $into []) ((Child) .More:label)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "9"
+              }
+            ]
+          },
+          {
+            "kind": "str",
+            "value": "more"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.message_override_kind",
+      "source": "(type Parent ^props {} (message ^^generator values [] : (Stream Int Never) (yield 1)))\n(type Child : Parent ^props {} (message ^^generator values [] : (Stream Int Never) ^^override (for value in (super .values) (yield (+ value 1)))))\n(type Eager : Parent ^props {} (message values [] : (Stream Int Never) ^^override ($to_stream [3]))) (fn run [] : (List (List Int)) [(((Child) .values) -> $into []) (((Eager) .values) -> $into [])]) (run)",
+      "web_source": "(mod generator_message_override_kind ^profile web) (type Parent ^props {} (message ^^generator values [] : (Stream Int Never) (yield 1)))\n(type Child : Parent ^props {} (message ^^generator values [] : (Stream Int Never) ^^override (for value in (super .values) (yield (+ value 1)))))\n(type Eager : Parent ^props {} (message values [] : (Stream Int Never) ^^override ($to_stream [3]))) (fn run [] : (List (List Int)) [(((Child) .values) -> $into []) (((Eager) .values) -> $into [])])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "2"
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "3"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.ordinary_factory_error_boundary",
+      "source": "(type Cleanup ^props {^message Str}) (impl Error for Cleanup)\n(fn ^^generator raw [] : (Stream Int Any) (try (yield 1) ensure (fail (Cleanup ^message \"cleanup\"))))\n(fn factory [] : (Stream Int Never) (raw))\n(fn run [] : Bool (let stream (factory)) (stream .next) (try (stream .close) false catch ErrorContractViolation true)) (run)",
+      "web_source": "(mod generator_ordinary_factory_error_boundary ^profile web) (type Cleanup ^props {^message Str}) (impl Error for Cleanup)\n(fn ^^generator raw [] : (Stream Int Any) (try (yield 1) ensure (fail (Cleanup ^message \"cleanup\"))))\n(fn factory [] : (Stream Int Never) (raw))\n(fn run [] : Bool (let stream (factory)) (stream .next) (try (stream .close) false catch ErrorContractViolation true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "generator.checked_alias_lookahead",
+      "source": "(fn ^^generator values [] : (Stream Int Never) (yield 1) (yield 2) (yield 3))\n(fn run [] : (List Int) (let source (values)) (let checked : (Stream Int Never) source)\n[(checked .peek) (source .next) (checked .next)]) (run)",
+      "web_source": "(mod generator_checked_alias_lookahead ^profile web) (fn ^^generator values [] : (Stream Int Never) (yield 1) (yield 2) (yield 3))\n(fn run [] : (List Int) (let source (values)) (let checked : (Stream Int Never) source)\n[(checked .peek) (source .next) (checked .next)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

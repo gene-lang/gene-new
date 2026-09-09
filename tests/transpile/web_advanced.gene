@@ -19,7 +19,7 @@
   none
   (some Int))
 
-(fn numbers [] : (Stream Int Never)
+(fn ^^generator numbers [] : (Stream Int Never)
   (yield 1)
   (yield void)
   (yield 2))

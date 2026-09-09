@@ -1,0 +1,43 @@
+# Run: gene run examples/generators.gene
+(mod generators)
+
+(fn ^^generator count_to [limit : Int] : (Stream Int Never)
+  (var n 0)
+  (while (< n limit)
+    (yield n)
+    (set n (+ n 1))))
+
+(type Numbers ^props {^limit Int}
+  (message ^^generator values [] : (Stream Int Never)
+    (for n in (count_to self/limit) (yield n))))
+
+# Inheriting a message also inherits its generator implementation.
+(type Child : Numbers ^props {})
+
+(type Shifted : Numbers ^props {^offset Int}
+  (message ^^generator values [] : (Stream Int Never) ^^override
+    (for n in (super .values) (yield (+ n self/offset)))))
+
+(protocol Items
+  (message values [] : (Stream Int Never)))
+(impl Items for Numbers
+  (message ^^generator values [] : (Stream Int Never)
+    (for n in (count_to self/limit) (yield n))))
+
+(fn ^^generator owned [] : (Stream Int Never)
+  (try
+    (yield 1)
+    (yield 2)
+    ensure ($println "closed")))
+
+(fn main [args] : Int
+  ($println "function:" ((count_to 3) -> $into []))
+  ($println "inherited:" (((Child ^limit 3) .values) -> $into []))
+  ($println "overridden:" (((Shifted ^limit 3 ^offset 10) .values) -> $into []))
+  ($println "protocol:" (((Child ^limit 3) .Items:values) -> $into []))
+
+  (let stream (owned))
+  (try
+    ($println "prefix:" (stream -> $take 1 -> $into []))
+    ensure (stream .close))
+  0)

@@ -20352,6 +20352,9 @@ proc driveActor(actor: Value) =
     if not schedulerRunOneRoot(workerLease):
       break
 
+when defined(geneGeneratorStats):
+  var generatorContinuationAllocations* {.threadvar.}: int64
+
 proc generatorFiber(stream: Value): Fiber =
   let continuation = stream.streamGeneratorContinuation
   if continuation == nil:
@@ -27811,6 +27814,8 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     let fiber = Fiber(chunk: proto.chunk, scope: callScope,
                       capabilityContext: callTransition.context,
                       capabilityPresence: callTransition.presence)
+    when defined(geneGeneratorStats):
+      inc generatorContinuationAllocations
     var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream,
                                          closeGeneratorStream)
     resultValue.setStreamGeneratorContinuation(fiber)

@@ -53,13 +53,13 @@
 
 # Because no stage builds a collection, a producer that never ends flows
 # through one item at a time and a later stage bounds it.
-(fn naturals* []
+(fn ^^generator naturals []
   (var n 0)
   (while true
     (yield n)
     (set n (+ n 1))))
 
-(show "endless source" ((naturals*) => * 2 -> $take 4 -> $into []))
+(show "endless source" ((naturals) => * 2 -> $take 4 -> $into []))
 
 # Work happens per item, interleaved, and only for the items that are pulled.
 (var trace [])

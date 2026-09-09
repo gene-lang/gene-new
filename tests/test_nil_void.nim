@@ -84,7 +84,7 @@ suite "nil/void — map and explicit dropping":
   test "iteration pipelines map void to nil while yield still skips void":
     check nilVoidEval("""
       (fn f [x] (if (> x 0) x void))
-      (fn producer [] (yield void) (yield nil) (yield 2))
+      (fn ^^generator producer [] (yield void) (yield nil) (yield 2))
       [([-1 2] => f -> $into []) ($into (producer) [])]
     """) == "[[nil 2] [nil 2]]"
   test "optional fields keep missing separate from present nil":

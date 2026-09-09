@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[algorithm, monotimes, os, sets, strutils, tables, times]
-import ./[capabilities, equality, gir, reader, types]
+import ./[capabilities, equality, gir, printer, reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
@@ -62,7 +62,7 @@ type
     capabilityCatalog: CapabilityCompileCatalog
     enforceCapabilityCatalog: bool
     allowYield: bool
-    sawYield: bool
+    generatorFnNames: Table[string, bool]
     sawNonVoidReturn: bool
     # Enclosing function is declared `: Nil` or `: Void`, so `return` may not
     # carry a value (design.md §7.7). Per-function: a child compiler is built
@@ -381,6 +381,7 @@ proc reserveLocal(c: var Compiler, name: string,
     raise newException(GeneError,
       "binding '" & name & "' conflicts with a macro of the same name")
   c.ordinaryFnNames.del(name)
+  c.generatorFnNames.del(name)
   c.declaredNames.incl name
   # A fresh binding is rebindable until something says otherwise, so it clears
   # any `let` mark inherited from an outer scope — branch-local `for`/`match`/
@@ -897,6 +898,7 @@ proc childCompiler(c: Compiler): Compiler =
            capabilityCatalog: c.capabilityCatalog,
            enforceCapabilityCatalog: c.enforceCapabilityCatalog,
            allowYield: c.allowYield, inFunction: c.inFunction,
+           generatorFnNames: c.generatorFnNames,
            inGenerator: c.inGenerator,
            ffiLibraryNames: c.ffiLibraryNames,
            constValues: c.constValues,
@@ -1186,6 +1188,15 @@ proc collectPatternBindingNames(pat: Value, names: var seq[string],
   else:
     discard
 
+proc knownGeneratorCall(c: Compiler, value: Value): bool =
+  if value.kind != vkNode: return false
+  let callee = value.head
+  if callee.kind == vkSymbol:
+    return c.generatorFnNames.hasKey(callee.symVal)
+  if callee.kind == vkNode and callee.head.isSymbol("fn"):
+    let flag = callee.props.getOrDefault("generator", FALSE)
+    return flag.kind == vkBool and flag.boolVal
+
 proc warnDiscardedPipeline(c: var Compiler, value: Value) =
   if value.kind == vkPipeline and value.pipelineStages.len > 0 and
       value.pipelineStages[^1].kind == pstIterate:
@@ -1193,6 +1204,12 @@ proc warnDiscardedPipeline(c: var Compiler, value: Value) =
       message: "unused lazy pipeline: item callbacks run only when consumed; " &
         "use -> $each for effects or -> $into [] to collect results",
       loc: value.pipelineStages[^1].sourceLoc)
+  elif c.knownGeneratorCall(value):
+    c.chunk.diagnostics.add CompileDiagnostic(
+      message: "unused generator Stream: the body runs only when consumed; " &
+        "use -> $each for effects or -> $into [] to collect results",
+      loc: if c.sourceLocs != nil: c.sourceLocs[].getOrDefault(value.bits, c.currentLoc)
+           else: c.currentLoc)
 
 proc collectParameterAliases(c: var Compiler, forms: openArray[Value], first = 0) =
   # Only declarations in this lexical body participate. Branch-local aliases
@@ -1241,6 +1258,8 @@ proc symbolText(v: Value): string =
 
 proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
   var child = c.childCompiler()
+  child.allowYield = false
+  child.inGenerator = false
   child.prepareStaticImports(@[node])
   child.reserveProtocolBindingsFor(@[node])
   compileExpr(child, node)
@@ -1605,7 +1624,6 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
   child.reserveProtocolBindingsFor(forms)
   compileBody(child, forms, tail = tail) # empty -> nil
   discard child.emit(opReturn)
-  c.sawYield = c.sawYield or child.sawYield
   c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
   if scoped:
     child.chunk.localNames = child.localNames
@@ -3732,6 +3750,70 @@ proc detectAotExpr(c: Compiler, name: string, specs: ParamSpecs,
   let expr = body[bodyStart]
   if expr.isAotValueExpr(specs.positional, typeName, available): expr else: NIL
 
+proc generatorMarker(node: Value): bool =
+  let flag = node.props.getOrDefault("generator", FALSE)
+  if flag.kind != vkBool:
+    raise newException(GeneError, "^generator requires a literal Bool")
+  flag.boolVal
+
+proc incompatibleGeneratorResult(c: Compiler, annotation: Value,
+                                  typeParams: seq[string], depth = 0): bool =
+  # Reject only contracts known to exclude Stream. Dynamic annotations and
+  # protocol constraints keep their ordinary declaration/invocation checks.
+  if depth > 64: return false
+  if annotation.kind == vkSymbol:
+    let name = annotation.symVal
+    if name in typeParams: return false
+    if c.parameterAliases.hasKey(name):
+      return c.incompatibleGeneratorResult(c.parameterAliases[name], typeParams, depth + 1)
+    for declaration in c.chunk.typeProtos:
+      if declaration.name == name: return true
+    # A lexical value may supply a type dynamically, including a binding that
+    # shadows a builtin name. Do not invent a concrete contract for it.
+    if c.localSlot(name) >= 0: return false
+    let own = c.ownInterfaceEntry(name)
+    if own.found and own.entry.category == cbcType:
+      let form = own.entry.typeForm
+      if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
+        return c.incompatibleGeneratorResult(form.body[1], typeParams, depth + 1)
+      return true
+    return name in ["Nil", "Void", "Never", "Bool", "Int", "Float", "F64",
+      "F32", "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64",
+      "Char", "Str", "Symbol", "List", "Map", "PropMap", "Set", "HashMap",
+      "Node", "Type", "Task", "Channel", "Cell", "AtomicCell", "Buffer",
+      "Bytes", "Range", "Callable", "Fn", "Date", "Time", "DateTime", "Duration"]
+  if annotation.kind == vkNode and annotation.head.kind == vkSymbol:
+    if annotation.head.isSymbol("|"):
+      if annotation.body.len == 0: return true
+      for member in annotation.body:
+        if not c.incompatibleGeneratorResult(member, typeParams, depth + 1): return false
+      return true
+    return c.incompatibleGeneratorResult(annotation.head, typeParams, depth + 1)
+  annotation.kind in {vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar}
+
+proc returnContractRetainsScope(c: Compiler, annotation: Value,
+                                 typeParams: seq[string], depth = 0): bool =
+  # Deferred views retain the scope that interprets their contracts. A pooled
+  # factory activation must not be cleared while its returned view is live.
+  if depth > 64: return true
+  case annotation.kind
+  of vkNil: false
+  of vkSymbol:
+    let name = annotation.symVal
+    if name in typeParams: return true
+    if c.parameterAliases.hasKey(name):
+      return c.returnContractRetainsScope(c.parameterAliases[name], typeParams, depth + 1)
+    if name in ["Any", "Stream"]: return false
+    not c.incompatibleGeneratorResult(annotation, typeParams)
+  of vkNode:
+    if annotation.head.isSymbol("Stream") or annotation.head.isSymbol("Callable") or
+        annotation.head.isSymbol("Fn"):
+      return true
+    for item in annotation.body:
+      if c.returnContractRetainsScope(item, typeParams, depth + 1): return true
+    false
+  else: false
+
 proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
                         typeParams: seq[string] = @[],
@@ -3739,7 +3821,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         errorTypeCount = 0,
                         immutableSelf = false,
                         tailBody = true,
-                        aotSelfRepr = AotRepr()): FunctionProto =
+                        aotSelfRepr = AotRepr(),
+                        generator = false): FunctionProto =
   var start = bodyStart
   var returnType = NIL
   if start < body.len and body[start].isSymbol(":"):
@@ -3748,6 +3831,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       raise newException(GeneError, "function return annotation requires a type")
     returnType = body[start]
     inc start
+
+  if generator and c.incompatibleGeneratorResult(returnType, typeParams):
+    raise newException(GeneError,
+      "generator return annotation must admit Stream, got " & returnType.print())
 
   var specs = c.paramSpecs(paramList, typeParams)
   # Receiver admission is supplied by dispatch. Retain the annotation's origin
@@ -3807,8 +3894,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     fnCompiler.selfReserved = true
   fnCompiler.allowYield = true
   fnCompiler.inFunction = true
-  fnCompiler.inGenerator = body.bodyContainsYield(start)
-  fnCompiler.sawYield = fnCompiler.inGenerator
+  fnCompiler.inGenerator = generator
   if "self" in specs.positional or specs.rest == "self":
     fnCompiler.selfAvailable = true
   for p in specs.named:
@@ -3822,17 +3908,19 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   fnCompiler.prepareStaticImports(flowForms)
   fnCompiler.reserveProtocolBindingsFor(flowForms)
   compileBodyFrom(fnCompiler, body, start, tail = tailBody)
-  if fnCompiler.sawYield and fnCompiler.sawNonVoidReturn:
+  if generator and start < body.len:
+    fnCompiler.warnDiscardedPipeline(body[^1])
+  if fnCompiler.inGenerator and fnCompiler.sawNonVoidReturn:
     raise newException(GeneError,
       "generator return value must be void")
   let returnKnownBareInt =
-    returnType.isBareIntType and not fnCompiler.sawYield and
+    returnType.isBareIntType and not fnCompiler.inGenerator and
       not fnCompiler.sawNonVoidReturn and
       fnCompiler.formsKnownBareInt(body, start)
   let returnBoundaryRedundant =
     returnType.kind == vkSymbol and
       returnType.symVal in ["Any", "Int", "F64", "Bool", "Str", "Nil", "Void"] and
-      not fnCompiler.sawYield and not fnCompiler.sawNonVoidReturn and
+      not fnCompiler.inGenerator and not fnCompiler.sawNonVoidReturn and
       fnCompiler.formsKnownExactResult(body, returnType.symVal, start)
   discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
@@ -3862,7 +3950,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let simpleCall = typeParams.len == 0 and not checksErrors and
                    specs.rest.len == 0 and specs.named.len == 0 and
                    not hasParamTypes and not hasNamedParamTypes and
-                   returnType.kind == vkNil and not fnCompiler.sawYield and
+                   returnType.kind == vkNil and not fnCompiler.inGenerator and
                    not specs.hasOptionalPositional
   let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
   var defaultsCanCapture = specs.hasOptionalPositional
@@ -3872,13 +3960,14 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         defaultsCanCapture = true
         break
   let poolCallScope = needsCallScope and not defaultsCanCapture and
+                      not c.returnContractRetainsScope(returnType, typeParams) and
                       chunkCanPoolCallScope(fnCompiler.chunk)
   let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
   let callScopeNeedsSlotReset =
     fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
   let native = specs.detectNativeCompileOp(body, start, returnType,
                                            typeParams, checksErrors,
-                                           fnCompiler.sawYield)
+                                           fnCompiler.inGenerator)
   var aotParamReprs: seq[AotRepr]
   for i, paramType in specs.positionalTypes:
     if i == 0 and specs.positional[i] == "self" and
@@ -3919,7 +4008,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         newNode(newSym("do"), body = body[start .. ^1])
       else: NIL
     let lowerBody = normalizeMessageCallTree(rawLowerBody)
-    let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
+    let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.inGenerator or
         specs.rest.len != 0 or specs.named.len != 0 or
         specs.hasComputedPositionalDefault or lowerBody.kind == vkNil or
         aotReturnRepr.kind == arkNone or
@@ -3955,7 +4044,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     let scalarLowerable = allAotParamsRepresentable and
       aotReturnRepr.kind in {arkI64, arkF64} and
       aotParamReprs.len == specs.positional.len and
-      typeParams.len == 0 and not checksErrors and not fnCompiler.sawYield and
+      typeParams.len == 0 and not checksErrors and not fnCompiler.inGenerator and
       specs.rest.len == 0 and specs.named.len == 0 and
       not specs.hasOptionalPositional
     if scalarLowerable and start < body.len:
@@ -3971,7 +4060,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         aotLocals = scalarLocals
     if aotExpr.kind == vkNil:
       aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
-                                typeParams, checksErrors, fnCompiler.sawYield)
+                                typeParams, checksErrors, fnCompiler.inGenerator)
   if aotExpr.kind != vkNil and not hasNativeRepr:
     # The original scalar AOT path is representation-homogeneous.
     for i in 0 ..< aotParamReprs.len:
@@ -3981,7 +4070,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if aotExpr.kind == vkNil: afkNone
     else: afkTypedNative
   let taskFrameKind =
-    if fnCompiler.sawYield: tfkGenerator
+    if fnCompiler.inGenerator: tfkGenerator
     elif bodyContainsAwait(body, start): tfkVm
     else: tfkNone
   var fastBindUnaryInt =
@@ -3990,10 +4079,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     positionalSlots[0] >= 0 and specs.rest.len == 0 and specs.named.len == 0 and
     hasParamTypes and specs.positionalTypes.len == 1 and
     specs.positionalTypes[0].isBareIntType and returnType.isBareIntType and
-    not fnCompiler.sawYield and specs.positionalDefaults.len == 1 and
+    not fnCompiler.inGenerator and specs.positionalDefaults.len == 1 and
     not specs.positionalDefaults[0].optional
   var fastBindPositionalInt =
-    typeParams.len == 0 and not checksErrors and not fnCompiler.sawYield and
+    typeParams.len == 0 and not checksErrors and not fnCompiler.inGenerator and
     specs.rest.len == 0 and specs.named.len == 0 and specs.positional.len > 0 and
     specs.requiredPositionalCount == specs.positional.len and
     positionalSlots.len == specs.positional.len and hasParamTypes and
@@ -4006,7 +4095,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         fastBindPositionalInt = false
         break
   var fastBindRequiredNamed =
-    typeParams.len == 0 and not fnCompiler.sawYield and specs.rest.len == 0 and
+    typeParams.len == 0 and not fnCompiler.inGenerator and specs.rest.len == 0 and
     specs.named.len > 0 and
     specs.requiredPositionalCount == specs.positional.len and
     specs.positionalDefaults.len == specs.positional.len and
@@ -4053,7 +4142,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          fastBindUnaryInt: fastBindUnaryInt,
                          fastBindPositionalInt: fastBindPositionalInt,
                          fastBindRequiredNamed: fastBindRequiredNamed,
-                         isGenerator: fnCompiler.sawYield,
+                         isGenerator: fnCompiler.inGenerator,
                          selfParentSlot: selfParentSlot,
                          nativeOp: native.op,
                          nativeParamIndex: native.paramIndex,
@@ -4562,6 +4651,10 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
   if typed and body.len < 3:
     raise newException(GeneError, "var type annotation requires a type")
   let valueIndex = if typed: 3 else: 1
+  let generatorValue = body.len > valueIndex and
+    ((body[valueIndex].kind == vkSymbol and c.generatorFnNames.hasKey(body[valueIndex].symVal)) or
+     (body[valueIndex].kind == vkNode and body[valueIndex].head.isSymbol("fn") and
+      body[valueIndex].generatorMarker))
   if c.useLocalSlots and body[0].kind == vkSymbol and body.len > valueIndex and
       body[valueIndex].kind == vkNode and body[valueIndex].head.isSymbol("fn"):
     discard c.reserveLocal(body[0].symVal)
@@ -4580,6 +4673,8 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
     discard c.emit(opCheckType, c.chunk.addConst(body[2]), name = where)
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
+    if generatorValue: c.generatorFnNames[body[0].symVal] = true
+    else: c.generatorFnNames.del(body[0].symVal)
     # Record binding mutability (design §12.1). A later `set` on a `let`
     # name is a compile error; a `var` un-marks a name an outer scope froze.
     if immutable: c.letNames.incl body[0].symVal
@@ -4816,6 +4911,7 @@ proc compileSet(c: var Compiler, node: Value) =
     c.moduleSyntaxFnExports[].excl(
       (c.namespacePath & @[body[0].symVal]).join("/"))
   c.ordinaryFnNames.del(body[0].symVal)
+  c.generatorFnNames.del(body[0].symVal)
   c.emitSetBinding(body[0].symVal)
 
 proc compileFn(c: var Compiler, node: Value, inferredName: string) =
@@ -4842,10 +4938,13 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
     # fused call opcodes. A later `set` removes this proof.
     c.ordinaryFnNames[name] = true
   let errorRow = compileErrorRow(c, node)
+  let generator = node.generatorMarker
+  if generator and name.len > 0: c.generatorFnNames[name] = true
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
                                  typeParams = typeParams,
                                  checksErrors = errorRow.checks,
-                                 errorTypeCount = errorRow.count)
+                                 errorTypeCount = errorRow.count,
+                                 generator = generator)
   let isPublic = definesName and node.bits in c.staticTopLevelImpls and
     not node.declarationIsPrivate
   proto.publicErrorInterface = isPublic
@@ -4865,6 +4964,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   if definesName:
     c.emitDefineBinding(name, immutable = true)
     c.ordinaryFnNames[name] = true
+    if generator: c.generatorFnNames[name] = true
 
 proc compileFexpr(c: var Compiler, node: Value) =
   ## `(fn name! [params] body...)` — runtime fexpr / syntax callable (design
@@ -4872,6 +4972,8 @@ proc compileFexpr(c: var Compiler, node: Value) =
   ## `syntax_call` arrive as implicit leading parameters at syntax_call time,
   ## so the body resolves them like ordinary locals.
   let body = node.body
+  if node.generatorMarker:
+    raise newException(GeneError, "a fexpr cannot be a generator")
   var idx = 0
   var name = ""
   var definesName = false
@@ -7837,11 +7939,12 @@ proc compileFor(c: var Compiler, node: Value) =
 proc compileYield(c: var Compiler, node: Value) =
   if not c.allowYield:
     raise newException(GeneError, "yield is only valid inside fn")
+  if not c.inGenerator:
+    raise newException(GeneError, "yield requires an explicit ^^generator declaration")
   if node.props.len != 0 or node.body.len != 1:
     raise newException(GeneError, "yield expects one value")
   compileExpr(c, node.body[0])
   discard c.emit(opYield)
-  c.sawYield = true
 
 proc compileReturn(c: var Compiler, node: Value) =
   if not c.inFunction:
@@ -8248,7 +8351,8 @@ proc implMessageProto(c: var Compiler, node: Value,
                               checksErrors = errorRow.checks,
                               errorTypeCount = errorRow.count,
                               immutableSelf = true,
-                              aotSelfRepr = aotSelfRepr)
+                              aotSelfRepr = aotSelfRepr,
+                              generator = node.generatorMarker)
   fn.capabilityRow = c.normalizedFunctionCapabilityRow(
     node, fn, not node.declarationIsPrivate)
   if fn.capabilityRow.declaresCapabilities:
@@ -8325,6 +8429,8 @@ proc compileType(c: var Compiler, node: Value) =
     elif item.kind == vkNode and item.head.isSymbol("impl"):
       implNodes.add item
     elif item.kind == vkNode and item.head.isSymbol("ctor"):
+      if item.generatorMarker:
+        raise newException(GeneError, "a constructor cannot be a generator")
       if ctorNode.kind != vkNil:
         raise newException(GeneError, "type " & name & " defines more than one ctor")
       ctorNode = item

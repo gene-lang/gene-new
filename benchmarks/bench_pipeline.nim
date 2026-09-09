@@ -1,5 +1,5 @@
 ## Pipeline construction, demand, and retention measurements.
-## Run: nim c -r -d:release -d:nimAllocStats --path:src benchmarks/bench_pipeline.nim
+## Run: nim c -r -d:release -d:nimAllocStats -d:geneGeneratorStats --path:src benchmarks/bench_pipeline.nim
 ## Allocations include call frames and user callback work, not just adapters.
 
 import std/[monotimes, strutils, tables, times]
@@ -32,7 +32,7 @@ proc measure(name, expression: string, expectedChecksum: int64,
   discard run(compileSource("""
     (fn step [x] (+ x 1))
     (var selected step)
-    (fn running_total [source]
+    (fn ^^generator running_total [source]
       (var total 0)
       (for value in source
         (set total (+ total value))
@@ -117,7 +117,7 @@ measure("map_take_collect", "(source => step -> $take 10)", 65,
         expectedItems = 10, expectedPulls = 10, collect = true)
 measure("early_take", "(source -> $take 10 => step)", 65,
         expectedItems = 10, expectedPulls = 10)
-measure("void_heavy", "(source => (fn [x] (if (< x 901) void x)))", 95050,
+measure("filter_map_void_heavy", "(source -> $filter_map (fn [x] (if (< x 901) void x)))", 95050,
         expectedItems = 100)
 measure("stateful_factory", "(source => (numberer))", 1001000)
 measure("custom_generator", "(source => step -> running_total => step)", 167668500)
@@ -126,3 +126,79 @@ measure("heterogeneous_sends", """
   (source => (fn [x] (if (< x 501) (A ^n x) (B ^n x))) => _ .value)
 """, 500500)
 measure("repeated_lookahead", "(source => step)", 501500, lookahead = true)
+
+proc measureGenerator(name: string, limit, consume: int, lookahead = false) =
+  let scope = newGlobalScope()
+  discard run(compileSource("""
+    (let closed ($cell 0))
+    (fn ^^generator count_to [limit : Int] : (Stream Int Never)
+      (try
+        (var n 0)
+        (while (< n limit) (yield n) (set n (+ n 1)))
+        ensure (closed .update (fn [n] (+ n 1)))))
+  """, useLocalSlots = false), scope)
+  let creation = compileSource("(count_to " & $limit & ")", useLocalSlots = false)
+  const samples = 20
+  var createNs, firstNs, iterateNs, closeNs, continuations: int64
+  var createAllocs, firstAllocs, heldBytes, retainedBytes: int
+  for sample in 0 ..< samples + 2:
+    GC_fullCollect()
+    let memoryBefore = getOccupiedMem()
+    let closesBefore = scope.vars["closed"].cellValue.intVal
+    let allocationsBefore = getAllocStats()
+    when defined(geneGeneratorStats):
+      let framesBefore = generatorContinuationAllocations
+    let started = getMonoTime()
+    var stream = run(creation, scope)
+    let created = getMonoTime()
+    let allocationsCreated = getAllocStats()
+    var checksum = 0'i64
+    if consume > 0:
+      checksum += stream.streamNext.intVal
+    let first = getMonoTime()
+    let allocationsFirst = getAllocStats()
+    for i in 1 ..< consume:
+      if lookahead:
+        doAssert stream.streamHasNext
+        doAssert stream.streamPeek.intVal == int64(i)
+        doAssert stream.streamPeek.intVal == int64(i)
+      checksum += stream.streamNext.intVal
+    doAssert checksum == int64(consume) * int64(consume - 1) div 2
+    if consume == limit:
+      doAssert not stream.streamHasNext
+    let iterated = getMonoTime()
+    let held = getOccupiedMem() - memoryBefore
+    stream.closeStream()
+    let closed = getMonoTime()
+    doAssert scope.vars["closed"].cellValue.intVal == closesBefore +
+      (if consume > 0: 1 else: 0), name & ": cleanup count"
+    stream = NIL
+    GC_fullCollect()
+    if sample >= 2:
+      createNs += inNanoseconds(created - started)
+      firstNs += inNanoseconds(first - created)
+      iterateNs += inNanoseconds(iterated - first)
+      closeNs += inNanoseconds(closed - iterated)
+      createAllocs += allocated(allocationsCreated - allocationsBefore)
+      firstAllocs += allocated(allocationsFirst - allocationsCreated)
+      heldBytes += held
+      retainedBytes += getOccupiedMem() - memoryBefore
+      when defined(geneGeneratorStats):
+        continuations += generatorContinuationAllocations - framesBefore
+  echo "generator_", name,
+    " | create ns=", createNs div samples,
+    " | first pull ns=", (if consume > 0: $(firstNs div samples) else: "n/a"),
+    " | remaining iteration ns=", iterateNs div samples,
+    " | close ns=", closeNs div samples,
+    " | create allocations=", createAllocs div samples,
+    " | first pull allocations=", firstAllocs div samples,
+    " | continuations=", (when defined(geneGeneratorStats): $(continuations div samples)
+                          else: "n/a (enable geneGeneratorStats)"),
+    " | held bytes=", heldBytes div samples,
+    " | retained bytes after close=", retainedBytes div samples
+
+measureGenerator("create_close", 10000, 0)
+measureGenerator("first_pull", 10000, 1)
+measureGenerator("long_iteration", 10000, 10000)
+measureGenerator("lookahead", 10000, 10000, lookahead = true)
+measureGenerator("early_cleanup", 10000, 10)

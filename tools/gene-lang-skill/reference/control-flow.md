@@ -125,16 +125,20 @@ result instead — `TryNext/exhausted`, `#(TryNext/value item)`, or
 `#(TryNext/error err)`. `void` items are skipped. The first producer error is
 terminal and propagates once.
 
-A generator is a `fn` whose name ends in `*`:
+A generator is a `fn` or `message` declared with `^^generator`. Unmarked
+executable `yield` is an error; ordinary Stream-returning functions still
+execute their bodies eagerly:
 
 ```gene
-(fn indexed_pairs* [items]
+(fn ^^generator indexed_pairs [items]
   (repeat index in items/.size
     (yield [index items/%index])))
 ```
 
 Closing a suspended generator unwinds its `ensure` blocks once, in LIFO order.
-Close is idempotent.
+Close is idempotent. `(Stream T E)` checks items and ordinary production/cleanup
+errors, including explicit close. Inherited messages preserve the parent's
+implementation kind; an override marks its own generator body explicitly.
 
 ## Tasks
 

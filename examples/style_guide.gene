@@ -152,7 +152,7 @@ line two"""
 
 # Destructuring, loops, streams, and control transfer.
 
-(fn indexed_pairs* [items]
+(fn indexed_pairs [items] ^^generator
   (repeat index in items/.size
     (yield [index items/%index])))
 

@@ -804,7 +804,7 @@ suite "threaded scheduler workers":
   test "generator pulls lease workers for worker-candidate tasks":
     withGeneWorkers:
       let task = run(compileSource(
-        "(fn gen [] " &
+        "(fn ^^generator gen [] " &
         "  (var t (spawn 42)) " &
         "  (var i 0) " &
         "  (while (< i 200000) (set i (+ i 1))) " &

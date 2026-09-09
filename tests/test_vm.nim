@@ -710,7 +710,7 @@ suite "compiler — GIR emission":
     check awaitChunk.functions[0].taskFrameKind == tfkVm
     check "task-frame=vm" in awaitChunk.disassemble()
 
-    let yieldChunk = compileSource("(fn ints [] : (Stream Int Never) (yield 1))")
+    let yieldChunk = compileSource("(fn ^^generator ints [] : (Stream Int Never) (yield 1))")
     check yieldChunk.functions[0].taskFrameKind == tfkGenerator
     check "task-frame=generator" in yieldChunk.disassemble()
 
@@ -3522,7 +3522,7 @@ suite "vm — streams":
        "(impl Error for Boom) " &
        "(var calls ($cell 0)) " &
        "(var closes ($cell 0)) " &
-       "(fn source [] : (Stream Int Never) " &
+       "(fn ^^generator source [] : (Stream Int Never) " &
        "  (try (yield 1) (yield 2) " &
        "   ensure (closes .update (fn [n] (+ n 1))))) " &
        "(var s ($map (source) " &
@@ -3549,7 +3549,7 @@ suite "vm — streams":
   test "generator close unwinds nested ensures in LIFO order":
     ck "(var log ($cell [])) " &
        "(fn note [x] (log .update (fn [xs] [xs... x]))) " &
-       "(fn gen [] : (Stream Int Never) " &
+       "(fn ^^generator gen [] : (Stream Int Never) " &
        "  (try " &
        "    (try (yield 1) (yield 2) ensure (note `inner)) " &
        "   ensure (note `outer))) " &
@@ -3564,7 +3564,7 @@ suite "vm — streams":
     ck "(type Cleanup ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Cleanup) " &
        "(var outer-ran ($cell false)) " &
-       "(fn gen ^errors [Cleanup] [] : (Stream Int Cleanup) " &
+       "(fn ^^generator gen ^errors [Cleanup] [] : (Stream Int Cleanup) " &
        "  (try " &
        "    (try (yield 1) " &
        "     ensure (fail (Cleanup ^message \"first\"))) " &
@@ -3584,7 +3584,7 @@ suite "vm — streams":
     try:
       discard run(compileSource(
         "(var closes ($cell 0)) " &
-        "(fn gen [] : (Stream Int Never) " &
+        "(fn ^^generator gen [] : (Stream Int Never) " &
         "  (try (while true (yield 1)) " &
         "   ensure (closes .update (fn [n] (+ n 1))))) " &
         "(scope " &
@@ -3620,7 +3620,7 @@ suite "vm — streams":
        "[(outer) (cleaned .get)]",
        "[7 1]"
     ck "(var closes ($cell 0)) " &
-       "(fn source [] : (Stream Int Never) " &
+       "(fn ^^generator source [] : (Stream Int Never) " &
        "  (try (yield 4) (yield 5) " &
        "   ensure (closes .update (fn [n] (+ n 1))))) " &
        "(fn first [s] " &
@@ -3629,14 +3629,14 @@ suite "vm — streams":
        "(var s (source)) " &
        "[(first s) (closes .get) (s .has_next)]",
        "[4 1 false]"
-    ck "(fn gen [] : (Stream Int Never) " &
+    ck "(fn ^^generator gen [] : (Stream Int Never) " &
        "  (yield 1) (return) (yield 2)) " &
        "(var s (gen)) " &
        "[(s .next) (s .has_next) " &
        " (try (s .peek) catch EndOfStream $err/message)]",
        "[1 false \"end of stream\"]"
     expect GeneError:
-      discard compileSource("(fn bad [] : (Stream Int Never) " &
+      discard compileSource("(fn ^^generator bad [] : (Stream Int Never) " &
                             "  (yield 1) (return 2))")
 
   test "stream into materializes list and map targets":

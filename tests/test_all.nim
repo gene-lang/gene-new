@@ -23,6 +23,7 @@ include test_web_modules
 include test_match
 include test_errors
 include test_error_handling
+include test_generators
 include test_testing
 include test_types
 include test_protocols

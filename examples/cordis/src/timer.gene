@@ -79,7 +79,7 @@
     (fn [fx]
       (spawn_effect_call fx "interval-task" run_interval [fx callback delay_ms]))))
 
-(fn channel_ticks* ^^private [channel]
+(fn ^^generator channel_ticks* ^^private [channel]
   (while true
     (try
       (yield (channel .recv))

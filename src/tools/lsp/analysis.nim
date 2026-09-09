@@ -323,6 +323,23 @@ proc nextTokenStart(src: string, start: int): int =
     dec discards
   src.len
 
+proc formEnd(src: string, start: int): int =
+  if start >= src.len: return src.len
+  if src[start] in {'(', '[', '{'} or src.continuesWith("#@", start) or
+      (src[start] == '#' and start + 1 < src.len and src[start + 1] in {'(', '[', '{'}):
+    return matchingCloseOffset(src, start)
+  var last = start
+  if skipCommentOrAtom(src, last): return last
+  tokenEnd(src, start)
+
+proc afterDeclarationProperties(src: string, start: int): int =
+  result = nextTokenStart(src, start)
+  while result < src.len and src[result] in {'^', '@'}:
+    let sugar = src.continuesWith("^^", result) or src.continuesWith("^!", result)
+    result = nextTokenStart(src, tokenEnd(src, result))
+    if not sugar:
+      result = nextTokenStart(src, formEnd(src, result))
+
 proc nameSelectionRange(src: string, starts: seq[int],
                         formOffset: int): LspRange =
   ## The token after the head symbol — the declared name — as an LSP range.
@@ -334,7 +351,7 @@ proc nameSelectionRange(src: string, starts: seq[int],
     inc i
   let headStart = nextTokenStart(src, i)
   let headEnd = tokenEnd(src, headStart)
-  var nameStart = nextTokenStart(src, headEnd)
+  var nameStart = afterDeclarationProperties(src, headEnd)
   var nameEnd = tokenEnd(src, nameStart)
   if nameStart >= src.len or src[nameStart] in {'(', '[', '{', ')'}:
     nameStart = headStart
@@ -369,10 +386,25 @@ proc symName(v: Value): string =
   if v.kind == vkSymbol: v.symVal else: ""
 
 proc signatureSource(src: string, starts: seq[int],
-                     r, name: LspRange): string =
+                     r, name: LspRange, generator = false): string =
   ## Usually the opening line. A #@ declaration can put its head or name on
   ## later lines; include those too, without including adjacent declarations.
   let first = lspPosToOffset(src, starts, r.start)
+  if generator:
+    let params = afterDeclarationProperties(src, lspPosToOffset(src, starts, name.endPos))
+    if params < src.len and src[params] == '[':
+      var last = afterDeclarationProperties(src, matchingCloseOffset(src, params))
+      let colon = last
+      if colon < src.len and src[colon] == ':':
+        last = afterDeclarationProperties(src,
+          formEnd(src, nextTokenStart(src, colon + 1)))
+      result = src[first ..< min(last, lspPosToOffset(src, starts, r.endPos))].strip()
+      if "^generator" notin result:
+        # Properties may appear after executable forms in an unformatted
+        # buffer. Still expose the parsed declaration's execution kind.
+        let head = nextTokenStart(src, first + (if src.continuesWith("#@", first): 2 else: 1))
+        result.insert(" ^^generator", tokenEnd(src, head) - first)
+      return
   let lastLine = max(r.start.line, name.endPos.line)
   let lineEnd = starts[lastLine] + lineSlice(src, starts, lastLine).len
   let last = min(lineEnd, lspPosToOffset(src, starts, r.endPos))
@@ -415,8 +447,11 @@ proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
   case headName
   of "fn", "macro":
     if body.len > 0 and body[0].kind == vkSymbol:
+      let flag = form.props.getOrDefault("generator", NIL)
       result.add named(skFunction, body[0].symVal,
-                       if headName == "fn": "" else: headName)
+        if headName != "fn": headName
+        elif flag.kind == vkBool and flag.boolVal: "generator"
+        else: "")
   of "var":
     if body.len > 0 and body[0].kind == vkSymbol:
       result.add named(skVariable, body[0].symVal)
@@ -467,7 +502,9 @@ proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
     result.add sym
   of "message":
     if body.len > 0 and body[0].kind == vkSymbol:
-      result.add named(skMethod, body[0].symVal)
+      let flag = form.props.getOrDefault("generator", NIL)
+      result.add named(skMethod, body[0].symVal,
+        if flag.kind == vkBool and flag.boolVal: "generator" else: "")
   of "ctor":
     result.add named(skConstructor, "ctor")
   of "ns":
@@ -509,7 +546,8 @@ proc flattenDefs*(symbols: seq[DocSymbol], src: string,
     result.add FlatDef(name: s.name, containerName: container, kind: s.kind,
                        range: s.range, selectionRange: s.selectionRange,
                        signature: signatureSource(src, starts, s.range,
-                                                  s.selectionRange))
+                                                  s.selectionRange,
+                                                  s.detail == "generator"))
     result.add flattenDefs(s.children, src, s.name)
 
 proc wordAt*(src: string, starts: seq[int], pos: LspPos): string =

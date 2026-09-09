@@ -97,6 +97,12 @@ Panic and cancellation retain their normal behavior. Returned
 Streams and Tasks remain values with their own deferred contracts. The callable
 error row does not apply to later consumption or execution of those values.
 
+`fn` and `message` declarations marked `^^generator` return a suspended Stream.
+The execution kind belongs to the resolved implementation and is preserved by
+inheritance and callable views. A Stream result contract also admits ordinary
+factories; it does not select generator execution. See the
+[generator contract](streams.md).
+
 Error-row compatibility compares resolved semantic coverage: order, duplicates,
 Never, redundant subtypes, and named hints alongside Error do not change it.
 Other exact callable-signature rules remain in force. The

@@ -164,6 +164,7 @@ type
     annotationSelf*: WebType
     checkedErrors*: bool
     errorTypes*: seq[WebType]
+    generator*: bool
 
   WebConstructor* = ref object
     params*: seq[WebParam]
@@ -214,6 +215,7 @@ type
     universalDefault*: bool
     selfDependent*: bool
     sourceForm: Value
+    generator*: bool
 
   WebProtocolDecl* = ref object
     sourceName*: string
@@ -241,6 +243,7 @@ type
     annotationSelf*: WebType
     checkedErrors*: bool
     errorTypes*: seq[WebType]
+    generator*: bool
 
   WebImplDecl* = ref object
     protocolName*: string
@@ -1402,6 +1405,12 @@ proc containsDefaultControl(value: Value): bool =
   for item in value.body:
     if containsDefaultControl(item): return true
 
+proc webGeneratorMarker(form: Value, loc: SourceLoc): bool =
+  let flag = form.props.getOrDefault("generator", FALSE)
+  if flag.kind != vkBool:
+    raise webError(loc, "^generator requires a literal Bool")
+  flag.boolVal
+
 proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
   let loc = analysis.locFor(form)
   if form.body.len < 5 or form.body[0].kind != vkSymbol or
@@ -1418,12 +1427,15 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
                                            allowNamed = true),
                        returnType: analysis.parseAnnotation(form.body[3], loc), loc: loc)
   # `async` is not a syntactic property of one body — see `resolveAsync`.
-  result.generator = containsForm(form, "yield")
+  result.generator = webGeneratorMarker(form, loc)
 
 proc validateCallableProps(analysis: WebAnalysis, form: Value,
                            loc: SourceLoc, label: string, allowOverride = false) =
   rejectUnknownProps(form, loc, label,
-    (if allowOverride: @["errors", "override"] else: @["errors"]))
+    (if allowOverride: @["errors", "override", "generator"]
+     else: @["errors", "generator"]))
+  if webGeneratorMarker(form, loc) and form.head.isSym("ctor"):
+    raise webError(loc, "a constructor cannot be a generator")
   if not form.props.hasKey("errors"): return
   let row = form.props["errors"]
   if row.kind != vkList:
@@ -1593,7 +1605,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
         params: bindWebParams(parseProtocolParams(analysis, member.body[1], loc), selfType),
         returnType: analysis.parseAnnotation(member.body[3], loc), loc: loc,
         sourceForm: member, declaresOverride: webOverrideFlag(member, loc),
-        annotationSelf: selfType)
+        annotationSelf: selfType, generator: webGeneratorMarker(member, loc))
       result.methods.add methodDecl
     else:
       raise webError(loc, "web type member '" & member.head.symVal &
@@ -1675,7 +1687,7 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
     validateWebMessageName(name, loc)
     # A signature's `^errors` row is erased; the types in it are checked on the
     # impl side, where `impl Error for T` has already been registered.
-    rejectUnknownProps(member, loc, "protocol message " & name, ["errors"])
+    rejectUnknownProps(member, loc, "protocol message " & name, ["errors", "generator"])
     result.messages.add WebProtocolMessage(sourceName: name,
       symbolName: "$" & result.emittedName & "$" & mangleWebName(name),
       params: parseProtocolParams(analysis, member.body[1], loc),
@@ -1685,7 +1697,8 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
       defaultFactory: (if member.body.len > 4:
         "$" & result.emittedName & "$" & mangleWebName(name) & "$default" else: ""),
       universalDefault: result.universal and member.body.len > 4,
-      selfDependent: analysis.bodyAnnotationsHaveSelf(member))
+      selfDependent: analysis.bodyAnnotationsHaveSelf(member),
+      generator: webGeneratorMarker(member, loc))
   result.ownMessages = result.messages
 
 proc findProtocolMessage(declaration: WebProtocolDecl,
@@ -1722,7 +1735,7 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
         member.body.len < 5 or
         member.body[1].kind != vkList or not member.body[2].isSym(":"):
       raise webError(loc, "web impl accepts message definitions")
-    rejectUnknownProps(member, loc, "impl message", ["errors"])
+    rejectUnknownProps(member, loc, "impl message", ["errors", "generator"])
     var messageDecl: WebProtocolMessage
     if member.body[0].kind == vkSymbol:
       validateWebMessageName(member.body[0].symVal, loc)
@@ -1750,7 +1763,7 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
       targetName: result.targetName, message: messageDecl,
       params: parseProtocolParams(analysis, member.body[1], loc),
       returnType: analysis.parseAbstractAnnotation(member.body[3], loc), loc: loc,
-      sourceForm: member)
+      sourceForm: member, generator: webGeneratorMarker(member, loc))
   result.localMethods = result.methods
 
 proc protocolIdentities(protocol: WebProtocolDecl): seq[WebProtocolDecl] =
@@ -1939,11 +1952,13 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
         selected = WebImplMethod(protocolName: impl.protocolName, targetName: impl.targetName,
           message: message, params: ancestor.params, returnType: ancestor.returnType,
           sourceForm: ancestor.sourceForm, inheritedTargetName: parentName,
-          annotationSelf: ancestor.annotationSelf, loc: impl.loc)
+          annotationSelf: ancestor.annotationSelf, loc: impl.loc,
+          generator: ancestor.generator)
       if selected == nil and message.sourceForm.kind == vkNode and message.sourceForm.body.len > 4:
         selected = WebImplMethod(protocolName: impl.protocolName, targetName: impl.targetName,
           message: message, params: requiredParams, returnType: requiredResult,
-          sourceForm: message.sourceForm, defaultBody: true, annotationSelf: bound, loc: impl.loc)
+          sourceForm: message.sourceForm, defaultBody: true, annotationSelf: bound, loc: impl.loc,
+          generator: message.generator)
       if selected == nil:
         raise webError(impl.loc, "impl is missing message " & message.sourceName)
       if message.sourceForm.kind == vkNode:
@@ -3723,8 +3738,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       result.keys.add "ensure"
     return
   if name == "yield":
-    if analysis.generatorDepth == 0 or value.body.len != 1:
-      raise webError(loc, "web yield expects one value inside a stream function")
+    if analysis.generatorDepth == 0:
+      raise webError(loc, "yield requires an explicit ^^generator declaration")
+    if value.body.len != 1:
+      raise webError(loc, "yield expects one value")
     let yielded = analysis.analyzeExpr(value.body[0], bindings,
       if value.body[0].kind == vkVoid: nil else: analysis.currentYield)
     return WebExpr(kind: wekYield, typ: webType(wtkVoid), loc: loc,
@@ -3769,9 +3786,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if not inferred and (value.body.len < 4 or not value.body[1].isSym(":")):
       raise webError(loc,
         "web callback requires annotated parameters, a return type, and a body")
-    if containsForm(value, "yield"):
+    if webGeneratorMarker(value, loc):
       raise webError(loc,
-        "web callback cannot be a generator: name it and use (fn name ...)")
+        "web callback cannot be a generator: name it and use (fn ^^generator name ...)")
     analysis.validateCallableProps(value, loc, "callback")
     var params =
       if inferred: inferredParams(analysis, value.body[0], expected, loc)
@@ -3785,6 +3802,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     var inner = copyBindings(bindings)
     analysis.analyzeParameterBindings(params, inner)
     let savedReturn = analysis.currentReturn
+    let savedGeneratorDepth = analysis.generatorDepth
+    analysis.generatorDepth = 0
     analysis.currentReturn = returnType
     var bodyForms: seq[Value]
     for i in (if inferred: 1 else: 3) ..< value.body.len:
@@ -3792,6 +3811,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let bodyExpected = if returnType.isStatementType: nil else: returnType
     let body = analysis.analyzeSequence(bodyForms, inner, bodyExpected, loc)
     analysis.currentReturn = savedReturn
+    analysis.generatorDepth = savedGeneratorDepth
     if not returnType.isStatementType:
       requireType(analysis, loc, body.typ, returnType, "return of web callback")
     if usesAsyncPrimitive(body):
@@ -4005,6 +4025,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "return":
     if value.body.len > 1:
       raise webError(loc, "web return expects zero or one value")
+    if analysis.generatorDepth > 0:
+      if value.body.len == 1 and value.body[0].kind != vkVoid:
+        raise webError(loc, "generator return value must be void")
+      return WebExpr(kind: wekReturn, typ: webType(wtkNever), loc: loc,
+        children: @[analysis.analyzeExpr(VOID, bindings)])
     # Same rule as the VM compiler: under a `Nil`/`Void` signature the frame
     # yields the declared unit, so a returned value could only be discarded.
     if analysis.currentReturn != nil and
@@ -4920,10 +4945,18 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         "message " & methodDecl.sourceName, allowOverride = true)
       methodDecl.checkedErrors = methodDecl.sourceForm.props.hasKey("errors")
       methodDecl.errorTypes = analysis.webErrorRow(methodDecl.sourceForm, methodDecl.loc)
+      if methodDecl.generator:
+        if methodDecl.returnType.kind != wtkStream:
+          raise webError(methodDecl.loc, "generator return annotation must admit Stream")
+        inc analysis.generatorDepth
+        analysis.currentYield = methodDecl.returnType.item
       methodDecl.body = analysis.analyzeSequence(forms, bindings,
-        (if methodDecl.returnType.isStatementType: nil
+        (if methodDecl.generator or methodDecl.returnType.isStatementType: nil
          else: methodDecl.returnType), methodDecl.loc)
-      if not methodDecl.returnType.isStatementType:
+      if methodDecl.generator:
+        dec analysis.generatorDepth
+        analysis.currentYield = nil
+      elif not methodDecl.returnType.isStatementType:
         requireType(analysis, methodDecl.loc, methodDecl.body.typ,
                     methodDecl.returnType,
                     "return of message " & methodDecl.sourceName)
@@ -4953,7 +4986,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       let selfType = WebType(kind: wtkAny, name: "bound Self")
       let fn = WebFunction(sourceName: protocol.sourceName & ":" & message.sourceName,
         emittedName: message.defaultFactory, params: bindWebParams(message.params, selfType),
-        returnType: bindWebSelf(message.returnType, selfType), loc: message.loc)
+        returnType: bindWebSelf(message.returnType, selfType), loc: message.loc,
+        generator: message.generator)
       analysis.annotationSelf = (if protocol.universal: nil else: selfType)
       analysis.currentReturn = fn.returnType
       analysis.currentTypeName = ""
@@ -4965,7 +4999,15 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.analyzeParameterBindings(fn.params, bindings)
       var forms: seq[Value]
       for i in 4 ..< message.sourceForm.body.len: forms.add message.sourceForm.body[i]
+      if fn.generator:
+        if fn.returnType.kind != wtkStream:
+          raise webError(fn.loc, "generator return annotation must admit Stream")
+        inc analysis.generatorDepth
+        analysis.currentYield = fn.returnType.item
       fn.body = analysis.analyzeSequence(forms, bindings, nil, message.loc)
+      if fn.generator:
+        dec analysis.generatorDepth
+        analysis.currentYield = nil
       rejectAsyncBody(fn.body, message.loc, "protocol default " & fn.sourceName)
       result.defaultBodies.add fn
       analysis.inProtocolDefault = false
@@ -4992,10 +5034,18 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         "protocol message " & implMethod.message.sourceName)
       implMethod.checkedErrors = implMethod.sourceForm.props.hasKey("errors")
       implMethod.errorTypes = analysis.webErrorRow(implMethod.sourceForm, implMethod.loc)
+      if implMethod.generator:
+        if implMethod.returnType.kind != wtkStream:
+          raise webError(implMethod.loc, "generator return annotation must admit Stream")
+        inc analysis.generatorDepth
+        analysis.currentYield = implMethod.returnType.item
       implMethod.body = analysis.analyzeSequence(forms, bindings,
-        (if implMethod.returnType.isStatementType or implMethod.defaultBody: nil
+        (if implMethod.generator or implMethod.returnType.isStatementType or implMethod.defaultBody: nil
          else: implMethod.returnType), implMethod.loc)
-      if not implMethod.returnType.isStatementType and not implMethod.defaultBody:
+      if implMethod.generator:
+        dec analysis.generatorDepth
+        analysis.currentYield = nil
+      elif not implMethod.returnType.isStatementType and not implMethod.defaultBody:
         requireType(analysis, implMethod.loc, implMethod.body.typ,
                     implMethod.returnType,
                     "return of protocol message " &
@@ -5354,6 +5404,28 @@ proc fixedParamDeclaration(param: WebParam, typescript: bool): string =
   param.emittedName & (if typescript:
     (if param.optional: "?" else: "") & ": " & tsType(param.typ) else: "")
 
+proc emitMessageResult(emitter: var WebEmitter, body: WebExpr,
+                        returnType: WebType, generator: bool, label: string) =
+  let previousReturn = emitter.currentReturnType
+  emitter.currentReturnType = if generator: nil else: returnType
+  if generator:
+    # The public method binds arguments/defaults now; only this inner body is
+    # suspended. Lexical self and parameters stay attached to this invocation.
+    let cursor = emitter.temp()
+    emitter.line("const " & cursor & " = (function*()" &
+      (if emitter.typescript: ": Generator<" & tsType(returnType.item) & ", void, unknown>"
+       else: "") & " {")
+    inc emitter.indent
+    let value = emitter.emitExpr(body)
+    emitter.line("void " & value & ";")
+    dec emitter.indent
+    emitter.line("})();")
+    emitter.emitCheckedReturn(returnType, "new GeneStream(" & cursor & ")", label)
+  else:
+    let value = emitter.emitExpr(body)
+    emitter.emitCheckedReturn(returnType, value, label)
+  emitter.currentReturnType = previousReturn
+
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   case expr.kind
   of wekNil: "null"
@@ -5457,7 +5529,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var call = expr.text & "(" & arguments.join(", ") & ")"
     if expr.immutable: call = "new GeneStream(" & call & ")"
     if expr.boolValue: call = "await " & call
-    if expr.external:
+    if expr.external or expr.immutable or expr.typ.kind == wtkStream:
       validatorName(expr.typ) & "(" & call & ", " &
         jsString(expr.text & " JS return") & ")"
     else:
@@ -6003,6 +6075,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.emitExpr(expr.children[^1]) & ")"
   of wekSend:
     var receiver = emitter.emitExpr(expr.children[0])
+    let superSend = receiver == "super"
     if expr.boolValue:
       let target = emitter.temp()
       let resultName = emitter.temp()
@@ -6021,15 +6094,21 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       dec emitter.indent
       emitter.line("}")
       return resultName
-    if receiver != "super":
+    if superSend:
+      receiver = "self"
+    else:
       let saved = emitter.temp()
       emitter.line("const " & saved & " = " & receiver & ";")
       receiver = saved
     var resolvedMethod = ""
-    if expr.keys.len == 1:
+    if expr.keys.len == 1 or superSend:
       resolvedMethod = emitter.temp()
-      let target = if emitter.typescript: "(" & receiver & " as any)" else: receiver
-      emitter.line("const " & resolvedMethod & " = " & target & "?.[" & expr.keys[0] & "]" &
+      let target = if superSend: mangleWebName(expr.children[0].typ.name) & ".prototype"
+                   elif emitter.typescript: "(" & receiver & " as any)" else: receiver
+      let member = if expr.keys.len > 0:
+                     (if superSend: "[" else: "?.[") & expr.keys[0] & "]"
+                   else: "." & expr.text
+      emitter.line("const " & resolvedMethod & " = " & target & member &
         (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "") & ";")
       emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageError\"), { message: \"no applicable message implementation\" });")
     var arguments: seq[string]
@@ -6221,13 +6300,20 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       handler & ")"
   of wekTry:
     let target = emitter.temp()
+    let hasEnsure = expr.keys.len > 0 and expr.keys[^1] == "ensure"
+    let failed = if hasEnsure: emitter.temp() else: ""
     emitter.line("let " & target & ";")
-    emitter.line("try {")
-    inc emitter.indent
-    emitter.line(target & " = " & emitter.emitExpr(expr.children[0]) & ";")
-    dec emitter.indent
-    emitter.line("}")
+    if hasEnsure:
+      emitter.line("let " & failed & " = false;")
+      emitter.line("try {")
+      inc emitter.indent
     if expr.patterns.len > 0:
+      emitter.line("try {")
+      inc emitter.indent
+    emitter.line(target & " = " & emitter.emitExpr(expr.children[0]) & ";")
+    if expr.patterns.len > 0:
+      dec emitter.indent
+      emitter.line("}")
       let caught = emitter.temp()
       emitter.line("catch (" & caught & ") {")
       inc emitter.indent
@@ -6247,11 +6333,18 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("else { throw " & caught & "; }")
       dec emitter.indent
       emitter.line("}")
-    if expr.keys.len > 0 and expr.keys[^1] == "ensure":
-      emitter.line("finally {")
+    if hasEnsure:
+      dec emitter.indent
+      let primary = emitter.temp()
+      emitter.line("} catch (" & primary & ") { " & failed & " = true; throw " & primary & "; } finally {")
+      inc emitter.indent
+      emitter.line("try {")
       inc emitter.indent
       let cleanup = emitter.emitExpr(expr.children[^1])
       emitter.line("void " & cleanup & ";")
+      dec emitter.indent
+      let cleanupError = emitter.temp()
+      emitter.line("} catch (" & cleanupError & ") { if (!" & failed & ") throw " & cleanupError & "; }")
       dec emitter.indent
       emitter.line("}")
     target
@@ -6903,21 +6996,18 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
                        else: "value.next"
       emitter.line("if (value === null || typeof value !== \"object\" || typeof " &
         nextAccess & " !== \"function\") $gene_type_error(where, \"Stream\", value);")
-      if typ.checkedErrors:
-        emitter.line("const source = value" &
-          (if emitter.typescript: " as GeneStream<any>" else: "") & ";")
-        emitter.line("function* checked() {")
-        inc emitter.indent
-        emitter.line("try { while (source.has_next()) yield " &
-          validatorName(typ.item) & "(source.next(), `${where} item`); } catch (error) {")
-        inc emitter.indent
-        emitter.line("throw $gene_error_contract(error, [" &
-          validatorName(typ.errorTypes[0]) & "], \"Stream error\");")
-        dec emitter.indent
-        emitter.line("}")
-        dec emitter.indent
-        emitter.line("}")
-        emitter.line("value = new GeneStream(checked(), source);")
+      emitter.line("const source = value" &
+        (if emitter.typescript: " as GeneStream<any>" else: "") & ";")
+      let failureCheck = if typ.checkedErrors:
+        "(error" & (if emitter.typescript: ": unknown" else: "") &
+          ") => $gene_error_contract(error, [" & validatorName(typ.errorTypes[0]) &
+          "], \"Stream error\")"
+        else: "undefined"
+      # A typed view delegates lookahead without consuming its source. A
+      # generator-based adapter would advance aliases merely on peek/has_next.
+      emitter.line("value = new GeneStream(undefined, source, " & failureCheck &
+        ", (item" & (if emitter.typescript: ": unknown" else: "") & ") => " &
+        validatorName(typ.item) & "(item, `${where} item`));")
     of wtkNominal:
       var isEnum = false
       var protocol: WebProtocolDecl
@@ -7178,11 +7268,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     emitter.beginWebErrorGuard(methodDecl.checkedErrors)
     emitter.emitFixedParameterBindings(methodDecl.params,
       declaration.sourceName & "." & methodDecl.sourceName)
-    let previousReturn = emitter.currentReturnType
-    emitter.currentReturnType = methodDecl.returnType
-    let body = emitter.emitExpr(methodDecl.body)
-    emitter.currentReturnType = previousReturn
-    emitter.emitCheckedReturn(methodDecl.returnType, body,
+    emitter.emitMessageResult(methodDecl.body, methodDecl.returnType, methodDecl.generator,
       declaration.sourceName & "." & methodDecl.sourceName & " return")
     emitter.endWebErrorGuard(methodDecl.checkedErrors, methodDecl.errorTypes,
                               declaration.sourceName & "." & methodDecl.sourceName)
@@ -7243,11 +7329,7 @@ proc emitDefaultFactory(emitter: var WebEmitter, module: WebModule, fn: WebFunct
   emitter.line("const self = this;")
   emitter.beginWebErrorGuard(fn.checkedErrors)
   emitter.emitFixedParameterBindings(fn.params, fn.sourceName)
-  let oldReturn = emitter.currentReturnType
-  emitter.currentReturnType = fn.returnType
-  let body = emitter.emitExpr(fn.body)
-  emitter.currentReturnType = oldReturn
-  emitter.emitCheckedReturn(fn.returnType, body, fn.sourceName & " return")
+  emitter.emitMessageResult(fn.body, fn.returnType, fn.generator, fn.sourceName & " return")
   emitter.endWebErrorGuard(fn.checkedErrors, fn.errorTypes, fn.sourceName)
   dec emitter.indent
   emitter.line("};")
@@ -7342,11 +7424,7 @@ proc emitImplDeclaration(emitter: var WebEmitter,
     emitter.emitFixedParameterBindings(implMethod.params,
       implementation.protocolName & ":" & implMethod.message.sourceName,
       offset = (if builtinTarget: 1 else: 0))
-    let previousReturn = emitter.currentReturnType
-    emitter.currentReturnType = implMethod.returnType
-    let body = emitter.emitExpr(implMethod.body)
-    emitter.currentReturnType = previousReturn
-    emitter.emitCheckedReturn(implMethod.returnType, body,
+    emitter.emitMessageResult(implMethod.body, implMethod.returnType, implMethod.generator,
       implementation.protocolName & ":" & implMethod.message.sourceName & " return")
     emitter.endWebErrorGuard(implMethod.checkedErrors, implMethod.errorTypes,
                               implementation.protocolName & ":" & implMethod.message.sourceName)
@@ -7759,11 +7837,19 @@ proc emitModule(module: WebModule, typescript: bool,
       emitter.line("private pulling = false;")
       emitter.line("private source: Iterator<T> | undefined;")
       emitter.line("private upstream: GeneStream<any> | undefined;")
+      emitter.line("private checkFailure: ((error: unknown) => unknown) | undefined;")
+      emitter.line("private checkItem: ((item: unknown) => T) | undefined;")
     let privateField = if typescript: "private " else: ""
     emitter.line("constructor(source" &
-      (if typescript: ": Iterator<T>" else: "") &
+      (if typescript: ": Iterator<T> | undefined" else: "") &
       ", upstream" & (if typescript: "?: GeneStream<any>" else: "") &
-      ") { this.source = source; this.upstream = upstream; this.buffered = undefined; this.closed = false; this.pulling = false; }")
+      ", checkFailure" & (if typescript: "?: (error: unknown) => unknown" else: "") &
+      ", checkItem" & (if typescript: "?: (item: unknown) => T" else: "") &
+      ") { this.source = source; this.upstream = upstream; this.checkFailure = checkFailure; this.checkItem = checkItem; this.buffered = undefined; this.closed = false; this.pulling = false; }")
+    emitter.line(privateField & "checked" & (if typescript: "<R>" else: "") &
+      "(operation" & (if typescript: ": () => R" else: "") & ")" &
+      (if typescript: ": R" else: "") &
+      " { try { return operation(); } catch (primary) { try { this.close(); } catch (_) {} throw this.checkFailure ? this.checkFailure(primary) : primary; } }")
     emitter.line(privateField & "pull()" &
       (if typescript: ": IteratorResult<T>" else: "") & " {")
     inc emitter.indent
@@ -7775,14 +7861,19 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line("has_next()" & (if typescript: ": boolean" else: "") &
-      " { return !this.pull().done; }")
+      " { if (this.checkItem) { if (this.closed || !this.upstream) return false; return this.checked(() => { if (!this.upstream" &
+      (if typescript: "!" else: "") & ".has_next()) { this.close(); return false; } return !this.closed; }); } return !this.pull().done; }")
     emitter.line("peek()" & (if typescript: ": T" else: "") & " {")
     inc emitter.indent
+    emitter.line("if (this.checkItem) { if (!this.has_next()) throw new GeneEndOfStream(); const source = this.upstream" &
+      (if typescript: "!" else: "") & ", check = this.checkItem; return this.checked(() => check(source.peek())); }")
     emitter.line("const item = this.pull(); if (item.done) throw new GeneEndOfStream(); return item.value;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("next()" & (if typescript: ": T" else: "") & " {")
     inc emitter.indent
+    emitter.line("if (this.checkItem) { const item = this.peek(); this.checked(() => this.upstream" &
+      (if typescript: "!" else: "") & ".next()); return item; }")
     emitter.line("const item = this.pull(); if (item.done) throw new GeneEndOfStream(); this.buffered = undefined; return item.value;")
     dec emitter.indent
     emitter.line("}")
@@ -7791,8 +7882,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (this.closed) return null; this.closed = true; this.buffered = undefined;")
     emitter.line("const source = this.source, upstream = this.upstream; this.source = undefined; this.upstream = undefined;")
     emitter.line("let failed = false, first" & (if typescript: ": unknown" else: "") & ";")
-    emitter.line("try { if (source && typeof source.return === \"function\") source.return(); } catch (error) { failed = true; first = error; }")
-    emitter.line("try { if (upstream) upstream.close(); } catch (error) { if (!failed) { failed = true; first = error; } } if (failed) throw first; return null;")
+    emitter.line("try { if (source && typeof source.return === \"function\") { let ending = source.return(); while (!ending.done) ending = source.next(); } } catch (error) { failed = true; first = error; }")
+    emitter.line("try { if (upstream) upstream.close(); } catch (error) { if (!failed) { failed = true; first = error; } } if (failed) throw this.checkFailure ? this.checkFailure(first) : first; return null;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("detach()" & (if typescript: ": void" else: "") &
@@ -9159,6 +9250,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                   returnType: remapType(methodDecl.returnType, dependency, typeAliases),
                   body: methodDecl.body, loc: methodDecl.loc,
                   sourceForm: methodDecl.sourceForm,
+                  generator: methodDecl.generator,
                   declaresOverride: methodDecl.declaresOverride,
                   annotationSelf: remapType(methodDecl.annotationSelf, dependency, typeAliases))
               var protocolMethods: seq[WebImplMethod]
@@ -9168,7 +9260,8 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                   params: remapParams(methodDecl.params, dependency, typeAliases),
                   returnType: remapType(methodDecl.returnType, dependency, typeAliases),
                   annotationSelf: remapType(methodDecl.annotationSelf, dependency, typeAliases),
-                  body: methodDecl.body, sourceForm: methodDecl.sourceForm, loc: methodDecl.loc)
+                  body: methodDecl.body, sourceForm: methodDecl.sourceForm, loc: methodDecl.loc,
+                  generator: methodDecl.generator)
               var protocolBindings = initTable[string, WebType]()
               for ancestor in typeLineage(dependency, declaration):
                 for identity, binding in ancestor.protocolBindings:
@@ -9224,6 +9317,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                   loc: spec.loc, identity: messageDecl.identity,
                   ownerIdentity: messageDecl.ownerIdentity, ownerName: messageDecl.ownerName,
                   sourceForm: messageDecl.sourceForm,
+                  generator: messageDecl.generator,
                   universalDefault: messageDecl.universalDefault,
                   selfDependent: messageDecl.selfDependent,
                   defaultFactory: (if messageDecl.defaultFactory.len == 0: "" else:
