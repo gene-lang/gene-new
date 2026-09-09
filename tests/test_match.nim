@@ -56,11 +56,11 @@ suite "match — typed patterns":
   test "typed patterns adapt streams lazily":
     ck "(try (match ($to_stream [\"bad\"]) " &
        "       (when (s : (Stream Int Never)) (s .next))) " &
-       "catch TypeError $ex/where)",
+       "catch TypeError $err/where)",
        "\"Stream/next item\""
   test "catch clauses match error types":
     ck "(try (fn f [x : Int] x) (f \"bad\") " &
-       "catch TypeError $ex/where)",
+       "catch TypeError $err/where)",
        "\"parameter 'x'\""
   test "typed patterns require exactly one type":
     expect GeneError: discard runStr("(match 1 (when (x :) x))")

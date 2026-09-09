@@ -12,14 +12,14 @@ when defined(geneRcStats):
   import gene/[compiler, types, vm]
   import std/[os, tables, unittest]
 
-  proc leakedManaged(src: string): int =
+  proc leakedManaged(src: string, useLocalSlots = true): int =
     ## Managed heap objects surviving one run of `src` after the program scope is
     ## dropped. The shared built-ins root is primed once below, so it cancels out.
     GC_fullCollect()
     let before = liveManaged
     block:
       var scope = newGlobalScope()
-      discard run(compileSource(src), scope)
+      discard run(compileSource(src, useLocalSlots = useLocalSlots), scope)
       scope = nil
     GC_fullCollect()
     result = liveManaged - before
@@ -29,6 +29,46 @@ when defined(geneRcStats):
   GC_fullCollect()
 
   suite "rc — closures and scopes (geneRcStats)":
+    test "returned local types retain and release their declaration scopes":
+      for slots in [true, false]:
+        check leakedManaged("""
+          (type A ^props {} (message m [] : Str "A"))
+          (type B ^props {} (message m [] : Str "B"))
+          (fn make [p label]
+            (type C : p ^props {}
+              (message up [] : Str ($ label (super .m)))
+              (message own_type [] C))
+            C)
+          (var C1 (make A "first:"))
+          (var C2 (make B "second:"))
+          ($assert (== ((C1) .up) "first:A"))
+          ($assert (== ((C2) .up) "second:B"))
+          ($assert (== ((C1) .own_type) C1))
+          (set C1 nil)
+          (set C2 nil)
+        """, useLocalSlots = slots) == 0
+
+      GC_fullCollect()
+      let before = liveManaged
+      var saved = NIL
+      block:
+        var scope = newGlobalScope()
+        saved = run(compileSource("""
+          (fn make [label]
+            (type Local ^props {} (message value [] label))
+            Local)
+          (make "retained")
+        """), scope)
+        scope = nil
+      GC_fullCollect()
+      block:
+        let scope = newGlobalScope()
+        scope.define("Saved", saved)
+        check run(compileSource("((Saved) .value)"), scope).strVal == "retained"
+      saved = NIL
+      GC_fullCollect()
+      check liveManaged == before
+
     test "Self contracts and declaration assemblies release their receiver identities":
       check leakedManaged("""
         (type A ^props {^next Self?}
@@ -49,13 +89,103 @@ when defined(geneRcStats):
       check leakedManaged("""
         (fn test []
           (type Boom ^props {} (message raise [] : Int ^errors [Self] (fail self)))
-          (impl Error for Boom)
+          (impl Error for Boom
+            (message message [] : Str ^errors [] "boom"))
           (try ((Boom) .raise) catch Boom nil))
         (test)
       """) == 0
 
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
+
+    test "strict message proof signatures do not retain their owning scope":
+      check leakedManaged("""
+        (mod checked ^errors_mode strict)
+        (type Item ^props {}
+          (message copy [] : Self ^errors [] self)
+          (message value [] : Int ^errors [] 7))
+        (fn read [item : Item] : Int ^errors [] ((item .copy) .value))
+        (read (Item))
+      """) == 0
+
+    test "inferred returned-callable proofs release their source scopes":
+      check leakedManaged("""
+        (mod checked ^errors_mode strict)
+        (fn source ^private true [] 1)
+        (fn factory ^private true [] (fn [] (source)))
+        (fn client [] ^errors [] ((factory)))
+        (client)
+      """) == 0
+      GC_fullCollect()
+      let before = liveManaged
+      var saved = NIL
+      block:
+        var scope = newGlobalScope()
+        saved = run(compileSource("""
+          (mod checked ^errors_mode strict)
+          (fn factory ^private true []
+            (fn callback [] ^errors [] 1)
+            callback)
+          (factory)
+        """), scope)
+        scope = nil
+      GC_fullCollect()
+      check saved.call().intVal == 1
+      saved = NIL
+      GC_fullCollect()
+      check liveManaged == before
+
+    test "returned protocol messages retain and release their binding scope":
+      GC_fullCollect()
+      let before = liveManaged
+      var saved = NIL
+      block:
+        var scope = newGlobalScope()
+        # A canonical impl intentionally remains an application root. Use an
+        # overlay so the escaped message is the only owner after this block.
+        scope.implOverlayRoot = true
+        saved = run(compileSource("""
+          (mod checked ^errors_mode strict)
+          (protocol P (message value [] : Int ^errors []))
+          (type Item ^props {})
+          (impl P for Item (message value [] : Int ^errors [] 7))
+          (fn factory ^private true [unused : Int] P:value)
+          [(factory 1) (Item)]
+        """), scope)
+        scope = nil
+      GC_fullCollect()
+      check saved.listItems[0].call(@[saved.listItems[1]]).intVal == 7
+      saved = NIL
+      GC_fullCollect()
+      check liveManaged == before
+
+    test "released error witnesses reclaim their formatter environments":
+      check leakedManaged("""
+        (fn raise_local []
+          (type Local ^props {^message Str})
+          (impl Error for Local
+            (message message [] : Str ^errors [] self/message))
+          (let original (Local ^message "local"))
+          (fail original))
+        (repeat 10 (try (raise_local) catch Error $err_msg))
+      """) == 0
+      check leakedManaged("""
+        (scope
+          (type Local ^props {^message Str}
+            (impl Error (message message [] : Str ^errors [] self/message)))
+          (var original (Local ^message "named"))
+          (try (fail original) catch Error $err_msg))
+      """, useLocalSlots = false) == 0
+      check leakedManaged("""
+        (fn error_factory []
+          (type Local ^props {^message Str})
+          (impl Error for Local)
+          (try (fail (Local ^message "saved")) catch Error
+            (fn [] $err_msg)))
+        (var display (error_factory))
+        (display)
+        (set display nil)
+      """) == 0
 
     test "$runtime/gc_stats exposes live managed count":
       let scope = newGlobalScope()
@@ -101,6 +231,8 @@ when defined(geneRcStats):
       check leakedManaged("(fn bad [x] (fail \"expected\")) " &
         "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Any nil)) " &
         "(repeat 100 (use bad))") == 0
+      check leakedManaged("(let f : (Callable [] Any ^errors []) " &
+        "(fn [] ($assert false))) (try (f) catch ErrorContractViolation nil)") == 0
 
     test "prepared pipeline captures are released on close and exhaustion":
       check leakedManaged("(let s ([1 2] => + 3)) (s .close)") == 0

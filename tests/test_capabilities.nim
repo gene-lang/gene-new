@@ -893,7 +893,7 @@ suite "capability call boundaries":
         ($fs/read_text "missing.txt"))
       (try (denied)
         catch MissingCapability
-        [$ex/capability $ex/operation])
+        [$err/capability $err/operation])
     """), newGlobalScope(newApplication()))
     check value.print == "[\"fs/ReadFile\" \"fs/read_text\"]"
 

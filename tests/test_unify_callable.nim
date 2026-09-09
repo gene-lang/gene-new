@@ -105,8 +105,8 @@ suite "unified callable — checked signatures":
       (let effects [])
       (let checked : (Callable [Int] Int)
         (fn [x] (effects .push x) "bad"))
-      [(try (checked "bad") catch TypeError $ex/where)
-       (try (checked 1) catch TypeError $ex/where)
+      [(try (checked "bad") catch TypeError $err/where)
+       (try (checked 1) catch TypeError $err/where)
        effects]
     """, "[\"Callable argument 0\" \"Callable result\" [1]]"
 
@@ -161,11 +161,11 @@ suite "unified callable — checked signatures":
   test "declared errors are bounded while boundary errors remain TypeErrors":
     unifyCallableCheck """
       (type Boom ^props {^n Int} ^impl [Error])
-      (impl Error for Boom)
+      (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
       (fn fail_it [x] (fail (Boom ^n x)))
       (let allowed : (Callable [Int] Int ^errors [Boom]) fail_it)
       (let denied : (Callable [Int] Int ^errors []) fail_it)
-      [(try (allowed 7) catch Boom $ex/n)
+      [(try (allowed 7) catch Boom $err/n)
        (try (denied 1) false catch Any true)
        (try (denied "bad") false catch TypeError true)]
     """, "[7 true true]"

@@ -56,8 +56,9 @@ const generated = [
   join(work, "web_component.ts"),
   join(root, "web", "gene_dom.generated.d.ts"),
 ];
-// Check callable, Self, nil/void, and reader-wrapper contracts in both emitted surfaces.
-const contractCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => (item.id.startsWith("callable.") || item.id.startsWith("self.") || item.id.startsWith("nil_void.") || item.id.startsWith("reader_wrap.")) && item.profile.status === "eligible");
+// Check invocation, error, Self, nil/void, and reader-wrapper contracts in both emitted surfaces.
+const contractPrefixes = ["callable.", "errors.", "self.", "nil_void.", "reader_wrap."];
+const contractCases = JSON.parse(readFileSync(join(root, "tests", "transpile", "fixtures.json"), "utf8")).cases.filter(item => contractPrefixes.some(prefix => item.id.startsWith(prefix)) && item.profile.status === "eligible");
 for (const item of contractCases) {
   const name = item.id.replaceAll(".", "_");
   const caseDir = join(work, name);

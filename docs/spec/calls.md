@@ -86,11 +86,22 @@ and the creating context's capability ceiling. Adaptation may create a distinct
 view without changing the target. Reapplying an equivalent contract may reuse
 a view; adaptation does not promise identity preservation or function variance.
 
-`^errors [E]` bounds recoverable invocation errors; `^errors []` admits no domain
-errors. An omitted row leaves errors unchecked. Type-boundary failures remain
-TypeErrors; panic and cancellation retain their normal behavior. Returned
+`^errors [E]` bounds ordinary invocation errors, including target-owned default
+evaluation; `^errors []` admits none. `Error` opens the row, so `[E Error]`
+permits every ordinary error while retaining E as diagnostic information.
+An omitted row leaves errors unchecked at runtime. A rejecting row generates
+one `ErrorContractViolation` retaining the original typed error as `cause`.
+Generated type failures and contract violations pass through outer rows;
+freshly constructed failures are ordinary regardless of their type name.
+Panic and cancellation retain their normal behavior. Returned
 Streams and Tasks remain values with their own deferred contracts. The callable
 error row does not apply to later consumption or execution of those values.
+
+Error-row compatibility compares resolved semantic coverage: order, duplicates,
+Never, redundant subtypes, and named hints alongside Error do not change it.
+Other exact callable-signature rules remain in force. The
+[error-handling contract](../error-handling.md) specifies checking modes,
+retained Error conformance, and implementation status.
 
 Executable coverage: `tests/test_unify_callable.nim` and shared `callable.*`
 fixtures in `tests/transpile/fixtures.json`.

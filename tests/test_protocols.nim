@@ -94,7 +94,7 @@ suite "protocols — declarations and dispatch":
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
     ck "(type Bad ^props {}) " &
        "(impl ToStr for Bad (message to_str [self] 1)) " &
-       "(try ($to_str (Bad)) catch TypeError $ex/where)",
+       "(try ($to_str (Bad)) catch TypeError $err/where)",
        "\"ToStr/to_str\""
 
   test "namespace protocol messages find receiver-scope impls":
@@ -314,7 +314,7 @@ suite "protocols — declarations and dispatch":
        "(type User ^props {^name Str}) " &
        "(impl ToName for User (message to_name [self] : Str 1)) " &
        "((User ^name \"Ada\") .ToName:to_name) " &
-       "catch TypeError $ex/where)",
+       "catch TypeError $err/where)",
        "\"return from 'to_name'\""
 
   test "missing impl is a recoverable runtime error":

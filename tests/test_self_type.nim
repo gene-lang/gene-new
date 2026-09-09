@@ -32,7 +32,7 @@ suite "Self — forward declaration readiness":
       (protocol P (message value [] : Int 99))
       (type Dog ^props {}) (type Pup : Dog ^props {})
       (impl P for Pup ^^override)
-      (let early (try ((Pup) .P:value) catch RuntimeError $ex/message))
+      (let early (try ((Pup) .P:value) catch RuntimeError $err/message))
       (impl P for Dog (message value [] : Int 7))
       [(== early "declaration not ready: P for Pup") ((Pup) .P:value)]
     """) == "[true 7]"
@@ -263,7 +263,7 @@ suite "Self — live overlay dependencies":
 suite "Self — checked error contracts":
   test "protocol error rows bind Self and inherited replacements name the original type":
     check selfTypeEval("""
-      (type Boom ^props {}) (impl Error for Boom)
+      (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
       (protocol P (message raise [] : Int ^errors [Self]))
       (impl P for Boom (message raise [] : Int ^errors [Self] (fail self)))
       (type Child : Boom ^props {})
@@ -274,7 +274,7 @@ suite "Self — checked error contracts":
 
   test "an error row alias cannot conceal replacement Self":
     selfTypeError("""
-      (type Boom ^props {}) (impl Error for Boom)
+      (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
       (alias Hidden Self)
       (protocol P (message raise [] : Int ^errors [Self]))
       (impl P for Boom (message raise [] : Int ^errors [Self] (fail self)))
@@ -287,7 +287,7 @@ suite "Self — checked error contracts":
       (protocol P ^^universal
         (message raise [] : Int ^errors [RuntimeError]
           (fail (RuntimeError ^message "declared"))))
-      (try (1 .P:raise) catch RuntimeError $ex/message)
+      (try (1 .P:raise) catch RuntimeError $err/message)
     """) == "\"declared\""
 
 suite "Self — forward annotation dependencies":
@@ -319,7 +319,7 @@ suite "Self — forward annotation dependencies":
   test "direct error rows wait for the receiver's Error conformance":
     check selfTypeEval("""
       (type Boom ^props {} (message raise [] : Int ^errors [Self] (fail self)))
-      (impl Error for Boom)
+      (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
       (try ((Boom) .raise) catch Boom 7)
     """) == "7"
 
@@ -353,7 +353,7 @@ suite "Self — nested error annotations":
     check selfTypeEval("""
       (type Boom ^props {}
         (message raiser [] (fn [] : Int ^errors [Self] (fail self))))
-      (impl Error for Boom)
+      (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
       (type Child : Boom ^props {})
       (let raise_child ((Child) .raiser))
       (try (raise_child) catch Boom 7)

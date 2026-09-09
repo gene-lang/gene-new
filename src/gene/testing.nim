@@ -67,8 +67,7 @@ proc biAssertRaises(args: openArray[Value],
   try:
     discard applyCall(args[0], [], NamedArgs(), scope, loc = call.loc)
   except GeneError as error:
-    let value = if error.hasErrVal: error.errVal
-                else: runtimeErrorValue(scope, error.msg)
+    let value = normalizeFailure(error, scope).errVal
     if matchesTypeExpr(args[1], value, scope):
       return value
     raise
@@ -98,7 +97,7 @@ proc testDiagnostic(error: ref GeneError, phase: string,
               else: runtimeErrorValue(scope, error.msg)
   props["error_type"] = if value.kind == vkNode: value.head
                         else: builtInTypeHead(scope, "RuntimeError")
-  props["message"] = newStr(error.msg)
+  props["message"] = newStr(errorDisplayMessage(error, scope))
   props["phase"] = newStr(phase)
   props["assertion"] = newBool(matchesTypeExpr(
     builtInTypeHead(scope, "AssertionError"), value, scope))
@@ -113,8 +112,9 @@ proc testDiagnostic(error: ref GeneError, phase: string,
           testDisplayValue(value.props[key])
           elif value.props.getOrDefault(key & "_present", FALSE).isTruthy: "void"
           else: "<unavailable>")
-    if value.props.hasKey("trace"):
-      props["trace"] = newStr(testDisplayValue(value.props["trace"]))
+    let diagnosticProps = value.errorProperties()
+    if diagnosticProps.hasKey("trace"):
+      props["trace"] = newStr(testDisplayValue(diagnosticProps["trace"]))
   newMap(props, immutable = true)
 
 proc checkTestRegistration(registry: TestRegistry) =
@@ -443,13 +443,13 @@ proc registerTestingNamespace(root: Scope) =
     fields.add TypeField(name: name, typeExpr: newSym("List"), scope: root)
   let resultType = newType("TestResult", NIL, fields, @[], root)
   root.define("TestResult", resultType)
-  root.define("assert", newNativeCallFn("assert", biAssert, acceptsNamed = false))
+  root.define("assert", builtinNativeCallFn("assert", biAssert, acceptsNamed = false))
   let ns = newScope(root)
   ns.define("AssertionError", assertionType)
   ns.define("TestResult", resultType)
-  ns.define("assert_equal", newNativeCallFn("test/assert_equal", biAssertEqual,
+  ns.define("assert_equal", builtinNativeCallFn("test/assert_equal", biAssertEqual,
                                            acceptsNamed = false))
-  ns.define("assert_raises", newNativeCallFn("test/assert_raises", biAssertRaises,
+  ns.define("assert_raises", builtinNativeCallFn("test/assert_raises", biAssertRaises,
                                             acceptsNamed = false))
   ns.define("register_group", newNativeCallFn("test/register_group",
     biTestRegisterGroup, acceptsNamed = false))

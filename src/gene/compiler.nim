@@ -2,6 +2,7 @@
 
 import std/[algorithm, monotimes, os, sets, strutils, tables, times]
 import ./[capabilities, equality, gir, reader, types]
+import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
 type
@@ -159,6 +160,8 @@ type
     ## Collected up front so the check does not depend on compilation order.
     overlayImplMessages: HashSet[string]
     budget: CompileBudget
+    deferErrorChecks: bool
+    errorModeOverride: string
 
   ParamSpecs = object
     positional: seq[string]
@@ -276,12 +279,12 @@ proc enableLocalSlots(c: var Compiler) =
 
 const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 
-# `$ex` reads as `(path gene ex)`, so it cannot collide with an ordinary
+# `$err` reads as `(path gene err)`, so it cannot collide with an ordinary
 # lexical binding. Catch bodies reserve this otherwise-unspellable slot and
 # `compilePath` lowers the special path to that slot. Nested bodies capture it
 # through the ordinary parent-slot machinery; outside a catch it remains an
 # invalid use rather than a mutable global exception cell.
-const CatchErrorBindingName = "$ex"
+const CatchErrorBindingName = "$err"
 
 # `~` and `?~` are canonical send markers produced by the reader's dot-syntax
 # lowering. Generated AST may contain them, but they may not be bound, set, or
@@ -1249,8 +1252,11 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
       chunk.forLoops.len > 0 or chunk.matches.len > 0 or
       chunk.tries.len > 0:
     return true
-  for inst in chunk.instructions:
+  for i, inst in chunk.instructions:
     case inst.op
+    of opBindMessage:
+      if i + 1 == chunk.instructions.len or chunk.instructions[i + 1].op != opResolveQualifiedMessage:
+        return true
     of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
        opCallParentLocal1, opCallOuterLocal1, opSetOuterLocal, opDefineName,
        opDefineLocal, opSetModuleName, opMakeFn, opPreparePipelineCall,
@@ -1298,8 +1304,13 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
     return false
-  for inst in chunk.instructions:
+  for i, inst in chunk.instructions:
     case inst.op
+    of opBindMessage:
+      # A held message owns the scope in which it was written. Only an
+      # immediately resolved send consumes that temporary without escape.
+      if i + 1 == chunk.instructions.len or chunk.instructions[i + 1].op != opResolveQualifiedMessage:
+        return false
     of opMakeFn, opPreparePipelineCall, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
        opMakeImpl, opImport, opImportImpl, opMatch, opMatchBind,
        opMatchBindReplace,
@@ -3825,6 +3836,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       fnCompiler.formsKnownExactResult(body, returnType.symVal, start)
   discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
+  for name in fnCompiler.letNames:
+    if name in fnCompiler.localNames: fnCompiler.chunk.immutableBindings.add name
+  fnCompiler.chunk.immutableBindings.sort()
   var positionalSlotMaySet: seq[bool]
   var positionalParamsMaySet = false
   for slot in positionalSlots:
@@ -4834,6 +4848,9 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
                                  errorTypeCount = errorRow.count)
   let isPublic = definesName and node.bits in c.staticTopLevelImpls and
     not node.declarationIsPrivate
+  proto.publicErrorInterface = isPublic
+  if node.props.hasKey("errors"):
+    proto.signatureErrorExprs = node.props["errors"].listItems
   proto.capabilityRow = c.normalizedFunctionCapabilityRow(node, proto, isPublic)
   if proto.capabilityRow.declaresCapabilities:
     proto.disableCapabilityBypasses()
@@ -4878,6 +4895,10 @@ proc compileFexpr(c: var Compiler, node: Value) =
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
   proto.isSyntaxFn = true
+  proto.publicErrorInterface = definesName and node.bits in c.staticTopLevelImpls and
+    not node.declarationIsPrivate
+  if node.props.hasKey("errors"):
+    proto.signatureErrorExprs = node.props["errors"].listItems
   # Syntax calls carry raw nodes and always bind through the general call
   # scope; the fused fast-bind paths assume evaluated arguments.
   proto.simpleCall = false
@@ -5558,6 +5579,11 @@ proc cloneCompileInterface*(source: CompileNamespaceInterface):
   if source == nil:
     return nil
   result = newCompileNamespaceInterface()
+  result.initializationErrorsKnown = source.initializationErrorsKnown
+  result.initializationErrors = source.initializationErrors
+  result.errorSummaryVersion = source.errorSummaryVersion
+  result.exportedImplsKnown = source.exportedImplsKnown
+  result.exportedImpls = source.exportedImpls
   for name, entry in source.entries:
     var copied = entry
     if entry.category == cbcNamespace:
@@ -6587,6 +6613,14 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
     raise newException(GeneError, "mod requires a name")
   validateBindingName(node.body[0].symVal)
   c.seenModDecl = true
+  if node.props.hasKey("errors_mode"):
+    let mode = node.props["errors_mode"]
+    if mode.kind != vkSymbol or mode.symVal notin ["dynamic", "warn", "strict"]:
+      raise newException(GeneError, "^errors_mode must be dynamic, warn, or strict")
+    c.chunk.errorsMode = case mode.symVal
+      of "warn": ecmWarn
+      of "strict": ecmStrict
+      else: ecmDynamic
   if node.props.hasKey("capabilities_mode"):
     let mode = node.props["capabilities_mode"]
     if mode.kind != vkSymbol or mode.symVal notin ["open", "strict"]:
@@ -6943,6 +6977,12 @@ proc compilePathSend(c: var Compiler, part, site: Value) =
     else:
       c.emitLoadBinding(segment.name)
     discard c.emit(opResolveQualifiedMessage, name = "%" & segment.name)
+  elif qualifiedMessageSplit(segment.name) > 0:
+    let split = qualifiedMessageSplit(segment.name)
+    let qualifier = desugarPath(segment.name[0..<split])
+    let message = newSym(segment.name[split + 1..^1])
+    compileExpr(c, newNode(newSym("msg"), body = @[qualifier, message]))
+    discard c.emit(opResolveQualifiedMessage, name = segment.name)
   else:
     validateMessageName(segment.name)
     discard c.emit(opResolveMessage, name = segment.name)
@@ -6956,12 +6996,21 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 0:
     c.emitConst VOID
     return
+  if parts.len >= 2 and parts[0].isSymbol("gene") and parts[1].isSymbol("ex"):
+    raise newException(GeneError, "$ex was renamed to $err")
   if parts.len >= 2 and parts[0].isSymbol("gene") and
-      parts[1].isSymbol("ex"):
+      parts[1].isSymbol("err_msg"):
+    let access = read("$err/.Error:message")
+    var rewritten = access.body
+    for i in 2..<parts.len: rewritten.add parts[i]
+    c.compilePath(newNode(newSym("path"), body = rewritten))
+    return
+  if parts.len >= 2 and parts[0].isSymbol("gene") and
+      parts[1].isSymbol("err"):
     if c.localSlot(CatchErrorBindingName) < 0 and
         c.parentSlot(CatchErrorBindingName).slot < 0:
       raise newException(GeneError,
-        "$ex is only available inside a catch body")
+        "$err is only available inside a catch body")
     c.emitLoadBinding(CatchErrorBindingName)
     var i = 2
     while i < parts.len:
@@ -7015,6 +7064,8 @@ proc compileSetPath(c: var Compiler, node: Value) =
     raise newException(GeneError,
       "set path assignment requires a path")
   let parts = target.body
+  if parts[0].isSymbol("gene") and parts[1].isSymbol("err_msg"):
+    raise newException(GeneError, "$err_msg is a read-only expression")
   compileExpr(c, parts[0])
   for i in 1 ..< parts.len:
     let seg = parts[i]
@@ -9582,7 +9633,19 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.chunk.localNames = c.localNames
     c.chunk.mirrorSlots = true
+  for name in c.letNames: c.chunk.immutableBindings.add name
+  c.chunk.immutableBindings.sort()
   c.chunk.rewriteSelfRecursiveCalls()
+  if c.errorModeOverride.len > 0:
+    c.chunk.errorsMode = parseErrorMode(c.errorModeOverride)
+  if c.chunk.errorsMode != ecmDynamic and not c.deferErrorChecks:
+    let checked = analyzeErrorEffects(c.chunk, c.importedInterfaces)
+    for diagnostic in checked.diagnostics: c.chunk.diagnostics.add diagnostic
+    if c.chunk.errorsMode == ecmStrict and checked.diagnostics.len > 0:
+      let failure = newException(GeneError, checked.diagnostics[0].message)
+      failure.loc = checked.diagnostics[0].loc
+      raise failure
+    c.chunk.errorChecksComplete = true
   c.chunk
 
 proc compileForms*(forms: openArray[Value],
@@ -9596,12 +9659,13 @@ proc compileForms*(forms: openArray[Value],
 
 proc compileSourceUnit*(unit: SourceUnit,
                         allowAmbientImports = true,
-                        useLocalSlots = true): Chunk =
+                        useLocalSlots = true, errorsMode = ""): Chunk =
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
                    sourceLocs: sharedSourceLocs(unit.locs),
                    formLocs: unit.formLocs,
                    unitSource: unit.source,
+                   errorModeOverride: errorsMode,
                    allowAmbientImports: allowAmbientImports,
                    ffiLibraryNames: initTable[string, bool]())
   compileFormsInto(c, unit.forms, useLocalSlots)
@@ -9610,7 +9674,7 @@ proc compileFormsWithMacros*(forms: openArray[Value],
     importedMacros: Table[string, Table[string, MacroDef]],
     importedSyntaxFns = initTable[string, seq[string]](),
     importedInterfaces = initTable[string, CompileNamespaceInterface](),
-    budget: CompileBudget = nil):
+    budget: CompileBudget = nil, deferErrorChecks = false):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   ## Module-loader entry point (design §11/§15): compile a source unit with the
@@ -9634,7 +9698,7 @@ proc compileFormsWithMacros*(forms: openArray[Value],
                    importedInterfaces: importedInterfaces,
                    moduleMacroExports: moduleMacroExports,
                    moduleSyntaxFnExports: moduleSyntaxFnExports,
-                   budget: budget)
+                   budget: budget, deferErrorChecks: deferErrorChecks)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
   result.macroExports = moduleMacroExports[]
   for name in moduleSyntaxFnExports[]:
@@ -9647,7 +9711,7 @@ proc compileFormsWithMacros*(unit: SourceUnit,
     importedInterfaces = initTable[string, CompileNamespaceInterface](),
     capabilityCatalog = initTable[string, CapabilityCompileDescriptor](),
     enforceCapabilityCatalog = false,
-    budget: CompileBudget = nil):
+    budget: CompileBudget = nil, deferErrorChecks = false, errorsMode = ""):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   var moduleMacroExports: ref Table[string, MacroDef]
@@ -9670,7 +9734,8 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    importedInterfaces: importedInterfaces,
                    moduleMacroExports: moduleMacroExports,
                    moduleSyntaxFnExports: moduleSyntaxFnExports,
-                   budget: budget)
+                   budget: budget, deferErrorChecks: deferErrorChecks,
+                   errorModeOverride: errorsMode)
   result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
   result.macroExports = moduleMacroExports[]
   for name in moduleSyntaxFnExports[]:
@@ -9688,18 +9753,18 @@ proc compileEvalForm*(form: Value): Chunk =
   compileForms(forms, allowAmbientImports = false)
 
 proc compileEvalSource*(src: string, useLocalSlots = true,
-                        sourceName = "<eval>"): Chunk =
+                        sourceName = "<eval>", errorsMode = ""): Chunk =
   ## CLI/REPL eval receives source text but still uses eval authority rules.
   compileSourceUnit(readAllWithLocs(src, sourceName),
                     allowAmbientImports = false,
-                    useLocalSlots = useLocalSlots)
+                    useLocalSlots = useLocalSlots, errorsMode = errorsMode)
 
 proc compileSource*(src: string, sourceName = "",
-                    useLocalSlots = true): Chunk =
+                    useLocalSlots = true, errorsMode = ""): Chunk =
   ## `useLocalSlots = false` binds by name instead of by slot index, which is
   ## what lets several independently compiled chunks accumulate in one scope:
   ## each slot layout numbers its locals from zero, so two of them in the same
   ## scope would alias. Unlike `compileEvalSource` this keeps ambient import
   ## authority, so an embedder can run successive sources that import.
   compileSourceUnit(readAllWithLocs(src, sourceName),
-                    useLocalSlots = useLocalSlots)
+                    useLocalSlots = useLocalSlots, errorsMode = errorsMode)

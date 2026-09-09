@@ -127,11 +127,11 @@
       "patterns": [
         {
           "name": "keyword.control.gene",
-          "match": "(?<=\\()\\s*(fn|var|set|do|if_yes|if_not|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|env|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
+          "match": "(?:(?<=\\()|(?<=#@))\\s*(fn|var|set|do|if_yes|if_not|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|env|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"#])"
         },
         {
           "name": "keyword.operator.logical.gene",
-          "match": "(?<=\\()\\s*(&&|\\|\\||!)(?=[\\s)])"
+          "match": "(?:(?<=\\()|(?<=#@))\\s*(&&|\\|\\||!)(?![^\\s()\\[\\]{},;\"#])"
         }
       ]
     },
@@ -174,7 +174,7 @@
     },
     "function-heads": {
       "name": "entity.name.function.gene",
-      "match": "(?<=\\()[a-z][^\\s()\\[\\]{},;\"]*"
+      "match": "(?:(?<=\\()|(?<=#@))\\s*\\$?[a-z][^\\s()\\[\\]{},;\"'`#]*"
     },
     "types": {
       "name": "entity.name.type.gene",

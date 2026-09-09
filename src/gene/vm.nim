@@ -4,8 +4,15 @@ import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, ne
             options, osproc, sets, strutils, tables, times, unicode]
 import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
           host_capabilities, package, printer, reader, types, type_contracts]
+import ./[error_analysis, native_errors]
 import ./ext/logging
 export type_contracts
+
+proc builtinNativeFn(name: string, impl: NativeProc, acceptsNamed = false): Value =
+  newNativeFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name))
+
+proc builtinNativeCallFn(name: string, impl: NativeCallProc, acceptsNamed = true): Value =
+  newNativeCallFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name))
 
 when not defined(emscripten) and not defined(geneWasm):
   import ./process_lock
@@ -136,6 +143,7 @@ type
     fkNamespaceBody
 
   FrameExtra = ref object
+    initializationLease: RootRef
     ensureValue: Value
     ensureBody: Chunk
     ensureScope: Scope
@@ -203,6 +211,7 @@ type
                             # truncates back to it before running catch clauses
 
   Fiber = ref object of RootObj
+    initializationLease: RootRef
     privateCall: bool
     callError: ref CatchableError
     callResult: Value
@@ -413,12 +422,56 @@ type
     running, collecting: bool
     diagnostics: seq[Value]
 
+  StrictErrorRegistration = ref object
+    active: bool
+    nativeMetadata: NativeErrorMetadata
+    returnDepth: int
+    returnKind: string
+    returnKindOnly: bool
+    returnTaskFresh: bool
+    returnTaskIsolated: bool
+    returnNativeMetadata: NativeErrorMetadata
+    returnTypeIdentity: string
+    returnTypeContract: string
+    returnMessageIdentity: string
+    typeIdentityOnly: bool
+    constructorCall: bool
+    messageName: string
+    typeDepth: int
+    declarationScope: pointer
+    targetScope: pointer
+    target: Value
+    name: string
+    allowed: seq[Value]
+    allowedReady: bool
+    sourceAllowed: ErrorEffectSummary
+    baselineNative: Value
+    baselineSignature: Value
+    baselineViewSignature: Value
+    subject: Value
+    originScope: pointer
+    originName: string
+    scopePins: seq[Scope]
+    label: string
+    ready: bool
+    prefixes: seq[tuple[scope: pointer, name: string, path, remaining: seq[string]]]
+
+  StrictErrorLeaseData = object of RootObj
+    registrations: seq[StrictErrorRegistration]
+    deferred: seq[ErrorProofDependency]
+    keep: RootRef
+
+  StrictErrorLease = ref StrictErrorLeaseData
+
   Application* = ref object of RuntimeContext
     builtins: Scope
     boundCallTemplate: FunctionProto
     streamCallbackTemplate: FunctionProto
     callableViewTemplate: FunctionProto
+    errorDefaultMessage: Value
     tests: TestRegistry
+    strictErrorRegistrations: seq[StrictErrorRegistration]
+    errorModeOverride: string
     # The whole standard library, i.e. the scope behind the `gene` namespace.
     # `builtins` is only the *lexical* root, which deliberately exposes almost
     # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
@@ -1384,6 +1437,15 @@ proc assignmentValue(scope: Scope, name: string, v: Value,
   else:
     v
 
+proc checkStrictBindingUpdate(scope: Scope, name: string, value: Value)
+proc installStrictErrorLease(value: Value, scope: Scope) {.nimcall.}
+proc activateStrictErrorLease(value: Value, scope: Scope): RootRef
+proc checkStrictScopeRemoval(app: Application, scope: Scope)
+proc checkStrictScopeReplacement(app: Application, previous, replacement: Scope)
+proc checkStrictImplChanges(app: Application, canonical: seq[ProtocolImpl],
+                            scopes: seq[ImplScopeUpdate])
+proc strictInitializationLease(chunk: Chunk, scope: Scope): RootRef
+
 proc declareType(scope: Scope, name: string, typeExpr: Value) =
   let binding = TypeBinding(expr: typeExpr, weakScope: cast[pointer](scope))
   let index = scope.slotIndex(name)
@@ -1419,8 +1481,13 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
     else:
       v
   let stored = functionForScopeStorage(value, scope)
+  checkStrictBindingUpdate(scope, name, stored)
   scope.slots[index] = stored
   if scope.slotMirror:
+    if scope.vars.hasKey(name) and scope.vars[name].fnErrorLease != nil:
+      # A stale reflection mirror must not keep a retired strict executable's
+      # proof lease alive after the binding and its escaped values are gone.
+      scope.vars[name] = stored
     # Deferred mirror: top-level loops set slots far more often than anything
     # reads .vars; materializeMirroredVars settles the hash on demand.
     scope.varsDirty = true
@@ -1499,6 +1566,7 @@ proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
   # qualify since the mirror write is now a deferred dirty-flag flip.
   if index >= 0 and index < scope.slots.len and scope.slotDefined(index) and
       scope.slotTypes.len == 0 and not v.isHeapBacked:
+    checkStrictBindingUpdate(scope, name, v)
     scope.slots[index] = v
     if scope.slotMirror:
       scope.varsDirty = true
@@ -1592,6 +1660,7 @@ proc define*(scope: Scope, name: string, v: Value) =
     return
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
+  checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope)
 
 proc redefine*(scope: Scope, name: string, v: Value) =
@@ -1604,11 +1673,13 @@ proc redefine*(scope: Scope, name: string, v: Value) =
   if scope.storeNamedSlot(name, v, requireExisting = false,
                           permitRedefine = true):
     return
+  checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
   ## Internal overlay write for Env materialization: child Env bindings should
   ## shadow copied parent bindings without acting like source declarations.
+  checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = v
 
 proc assign*(scope: Scope, name: string, v: Value) =
@@ -1621,6 +1692,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
         if s.varTypes.hasKey(name): s.assignmentValue(name, v, s.varTypes[name])
         else: v
       let stored = functionForScopeStorage(value, s)
+      checkStrictBindingUpdate(s, name, stored)
       s.vars[name] = stored
       s.syncSlot(name, stored)
       return
@@ -1755,6 +1827,17 @@ proc applySelector(selector, target: Value): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
+proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value]
+proc admitErrorValue(value: Value, scope: Scope): Value
+proc retainedErrorFormatter(value: Value, scope: Scope): Value
+proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError
+proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
+                                name: string, scope: Scope): ref GeneError
+proc buildErrorProtocol(root: Scope): Value
+proc validateDefaultErrorBacking(receiver, formatter: Value, scope: Scope)
+proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string
+proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string
+proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
 proc typeExprLabel(expr: Value): string
 proc capabilityArgFromValue(value: Value): CapabilityArg
 proc moduleRootScope(scope: Scope): Scope
@@ -2225,7 +2308,7 @@ proc projectHead(v: Value): Value =
 
 proc projectProps(v: Value): PropTable =
   case v.kind
-  of vkNode: v.props
+  of vkNode: v.errorProperties()
   of vkMap: v.mapEntries
   else: initPropTable()
 
@@ -4260,12 +4343,17 @@ proc freezeValue(value: Value): Value =
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
       body[i] = freezeValue(item)
-    newNode(freezeValue(value.head),
+    let copied = newNode(freezeValue(value.head),
             props = freezeEntries(value.props),
             body = body,
             meta = freezeEntries(value.meta),
             immutable = true,
-            deepFrozen = true)
+            deepFrozen = true).copyErrorEvidence(value)
+    if copied.errorEvidence != nil:
+      let diagnostics = freezeEntries(copied.errorEvidence.diagnostics)
+      copied.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+        evidence.diagnostics = diagnostics)
+    copied
   of vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
      vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
@@ -4307,11 +4395,16 @@ proc thawValue(value: Value): Value =
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
       body[i] = thawValue(item)
-    newNode(thawValue(value.head),
+    let copied = newNode(thawValue(value.head),
             props = thawEntries(value.props),
             body = body,
             meta = thawEntries(value.meta),
-            immutable = false)
+            immutable = false).copyErrorEvidence(value)
+    if copied.errorEvidence != nil:
+      let diagnostics = thawEntries(copied.errorEvidence.diagnostics)
+      copied.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+        evidence.diagnostics = diagnostics)
+    copied
   else:
     value
 
@@ -4340,7 +4433,7 @@ proc biFreezeShallow(args: openArray[Value]): Value {.nimcall.} =
             props = copyEntries(args[0].props),
             body = copyItems(args[0].body),
             meta = copyEntries(args[0].meta),
-            immutable = true)
+            immutable = true).copyErrorEvidence(args[0])
   else:
     args[0]
 
@@ -4807,7 +4900,7 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if call != nil: scope = call.dispatchScope
   if args.len == 1:
     return newSelectorCallStage(
-      newNativeCallFn("filter", biFilter, acceptsNamed = false), args)
+      builtinNativeCallFn("filter", biFilter, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError,
       "filter expects 1 or 2 arguments, got " & $args.len)
@@ -4856,7 +4949,7 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if remaining < 0:
       raise newException(GeneError, "take count must be non-negative")
     return newSelectorCallStage(
-      newNativeCallFn("take", biTake, acceptsNamed = false), args)
+      builtinNativeCallFn("take", biTake, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, "take expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
@@ -4887,7 +4980,7 @@ proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args[0].kind notin {vkList, vkMap}:
       raise newException(GeneError, "into expects a List or Map target")
     return newSelectorCallStage(
-      newNativeCallFn("into", biInto, acceptsNamed = false), args)
+      builtinNativeCallFn("into", biInto, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, "into expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
@@ -4899,12 +4992,12 @@ proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     try:
       while receiver.streamHasNext:
         source.add checkedStreamNext(receiver, "into item")
-    except CatchableError as primaryError:
+    except CatchableError:
       try:
         receiver.closeStream()
       except CatchableError:
         discard
-      raise primaryError
+      raise
     receiver.closeStream()
   of vkList:
     source = copyItems(receiver.listItems)
@@ -7591,7 +7684,7 @@ proc buildBuiltins(app: Application): Scope =
   discard checkedChunk.emit(Instruction(op: opLoadLocal, intArg: 0, name: "payload"))
   discard checkedChunk.emit(Instruction(op: opCheckCallableResult))
   discard checkedChunk.emit(Instruction(op: opReturn))
-  let errorProtocol = newProtocol("Error", [])
+  let errorProtocol = buildErrorProtocol(result)
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
@@ -7663,6 +7756,15 @@ proc buildBuiltins(app: Application): Scope =
   result.define("TypeError", typeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: typeError)
+  let contractViolation = newType("ErrorContractViolation", NIL,
+    @[TypeField(name: "message", typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "where", typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "expected", typeExpr: newSym("List"), scope: result),
+      TypeField(name: "actual", typeExpr: newSym("Any"), scope: result),
+      TypeField(name: "cause", typeExpr: newSym("Any"), scope: result)],
+    @[errorProtocol], result)
+  result.define("ErrorContractViolation", contractViolation)
+  result.impls.add ProtocolImpl(protocol: errorProtocol, receiver: contractViolation)
   let capabilityError = newType("CapabilityError", NIL,
     @[TypeField(name: "message", optional: false,
                 typeExpr: newSym("Str"), scope: result),
@@ -7818,27 +7920,27 @@ proc buildBuiltins(app: Application): Scope =
   result.define("ActorFailure", actorFailure)
   result.impls.add ProtocolImpl(protocol: sendProtocol,
                                 receiver: actorFailure)
-  app.nativeAdd = newNativeFn("+", biAdd)
-  app.nativeSub = newNativeFn("-", biSub)
-  app.nativeMul = newNativeFn("*", biMul)
-  app.nativeLt = newNativeFn("<", comparison("<", `<`))
-  app.nativeGt = newNativeFn(">", comparison(">", `>`))
-  app.nativeLe = newNativeFn("<=", comparison("<=", `<=`))
-  app.nativeGe = newNativeFn(">=", comparison(">=", `>=`))
+  app.nativeAdd = builtinNativeFn("+", biAdd)
+  app.nativeSub = builtinNativeFn("-", biSub)
+  app.nativeMul = builtinNativeFn("*", biMul)
+  app.nativeLt = builtinNativeFn("<", comparison("<", `<`))
+  app.nativeGt = builtinNativeFn(">", comparison(">", `>`))
+  app.nativeLe = builtinNativeFn("<=", comparison("<=", `<=`))
+  app.nativeGe = builtinNativeFn(">=", comparison(">=", `>=`))
   result.define("+", app.nativeAdd)
   result.define("-", app.nativeSub)
   result.define("*", app.nativeMul)
-  result.define("/", newNativeFn("/", biDiv))
-  result.define("//", newNativeFn("//", biRem))
+  result.define("/", builtinNativeFn("/", biDiv))
+  result.define("//", builtinNativeFn("//", biRem))
   result.define("<", app.nativeLt)
   result.define(">", app.nativeGt)
   result.define("<=", app.nativeLe)
   result.define(">=", app.nativeGe)
-  result.define("==", newNativeFn("==", biEq))
-  result.define("!=", newNativeFn("!=", biNe))
+  result.define("==", builtinNativeFn("==", biEq))
+  result.define("!=", builtinNativeFn("!=", biNe))
   result.define("contains?",
                 sharedBuiltinNative("contains?", newNativeFn("contains?", biContains)))
-  result.define("same?", newNativeFn("same?", biSame))
+  result.define("same?", builtinNativeFn("same?", biSame))
   result.define("check_capabilities",
                 newNativeCallFn("check_capabilities", biCheckCapabilities,
                                 acceptsNamed = false))
@@ -7848,7 +7950,7 @@ proc buildBuiltins(app: Application): Scope =
                 newNativeCallFn("capability_type_info", biCapabilityTypeInfo,
                                 acceptsNamed = false))
   result.define("hash", newNativeFn("hash", biHash))
-  result.define("not", newNativeFn("not", biNot))
+  result.define("not", builtinNativeFn("not", biNot))
   # The four node projections are both bare wrapper functions and messages on
   # the `Node` type. Bind one value each so `(head n)` and `(n .head)` name the
   # same function rather than two natives that merely behave alike.
@@ -7862,7 +7964,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("meta", metaFn)
   result.define("construct_type",
                 newNativeFn("construct_type", biConstructType))
-  result.define("to_str", newNativeCallFn("to_str", biToStr,
+  result.define("to_str", builtinNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
   result.define("to_sym", newNativeFn("to_sym", biToSym))
   result.define("to_int", newNativeFn("to_int", biToInt))
@@ -7870,7 +7972,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("chars", newNativeFn("chars", biChars))
   result.define("bytes", newNativeFn("bytes", biBytes))
   result.define("graphemes", newNativeFn("graphemes", biGraphemes))
-  result.define("$", newNativeCallFn("$", biDollar, acceptsNamed = false))
+  result.define("$", builtinNativeCallFn("$", biDollar, acceptsNamed = false))
   result.define("freeze_shallow", newNativeFn("freeze_shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))
@@ -7888,7 +7990,7 @@ proc buildBuiltins(app: Application): Scope =
                     newNativeFn("regex/replace_all", biRegexReplaceAll))
   regexScope.define("split", newNativeFn("regex/split", biRegexSplit))
   result.define("regex", newNamespace("regex", regexScope))
-  result.define("range", newNativeFn("range", biRange))
+  result.define("range", builtinNativeFn("range", biRange))
   result.defineBuiltinType(vkRange, "Range", {
     "start": newNativeFn("Range/start", biRangeStart),
     "stop": newNativeFn("Range/stop", biRangeStop),
@@ -7937,12 +8039,12 @@ proc buildBuiltins(app: Application): Scope =
   # message on one or more container types, so `($size xs)` and `(xs .size)`
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
-  let sizeFn = sharedBuiltinNative("size", newNativeFn("size", biListSize))
-  let emptyFn = sharedBuiltinNative("empty?", newNativeFn("empty?", biListEmpty))
+  let sizeFn = sharedBuiltinNative("size", builtinNativeFn("size", biListSize))
+  let emptyFn = sharedBuiltinNative("empty?", builtinNativeFn("empty?", biListEmpty))
   let firstFn = sharedBuiltinNative("first", newNativeFn("first", biListFirst))
   let lastFn = sharedBuiltinNative("last", newNativeFn("last", biListLast))
   let toStreamFn = sharedBuiltinNative("to_stream",
-    newNativeCallFn("to_stream", biToStream, acceptsNamed = false))
+    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
                                             newNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (design §6.2) are call-fns so the
@@ -7952,32 +8054,32 @@ proc buildBuiltins(app: Application): Scope =
   # process-wide instance per op serves the root binding, the List/Map/Stream
   # message tables, and the stream namespace at once.
   let mapFn = sharedBuiltinNative("map",
-    newNativeCallFn("map", biMap, acceptsNamed = false))
+    builtinNativeCallFn("map", biMap, acceptsNamed = false))
   let filterMapFn = sharedBuiltinNative("filter_map",
-    newNativeCallFn("filter_map", biFilterMap, acceptsNamed = false))
+    builtinNativeCallFn("filter_map", biFilterMap, acceptsNamed = false))
   let filterFn = sharedBuiltinNative("filter",
-    newNativeCallFn("filter", biFilter, acceptsNamed = false))
+    builtinNativeCallFn("filter", biFilter, acceptsNamed = false))
   let takeFn = sharedBuiltinNative("take",
-    newNativeCallFn("take", biTake, acceptsNamed = false))
+    builtinNativeCallFn("take", biTake, acceptsNamed = false))
   let intoFn = sharedBuiltinNative("into",
-    newNativeCallFn("into", biInto, acceptsNamed = false))
+    builtinNativeCallFn("into", biInto, acceptsNamed = false))
   let eachFn = sharedBuiltinNative("each",
-    newNativeCallFn("each", biEach, acceptsNamed = false))
+    builtinNativeCallFn("each", biEach, acceptsNamed = false))
   var containsFn: Value
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
   result.define("empty?", emptyFn)
   result.define("leaf?", newNativeFn("leaf?", biIsLeaf))
-  result.define("nil?", newNativeFn("nil?", biIsNil))
-  result.define("void?", newNativeFn("void?", biIsVoid))
+  result.define("nil?", builtinNativeFn("nil?", biIsNil))
+  result.define("void?", builtinNativeFn("void?", biIsVoid))
   result.define("absent?", newNativeFn("absent?", biIsAbsent))
-  result.define("present?", newNativeFn("present?", biIsPresent))
+  result.define("present?", builtinNativeFn("present?", biIsPresent))
   result.define("first", firstFn)
   result.define("last", lastFn)
   result.defineBuiltinType(vkList, "List", {
     "assoc": newNativeFn("List/assoc", biListAssoc),
     "set": newNativeFn("List/set", biListSetBang),
-    "push": newNativeFn("List/push", biListPushBang),
+    "push": builtinNativeFn("List/push", biListPushBang),
     "size": sizeFn,
     "empty?": emptyFn,
     "first": firstFn,
@@ -8249,7 +8351,7 @@ proc buildBuiltins(app: Application): Scope =
     "cancel": newNativeFn("Task/cancel", biTaskCancel),
     "detach": newNativeCallFn("Task/detach", biTaskDetach,
                                              acceptsNamed = false),
-    "join": newNativeCallFn("Task/join", biTaskJoin,
+    "join": builtinNativeCallFn("Task/join", biTaskJoin,
                                          acceptsNamed = false)})
   let taskOutcomeType = newEnum("TaskOutcome", @["T", "E"],
     [(name: "ok", payloadTypes: @[newSym("T")],
@@ -8341,9 +8443,9 @@ proc buildBuiltins(app: Application): Scope =
   # `Env` is left holding only the message that genuinely takes an `Env`.
   result.defineBuiltinType(vkCallerEnv, "CallerEnv", {
     "snapshot": newNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
-  result.define("read_one", newNativeCallFn("read_one", biReadOne,
+  result.define("read_one", builtinNativeCallFn("read_one", biReadOne,
                                             acceptsNamed = false))
-  result.define("read_all", newNativeCallFn("read_all", biReadAll,
+  result.define("read_all", builtinNativeCallFn("read_all", biReadAll,
                                             acceptsNamed = false))
   result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
@@ -8369,14 +8471,14 @@ proc buildBuiltins(app: Application): Scope =
   var streamNs: Value
   discard result.lookupOptional("stream", streamNs)
   result.defineBuiltinType(vkStream, "Stream", {
-    "has_next": newNativeFn("Stream/has_next", biStreamHasNext),
-    "peek": newNativeCallFn("Stream/peek", biStreamPeek,
+    "has_next": builtinNativeFn("Stream/has_next", biStreamHasNext),
+    "peek": builtinNativeCallFn("Stream/peek", biStreamPeek,
                             acceptsNamed = false),
-    "next": newNativeCallFn("Stream/next", biStreamNext,
+    "next": builtinNativeCallFn("Stream/next", biStreamNext,
                             acceptsNamed = false),
-    "try_next": newNativeCallFn("Stream/try_next", biStreamTryNext,
+    "try_next": builtinNativeCallFn("Stream/try_next", biStreamTryNext,
                                 acceptsNamed = false),
-    "close": newNativeFn("Stream/close", biStreamClose),
+    "close": builtinNativeFn("Stream/close", biStreamClose),
     "map": mapFn,
     "filter_map": filterMapFn,
     "filter": filterFn,
@@ -8397,6 +8499,13 @@ proc buildBuiltins(app: Application): Scope =
       result.define("each", eachFn)
   registerEventNamespace(result)
   registerTestingNamespace(result)
+  # Built-in errors are installed directly rather than through source impl
+  # assembly. Complete their newly nonempty Error interface here as well.
+  for impl in result.impls.mitems:
+    if impl.protocol.isErrorProtocol and impl.messages.len == 0:
+      impl.messages.add ImplMessage(
+        message: errorProtocol.protocolMessages["message"],
+        fn: app.errorDefaultMessage)
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
   # bare name means whatever the program binds it to, so reading a name tells
@@ -8462,6 +8571,7 @@ proc newApplicationState(root: string,
     rootGrants.add grant
   let rootCapabilityContext = newCapabilityContext(rootGrants)
   Application(capabilityRegistry: capabilityRegistry,
+                       errorFunctionCreated: installStrictErrorLease,
                        filesystemProvider: filesystemProvider,
                        hostCapabilityProvider: hostCapabilityProvider,
                        rootCapabilityContext: rootCapabilityContext,
@@ -8558,6 +8668,12 @@ proc newApplicationForEntryFile*(entryFile: string): Application =
 
 proc applicationPackage*(app: Application): Package =
   app.appPackage
+
+proc setErrorCheckingMode*(app: Application, mode: string) =
+  discard parseErrorMode(mode)
+  if app.moduleCompileArtifacts.len > 0:
+    raise newException(GeneError, "set the error checking mode before compiling modules")
+  app.errorModeOverride = mode
 
 proc packageRoot*(app: Application): string =
   app.appPackage.root
@@ -9194,7 +9310,7 @@ proc newGlobalScope*(app: Application): Scope =
     else: app.builtinsScope()
   result = newScope(parent, application = app)
   result.moduleRoot = true
-  result.moduleBase = result
+  result.moduleBase = nil
   result.moduleStatic = true
 
 proc newGlobalScope*(): Scope =
@@ -9389,7 +9505,7 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   ## Package lexically, never through a process-global current package.
   let root = newNamespace(name, scope, path, moduleRoot = true)
   scope.moduleRoot = true
-  scope.moduleBase = scope
+  scope.moduleBase = nil
   scope.moduleStatic = true
   # A named module base is enumerable for reload (file modules, the reload
   # replacement, native modules). Already retained by moduleCache, so this adds
@@ -10221,12 +10337,15 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
   ## its mutable module/REPL scope. Candidate-bearing functions are compiled
   ## with needsCallScope, so this never has to mutate the lexical parent.
   scope.varsDirty = false
+  if callee.fnErrorLease != nil:
+    scope.strictErrorLease = activateStrictErrorLease(callee, scope)
   if callee.kind == vkFunction and callee.fnCode of FunctionProto:
     let selfBits = FunctionProto(callee.fnCode).annotationSelfBits
     if selfBits != 0:
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
+  scope.strictErrorLease = nil
   scope.application =
     if parent != nil: parent.application
     else: nil
@@ -10570,6 +10689,7 @@ proc clearDefinedCallSlots(scope: Scope) {.inline.} =
 proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope == nil:
     return
+  scope.strictErrorLease = nil
   scope.annotationSelfType = NIL
   scope.implAssembly = nil
   if scope.simpleCallScope:
@@ -10995,7 +11115,9 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
     let identity = if resolved.isTypeAlias: resolved.typeAliasExpr
                    elif resolved.kind == vkSymbol: staticImplOperand(scope, resolved)
                    else: resolved
-    if not scope.isErrorType(identity):
+    try:
+      discard normalizeErrorTypes(scope, [identity])
+    except GeneError:
       raise newException(DeclarationNotReadyError,
         "declaration not ready: ^errors entry " & identity.print() & " must be an Error type")
     var duplicate = false
@@ -11005,7 +11127,7 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
       errors.add (if resolved.isBorrowedTypeAnnotation: resolved else: identity)
   proto.signatureErrorExprs = @[]
   result = newFunction(fn.fnName, proto.params, proto, fn.fnScope,
-                       fn.fnChecksErrors, errors, fn.isSyntaxFn)
+                       fn.fnChecksErrors, normalizeErrorTypes(scope, errors), fn.isSyntaxFn)
 
 proc validateUniversalSelf(proto: FunctionProto, scope: Scope) =
   proc checkAnnotation(expr: Value) =
@@ -11060,8 +11182,11 @@ proc validateUniversalSelf(proto: FunctionProto, scope: Scope) =
   checkFunction(proto)
 
 proc moduleRootScope(scope: Scope): Scope =
-  if scope != nil and scope.moduleBase != nil:
-    return scope.moduleBase
+  if scope != nil:
+    # The root flag identifies self without an owning self-reference. Caching
+    # self here prevents atomicArc from releasing the scope and its witnesses.
+    if scope.moduleRoot: return scope
+    if scope.moduleBase != nil: return scope.moduleBase
   var current = scope
   while current != nil:
     if current.moduleRoot:
@@ -11492,6 +11617,9 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
+  for entry in entries:
+    if entry.message.protocolMessageProtocol.isErrorProtocol:
+      validateDefaultErrorBacking(receiver, entry.fn, scope)
   if inheritBodies and not hasAncestor:
     raise newException(GeneError,
       "impl " & protocol.protocolName & " for " & receiver.typeName &
@@ -11617,6 +11745,7 @@ proc currentImplScopeSets(app: Application, extra: Scope = nil): seq[ImplScopeUp
 proc commitRecomposedImpls(app: Application,
                           recomposed: tuple[canonical: seq[ProtocolImpl],
                                             scopes: seq[ImplScopeUpdate]]) =
+  app.checkStrictImplChanges(recomposed.canonical, recomposed.scopes)
   let root = app.builtinsScope()
   root.impls = @[]
   for impl in recomposed.canonical: root.impls.add impl.implForScopeStorage(root)
@@ -11846,7 +11975,9 @@ proc validateProtocolContract(pending: PendingProtocolContract) =
         raise
       if concrete.isTypeAlias: concrete = concrete.typeAliasExpr
       elif concrete.kind == vkSymbol: concrete = staticImplOperand(scope, concrete)
-      if not scope.isErrorType(concrete):
+      try:
+        discard normalizeErrorTypes(scope, [concrete])
+      except GeneError:
         raise newException(DeclarationNotReadyError,
           "declaration not ready: ^errors entries must be Error types in protocol " & protocol.protocolName)
   pending.ready = true
@@ -12608,6 +12739,16 @@ proc isSendableValue(value: Value, scope: Scope,
       return false
     if value.resourceAuthorityId != 0:
       return false
+    # A raised error carries behavior as well as its visible data. A nominal
+    # Send impl cannot authorize a formatter that captures a Cell/Env or other
+    # non-Send state. Apply the ordinary callable capture rules to that edge.
+    let evidence = value.errorEvidence
+    if evidence != nil:
+      if not isSendableValue(evidence.formatter, scope, seen, mode):
+        return false
+      for _, item in evidence.diagnostics:
+        if not isSendableValue(item, scope, seen, mode):
+          return false
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
         builtinTypeBinding(scope, "Send", sendProtocol) and
@@ -12837,7 +12978,7 @@ proc cloneForCapturedSnapshot(value: Value,
     if changed:
       newNode(clonedHead, props = props, body = body, meta = meta,
               immutable = value.nodeImmutable,
-              constructing = value.nodeConstructing)
+              constructing = value.nodeConstructing).inheritErrorEvidence(value)
     else:
       value
   else:
@@ -13094,6 +13235,13 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkNode:
     publishSpawnValue(value.head, seenScopes, seenValues, seenChunks)
+    let evidence = value.errorEvidence
+    if evidence != nil:
+      publishSpawnValue(evidence.protocol, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(evidence.formatter, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(evidence.environment, seenScopes, seenValues, seenChunks)
+      for _, item in evidence.diagnostics:
+        publishSpawnValue(item, seenScopes, seenValues, seenChunks)
     for _, item in value.props:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
     for item in value.body:
@@ -13312,9 +13460,10 @@ proc validateRequiredImpls(scope: Scope) =
     scope.validateRequiredImplType(typ)
 
 proc isErrorValue(scope: Scope, value: Value): bool =
+  if value.hasErrorWitness: return true
   if value.kind != vkNode:
     return false
-  # `$ex` is the whole caught Error value, so `(fail $ex)` is the re-raise
+  # `$err` is the whole caught Error value, so `(fail $err)` is the re-raise
   # idiom. Runtime diagnostics without a more specific value are synthesized
   # as `RuntimeError`; accept the old symbol-headed shape too while persisted
   # values and external producers migrate.
@@ -13328,6 +13477,7 @@ proc isErrorValue(scope: Scope, value: Value): bool =
   synthesized or scope.typeImplementsProtocol(value.head, errorProtocol)
 
 proc isErrorType(scope: Scope, typ: Value): bool =
+  if typ.isErrorProtocol: return true
   if typ.kind != vkType:
     return false
   var errorProtocol: Value
@@ -13347,16 +13497,23 @@ proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
       var typ = move stack[sp]
       if typ.isTypeAlias or typ.isSymbol("Self"):
         typ = closeTypeExpr(typ, scope)
-      if not scope.isErrorType(typ):
-        raise newException(GeneError, "^errors entries must be Error types")
       result[i] = typ
+  result = normalizeErrorTypes(scope, result)
 
 proc raiseFailedValue(value: Value) =
   var e: ref GeneError
   new(e)
-  e.msg = "fail: " & print(value)
+  e.msg = if value.props.hasKey("message") and value.props["message"].kind == vkString:
+            value.props["message"].strVal
+          else: "failure of " & value.head.typeName
   e.errVal = value
   e.hasErrVal = true
+  let evidence = value.errorEvidence
+  if evidence != nil and evidence.diagnostics.hasKey("line"):
+    e.loc = SourceLoc(
+      sourceName: evidence.diagnostics.getOrDefault("file", newStr("")).strVal,
+      line: int(evidence.diagnostics["line"].intVal),
+      col: int(evidence.diagnostics.getOrDefault("col", newInt(1)).intVal))
   raise e
 
 proc raisePanicValue(value: Value) =
@@ -13395,7 +13552,19 @@ proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
   withScopedScheduler(scope):
     if task.kind != vkTask:
       raise newException(GeneError, "native task fail expects a Task")
-    result = tryFailTask(task, message, value, hasValue)
+    if task.taskDone: return false
+    var payload = value
+    if hasValue:
+      if scope == nil and not value.hasErrorWitness:
+        raise newException(GeneError,
+          "typed native task failures require their producing scope or an admitted Error value")
+      if scope != nil: payload = admitErrorValue(value, scope)
+      if currentEventLane() != currentScheduler().rootLane:
+        var seen = initHashSet[uint64]()
+        if not isSendableValue(payload, scope, seen, csmWorker):
+          raise newException(GeneError, "native task error payload does not satisfy Send")
+        markSharedValue(payload)
+    result = tryFailTask(task, message, payload, hasValue)
     if result:
       wakeTaskWaiters(task)
 
@@ -13419,22 +13588,14 @@ proc checkedTaskResult(task, value: Value): Value =
                 taskBoundaryScopeOr(task))
 
 proc isBoundaryTypeError(value: Value, scope: Scope): bool =
-  if value.kind != vkNode:
-    return false
-  var typeError: Value
-  builtinTypeBinding(scope, "TypeError", typeError) and
-    typeError.kind == vkType and value.head.isSubtypeOf(typeError)
+  discard scope
+  value.generatedFailure
 
 proc checkTaskError(task: Value, hasValue: bool, value: Value) =
   let errorType = task.taskErrorType
   if errorType.kind == vkNil or not hasValue:
     return
-  # Boundary TypeError is raised by the boundary itself, not classified as the
-  # task's domain error E.
-  if isBoundaryTypeError(value, taskBoundaryScopeOr(task)):
-    return
-  discard adaptBoundary("await task error", errorType, value,
-                        taskBoundaryScopeOr(task))
+  enforceDeferredErrors(value, errorType, "Task error", taskBoundaryScopeOr(task))
 
 proc checkStreamBoundaryFailure(stream: Value,
                                 error: ref CatchableError) {.nimcall.} =
@@ -13444,58 +13605,37 @@ proc checkStreamBoundaryFailure(stream: Value,
   if not (error of GeneError): return
   let failure = cast[ref GeneError](error)
   let scope = stream.streamItemScope
-  let value = if failure.hasErrVal: failure.errVal
-    else:
-      block:
-        var props = initPropTable()
-        props["message"] = newStr(failure.msg)
-        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
-  if isBoundaryTypeError(value, scope): return
-  discard adaptBoundary("Stream error", stream.streamErrType, value, scope)
+  let normalized = normalizeFailure(failure, scope)
+  enforceDeferredErrors(normalized.errVal, stream.streamErrType, "Stream error", scope)
 
 proc awaitTaskValue(task: Value): Value =
   if task.kind != vkTask:
     raise newException(GeneError, "await expects a Task")
-  if task.taskAwaited:
-    raise newException(GeneError, "task result has already been awaited")
   # The current completed-task MVP consumes the payload on await. That breaks
   # Task -> closure result -> scope -> Task cycles until live task frames have
   # an explicit scheduler-owned reclamation path.
-  if task.taskHasPanic:
-    let msg = $task.taskPanicMsg
-    let hasValue = task.taskHasPanicValue
-    let value = task.taskPanicValue
-    task.clearTaskPayload()
+  let payload = task.consumeTaskPayload()
+  if payload.hasPanic:
     var e: ref GenePanic
     new(e)
-    e.msg = msg
-    if hasValue:
-      e.errVal = value
+    e.msg = payload.panicMessage
+    if payload.hasPanicValue:
+      e.errVal = payload.panicValue
       e.hasErrVal = true
     raise e
-  if task.taskHasError:
-    let msg = $task.taskErrorMsg
-    let hasValue = task.taskHasErrorValue
-    let value = task.taskErrorValue
-    try:
-      checkTaskError(task, hasValue, value)
-    finally:
-      task.clearTaskPayload()
+  if payload.hasError:
     var e: ref GeneError
     new(e)
-    e.msg = msg
-    if hasValue:
-      e.errVal = value
+    e.msg = payload.errorMessage
+    if payload.hasErrorValue:
+      e.errVal = payload.errorValue
       e.hasErrVal = true
-    raise e
-  if task.taskCancelled:
-    task.clearTaskPayload()
+    let failure = normalizeFailure(e, taskBoundaryScopeOr(task))
+    checkTaskError(task, true, failure.errVal)
+    raise failure
+  if payload.cancelled:
     raise newException(GeneCancel, "task was cancelled")
-  let value = task.taskResult
-  try:
-    result = checkedTaskResult(task, value)
-  finally:
-    task.clearTaskPayload()
+  checkedTaskResult(task, payload.value)
 
 const maxRuntimePanicSummaryBytes = 4096
 
@@ -13541,30 +13681,30 @@ proc runtimeErrorValue(scope: Scope, message: string): Value =
           immutable = true)
 
 proc taskJoinOutcome(task: Value, scope: Scope): Value =
-  if task.taskAwaited:
-    raise newException(GeneError,
-      "task result has already been consumed by await")
-  if task.taskHasPanic:
+  let payload = task.peekTaskPayload()
+  if payload.hasPanic:
     return taskOutcomeValue(scope, "panic",
-      newStr(runtimePanicSummary(task.taskPanicMsg,
-                                 task.taskHasPanicValue,
-                                 task.taskPanicValue)))
-  if task.taskHasError:
+      newStr(runtimePanicSummary(payload.panicMessage,
+                                 payload.hasPanicValue,
+                                 payload.panicValue)))
+  if payload.hasError:
     var errorValue =
-      if task.taskHasErrorValue: task.taskErrorValue
-      else: runtimeErrorValue(scope,
-        if task.taskErrorMsg.len > 0: task.taskErrorMsg else: "task failed")
+      if payload.hasErrorValue: payload.errorValue
+      else: runtimeErrorValue(scope, payload.errorMessage)
     try:
-      checkTaskError(task, task.taskHasErrorValue, errorValue)
+      errorValue = admitErrorValue(errorValue, taskBoundaryScopeOr(task, scope))
+      # A message-only native failure has now become an ordinary RuntimeError;
+      # it is subject to the same deferred row as an originally typed payload.
+      checkTaskError(task, true, errorValue)
     except GeneError as boundaryError:
       errorValue =
         if boundaryError.hasErrVal: boundaryError.errVal
         else: runtimeErrorValue(scope, boundaryError.msg)
     return taskOutcomeValue(scope, "error", errorValue)
-  if task.taskCancelled:
+  if payload.cancelled:
     return taskOutcomeValue(scope, "cancelled")
   try:
-    taskOutcomeValue(scope, "ok", checkedTaskResult(task, task.taskResult))
+    taskOutcomeValue(scope, "ok", checkedTaskResult(task, payload.value))
   except GeneError as boundaryError:
     taskOutcomeValue(scope, "error",
       if boundaryError.hasErrVal: boundaryError.errVal
@@ -13994,6 +14134,8 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
   let recvType = receiver.receiverType
   case qualifier.kind
   of vkProtocol:
+    if qualifier.isErrorProtocol and name == "message" and receiver.hasErrorWitness:
+      return retainedErrorFormatter(receiver, scope)
     var message = qualifier.protocolMessages.getOrDefault(name, VOID)
     if message.kind == vkVoid:
       let candidates = qualifier.protocolClosureByName(name)
@@ -14029,6 +14171,9 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "protocol message '" & message.protocolMessageName &
       "' has no visible implementation scope")
   let protocol = message.protocolMessageProtocol
+  if protocol.isErrorProtocol and message.protocolMessageName == "message" and
+      receiver.hasErrorWitness:
+    return retainedErrorFormatter(receiver, scope)
   let recvType = receiver.receiverType
   if recvType.kind != vkType:
     # A receiver with no nominal type carries no impl, but the send still failed
@@ -14215,18 +14360,14 @@ proc annotateTopLevelUndefined(e: ref GeneError, chunk: Chunk,
 proc withSourceLocProps(value: Value, loc: SourceLoc): Value =
   if value.kind != vkNode or not loc.hasSourceLoc:
     return value
-  var props = copyEntries(value.props)
-  if not props.hasKey("file") and loc.sourceName.len > 0:
-    props["file"] = newStr(loc.sourceName)
-  if not props.hasKey("line"):
-    props["line"] = newInt(int64(loc.line))
-  if not props.hasKey("col"):
-    props["col"] = newInt(int64(loc.col))
-  newNode(value.head, props = props,
-          body = copyItems(value.body),
-          meta = copyEntries(value.meta),
-          immutable = value.nodeImmutable,
-          constructing = value.nodeConstructing)
+  value.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+    if not evidence.diagnostics.hasKey("file") and loc.sourceName.len > 0:
+      evidence.diagnostics["file"] = newStr(loc.sourceName)
+    if not evidence.diagnostics.hasKey("line"):
+      evidence.diagnostics["line"] = newInt(int64(loc.line))
+    if not evidence.diagnostics.hasKey("col"):
+      evidence.diagnostics["col"] = newInt(int64(loc.col)))
+  value
 
 proc attachSourceLoc(e: ref GeneError, loc: SourceLoc) =
   if e == nil or not loc.hasSourceLoc:
@@ -14251,17 +14392,13 @@ proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
   if e == nil or traceFrames.len == 0 or not e.hasErrVal or
       e.errVal.kind != vkNode:
     return
-  var props = copyEntries(e.errVal.props)
-  var items: seq[Value]
-  if props.hasKey("trace") and props["trace"].kind == vkList:
-    items = copyItems(props["trace"].listItems)
-  for frame in traceFrames:
-    items.add frame
-  props["trace"] = newList(items, immutable = true)
-  e.errVal = newNode(e.errVal.head, props = props,
-                     body = copyItems(e.errVal.body),
-                     meta = copyEntries(e.errVal.meta),
-                     immutable = e.errVal.nodeImmutable)
+  let extraFrames = @traceFrames
+  e.errVal.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+    var items: seq[Value]
+    if evidence.diagnostics.hasKey("trace") and evidence.diagnostics["trace"].kind == vkList:
+      items = copyItems(evidence.diagnostics["trace"].listItems)
+    items.add extraFrames
+    evidence.diagnostics["trace"] = newList(items, immutable = true))
 
 proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
                    frames: openArray[Frame],
@@ -14501,21 +14638,11 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value
 
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             scope: Scope, e: ref GeneError): ref GeneError =
-  ## Apply one ^errors boundary as an exception unwinds the frame stack: declared
-  ## (allowed) errors pass through unchanged; an undeclared error escaping an
-  ## ^errors function is replaced with the generic "raised an undeclared error".
-  ## Mirrors applyCall's per-call try/except for the frame-push (trampoline) path.
-  if not checks:
-    return e
-  if not e.hasErrVal:
-    var props = initPropTable()
-    props["message"] = newStr(e.msg)
-    e.errVal = newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
-    e.hasErrVal = true
-  if e.hasErrVal and errorAllowed(errorTypes, e.errVal):
-    return e
-  newException(GeneError,
-    "function '" & fnName & "' raised an undeclared error")
+  let failure = normalizeFailure(e, scope)
+  if not checks or failure.errVal.generatedFailure or
+      errorAllowed(errorTypes, failure.errVal):
+    return failure
+  makeErrorContractViolation(failure, errorTypes, fnName, scope)
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
@@ -14773,6 +14900,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curForBody: Chunk = nil
   var curOwnedScope: Scope = nil
   var curNamespaceName = ""
+  var curInitializationLease: RootRef
+  if fiber == nil or not fiber.started:
+    curInitializationLease = strictInitializationLease(chunk, scope)
   var handlers: seq[TryHandler] # active `try` regions, innermost last
   var tailTraceFrames: seq[TailTraceFrame]
   var tailTraceSummaries: seq[TailTraceSummary]
@@ -14816,6 +14946,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curForBody = fiber.forBody
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
+    curInitializationLease = fiber.initializationLease
     capabilityContext = restrictGeneratorContext(fiber.capabilityContext)
     if capabilityContext == nil:
       capabilityContext = restrictGeneratorContext(executionCapabilities(scope))
@@ -14855,6 +14986,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = f.fnName
     curFrameKind = f.kind
     if f.extra == nil:
+      curInitializationLease = nil
       curEnsureValue = NIL
       curEnsureBody = nil
       curEnsureScope = nil
@@ -14870,6 +15002,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curOwnedScope = nil
       curNamespaceName = ""
     else:
+      curInitializationLease = f.extra.initializationLease
       curEnsureValue = f.extra.ensureValue
       curEnsureBody = f.extra.ensureBody
       curEnsureScope = f.extra.ensureScope
@@ -14894,13 +15027,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template pushFrame() =
     let frameExtra =
       if curFrameKind == fkNormal and curEnsureBody == nil and
+          curInitializationLease == nil and
           curForItems.len == 0 and curForStream.kind != vkStream and
           curOwnedScope == nil and
           curPendingError == nil and curPendingPanic == nil and
           curPendingCancel == nil and curPendingReturn == nil:
         nil
       else:
-        FrameExtra(ensureValue: curEnsureValue,
+        FrameExtra(initializationLease: curInitializationLease, ensureValue: curEnsureValue,
                    ensureBody: curEnsureBody,
                    ensureScope: curEnsureScope,
                    pendingError: curPendingError,
@@ -14949,6 +15083,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   template pushCallFrame() =
     if curFrameKind == fkNormal and curEnsureBody == nil and
+        curInitializationLease == nil and
         curForItems.len == 0 and curForStream.kind != vkStream and
         curOwnedScope == nil and
         curPendingError == nil and curPendingPanic == nil and
@@ -14977,6 +15112,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope = nextScope
     recycleScope = false
     scope.prepareChunkScope(chunk)
+    curInitializationLease = strictInitializationLease(chunk, scope)
     curStackBase = sp
     ip = 0
     validateImplRequirements = nextValidate
@@ -15032,6 +15168,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.forBody = curForBody
     fiber.ownedScope = curOwnedScope
     fiber.namespaceName = curNamespaceName
+    fiber.initializationLease = curInitializationLease
     fiber.capabilityContext = capabilityContext
     fiber.capabilityPresence = capabilityPresence
     fiber.started = true
@@ -15502,7 +15639,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template canReplaceCurrentTailCall(calleeScope: Scope, tailMarked: bool,
                                      operandBase: int,
                                      boundValuesMayCapture: bool): bool =
-    tailMarked and operandBase == curStackBase and
+    tailMarked and curInitializationLease == nil and operandBase == curStackBase and
       curFrameKind == fkNormal and returnDepth == frames.len and
       not validateImplRequirements and
       returnType.kind == vkNil and returnLabel.len == 0 and
@@ -15642,6 +15779,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
      elif validateImplRequirements: tfrImplValidation
      elif returnType.kind != vkNil or returnLabel.len != 0: tfrReturnType
      elif curChecksErrors: tfrCheckedErrors
+     elif scope.strictErrorLease != nil or curInitializationLease != nil: tfrCapturedScope
      elif curEnsureBody != nil or curForItems.len != 0 or
           curForStream.kind == vkStream or curOwnedScope != nil or
           curPendingError != nil or curPendingPanic != nil or
@@ -15697,7 +15835,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                           boundValuesMayCapture):
         collapseTailExpressionFrames(nextScope, operandBase, keepOperands,
                                      boundValuesMayCapture)
-      let replaceCurrent = nextTransition.context == capabilityContext and
+      let replaceCurrent = scope.strictErrorLease == nil and
+          nextTransition.context == capabilityContext and
           nextTransition.presence == capabilityPresence and
           (not keepOperands or not boundValuesMayCapture) and
           canReplaceCurrentTailCall(nextScope, true, operandBase,
@@ -15728,6 +15867,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = nextErrorTypes
     curFnName = nextFnName
     curFrameKind = fkNormal
+    curInitializationLease = nil
     evalBudget = executionBudget(nextScope)
     continue
 
@@ -18436,9 +18576,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opFail:
           let errVal = spop()
           rejectCallerEnvEscape("fail payload", errVal)
-          if not scope.isErrorValue(errVal):
-            raise newException(GeneError, "fail expects an Error value")
-          raiseFailedValue(errVal)
+          raiseFailedValue(admitErrorValue(errVal, scope))
         of opPanic:
           let panicVal = spop()
           rejectCallerEnvEscape("panic payload", panicVal)
@@ -18739,6 +18877,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             releaseCurrentCallScope()
         elif frames.len == 0:
           releaseFrameStack(gVmPools, frames)
+          if err == e:
+            raise
           raise err
         else:
           strunc(curStackBase)    # drop the failing frame's region
@@ -18789,7 +18929,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       for f in frames:
         releaseFrameCallScope(f)
       releaseFrameStack(gVmPools, frames)
-      raise p
+      raise
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
@@ -18908,6 +19048,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true,
           initialCapabilities: CapabilityContext = nil): Value =
+  if chunk.errorsMode == ecmStrict and not chunk.errorChecksComplete:
+    raise newException(GeneError, "strict executable has no completed error analysis")
   let app = scope.application()
   let outerAssemblies = app.activeImplAssemblies
   defer:
@@ -19036,7 +19178,8 @@ proc runReplSession*(scope: Scope,
         let chunk = compileEvalSource(source, useLocalSlots = false,
                                        sourceName = "<repl>")
         for diagnostic in chunk.compilerDiagnostics:
-          if diagnostic.message.startsWith("unused lazy pipeline:"):
+          if diagnostic.message.startsWith("unused lazy pipeline:") or
+              diagnostic.message.startsWith("error checking:"):
             writeErr(formatDiagnostic("Warning", diagnostic.message,
                                       diagnostic.loc) & "\n")
         writeOut(run(chunk, scope).print() & "\n")
@@ -19059,7 +19202,8 @@ proc runReplSession*(scope: Scope,
       except GeneError as e:
         pendingSource = ""
         pendingError = ""
-        writeErr(formatDiagnostic("Error", e.msg, e.loc) & "\n")
+        writeErr(formatDiagnostic("Error", errorDiagnosticMessage(e, scope),
+                                  e.loc) & "\n")
       if options.interactive:
         writeOut(options.prompt)
     if options.interactive:
@@ -19384,6 +19528,14 @@ proc workerPublicationValue(value: Value, scope: Scope): tuple[ok: bool,
     markSharedValue(value)
     return (true, value)
   try:
+    # A diagnostic can contain a Send-safe live handle (e.g. ReplyTo in the
+    # rejected input). Freeze its container without trying to deep-freeze that
+    # handle, then apply the same recursive Send check to every retained edge.
+    let shallow = biFreezeShallow([value])
+    seen.clear()
+    if isSendableValue(shallow, scope, seen, csmWorker):
+      markSharedValue(shallow)
+      return (true, shallow)
     let frozen = freezeValue(value)
     seen.clear()
     if isSendableValue(frozen, scope, seen, csmWorker):
@@ -19538,14 +19690,19 @@ proc runFiber(f: Fiber) =
     if f.privateCall:
       f.callError = e
     if isActorFiber:
-      let askSettled = failReplyTask(f.actorAskReply, e)
-      var errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
       if f.workerSafe and activeWorkerThread and e.hasErrVal:
-        let published = workerPublicationValue(errorValue, f.actorScope)
+        let published = workerPublicationValue(e.errVal, f.actorScope)
         if published.ok:
-          errorValue = published.value
+          e.errVal = published.value
         else:
-          errorValue = newStr("actor worker error payload does not satisfy Send")
+          # Settle neither replies nor supervisor delivery with the rejected
+          # payload. Its retained formatter can contain non-Send captures even
+          # when the original nominal message was Send-safe.
+          e.errVal = NIL
+          e.hasErrVal = false
+          e.msg = "actor worker error payload does not satisfy Send"
+      let askSettled = failReplyTask(f.actorAskReply, e)
+      let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
                             errorValue)
       case actor.actorFailureStrategy
@@ -20146,17 +20303,23 @@ proc invokeStreamCallback(stream, item: Value): Value =
       raise frame.callError
     discard awaitTaskValue(pending)
     result = frame.callResult
-  except CatchableError as primaryError:
+  except CatchableError:
     if not pending.taskDone:
       pending.requestTaskCancellation()
       try:
         pumpUntilDone(pending)
       except CatchableError:
         discard
-    raise primaryError
+    raise
   finally:
     if pending.taskDone and not pending.taskAwaited:
       pending.clearTaskPayload()
+    if pending.taskDone:
+      # The result/exception has already been transferred to the caller. A
+      # scheduler reference to this settled private frame must not retain the
+      # previous callback's typed error and formatter environment.
+      frame.callError = nil
+      frame.callResult = NIL
     stream.clearStreamGeneratorContinuation()
     releaseCallScope(callScope)
 
@@ -20901,6 +21064,7 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
   new(e)
   e.msg = message
   e.errVal = newNode(head, props = props)
+  e.errVal.setFailureClassification(fcGeneratedTypeFailure)
   e.hasErrVal = true
   raise e
 
@@ -21570,6 +21734,8 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
                 typeExprIdentity(closeTypeExpr(actual, scope)))
 
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
+  if expr.isErrorProtocol and value.hasErrorWitness:
+    return true
   if expr.kind == vkNil:
     return true
   case expr.kind
@@ -21584,6 +21750,10 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
              matchesTypeExpr(newSym(name[0 ..< name.len - 1]), value, scope)
     if name == "Callable":
       return value.valueImplementsCallable(scope)
+    if name == "Error" and value.hasErrorWitness:
+      var resolved: Value
+      if scope.lookupOptional(name, resolved) and resolved.isErrorProtocol:
+        return true
     if name.len > 5 and name.startsWith("gene/"):
       # `$X/y` reads as a path and is normalised in `closeTypeExpr`; the bare
       # `gene/X/y` spelling arrives here as a symbol instead. Both name the
@@ -21824,12 +21994,12 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         if not sigMatches(expr.body[1], actualReturn):
           return false
         if expr.props.hasKey("errors"):
-          let expectedErrors = expr.props["errors"].listItems
-          if not value.fnChecksErrors or expectedErrors.len != value.fnErrorTypes.len:
+          var expectedErrors: seq[Value]
+          for item in expr.props["errors"].listItems:
+            expectedErrors.add closeTypeExpr(item, scope)
+          if not value.fnChecksErrors or
+              not errorRowsEquivalent(expectedErrors, value.fnErrorTypes):
             return false
-          for i, expected in expectedErrors:
-            if not sigMatches(expected, value.fnErrorTypes[i]):
-              return false
         elif value.fnChecksErrors:
           return false
         return true
@@ -22287,13 +22457,7 @@ proc validateCallableSignature(signature: Value, scope: Scope): Value =
       named[key] = checkedType(typ)
     props["named"] = newMap(named, immutable = true)
   if signature.props.hasKey("errors"):
-    var errors: seq[Value]
-    for typ in signature.props["errors"].listItems:
-      let closed = closeTypeExpr(typ, scope)
-      let resolved = if closed.kind == vkSymbol: scope.lookup(closed.symVal) else: closed
-      if not scope.isErrorType(resolved):
-        raise newException(GeneError, "Callable ^errors entries must be Error types")
-      errors.add resolved
+    let errors = normalizeErrorTypes(scope, signature.props["errors"].listItems)
     props["errors"] = newList(errors, immutable = true)
   newNode(newSym("Callable"), props = props,
     body = @[newList(parameters, immutable = true), checkedType(signature.body[1])],
@@ -22383,13 +22547,13 @@ proc callableViewErrors(view: Value): seq[Value] =
   let signature = view.callableViewSignature
   if signature.props.hasKey("errors"):
     result = copyItems(signature.props["errors"].listItems)
-    # Gradual boundary failures are typing errors, not declared domain errors.
-    result.add builtinBinding(view.callableViewScope, "TypeError")
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   if errVal.kind != vkNode or errVal.head.kind != vkType:
     return false
   for typ in allowed:
+    if typ.isErrorProtocol and errVal.hasErrorWitness:
+      return true
     if errVal.head.isSubtypeOf(if typ.isTypeAlias: typ.typeAliasExpr else: typ):
       return true
   false
@@ -22456,12 +22620,15 @@ proc staticLookup(target, segment: Value): Value =
         else: target.props.getOrDefaultById(keyId, VOID)
       if prop.kind != vkVoid:
         prop
+      elif target.errorEvidence != nil and
+          target.errorEvidence.diagnostics.hasKey(key):
+        target.errorEvidence.diagnostics[key]
       elif keyId < 0:
         VOID
       else:
         ensureNodeProjectionKeyIds()
         if keyId == nodeHeadKeyId: target.head
-        elif keyId == nodePropsKeyId: newMap(target.props)
+        elif keyId == nodePropsKeyId: newMap(target.errorProperties())
         elif keyId == nodeBodyKeyId: newList(target.body)
         elif keyId == nodeMetaKeyId: newMap(target.meta)
         else: VOID
@@ -27374,8 +27541,8 @@ proc constructEnumVariant(variant: Value, args: openArray[Value],
                              payloadType, args[i], enumScope)
   newNode(variant, body = body)
 
-proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
-                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray[Value],
+                            named: NamedArgs): tuple[scope: Scope, returnType: Value] =
   ## Build a fully-bound call scope for a non-simple function call: arity check,
   ## named-arg validation, generic inference, per-parameter type adaptation,
   ## defaults, and rest gathering. Returns the scope plus the instantiated return
@@ -27545,6 +27712,16 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)
   (callScope, rt)
 
+proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
+                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+  try:
+    bindCallScopeUnchecked(callee, proto, args, named)
+  except GeneError as error:
+    let translated = translateErrorBoundary(callee.fnChecksErrors, callee.fnErrorTypes,
+                                             callee.fnName, callee.fnScope, error)
+    if translated == error: raise
+    raise translated
+
 proc statementCallResult(typ, value: Value): Value {.inline.} =
   if typ.isBareVoidType: VOID
   elif typ.isBareNilType: NIL
@@ -27564,10 +27741,9 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
         ".." & $positional.len &
         " argument(s), got " & $args.len)
-    # Keep the ordinary call path at its old cost. Module roots are cached on
-    # every lexical scope; only configured sandbox functions need the caller
-    # root and the extra call-scope decision.
-    let policyRoot = callee.fnScope.moduleBase
+    # The root flag or ancestor cache makes this lookup cheap. Only configured
+    # sandbox functions need the caller root and the extra call-scope decision.
+    let policyRoot = callee.fnScope.moduleRootScope()
     let hasModulePolicy = policyRoot != nil and
                           policyRoot.moduleExecutionPolicy != nil
     let callerRoot =
@@ -27652,12 +27828,10 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
       resultValue = runPooled(proto.chunk, callScope,
                               validateImplRequirements = proto.frameNeedsImplValidation)
     except GeneError as e:
-      if not callee.fnChecksErrors:
-        raise
-      if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
-        raise
-      raise newException(GeneError,
-        "function '" & callee.fnName & "' raised an undeclared error")
+      let translated = translateErrorBoundary(callee.fnChecksErrors, callee.fnErrorTypes,
+                                               callee.fnName, callScope, e)
+      if translated == e: raise
+      raise translated
     if returnType.isStatementReturnType:
       resultValue = statementCallResult(returnType, resultValue)
     elif frameReturnType.kind != vkNil:
@@ -28090,8 +28264,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       try:
         result = runPooled(proto.chunk, callScope)
       except GeneError as error:
-        raise translateErrorBoundary(callee.callableViewSignature.props.hasKey("errors"),
+        let translated = translateErrorBoundary(callee.callableViewSignature.props.hasKey("errors"),
           callableViewErrors(callee), "Callable contract", caller, error)
+        if translated == error: raise
+        raise translated
     finally:
       activeCapabilityContext = savedCapabilities
       activeCapabilityPresence = savedPresence
@@ -28282,7 +28458,7 @@ proc moduleCompileHeader(app: Application,
   app.moduleCompileHeaders[identity] = result
   inc app.moduleEpoch
 
-proc compileModuleArtifact(app: Application,
+proc compileModuleArtifactRaw(app: Application,
                            absPath: string): ModuleCompileArtifact =
   ## Build/cache a module's compile artifact without creating a runtime scope or
   ## executing top-level code. Wildcards and aliases consume lightweight
@@ -28341,7 +28517,7 @@ proc compileModuleArtifact(app: Application,
           compileInterfaceNeedsArtifact(depInterface)
         if needsDependency:
           compileDependency = true
-          dependency = compileModuleArtifact(app, depPath)
+          dependency = compileModuleArtifactRaw(app, depPath)
           dependencies[raw] = dependency
           depInterface = dependency.compileInterface
       if depInterface == nil:
@@ -28384,7 +28560,7 @@ proc compileModuleArtifact(app: Application,
       if needsMacroArtifact:
         compileDependency = true
         if dependency == nil:
-          dependency = compileModuleArtifact(app, depPath)
+          dependency = compileModuleArtifactRaw(app, depPath)
           dependencies[raw] = dependency
           importedInterfaces[raw] = dependency.compileInterface
         importedMacros[raw] = dependency.macroExports
@@ -28419,7 +28595,10 @@ proc compileModuleArtifact(app: Application,
                                           importedInterfaces,
                                           capabilityCatalog,
                                           enforceCapabilityCatalog = true,
-                                          budget = activeSandboxCompileBudget)
+                                          budget = activeSandboxCompileBudget,
+                                          deferErrorChecks = true,
+                                          errorsMode = if app.currentPackage.id == app.appPackage.id:
+                                            app.errorModeOverride else: "")
     attachCompiledNativeMetadata(ownInterface, compiled.chunk,
                                  header.unit.sourceName)
     var macroExports = compiled.macroExports
@@ -28469,6 +28648,83 @@ proc compileModuleArtifact(app: Application,
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
     app.moduleCompileLoading.excl identity
+
+proc checkModuleErrorGraph(app: Application, entryPath: string) =
+  ## Compile the source graph before any initializer executes. Runtime cache
+  ## warmth never stands in for a dependency's initialization summary.
+  var artifacts = initTable[string, ModuleCompileArtifact]()
+  var edges = initTable[string, Table[string, string]]()
+  var pathStack: seq[string]
+  var cyclic = initHashSet[string]()
+  proc collect(path: string) =
+    if path in pathStack:
+      for item in pathStack: cyclic.incl item
+      return
+    if artifacts.hasKey(path): return
+    let artifact = compileModuleArtifactRaw(app, path)
+    artifacts[path] = artifact
+    pathStack.add path
+    let savedDir = app.currentModuleDir
+    let savedPackage = app.currentPackage
+    app.currentModuleDir = app.moduleSourceDir(path)
+    app.currentPackage = app.packageForModule(path)
+    try:
+      var imports = initTable[string, string]()
+      for spec in artifact.chunk.imports:
+        if spec.fromModule:
+          imports[spec.importKey] = app.resolveModuleRef(spec.modulePath, spec.pkgName)
+      for spec in artifact.chunk.importImpls:
+        imports[spec.modulePath] = app.resolveModuleRef(spec.modulePath)
+      edges[path] = imports
+      for _, dependency in imports: collect(dependency)
+    finally:
+      app.currentModuleDir = savedDir
+      app.currentPackage = savedPackage
+      pathStack.setLen(pathStack.len - 1)
+  collect(entryPath)
+  var paths: seq[string]
+  for path in artifacts.keys: paths.add path
+  paths.sort()
+  var analyses = initTable[string, ErrorAnalysis]()
+  var settled = false
+  for iteration in 0..<max(32, paths.len * 64):
+    var changed = false
+    for path in paths:
+      let artifact = artifacts[path]
+      let previous = errorInterfaceKey(artifact.compileInterface)
+      var imported = initTable[string, CompileNamespaceInterface]()
+      for key, dependency in edges[path]:
+        imported[key] = artifacts[dependency].compileInterface
+      let analysis = analyzeErrorEffects(artifact.chunk, imported)
+      if path in cyclic:
+        artifact.chunk.initializationErrors.open = true
+        analysis.validateErrorAnalysis()
+      analysis.attachErrorInterfaces(artifact.compileInterface)
+      analyses[path] = analysis
+      changed = changed or previous != errorInterfaceKey(artifact.compileInterface)
+    if not changed:
+      settled = true
+      break
+  if not settled:
+    raise newException(GeneError, "error summaries did not converge for module graph " & entryPath)
+  var firstFailure: ref GeneError
+  for path in paths:
+    let artifact = artifacts[path]
+    let analysis = analyses[path]
+    for diagnostic in analysis.diagnostics:
+      artifact.chunk.diagnostics.add diagnostic
+      if artifact.chunk.errorsMode == ecmStrict and firstFailure == nil:
+        firstFailure = newException(GeneError, diagnostic.message)
+        firstFailure.loc = diagnostic.loc
+    artifact.chunk.errorChecksComplete = true
+  if firstFailure != nil:
+    for _, artifact in artifacts: artifact.chunk.errorChecksComplete = false
+    raise firstFailure
+
+proc compileModuleArtifact(app: Application, absPath: string): ModuleCompileArtifact =
+  result = compileModuleArtifactRaw(app, absPath)
+  if result.chunk.errorsMode != ecmDynamic and not result.chunk.errorChecksComplete:
+    app.checkModuleErrorGraph(absPath)
 
 proc resolvedModuleCeiling(app: Application, module: Value,
                            parent: CapabilityContext): CapabilityContext =
@@ -28901,6 +29157,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
       update.scope.validateProspectiveBase(update.impls, recomposed.canonical)
 
     # Commit. No enumerable live scope is mutated before this point.
+    app.checkStrictScopeReplacement(oldScope, replacementScope)
     app.commitRecomposedImpls(recomposed)
     app.moduleCache[identity] = replacement
     inc app.moduleEpoch
@@ -29326,6 +29583,7 @@ proc appendCompileInterfaceRows(iface: CompileNamespaceInterface,
 proc compileInterfaceDigest(iface: CompileNamespaceInterface): string =
   var rows: seq[string]
   appendCompileInterfaceRows(iface, "", rows)
+  rows.add errorInterfaceKey(iface)
   "sha256:" & sha256Hex(rows.join("\n"))
 
 proc sandboxRuntimeIdentity(app: Application, path, sandboxDir,
@@ -29659,9 +29917,18 @@ proc biSandboxTransactionCommit(args: openArray[Value],
           "sandbox transaction contains an invalid generation")
   finally:
     release(resourceAuthorityLock)
+  let scheduler = schedulerForScope(scope)
+  for key, previous in app.moduleCache:
+    if transaction.candidate.moduleCache.hasKey(key):
+      let replacement = transaction.candidate.moduleCache[key]
+      if previous.bits != replacement.bits:
+        app.checkStrictScopeReplacement(previous.moduleRootNamespace.nsScope,
+                                         replacement.moduleRootNamespace.nsScope)
+  # Strict callers can be installed after prepare without changing the module
+  # or impl epoch. Validate their assumptions against the state being published.
+  app.checkStrictImplChanges(transaction.candidate.rootImpls, @[])
   # Everything fallible is complete. These assignments form one non-yielding
   # owning-lane publication turn, so no Gene task can observe a partial graph.
-  let scheduler = schedulerForScope(scope)
   pauseSchedulerWorkersForModuleMutation(scheduler)
   try:
     installSandboxAppState(app, transaction.candidate)
@@ -29736,9 +30003,8 @@ proc biSandboxGenerationGraph(args: openArray[Value],
       "SandboxGeneration/graph requires a prepared generation")
   generation.graph
 
-proc removeGenerationImpls(app: Application,
-                           owned: openArray[ProtocolImpl]) =
-  var retained: seq[ProtocolImpl]
+proc implsWithoutGeneration(app: Application,
+                            owned: openArray[ProtocolImpl]): seq[ProtocolImpl] =
   for candidate in app.builtinsScope().impls:
     var remove = false
     for target in owned:
@@ -29749,8 +30015,7 @@ proc removeGenerationImpls(app: Application,
         remove = true
         break
     if not remove:
-      retained.add candidate
-  app.builtinsScope().impls = retained
+      result.add candidate
 
 proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
@@ -29770,16 +30035,23 @@ proc biSandboxGenerationRelease(args: openArray[Value],
   of sgsCommitted:
     discard
   let app = generation.application
+  for owned in generation.scopes:
+    app.checkStrictScopeRemoval(owned)
+  let recomposed = recomposeImplSets(app,
+    app.implsWithoutGeneration(generation.canonicalImpls),
+    app.currentImplScopeSets(), generation.canonicalImpls)
   let scheduler = schedulerForScope(scope)
   pauseSchedulerWorkersForModuleMutation(scheduler)
   try:
+    # The shared publication guard must run before removing any cache entries
+    # or generation roots. A failed release leaves the live graph intact.
+    app.commitRecomposedImpls(recomposed)
     for key, value in generation.moduleEntries:
       if app.moduleCache.hasKey(key) and app.moduleCache[key].bits == value.bits:
         app.moduleCache.del(key)
     for key in generation.compileKeys:
       app.moduleCompileHeaders.del(key)
       app.moduleCompileArtifacts.del(key)
-    removeGenerationImpls(app, generation.canonicalImpls)
     var retainedScopes: seq[Scope]
     for candidate in app.baseScopes:
       var remove = false
@@ -29954,3 +30226,4 @@ proc installCompiledModules*(app: Application,
       compileInterface: compiled.compileInterface)
 
 include ./testing
+include ./error_runtime

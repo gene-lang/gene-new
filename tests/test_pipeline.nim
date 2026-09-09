@@ -97,7 +97,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (fn gather [xs...] xs)
       (let bad 3)
-      (try ([] => gather bad...) catch Any $ex/message)
+      (try ([] => gather bad...) catch Any $err/message)
     """, "\"call splice expects a list, map, or node\""
 
   test "guarded sends prepare once and validate descriptors only on demand":
@@ -234,7 +234,7 @@ suite "pipeline — prepared lazy invocation":
                 (fail (RuntimeError ^message "cleanup"))))
       (fn stop [x] (fail (RuntimeError ^message "callback")))
       (let message (try ((rows) -> $each stop)
-        catch RuntimeError $ex/message))
+        catch RuntimeError $err/message))
       [message log]
     """, "[\"callback\" [\"close\"]]"
 
@@ -371,7 +371,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (var pending nil)
       (set pending ([1] => (fn [x] (pending .next))))
-      [(try (pending .next) catch Any $ex/message) (pending .has_next)]
+      [(try (pending .next) catch Any $err/message) (pending .has_next)]
     """, "[\"a Stream cannot be pulled reentrantly\" false]"
 
   test "take detaches before a downstream failure on the limiting item":

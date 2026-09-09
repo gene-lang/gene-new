@@ -45,7 +45,7 @@
   (try
     (register_module workspace h "claim" rebuilt ^selectors [])
   catch Any
-    (set refused ($to_str $ex/message)))
+    (set refused ($to_str $err/message)))
   (assert ($str/contains? refused "already exists")
     "a duplicate id with replace false must be refused")
   (assert (== (blob_count workspace) blobs)

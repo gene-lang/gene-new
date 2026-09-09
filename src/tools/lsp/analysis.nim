@@ -54,7 +54,7 @@ type
     kind*: int
     range*: LspRange
     selectionRange*: LspRange
-    signature*: string        ## first source line of the form, for hover
+    signature*: string        ## opening source line(s) through the name, for hover
 
   DocAnalysis* = object
     parsed*: bool             ## false => parse error; symbols may be empty
@@ -368,8 +368,15 @@ proc findTokenRange(src: string, starts: seq[int],
 proc symName(v: Value): string =
   if v.kind == vkSymbol: v.symVal else: ""
 
-proc firstSourceLine(src: string, starts: seq[int], r: LspRange): string =
-  lineSlice(src, starts, r.start.line).strip()
+proc signatureSource(src: string, starts: seq[int],
+                     r, name: LspRange): string =
+  ## Usually the opening line. A #@ declaration can put its head or name on
+  ## later lines; include those too, without including adjacent declarations.
+  let first = lspPosToOffset(src, starts, r.start)
+  let lastLine = max(r.start.line, name.endPos.line)
+  let lineEnd = starts[lastLine] + lineSlice(src, starts, lastLine).len
+  let last = min(lineEnd, lspPosToOffset(src, starts, r.endPos))
+  src[first ..< max(first, last)].strip()
 
 proc formRange(src: string, starts: seq[int], loc: SourceLoc): LspRange =
   let startOff = byteOffset(starts, loc.line, loc.col)
@@ -501,7 +508,8 @@ proc flattenDefs*(symbols: seq[DocSymbol], src: string,
   for s in symbols:
     result.add FlatDef(name: s.name, containerName: container, kind: s.kind,
                        range: s.range, selectionRange: s.selectionRange,
-                       signature: firstSourceLine(src, starts, s.range))
+                       signature: signatureSource(src, starts, s.range,
+                                                  s.selectionRange))
     result.add flattenDefs(s.children, src, s.name)
 
 proc wordAt*(src: string, starts: seq[int], pos: LspPos): string =
@@ -513,6 +521,11 @@ proc wordAt*(src: string, starts: seq[int], pos: LspPos): string =
   var col = utf16ColToByte(line, pos.character)
   if col >= line.len:
     col = line.len - 1
+  # #@ is its own reader token, including when glued to the head. Neither
+  # byte of the marker names the callable (or the preceding adjacent form).
+  if (line[col] == '#' and col + 1 < line.len and line[col + 1] == '@') or
+      (line[col] == '@' and col > 0 and line[col - 1] == '#'):
+    return ""
   if line[col] in symbolStop:
     if col > 0 and line[col - 1] notin symbolStop:
       dec col
@@ -540,6 +553,8 @@ proc wordAt*(src: string, starts: seq[int], pos: LspPos): string =
         segStart = i + 1
     if segStart <= segEnd:
       word = word[segStart ..< segEnd]
+  # The reader expands $name to gene/name. Like other paths, lookup uses
+  # the member name, including when the source spells it #@$name.
   while word.len > 0 and word[0] in {'\'', '^', '%', '@', '$'}:
     word = word[1 .. ^1]
   word

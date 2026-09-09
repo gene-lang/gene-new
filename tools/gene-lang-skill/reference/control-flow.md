@@ -86,16 +86,17 @@ deep nesting.
 (try
   (checked_value (load))
 catch ExampleError
-  $"error: ${$ex/message}"
-catch Any
+  $"error: ${$err_msg}"
+catch Error
   "unknown error"
 ensure
   (close))
 ```
 
 What follows `catch` is a type. The catch body reads the whole error through
-`$ex`; use `catch Any` as the explicit catch-all. `fail` raises a recoverable
-typed error; `panic` does not. Clause heads align
+`$err`; `$err_msg` calls its retained `Error:message` implementation. Use
+`catch Error` for any ordinary error. `fail` raises a recoverable value that
+implements Error; `panic` does not. Clause heads align
 under `try` and their bodies indent once. See `reference/declarations.md` for
 declaring an error type and a function's `^errors` row.
 

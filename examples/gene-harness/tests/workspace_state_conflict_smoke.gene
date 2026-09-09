@@ -49,7 +49,7 @@
     ((resolve right "Shared"))
   catch HarnessStateConflict
     (set conflicted
-      (&& (== $ex/scope "workspace") (== $ex/stream "workspace"))))
+      (&& (== $err/scope "workspace") (== $err/stream "workspace"))))
   (assert conflicted
     "stale workspace state must conflict at the plugin callback boundary")
 

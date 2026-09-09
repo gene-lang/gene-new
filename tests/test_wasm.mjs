@@ -34,6 +34,9 @@ function geneEval(src) {
 // [source, expected status, expected text, expected captured output]
 const cases = [
   ["", 0, "nil", ""],
+  ["true", 0, "true", ""],
+  ["false", 0, "false", ""],
+  ["void", 0, "void", ""],
   ["(+ 1 2)", 0, "3", ""],
   ["(if true 1 2)", 0, "1", ""],
   ["[true false nil]", 0, "[true false nil]", ""],
@@ -50,12 +53,29 @@ const cases = [
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
    '(try (f 1) false catch TypeError true)', 0, "true", ""],
+  ['(fn local_error [] (type Local ^props {^code Int}) ' +
+   '(impl Error for Local (message message [] : Str ^errors [] $"code ${self/code}")) ' +
+   '(fail (Local ^code 7))) ' +
+   '(let later (try (local_error) catch Error (fn [] $err_msg))) (later)',
+   0, '"code 7"', ""],
+  ['(let checked : (Callable [] Any ^errors []) ' +
+   '(fn [] (fail (AssertionError ^message "original")))) ' +
+   '(fn outer [] ^errors [] (checked)) ' +
+   '(try (outer) catch ErrorContractViolation $err/cause/.Error:message)',
+   0, '"original"', ""],
+  ['(fn checked [] ^errors [] ' +
+   '(try (let n : Int "bad") catch TypeError (let saved $err) (fail saved))) ' +
+   '(try (checked) catch TypeError true)', 0, "true", ""],
+  ['(mod checked ^errors_mode strict) ' +
+   '(fn add_one [n : Int] : Int ^errors [] (+ n 1)) (add_one 6)', 0, "7", ""],
   ['(let source ($to_stream [1 2])) (let bounded ($take source 0)) ' +
    '(bounded .close) (source .next)', 0, "1", ""],
   ['(type Rows ^props {} (message to_stream [] ($to_stream [1 2]))) ' +
    '((Rows) => + 1 -> $into [])', 0, "[2 3]", ""],
   ['(fn drop [x] (if (== x 1) void nil)) ' +
-   '([1 2] => drop -> $into [])', 0, "[nil]", ""],
+   '([1 2] => drop -> $into [])', 0, "[nil nil]", ""],
+  ['(fn drop [x] (if (== x 1) void nil)) ' +
+   '($into ($filter_map ($to_stream [1 2]) drop) [])', 0, "[nil]", ""],
   ['($str/join ["a" "b"] "-")', 0, '"a-b"', ""],
   ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +
@@ -84,6 +104,15 @@ for (const [src, wantStatus, wantText, wantOut] of cases) {
   } else {
     console.log(`ok   ${src}  ->  ${JSON.stringify(r.text)}${r.out ? "  out=" + JSON.stringify(r.out) : ""}`);
   }
+}
+
+const strictFailure = geneEval(
+  '(mod checked ^errors_mode strict) (fn invalid [] ^errors [] ($assert false))');
+if (strictFailure.status === 0 || !strictFailure.text.includes('error checking:')) {
+  failed++;
+  console.error(`FAIL wasm strict error policy: ${JSON.stringify(strictFailure)}`);
+} else {
+  console.log('ok   wasm rejects an unchecked ordinary error under strict policy');
 }
 
 const logResult = geneEval(

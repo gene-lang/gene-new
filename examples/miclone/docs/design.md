@@ -2347,7 +2347,7 @@ A mod declares a form and the client walks one it has never seen the shape of;
 the smoke test asserts the rendered text contains a word that appears nowhere in
 the client. That is the composability claim, checked.
 
-Catch headers name an error type and the body reads the value through `$ex`.
+Catch headers name an error type and the body reads the value through `$err`.
 `catch Error` matches custom error types implementing the marker protocol on
 both backends.
 

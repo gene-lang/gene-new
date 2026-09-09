@@ -103,7 +103,7 @@
     (try (box .recv)
       catch ChannelClosed
         (done .set true)
-        ($println "     receiver saw:" $ex/message))))
+        ($println "     receiver saw:" $err/message))))
 
   ($sleep 1)                           # let receiver settle into recv
   (box .close)
@@ -267,13 +267,13 @@
     (try
       (stoptest .send 0)
       "first_send"
-      catch Boom $ex/message))
+      catch Boom $err/message))
   ($sleep 1)                                           # let failure propagate
   (var post_failure
     (try
       (stoptest .send 99)
       "second-send"
-      catch ActorClosed $ex/message))
+      catch ActorClosed $err/message))
   ($println "   - first send (failure trapped):" first_send)
   ($println "   - post_failure send:" post_failure))
 

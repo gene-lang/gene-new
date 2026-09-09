@@ -216,8 +216,8 @@
     },
     {
       "id": "numeric.int_division_by_zero",
-      "source": "(try (/ 7 0) catch Any $ex)",
-      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch Any $ex))",
+      "source": "(try (/ 7 0) catch Any $err)",
+      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch Any $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -244,8 +244,8 @@
     },
     {
       "id": "numeric.f64_division_by_zero",
-      "source": "(try (/ 7.0 0.0) catch Any $ex)",
-      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch Any $ex))",
+      "source": "(try (/ 7.0 0.0) catch Any $err)",
+      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch Any $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -272,8 +272,8 @@
     },
     {
       "id": "numeric.remainder_by_zero",
-      "source": "(try (// 7 0) catch Any $ex)",
-      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch Any $ex))",
+      "source": "(try (// 7 0) catch Any $err)",
+      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch Any $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -300,8 +300,8 @@
     },
     {
       "id": "errors.builtin_typed_catch",
-      "source": "(fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $ex/message)) [(div_msg 7 0) (div_msg 7 2)]",
-      "web_source": "(mod errors_builtin_catch ^profile web) (fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $ex/message)) (fn run [] : (List Str) [(div_msg 7 0) (div_msg 7 2)])",
+      "source": "(fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $err/message)) [(div_msg 7 0) (div_msg 7 2)]",
+      "web_source": "(mod errors_builtin_catch ^profile web) (fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $err/message)) (fn run [] : (List Str) [(div_msg 7 0) (div_msg 7 2)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -384,8 +384,8 @@
     },
     {
       "id": "errors.imported_builtin_typed_catch",
-      "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $ex/message)) (reason)",
-      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $ex/message))",
+      "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $err/message)) (reason)",
+      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $err/message))",
       "web_files": {
         "fixture_div_dep.gene": "(mod fixture_div_dep ^profile web)\n(fn q [a : Int b : Int] : Int (/ a b))\n"
       },
@@ -426,8 +426,8 @@
     },
     {
       "id": "pattern.declared_error_type_does_not_shadow",
-      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Any $ex/message)",
-      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Any $ex/message))",
+      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Any $err/message)",
+      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Any $err/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -909,8 +909,8 @@
     },
     {
       "id": "errors.typed_catch_and_ensure",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (fail (AppError ^message \"boom\")) catch AppError $ex/message ensure nil)",
-      "web_source": "(mod errors_typed_catch ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (fail (AppError ^message \"boom\")) catch AppError $ex/message ensure nil))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (fail (AppError ^message \"boom\")) catch AppError $err/message ensure nil)",
+      "web_source": "(mod errors_typed_catch ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (fail (AppError ^message \"boom\")) catch AppError $err/message ensure nil))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -924,8 +924,8 @@
     },
     {
       "id": "errors.checked_row",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (try (raise_app) catch AppError $ex/message)",
-      "web_source": "(mod errors_checked_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (fn run [] : Str (try (raise_app) catch AppError $ex/message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (try (raise_app) catch AppError $err/message)",
+      "web_source": "(mod errors_checked_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (fn run [] : Str (try (raise_app) catch AppError $err/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -939,8 +939,8 @@
     },
     {
       "id": "errors.imported_checked_row",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (try (raise_app) catch AppError $ex/message)",
-      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch AppError $ex/message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (try (raise_app) catch AppError $err/message)",
+      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch AppError $err/message))",
       "web_files": {
         "fixture_error_dep.gene": "(mod fixture_error_dep ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError)"
       },
@@ -1158,8 +1158,8 @@
     },
     {
       "id": "async.child_failure_join",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $ex/message)",
-      "web_source": "(mod async_child_failure ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $ex/message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $err/message)",
+      "web_source": "(mod async_child_failure ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $err/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -1206,8 +1206,8 @@
     },
     {
       "id": "async.cancellation_brand_does_not_collide",
-      "source": "(type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $ex/kind)) (run)",
-      "web_source": "(mod cancel_brand_collision ^profile web) (type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $ex/kind))",
+      "source": "(type AppError ^props {^kind Str}) (impl Error for AppError (message message [] : Str ^errors [] self/kind)) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $err/kind)) (run)",
+      "web_source": "(mod cancel_brand_collision ^profile web) (type AppError ^props {^kind Str}) (impl Error for AppError (message message [] : Str ^errors [] self/kind)) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $err/kind))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -3346,8 +3346,8 @@
     },
     {
       "id": "callable.error_row",
-      "source": "(type Boom ^props {^n Int}) (impl Error for Boom) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch RuntimeError true)]) (run)",
-      "web_source": "(mod callable_error_row ^profile web) (type Boom ^props {^n Int}) (impl Error for Boom) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch RuntimeError true)])",
+      "source": "(type Boom ^props {^n Int}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch ErrorContractViolation (let cause : Boom $err/cause) (== cause/n 1))]) (run)",
+      "web_source": "(mod callable_error_row ^profile web) (type Boom ^props {^n Int}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch ErrorContractViolation (let cause : Boom $err/cause) (== cause/n 1))])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3385,8 +3385,8 @@
     },
     {
       "id": "callable.deferred_errors",
-      "source": "(type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)]) (run)",
-      "web_source": "(mod callable_deferred_errors ^profile web) (type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)])",
+      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)]) (run)",
+      "web_source": "(mod callable_deferred_errors ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3608,8 +3608,8 @@
     },
     {
       "id": "callable.stream_error_contract",
-      "source": "(type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch TypeError true)) (run)",
-      "web_source": "(mod callable_stream_error_contract ^profile web) (type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch TypeError true))",
+      "source": "(type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true)) (run)",
+      "web_source": "(mod callable_stream_error_contract ^profile web) (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] \"boom\")) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch ErrorContractViolation true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -4774,6 +4774,126 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "errors.gradual_message",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (fail (AppError ^message \"display\")) catch Error $err_msg)",
+      "web_source": "(mod errors_gradual_message ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (fail (AppError ^message \"display\")) catch Error $err_msg))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "display"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_custom_message",
+      "source": "(type StatusError ^props {^code Int}) (impl Error for StatusError (message message [] : Str ^errors [] \"computed\")) (try (fail (StatusError ^code 503)) catch Error $err/.Error:message)",
+      "web_source": "(mod errors_gradual_custom_message ^profile web) (type StatusError ^props {^code Int}) (impl Error for StatusError (message message [] : Str ^errors [] \"computed\")) (fn run [] : Str (try (fail (StatusError ^code 503)) catch Error $err/.Error:message))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "computed"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_contract_cause",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn broken [] : Str ^errors [] (fail (AppError ^message \"original\"))) (fn outer [] : Str ^errors [] (broken)) (try (outer) catch ErrorContractViolation $err/cause/message)",
+      "web_source": "(mod errors_gradual_contract_cause ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn broken [] : Str ^errors [] (fail (AppError ^message \"original\"))) (fn outer [] : Str ^errors [] (broken)) (fn run [] : Str (try (outer) catch ErrorContractViolation $err/cause/message))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "original"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_open_row",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn opened [] : Str ^errors [AppError Error] (fail (AppError ^message \"open\"))) (try (opened) catch AppError $err_msg)",
+      "web_source": "(mod errors_gradual_open_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn opened [] : Str ^errors [AppError Error] (fail (AppError ^message \"open\"))) (fn run [] : Str (try (opened) catch AppError $err_msg))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "open"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_fresh_type_error",
+      "source": "(fn fresh [] : Str ^errors [] (fail (TypeError ^message \"fresh\" ^where \"x\" ^expected \"Int\" ^actual \"Str\"))) (try (fresh) catch ErrorContractViolation $err/cause/message)",
+      "web_source": "(mod errors_gradual_fresh_type_error ^profile web) (fn fresh [] : Str ^errors [] (fail (TypeError ^message \"fresh\" ^where \"x\" ^expected \"Int\" ^actual \"Str\"))) (fn run [] : Str (try (fresh) catch ErrorContractViolation $err/cause/message))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "fresh"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_generated_type_error",
+      "source": "(fn typed [x : Int] : Str ^errors [] \"valid\") (let dynamic : Any \"bad\") (try (typed dynamic) catch TypeError \"generated\")",
+      "web_source": "(mod errors_gradual_generated_type_error ^profile web) (fn typed [x : Int] : Str ^errors [] \"valid\") (fn run [] : Str (let dynamic : Any \"bad\") (try (typed dynamic) catch TypeError \"generated\"))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "generated"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_default_row",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn defaults [x : Str = (fail (AppError ^message \"default\"))] : Str ^errors [] x) (try (defaults) catch ErrorContractViolation $err/cause/message)",
+      "web_source": "(mod errors_gradual_default_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn defaults [x : Str = (fail (AppError ^message \"default\"))] : Str ^errors [] x) (fn run [] : Str (try (defaults) catch ErrorContractViolation $err/cause/message))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "default"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "errors.gradual_fn_contracts",
+      "source": "(type Known ^props {^message Str})\n(impl Error for Known)\n(fn clean [] : Int ^errors [] 1)\n(fn broken [] : Int ^errors [Known] (fail (Known ^message \"broken\")))\n(fn invoke_clean [callback : (Fn [] Int ^errors [])] : Int ^errors [] (callback))\n(fn invoke_broken [callback : (Fn [] Int ^errors [Known])] : Int ^errors [Known] (callback))\n(fn run [] : Int ^errors []\n  (let value (invoke_clean clean))\n  (try (invoke_broken broken) catch Known (+ value 6)))\n(run)",
+      "web_source": "(mod errors_gradual_fn_contracts ^profile web)\n(type Known ^props {^message Str})\n(impl Error for Known)\n(fn clean [] : Int ^errors [] 1)\n(fn broken [] : Int ^errors [Known] (fail (Known ^message \"broken\")))\n(fn invoke_clean [callback : (Fn [] Int ^errors [])] : Int ^errors [] (callback))\n(fn invoke_broken [callback : (Fn [] Int ^errors [Known])] : Int ^errors [Known] (callback))\n(fn run [] : Int ^errors []\n  (let value (invoke_clean clean))\n  (try (invoke_broken broken) catch Known (+ value 6)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
     }
   ]
 }

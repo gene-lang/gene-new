@@ -96,6 +96,8 @@ proc typeExprEquivalent*(a, b: Value): bool =
   ## order cannot be significant in one place and not the other.
   equal(canonicalTypeExpr(a), canonicalTypeExpr(b))
 
+proc canonicalErrorCoverage(row: openArray[Value]): seq[Value]
+
 proc closedContractType(expr: Value, depth = 0): Value =
   ## Callers resolve lexical names first. This pass expands retained identity
   ## references and normalizes optional syntax without consulting a receiver.
@@ -115,7 +117,12 @@ proc closedContractType(expr: Value, depth = 0): Value =
     var body: seq[Value]
     for item in expr.body: body.add closedContractType(item, depth + 1)
     var props = initPropTable()
-    for key, item in expr.props: props[key] = closedContractType(item, depth + 1)
+    for key, item in expr.props:
+      if key == "errors" and item.kind == vkList and
+          (expr.head.isSymbol("Callable") or expr.head.isSymbol("Fn")):
+        props[key] = newList(canonicalErrorCoverage(item.listItems), immutable = true)
+      else:
+        props[key] = closedContractType(item, depth + 1)
     newNode(closedContractType(expr.head, depth + 1), body = body, props = props)
   of vkList:
     var items: seq[Value]
@@ -135,6 +142,68 @@ proc signatureTypeEqual*(a, b: Value): bool =
   let bAny = right.kind == vkNil or right.isSymbol("Any")
   (aAny and bAny) or
     typeExprEquivalent(left, right)
+
+proc errorRowMembers*(row: openArray[Value]): seq[Value] =
+  ## Inputs are already closed in their declaration environment. Keep named
+  ## alternatives alongside Error; semantic coverage is compared separately.
+  var members: seq[Value]
+  proc add(expr: Value) =
+    let value = closedContractType(expr)
+    if value.isSymbol("Never"):
+      return
+    if value.kind == vkNode and value.head.isSymbol("|"):
+      for member in value.body: add(member)
+      return
+    for existing in members:
+      if signatureTypeEqual(existing, value): return
+    members.add value
+  for value in row: add(value)
+  members
+
+proc errorRowIsOpen*(row: openArray[Value]): bool =
+  for member in errorRowMembers(row):
+    if member.isErrorProtocol:
+      return true
+    if member.isSymbol("Error"):
+      return true
+
+proc errorRowCovers*(allowed, actual: openArray[Value]): bool =
+  ## This shared predicate compares coverage, not order or diagnostic hints.
+  if errorRowIsOpen(allowed): return true
+  let expected = errorRowMembers(allowed)
+  for member in errorRowMembers(actual):
+    var covered = false
+    for permitted in expected:
+      if signatureTypeEqual(permitted, member):
+        covered = true
+        break
+      var ancestor = member
+      while ancestor.kind == vkType and permitted.kind == vkType:
+        if ancestor.bits == permitted.bits:
+          covered = true
+          break
+        ancestor = ancestor.typeParent
+      if covered: break
+    if not covered: return false
+  true
+
+proc errorRowsEquivalent*(a, b: openArray[Value]): bool =
+  errorRowCovers(a, b) and errorRowCovers(b, a)
+
+proc canonicalErrorCoverage(row: openArray[Value]): seq[Value] =
+  let members = errorRowMembers(row)
+  for member in members:
+    if member.isErrorProtocol or member.isSymbol("Error"):
+      return @[member]
+  for member in members:
+    var redundant = false
+    for other in members:
+      if not signatureTypeEqual(member, other) and
+          errorRowCovers([other], [member]):
+        redundant = true
+        break
+    if not redundant: result.add member
+  result.sortTypeExprOperands()
 
 proc callableSignatureMismatch*(expected, actual: Value): string =
   if expected.kind != vkFunction or actual.kind != vkFunction:
@@ -182,11 +251,8 @@ proc callableSignatureMismatch*(expected, actual: Value): string =
     return "checked error row"
   let expectedErrors = expected.fnErrorTypes
   let actualErrors = actual.fnErrorTypes
-  if expectedErrors.len != actualErrors.len:
+  if not errorRowsEquivalent(expectedErrors, actualErrors):
     return "checked error row"
-  for i in 0 ..< expectedErrors.len:
-    if not signatureTypeEqual(expectedErrors[i], actualErrors[i]):
-      return "checked error row"
   ""
 
 proc validateCallableSignature*(expected, actual: Value, label: string) =

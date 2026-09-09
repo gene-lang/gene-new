@@ -68,6 +68,7 @@ structured tasks, modules, and template macros.
 | [Library recipes](docs/stdlib.md) | Strings, JSON, files, HTTP, databases, logging, and events. |
 | [Workflows](docs/workflows.md) | Scripts, packages, editor tools, browser output, and native interop. |
 | [Testing](docs/testing.md) | Assertions and RSpec-style examples, fixtures, and reports. |
+| [Error handling](docs/error-handling.md) | Typed failures, messages, error rows, and gradual checking. |
 
 For larger programs, read the [Todo web app](examples/todo_app/src/main.gene),
 [protocol demo](examples/protocol_demo.gene), or

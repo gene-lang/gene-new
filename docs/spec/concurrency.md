@@ -5,7 +5,10 @@ bounded-channel, and actor suites in `tests/spec_runner.nim` and scheduler/actor
 suites in `tests/test_vm.nim`.
 
 - `scope` owns child tasks; normal exit waits, while error/cancellation cancels
-  and waits for cleanup. Detached tasks are explicit exceptions.
+  and waits for cleanup. Normal waiting does not consume task results or raise
+  their stored failures. Detached tasks are explicit exceptions.
+- The VM's first `await` consumes the task result, including a failed result.
+  Repeating it through the same handle or an alias raises `RuntimeError`.
 - `Task/join` waits without propagating the joined task's outcome. It returns
   `TaskOutcome/ok`, `error`, `panic`, or `cancelled`, does not consume the
   ordinary `await` result, and may be repeated. Cancellation of the joining

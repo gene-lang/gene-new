@@ -278,7 +278,7 @@ suite "native api — roots and trampoline":
 
     let failedTask = api.newAsyncTask()
     scope.define("failed-task", failedTask)
-    let errorRoot = api.root(newStr("detail"))
+    let errorRoot = api.root(run(compileSource("(RuntimeError ^message \"detail\")"), scope))
     let failed = api.taskFail(failedTask, "native async failed", errorRoot,
                               true, scope)
     check failed.status == gsOk
@@ -289,7 +289,8 @@ suite "native api — roots and trampoline":
     except GeneError as e:
       check e.msg == "native async failed"
       check e.hasErrVal
-      check e.errVal.print() == "\"detail\""
+      check e.errVal.head.typeName == "RuntimeError"
+      check e.errVal.props["message"].strVal == "detail"
     api.rootRelease(errorRoot)
 
     let cancelledTask = api.newAsyncTask()
@@ -396,12 +397,12 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn .set_prop `handle \"junk\") catch Error $ex/message)"),
+      "(try (conn .set_prop `handle \"junk\") catch Error $err/message)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
     check run(compileSource(
-      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Error $ex/message)"),
+      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Error $err/message)"),
       scope).print() ==
       "\"direct construction cannot construct Conn: it is a native wrapper; " &
       "construct it with (new Conn ...)\""
@@ -503,7 +504,7 @@ suite "native api — roots and trampoline":
     # A borrowed pointer fails the declared field type, and the ctor's own
     # owned handle count is untouched because it never installed one.
     check "field 'handle' for Blob" in run(compileSource(
-      "(try (new Blob ^borrowed true) catch TypeError $ex/where)"),
+      "(try (new Blob ^borrowed true) catch TypeError $err/where)"),
       scope).print()
     check releasedPointers == 0
 
@@ -528,13 +529,13 @@ suite "native api — roots and trampoline":
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
       "  (ctor [] (self .push_body (open_handle))))"), scope)
     let failed = run(compileSource(
-      "(try (new Conn) catch Error $ex/message)"), scope)
+      "(try (new Conn) catch Error $err/message)"), scope)
     check "left required field 'label' unset" in failed.print()
     check releasedPointers == 1
 
     releasedPointers = 0
     let failedBody = run(compileSource(
-      "(try (new Bag) catch Error $ex/message)"), scope)
+      "(try (new Bag) catch Error $err/message)"), scope)
     check "left required field 'label' unset" in failedBody.print()
     check releasedPointers == 1
 

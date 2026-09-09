@@ -803,7 +803,7 @@ suite "modules — built-in identity and scope hygiene":
       "(fn boom ^errors [Boom] [] (fail (Boom ^message \"x\")))")
     check runProgram("(import [Boom, boom] from \"./erra\") " &
       "(fn f ^errors [Boom] [] (boom)) " &
-      "(try (f) catch Boom $ex/message)").print() == "\"x\""
+      "(try (f) catch Boom $err/message)").print() == "\"x\""
 
   test "gene exposes builtins and stdlib namespaces without shadowing":
     check runProgram("[(== gene/Error Error) " &
@@ -1343,7 +1343,7 @@ suite "modules — the capability sandbox (design §D5)":
       "  (top_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"bad_top.gene\" ^grants [] ^shared [] " &
       "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
-      "  \"missing\" catch Any $ex/message)) " &
+      "  \"missing\" catch Any $err/message)) " &
       "(top_tx .discard) top_error"), scope).strVal
     check "max steps" in topMessage
     let callMessage = run(compileSource(
@@ -1354,7 +1354,7 @@ suite "modules — the capability sandbox (design §D5)":
       "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
       "(var call_module (call_generation .module)) " &
       "(var call_error (try (call_module/spin) \"missing\" " &
-      "  catch Any $ex/message)) " &
+      "  catch Any $err/message)) " &
       "(call_tx .discard) call_error",
       useLocalSlots = false), scope).strVal
     check "max steps" in callMessage
@@ -1377,7 +1377,7 @@ suite "modules — the capability sandbox (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"large_macro.gene\" ^grants [] ^shared [] " &
       "    ^policy {^max_steps 40 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
-      "  \"missing\" catch Any $ex/message)) " &
+      "  \"missing\" catch Any $err/message)) " &
       "(tx .discard) compile_error"), scope).strVal
     check "compile max steps" in message
     check app.moduleCacheEntryCount() == beforeModules
@@ -1440,7 +1440,7 @@ suite "modules — the capability sandbox (design §D5)":
         "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
         "    ^entry \"" & entry & "\" ^grants [] ^shared [] " &
         "    ^policy " & policy & "}) " &
-        "  \"missing\" catch Any $ex/message)) " &
+        "  \"missing\" catch Any $err/message)) " &
         "(tx .discard) message"), scope).strVal
 
     check "compile timeout" in prepareError(
@@ -1463,7 +1463,7 @@ suite "modules — the capability sandbox (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"native.gene\" ^grants [\"ffi\"] ^shared [] " &
       "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
-      "  \"missing\" catch Any $ex/message)) " &
+      "  \"missing\" catch Any $err/message)) " &
       "(tx .discard) message"), scope).strVal
     check "disables FFI" in message
 
@@ -1585,6 +1585,21 @@ suite "modules — the capability sandbox (design §D5)":
       implementationOnly.mapEntries["compile_interface_digest"].strVal
     check implementationOnly.mapEntries["compile_interface_digest"].strVal !=
       interfaceChange.mapEntries["compile_interface_digest"].strVal
+
+    proc errorDigest(source: string): string =
+      let node = rootNode(graphFor("(mod plugin ^errors_mode strict)\n" & source))
+      node.mapEntries["compile_interface_digest"].strVal
+
+    let closed = errorDigest("(fn answer [] : Int ^errors [] 1)")
+    check closed == errorDigest("(fn answer [] : Int ^errors [] 2)")
+    check closed != errorDigest("(fn answer [] : Int ^errors [Error] 1)")
+    let factory = "(fn factory [] : (Callable [] Int ^errors ROW) ^errors [] " &
+      "(fn [] : Int ^errors [] 1))"
+    check errorDigest(factory.replace("ROW", "[]")) !=
+      errorDigest(factory.replace("ROW", "[Error]"))
+    let deferred = "(fn produce [] : (Task Int ROW) ^errors [] (spawn 1))"
+    check errorDigest(deferred.replace("ROW", "Never")) !=
+      errorDigest(deferred.replace("ROW", "Error"))
 
   test "prepared candidate protocols work without publishing to live scopes":
     let root = modDir / "generation_protocol"

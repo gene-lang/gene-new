@@ -398,19 +398,19 @@ suite "spec — sequenced value pipelines":
     check_eval("(var hits ($cell 0)) " &
                "(fn later [x] (hits .set 1) x) " &
                "[(try ((fail (RuntimeError ^message \"stop\")) -> later) " &
-               "   catch RuntimeError $ex/message) hits/.get]",
+               "   catch RuntimeError $err/message) hits/.get]",
                "[\"stop\" 0]")
     check_eval("(var hits ($cell 0)) " &
                "(fn touch [] (hits .update (fn [n] (+ n 1))) 2) " &
                "[(try (1 -> (fail (RuntimeError ^message \"callee\")) " &
                "             (touch)) " &
-               "   catch RuntimeError $ex/message) hits/.get]",
+               "   catch RuntimeError $err/message) hits/.get]",
                "[\"callee\" 0]")
     check_eval("(var hits ($cell 0)) " &
                "(fn stop [x] (fail (RuntimeError ^message \"stage\"))) " &
                "(fn later [x] (hits .set 1) x) " &
                "[(try (1 -> stop -> later) " &
-               "   catch RuntimeError $ex/message) hits/.get]",
+               "   catch RuntimeError $err/message) hits/.get]",
                "[\"stage\" 0]")
 
   test "a head slot composes with dot sends":
@@ -441,7 +441,7 @@ suite "spec — sequenced value pipelines":
     check_eval("(fn pair [a b] [a b]) (var slot (quote _)) " &
                "(eval `(1 -> pair 2 %slot) ^in (env))",
                "[2 1]")
-    check_eval("(try ($freeze (quote (1 -> + 2))) catch Any $ex/message)",
+    check_eval("(try ($freeze (quote (1 -> + 2))) catch Any $err/message)",
                "\"freeze cannot freeze pipeline syntax; quote it for syntax " &
                "or eval it as a program\"")
     check_eval("#(1 -> + 2)", "3")
@@ -533,7 +533,7 @@ suite "spec — sequenced value pipelines":
                "  (if_yes (== x 3) " &
                "    (fail (RuntimeError ^message \"bad row\"))) x) " &
                "(var message (try ([1 2 3 4] => validate -> $into []) " &
-               "  catch RuntimeError $ex/message)) [message log]",
+               "  catch RuntimeError $err/message)) [message log]",
                "[\"bad row\" [1 2 3]]")
 
   test "a Stream-to-List boundary points at the explicit collector":
@@ -846,11 +846,11 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
                "\"ok\"")
     check_eval("(fn q! [e] e) " &
                "(try (fn keep [f : Fn] f) (keep q!) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"Fn\"")
     check_eval("(fn q! [e] e) " &
                "(try (fn keep [f : Callable] f) (keep q!) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"Callable\"")
 
   test "higher-order calls stay eager and reject held fexprs":
@@ -871,9 +871,9 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
     # receiver's type is a recoverable MessageError, with a hint when the name
     # is a lexical callable (there is no lexical send fallback).
     check_eval("(fn f [self y] [self y]) " &
-               "(try ([1] .f 2) catch MessageError $ex/receiver_type)",
+               "(try ([1] .f 2) catch MessageError $err/receiver_type)",
                "\"List\"")
-    check_eval("(try ([1] .nope 1) catch MessageError $ex/message)",
+    check_eval("(try ([1] .nope 1) catch MessageError $err/message)",
                "\"no message 'nope' on List\"")
     # The MessageError is raised before any send argument runs.
     check_eval("(var side 0) (try ([1] .nope (set side 1)) catch Any side)",
@@ -886,7 +886,7 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
     check_eval("(fn q! [x] x) " &
                "(try ([1] .%(do q!) 1) " &
                " catch CallKindError " &
-               " [$ex/where $ex/expected $ex/actual])",
+               " [$err/where $err/expected $err/actual])",
                "[\"message send\" \"Callable\" \"Fexpr\"]")
 
   test "fexpr prints as its fn declaration form":
@@ -895,7 +895,7 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
   test "fexpr arity errors count only syntax parameters":
     # caller_env and syntax_call bind as implicit leading parameters but must
     # not surface in arity diagnostics.
-    check_eval("(fn q! [e] e) (try (q!) catch Error $ex/message)",
+    check_eval("(fn q! [e] e) (try (q!) catch Error $err/message)",
                "\"fexpr 'q!' expects 1..1 syntax argument(s), got 0\"")
 
   test "caller_env is borrowed and explicit snapshots are durable":
@@ -946,7 +946,7 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
     check_eval("(var ch ($channel ^capacity 1)) " &
                "(fn leak! [] " &
                "  (try (ch .send caller_env) " &
-               "   catch TypeError $ex/expected)) " &
+               "   catch TypeError $err/expected)) " &
                "(leak!)",
                "\"Send\"")
 
@@ -958,13 +958,13 @@ suite "spec — typed native compilation prototype from design":
     check_eval("(fn add [x : Int y : Int] : Int (+ x y)) (add 20 22)",
                "42")
     check_eval("(fn add [x : Int y : Int] : Int (+ x y)) " &
-               "(try (add \"bad\" 1) catch TypeError $ex/where)",
+               "(try (add \"bad\" 1) catch TypeError $err/where)",
                "\"parameter 'x'\"")
     check_eval("(fn outer [] (add \"bad\" 1)) " &
                "(fn add [x : Int y : Int] : Int (+ x y)) " &
                "(try (outer) catch TypeError " &
-               "  [$ex/trace/0/name $ex/trace/0/kind " &
-               "   $ex/trace/1/name $ex/trace/1/kind])",
+               "  [$err/trace/0/name $err/trace/0/kind " &
+               "   $err/trace/1/name $err/trace/1/kind])",
                "[\"add\" \"typed_native\" \"outer\" \"bytecode\"]")
 
   test "fixed representation functions expose an experimental C backend":
@@ -3303,14 +3303,14 @@ suite "spec — hashable collections and bytes from design":
   test "Set deduplicates hash-stable values in insertion order":
     check_eval("[(Set 1 2 1) ($set_has? (Set \"a\" \"b\") \"b\")]",
                "[(Set 1 2) true]")
-    check_eval("(try (Set [1]) catch TypeError $ex/expected)",
+    check_eval("(try (Set [1]) catch TypeError $err/expected)",
                "\"HashStable\"")
 
   test "general maps evaluate any hash-stable keys":
     check_eval("(var k \"a\") [({{k : (+ 1 2)}} .get \"a\") " &
                "{{\"x\" : 1 \"x\" : 2}}]",
                "[3 {{\"x\" : 2}}]")
-    check_eval("(try {{[1] : 2}} catch TypeError $ex/expected)",
+    check_eval("(try {{[1] : 2}} catch TypeError $err/expected)",
                "\"HashStable\"")
 
 suite "spec — regular expressions from design":
@@ -3342,9 +3342,9 @@ suite "spec — equality and identity from design":
                " (== ($hash (quote #(x @line 1 ^a 2))) " &
                "    ($hash (quote #(x @line 99 ^a 2))))]",
                "[true true]")
-    check_eval("(try ($hash [1 2]) catch Any $ex/message)",
+    check_eval("(try ($hash [1 2]) catch Any $err/message)",
                "\"hash expects a hash-stable value\"")
-    check_eval("(try ($hash #[($cell 1)]) catch Any $ex/message)",
+    check_eval("(try ($hash #[($cell 1)]) catch Any $err/message)",
                "\"hash expects a hash-stable value\"")
 
   test "freeze helpers make mutability explicit":
@@ -3352,7 +3352,7 @@ suite "spec — equality and identity from design":
                " ($freeze [1 {^a [2]}]) " &
                " ($thaw ($freeze [1 {^a [2]}]))]",
                "[#[1 [2]] #[1 #{^a #[2]}] [1 {^a [2]}]]")
-    check_eval("(try ($freeze [($cell 1)]) catch Any $ex/message)",
+    check_eval("(try ($freeze [($cell 1)]) catch Any $err/message)",
                "\"freeze cannot freeze Cell\"")
 
   test "deep freeze traverses node metadata":
@@ -3411,7 +3411,7 @@ suite "spec — numeric boundaries from design":
                   newGlobalScope())
     check_eval("(fn single [x : F32] x) (single 3.5)", "3.5")
     check_eval("(try (fn single [x : F32] x) (single 1e39) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"F32\"")
     check_eval("(fn double [x : F64] 1) (double 1e39)", "1")
 
@@ -3425,10 +3425,10 @@ suite "spec — numeric boundaries from design":
     check_eval("(fn cbool [x : C/Bool] x) (cbool false)", "false")
     check_eval("(fn cstr [x : C/CStr] x) (cstr \"ok\")", "\"ok\"")
     check_eval("(try (fn int32 [x : C/Int32] x) (int32 2147483648) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"C/Int32\"")
     check_eval("(try (fn cstr [x : C/CStr] x) (cstr \"bad\\0str\") " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"C/CStr\"")
 
   test "C pointer annotations are opaque checked boundaries":
@@ -3515,7 +3515,7 @@ suite "spec — numeric boundaries from design":
                   newGlobalScope())
     check_eval("(var b ($device/buffer \"mock\" C/Int64 4)) " &
                "(try ((fn [buf : (device/Buffer F64)] buf) b) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"(device/Buffer F64)\"")
 
   test "FFI runtime loading uses ambient authority":
@@ -3544,7 +3544,7 @@ suite "spec — nominal types from design":
                "[(/id t) (/text (/0 t)) (/text (/1 t))]",
                "[1 \"a\" \"b\"]")
     check_eval("(type Pair ^body [Int Str]) " &
-               "(try (Pair 1 2) catch TypeError $ex/where)",
+               "(try (Pair 1 2) catch TypeError $err/where)",
                "\"body field 1 for Pair\"")
 
   test "type layout promises are reserved":
@@ -3585,7 +3585,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "      (self .set_prop `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
-               "[(try (new Port 99999) catch ValidationError $ex/message) " &
+               "[(try (new Port 99999) catch ValidationError $err/message) " &
                " ok/value]",
                "[\"invalid port\" 8080]")
 
@@ -3600,7 +3600,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
                "  (ctor [] (self .set_prop `a \"nope\"))) " &
-               "(try (new Typed) catch TypeError $ex/where)",
+               "(try (new Typed) catch TypeError $err/where)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
@@ -3614,7 +3614,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "direct construction still schema-validates on a ctor type":
     check_eval("(type Port3 ^props {^value Int} " &
                "  (ctor [n : Int] (self .set_prop `value n))) " &
-               "(try (Port3 ^value \"nope\") catch TypeError $ex/where)",
+               "(try (Port3 ^value \"nope\") catch TypeError $err/where)",
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
                "  (ctor [n : Int] (self .set_prop `value n))) " &
@@ -3625,12 +3625,12 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
                "[(try (counter .set_prop `n \"bad\") " &
-               "  catch TypeError $ex/where) counter/n]",
+               "  catch TypeError $err/where) counter/n]",
                "[\"field 'n' for Counter\" 1]")
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
                "[(try (counter .set_prop `n void) " &
-               "  catch Error $ex/message) counter/n]",
+               "  catch Error $err/message) counter/n]",
                "[\"cannot remove required field 'n' from Counter\" 1]")
     check_eval("(type MaybeCounter ^props {^n Int?}) " &
                "(var counter (MaybeCounter ^n 1)) " &
@@ -3641,35 +3641,35 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
                "[(try ($assoc_in counter /n \"bad\") " &
-               "  catch TypeError $ex/where) " &
+               "  catch TypeError $err/where) " &
                " (try ($update_in counter /n (fn [_] \"bad\")) " &
-               "  catch TypeError $ex/where) counter/n]",
+               "  catch TypeError $err/where) counter/n]",
                "[\"field 'n' for Counter\" \"field 'n' for Counter\" 1]")
     check_eval("(type Counter ^props {^n Int}) " &
                "(try ($assoc_in (quote (data ^n \"bad\")) /head Counter) " &
-               " catch TypeError $ex/where)",
+               " catch TypeError $err/where)",
                "\"field 'n' for Counter\"")
 
   test "typed instance body mutation preserves the declared body schema":
     check_eval("(type NamedOnly ^props {^n Int}) " &
                "(var value (NamedOnly ^n 1)) " &
                "[(try (value .set_body [\"undeclared\"]) " &
-               "  catch Error $ex/message) " &
+               "  catch Error $err/message) " &
                " (try (value .push_body \"undeclared\") " &
-               "  catch Error $ex/message) value]",
+               "  catch Error $err/message) value]",
                "[\"NamedOnly expects 0 body item(s), got 1\" " &
                "\"NamedOnly expects 0 body item(s), got 1\" " &
                "((type NamedOnly) ^n 1)]")
     check_eval("(type Pair ^body [Int Int]) (var pair (Pair 1 2)) " &
                "[(try (pair .set_body [1 \"bad\"]) " &
-               "  catch TypeError $ex/where) pair]",
+               "  catch TypeError $err/where) pair]",
                "[\"body field 1 for Pair\" ((type Pair) 1 2)]")
 
   test "the immutable node reader preserves typed-instance immutability":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter #(Counter ^n 1)) " &
                "[(try (counter .set_prop `n 2) " &
-               "  catch Error $ex/message) counter]",
+               "  catch Error $err/message) counter]",
                "[\"cannot mutate immutable Node\" #((type Counter) ^n 1)]")
 
   test "construct_type validates a runtime map against one real type schema":
@@ -3679,7 +3679,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "((type Request) ^name \"build\" ^count 2)")
     check_eval("(type Request ^props {^name Str}) " &
                "(try ($construct_type Request {^name 7}) " &
-               " catch TypeError $ex/where)",
+               " catch TypeError $err/where)",
                "\"field 'name' for Request\"")
 
   test "types reflect their closed property schema as Gene data":
@@ -3692,7 +3692,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "new fails when the type hierarchy has no ctor":
     check_eval("(type Plain ^props {^name Str ^age Int}) " &
                "(try (new Plain ^name \"Ada\" ^age 37) " &
-               " catch Error $ex/message)",
+               " catch Error $err/message)",
                "\"type Plain has no constructor\"")
     check_eval("(try (new 5) catch Any \"not a type\")",
                "\"not a type\"")
@@ -3747,7 +3747,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
                "  (ctor [] (fail self))) " &
-               "(impl Error for T) " &
+               "(impl Error for T (message message [] : Str ^errors [] \"constructing\")) " &
                "(try (new T) catch T \"leaked\" catch Any \"blocked\")",
                "\"blocked\"")
     expect GeneError:
@@ -3806,7 +3806,7 @@ suite "spec — native wrapper types (design §16.6)":
                "[\"H\" (type Conn)]")
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
                "  (ctor [h : Str] (set self/handle h))) " &
-               "(try (Conn ^handle \"junk\") catch Error $ex/message)",
+               "(try (Conn ^handle \"junk\") catch Error $err/message)",
                "\"direct construction cannot construct Conn: it is a native " &
                "wrapper; construct it with (new Conn ...)\"")
 
@@ -3825,7 +3825,7 @@ suite "spec — native wrapper types (design §16.6)":
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
                "  (ctor [h : Str] (set self/handle h))) " &
                "(var c (new Conn \"H\")) " &
-               "[(try (set c/handle \"junk\") catch Error $ex/message) " &
+               "[(try (set c/handle \"junk\") catch Error $err/message) " &
                " (try (c .set_prop `handle \"junk\") catch Any \"no\") " &
                " (try ($assoc_in c /handle \"junk\") catch Any \"no\") " &
                " c/handle]",
@@ -3850,7 +3850,7 @@ suite "spec — native wrapper types (design §16.6)":
       discard compileSource("(type T ^sealed true ^props {^n Int})")
 
   test "in-tree native surfaces are wrapper types":
-    check_eval("(try (SqliteDb) catch Error $ex/message)",
+    check_eval("(try (SqliteDb) catch Error $err/message)",
                "\"direct construction cannot construct SqliteDb: it is a " &
                "native wrapper; construct it with (new SqliteDb ...)\"")
     check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
@@ -3897,7 +3897,7 @@ suite "spec — native wrapper types (design §16.6)":
     check_eval("(import $terminal [write]) " &
                "(type TerminalSession ^props {^id Int ^closed Any}) " &
                "(var fake (TerminalSession ^id 1 ^closed ($cell false))) " &
-               "(try (write fake ^bytes \"x\") catch Any $ex/message)",
+               "(try (write fake ^bytes \"x\") catch Any $err/message)",
                "\"terminal/write expects a terminal/Session\"")
 
   test "deep freeze rejects a wrapper; shallow freeze and thaw pass it through":
@@ -3906,7 +3906,7 @@ suite "spec — native wrapper types (design §16.6)":
     # original. Shallow freeze promises only that the container's own structure
     # is fixed, which a completed wrapper already satisfies.
     check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
-               "(try ($freeze c) catch Error $ex/message)",
+               "(try ($freeze c) catch Error $err/message)",
                "\"freeze cannot freeze SqliteDb: a native wrapper owns " &
                "native state; freeze_shallow returns it unchanged\"")
     check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
@@ -4228,20 +4228,20 @@ suite "spec — typed variable boundaries from design":
     check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",
                "42")
     check_eval("(try (var result : Int (eval (quote \"bad\") ^in (env))) result " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"var 'result'\"")
   test "set checks typed variable boundaries":
     check_eval("(var result : Int 1) (set result 42) result", "42")
     check_eval("(try (var result : Int 1) (set result \"bad\") result " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"set 'result'\"")
     check_eval("(try (fn f [x : Int] (set x \"bad\") x) (f 1) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"set 'x'\"")
     check_eval("(try (var s : (Stream Int Never) ($to_stream [1])) " &
                "     (set s ($to_stream [\"bad\"])) " &
                "     (s .next) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"Stream/next item\"")
 
   test "optional type sugar T? is (? T) (design §7.2)":
@@ -4252,7 +4252,7 @@ suite "spec — typed variable boundaries from design":
     check_eval("(fn g [xs : (List Int?)] ($size xs)) (g [1 nil 3])", "3")
     check_eval("(type Box ^props {^v Int}) (fn h [b : Box?] : Box? b) (h nil)",
                "nil")
-    check_eval("(try (var a : Int? \"bad\") a catch TypeError $ex/expected)",
+    check_eval("(try (var a : Int? \"bad\") a catch TypeError $err/expected)",
                "\"Int?\"")
     # `?` is special only in type position; a `name?` predicate call is untouched.
     check_eval("(fn done? [x] (== x 0)) [(done? 0) (done? 1)]", "[true false]")
@@ -4261,13 +4261,13 @@ suite "spec — typed variable boundaries from design":
     check_eval("(fn keep-native [f : NativeFn] f) (keep-native +)",
                "(native-fn +)")
     check_eval("(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"Fn\"")
     check_eval("(fn keep-selector [s : Selector] s) (keep-selector /name)",
                "(select name)")
     check_eval("(try (fn keep-selector [s : Selector] s) " &
                "     (keep-selector (quote (name))) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"Selector\"")
     check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
                "(native-fn +)")
@@ -4351,7 +4351,7 @@ suite "spec — generic functions from design":
                "  (cell .get)) " &
                "[(read count) " &
                " (try (count .set \"bad\") " &
-               "  catch TypeError $ex/where)]",
+               "  catch TypeError $err/where)]",
                "[7 \"Cell/set value\"]")
 
   test "generic calls can request selective monomorphization metadata":
@@ -4495,23 +4495,23 @@ suite "spec — checked errors from design":
                "(impl Error for Boom) " &
                "(fn raise-boom ^errors [Never Boom Boom] [] " &
                "  (fail (Boom ^message \"x\"))) " &
-               "(try (raise-boom) catch Boom $ex/message)",
+               "(try (raise-boom) catch Boom $err/message)",
                "\"x\"")
 
-  test "(fail $ex) re-raises a caught error without losing its message":
+  test "(fail $err) re-raises a caught error without losing its message":
     # A VM diagnostic with no domain-specific value becomes RuntimeError.
-    # Re-raising `$ex` must preserve that value and its original message.
-    check_eval("(try (try (undefined_name) catch Any (fail $ex)) " &
-               "  catch Any $ex/message)",
+    # Re-raising `$err` must preserve that value and its original message.
+    check_eval("(try (try (undefined_name) catch Any (fail $err)) " &
+               "  catch Any $err/message)",
                "\"undefined symbol: undefined_name\"")
-    check_eval("(try (try (\"x\" .get 0) catch Any (fail $ex)) " &
-               "  catch Any $ex/message)",
+    check_eval("(try (try (\"x\" .get 0) catch Any (fail $err)) " &
+               "  catch Any $err/message)",
                "\"no message 'get' on Str\"")
-    check_eval_error("(fail 42)", "fail expects an Error value")
-    check_eval_error("(fail \"text\")", "fail expects an Error value")
+    check_eval_error("(fail 42)", "Error admission expected value implementing Error")
+    check_eval_error("(fail \"text\")", "Error admission expected value implementing Error")
 
 suite "spec — pattern destructuring from design":
-  test "match/for bindings and $ex are branch-local":
+  test "match/for bindings and $err are branch-local":
     expect GeneError:
       discard run(compileSource("(match [1 2] (when [a b] (+ a b))) a"),
                   newGlobalScope())
@@ -4519,7 +4519,7 @@ suite "spec — pattern destructuring from design":
       discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
                                 "(impl Error for Boom) " &
                                 "(try (fail (Boom ^message \"x\")) " &
-                                "catch Boom $ex/message) $ex"),
+                                "catch Boom $err/message) $err"),
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(for x in [1 2 3] x) x"), newGlobalScope())
@@ -4729,7 +4729,7 @@ suite "spec — pattern destructuring from design":
     check_eval("(match 7 (when (s : Str) s) (else \"no\"))",
                "\"no\"")
     check_eval("(try (fn f [x : Int] x) (f \"bad\") " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"parameter 'x'\"")
 
 suite "spec — Fn type call-shape admission per design §7.4.1":
@@ -4893,17 +4893,17 @@ suite "spec — implicit self in message bodies from design §10":
 
   test "sending a held fexpr value is a CallKindError":
     check_eval("(fn q! [x] x) (var f q!) " &
-               "(try ([1] .%f 1) catch CallKindError $ex/where)",
+               "(try ([1] .%f 1) catch CallKindError $err/where)",
                "\"message send\"")
 
   test "a dynamic send requires a message value, not an arbitrary function":
     # (x .%m) / (x .%(expr)) dispatch only: a plain function held in the
     # callee value is rejected, so a dot send never invokes an arbitrary function.
     check_eval("(fn f [x] x) (var m f) " &
-               "(try ([1] .%m) catch CallKindError $ex/expected)",
+               "(try ([1] .%m) catch CallKindError $err/expected)",
                "\"Message\"")
     check_eval("(fn f [x] x) " &
-               "(try ([1] .%(do f)) catch CallKindError $ex/where)",
+               "(try ([1] .%(do f)) catch CallKindError $err/where)",
                "\"message send\"")
 
   test "a qualified send requires a protocol message, not a namespace member":
@@ -4911,13 +4911,13 @@ suite "spec — implicit self in message bodies from design §10":
     # a reliable signal: bare means type-direct, qualified means protocol.
     check_eval("(import $str [join]) " &
                "(try ([\"a\" \"b\"] .%$str/join \"-\") " &
-               "catch CallKindError $ex/expected)",
+               "catch CallKindError $err/expected)",
                "\"Message\"")
     # A built-in operation is type-direct, so it takes the bare form.
     # Neither `Cell/get` nor `Cell:get` is a callable/message spelling.
     check_eval("(var c ($cell 7)) " &
                "[(c .get) " &
-               " (try (c .Cell:get) catch CallKindError $ex/expected)]",
+               " (try (c .Cell:get) catch CallKindError $err/expected)]",
                "[7 \"Protocol\"]")
     check_runtime_error("(Cell/get ($cell 7))", "not a callable path")
 
@@ -4979,7 +4979,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(type Channel ^props {^a Int}) " &
                "[((fn [c : Channel] 3) (Channel ^a 1)) " &
                " (try ((fn [c : Channel] 3) ($channel ^capacity 1)) " &
-               "  catch TypeError $ex/expected)]",
+               "  catch TypeError $err/expected)]",
                "[3 \"Channel\"]")
     # A name that is both a bare library function and a type message names one
     # function value, not two natives that behave alike.
@@ -5017,7 +5017,7 @@ suite "spec — implicit self in message bodies from design §10":
     # name it does not hold is still a MessageError naming the type.
     check_eval("(var c ($cell 1)) " &
                "[(c .get) c/.get " &
-               " (try (c .nope) catch MessageError $ex/receiver_type)]",
+               " (try (c .nope) catch MessageError $err/receiver_type)]",
                "[1 1 \"Cell\"]")
 
   test "every reader-produced shape projects as a node":
@@ -5150,12 +5150,12 @@ suite "spec — implicit self in message bodies from design §10":
                " ((fn [x : Int] x) 7)]",
                "[7 7 7]")
     check_eval("(try ((fn [x : $Int] x) \"s\") " &
-               " catch TypeError $ex/expected)",
+               " catch TypeError $err/expected)",
                "\"gene/Int\"")
     # A path that names nothing is an unknown annotation, not a crash, and it
     # is catchable.
     check_eval("($str/starts_with? " &
-               " (try ((fn [x : $fs/ReadDir] x) nil) catch Error $ex/message) " &
+               " (try ((fn [x : $fs/ReadDir] x) nil) catch Error $err/message) " &
                " \"unknown type annotation\")",
                "true")
 
@@ -5168,7 +5168,7 @@ suite "spec — implicit self in message bodies from design §10":
     # into a type later and quietly make this test vacuous.
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(try (impl Shown for C (message show [] : Str \"x\")) " &
-               " catch TypeError [$ex/where $ex/expected $ex/actual])",
+               " catch TypeError [$err/where $err/expected $err/actual])",
                "[\"impl receiver\" \"Type\" \"Namespace\"]")
     check_runtime_error(
       "(protocol Shown (message show [] : Str)) " &
@@ -5218,7 +5218,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[f {} [1 2] {}]")
     check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
                "[(try (p .set_prop \"b\" 2) " &
-               "  catch Error $ex/message) " &
+               "  catch Error $err/message) " &
                " (p .head) (p .body) (p .props)]",
                "[\"P has no field 'b'\" (type P) [] {^a 1}]")
     # The *annotation* answers exactly what the impl reaches. `Node` is a
@@ -5228,9 +5228,9 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(type P ^props {^a Int}) (enum Color red green) " &
                "(fn takes [n : Node] : Str \"yes\") " &
                "[(takes (quote (f 1 2))) (takes `(tr (td \"x\"))) " &
-               " (try (takes (P ^a 1)) catch TypeError $ex/expected) " &
-               " (try (takes Color/red) catch TypeError $ex/expected) " &
-               " (try (takes 42) catch TypeError $ex/expected)]",
+               " (try (takes (P ^a 1)) catch TypeError $err/expected) " &
+               " (try (takes Color/red) catch TypeError $err/expected) " &
+               " (try (takes 42) catch TypeError $err/expected)]",
                "[\"yes\" \"yes\" \"Node\" \"Node\" \"Node\"]")
     check_eval("(type P ^props {^a Int}) (fn any [x : Any] : Str \"yes\") " &
                "[(any (P ^a 1)) (any 42) (any (quote (f 1)))]",
@@ -5244,7 +5244,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[($leaf? ($head (quote (Declaration ^name \"h\")))) " &
                " (routed? (quote (Declaration ^name \"h\"))) " &
                " (try (routed? (Declaration ^name \"h\")) " &
-               "  catch TypeError $ex/expected)]",
+               "  catch TypeError $err/expected)]",
                "[true true \"Node\"]")
     # An impl on `Node` does not reach a typed instance: `Node` is concrete,
     # not a supertype.
@@ -5252,7 +5252,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(impl Tag for Node (message tag [] : Any (self .head))) " &
                "(type P ^props {^a Int}) " &
                "(try ((P ^a 1) .Tag:tag) " &
-               "catch MessageError $ex/receiver_type)",
+               "catch MessageError $err/receiver_type)",
                "\"P\"")
 
   test "a message in head position normalizes to a send":
@@ -5287,7 +5287,7 @@ suite "spec — implicit self in message bodies from design §10":
     # It answers as a message: Callable, but not a Fn, and it prints as one.
     check_eval("(protocol S (message s [] : Str)) " &
                "[((fn [f : Callable] true) S:s) " &
-               " (try ((fn [f : Fn] true) S:s) catch TypeError $ex/expected)]",
+               " (try ((fn [f : Fn] true) S:s) catch TypeError $err/expected)]",
                "[true \"Fn\"]")
     check_eval("(protocol S (message s [] : Str)) S:s", "(message s)")
     # A held message value still reaches `(x .%m)`, which a function cannot.
@@ -5363,7 +5363,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(impl Eq for Dog (message eq [other : Self] : Bool true)) " &
                "[((Dog ^n \"d\") .Eq:eq (Pup ^n \"p\")) " &
                " (try ((Pup ^n \"p\") .Eq:eq (Dog ^n \"d\")) " &
-               "  catch TypeError $ex/expected)]",
+               "  catch TypeError $err/expected)]",
                "[true true]")
     # Shared defaults get independent conformance-bound signatures.
     check_eval("(protocol Eq (message eq [other : Self] : Bool true)) " &
@@ -5371,7 +5371,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(impl Eq for A) (impl Eq for B) " &
                "[((A ^a 1) .Eq:eq (A ^a 2)) " &
                " (try ((A ^a 1) .Eq:eq (B ^a 2)) " &
-               "  catch TypeError $ex/expected)]",
+               "  catch TypeError $err/expected)]",
                "[true \"A\"]")
     # Annotating the receiver itself is a tautology: accepted, discarded, and
     # builds the same signature as `[self]` — which is what lets a declaration
@@ -5418,7 +5418,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(type B : A ^props {} " &
                "  (message m [] : Str ^^override (super .A:m))) " &
                "(try ((B) .m) " &
-               "catch CallKindError [$ex/where $ex/expected])",
+               "catch CallKindError [$err/where $err/expected])",
                "[\"super send\" \"Protocol\"]")
 
   test "super delegates a protocol message from the nominal parent":
@@ -5455,7 +5455,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(type A ^props {}) " &
                "(type B : A ^props {}) " &
                "(impl P for B (message m [] : Str (super .P:m))) " &
-               "(try ((B) .P:m) catch MessageError $ex/receiver_type)",
+               "(try ((B) .P:m) catch MessageError $err/receiver_type)",
                "\"A\"")
     # `Self:` names no qualifier, so it is exactly the bare super send.
     check_eval("(type A ^props {} (message g [] : Str \"A\")) " &
@@ -5516,12 +5516,12 @@ suite "spec — implicit self in message bodies from design §10":
 
   test "a qualified send with no visible impl raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) (type T ^props {}) " &
-               "(try ((T) .P:m) catch MessageError $ex/protocol)",
+               "(try ((T) .P:m) catch MessageError $err/protocol)",
                "\"P\"")
 
   test "a receiver with no nominal type still raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) " &
-               "(try (nil .P:m) catch MessageError $ex/protocol)",
+               "(try (nil .P:m) catch MessageError $err/protocol)",
                "\"P\"")
 
 suite "spec — respond_to? (design §3)":
@@ -5588,7 +5588,7 @@ suite "spec — absence-guarded sends (design §3)":
     check_eval(guarded & "(nil ?.no_such_message)", "nil")
     check_eval(guarded &
                "(try ((X ^n 1) ?.no_such_message) " &
-               " catch MessageError $ex/message)",
+               " catch MessageError $err/message)",
                "\"no message 'no_such_message' on X\"")
 
   test "a guarded send evaluates its receiver once and skips arguments":
@@ -5609,7 +5609,7 @@ suite "spec — absence-guarded sends (design §3)":
     # docs/spec/protocols.md: Nil is an ordinary nominal type with no dispatch
     # carve-out, so a bare send still fails and an explicit impl still wins.
     check_eval(guarded &
-               "(try (nil .msg) catch MessageError $ex/message)",
+               "(try (nil .msg) catch MessageError $err/message)",
                "\"no message 'msg' on Nil\"")
     # And the two spellings stay distinguishable even then: `.message` dispatches to
     # the Nil impl, `?.message` short-circuits before any lookup. The guard is a
@@ -5675,7 +5675,7 @@ suite "spec — protocol intersection types":
     check_eval(protos & "((fn [a : (& Shown Sized)] \"ok\") (Both))", "\"ok\"")
     check_eval(protos &
                "(try ((fn [a : (& Shown Sized)] \"ok\") (OnlyShown)) " &
-               " catch TypeError $ex/expected)",
+               " catch TypeError $err/expected)",
                "\"(& Shown Sized)\"")
 
   test "intersections compose inside containers and props":
@@ -5685,7 +5685,7 @@ suite "spec — protocol intersection types":
                "(var b (Box ^item (Both))) (var it b/item) " &
                "(it .Shown:show)", "\"b\"")
     check_eval(protos & "(type Box2 ^props {^item (& Shown Sized)}) " &
-               "(try (Box2 ^item (OnlyShown)) catch TypeError $ex/where)",
+               "(try (Box2 ^item (OnlyShown)) catch TypeError $err/where)",
                "\"field 'item' for Box2\"")
     check_eval(protos & "((fn [a : (| Int (& Shown Sized))] \"ok\") (Both))",
                "\"ok\"")
@@ -5848,13 +5848,13 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     # unenumerable, so they stay silent too — pinned, not silently regressed.
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(type N ^props {}) (fn takes [a : Shown] \"ok\") " &
-               "(try (takes (N)) catch TypeError $ex/message)",
+               "(try (takes (N)) catch TypeError $err/message)",
                "\"parameter 'a' expected Shown, got (type N)\"")
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(type H ^props {}) (fn takes [a : Shown] \"ok\") " &
                "(fn hidden [] (impl Shown for H (message show [] : Str \"h\")) " &
                "  (takes (H))) " &
-               "(try (hidden) catch TypeError $ex/message)",
+               "(try (hidden) catch TypeError $err/message)",
                "\"parameter 'a' expected Shown, got (type H)\"")
 
 suite "spec — protocol derive from design":
@@ -6019,7 +6019,7 @@ suite "spec — binding forms from design §12.1":
     # The point of routing every write through one seam: the closed schema and
     # the field types hold for assignment exactly as they do for construction.
     check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) " &
-               "[(try (set t/n \"bad\") catch TypeError $ex/message) t/n]",
+               "[(try (set t/n \"bad\") catch TypeError $err/message) t/n]",
                "[\"field 'n' for T expected Int, got Str\" 1]")
     check_runtime_error("(type T ^props {^n Int}) (var t (T ^n 1)) " &
                         "(set t/bogus 1)", "T has no field 'bogus'")
@@ -6133,13 +6133,13 @@ suite "spec — cells from design":
     check_eval("(var count : (Cell Int) ($cell 1)) " &
                "[(count .set 2) " &
                " (try (count .swap \"bad\") " &
-               "  catch TypeError $ex/where) " &
+               "  catch TypeError $err/where) " &
                " (try (count .update (fn [n] \"bad\")) " &
-               "  catch TypeError $ex/where) " &
+               "  catch TypeError $err/where) " &
                " count/.get]",
                "[2 \"Cell/swap value\" \"Cell/update result\" 2]")
     check_eval("(try (do (var count : (Cell Int) ($cell \"bad\")) count) " &
-               " catch TypeError $ex/expected)",
+               " catch TypeError $err/expected)",
                "\"(Cell Int)\"")
 
   test "typed cell writes use the captured protocol visibility scope":
@@ -6150,7 +6150,7 @@ suite "spec — cells from design":
                "(var item (capture ($cell (Good)))) " &
                "[((item .set (Good)) .head; .name) " &
                " (try (item .set (Bad)) " &
-               "  catch TypeError $ex/where) " &
+               "  catch TypeError $err/where) " &
                " ((item .get) .head; .name)]",
                "[\"Good\" \"Cell/set value\" \"Good\"]")
 
@@ -6158,13 +6158,13 @@ suite "spec — cells from design":
     check_eval("(alias IntCell (Cell Int)) " &
                "(var count : IntCell ($cell 1)) " &
                "[(try (count .set \"bad\") " &
-               "  catch TypeError $ex/where) count/.get]",
+               "  catch TypeError $err/where) count/.get]",
                "[\"Cell/set value\" 1]")
 
   test "typed cells retain their invariant inside container boundaries":
     check_eval("(var counts : (List (Cell Int)) [($cell 1)]) " &
                "[(try (counts/0 .set \"bad\") " &
-               "  catch TypeError $ex/where) (counts/0 .get)]",
+               "  catch TypeError $err/where) (counts/0 .get)]",
                "[\"Cell/set value\" 1]")
 
   test "typed cell mismatches report their retained invariant":
@@ -6174,7 +6174,7 @@ suite "spec — cells from design":
                "(admit_any item) " &
                "(try (require_int item) " &
                " catch TypeError " &
-               "   [$ex/actual $ex/message])",
+               "   [$err/actual $err/message])",
                "[\"(Cell Any)\" " &
                "\"parameter 'cell' expected (Cell Int), got (Cell Any); " &
                "Cell value types are invariant\"]")
@@ -6208,7 +6208,7 @@ suite "spec — mutable containers from design":
 
   test "List/push rejects immutable lists":
     check_eval("(try (#[1] .push 2) " &
-               " catch Error $ex/message)",
+               " catch Error $err/message)",
                "\"cannot mutate immutable List\"")
 
   test "built-in operations are type-direct messages (unqualified and path)":
@@ -6268,7 +6268,7 @@ suite "spec — optionality lives on the type, not the key":
                "[true false]")
   test "Any stays a required field — gradual slack is not optionality":
     check_eval("(type T ^props {^a Any}) " &
-               "(try (T) catch Any $ex/message)",
+               "(try (T) catch Any $err/message)",
                geneString("missing required field 'a' for T"))
   test "an omitted nil-admitting named parameter binds nil":
     check_eval("(fn f [^w : Int?] [(if w 1 0) w]) (f)", "[0 nil]")
@@ -6302,14 +6302,14 @@ suite "spec — streams from design":
 
   test "next on an exhausted stream raises EndOfStream":
     check_eval("(try (var s ($to_stream [])) (s .next) " &
-               "catch EndOfStream $ex/message)",
+               "catch EndOfStream $err/message)",
                "\"end of stream\"")
 
   test "has_next surfaces producer errors without EndOfStream":
     check_eval("(try " &
                "  (var s ($map ($to_stream [1]) (fn [x] (/ 1 0)))) " &
                "  (s .has_next) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"division by zero\"")
 
   test "stream helpers map, filter, take, and materialize":
@@ -6425,12 +6425,12 @@ suite "spec — streams from design":
   test "typed stream boundaries check items when pulled":
     check_eval("(try (fn first [s : (Stream Int Never)] (s .next)) " &
                "     (first ($to_stream [\"bad\"])) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"Stream/next item\"")
     check_eval("(try (fn bad [] : (Stream Int Never) (yield \"bad\")) " &
                "     (var s (bad)) " &
                "     (s .next) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"Stream/next item\"")
 
   test "yield is only valid inside functions":
@@ -6516,10 +6516,10 @@ suite "spec — streams from design":
                "  (fn [x] (calls .update (fn [n] (+ n 1))) " &
                "          (fail (Boom ^message \"boom\"))))) " &
                "(var first (try (s .next) " &
-               "  catch Boom $ex/message)) " &
+               "  catch Boom $err/message)) " &
                "[first (s .has_next) " &
                " (try (s .next) " &
-               "  catch EndOfStream $ex/message) " &
+               "  catch EndOfStream $err/message) " &
                " (calls .get) (closes .get)]",
                "[\"boom\" false \"end of stream\" 1 1]")
     check_eval("(type GenBoom ^props {^message Str} ^impl [Error]) " &
@@ -6532,10 +6532,10 @@ suite "spec — streams from design":
                "(var s (bad)) " &
                "(var first (s .next)) " &
                "(var message (try (s .has_next) " &
-               "  catch GenBoom $ex/message)) " &
+               "  catch GenBoom $err/message)) " &
                "[first message (s .has_next) " &
                " (try (s .peek) " &
-               "  catch EndOfStream $ex/message) " &
+               "  catch EndOfStream $err/message) " &
                " (runs .get)]",
                "[1 \"generator failed\" false \"end of stream\" 1]")
 
@@ -6622,13 +6622,13 @@ suite "spec — streams from design":
                " ((select ^default fallback name) {^name nil})]",
                "[\"unknown\" nil]")
     check_eval("(try ((select ^strict true name) {^age 37}) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"selector lookup failed at segment: name\"")
     check_eval("(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"selector lookup failed at segment: name\"")
     check_eval("(try ((select ^strict true name) {^age 37}) " &
-               "catch SelectorMissing $ex/segment)",
+               "catch SelectorMissing $err/segment)",
                "name")
 
   test "list path sends expose behavior while selectors stay generic":
@@ -6712,7 +6712,7 @@ suite "spec — generic collection operations from design (§6.2)":
     check_eval("([1 2 3 4] .take 2)", "[1 2]")
     check_eval("([1 2] .take 5)", "[1 2]")
     check_eval("([1 2 3] .take 0)", "[]")
-    check_eval("(try ([1 2] .take -1) catch Any $ex/message)",
+    check_eval("(try ([1 2] .take -1) catch Any $err/message)",
                "\"take count must be non-negative\"")
 
   test "into collects an iterable receiver into the target":
@@ -6737,11 +6737,11 @@ suite "spec — generic collection operations from design (§6.2)":
     check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v void)))", "{^a 1 ^b nil}")
 
   test "a receiver with no method raises the send's MessageError":
-    check_eval("(try (42 .map (fn [x] x)) catch MessageError $ex/receiver_type)",
+    check_eval("(try (42 .map (fn [x] x)) catch MessageError $err/receiver_type)",
                "\"Int\"")
-    check_eval("(try ($map 42 (fn [x] x)) catch MessageError $ex/receiver_type)",
+    check_eval("(try ($map 42 (fn [x] x)) catch MessageError $err/receiver_type)",
                "\"Int\"")
-    check_eval("(try (($cell 1) .map (fn [x] x)) catch MessageError $ex/receiver_type)",
+    check_eval("(try (($cell 1) .map (fn [x] x)) catch MessageError $err/receiver_type)",
                "\"Cell\"")
 
   test "a user type joins the generic by declaring the message":
@@ -6752,7 +6752,7 @@ suite "spec — generic collection operations from design (§6.2)":
                "[20 20]")
     check_eval("(type Plain ^props {^v Int}) " &
                "(try ($map (Plain ^v 1) (fn [x] x)) " &
-               "  catch MessageError $ex/receiver_type)",
+               "  catch MessageError $err/receiver_type)",
                "\"Plain\"")
 
   test "a pipeline runs eagerly on a raw List without to_stream":
@@ -6945,7 +6945,7 @@ suite "spec — structured tasks from design":
                "(impl Error for Boom) " &
                "(scope " &
                "  (var t (spawn (fail (Boom ^message \"boom\")))) " &
-               "  (try (await t) catch Boom $ex/message))",
+               "  (try (await t) catch Boom $err/message))",
                "\"boom\"")
 
   test "await propagates task cancellation outside catch":
@@ -6963,7 +6963,7 @@ suite "spec — structured tasks from design":
                "  (scope " &
                "    (spawn (do (ch .recv) (out .set 1))) " &
                "    nil) " &
-               "  catch Any $ex/message) " &
+               "  catch Any $err/message) " &
                "(ch .send 1) " &
                "($sleep 1) " &
                "(out .get)",
@@ -7038,7 +7038,7 @@ suite "spec — structured tasks from design":
                "5")
     check_eval("(scope " &
                "  (fn use [t : (Task Int Never)] " &
-               "    (try (await t) catch TypeError $ex/where)) " &
+               "    (try (await t) catch TypeError $err/where)) " &
                "  (use (spawn \"bad\")))",
                "\"await task result\"")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -7047,9 +7047,10 @@ suite "spec — structured tasks from design":
                "(impl Error for Other) " &
                "(scope " &
                "  (fn use [t : (Task Int Boom)] " &
-               "    (try (await t) catch TypeError $ex/where)) " &
+               "    (try (await t) catch ErrorContractViolation " &
+               "      [$err/where $err/cause/.Error:message])) " &
                "  (use (spawn (fail (Other ^message \"bad\")))))",
-               "\"await task error\"")
+               "[\"Task error\" \"bad\"]")
 
 suite "spec — bounded channels from design":
   test "channels send, receive, and close in FIFO order":
@@ -7059,18 +7060,18 @@ suite "spec — bounded channels from design":
                "(ch .close) " &
                "[(ch .recv) " &
                " (ch .recv) " &
-               " (try (ch .recv) catch ChannelClosed $ex/message)]",
+               " (try (ch .recv) catch ChannelClosed $err/message)]",
                "[1 2 \"channel is closed\"]")
     check_eval("(scope (var ch ($channel ^capacity 1)) " &
                "  (var t (spawn (try (ch .recv) " &
-               "                  catch ChannelClosed $ex/message))) " &
+               "                  catch ChannelClosed $err/message))) " &
                "  (spawn (ch .close)) " &
                "  (await t))",
                "\"channel is closed\"")
     check_eval("(scope (var ch ($channel ^capacity 1)) " &
                "  (ch .send 1) " &
                "  (var t (spawn (try (ch .send 2) " &
-               "                  catch ChannelClosed $ex/message))) " &
+               "                  catch ChannelClosed $err/message))) " &
                "  (spawn (ch .close)) " &
                "  (await t))",
                "\"channel is closed\"")
@@ -7106,7 +7107,7 @@ suite "spec — bounded channels from design":
 
   test "typed channel boundaries check items before enqueue":
     check_eval("(var ch : (Channel Int) ($channel)) " &
-               "(try (ch .send \"bad\") catch TypeError $ex/where)",
+               "(try (ch .send \"bad\") catch TypeError $err/where)",
                "\"Channel/send item\"")
 
   test "channel sends enforce dynamic Send values":
@@ -7128,16 +7129,16 @@ suite "spec — bounded channels from design":
                "(g 7)",
                "7")
     check_eval("(var ch ($channel)) " &
-               "(try (ch .send [1]) catch TypeError $ex/expected)",
+               "(try (ch .send [1]) catch TypeError $err/expected)",
                "\"Send\"")
     check_eval("(var ch ($channel)) " &
                "(try (ch .send #[($cell 1)]) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"Channel/send item\"")
     check_eval("(var ch ($channel)) " &
                "(var captured ($cell 1)) " &
                "(var f (fn [] (captured .get))) " &
-               "(try (ch .send f) catch TypeError $ex/expected)",
+               "(try (ch .send f) catch TypeError $err/expected)",
                "\"Send\"")
 
 suite "spec — actors from design":
@@ -7163,7 +7164,7 @@ suite "spec — actors from design":
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "[((fn [x : Actor] 1) a) ((fn [x : ActorRef] 2) a) " &
                " (try ((fn [x : Actor] 1) 5) " &
-               "  catch TypeError $ex/expected)]",
+               "  catch TypeError $err/expected)]",
                "[1 2 \"Actor\"]")
     # A program may still redeclare `ActorRef` as its own nominal type.
     check_eval("(type ActorRef ^props {^a Int}) " &
@@ -7228,7 +7229,7 @@ suite "spec — actors from design":
                "(counter .send 3) " &
                "(var before (counter .snapshot)) " &
                "(var err (try (counter .upgrade 99) " &
-               "  catch TypeError $ex/where)) " &
+               "  catch TypeError $err/where)) " &
                "(counter .send 2) " &
                "(var after (counter .snapshot)) " &
                "[before/state err after/state]",
@@ -7239,18 +7240,18 @@ suite "spec — actors from design":
                "  ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] ($actor/stop)))) " &
                "(a .send 1) " &
-               "(try (a .send 2) catch ActorClosed $ex/message)",
+               "(try (a .send 2) catch ActorClosed $err/message)",
                "\"actor is closed\"")
 
   test "actor sends require typed Send messages":
     check_eval("(var a : (ActorRef Int) " &
                "  ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-               "(try (a .send \"bad\") catch TypeError $ex/where)",
+               "(try (a .send \"bad\") catch TypeError $err/where)",
                "\"actor/send message\"")
     check_eval("(var a ($actor/spawn ^init (fn [] 0) " &
                "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-               "(try (a .send [1]) catch TypeError $ex/expected)",
+               "(try (a .send [1]) catch TypeError $err/expected)",
                "\"Send\"")
 
   test "actor ask uses an explicit one-shot ReplyTo capability":
@@ -7274,7 +7275,7 @@ suite "spec — actors from design":
                "  (var (Get ^reply reply) msg) " &
                "  (reply .send state) " &
                "  (try (reply .send state) " &
-               "   catch ReplyAlreadySent (out .set $ex/message)) " &
+               "   catch ReplyAlreadySent (out .set $err/message)) " &
                "  ($actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 7) ^handle handle)) " &
@@ -7290,7 +7291,7 @@ suite "spec — actors from design":
                "  (var (Get ^reply reply) msg) " &
                "  (reply .send state) " &
                "  (try (reply .send state) " &
-               "   catch ActorError (out .set $ex/message)) " &
+               "   catch ActorError (out .set $err/message)) " &
                "  ($actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 7) ^handle handle)) " &
@@ -7310,7 +7311,7 @@ suite "spec — actors from design":
                "  (fn (choose result err) [t : (Task result err) fallback : result] " &
                "    fallback) " &
                "  (try (choose (counter .ask (fn [reply] (Get ^reply reply))) \"bad\") " &
-               "       catch TypeError $ex/expected))",
+               "       catch TypeError $err/expected))",
                "\"Int\"")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send for Get) " &
@@ -7340,7 +7341,7 @@ suite "spec — actors from design":
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(var pending (counter .ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
-               "(var err (try (await pending) catch ActorError $ex/message)) " &
+               "(var err (try (await pending) catch ActorError $err/message)) " &
                "(ch .send 7) " &
                "[err ($sleep 1) (out .get)]",
                "[\"actor/ask timed out\" nil 7]")
@@ -7352,17 +7353,17 @@ suite "spec — actors from design":
                "(fn handle [ctx state msg] " &
                "  (var (Get ^reply reply) msg) " &
                "  (var got (ch .recv)) " &
-               "  (try (reply .send got) catch Any $ex/message) " &
+               "  (try (reply .send got) catch Any $err/message) " &
                "  ($actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(var pending (counter .ask ^timeout_ms 5 " &
                "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
-               "(var err (try (await pending) catch ActorError $ex/message)) " &
+               "(var err (try (await pending) catch ActorError $err/message)) " &
                "(var first-late (try ((saved .get) .send 9) " &
-               "                  catch Any $ex/message)) " &
+               "                  catch Any $err/message)) " &
                "(var second-late (try ((saved .get) .send 10) " &
-               "                   catch Any $ex/message)) " &
+               "                   catch Any $err/message)) " &
                "[err first-late second-late])",
                "[\"actor/ask timed out\" nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -7375,7 +7376,7 @@ suite "spec — actors from design":
                "          (reply .send \"bad\") " &
                "          ($actor/continue state)))))) " &
                "(try (await (counter .ask (fn [reply] (Get ^reply reply)))) " &
-               "catch TypeError $ex/where)",
+               "catch TypeError $err/where)",
                "\"ReplyTo/send value\"")
 
   test "scope shutdown cancels pending actor asks":
@@ -7403,7 +7404,7 @@ suite "spec — actors from design":
                "(fn handle [ctx state msg] " &
                "  (var (Get ^reply reply) msg) " &
                "  (var got (ch .recv)) " &
-               "  (try (reply .send got) catch Any $ex/message) " &
+               "  (try (reply .send got) catch Any $err/message) " &
                "  ($actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
@@ -7411,9 +7412,9 @@ suite "spec — actors from design":
                "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
                "(pending .cancel) " &
                "(var first-late (try ((saved .get) .send 9) " &
-               "                  catch Any $ex/message)) " &
+               "                  catch Any $err/message)) " &
                "(var second-late (try ((saved .get) .send 10) " &
-               "                   catch Any $ex/message)) " &
+               "                   catch Any $err/message)) " &
                "[first-late second-late])",
                "[nil \"reply has already been sent\"]")
     expect GeneCancel:
@@ -7451,8 +7452,8 @@ suite "spec — actors from design":
                "  (var a ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
                "  (a .send 1) " &   # restart consumes the budget
-               "  (var second (try (a .send 2) catch Boom $ex/message)) " &
-               "  (var third (try (a .send 3) catch ActorClosed $ex/message)) " &
+               "  (var second (try (a .send 2) catch Boom $err/message)) " &
+               "  (var third (try (a .send 3) catch ActorClosed $err/message)) " &
                "  [second third])",
                "[\"boom\" \"actor is closed\"]")
 
@@ -7631,7 +7632,7 @@ suite "spec — actors from design":
                "    (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
                "    ($sleep 1) " &
                "    \"after\") " &
-               "  catch Boom $ex/message)",
+               "  catch Boom $err/message)",
                "\"bad\"")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -7644,7 +7645,7 @@ suite "spec — actors from design":
                "          ^handle (fn [ctx state msg] " &
                "            (fail (Boom ^message \"bad\"))))) " &
                "        (a .send 7))) " &
-               "    catch Boom $ex/message)) " &
+               "    catch Boom $err/message)) " &
                "(var event (parent-events .recv)) " &
                "[outcome " &
                " (match event " &
@@ -7684,7 +7685,7 @@ suite "spec — Env and eval from design":
                "(var child (base .extend {^y 20})) " &
                "[(eval (quote x) ^in child) " &
                " (eval (quote y) ^in child) " &
-               " (try (eval (quote y) ^in base) catch Any $ex/message)]",
+               " (try (eval (quote y) ^in base) catch Any $err/message)]",
                "[10 20 \"undefined symbol: y\"]")
 
   test "eval sees explicit Env imports before built-ins":
@@ -7714,7 +7715,7 @@ suite "spec — Env and eval from design":
   test "eval rejects ambient imports inside evaluated code":
     check_eval("(try " &
                "  (eval (quote (import [answer] from \"./envlib\")) ^in (env)) " &
-               "catch CompileError $ex/message)",
+               "catch CompileError $err/message)",
                "\"eval cannot use import; add imports to Env\"")
 
   test "the legacy Env capabilities map supplies name bindings":
@@ -7733,7 +7734,7 @@ suite "spec — Env and eval from design":
                "\"fs/ReadDir\"")
     check_eval("(var ch ($channel)) " &
                "(try (ch .send $fs/ReadDir) " &
-               "catch TypeError $ex/expected)",
+               "catch TypeError $err/expected)",
                "\"Send\"")
 
   test "runtime GC stats expose optimization diagnostics":
@@ -7752,17 +7753,17 @@ suite "spec — Env and eval from design":
                "3")
     check_eval("(try (eval (quote (while true nil)) " &
                "           ^in (env ^policy {^max_steps 20})) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"eval max steps exceeded\"")
     check_eval("(eval (quote 1) " &
                " ^in (env ^policy {^max_memory_mb 1}))", "1")
     check_eval("(try (eval (quote 1) " &
                "           ^in (env ^policy {^timeout_ms 0})) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"eval timeout exceeded\"")
     check_eval("(try (eval (quote [1 2 3]) " &
                "           ^in (env ^policy {^max_memory_mb 0})) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"eval memory limit exceeded\"")
     expect GeneError:
       discard run(compileSource("(env ^policy {^allow_ffi true})"),
@@ -7773,7 +7774,7 @@ suite "spec — Env and eval from design":
                "(try (eval (quote (callable)) " &
                "           ^in (env ^bindings {^callable spin} " &
                "                    ^policy {^max_steps 20})) " &
-               "catch Any $ex/message)",
+               "catch Any $err/message)",
                "\"eval max steps exceeded\"")
 
   test "runtime guard_call contains panic only at an explicit boundary":
@@ -7793,12 +7794,12 @@ suite "spec — parser helpers from design":
     check_eval("(import gene/parse [read_all ParseError]) " &
                "(try (read_all \"(a [b)\") false " &
                " catch ParseError " &
-               "   [$ex/line $ex/col " &
-               "    $ex/contexts/0/opener $ex/contexts/0/expected_closer " &
-               "    $ex/contexts/1/opener $ex/contexts/1/expected_closer])",
+               "   [$err/line $err/col " &
+               "    $err/contexts/0/opener $err/contexts/0/expected_closer " &
+               "    $err/contexts/1/opener $err/contexts/1/expected_closer])",
                "[1 6 \"(\" \")\" \"[\" \"]\"]")
     check_eval("(try ($read_all \"(ok) )\") false " &
-               " catch ParseError ($size $ex/contexts))",
+               " catch ParseError ($size $err/contexts))",
                "0")
 
   test "lex_all exposes a token stream":
@@ -8308,7 +8309,7 @@ suite "spec — net/http_client native client contract":
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
                "(try (request ^url \"file:///etc/passwd\") false " &
                " catch HttpClientError " &
-               "   ($str/contains? $ex/message \"http:// or https://\"))",
+               "   ($str/contains? $err/message \"http:// or https://\"))",
                "true")
 
   test "setup errors carry ^kind so fallbacks match only unavailability":
@@ -8317,12 +8318,12 @@ suite "spec — net/http_client native client contract":
     # curl(1) fallback catches only the latter.
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
-               " catch HttpClientError (== $ex/kind \"usage\"))",
+               " catch HttpClientError (== $err/kind \"usage\"))",
                "true")
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError " &
-               "   (if (== $ex/kind \"unavailable\") \"fallback\" \"surfaced\"))",
+               "   (if (== $err/kind \"unavailable\") \"fallback\" \"surfaced\"))",
                geneString("surfaced"))
 
 # Disabled here because spec_runner inherits its caller's terminal: the assertion
@@ -8333,7 +8334,7 @@ suite "spec — net/http_client native client contract":
 #     check_eval("(import $curses [open close dimensions draw read_input " &
 #                "refresh_input escape_pressed? next_event Screen CursesError]) " &
 #                "(try (open) false " &
-#                " catch CursesError ($str/contains? $ex/message \"TTY\"))",
+#                " catch CursesError ($str/contains? $err/message \"TTY\"))",
 #                "true")
 
 suite "spec — structured logging contract":
@@ -8430,7 +8431,7 @@ suite "spec — store persistence protocol":
                "(import $str [byte_size]) " &
                "(byte_size (random_hex 16))", "32")
     check_eval("(import $crypto [random_hex]) " &
-      "(try (random_hex 0) catch Any $ex/message)",
+      "(try (random_hex 0) catch Any $err/message)",
       "\"crypto/random_hex byte count must be between 1 and 1024\"")
 
   test "crypto secure_equal? compares credentials without an early-exit API":
@@ -8451,7 +8452,7 @@ suite "spec — store persistence protocol":
                " (s .Store:has? \"a\") " &
                " (s .Store:has? \"missing\") " &
                " (s .Store:get \"missing\" ^default \"fallback\") " &
-               " (try (s .Store:get \"missing\") catch StoreError $ex/kind)]",
+               " (try (s .Store:get \"missing\") catch StoreError $err/kind)]",
                "[{^x 1} void true false \"fallback\" missing]")
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
@@ -8469,7 +8470,7 @@ suite "spec — store persistence protocol":
                "(var after-clear (s .Store:keys)) " &
                "(s .Store:close) " &
                "[(same? got gene/str/join) before after-delete after-clear " &
-               " (try (s .Store:keys) catch StoreError $ex/kind)]",
+               " (try (s .Store:keys) catch StoreError $err/kind)]",
                "[true [\"fn\" \"n\"] [false [\"fn\"]] [] closed]")
 
   test "filesystem store uses encoded keys and ignores junk files":
@@ -8483,7 +8484,7 @@ suite "spec — store persistence protocol":
                "(s .Store:put \"session:tg/42\" {^x 1}) " &
                "[(s .Store:get \"session:tg/42\") " &
                " (s .Store:keys) " &
-               " (try (s .Store:put \"\" 1) catch StoreError $ex/kind)]",
+               " (try (s .Store:put \"\" 1) catch StoreError $err/kind)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]", dir)
 
   test "filesystem atomic text replacement is capability-gated":
@@ -8519,7 +8520,7 @@ suite "spec — store persistence protocol":
                "(s .Store:checkpoint 1 {^state {^winner 1}}) " &
                "(var conflict " &
                "  (try (s .Store:checkpoint 1 {^state {^winner 2}}) " &
-               "   catch StoreError $ex/kind)) " &
+               "   catch StoreError $err/kind)) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[conflict loaded/records/state/winner]",
                "[conflict 1]")
@@ -8534,7 +8535,7 @@ suite "spec — store persistence protocol":
                "(first .Store:checkpoint 1 {^state {^winner 1}}) " &
                "(var conflict " &
                "  (try (stale .Store:checkpoint 1 {^state {^winner 2}}) " &
-               "   catch StoreError $ex/kind)) " &
+               "   catch StoreError $err/kind)) " &
                "(var loaded (stale .Store:load_checkpoint)) " &
                "[conflict loaded/records/state/winner]",
                "[conflict 1]", dir)
@@ -8550,7 +8551,7 @@ suite "spec — store persistence protocol":
                "  (set n (+ n 1))) " &
                "(var conflict " &
                "  (try (s .Store:checkpoint 1 {^state {^winner 99}}) " &
-               "   catch StoreError $ex/kind)) " &
+               "   catch StoreError $err/kind)) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[conflict loaded/generation loaded/records/state/winner]",
                "[conflict 5 5]")
@@ -8567,7 +8568,7 @@ suite "spec — store persistence protocol":
                "  (set n (+ n 1))) " &
                "(var conflict " &
                "  (try (s .Store:checkpoint 1 {^state {^winner 99}}) " &
-               "   catch StoreError $ex/kind)) " &
+               "   catch StoreError $err/kind)) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[conflict loaded/generation loaded/records/state/winner]",
                "[conflict 5 5]", staleDir)
@@ -8670,9 +8671,9 @@ suite "spec — store persistence protocol":
                "(s .Store:checkpoint 1 {^state 1}) " &
                "(s .Store:put \"checkpoint/CURRENT\" \"broken\") " &
                "[(try (s .Store:load_checkpoint) " &
-               "  catch StoreError $ex/kind) " &
+               "  catch StoreError $err/kind) " &
                " (try (s .Store:checkpoint 2 {^state 2}) " &
-               "  catch StoreError $ex/kind)]",
+               "  catch StoreError $err/kind)]",
                "[corrupt corrupt]")
 
     let dir = getTempDir() / "gene-store-fs-corrupt-current-spec"
@@ -8687,9 +8688,9 @@ suite "spec — store persistence protocol":
     check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "[(try (s .Store:load_checkpoint) " &
-               "  catch StoreError $ex/kind) " &
+               "  catch StoreError $err/kind) " &
                " (try (s .Store:checkpoint 2 {^state 2}) " &
-               "  catch StoreError $ex/kind)]",
+               "  catch StoreError $err/kind)]",
                "[corrupt corrupt]", dir)
 
 suite "spec — capability-gated filesystem watching":
@@ -9273,7 +9274,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(import $str [contains?]) " &
                "(var cyclic [nil]) (cyclic .set 0 cyclic) " &
                "(try (write_data cyclic) " &
-               " catch SerdeError (contains? $ex/message \"cycle\"))",
+               " catch SerdeError (contains? $err/message \"cycle\"))",
                "true")
 
   test "float specials use canonical serde_float forms":
@@ -9312,12 +9313,12 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(import $str [contains?]) " &
                "(try (write_data [1 ($cell 2)]) " &
                "catch SerdeError " &
-               "  [(contains? $ex/message \"at 1:\") " &
-               "   (contains? $ex/message \"not data\")])",
+               "  [(contains? $err/message \"at 1:\") " &
+               "   (contains? $err/message \"not data\")])",
                "[true true]")
     check_eval("(import $serde [write_data SerdeError]) " &
                "(try (write_data {^net $net/Connect}) " &
-               "catch SerdeError $ex/path)",
+               "catch SerdeError $err/path)",
                "\"net\"")
 
   test "serde/data? classifies without raising":
@@ -9344,7 +9345,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(import $str [contains?]) " &
                "(var m {}) (m .put \"self\" m) " &
                "(try (write_data m) " &
-               "catch SerdeError (contains? $ex/message \"cycle\"))",
+               "catch SerdeError (contains? $err/message \"cycle\"))",
                "true")
 
   test "policy limits are enforced and named":
@@ -9352,7 +9353,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 [[[[1]]]])\" " &
                "               ^policy (SerdePolicy ^max_depth 2)) " &
-               "catch SerdeError (contains? $ex/message \"max_depth\"))",
+               "catch SerdeError (contains? $err/message \"max_depth\"))",
                "true")
     let deep = "(serde_v1 " & repeat("[", 20) & "1" & repeat("]", 20) & ")"
     check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
@@ -9360,26 +9361,26 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(try (read_data " & geneString(deep) &
                "               ^policy (SerdePolicy ^max_depth 2)) " &
                "catch SerdeError " &
-               "  (&& (contains? $ex/message \"parse\") " &
-               "      (contains? $ex/message \"max_depth\")))",
+               "  (&& (contains? $err/message \"parse\") " &
+               "      (contains? $err/message \"max_depth\")))",
                "true")
     check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 [1 2 3 4 5])\" " &
                "               ^policy (SerdePolicy ^max_nodes 3)) " &
-               "catch SerdeError (contains? $ex/message \"max_nodes\"))",
+               "catch SerdeError (contains? $err/message \"max_nodes\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 [a b c])\" " &
                "               ^policy (SerdePolicy ^max_symbols 2)) " &
-               "catch SerdeError (contains? $ex/message \"max_symbols\"))",
+               "catch SerdeError (contains? $err/message \"max_symbols\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 nil)\" " &
                "               ^policy (SerdePolicy ^max_bytes 5)) " &
-               "catch SerdeError (contains? $ex/message \"max_bytes\"))",
+               "catch SerdeError (contains? $err/message \"max_bytes\"))",
                "true")
 
   test "envelope versioning is enforced":
@@ -9387,7 +9388,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v2 nil)\") " &
                "catch SerdeError " &
-               "  (contains? $ex/message \"unsupported serde envelope\"))",
+               "  (contains? $err/message \"unsupported serde envelope\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError]) " &
                "(try (read_data \"[1 2]\") " &
@@ -9398,7 +9399,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
     check_eval("(import $serde [read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 (serde_bogus 1))\") " &
-               "catch SerdeError (contains? $ex/message \"serde_bogus\"))",
+               "catch SerdeError (contains? $err/message \"serde_bogus\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError]) " &
                "(try (read_data \"(serde_v1 (serde_range 1 2))\") " &
@@ -9407,17 +9408,17 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
     check_eval("(import $serde [read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 (serde_map false [\\\"a\\\" 1 \\\"a\\\" 2]))\") " &
-               "catch SerdeError (contains? $ex/message \"duplicate key\"))",
+               "catch SerdeError (contains? $err/message \"duplicate key\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 (serde_set 1 1))\") " &
-               "catch SerdeError (contains? $ex/message \"duplicate\"))",
+               "catch SerdeError (contains? $err/message \"duplicate\"))",
                "true")
     check_eval("(import $serde [read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data \"(serde_v1 (serde_set [1]))\") " &
-               "catch SerdeError (contains? $ex/message \"hash-stable\"))",
+               "catch SerdeError (contains? $err/message \"hash-stable\"))",
                "true")
 
 suite "spec — serde references (stage 3)":
@@ -9441,14 +9442,14 @@ suite "spec — serde references (stage 3)":
     check_eval("(import $serde [write_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (write_data gene/str/join) " &
-               "catch SerdeError (contains? $ex/message \"not data\"))",
+               "catch SerdeError (contains? $err/message \"not data\"))",
                "true")
 
   test "read_data refuses reference tags":
     check_eval("(import $serde [write read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data (write gene/str/join)) " &
-               "catch SerdeError (contains? $ex/message \"serde/read\"))",
+               "catch SerdeError (contains? $err/message \"serde/read\"))",
                "true")
 
   test "unresolved module reference errors without loading":
@@ -9456,7 +9457,7 @@ suite "spec — serde references (stage 3)":
                "(import $str [contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^module \\\"no/such\\\" " &
                "^path \\\"X\\\"))\") " &
-               "catch SerdeError (contains? $ex/message \"not loaded\"))",
+               "catch SerdeError (contains? $err/message \"not loaded\"))",
                "true")
 
   test "reserved ref props are rejected":
@@ -9464,14 +9465,14 @@ suite "spec — serde references (stage 3)":
                "(import $str [contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^package \\\"p\\\" " &
                "^path \\\"X\\\"))\") " &
-               "catch SerdeError (contains? $ex/message \"reserved\"))",
+               "catch SerdeError (contains? $err/message \"reserved\"))",
                "true")
 
   test "a reference resolving to the wrong kind errors":
     check_eval("(import $serde [read SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^path \\\"gene/str/join\\\"))\") " &
-               "catch SerdeError (contains? $ex/message \"not the expected kind\"))",
+               "catch SerdeError (contains? $err/message \"not the expected kind\"))",
                "true")
 
   test "cells snapshot through serde/write, outside the equality guarantee":
@@ -9484,19 +9485,19 @@ suite "spec — serde references (stage 3)":
     check_eval("(import $serde [write_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (write_data ($cell 1)) " &
-               "catch SerdeError (contains? $ex/message \"not data\"))",
+               "catch SerdeError (contains? $err/message \"not data\"))",
                "true")
     check_eval("(import $serde [write read_data SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read_data (write ($cell 1))) " &
-               "catch SerdeError (contains? $ex/message \"read_data\"))",
+               "catch SerdeError (contains? $err/message \"read_data\"))",
                "true")
 
   test "atomic cells never serialize":
     check_eval("(import $serde [write SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (write ($atomic_cell 1)) " &
-               "catch SerdeError (contains? $ex/message \"atomic\"))",
+               "catch SerdeError (contains? $err/message \"atomic\"))",
                "true")
 
 suite "spec — qualified message spelling":
@@ -9513,13 +9514,13 @@ suite "spec — qualified message spelling":
   test "a type cannot qualify a direct message send":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(try ((Dog) .Dog:bark) " &
-               "catch CallKindError [$ex/where $ex/expected])",
+               "catch CallKindError [$err/where $err/expected])",
                "[\"message send\" \"Protocol\"]")
 
   test "a type cannot qualify a message value":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(try Dog:bark " &
-               "catch CallKindError [$ex/where $ex/expected])",
+               "catch CallKindError [$err/where $err/expected])",
                "[\"message value\" \"Protocol\"]")
 
   test "Self:msg is the value spelling for a type-direct message":
@@ -9892,7 +9893,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(type NotAnEvent ^props {^x Int}) " &
       "(var bus ($event/Bus)) " &
       "(try (bus .publish (NotAnEvent ^x 1)) " &
-      "  catch EventTypeError $ex/message)",
+      "  catch EventTypeError $err/message)",
       "\"publish expects an event/Event descendant, got type NotAnEvent; " &
       "declare the event type with : $event/Event\"")
 
@@ -9979,7 +9980,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(fn narrow [e : order/Placed] e) " &
       "(var bus ($event/Bus)) " &
       "(try (bus .subscribe order/Event narrow) " &
-      "  catch EventTypeError $ex/message)",
+      "  catch EventTypeError $err/message)",
       "\"handler parameter type Placed cannot accept every event Event " &
       "matches; widen the parameter to Event or subscribe to Placed instead\"")
 
@@ -9998,7 +9999,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(fn h [e] e) " &
       "(var bus ($event/Bus)) " &
       "(try (bus .subscribe NotAnEvent h) " &
-      "  catch EventTypeError $ex/message)",
+      "  catch EventTypeError $err/message)",
       "\"subscribe expects an event/Event descendant type, a union of them, " &
       "or an event/Matcher from event/exact\"")
 
@@ -10093,9 +10094,9 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(bus .subscribe Ping recurse) " &
       "(try (bus .publish (Ping)) " &
       "  catch EventPublishError " &
-      "    (var inner $ex/errors/.first) " &
+      "    (var inner $err/errors/.first) " &
       "    (var innermost inner/errors/.first) " &
-      "    [$ex/errors/.size innermost/limit])",
+      "    [$err/errors/.size innermost/limit])",
       "[1 2]")
 
   test "handler failures do not prevent later handlers from running":
@@ -10119,7 +10120,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(bus .subscribe Ping boom) " &
       "(try (bus .publish (Ping)) " &
       "  catch EventPublishError " &
-      "    [$ex/failed $ex/errors/.size])",
+      "    [$err/failed $err/errors/.size])",
       "[1 1]")
 
   test "EventSink:emit reports handler failures under collect too":
@@ -10132,7 +10133,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(bus .subscribe Ping boom) " &
       "(var collected (bus .publish (Ping))) " &
       "(var emitted (try (bus .EventSink:emit (Ping)) " &
-      "  catch EventPublishError $ex/failed)) " &
+      "  catch EventPublishError $err/failed)) " &
       "[collected/failed emitted]",
       "[1 1]")
 
@@ -10272,7 +10273,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(fn narrow [e : order/Placed] e) " &
       "(var bus ($event/Bus)) " &
       "(try (bus .subscribe (| order/Placed order/Shipped) narrow) " &
-      "  catch EventTypeError $ex/message)",
+      "  catch EventTypeError $err/message)",
       "\"handler parameter type Placed cannot accept every event Shipped " &
       "matches; widen the parameter to Shipped or subscribe to Placed " &
       "instead\"")
@@ -10285,7 +10286,7 @@ suite "spec — application event bus (docs/stdlib.md)":
 
   test "a bus cannot be frozen, sent, or published as an event":
     check_eval(
-      "(try ($freeze ($event/Bus)) catch Error $ex/message)",
+      "(try ($freeze ($event/Bus)) catch Error $err/message)",
       "\"freeze cannot freeze event/Bus\"")
 
   test "a bus is lane-owned and usable from any fiber on that lane":

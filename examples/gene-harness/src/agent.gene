@@ -162,7 +162,7 @@
       (try
         (invoke_registry_row h "tools" name [probe])
       catch Any
-        (set problem ($to_str $ex/message)))))
+        (set problem ($to_str $err/message)))))
   (if (== problem "") status $"${status}; first call raised: ${problem}"))
 
 (fn tool_names [h : Harness] : Any
@@ -283,7 +283,7 @@
     (try
       ((resolve h "HarnessPrompt") .HarnessPrompt:handle h prompt)
     catch Any
-      $"error: ${$ex/message}"))
+      $"error: ${$err/message}"))
   (if_yes (!= out "") (log_append h "output" out))
   (flush_harness h)
   out)

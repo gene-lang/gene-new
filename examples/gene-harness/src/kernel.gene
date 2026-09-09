@@ -387,7 +387,7 @@
     (try
       (remove_registry_row h owned/%i)
     catch Any
-      (errors .push ($to_str $ex/message)))
+      (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
   (for [name r] in ((active_registries_cell h) .get)
@@ -412,7 +412,7 @@
     (try
       (remove_registry_row h records/%i/row_id)
     catch Any
-      (errors .push ($to_str $ex/message)))
+      (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (var registries_cell (active_registries_cell h))
   (var registries (registries_cell .get))
@@ -596,7 +596,7 @@
       (try
         (cleanup_transaction_row h tx row_id)
       catch Any
-        (errors .push $ex/message)))
+        (errors .push $err/message)))
     (set i (- i 1)))
   (for context in contexts_to_release (release_plugin_context context))
   (h/transaction .set nil)
@@ -632,7 +632,7 @@
           [(callback_receiver h deferred/hook_owner)
            deferred/record/payload])
       catch Any
-        (errors .push $ex/message))))
+        (errors .push $err/message))))
   # Cleanup ran with baseline owner policies/contexts. Publish the staged
   # policy table only now, then expire contexts belonging to removed plugins.
   (h/plugin_policies .set (tx/plugin_policies .get))
@@ -661,7 +661,7 @@
     committed
   catch Any
     (var aborted (abort_turn h tx))
-    (aborted .put "error" $ex)
+    (aborted .put "error" $err)
     (record_turn_end h id "aborted")
     (flush_harness h)
     aborted
@@ -1344,7 +1344,7 @@
       (invoke_owned_callable h p/id deactivation [policy/context])
       true
       catch Any
-      (log_append h "lifecycle" $"deactivate ${p/id} failed: ${$ex/message}")
+      (log_append h "lifecycle" $"deactivate ${p/id} failed: ${$err/message}")
       false)))
 
 (fn promote [h : Harness, id : Str]
@@ -1390,9 +1390,9 @@
     # cannot investigate.
     (unwind h id)
     (((active_status_cell h) .get) .put id "error")
-    (((active_plugin_errors_cell h) .get) .put id ($to_str $ex/message))
-    (log_append h "lifecycle" $"activate ${id} failed: ${$ex/message}")
-    (notify h (PluginFailed ^plugin id ^message ($to_str $ex/message)))
+    (((active_plugin_errors_cell h) .get) .put id ($to_str $err/message))
+    (log_append h "lifecycle" $"activate ${id} failed: ${$err/message}")
+    (notify h (PluginFailed ^plugin id ^message ($to_str $err/message)))
   ensure
     (if_yes (&& (!= context nil) (! activated))
       (release_plugin_context context))))
@@ -1517,7 +1517,7 @@
   catch Any
     (policies .delete p/id)
     ((active_plugin_policies_cell h) .set policies)
-    (fail $ex)))
+    (fail $err)))
 
 (fn uninstall [h : Harness, id : Str] : Str
   (var plugins ((active_plugins_cell h) .get))
@@ -1582,7 +1582,7 @@
       (if_yes ($str/contains? result "recovery_required")
         (errors .push result))
     catch Any
-      (errors .push ($to_str $ex/message)))
+      (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (flush_harness h)
   {^status (if (== errors/.size 0) "closed" "recovery_required")

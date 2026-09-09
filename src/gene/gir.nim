@@ -8,6 +8,7 @@ import std/[sets, strutils, tables]
 import ./[capabilities, printer, types]
 
 const
+  MaxInferredReturnDepth* = 8
   PipelineTargetName* = "\x00gene_prepared_target"
   PipelineMessageName* = "\x00gene_prepared_message"
   PipelineArgumentsName* = "\x00gene_prepared_arguments"
@@ -252,6 +253,78 @@ type
     typeExpr*: Value
     defaultValue*: ParamDefault
 
+  ErrorCheckMode* = enum
+    ecmDynamic
+    ecmWarn
+    ecmStrict
+
+  ErrorTypeSummary* = object
+    ## Source declaration identity, not a printed nominal name. Runtime proof
+    ## admission additionally resolves expr in the owning declaration scope.
+    identity*: string
+    name*: string
+    expr*: Value
+    ancestors*: seq[string]
+
+  ErrorEffectSummary* = object
+    open*: bool
+    named*: seq[ErrorTypeSummary]
+
+  ErrorOrigin* = object
+    declaration*: string
+    callee*: string
+    loc*: SourceLoc
+
+  ErrorProofDependency* = object
+    target*: Value
+    nativeMetadata*: NativeErrorMetadata
+    returnDepth*: int # zero: invocation; positive: result after this many calls
+    returnKind*: string # callable, task, or stream when consuming an inferred result
+    returnKindOnly*: bool # classification is needed, but deferred errors are not consumed
+    returnTaskFresh*: bool
+    returnTaskIsolated*: bool
+    returnNativeMetadata*: NativeErrorMetadata
+    returnTypeIdentity*: string
+    returnTypeContract*: string
+    returnMessageIdentity*: string
+    typeIdentityOnly*: bool
+    constructorCall*: bool
+    messageName*: string
+    typeDepth*: int # nominal parent steps from target to the declaring type
+    producer*: string
+    permitted*: ErrorEffectSummary
+    loc*: SourceLoc
+
+  ErrorReturnContract* = object
+    kind*: string
+    errorsKnown*: bool
+    errors*: ErrorEffectSummary
+    valueType*: Value
+    nativeMetadata*: NativeErrorMetadata
+    typeIdentity*: string
+    typeContract*: string
+    messageIdentity*: string
+    taskFresh*: bool
+    taskIsolated*: bool
+
+  CallableErrorSummary* = ref object
+    name*: string
+    identity*: string
+    version*: string
+    declared*: bool
+    declaredRow*: ErrorEffectSummary
+    inferredRow*: ErrorEffectSummary
+    producerRow*: ErrorEffectSummary
+    resultType*: Value
+    inferredResultType*: Value
+    receiverType*: ErrorTypeSummary # declaring Self binding for concrete methods/ctors
+    resultKind*: string
+    resultErrorsKnown*: bool
+    resultErrors*: ErrorEffectSummary
+    returnContracts*: seq[ErrorReturnContract] # bounded, acyclic chain of returned callables/values
+    origins*: seq[ErrorOrigin]
+    dependencies*: seq[ErrorProofDependency]
+
   FunctionProto* {.acyclic.} = ref object of FunctionCode
     name*: string
     sourceLoc*: SourceLoc
@@ -304,6 +377,10 @@ type
     aotFrameCanSuspend*: bool
     taskFrameKind*: TaskFrameKind
     checksErrors*: bool
+    builtinErrorMessage*: bool # private origin of Error's default backing-field accessor
+    errorsMode*: ErrorCheckMode
+    errorSummary*: CallableErrorSummary
+    publicErrorInterface*: bool
     errorTypeCount*: int
     capabilityRow*: CapabilityRow
     boundExecutionPolicy*: ModuleExecutionPolicy
@@ -358,11 +435,20 @@ type
     cbcProtocol
     cbcNamespace
 
+  CompileImplInterface* = object
+    protocolIdentity*: string
+    receiverIdentity*: string
+
   CompileNamespaceInterface* = ref object
     ## Static, guaranteed exports for one module/namespace scope. Interfaces
     ## are compiler input: runtime-only/conditional declarations never enter
     ## this tree.
     entries*: Table[string, CompileInterfaceEntry]
+    initializationErrorsKnown*: bool
+    initializationErrors*: ErrorEffectSummary
+    errorSummaryVersion*: string
+    exportedImplsKnown*: bool
+    exportedImpls*: seq[CompileImplInterface]
 
   CompileInterfaceEntry* = object
     category*: CompileBindingCategory
@@ -375,6 +461,12 @@ type
     ## `^repr` and `^props`, so the header path needs the whole declaration to
     ## apply the same rules the compiler does.
     typeForm*: Value
+    callableErrors*: CallableErrorSummary
+    constructorErrors*: CallableErrorSummary
+    messageErrorsKnown*: bool
+    messageErrors*: Table[string, CallableErrorSummary]
+    protocolMessageErrors*: seq[CallableErrorSummary] # full identity closure, including shadowed names
+    errorType*: ErrorTypeSummary
 
   ImportSpec* = object
     fromModule*: bool                 # true: `from "path"`; false: namespace path
@@ -551,7 +643,7 @@ type
 
   CatchClause* = object
     errorType*: Value            # source-level type following `catch`
-    pattern*: Value              # internal typed `$ex` binding pattern
+    pattern*: Value              # internal typed `$err` binding pattern
     body*: Chunk
 
   TryProto* = ref object
@@ -694,6 +786,11 @@ type
   # pragma each release-not-to-zero registers an ORC cycle candidate.
   Chunk* {.acyclic.} = ref object
     sourceName*: string
+    errorsMode*: ErrorCheckMode
+    initializationErrors*: ErrorEffectSummary
+    errorSummaryVersion*: string
+    errorProofDependencies*: seq[ErrorProofDependency]
+    errorChecksComplete*: bool
     constants*: seq[Value]
     instructions*: seq[Instruction]
     instructionLocs*: seq[SourceLoc]
@@ -706,6 +803,7 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
+    immutableBindings*: seq[string]
     moduleRefNames*: seq[string] # predeclared before source-unit execution
     exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports
     subchunks*: seq[Chunk]       # bodies of `ns` declarations

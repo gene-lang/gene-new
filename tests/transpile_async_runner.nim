@@ -55,11 +55,12 @@ let collisionPath = workDir / "cancel_collision.gene"
 writeFile(collisionPath, """
 (mod cancel_collision ^profile web)
 (type AppError ^props {^kind Str})
-(impl Error for AppError)
+(impl Error for AppError
+  (message message [] : Str ^errors [] self/kind))
 (fn boom [] : Never
   (fail (AppError ^kind "gene_cancellation")))
 (fn caught [] : Str
-  (try (boom) catch AppError $ex/kind))
+  (try (boom) catch AppError $err/kind))
 """)
 writeFile(workDir / "async_host.mjs", """
 export let marks = 0;

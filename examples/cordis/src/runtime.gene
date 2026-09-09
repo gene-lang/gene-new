@@ -642,7 +642,7 @@
               (task .detach))
             (finish_host_request request)
           catch Any
-            (request/error .set $ex)
+            (request/error .set $err)
             (finish_host_request request))))
       (set pending (fresh_list)))
   ensure
@@ -978,7 +978,7 @@
                    instance/plugin/config_schema [frozen]))
   catch Any
     (plugin_error ConfigValidationError
-      $"config validation failed for ${instance/plugin/id}" instance $ex)))
+      $"config validation failed for ${instance/plugin/id}" instance $err)))
 
 (fn runtime_install ^^private
   [handle : Runtime, context_handle_value, plugin, config, entry_id]
@@ -1138,9 +1138,9 @@
       (record_diagnostic instance/runtime "cleanup_failed"
                          instance cleanup_error))
     (instance/root_effect .set nil)
-    (instance/error .set $ex)
+    (instance/error .set $err)
     (instance/state .set InstanceState/failed)
-    (record_diagnostic instance/runtime "activation_failed" instance $ex)))
+    (record_diagnostic instance/runtime "activation_failed" instance $err)))
 
 (fn await_transition_task ^^private [instance]
   (var task (instance/transition .get))
@@ -1280,7 +1280,7 @@
         {^terminal config_update_terminal}))
   catch Any
     (plugin_error ConfigValidationError
-      "config_update hook rejected the candidate" instance $ex))
+      "config_update hook rejected the candidate" instance $err))
   (set checked (validate_instance_config instance checked))
   (instance/config .set checked)
   (instance/error .set nil)
@@ -1424,7 +1424,7 @@
         (when "instance" (dispose_owned_instance_record entry/record))
         (else nil))
     catch Any
-      (errors .push $ex)))
+      (errors .push $err)))
   (scope/entries .set (fresh_list))
   (scope/value .set nil)
   (if (== errors/.size 0) (return nil))
@@ -1469,7 +1469,7 @@
     (dispose_effect_record child false)
     (remove_effect_entry parent "effect" child/token)
     (plugin_error PluginActivationError
-      $"effect ${label} acquisition failed" parent/owner $ex)))
+      $"effect ${label} acquisition failed" parent/owner $err)))
 
 (fn effect_lease_value ^^private [handle : EffectLease]
   (var record (effect_record handle))
@@ -1553,7 +1553,7 @@
                  key/check [value] nil false context)
   catch Any
     (plugin_error ServiceContractError
-      $"service ${key/id} failed its conformance gate" instance $ex)))
+      $"service ${key/id} failed its conformance gate" instance $err)))
 
 (fn evaluate_availability ^^private [provider] : Bool
   (if (absent? provider/availability) (return true))
@@ -1569,7 +1569,7 @@
     answer
   catch Any
     (record_diagnostic provider/runtime "availability_failed"
-                       provider/owner $ex)
+                       provider/owner $err)
     false))
 
 (fn owner_provide ^^private [owner, candidate, value, availability]
@@ -1677,7 +1677,7 @@
                                key/merge_config [merged config]))
       catch Any
         (cordis_failure ConfigValidationError
-          $"service ${key/id} config merge failed" $ex
+          $"service ${key/id} config merge failed" $err
           (if (absent? context/owner) nil context/owner/plugin/id)
           (if (absent? context/owner) nil context/owner/uid)
           (if (absent? context/owner) nil context/owner/entry_id)))))
@@ -1690,7 +1690,7 @@
                                key/config_schema [merged])))
     catch Any
       (cordis_failure ConfigValidationError
-        $"service ${key/id} config validation failed" $ex
+        $"service ${key/id} config validation failed" $err
         (if (absent? context/owner) nil context/owner/plugin/id)
         (if (absent? context/owner) nil context/owner/uid)
         (if (absent? context/owner) nil context/owner/entry_id))))
@@ -1702,7 +1702,7 @@
                          key/check [value])
   catch Any
     (cordis_failure ServiceContractError
-      $"bound service ${key/id} failed its conformance gate" $ex
+      $"bound service ${key/id} failed its conformance gate" $err
       (if (absent? context/owner) nil context/owner/plugin/id)
       (if (absent? context/owner) nil context/owner/uid)
       (if (absent? context/owner) nil context/owner/entry_id))))
@@ -1736,7 +1736,7 @@
           [provider/value provider/definition_context handle config]))
     catch Any
       (cordis_failure ServiceContractError
-        $"service ${key/id} binding failed" $ex
+        $"service ${key/id} binding failed" $err
         (if (absent? context/owner) nil context/owner/plugin/id)
         (if (absent? context/owner) nil context/owner/uid)
         (if (absent? context/owner) nil context/owner/entry_id))))
@@ -1843,7 +1843,7 @@
                  record/handler [payload] nil false record/context)
   catch Any
     (plugin_error HookDispatchError
-      $"hook ${record/hook/id} handler failed" record/owner $ex)))
+      $"hook ${record/hook/id} handler failed" record/owner $err)))
 
 (fn bailed? ^^private [value] : Bool
   (&& (! (absent? value)) (!= value false)))
@@ -1869,7 +1869,7 @@
                        record/handler [payload] nil false record/context)
         catch Any
           (plugin_error HookDispatchError
-            $"hook ${record/hook/id} handler failed" record/owner $ex)))))
+            $"hook ${record/hook/id} handler failed" record/owner $err)))))
   (var errors (fresh_list))
   (for task in tasks
     (match (task .join)
@@ -1916,7 +1916,7 @@
                  record/handler [payload handle] nil false record/context)
   catch Any
     (plugin_error HookDispatchError
-      $"waterfall hook ${hook/id} handler failed" record/owner $ex)))
+      $"waterfall hook ${hook/id} handler failed" record/owner $err)))
 
 (fn waterfall_continue ^^private [handle : WaterfallContinuation, call]
   (var record (continuation_record handle))
@@ -1973,7 +1973,7 @@
                                hook/payload_schema [checked])))
     catch Any
       (cordis_failure HookDispatchError
-        $"hook ${hook/id} payload validation failed" $ex)))
+        $"hook ${hook/id} payload validation failed" $err)))
   (var handlers (hook_snapshot context hook subject))
   (match hook/mode
     (when HookMode/emit (dispatch_emit handlers checked))
@@ -2101,7 +2101,7 @@
   (for loader in (copy_list (runtime/loaders .get))
     (try (loader_dispose (Loader ^token loader/token)) catch Any
       ((runtime/diagnostics .get) .push
-        {^kind "loader_close_failed" ^message $ex/message})))
+        {^kind "loader_close_failed" ^message $err/message})))
   (var remaining true)
   (while remaining
     (set remaining false)
@@ -2411,7 +2411,7 @@
   (var plugin
     (try module/plugin catch Any
       (cordis_failure CompositionError
-        $"entry ${row/id} module must export one plugin binding" $ex)))
+        $"entry ${row/id} module must export one plugin binding" $err)))
   (validate_plugin_spec loader/runtime plugin)
   (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
     (cordis_failure CompositionError
@@ -2437,7 +2437,7 @@
   catch Any
     (transaction .discard)
     (cordis_failure CompositionError
-      $"entry ${row/id} preparation failed" $ex))
+      $"entry ${row/id} preparation failed" $err))
   (transaction .commit)
   (var instance nil)
   (try
@@ -2447,7 +2447,7 @@
   catch Any
     (prepared/generation .release)
     (cordis_failure CompositionError
-      $"entry ${row/id} installation failed" $ex))
+      $"entry ${row/id} installation failed" $err))
   ((loader/generations .get) .push prepared/generation)
   (loader_entry_from_source loader row context prepared instance))
 
@@ -3015,7 +3015,7 @@
     (if (&& (! (absent? entry/generation))
             (! (generation_reused? staged/entries entry/generation)))
       (try (entry/generation .release) catch Any
-        (retirement_errors .push $ex))))
+        (retirement_errors .push $err))))
   (live/contexts .set contexts)
   # Old unload removes reservations sharing preserved uids; reconstruct the
   # committed indexes after retirement.
@@ -3069,7 +3069,7 @@
     (discard_candidate_runtime candidate)
     (transaction .discard)
     (cordis_failure CompositionError
-      "staged composition rejected before publication" $ex))
+      "staged composition rejected before publication" $err))
   (var changed (staged_changed_ids old_entries staged/entries))
   # Gene publishes every prepared module graph first; the following Cordis
   # table replacement is a non-yielding turn containing no plugin call.
@@ -3118,7 +3118,7 @@
     (transaction .discard)
     (cordis_failure ReloadRejected
       "stop_start reload preparation failed; old composition remains live"
-      $ex))
+      $err))
   # The reduced guarantee begins only after every module descriptor validates.
   (transaction .commit)
   (for [id entry] in old_entries
@@ -3200,7 +3200,7 @@
     (loader/manifest .set ($freeze manifest))
     (loader/generations .set generations)
     (cordis_failure RecoveryRequired
-      "stop_start reload failed after old composition teardown" $ex))
+      "stop_start reload failed after old composition teardown" $err))
   (for [id old] in old_entries
     (if (&& (! (absent? old/generation))
             (! (generation_reused? next_entries old/generation)))
@@ -3231,7 +3231,7 @@
       {^affected affected ^old old_digests ^new new_digests} nil)
   catch Any
     (cordis_failure RecoveryRequired
-      "reload published but hmr_reloaded hook failed" $ex)))
+      "reload published but hmr_reloaded hook failed" $err)))
 
 (fn loader_reload ^^private [handle : Loader, changed_paths]
   (var loader (loader_record handle))
@@ -3270,10 +3270,10 @@
     (set snapshot
       (loader_reconcile_staged loader manifest rows affected))
   catch RecoveryRequired
-    (fail $ex)
+    (fail $err)
   catch Any
     (cordis_failure ReloadRejected
-      "hot reload candidate was rejected; old composition remains live" $ex))
+      "hot reload candidate was rejected; old composition remains live" $err))
   (emit_hmr_reloaded loader affected old_digests
                      (entry_root_digests loader affected))
   ($freeze {^status "reloaded" ^affected affected ^composition snapshot}))

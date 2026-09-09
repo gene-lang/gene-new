@@ -56,7 +56,7 @@ proc geneEvalSource(src: string): GeneResult =
     result.text = e.msg
   except GeneError as e:
     result.status = 1
-    result.text = e.msg
+    result.text = errorDiagnosticMessage(e, scope)
   except CatchableError as e:
     result.status = 1
     result.text = e.msg
@@ -116,9 +116,22 @@ proc geneResultFree(handle: cint) {.exportc: "gene_result_free".} =
 
 # Nim's module init (`NimMain`) runs global `let` initializers — including the
 # `TRUE`/`FALSE`/`VOID` singletons. It must execute before any export is called,
-# or those singletons read as zero (i.e. `nil`). Emscripten runs the generated C
-# `_main` at module instantiation when it is exported (INVOKE_RUN, on by
-# default), which guarantees NimMain runs before the ABI exports are callable.
-proc main() =
-  discard
-main()
+# or those singletons read as zero (i.e. `nil`). Emscripten invokes the C
+# `_main` shim below at module instantiation. Compile with --noMain:
+# ordinary executable startup destroys Nim globals on return, while this VM
+# must remain usable through the ABI until the host releases the wasm module.
+when not compileOption("noMain"):
+  {.error: "gene_wasm requires --noMain; use the nimble wasm task".}
+
+{.emit: """
+void NimMain(void);
+int cmdCount;
+char **cmdLine;
+char **gEnv;
+int main(int argc, char **argv) {
+  cmdCount = argc;
+  cmdLine = argv;
+  NimMain();
+  return 0;
+}
+""".}

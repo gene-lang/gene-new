@@ -81,7 +81,7 @@
       (build_tool bare "gamma" "hello")
       ""
     catch Any
-      ($to_str $ex/message)))
+      ($to_str $err/message)))
   (assert ($str/contains? refused "HarnessCodegen")
     "build without a codegen provider must name the seam it could not resolve")
 

@@ -117,6 +117,8 @@ type
     async*: bool
     publicExport*: bool
     namespacePath*: seq[string]
+    checkedErrors*: bool
+    errorTypes*: seq[WebType]
 
   WebNamespace* = ref object
     sourceName*: string
@@ -160,12 +162,16 @@ type
     sourceForm: Value
     declaresOverride*: bool
     annotationSelf*: WebType
+    checkedErrors*: bool
+    errorTypes*: seq[WebType]
 
   WebConstructor* = ref object
     params*: seq[WebParam]
     body*: WebExpr
     loc*: SourceLoc
     sourceForm: Value
+    checkedErrors*: bool
+    errorTypes*: seq[WebType]
 
   WebTypeDecl* = ref object
     sourceName*: string
@@ -233,6 +239,8 @@ type
     inheritedTargetName*: string
     defaultBody*: bool
     annotationSelf*: WebType
+    checkedErrors*: bool
+    errorTypes*: seq[WebType]
 
   WebImplDecl* = ref object
     protocolName*: string
@@ -342,6 +350,7 @@ type
     enumDecls: Table[string, WebEnumDecl]
     protocolDecls: Table[string, WebProtocolDecl]
     errorTypes: HashSet[string]
+    contractTypeValues: Table[string, Value]
     protocolImplTargets: HashSet[string]
     currentTypeName: string
     annotationSelf: WebType
@@ -537,11 +546,14 @@ proc sameType(a, b: WebType): bool =
   of wtkCallback:
     if a.name != b.name: return false
     if a.params.len != b.params.len or a.namedKeys != b.namedKeys or
+        a.checkedErrors != b.checkedErrors or a.errorTypes.len != b.errorTypes.len or
         not sameType(a.returnType, b.returnType):
       return false
     for i in 0 ..< a.params.len:
       if a.callbackParamOptional(i) != b.callbackParamOptional(i) or
           not sameType(a.params[i], b.params[i]): return false
+    for i in 0 ..< a.errorTypes.len:
+      if not sameType(a.errorTypes[i], b.errorTypes[i]): return false
     true
   of wtkCallable:
     if a.name != b.name or a.params.len != b.params.len or a.namedKeys != b.namedKeys or
@@ -779,7 +791,9 @@ proc tsType(typ: WebType): string =
   of wtkGl: "WebGL2RenderingContext"
   of wtkGlObject: glObjectTsType(typ.name)
   of wtkNominal:
-    if typ.name in ["Call", "RuntimeError", "MessageError"]: "GeneNode"
+    if typ.name == "Error": "unknown"
+    elif typ.name == "ErrorContractViolation": "globalThis.Error"
+    elif typ.name in ["Call", "RuntimeError", "MessageError"]: "GeneNode"
     else: mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -828,6 +842,9 @@ proc validatorSuffix(typ: WebType): string =
     for i, param in typ.params:
       parts.add (if typ.callbackParamOptional(i): "optional_" else: "") & validatorSuffix(param)
     for key in typ.namedKeys: parts.add "required_named_" & mangleWebName(key)
+    if typ.checkedErrors:
+      parts.add "checked"
+      for item in typ.errorTypes: parts.add validatorSuffix(item)
     "callback_" & (if typ.name.len > 0: mangleWebName(typ.name) & "_" else: "") &
       parts.join("_") & "_to_" &
       validatorSuffix(typ.returnType)
@@ -1145,8 +1162,15 @@ proc contractTypeValue(analysis: WebAnalysis, typ: WebType): Value =
   of wtkNominal:
     if analysis.typeDecls.hasKey(typ.name):
       let decl = analysis.typeDecls[typ.name]
-      return newSym("nominal:" & (if decl.originId.len > 0: decl.originId else: typ.name))
+      let identity = "nominal:" & (if decl.originId.len > 0: decl.originId else: typ.name)
+      if analysis.contractTypeValues.hasKey(identity): return analysis.contractTypeValues[identity]
+      let parent = if decl.parentName.len > 0:
+        analysis.contractTypeValue(WebType(kind: wtkNominal, name: decl.parentName)) else: NIL
+      let value = newType(identity, parent, @[], @[], nil)
+      analysis.contractTypeValues[identity] = value
+      return value
     if analysis.protocolDecls.hasKey(typ.name):
+      if analysis.protocolDecls[typ.name].identity == "gene.Error": return newSym("Error")
       return newSym("protocol:" & analysis.protocolDecls[typ.name].identity)
     newSym(typ.name)
   of wtkList, wtkTask, wtkStream:
@@ -1411,12 +1435,18 @@ proc validateCallableProps(analysis: WebAnalysis, form: Value,
     if typ.kind == wtkNever: continue
     if typ.kind != wtkNominal:
       raise webError(loc, label & " ^errors entries must name Error types")
-    if typ.name in seen:
-      raise webError(loc, label & " ^errors contains duplicate " & typ.name)
+    if typ.name in seen: continue
     seen.incl typ.name
-    if typ.name notin analysis.errorTypes:
+    if typ.name != "Error" and typ.name notin analysis.errorTypes:
       raise webError(loc, label & " ^errors type " & typ.name &
         " does not implement Error")
+
+proc webErrorRow(analysis: WebAnalysis, form: Value, loc: SourceLoc): seq[WebType] =
+  if not form.props.hasKey("errors"): return
+  for item in form.props["errors"].listItems:
+    let typ = analysis.parseAnnotation(item, loc)
+    if typ.kind == wtkNever: continue
+    if not result.anyIt(sameType(it, typ)): result.add typ
 
 proc parseWebImport(form: Value, loc: SourceLoc,
                     importerPath: string): WebImport =
@@ -2503,6 +2533,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "unknown web protocol in qualified send")
         protocolMessage = findProtocolMessage(
           analysis.protocolDecls[protocolName], messageName)
+        if protocolName == "Error" and messageName == "message":
+          if value.body.len != 2:
+            raise webError(loc, "Error:message expects no arguments")
+          return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr),
+                          loc: loc, children: @[receiver])
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
@@ -3478,9 +3513,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "path":
     if value.body.len < 2:
       raise webError(loc, "web path requires a base and member")
-    if value.body[0].isSym("gene") and value.body[1].isSym("ex"):
+    if value.body[0].isSym("gene") and value.body[1].isSym("err_msg"):
       if not bindings.hasKey(WebCatchErrorBindingName):
-        raise webError(loc, "$ex is only available inside a catch body")
+        raise webError(loc, "$err_msg is only available inside a catch body")
+      return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr), loc: loc,
+        children: @[analysis.analyzeExpr(newSym(WebCatchErrorBindingName), bindings)])
+    if value.body[0].isSym("gene") and value.body[1].isSym("err"):
+      if not bindings.hasKey(WebCatchErrorBindingName):
+        raise webError(loc, "$err is only available inside a catch body")
       if value.body.len == 2:
         return analysis.analyzeExpr(newSym(WebCatchErrorBindingName),
                                     bindings, expected)
@@ -3507,6 +3547,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       let callee =
         if rest.len > 1 and rest[0] == '%':
           newNode(newSym("unquote"), body = @[newSym(rest[1 .. ^1])])
+        elif qualifiedMessageSplit(rest) > 0:
+          let split = qualifiedMessageSplit(rest)
+          newNode(newSym("msg"), body = @[newSym(rest[0..<split]), newSym(rest[split + 1..^1])])
         else:
           newSym(rest)
       let desugared = newNode(receiver,
@@ -3758,6 +3801,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       raise webError(loc,
         "web callback cannot await: Callback types carry no asyncness")
     var callbackType = webType(wtkCallback)
+    callbackType.checkedErrors = value.props.hasKey("errors")
+    callbackType.errorTypes = analysis.webErrorRow(value, loc)
     for param in params:
       callbackType.params.add param.typ
       callbackType.optionalParams.add param.optional
@@ -4492,8 +4537,30 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.errorTypes.incl name
     for protocolName in declaration.implementedProtocols:
       analysis.protocolImplTargets.incl(protocolName & "\x1f" & name)
-  analysis.protocolDecls["Error"] = WebProtocolDecl(
-    sourceName: "Error", emittedName: "Error")
+  let errorDeclaration = parseWebProtocolDecl(analysis,
+    read("(protocol Error (message message [] : Str ^errors [] self/message))"),
+    SourceLoc(sourceName: "<builtin Error>", line: 1, col: 1))
+  errorDeclaration.identity = "gene.Error"
+  for message in errorDeclaration.messages:
+    message.identity = "gene.Error\x1fmessage"
+    message.ownerIdentity = "gene.Error"
+    message.symbolName = "$gene_error_message"
+    message.defaultFactory = "$gene_error_message_default"
+  analysis.protocolDecls["Error"] = errorDeclaration
+  for name in ["RuntimeError", "TypeError", "ErrorContractViolation", "MatchError", "SelectorMissing", "EndOfStream"]:
+    analysis.errorTypes.incl name
+  for name in ["TypeError", "ErrorContractViolation"]:
+    let declaration = WebTypeDecl(sourceName: name,
+      emittedName: if name == "TypeError": "$gene_user_type_error" else: "$gene_contract_type",
+      originId: "builtin:" & name, implementsError: true)
+    for field in ["message", "where"]:
+      declaration.fields.add WebField(sourceName: field, emittedName: field, typ: webType(wtkStr))
+    for field in ["expected", "actual"]:
+      declaration.fields.add WebField(sourceName: field, emittedName: field,
+        typ: if name == "TypeError": webType(wtkStr) else: webType(wtkAny))
+    if name == "ErrorContractViolation":
+      declaration.fields.add WebField(sourceName: "cause", emittedName: "cause", typ: webType(wtkAny))
+    analysis.typeDecls[name] = declaration
   analysis.protocolDecls["Callable"] = WebProtocolDecl(
     sourceName: "Callable", emittedName: "Callable",
     messages: @[WebProtocolMessage(sourceName: "apply",
@@ -4512,7 +4579,10 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   if not moduleForm.props.hasKey("profile") or
       not moduleForm.props["profile"].isSym("web"):
     raise webError(moduleLoc, "web module requires `^profile web`")
-  rejectUnknownProps(moduleForm, moduleLoc, "mod", ["profile"])
+  rejectUnknownProps(moduleForm, moduleLoc, "mod", ["profile", "errors_mode"])
+  if moduleForm.props.hasKey("errors_mode") and not moduleForm.props["errors_mode"].isSym("dynamic"):
+    raise webError(moduleLoc,
+      "web backend does not yet support warning/strict error analysis; use the native VM")
   result = WebModule(name: moduleForm.body[0].symVal,
                      sourcePath: sourcePath, embedded: embedded,
                      loc: moduleLoc)
@@ -4590,6 +4660,29 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
           implementation.protocolName)
   analysis.implementations = result.impls
   analysis.resolveWebImplementations()
+  var inheritedErrors = true
+  while inheritedErrors:
+    inheritedErrors = false
+    for name, declaration in analysis.typeDecls:
+      if declaration.parentName in analysis.errorTypes and name notin analysis.errorTypes:
+        analysis.errorTypes.incl name
+        declaration.implementsError = true
+        inheritedErrors = true
+  for implementation in result.impls:
+    if implementation.protocolName != "Error": continue
+    for methodDecl in implementation.methods:
+      if not methodDecl.defaultBody: continue
+      var declaration = analysis.typeDecls.getOrDefault(implementation.targetName)
+      var valid = false
+      while declaration != nil:
+        for field in declaration.fields:
+          if field.sourceName == "message":
+            valid = not field.optional and field.typ.kind == wtkStr
+        if declaration.parentName.len == 0: break
+        declaration = analysis.typeDecls.getOrDefault(declaration.parentName)
+      if not valid:
+        raise webError(implementation.loc,
+          "default Error:message requires a required Str message property; provide a custom implementation")
   var headers: seq[tuple[form: Value, fn: WebFunction]]
   let moduleResult = result
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
@@ -4640,6 +4733,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         "it requires a live evaluator and retained call syntax")
     let fn = parseFunctionHeader(analysis, form)
     analysis.validateCallableProps(form, loc, "function " & fn.sourceName)
+    fn.checkedErrors = form.props.hasKey("errors")
+    fn.errorTypes = analysis.webErrorRow(form, loc)
     let memberName = fn.sourceName
     if namespacePath.len > 0:
       fn.namespacePath = namespacePath
@@ -4661,8 +4756,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       params: paramTypes,
       namedParams: (if anyNamed: fn.params else: @[]),
       returnType: fn.returnType,
-      callName: (if anyNamed: fn.emittedName else: "$gene_impl_" & fn.emittedName),
-      valueName: fn.emittedName, generator: fn.generator and not anyNamed,
+      callName: (if anyNamed or fn.checkedErrors: fn.emittedName else: "$gene_impl_" & fn.emittedName),
+      valueName: fn.emittedName, generator: fn.generator and not anyNamed and not fn.checkedErrors,
       async: fn.async)
     headers.add (form, fn)
 
@@ -4823,6 +4918,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.currentTypeName = declaration.sourceName
       analysis.validateCallableProps(methodDecl.sourceForm, methodDecl.loc,
         "message " & methodDecl.sourceName, allowOverride = true)
+      methodDecl.checkedErrors = methodDecl.sourceForm.props.hasKey("errors")
+      methodDecl.errorTypes = analysis.webErrorRow(methodDecl.sourceForm, methodDecl.loc)
       methodDecl.body = analysis.analyzeSequence(forms, bindings,
         (if methodDecl.returnType.isStatementType: nil
          else: methodDecl.returnType), methodDecl.loc)
@@ -4843,6 +4940,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.currentTypeName = declaration.sourceName
       analysis.validateCallableProps(declaration.constructor.sourceForm,
         declaration.constructor.loc, "constructor " & declaration.sourceName)
+      declaration.constructor.checkedErrors = declaration.constructor.sourceForm.props.hasKey("errors")
+      declaration.constructor.errorTypes = analysis.webErrorRow(declaration.constructor.sourceForm,
+                                                                declaration.constructor.loc)
       declaration.constructor.body = analysis.analyzeSequence(forms, bindings,
         nil, declaration.constructor.loc)
       rejectAsyncBody(declaration.constructor.body,
@@ -4858,6 +4958,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.currentReturn = fn.returnType
       analysis.currentTypeName = ""
       analysis.inProtocolDefault = true
+      fn.checkedErrors = message.sourceForm.props.hasKey("errors")
+      fn.errorTypes = analysis.webErrorRow(message.sourceForm, message.loc)
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
       analysis.analyzeParameterBindings(fn.params, bindings)
@@ -4888,6 +4990,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.currentTypeName = implementation.targetName
       analysis.validateCallableProps(implMethod.sourceForm, implMethod.loc,
         "protocol message " & implMethod.message.sourceName)
+      implMethod.checkedErrors = implMethod.sourceForm.props.hasKey("errors")
+      implMethod.errorTypes = analysis.webErrorRow(implMethod.sourceForm, implMethod.loc)
       implMethod.body = analysis.analyzeSequence(forms, bindings,
         (if implMethod.returnType.isStatementType or implMethod.defaultBody: nil
          else: implMethod.returnType), implMethod.loc)
@@ -5139,7 +5243,7 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
       # One pattern form over two representations, as in the VM: a plain symbol
       # head matches a type instance *and* Gene node data carrying that head.
       # Gene node data is the shape the VM raises builtin errors as, which is
-      # what lets `$ex/message` read the same value here. Listed
+      # what lets `$err/message` read the same value here. Listed
       # props must be present (extra props in the data are ignored) and the body
       # must match exactly.
       let nodeTarget = if emitter.typescript: "(" & target & " as any)" else: target
@@ -5174,17 +5278,9 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
     if name == "Any":
       return "true"
     if name == "Error":
-      let value = if emitter.typescript: "(" & target & " as any)" else: target
-      var alternatives = @[
-        target & " instanceof Error",
-        value & "?.head === Symbol.for(\"RuntimeError\")"]
-      var nominalErrors: seq[string]
-      for nominal in emitter.errorTypes:
-        nominalErrors.add nominal
-      nominalErrors.sort()
-      for nominal in nominalErrors:
-        alternatives.add target & " instanceof " & mangleWebName(nominal)
-      return "(" & alternatives.join(" || ") & ")"
+      return "$gene_is_error(" & target & ")"
+    if name == "ErrorContractViolation":
+      return target & " instanceof $gene_contract_type"
     if name == "RuntimeError":
       let value = if emitter.typescript: "(" & target & " as any)" else: target
       return value & "?.head === Symbol.for(\"RuntimeError\")"
@@ -5205,6 +5301,20 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
     "unsupported web catch error type: " & errorType.print())
 
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string
+
+proc beginWebErrorGuard(emitter: var WebEmitter, checked: bool) =
+  if checked:
+    emitter.line("try {")
+    inc emitter.indent
+
+proc endWebErrorGuard(emitter: var WebEmitter, checked: bool,
+                       errors: seq[WebType], label: string) =
+  if not checked: return
+  dec emitter.indent
+  var validators: seq[string]
+  for error in errors: validators.add validatorName(error)
+  emitter.line("} catch (error) { throw $gene_error_contract(error, [" &
+    validators.join(", ") & "], " & jsString(label) & "); }")
 
 proc emitFixedParameterBindings(emitter: var WebEmitter, params: seq[WebParam],
                                  label: string, arguments = "arguments", offset = 0) =
@@ -5356,6 +5466,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var arguments: seq[string]
     for child in expr.children: arguments.add emitter.emitExpr(child)
     case expr.text
+    of "error_message": "$gene_error_text(" & arguments[0] & ")"
     of "str/join": arguments[0] & ".join(" & arguments[1] & ")"
     of "str/split": arguments[0] & ".split(" & arguments[1] & ")"
     of "str/trim": arguments[0] & ".trim()"
@@ -5790,7 +5901,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("return " & returned & ";")
     "undefined"
   of wekFail:
-    emitter.line("throw " & emitter.emitExpr(expr.children[0]) & ";")
+    emitter.line("throw $gene_admit_error(" & emitter.emitExpr(expr.children[0]) & ");")
     "undefined"
   of wekMatch:
     let matched = emitter.temp()
@@ -6031,7 +6142,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekDomRender:
     "$gene_dom_render(" & emitter.emitExpr(expr.children[0]) & ")"
   of wekLambda:
-    if expr.params.anyIt(it.optional):
+    if expr.params.anyIt(it.optional) or expr.typ.checkedErrors:
       let target = emitter.temp()
       let arguments = emitter.temp()
       emitter.line("const " & target & " = (..." & arguments &
@@ -6041,12 +6152,14 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       for i, param in expr.params:
         emitter.line("let " & param.emittedName & (if emitter.typescript: ": any" else: "") &
           " = " & arguments & "[" & $i & "];")
+      emitter.beginWebErrorGuard(expr.typ.checkedErrors)
       emitter.emitFixedParameterBindings(expr.params, "callback", arguments)
       let previousReturn = emitter.currentReturnType
       emitter.currentReturnType = expr.typ.returnType
       let value = emitter.emitExpr(expr.children[0])
       emitter.currentReturnType = previousReturn
       emitter.emitCheckedReturn(expr.typ.returnType, value, "callback return")
+      emitter.endWebErrorGuard(expr.typ.checkedErrors, expr.typ.errorTypes, "callback")
       dec emitter.indent
       emitter.line("};")
       var order: seq[string]
@@ -6118,7 +6231,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let caught = emitter.temp()
       emitter.line("catch (" & caught & ") {")
       inc emitter.indent
-      emitter.line("if ($gene_cancelled(" & caught & ")) throw " & caught & ";")
+      emitter.line("if ($gene_cancelled(" & caught & ") || " &
+        (if emitter.typescript: "(" & caught & " as any)" else: caught) &
+        "?.[Symbol.for(\"gene.panic\")]) throw " & caught & ";")
+      emitter.line("$gene_admit_error(" & caught & ");")
       for i, errorType in expr.patterns:
         let condition = emitter.emitCatchType(errorType, caught)
         emitter.line((if i == 0: "if" else: "else if") & " (" & condition & ") {")
@@ -6231,6 +6347,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
                wrapperReturn & " {")
   inc emitter.indent
   var checkedArgs, omitted: seq[string]
+  emitter.beginWebErrorGuard(fn.checkedErrors)
   # Validate every supplied value before any default expression can run.
   # A runtime Void is supplied; the reader alone removes literal void props.
   for index, param in fn.params:
@@ -6270,6 +6387,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   if fn.async: call = "await " & call
   emitter.line("return " & validatorName(fn.returnType) & "(" & call &
                ", " & jsString(fn.sourceName & " return") & ");")
+  emitter.endWebErrorGuard(fn.checkedErrors, fn.errorTypes, fn.sourceName)
   dec emitter.indent
   emitter.line("}")
   var order, names: seq[string]
@@ -6588,6 +6706,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
   var types: seq[WebType]
   for fn in module.functions & module.defaultBodies:
     for param in fn.params: collectValidatorTypes(param.typ, types)
+    for error in fn.errorTypes: collectValidatorTypes(error, types)
     collectValidatorTypes(fn.returnType, types)
   for extern in module.externs:
     for param in extern.params: collectValidatorTypes(param.typ, types)
@@ -6600,8 +6719,10 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       collectValidatorTypes(declaration.bodyRest, types)
     for methodDecl in declaration.methods:
       for param in methodDecl.params: collectValidatorTypes(param.typ, types)
+      for error in methodDecl.errorTypes: collectValidatorTypes(error, types)
       collectValidatorTypes(methodDecl.returnType, types)
     if declaration.constructor != nil:
+      for error in declaration.constructor.errorTypes: collectValidatorTypes(error, types)
       for param in declaration.constructor.params:
         collectValidatorTypes(param.typ, types)
   for declaration in module.enums:
@@ -6609,6 +6730,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       for typ in variant.payload: collectValidatorTypes(typ, types)
   for implementation in module.impls:
     for implMethod in implementation.methods:
+      for error in implMethod.errorTypes: collectValidatorTypes(error, types)
       for param in implMethod.params: collectValidatorTypes(param.typ, types)
       collectValidatorTypes(implMethod.returnType, types)
       if implMethod.defaultBody and implMethod.annotationSelf != nil:
@@ -6632,7 +6754,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
   emitter.line("function $gene_type_error(" & errorParams & ")" &
     (if emitter.typescript: ": never" else: "") & " {")
   inc emitter.indent
-  emitter.line("throw new TypeError(`${where} expected ${expected}, got ${typeof value}`);")
+  emitter.line("return $gene_raise_type_error(where, expected, value);")
   dec emitter.indent
   emitter.line("}")
   emitter.line()
@@ -6770,8 +6892,8 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         let errorCheck = validatorName(typ.errorTypes[0])
         emitter.line("const source = value;")
         emitter.line("const checked = new GeneTask(source.promise.then(item => " &
-          validatorName(typ.item) & "(item, `${where} result`), error => { if (!(error instanceof TypeError) && !error?.[Symbol.for(\"gene.cancellation\")]) " &
-          errorCheck & "(error, `${where} error`); throw error; }));")
+          validatorName(typ.item) & "(item, `${where} result`), error => { throw $gene_error_contract(error, [" &
+          errorCheck & "], \"Task error\"); }));")
         emitter.line("Object.defineProperty(checked, \"cancelled\", { get: () => source.cancelled, set: (cancelled" &
           (if emitter.typescript: ": boolean" else: "") & ") => { source.cancelled = cancelled; } });")
         emitter.line("checked.cancel = () => source.cancel(); value = checked;")
@@ -6789,9 +6911,8 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         emitter.line("try { while (source.has_next()) yield " &
           validatorName(typ.item) & "(source.next(), `${where} item`); } catch (error) {")
         inc emitter.indent
-        let err = if emitter.typescript: "(error as any)" else: "error"
-        emitter.line("if (!(error instanceof TypeError) && !" & err & "?.[Symbol.for(\"gene.cancellation\")]) " &
-          validatorName(typ.errorTypes[0]) & "(error, `${where} error`); throw error;")
+        emitter.line("throw $gene_error_contract(error, [" &
+          validatorName(typ.errorTypes[0]) & "], \"Stream error\");")
         dec emitter.indent
         emitter.line("}")
         dec emitter.indent
@@ -6804,7 +6925,11 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         if declaration.sourceName == typ.name: isEnum = true
       for declaration in module.visibleProtocols:
         if declaration.sourceName == typ.name: protocol = declaration
-      if typ.name in ["Call", "RuntimeError", "MessageError"]:
+      if typ.name == "Error":
+        emitter.line("if (!$gene_is_error(value)) $gene_type_error(where, \"Error\", value);")
+      elif typ.name == "ErrorContractViolation":
+        emitter.line("if (!(value instanceof $gene_contract_type)) $gene_type_error(where, \"ErrorContractViolation\", value);")
+      elif typ.name in ["Call", "RuntimeError", "MessageError"]:
         emitter.line("if (!$gene_is_node(value) || value.head !== Symbol.for(" &
           jsString(typ.name) & ")) $gene_type_error(where, " & jsString(typ.name) & ", value);")
       elif protocol != nil:
@@ -6848,9 +6973,11 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
           ", `${where} argument " & $(i + 1) & "`)"
       emitter.line("return (" & callbackParams.join(", ") & ") => {")
       inc emitter.indent
+      emitter.beginWebErrorGuard(typ.checkedErrors)
       emitter.line("const result = value(" & checkedParams.join(", ") & ");")
       emitter.line("return " & validatorName(typ.returnType) &
         "(result, `${where} return`);")
+      emitter.endWebErrorGuard(typ.checkedErrors, typ.errorTypes, "Fn contract")
       dec emitter.indent
       emitter.line("};")
     else:
@@ -7026,6 +7153,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
       (if emitter.typescript: ": " & declaration.emittedName else: "") & " {")
     inc emitter.indent
     emitter.line("const self = new " & declaration.emittedName & "({}, [], true);")
+    emitter.beginWebErrorGuard(constructor.checkedErrors)
     emitter.emitFixedParameterBindings(constructor.params, declaration.sourceName & "/ctor")
     let body = emitter.emitExpr(constructor.body)
     emitter.line("void " & body & ";")
@@ -7035,6 +7163,8 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     emitter.line("delete self.$gene_in_progress;")
     emitter.line("self.$gene_validate();")
     emitter.line("return self;")
+    emitter.endWebErrorGuard(constructor.checkedErrors, constructor.errorTypes,
+                              declaration.sourceName & "/ctor")
     dec emitter.indent
     emitter.line("}")
   for methodDecl in declaration.methods:
@@ -7045,6 +7175,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
       (if emitter.typescript: ": " & tsType(methodDecl.returnType) else: "") & " {")
     inc emitter.indent
     emitter.line("const self = this;")
+    emitter.beginWebErrorGuard(methodDecl.checkedErrors)
     emitter.emitFixedParameterBindings(methodDecl.params,
       declaration.sourceName & "." & methodDecl.sourceName)
     let previousReturn = emitter.currentReturnType
@@ -7053,6 +7184,8 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     emitter.currentReturnType = previousReturn
     emitter.emitCheckedReturn(methodDecl.returnType, body,
       declaration.sourceName & "." & methodDecl.sourceName & " return")
+    emitter.endWebErrorGuard(methodDecl.checkedErrors, methodDecl.errorTypes,
+                              declaration.sourceName & "." & methodDecl.sourceName)
     dec emitter.indent
     emitter.line("}")
   dec emitter.indent
@@ -7108,12 +7241,14 @@ proc emitDefaultFactory(emitter: var WebEmitter, module: WebModule, fn: WebFunct
     (if emitter.typescript: ": " & tsType(fn.returnType) else: "") & " {")
   inc emitter.indent
   emitter.line("const self = this;")
+  emitter.beginWebErrorGuard(fn.checkedErrors)
   emitter.emitFixedParameterBindings(fn.params, fn.sourceName)
   let oldReturn = emitter.currentReturnType
   emitter.currentReturnType = fn.returnType
   let body = emitter.emitExpr(fn.body)
   emitter.currentReturnType = oldReturn
   emitter.emitCheckedReturn(fn.returnType, body, fn.sourceName & " return")
+  emitter.endWebErrorGuard(fn.checkedErrors, fn.errorTypes, fn.sourceName)
   dec emitter.indent
   emitter.line("};")
   dec emitter.indent
@@ -7203,6 +7338,7 @@ proc emitImplDeclaration(emitter: var WebEmitter,
         (if emitter.typescript: ": " & tsType(implMethod.returnType) else: "") & " {")
     inc emitter.indent
     if not builtinTarget: emitter.line("const self = this;")
+    emitter.beginWebErrorGuard(implMethod.checkedErrors)
     emitter.emitFixedParameterBindings(implMethod.params,
       implementation.protocolName & ":" & implMethod.message.sourceName,
       offset = (if builtinTarget: 1 else: 0))
@@ -7212,6 +7348,8 @@ proc emitImplDeclaration(emitter: var WebEmitter,
     emitter.currentReturnType = previousReturn
     emitter.emitCheckedReturn(implMethod.returnType, body,
       implementation.protocolName & ":" & implMethod.message.sourceName & " return")
+    emitter.endWebErrorGuard(implMethod.checkedErrors, implMethod.errorTypes,
+                              implementation.protocolName & ":" & implMethod.message.sourceName)
     dec emitter.indent
     emitter.line(if builtinTarget: "}" else: "} });")
   if implementation.methods.len > 0: emitter.line()
@@ -7265,10 +7403,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("for (const key of Object.keys(this.#named)) if (this.#named[key][1] && !Object.prototype.hasOwnProperty.call(named, key)) $gene_type_error(\"Callable named argument '\" + key + \"'\", \"a supplied value\", undefined);")
   emitter.line("try { return this.#result($gene_invoke_callable(this.#target, checked, checkedNamed, site), \"Callable result\"); } catch (error) {")
   inc emitter.indent
-  let err = if emitter.typescript: "(error as any)" else: "error"
-  emitter.line("if (this.#errors === null || error instanceof globalThis.TypeError || " & err & "?.head === Symbol.for(\"TypeError\") || " & err & "?.[Symbol.for(\"gene.cancellation\")]) throw error;")
-  emitter.line("for (const check of this.#errors) { try { check(error, \"Callable error\"); } catch (_) { continue; } throw error; }")
-  emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function 'Callable contract' raised an undeclared error\" });")
+  emitter.line("throw $gene_error_contract(error, this.#errors, \"Callable contract\");")
   dec emitter.indent
   emitter.line("}")
   dec emitter.indent
@@ -7277,6 +7412,8 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   dec emitter.indent
   emitter.line("}")
 
+include ./web_errors
+
 proc emitModule(module: WebModule, typescript: bool,
                 lineLocs: var seq[SourceLoc]): string =
   let nominalTypes = nominalTypeNames(module)
@@ -7284,6 +7421,7 @@ proc emitModule(module: WebModule, typescript: bool,
   var emitter = WebEmitter(typescript: typescript, nominalTypes: nominalTypes,
                            errorTypes: errorTypes)
   emitter.line("// Generated from " & module.sourcePath & "; target es2022.")
+  emitter.emitErrorRuntime()
   for imported in module.imports:
     emitter.currentLoc = imported.loc
     var selections: seq[string]
@@ -8375,6 +8513,7 @@ proc emitModule(module: WebModule, typescript: bool,
 
 proc emitDeclarations(module: WebModule): string =
   result.add "// Generated Gene web-profile declarations (TypeScript 5.9.2).\n"
+  result.add "declare const $gene_error_message: unique symbol;\n"
   for name, target in module.emittedAliases:
     result.add "export type " & mangleWebName(name) & " = " &
       tsType(bindWebSelf(target, webType(wtkAny))) & ";\n"

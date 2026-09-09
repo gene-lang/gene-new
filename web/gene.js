@@ -6478,6 +6478,7 @@ function checkIncomingModuleAPI() {
 var _strerror = makeInvalidEarlyAccess('_strerror');
 var _fflush = makeInvalidEarlyAccess('_fflush');
 var _free = Module['_free'] = makeInvalidEarlyAccess('_free');
+var _main = Module['_main'] = makeInvalidEarlyAccess('_main');
 var _gene_alloc = Module['_gene_alloc'] = makeInvalidEarlyAccess('_gene_alloc');
 var _gene_free = Module['_gene_free'] = makeInvalidEarlyAccess('_gene_free');
 var _gene_eval = Module['_gene_eval'] = makeInvalidEarlyAccess('_gene_eval');
@@ -6487,7 +6488,6 @@ var _gene_result_text_len = Module['_gene_result_text_len'] = makeInvalidEarlyAc
 var _gene_result_out_ptr = Module['_gene_result_out_ptr'] = makeInvalidEarlyAccess('_gene_result_out_ptr');
 var _gene_result_out_len = Module['_gene_result_out_len'] = makeInvalidEarlyAccess('_gene_result_out_len');
 var _gene_result_free = Module['_gene_result_free'] = makeInvalidEarlyAccess('_gene_result_free');
-var _main = Module['_main'] = makeInvalidEarlyAccess('_main');
 var _malloc = Module['_malloc'] = makeInvalidEarlyAccess('_malloc');
 var _emscripten_stack_get_end = makeInvalidEarlyAccess('_emscripten_stack_get_end');
 var _emscripten_stack_get_base = makeInvalidEarlyAccess('_emscripten_stack_get_base');
@@ -6509,6 +6509,7 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['strerror'] != 'undefined', 'missing Wasm export: strerror');
   assert(typeof wasmExports['fflush'] != 'undefined', 'missing Wasm export: fflush');
   assert(typeof wasmExports['free'] != 'undefined', 'missing Wasm export: free');
+  assert(typeof wasmExports['__main_argc_argv'] != 'undefined', 'missing Wasm export: __main_argc_argv');
   assert(typeof wasmExports['gene_alloc'] != 'undefined', 'missing Wasm export: gene_alloc');
   assert(typeof wasmExports['gene_free'] != 'undefined', 'missing Wasm export: gene_free');
   assert(typeof wasmExports['gene_eval'] != 'undefined', 'missing Wasm export: gene_eval');
@@ -6518,7 +6519,6 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports['gene_result_out_ptr'] != 'undefined', 'missing Wasm export: gene_result_out_ptr');
   assert(typeof wasmExports['gene_result_out_len'] != 'undefined', 'missing Wasm export: gene_result_out_len');
   assert(typeof wasmExports['gene_result_free'] != 'undefined', 'missing Wasm export: gene_result_free');
-  assert(typeof wasmExports['main'] != 'undefined', 'missing Wasm export: main');
   assert(typeof wasmExports['malloc'] != 'undefined', 'missing Wasm export: malloc');
   assert(typeof wasmExports['emscripten_stack_get_end'] != 'undefined', 'missing Wasm export: emscripten_stack_get_end');
   assert(typeof wasmExports['emscripten_stack_get_base'] != 'undefined', 'missing Wasm export: emscripten_stack_get_base');
@@ -6536,6 +6536,7 @@ function assignWasmExports(wasmExports) {
   _strerror = createExportWrapper('strerror', 1);
   _fflush = createExportWrapper('fflush', 1);
   _free = Module['_free'] = createExportWrapper('free', 1);
+  _main = Module['_main'] = createExportWrapper('__main_argc_argv', 2);
   _gene_alloc = Module['_gene_alloc'] = createExportWrapper('gene_alloc', 1);
   _gene_free = Module['_gene_free'] = createExportWrapper('gene_free', 1);
   _gene_eval = Module['_gene_eval'] = createExportWrapper('gene_eval', 2);
@@ -6545,7 +6546,6 @@ function assignWasmExports(wasmExports) {
   _gene_result_out_ptr = Module['_gene_result_out_ptr'] = createExportWrapper('gene_result_out_ptr', 1);
   _gene_result_out_len = Module['_gene_result_out_len'] = createExportWrapper('gene_result_out_len', 1);
   _gene_result_free = Module['_gene_result_free'] = createExportWrapper('gene_result_free', 1);
-  _main = Module['_main'] = createExportWrapper('main', 3);
   _malloc = Module['_malloc'] = createExportWrapper('malloc', 1);
   _emscripten_stack_get_end = wasmExports['emscripten_stack_get_end'];
   _emscripten_stack_get_base = wasmExports['emscripten_stack_get_base'];

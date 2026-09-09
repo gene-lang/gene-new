@@ -24,43 +24,43 @@ proc markChildCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
   NIL
 
 suite "errors — fail and catch":
-  test "catch selects by type and exposes the error as $ex":
+  test "catch selects by type and exposes the error as $err":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(type Other ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Other) " &
        "(try (fail (Boom ^message \"boom\")) " &
        "  catch Other \"wrong\" " &
-       "  catch Boom $ex/message)", "\"boom\""
+       "  catch Boom $err/message)", "\"boom\""
 
   test "a typed failed value is caught and bound":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
-       "(try (fail (Boom ^message \"boom\")) catch Boom $ex/message)", "\"boom\""
+       "(try (fail (Boom ^message \"boom\")) catch Boom $err/message)", "\"boom\""
   test "fail only raises values implementing Error":
     expect GeneError: discard runStr("(fail \"boom\")")
   test "the body result is returned when nothing fails":
     ck "(try (+ 1 2) catch Any \"caught\")", "3"
-  test "catch exposes typed error properties through $ex":
+  test "catch exposes typed error properties through $err":
     ck "(type ParseError ^props {^line Int} ^impl [Error]) " &
-       "(impl Error for ParseError) " &
-       "(try (fail (ParseError ^line 3)) catch ParseError $ex/line)", "3"
+       "(impl Error for ParseError (message message [] : Str ^errors [] \"parse error\")) " &
+       "(try (fail (ParseError ^line 3)) catch ParseError $err/line)", "3"
   test "catch clauses are tried in order, with an Any fallback":
     ck "(type ParseError ^props {^line Int} ^impl [Error]) " &
-       "(impl Error for ParseError) " &
+       "(impl Error for ParseError (message message [] : Str ^errors [] \"parse error\")) " &
        "(type IoError ^props {^m Str} ^impl [Error]) " &
-       "(impl Error for IoError) " &
+       "(impl Error for IoError (message message [] : Str ^errors [] self/m)) " &
        "(try (fail (IoError ^m \"x\")) " &
        "catch ParseError \"parse\" catch Any \"other\")", "\"other\""
   test "internal errors are catchable by message shape":
-    ck "(try (/ 1 0) catch Any $ex/message)", "\"division by zero\""
+    ck "(try (/ 1 0) catch Any $err/message)", "\"division by zero\""
   test "runtime diagnostics carry RuntimeError and satisfy Error":
-    ck "(try undefined_name catch RuntimeError $ex/message)",
+    ck "(try undefined_name catch RuntimeError $err/message)",
        "\"undefined symbol: undefined_name\""
-    ck "(try (/ 1 0) catch Error $ex/message)", "\"division by zero\""
-  test "$ex is captured by a function created in the catch body":
+    ck "(try (/ 1 0) catch Error $err/message)", "\"division by zero\""
+  test "$err is captured by a function created in the catch body":
     ck "(try (/ 1 0) catch RuntimeError " &
-       "  (var message (fn [] $ex/message)) (message))",
+       "  (var message (fn [] $err/message)) (message))",
        "\"division by zero\""
   test "catch headers reject patterns and wildcard spelling":
     expect GeneError:
@@ -68,7 +68,7 @@ suite "errors — fail and catch":
     expect GeneError:
       discard compileSource("(try (/ 1 0) catch (RuntimeError ^message m) m)")
   test "a MatchError from the body is catchable by type":
-    ck "(try (var [a b] [1]) catch MatchError $ex/message)",
+    ck "(try (var [a b] [1]) catch MatchError $err/message)",
        "\"destructuring pattern did not match\""
   test "an unmatched catch re-raises":
     expect GeneError:
@@ -83,22 +83,22 @@ suite "errors — fail and catch":
        "(try (fail (Boom ^message \"x\")) catch Any 7)", "7"
   test "built-in TypeError implements Error":
     ck "(try (fail (TypeError ^message \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
-       "catch TypeError $ex/message)", "\"m\""
+       "catch TypeError $err/message)", "\"m\""
   test "built-in CompileError implements Error":
     ck "(try (fail (CompileError ^message \"bad syntax\")) " &
-       "catch CompileError $ex/message)", "\"bad syntax\""
+       "catch CompileError $err/message)", "\"bad syntax\""
   test "Error marker impls apply to child error types":
     ck "(type BaseError ^props {^message Str} ^impl [Error]) " &
        "(impl Error for BaseError) " &
        "(type ChildError : BaseError ^props {}) " &
-       "(try (fail (ChildError ^message \"child\")) catch BaseError $ex/message)",
+       "(try (fail (ChildError ^message \"child\")) catch BaseError $err/message)",
        "\"child\""
-  test "$ex is local to the recovery branch":
+  test "$err is local to the recovery branch":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
                      "(impl Error for Boom) " &
-                     "(try (fail (Boom ^message \"x\")) catch Boom $ex/message) " &
-                     "$ex")
+                     "(try (fail (Boom ^message \"x\")) catch Boom $err/message) " &
+                     "$err")
   test "catch recovery declarations are local":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -109,20 +109,20 @@ suite "errors — fail and catch":
 suite "errors — checked rows":
   test "RuntimeError can be declared in a checked row":
     ck "(fn missing ^errors [RuntimeError] [] undefined_name) " &
-       "(try (missing) catch RuntimeError $ex/message)",
+       "(try (missing) catch RuntimeError $err/message)",
        "\"undefined symbol: undefined_name\""
 
   test "functions may raise declared errors":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom ^errors [Boom] [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch Boom $ex/message)", "\"x\""
+       "(try (raise-boom) catch Boom $err/message)", "\"x\""
 
   test "missing error row remains dynamic":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch Boom $ex/message)", "\"x\""
+       "(try (raise-boom) catch Boom $err/message)", "\"x\""
 
   test "^errors [] rejects recoverable errors":
     expect GeneError:
@@ -141,7 +141,7 @@ suite "errors — checked rows":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom ^errors [Never Boom Boom] [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch Boom $ex/message)",
+       "(try (raise-boom) catch Boom $err/message)",
        "\"x\""
 
   test "undeclared recoverable errors are rejected":
@@ -165,16 +165,16 @@ suite "errors — checked rows":
        "(type Job ^props {}) " &
        "(impl Run for Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
-       "(try ((Job) .Run:run) catch Boom $ex/message)", "\"x\""
+       "(try ((Job) .Run:run) catch Boom $err/message)", "\"x\""
 
   test "checked rows can declare built-in MatchError":
     ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
-       "(try (first-two [1]) catch MatchError $ex/message)",
+       "(try (first-two [1]) catch MatchError $err/message)",
        "\"destructuring pattern did not match\""
 
   test "checked rows can declare built-in CompileError":
     ck "(fn bad ^errors [CompileError] [] (fail (CompileError ^message \"compile\"))) " &
-       "(try (bad) catch CompileError $ex/message)", "\"compile\""
+       "(try (bad) catch CompileError $err/message)", "\"compile\""
 
   test "^effects is reserved":
     expect GeneError:
@@ -289,10 +289,10 @@ suite "errors — try on the frame stack":
     ck "(type A ^props {^message Str} ^impl [Error]) (impl Error for A) " &
        "(type B ^props {^message Str} ^impl [Error]) (impl Error for B) " &
        "(try (try (fail (A ^message \"a\")) catch A (fail (B ^message \"b\"))) " &
-       "     catch B $ex/message)", "\"b\""
+       "     catch B $err/message)", "\"b\""
   test "an error raised in an ensure body overrides and unwinds outward":
     ck "(type A ^props {^message Str} ^impl [Error]) (impl Error for A) " &
-       "(try (try 5 ensure (fail (A ^message \"e\"))) catch A $ex/message)", "\"e\""
+       "(try (try 5 ensure (fail (A ^message \"e\"))) catch A $err/message)", "\"e\""
 
 suite "errors — panic":
   test "panic is not caught by try":

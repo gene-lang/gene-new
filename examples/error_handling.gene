@@ -1,0 +1,67 @@
+# Run: gene run examples/error_handling.gene
+(mod error_handling ^errors_mode strict)
+
+(type ConfigError ^props {^message Str})
+(impl Error for ConfigError)
+
+(type StatusError ^props {^code Int})
+(impl Error for StatusError
+  (message message [] : Str ^errors []
+    $"Operation failed with status ${self/code}"))
+
+(fn load_config [missing : Bool] : Str ^errors [ConfigError]
+  (if missing
+    (fail (ConfigError ^message "Configuration is missing"))
+    "ready"))
+
+# The known error is useful documentation; Error permits other failures too.
+(fn call_plugin [callback : Callable] : Any ^errors [ConfigError Error]
+  (callback))
+
+(fn main [args] : Int ^errors [Error]
+  (try
+    (load_config true)
+    catch ConfigError ($println $err_msg))
+
+  (try
+    (call_plugin (fn [] (fail (StatusError ^code 503))))
+    catch ConfigError ($println "Recover configuration here")
+    catch Error
+      ($println $err_msg)
+      ($assert (== $err/code 503)))
+
+  # A checked view is an explicit runtime assertion at a dynamic boundary.
+  # Its violation preserves the original typed error as cause.
+  (let checked : (Callable [] Any ^errors [])
+    (fn [] (fail (ConfigError ^message "Unexpected plugin failure"))))
+  (try
+    (checked)
+    catch ErrorContractViolation
+      ($println $err_msg)
+      ($println $err/cause/.Error:message))
+
+  # A closure retains its own catch binding, including the Error formatter.
+  (let describe_later
+    (try
+      (fail (ConfigError ^message "Retained error"))
+      catch Error (fn [] $err_msg)))
+  ($println (describe_later))
+
+  # Lazy callbacks fail when their stream is consumed.
+  (let attempts
+    ($map ($to_stream [429])
+      (fn [code : Int] : Any ^errors [StatusError]
+        (fail (StatusError ^code code)))))
+  (try
+    ($into attempts [])
+    catch StatusError ($println $err_msg))
+
+  # Task failures are handled at await. A failed await still consumes its result.
+  (let attempt (spawn (load_config true)))
+  (try
+    (await attempt)
+    catch ConfigError ($println $err_msg))
+  (try
+    (await attempt)
+    catch RuntimeError ($println "Task result already consumed"))
+  0)

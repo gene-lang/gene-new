@@ -42,7 +42,7 @@
   (try
     ((resolve h "TypedSlow") .HarnessRender:render "probe")
   catch Any
-    (set failed ($str/contains? $ex/message "max steps exceeded")))
+    (set failed ($str/contains? $err/message "max steps exceeded")))
   (assert failed
     "direct typed protocol methods must retain the sandbox module budget")
   (var refused false)

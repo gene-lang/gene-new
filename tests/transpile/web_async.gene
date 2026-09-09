@@ -16,9 +16,10 @@
 # rethrow guard brands with a registry symbol rather than testing that field.
 # This is also the typecheck gate's only module carrying a Gene catch.
 (type RelayError ^props {^kind Str})
-(impl Error for RelayError)
+(impl Error for RelayError
+  (message message [] : Str ^errors [] self/kind))
 
 (fn guarded [] : Int
   (try
     (relay)
-    catch RelayError ($size $ex/kind)))
+    catch RelayError ($size $err/kind)))

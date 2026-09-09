@@ -29,11 +29,11 @@ task wasm, "Build the wasm host-ABI module (docs/workflows.md §A.4) via Emscrip
   ## Requires the Emscripten SDK (`emcc` on PATH). Produces web/gene.js +
   ## web/gene.wasm exporting the text-only eval ABI, ready for the browser
   ## playground (web/index.html) and the node harness (tests/test_wasm.mjs).
-  ## `_main` MUST be exported so Emscripten runs NimMain (global `let` init)
-  ## before the exports are callable — without it TRUE/FALSE/VOID read as nil.
+  ## The hosted main shim initializes Nim without executable-mode cleanup.
+  ## --noMain also keeps Nim from destroying globals when startup returns.
   exec "mkdir -p web"
   exec "nim c --os:linux --cpu:wasm32 -d:emscripten -d:geneWasm --mm:orc " &
-       "-d:release --threads:off --cc:clang --clang.exe:emcc " &
+       "-d:release --threads:off --noMain --cc:clang --clang.exe:emcc " &
        "--clang.linkerexe:emcc --path:src --hints:off " &
        "--passL:\"-s EXPORTED_FUNCTIONS=['_main','_gene_alloc'," &
        "'_gene_free','_gene_eval','_gene_result_status','_gene_result_text_ptr'," &

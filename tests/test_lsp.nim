@@ -2,6 +2,7 @@
 ## unit tests over tools/lsp/analysis plus one JSON-RPC stdio e2e against the
 ## built CLI (`gene lsp`). Included by test_all.nim after test_cli, so the
 ## e2e reuses its buildGeneCli/geneExe helpers.
+## Can also run standalone, building and launching gene-lsp directly.
 
 import std/[json, os, osproc, streams, strutils, unittest]
 import tools/lsp/analysis
@@ -38,6 +39,21 @@ proc findSym(syms: seq[DocSymbol], name: string): DocSymbol =
       return s
   checkpoint "symbol not found: " & name
   check false
+
+proc startTestLsp(): Process =
+  when declared(buildGeneCli):
+    buildGeneCli()
+    startProcess(geneExe, args = ["lsp"], options = {poUsePath})
+  else:
+    let dir = getTempDir() / "gene_lsp_tests"
+    createDir(dir)
+    let exe = dir / "gene-lsp"
+    let build = execCmdEx("nim c --path:src --hints:off -o:" &
+                          quoteShell(exe) & " src/gene_lsp.nim")
+    if build.exitCode != 0:
+      checkpoint build.output
+    doAssert build.exitCode == 0, "could not build gene-lsp"
+    startProcess(exe, options = {poUsePath})
 
 suite "lsp — analysis":
   test "document symbols cover declaration forms with nesting":
@@ -213,6 +229,70 @@ suite "lsp — analysis":
     check c.symbols[0].range.endPos.character == prefixed.find('\n')
     check c.symbols[0].selectionRange.start.character == prefixed.find("stats")
 
+  test "wrapping prefixes preserve nested and multiline declaration ranges":
+    let src = "(ns util\n  #@type Person\n  #@protocol\n    Named)\n#@ns stats"
+    let a = analyze(src)
+    check a.parsed
+    check a.diagnostics.len == 0
+    check a.symbols.len == 2
+    let util = findSym(a.symbols, "util")
+    check util.range.endPos == LspPos(line: 3, character: 10)
+    check util.children.len == 2
+    check util.children[0].name == "Person"
+    check util.children[0].range.start == LspPos(line: 1, character: 2)
+    check util.children[0].range.endPos == LspPos(line: 1, character: 15)
+    check util.children[1].name == "Named"
+    check util.children[1].range.start == LspPos(line: 2, character: 2)
+    check util.children[1].range.endPos == LspPos(line: 3, character: 9)
+    check util.children[1].selectionRange.start == LspPos(line: 3, character: 4)
+    check a.symbols[1].name == "stats"
+    let defs = flattenDefs(a.symbols, src)
+    check defs[2].signature == "#@protocol\n    Named"
+    let adjacent = "#@ns first #@ns second"
+    let adjacentDefs = flattenDefs(analyze(adjacent).symbols, adjacent)
+    check adjacentDefs[0].signature == "#@ns first"
+    check adjacentDefs[1].signature == "#@ns second"
+
+  test "wordAt separates wrapping markers from their head and argument":
+    let src = "#@greet #@$echo #@util/helper π"
+    let starts = lineStarts(src)
+    for i, ch in src:
+      if ch == '#':
+        check wordAt(src, starts, LspPos(line: 0, character: i)) == ""
+        check wordAt(src, starts, LspPos(line: 0, character: i + 1)) == ""
+    check wordAt(src, starts, LspPos(line: 0, character: 2)) == "greet"
+    check wordAt(src, starts, LspPos(line: 0, character: 10)) == "echo"
+    check wordAt(src, starts, LspPos(line: 0, character: 12)) == "echo"
+    check wordAt(src, starts, LspPos(line: 0, character: 18)) == "util"
+    check wordAt(src, starts, LspPos(line: 0, character: 23)) == "helper"
+    check wordAt(src, starts, LspPos(line: 0, character: 30)) == "π"
+    let computed = "#@ (choose) value"
+    let computedStarts = lineStarts(computed)
+    check wordAt(computed, computedStarts, LspPos(line: 0, character: 5)) == "choose"
+    check wordAt(computed, computedStarts, LspPos(line: 0, character: 13)) == "value"
+    let ordinary = "($echo value)"
+    check wordAt(ordinary, lineStarts(ordinary),
+                 LspPos(line: 0, character: 3)) == "echo"
+    let unicodePrefix = "π#@greet π"
+    check wordAt(unicodePrefix, lineStarts(unicodePrefix),
+                 LspPos(line: 0, character: 1)) == ""
+    check wordAt(unicodePrefix, lineStarts(unicodePrefix),
+                 LspPos(line: 0, character: 2)) == ""
+    check wordAt(unicodePrefix, lineStarts(unicodePrefix),
+                 LspPos(line: 0, character: 3)) == "greet"
+
+  test "incomplete wrapping operands report reader diagnostics":
+    for src in ["#@", "#@f", "(fn f [] #@g)", "[#@f]", "#@f #@g"]:
+      let a = analyze(src)
+      check not a.parsed
+      check a.diagnostics.len == 1
+      check "#@ requires" in a.diagnostics[0].message
+      check a.diagnostics[0].range.start.line == 0
+      check a.diagnostics[0].range.start.character < src.len
+    let a = analyze("#@f # comment\n #_ ignored #@g\n x")
+    check a.parsed
+    check a.diagnostics.len == 0
+
   test "flattenDefs carries container names and signatures":
     let a = analyze(lspSample)
     let defs = flattenDefs(a.symbols, lspSample)
@@ -225,14 +305,13 @@ suite "lsp — analysis":
 
 suite "lsp — stdio e2e":
   test "gene lsp answers initialize, diagnostics, symbols, and definition":
-    buildGeneCli()
     let dir = getTempDir() / "gene_lsp_e2e"
     createDir(dir)
     let samplePath = dir / "sample.gene"
     writeFile(samplePath, lspSample)
     let uri = "file://" & samplePath
 
-    let p = startProcess(geneExe, args = ["lsp"], options = {poUsePath})
+    let p = startTestLsp()
     defer:
       if p.running:
         p.terminate()
@@ -314,6 +393,83 @@ suite "lsp — stdio e2e":
     let hover = recv()["result"]
     check "(fn greet" in hover["contents"]["value"].getStr
 
+    # Compact/nested wrappers use the same definition and hover index as
+    # ordinary calls; a multiline wrapped declaration keeps its own span.
+    let wrapSource = lspSample & """
+(fn echo [value] value)
+#@ns
+  wrapped
+(fn wrapped_calls [name]
+  [#@greet name
+   #@echo #@greet name
+   #@$println name
+   #@ (fn [value] value) name])
+"""
+    send(%*{"jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {"textDocument": {"uri": uri, "version": 3},
+                       "contentChanges": [{"text": wrapSource}]}})
+    check recv()["params"]["diagnostics"].len == 0
+    let wrapStarts = lineStarts(wrapSource)
+    let echoPos = offsetToLspPos(wrapSource, wrapStarts,
+                                wrapSource.find("#@echo") + 3)
+    send(%*{"jsonrpc": "2.0", "id": 10, "method": "textDocument/definition",
+            "params": {"textDocument": {"uri": uri},
+                       "position": {"line": echoPos.line,
+                                    "character": echoPos.character}}})
+    let echoDefs = recv()["result"]
+    require echoDefs.len == 1
+    check echoDefs[0]["range"]["start"]["line"].getInt ==
+      offsetToLspPos(wrapSource, wrapStarts, wrapSource.find("(fn echo")).line
+    send(%*{"jsonrpc": "2.0", "id": 11, "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": uri},
+                       "position": {"line": echoPos.line,
+                                    "character": echoPos.character}}})
+    check "(fn echo" in recv()["result"]["contents"]["value"].getStr
+    let markerPos = offsetToLspPos(wrapSource, wrapStarts,
+                                  wrapSource.find("#@greet") + 1)
+    send(%*{"jsonrpc": "2.0", "id": 12, "method": "textDocument/definition",
+            "params": {"textDocument": {"uri": uri},
+                       "position": {"line": markerPos.line,
+                                    "character": markerPos.character}}})
+    check recv()["result"].len == 0
+    send(%*{"jsonrpc": "2.0", "id": 13, "method": "textDocument/definition",
+            "params": {"textDocument": {"uri": uri},
+                       "position": {"line": markerPos.line,
+                                    "character": markerPos.character + 2}}})
+    let wrappedDefs = recv()["result"]
+    require wrappedDefs.len == 1
+    check wrappedDefs[0]["range"]["start"]["line"].getInt == 4
+    let nsPos = offsetToLspPos(wrapSource, wrapStarts,
+                              wrapSource.find("  wrapped") + 3)
+    send(%*{"jsonrpc": "2.0", "id": 14, "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": uri},
+                       "position": {"line": nsPos.line,
+                                    "character": nsPos.character}}})
+    check "#@ns\n  wrapped" in recv()["result"]["contents"]["value"].getStr
+
+    # An unfinished operand diagnoses the new text but preserves the last
+    # good outline. Completing it clears the diagnostic.
+    send(%*{"jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {"textDocument": {"uri": uri, "version": 4},
+                       "contentChanges": [{"text": wrapSource & "\n#@greet"}]}})
+    let wrapDiag = recv()["params"]["diagnostics"]
+    check wrapDiag.len == 1
+    check "#@ requires" in wrapDiag[0]["message"].getStr
+    send(%*{"jsonrpc": "2.0", "id": 15, "method": "textDocument/documentSymbol",
+            "params": {"textDocument": {"uri": uri}}})
+    let wrapSymbols = recv()["result"]
+    var hasWrapped = false
+    for sym in wrapSymbols:
+      if sym["name"].getStr == "wrapped":
+        hasWrapped = true
+        check sym["range"]["end"]["line"].getInt == nsPos.line
+        check sym["selectionRange"]["start"]["character"].getInt == 2
+    check hasWrapped
+    send(%*{"jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {"textDocument": {"uri": uri, "version": 5},
+                       "contentChanges": [{"text": wrapSource & "\n#@greet \"Gene\""}]}})
+    check recv()["params"]["diagnostics"].len == 0
+
     # Watched-file events keep the index current for closed files.
     let extraPath = dir / "extra.gene"
     writeFile(extraPath, "(fn watched-helper [x] x)\n")
@@ -333,7 +489,7 @@ suite "lsp — stdio e2e":
     # didClose clears diagnostics and re-indexes from disk, so unsaved
     # buffer definitions do not outlive the buffer.
     send(%*{"jsonrpc": "2.0", "method": "textDocument/didChange",
-            "params": {"textDocument": {"uri": uri, "version": 3},
+            "params": {"textDocument": {"uri": uri, "version": 6},
                        "contentChanges": [{"text": "(fn only-in-buffer [] 1)"}]}})
     discard recv()   # diagnostics for the buffer text
     send(%*{"jsonrpc": "2.0", "method": "textDocument/didClose",

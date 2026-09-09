@@ -108,10 +108,10 @@ suite "runtime bound calls":
 
   test "recoverable errors preserve their nominal type and fields":
     check evalBoundCall("(type Boom ^props {^code Int} ^impl [Error]) " &
-      "(impl Error for Boom) (var boom (Boom ^code 7)) " &
+      "(impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom)))) (var boom (Boom ^code 7)) " &
       "(fn fail_it [] (fail boom)) " &
       "(var f ($runtime/bind_call fail_it [])) " &
-      "(try (f) 0 catch Boom $ex/code)").print() == "7"
+      "(try (f) 0 catch Boom $err/code)").print() == "7"
 
   test "panics remain task outcomes rather than ordinary catchable errors":
     check evalBoundCall("(fn fail_it [] (panic \"bound panic\")) " &

@@ -60,9 +60,11 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
+  echo "  gene eval --errors-mode dynamic|warn|strict \"<source>\""
   echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
   echo "           [--report_tail_fallbacks]"
+  echo "           [--errors-mode dynamic|warn|strict]"
   echo "           [--allow_read_dir dir] [--allow_write_dir dir]"
   echo "           [--allow_read_write_dir dir] <file.gene>"
   echo "           [--] [args...]     execute a file under the host capability policy"
@@ -112,15 +114,16 @@ proc maybeReplOnError(scope: Scope, app: Application = nil) =
 
 proc reportPipelineWarnings(chunk: Chunk) =
   for diagnostic in chunk.compilerDiagnostics:
-    if diagnostic.message.startsWith("unused lazy pipeline:"):
+    if diagnostic.message.startsWith("unused lazy pipeline:") or
+        diagnostic.message.startsWith("error checking:"):
       stderr.writeLine formatDiagnostic("Warning", diagnostic.message,
                                          diagnostic.loc)
 
-proc cmdEval(src: string) =
+proc cmdEval(src: string, errorsMode = "") =
   let app = initModuleContext(getCurrentDir())
   let scope = newGlobalScope(app)
   try:
-    let chunk = compileEvalSource(src, sourceName = "<eval>")
+    let chunk = compileEvalSource(src, sourceName = "<eval>", errorsMode = errorsMode)
     reportPipelineWarnings(chunk)
     echo run(chunk, scope).print()
   except ReadError as e:
@@ -131,7 +134,7 @@ proc cmdEval(src: string) =
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    stderr.writeLine formatDiagnostic("Error", errorDiagnosticMessage(e, scope), e.loc)
     maybeReplOnError(scope, app)
     quit(1)
 
@@ -180,6 +183,7 @@ type RunCli = object
   allowReadDirs: seq[string]
   allowWriteDirs: seq[string]
   allowReadWriteDirs: seq[string]
+  errorsMode: string
 
 proc parseRunCli(label = "run", pathNoun = "a file path",
                  pathRequired = true): RunCli =
@@ -193,7 +197,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
     case arg
     of "--log-config", "--package-root", "--target", "--profile", "--mode",
        "--debug_info", "--jobs", "--allow_read_dir", "--allow_write_dir",
-       "--allow_read_write_dir":
+       "--allow_read_write_dir", "--errors-mode":
       inc i
       if i > paramCount():
         raise newException(ValueError, arg & " expects a value")
@@ -201,6 +205,10 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
       case arg
       of "--log-config": result.logConfig = value
       of "--package-root": result.packageRoot = value
+      of "--errors-mode":
+        if value notin ["dynamic", "warn", "strict"]:
+          raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
+        result.errorsMode = value
       of "--target": result.targetTriple = value
       of "--profile":
         result.profile = value
@@ -234,6 +242,10 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         result.logConfig = arg[13 .. ^1]
       elif arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("--errors-mode="):
+        result.errorsMode = arg[14..^1]
+        if result.errorsMode notin ["dynamic", "warn", "strict"]:
+          raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
       elif arg.startsWith("--target="):
         result.targetTriple = arg[9 .. ^1]
       elif arg.startsWith("--profile="):
@@ -291,6 +303,8 @@ proc applyRunCapabilityPolicy(app: Application, options: RunCli) =
   ## argument or Value.
   if app == nil:
     raise newException(ValueError, "run capability policy needs an application")
+  if options.errorsMode.len > 0:
+    app.setErrorCheckingMode(options.errorsMode)
   var grants = @(app.rootCapabilities.grants)
   let fs = app.filesystemCapabilities
   for requested in options.allowReadDirs:
@@ -414,7 +428,8 @@ proc cmdRun(path: string, args: openArray[string] = [],
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    stderr.writeLine formatDiagnostic("Error",
+      errorDiagnosticMessage(e, replFallbackScope(replScope, app)), e.loc)
     maybeReplOnError(replScope, app)
     quit(1)
 
@@ -447,7 +462,8 @@ proc cmdRunUrl(url: string, args: openArray[string] = [],
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    stderr.writeLine formatDiagnostic("Error",
+      errorDiagnosticMessage(e, replFallbackScope(replScope, app)), e.loc)
     maybeReplOnError(replScope, app)
     quit(1)
 
@@ -794,7 +810,11 @@ proc selectedApplication(pkg: Package, name: string): ApplicationTarget =
 proc cmdProjectRun(options: RunCli) =
   let start =
     if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
+  var reportingScope: Scope
   try:
+    if options.errorsMode.len > 0:
+      raise newException(ValueError,
+        "--errors-mode currently requires a source entry path; pass the application's .gene entry file")
     let graph = materializeProject(start, options.locked, options.offline,
                                    false)
     let pkg = graph.packagesById[graph.activePackageId]
@@ -812,6 +832,7 @@ proc cmdProjectRun(options: RunCli) =
     let executionPackage = executionGraph.packagesById[pkg.id]
     let app = newApplication(executionGraph, executionPackage.root)
     app.applyRunCapabilityPolicy(options)
+    reportingScope = newGlobalScope(app)
     for artifact in built.artifacts:
       app.installCompiledModules(artifact.compiledModules)
     let chunk = built.rootArtifact.compiledChunk
@@ -820,6 +841,7 @@ proc cmdProjectRun(options: RunCli) =
         "build produced no executable GIR artifact")
     let entry = app.loadCompiledFileModule(
       executionPackage.root / application.entry, chunk)
+    reportingScope = entry.moduleRootNamespace.nsScope
     invokeEntryMain(entry.moduleRootNamespace.nsScope, options.args)
   except ReadError as error:
     stderr.writeLine formatDiagnostic("Read error", error.msg,
@@ -829,13 +851,15 @@ proc cmdProjectRun(options: RunCli) =
     stderr.writeLine "Panic: " & error.msg
     quit(1)
   except GeneError as error:
-    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    stderr.writeLine formatDiagnostic("Error",
+      errorDiagnosticMessage(error, replFallbackScope(reportingScope)), error.loc)
     quit(1)
   except CatchableError as error:
     stderr.writeLine "Error: " & error.msg
     quit(1)
 
 proc cmdProjectTest(options: ProjectBuildCli) =
+  var reportingScope: Scope
   try:
     if options.all:
       raise newException(ValueError, "gene test does not accept --all")
@@ -870,6 +894,7 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       let executionGraph = built.executionGraph
       let executionPackage = executionGraph.packagesById[pkg.id]
       let app = newApplication(executionGraph, executionPackage.root)
+      reportingScope = newGlobalScope(app)
       for artifact in built.artifacts:
         app.installCompiledModules(artifact.compiledModules)
       let chunk = built.rootArtifact.compiledChunk
@@ -878,6 +903,7 @@ proc cmdProjectTest(options: ProjectBuildCli) =
           "build produced no executable GIR artifact")
       let entry = app.loadCompiledFileModule(
         executionPackage.root / relative, chunk)
+      reportingScope = entry.moduleRootNamespace.nsScope
       invokeEntryMain(entry.moduleRootNamespace.nsScope, @[])
       echo "[OK] " & relative
   except ReadError as error:
@@ -888,7 +914,8 @@ proc cmdProjectTest(options: ProjectBuildCli) =
     stderr.writeLine "Panic: " & error.msg
     quit(1)
   except GeneError as error:
-    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    stderr.writeLine formatDiagnostic("Error",
+      errorDiagnosticMessage(error, replFallbackScope(reportingScope)), error.loc)
     quit(1)
   except CatchableError as error:
     stderr.writeLine "Error: " & error.msg
@@ -912,7 +939,7 @@ proc parseSpecTestCli(): SpecTestCli =
       let at = arg.find('=')
       let option = if at < 0: arg else: arg[0..<at]
       if option notin ["--name", "--package-root", "--allow_read_dir",
-                        "--allow_write_dir", "--allow_read_write_dir"]:
+                        "--allow_write_dir", "--allow_read_write_dir", "--errors-mode"]:
         raise newException(ValueError, "unknown test option: " & option)
       var value: string
       if at >= 0:
@@ -925,6 +952,10 @@ proc parseSpecTestCli(): SpecTestCli =
       case option
       of "--name": result.name = value
       of "--package-root": result.host.packageRoot = value
+      of "--errors-mode":
+        if value notin ["dynamic", "warn", "strict"]:
+          raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
+        result.host.errorsMode = value
       of "--allow_read_dir": result.host.allowReadDirs.add value
       of "--allow_write_dir": result.host.allowWriteDirs.add value
       of "--allow_read_write_dir": result.host.allowReadWriteDirs.add value
@@ -967,6 +998,7 @@ proc discoverSpecFiles(app: Application, inputs: seq[string]): seq[string] =
   result.sort()
 
 proc cmdSpecTest(options: SpecTestCli) =
+  var reportingScope: Scope
   try:
     let start = if options.host.packageRoot.len > 0:
                   options.host.packageRoot
@@ -977,6 +1009,7 @@ proc cmdSpecTest(options: SpecTestCli) =
     app.applyRunCapabilityPolicy(options.host)
     let files = discoverSpecFiles(app, options.paths)
     let scope = newGlobalScope(app)
+    reportingScope = scope
     scope.beginTestCollection()
     try:
       for path in files:
@@ -1001,7 +1034,8 @@ proc cmdSpecTest(options: SpecTestCli) =
     stderr.writeLine "Cancelled: " & error.msg
     quit(1)
   except GeneError as error:
-    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    stderr.writeLine formatDiagnostic("Error",
+      errorDiagnosticMessage(error, replFallbackScope(reportingScope)), error.loc)
     quit(1)
   except CatchableError as error:
     stderr.writeLine "Error: " & error.msg
@@ -1499,7 +1533,19 @@ proc main() =
     if paramCount() < 2:
       stderr.writeLine "Error: 'eval' needs a source string"
       quit(1)
-    cmdEval(paramStr(2))
+    if paramStr(2) == "--errors-mode":
+      if paramCount() != 4 or paramStr(3) notin ["dynamic", "warn", "strict"]:
+        stderr.writeLine "Error: eval --errors-mode expects a mode and source"
+        quit(2)
+      cmdEval(paramStr(4), paramStr(3))
+    elif paramStr(2).startsWith("--errors-mode="):
+      let mode = paramStr(2)[14..^1]
+      if paramCount() != 3 or mode notin ["dynamic", "warn", "strict"]:
+        stderr.writeLine "Error: eval --errors-mode expects a mode and source"
+        quit(2)
+      cmdEval(paramStr(3), mode)
+    else:
+      cmdEval(paramStr(2))
   of "repl":
     if paramCount() >= 2:
       stderr.writeLine "Error: unknown repl option: " & paramStr(2)

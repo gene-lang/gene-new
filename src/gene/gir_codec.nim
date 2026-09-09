@@ -7,9 +7,19 @@
 import std/[algorithm, json, jsonutils, sets, tables]
 import ./[gir, printer, reader, types]
 
-# Fixed nil-admitting parameters now carry optional call-shape metadata, and
-# compile interfaces retain alias targets needed before runtime initialization.
-const GirArtifactFormat* = 9
+# Error summaries and strict proof dependencies retain native model identities,
+# in addition to invocation, deferred, and module-initialization contracts.
+const GirArtifactFormat* = 14
+
+proc toJsonHook(scope: Scope): JsonNode =
+  if scope != nil:
+    raise newException(ValueError, "executable GIR cannot serialize a live scope")
+  newJNull()
+
+proc fromJsonHook(scope: var Scope, node: JsonNode) =
+  if node.kind != JNull:
+    raise newException(ValueError, "encoded GIR must not contain a live scope")
+  scope = nil
 
 proc toJsonHook(value: Value): JsonNode =
   ## Values reachable from GIR are inert reader data. Canonical Gene text is
@@ -98,14 +108,31 @@ proc restoreChunkOwners(root: Chunk) =
   var seenChunks = initHashSet[pointer]()
   var seenFunctions = initHashSet[pointer]()
 
+  proc validateDependency(dependency: ErrorProofDependency) =
+    if dependency.returnDepth < 0 or dependency.returnDepth > MaxInferredReturnDepth or
+        (dependency.returnDepth == 0 and (dependency.returnKind.len > 0 or dependency.returnKindOnly)) or
+        (dependency.returnDepth > 0 and dependency.returnKind notin ["callable", "task", "stream", "native", "type", "message"]):
+      raise newException(ValueError, "encoded GIR contains an invalid return-contract dependency")
+
+  proc validateSummary(summary: CallableErrorSummary) =
+    if summary == nil: return
+    if summary.returnContracts.len > MaxInferredReturnDepth:
+      raise newException(ValueError, "encoded GIR return-contract chain exceeds its bound")
+    for contract in summary.returnContracts:
+      if contract.kind notin ["callable", "task", "stream", "native", "type", "message"]:
+        raise newException(ValueError, "encoded GIR contains an invalid return-contract kind")
+    for dependency in summary.dependencies: validateDependency(dependency)
+
   proc restoreChunk(chunk: Chunk, owner: FunctionProto)
 
   proc restoreFunction(fn: FunctionProto) =
     if fn == nil or seenFunctions.containsOrIncl(cast[pointer](fn)):
       return
-    if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf:
+    if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf or
+        fn.builtinErrorMessage:
       raise newException(ValueError,
         "encoded GIR function contains runtime-only declaration state")
+    validateSummary(fn.errorSummary)
     restoreChunk(fn.chunk, fn)
     restoreChunk(fn.scopelessChunk, fn)
     for defaultValue in fn.paramDefaults:
@@ -118,6 +145,7 @@ proc restoreChunkOwners(root: Chunk) =
       return
     chunk.owner = owner
     chunk.dispatchCache = @[]
+    for dependency in chunk.errorProofDependencies: validateDependency(dependency)
     for fn in chunk.functions:
       restoreFunction(fn)
     for body in chunk.subchunks:

@@ -4812,9 +4812,23 @@ proc serdeOriginOf(w: var SerdeWriter, v: Value):
   serdeEnsureOrigins(w.app)
   if w.app.serdeOrigins.hasKey(v.bits):
     let o = w.app.serdeOrigins[v.bits]
-    (true, o.module, o.path)
-  else:
-    (false, "", "")
+    return (true, o.module, o.path)
+  if v.kind == vkFunction and v.fnScope != nil and v.fnName.len > 0:
+    # Retaining a weak module binding may produce a new function handle over
+    # the same declaration and lexical scope. Its module origin survives that
+    # ownership change; anonymous or genuinely captured functions still have
+    # no indexed declaration and remain non-serializable.
+    var declaration: Value
+    if v.fnScope.lookupOptional(v.fnName, declaration) and
+        declaration.kind == vkFunction and declaration.fnCode == v.fnCode and
+        declaration.fnScope == v.fnScope and
+        declaration.fnChecksErrors == v.fnChecksErrors and
+        declaration.fnParams == v.fnParams and
+        errorRowsEquivalent(declaration.fnErrorTypes, v.fnErrorTypes) and
+        w.app.serdeOrigins.hasKey(declaration.bits):
+      let origin = w.app.serdeOrigins[declaration.bits]
+      return (true, origin.module, origin.path)
+  (false, "", "")
 
 proc serdeIdentityBearing(v: Value): bool {.inline.} =
   ## Module refs may explicitly name scalars, but generated serialization refs
@@ -7824,27 +7838,27 @@ proc registerStdlibNamespaces(root: Scope) =
   # file-backed modules later without changing call sites.
   let stdStreamScope = newScope(root)
   stdStreamScope.define("to_stream",
-    newNativeCallFn("to_stream", biToStream, acceptsNamed = false))
+    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   stdStreamScope.define("to_pairs_stream",
                         newNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (§6.2) must bind the same process-wide
   # dispatchers the root and the type tables hold — `sharedBuiltinNative`
   # returns those instances; the fresh values built here are discarded.
   stdStreamScope.define("map",
-    sharedBuiltinNative("map", newNativeCallFn("map", biMap, acceptsNamed = false)))
+    sharedBuiltinNative("map", builtinNativeCallFn("map", biMap, acceptsNamed = false)))
   stdStreamScope.define("filter_map",
-    sharedBuiltinNative("filter_map", newNativeCallFn("filter_map", biFilterMap, acceptsNamed = false)))
+    sharedBuiltinNative("filter_map", builtinNativeCallFn("filter_map", biFilterMap, acceptsNamed = false)))
   stdStreamScope.define("filter",
-    sharedBuiltinNative("filter", newNativeCallFn("filter", biFilter, acceptsNamed = false)))
+    sharedBuiltinNative("filter", builtinNativeCallFn("filter", biFilter, acceptsNamed = false)))
   stdStreamScope.define("take",
-    sharedBuiltinNative("take", newNativeCallFn("take", biTake, acceptsNamed = false)))
+    sharedBuiltinNative("take", builtinNativeCallFn("take", biTake, acceptsNamed = false)))
   stdStreamScope.define("into",
-    sharedBuiltinNative("into", newNativeCallFn("into", biInto, acceptsNamed = false)))
+    sharedBuiltinNative("into", builtinNativeCallFn("into", biInto, acceptsNamed = false)))
   # `each` has no bare root binding, so the `Stream` type takes it from this
   # namespace. It must be the process-wide instance or the type singleton
   # would hold the first application's copy.
   stdStreamScope.define("each",
-    sharedBuiltinNative("each", newNativeCallFn("each", biEach, acceptsNamed = false)))
+    sharedBuiltinNative("each", builtinNativeCallFn("each", biEach, acceptsNamed = false)))
   let stdNodeScope = newScope(root)
   stdNodeScope.define("head", newNativeFn("head", biHead))
   stdNodeScope.define("props", newNativeFn("props", biProps))
@@ -7853,7 +7867,7 @@ proc registerStdlibNamespaces(root: Scope) =
   stdNodeScope.define("declarations",
                       newNativeFn("declarations", biDeclarations))
   let stdParseScope = newScope(root)
-  stdParseScope.define("parse_int", newNativeCallFn("parse_int", biParseInt,
+  stdParseScope.define("parse_int", builtinNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
   stdParseScope.define("read_all", root.vars["read_all"])
   # `format` was removed from the runtime: canonical formatting is a tool
@@ -8084,7 +8098,7 @@ proc registerStdlibNamespaces(root: Scope) =
 
   # db: shared protocol + error type; sqlite/postgres backends implement it.
   # DbError lives at the root so native raise sites resolve the type head and
-  # `catch DbError` matches and `$ex/message` reads the detail; backend impls live on their
+  # `catch DbError` matches and `$err/message` reads the detail; backend impls live on their
   # namespace scopes so only importing programs pay protocol-dispatch cost.
   let dbError = newType("DbError", NIL,
                         @[TypeField(name: "message", optional: false,

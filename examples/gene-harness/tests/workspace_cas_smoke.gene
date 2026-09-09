@@ -25,7 +25,7 @@
       [{^id "lost" ^scope "session" ^module_digest "sha256:b"
         ^closure ["sha256:b"] ^interfaces {} ^selectors []}])
   catch CompositionConflict
-    (set conflicted (&& (== $ex/expected 0) (== $ex/actual 1))))
+    (set conflicted (&& (== $err/expected 0) (== $err/actual 1))))
   (assert conflicted "a stale writer must receive a typed revision conflict")
 
   (refresh_workspace stale)

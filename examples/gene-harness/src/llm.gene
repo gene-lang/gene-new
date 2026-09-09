@@ -206,11 +206,11 @@
             $"${(eval program ^in sandbox)}"
           catch MissingCapability
             # A denial is a value shown to the next model round.
-            $"refused: ${$ex/operation} needs ${$ex/capability}"
+            $"refused: ${$err/operation} needs ${$err/capability}"
           catch Any
-            (if ($str/contains? $ex/message " requires ")
-              $"refused: ${$ex/message}"
-              (fail $ex))))
+            (if ($str/contains? $err/message " requires ")
+              $"refused: ${$err/message}"
+              (fail $err))))
         # Drained here and not in the sandbox: this callback runs under the
         # caller's capability context (`invoke_bounded ^inherit true`), which
         # is the only point in the round that still holds the authority a
@@ -734,7 +734,7 @@ Reply with the module for that tool and nothing else.""")
   (try
     {^form ((read_all text) .next) ^problem ""}
   catch Any
-    {^form nil ^problem ($to_str $ex/message)}))
+    {^form nil ^problem ($to_str $err/message)}))
 
 (fn model_plugin_source [name : Str, request : Str, skill : Str] : Any
   # Text in, inert node out. Two recoveries, both cheap: drop a markdown fence,

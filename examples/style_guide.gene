@@ -194,7 +194,7 @@ line two"""
   (try
     (checked_value (load))
   catch ExampleError
-    $"error: ${$ex/message}"
+    $"error: ${$err/message}"
   catch Any
     "unknown error"
   ensure

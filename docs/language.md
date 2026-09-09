@@ -219,8 +219,9 @@ Use `$assert` to check an assumption. It returns nil on success and raises
 
 The [testing guide](testing.md) shows example groups, fixtures, and error checks.
 
-Use typed errors for recoverable failures. `catch` binds the error as `$ex`;
-`ensure` runs cleanup on success or failure.
+Use typed errors for recoverable failures. `catch` binds the original error as
+`$err`; `$err_msg` invokes its `Error:message` method. `ensure` runs cleanup on
+success or failure.
 
 ```gene runnable
 (type InputError ^props {^message Str})
@@ -230,13 +231,23 @@ Use typed errors for recoverable failures. `catch` binds the error as `$ex`;
   (if (< n 1) (fail (InputError ^message "expected positive")) n))
 
 (try (positive 0)
-  catch InputError $ex/message)
+  catch InputError $err_msg)
 # "expected positive"
 ```
 
-`^errors` declares recoverable invocation errors. Without it, errors remain
-dynamically checked. Type-boundary failures, panic, and cancellation have their
-own rules; cancellation is not swallowed by an ordinary catch.
+An empty `impl Error` uses the required string `message` property. Types with
+another representation provide `message [] : Str ^errors []` in their impl.
+`$err/message` is a direct property lookup when you need the stored data.
+
+`^errors [InputError]` permits that error and its subtypes to escape;
+`^errors []` permits no ordinary errors, and `^errors [Error]` permits any.
+Violating a declared row raises `ErrorContractViolation`, with the original
+error in `$err/cause`. Generated type failures and contract violations remain
+catchable without being wrapped again. Panic and cancellation bypass catches.
+
+Scripts default to dynamic checking. The gradual checker adds `warn` and
+`strict` module policies; see the [error-handling contract](error-handling.md)
+and [runnable example](../examples/error_handling.gene).
 
 ## Types and messages
 

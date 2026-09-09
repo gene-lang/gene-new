@@ -190,9 +190,9 @@
     (try
       (workspace/store .Store:checkpoint next {^composition manifest})
     catch StoreError
-      (if (== ($to_str $ex/kind) "conflict")
+      (if (== ($to_str $err/kind) "conflict")
         (revision_conflict workspace expected)
-        (fail (CompositionError ^message $ex/message))))
+        (fail (CompositionError ^message $err/message))))
     (workspace/revision .set next)
     (workspace/entries .set checked)
     next
@@ -607,7 +607,7 @@
           (record_quarantine workspace pending/entry/id
             (plugin_error h pending/entry/id)))
       catch Any
-        (record_quarantine workspace pending/entry/id ($to_str $ex/message))))
+        (record_quarantine workspace pending/entry/id ($to_str $err/message))))
     (record_turn_end h id "committed")
     (flush_harness h)
     {^status registry_result/status ^result result ^revision revision
@@ -616,7 +616,7 @@
     (var aborted (abort_turn h tx))
     (record_turn_end h id "aborted")
     (flush_harness h)
-    (aborted .put "error" $ex)
+    (aborted .put "error" $err)
     aborted
   ensure
     (if_yes (== (active_transaction h) tx)
@@ -670,7 +670,7 @@
           (descriptors .put entry/id descriptor)
           (register_descriptor_events h descriptor)
         catch Any
-          (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message))))))
+          (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
 
   # Phase 2: validate the already-decoded generic envelopes against the core +
   # descriptor catalog. Missing plugin vocabulary quarantines that projection;
@@ -706,7 +706,7 @@
               (plugin_error h ($to_str entry/id))))
           (else (pending .push entry/id)))
       catch Any
-        (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message)))))
+        (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))
   {^ready ready ^pending pending ^errors (data_copy (workspace/errors .get))
    ^session plan/session})
 

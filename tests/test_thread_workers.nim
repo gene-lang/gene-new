@@ -42,6 +42,20 @@ proc biRecordThread(args: openArray[Value]): Value {.nimcall.} =
   os.sleep(sleepMs)
   NIL
 
+proc biRaiseWorkerError(args: openArray[Value]): Value {.nimcall.} =
+  if currentEventLane() == int(args[1].intVal):
+    raise newException(GeneError, "error probe ran on the root lane")
+  var payload = args[0]
+  if payload.kind == vkType:
+    var props = initPropTable()
+    props["message"] = newStr("native worker failure")
+    props["local"] = newCell(newInt(1))
+    payload = newNode(payload, props = props)
+  let failure = newException(GeneError, "native worker failure")
+  failure.hasErrVal = true
+  failure.errVal = payload
+  raise failure
+
 proc sendTcpPayloadOnce(server: Socket) {.thread.} =
   var client: owned(Socket)
   var address = ""
@@ -252,6 +266,32 @@ suite "threaded scheduler workers":
          "  (var b (spawn (+ x 2))) " &
          "  (+ (await a) (await b)))",
          "43"
+
+  test "actor workers reject non-Send error data and formatter captures before replying":
+    for kind in ["data", "formatter"]:
+      let scope = newGlobalScope()
+      scope.define("raise-worker-error", newNativeFn("raise-worker-error", biRaiseWorkerError))
+      scope.define("root-lane", newInt(currentEventLane()))
+      withGeneWorkers:
+        let result = run(compileSource("""
+          (let secret ($cell "root only"))
+          (type Request ^props {^reply (ReplyTo Int)})
+          (impl Send for Request)
+          (impl Error for Request
+            (message message [] : Str ^errors [] (secret .get)))
+          (let actor ($actor/spawn ^init (fn [] 0)
+            ^handle (fn [ctx state message]
+              (raise-worker-error PAYLOAD root-lane))))
+          (let pending (actor .ask (fn [reply] (Request ^reply reply))))
+          (var i 0)
+          (while (< i 800000) (set i (+ i 1)))
+          (try (await pending)
+            catch TypeError $err/where
+            catch ErrorContractViolation $err/cause/.Error:message
+            catch Error $err_msg)
+        """.replace("PAYLOAD", if kind == "data": "RuntimeError" else: "message")), scope)
+        check result.strVal == (if kind == "data": "actor worker error payload does not satisfy Send"
+                                else: "Error admission")
 
   test "worker pool runs sendable actor handlers while root runs":
     resetThreadProbe()
@@ -526,7 +566,7 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
           "(try (await ($fs/read_text_async path)) " &
-          " catch Any $ex/message)"), scope).print() ==
+          " catch Any $err/message)"), scope).print() ==
           "\"fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
@@ -643,7 +683,7 @@ suite "threaded scheduler workers":
           "  (var cancelled ($fs/write_text_async cancelledPath \"cancelled\")) " &
           "  (cancelled .cancel) " &
           "  (var next ($fs/write_text_async nextPath \"next\")) " &
-          "  [(await blocker) (try (await next) catch Any $ex/message)])"),
+          "  [(await blocker) (try (await next) catch Any $err/message)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)
     check not fileExists(cancelledPath)
@@ -660,7 +700,7 @@ suite "threaded scheduler workers":
          "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
          "  (var i 0) " &
          "  (while (< i 200000) (set i (+ i 1))) " &
-         "  (try (await t) catch Boom $ex/message))",
+         "  (try (await t) catch Boom $err/message))",
          "\"worker\""
 
   test "worker-candidate non-Send results are rejected before publication":
@@ -822,5 +862,5 @@ suite "threaded scheduler workers":
          "      ($actor/continue state)))) " &
          "  (var pending (a .ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
-         "  (try (await pending) catch ActorError $ex/message))",
+         "  (try (await pending) catch ActorError $err/message))",
          "\"actor/ask timed out\""

@@ -121,6 +121,12 @@ methods such as `push` or `put`. A trailing `!` is reserved for fexprs. The
 [style example](../examples/style_guide.gene) is the formatter's canonical fixture.
 See the [VS Code extension](../tools/vscode-extension/README.md) for editor setup.
 
+The language server recognizes `#@greet name` like `(greet name)` for hover
+and go to definition, including nested wrappers and `$` root-namespace shorthand.
+Wrapped declarations appear in the outline; incomplete wrappers produce reader
+diagnostics while the last valid outline stays available. Rebuild the server
+with `nimble tools` and restart it in your editor after updating.
+
 ## Web applications
 
 A standalone web-profile module can be compiled to ESM and TypeScript:
@@ -165,6 +171,9 @@ is a smaller browser example.
 The alternative is the wasm VM. `nimble wasm` requires Emscripten and builds
 the runtime for the browser. Choose it when you need the evaluator and broader
 VM semantics; host facilities still depend on what the embedding provides.
+The build uses a hosted startup that keeps Nim globals alive after initialization.
+Run `nimble wasm` after changing value lifetimes or VM startup; it also exercises
+the exported ABI through Node.
 
 ## Native interop
 

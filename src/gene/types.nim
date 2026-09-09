@@ -207,19 +207,23 @@ proc installResourceAuthorityReleaseHook*(hook: ResourceAuthorityReleaseHook) =
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
 
-proc `=destroy`(v: Value) {.inline.} =
-  if (v.bits shr TAG_SHIFT) >= MANAGED_MIN:
-    rcRelease(v.bits)
+proc `=destroy`(v: var Value) {.inline.} =
+  let old = v.bits
+  v.bits = 0
+  if (old shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRelease(old)
 
 proc `=copy`(dest: var Value, src: Value) {.inline.} =
   if dest.bits == src.bits: return
   if (src.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRetain(src.bits)
-  if (dest.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(dest.bits)
+  let old = dest.bits
   dest.bits = src.bits
+  if (old shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(old)
 
 proc `=sink`(dest: var Value, src: Value) {.inline.} =
-  if (dest.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(dest.bits)
+  let old = dest.bits
   dest.bits = src.bits
+  if (old shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(old)
 
 proc `=dup`(src: Value): Value {.inline.} =
   if (src.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRetain(src.bits)
@@ -320,6 +324,22 @@ type
     key*: Value
     val*: Value
 
+  FailureClassification* = enum
+    fcOrdinaryError
+    fcGeneratedTypeFailure
+    fcGeneratedContractViolation
+
+  ErrorEvidence* = ref object
+    ## Runtime-owned evidence, never supplied by Gene properties or serde.
+    ## It belongs to the original node: adding evidence does not wrap, copy,
+    ## change equality, or change the identity of an error payload.
+    classification*: FailureClassification
+    protocol*: Value
+    formatter*: Value
+    environment*: Scope
+    weakEnvironment: pointer # scope-owned error back-edge; promoted on retain
+    diagnostics*: PropTable
+
   GeneNode = object
     refCount: int
     shared: int
@@ -332,6 +352,7 @@ type
     deepFrozen: bool
     constructing: bool
     resourceAuthorityId: uint64
+    errorEvidence: ErrorEvidence
     head: Value
     props: PropTable
     body: seq[Value]
@@ -385,6 +406,7 @@ type
   ## Opaque runtime owner for scopes. The VM defines the concrete Application
   ## type; the value layer keeps only this base reference.
   RuntimeContext* = ref object of RootObj
+    errorFunctionCreated*: proc(value: Value, scope: Scope) {.nimcall.}
 
   ## Shared instruction budget for policy-limited eval scopes. Budgets can be
   ## chained so nested evals with their own policy still consume the outer budget.
@@ -447,6 +469,7 @@ type
   ## values escaping as run/eval results are cloned back to a strong capture.
   Scope* = ref object
     application*: RuntimeContext
+    strictErrorLease*: RootRef
     parent*: Scope
     vars*: Table[string, Value]
     wildcardFallbacks*: Table[string, WildcardFallback]
@@ -475,7 +498,7 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
-    moduleBase*: Scope      # cached nearest module root; nil outside a module
+    moduleBase*: Scope      # cached ancestor module root; roots identify self via moduleRoot
     moduleStatic*: bool     # unconditional module/namespace declaration scope
     moduleRefs*: ModuleRefTable
     borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
@@ -637,6 +660,14 @@ type
     nfkLe
     nfkGe
 
+  NativeErrorMetadata* = object
+    ## Host-authored identity of a compiler-known native effect model. Metadata
+    ## is installed with the implementation and immutable after construction.
+    ## The compiler model supplies invocation, callback, and deferred summaries;
+    ## a matching display name alone never establishes that model.
+    identity*: string
+    version*: string
+
   GeneFunction = object
     refCount: int
     shared: int
@@ -649,6 +680,7 @@ type
     syntaxFn: bool           # named fexpr / syntax callable (design §3/§11.1)
     capturesCallerEnv: bool  # closure was created under a borrowed caller view
     errorTypes: seq[Value]
+    errorLease: RootRef
 
   GeneNativeFn = object
     refCount: int
@@ -658,6 +690,7 @@ type
     callImpl: NativeCallProc
     acceptsNamed: bool
     fastKind: NativeFastKind
+    errorMetadata: NativeErrorMetadata
 
   # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
@@ -886,9 +919,11 @@ type
     awaited: bool
     external: bool
     result: Value
+    failed: bool
     errorMsg: string
     errorValue: Value
     hasErrorValue: bool
+    panicked: bool
     panicMsg: string
     panicValue: Value
     hasPanicValue: bool
@@ -898,6 +933,18 @@ type
     resultType: Value
     errorType: Value
     boundaryScope: Scope
+
+  TaskPayload* = object
+    value*: Value
+    cancelled*: bool
+    hasError*: bool
+    errorMessage*: string
+    errorValue*: Value
+    hasErrorValue*: bool
+    hasPanic*: bool
+    panicMessage*: string
+    panicValue*: Value
+    hasPanicValue*: bool
 
   ChannelState = ref object
     lock: Lock
@@ -1107,6 +1154,8 @@ type
     trNativeWrapper
 
   TypeData = ref object of GeneObjectData
+    valueRefs: int        # boxed references, excluding temporary Nim views
+    scopeEscaped: bool   # later reads must promote a weakened declaration scope
     name: string
     contractPending: bool
     annotationRefBits: uint64 # borrowed nominal/protocol identity in owned code
@@ -1134,7 +1183,7 @@ type
                           # contract.
     fields: seq[TypeField]
     bodyFields: seq[TypeBodyField]
-    scope: Scope          # strong only for future escaped-type anchoring
+    scope: Scope          # retains the declaration environment after escape
     weakScope: pointer    # defining scope for scope-owned type metadata
     requiredProtocols: seq[Value]
     derivedProtocols: seq[Value]
@@ -1197,6 +1246,7 @@ type
     messages: OrderedTable[string, Value] # own messages, keyed by local name
     deriveFn: Value
     universal: bool         # explicit ^universal conformance, never inferred
+    errorRoot: bool         # the runtime's Error protocol, not a same-named declaration
     parents: seq[Value]      # direct ^inherit parents (docs/spec/protocols.md)
     closure: seq[Value]      # full transitive message closure, ancestors
                              # first, deduped by message identity; same-name
@@ -1447,6 +1497,8 @@ template objData(v: Value): GeneObjectData =
 proc boxObject(data: GeneObjectData): Value =
   var tag = OBJECT_TAG
   case data.objKind
+  of okType:
+    TypeData(data).valueRefs = 1
   of okEnv:
     EnvData(data).cycleRefs = 1
     tag = CYCLE_OBJECT_TAG
@@ -2206,6 +2258,17 @@ proc tryCollectObjectCycle(seed: GeneObjectData) =
 template threadedRc: bool =
   compileOption("threads")
 
+when compileOption("threads"):
+  var errorEvidenceLocks: array[64, Lock]
+  for lock in errorEvidenceLocks.mitems: initLock(lock)
+
+template withErrorEvidenceLock(node: ptr GeneNode, body: untyped) =
+  when compileOption("threads"):
+    withLock errorEvidenceLocks[(cast[uint](node) shr 4) mod 64]:
+      body
+  else:
+    body
+
 template isSharedFlag(flag: var int): bool =
   when threadedRc:
     atomicLoadN(addr flag, ATOMIC_ACQUIRE) != 0
@@ -2343,8 +2406,19 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
       markSharedBits(item.bits, seen)
   of NODE_TAG:
     let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
-    markManualShared(p)
+    var evidence: ErrorEvidence
+    withErrorEvidenceLock(p):
+      if p.errorEvidence != nil and p.errorEvidence.weakEnvironment != nil:
+        p.errorEvidence.environment = cast[Scope](p.errorEvidence.weakEnvironment)
+        p.errorEvidence.weakEnvironment = nil
+      markManualShared(p)
+      evidence = p.errorEvidence
     markSharedBits(p.head.bits, seen)
+    if evidence != nil:
+      markSharedBits(evidence.protocol.bits, seen)
+      markSharedBits(evidence.formatter.bits, seen)
+      for _, item in evidence.diagnostics:
+        markSharedBits(item.bits, seen)
     for _, item in p.props:
       markSharedBits(item.bits, seen)
     for item in p.body:
@@ -2378,7 +2452,16 @@ proc rcRetain(bits: uint64) =
   of INT64_TAG:  retainManual(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
   of LIST_TAG:   retainManual(cast[ptr GeneList](bits and PAYLOAD_MASK))
   of MAP_TAG:    retainManual(cast[ptr GeneMap](bits and PAYLOAD_MASK))
-  of NODE_TAG:   retainManual(cast[ptr GeneNode](bits and PAYLOAD_MASK))
+  of NODE_TAG:
+    let node = cast[ptr GeneNode](bits and PAYLOAD_MASK)
+    retainManual(node)
+    # Reading an error out of its owning scope makes its formatter environment
+    # independently reachable again, just as escaping a scope-owned function
+    # strengthens its captured scope. The nominal node itself never changes.
+    if not isSharedFlag(node.shared) and node.errorEvidence != nil and
+        node.errorEvidence.weakEnvironment != nil:
+      node.errorEvidence.environment = cast[Scope](node.errorEvidence.weakEnvironment)
+      node.errorEvidence.weakEnvironment = nil
   of FUNCTION_TAG:  retainManual(cast[ptr GeneFunction](bits and PAYLOAD_MASK))
   of NATIVE_FN_TAG: retainManual(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG:
@@ -2405,8 +2488,134 @@ proc rcRetain(bits: uint64) =
     else:
       discard
     GC_ref(data)
-  of OBJECT_TAG: GC_ref(cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK)))
+  of OBJECT_TAG:
+    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    if data.objKind == okType:
+      let typ = TypeData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr typ.valueRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc typ.valueRefs
+      else:
+        inc typ.valueRefs
+      if not isSharedFlag(data.shared) and typ.scopeEscaped and
+          typ.scope == nil and typ.weakScope != nil:
+        typ.scope = cast[Scope](typ.weakScope)
+    GC_ref(data)
   else: discard
+
+proc weakenOwnedErrorEnvironment(node: ptr GeneNode, bits: uint64) =
+  # Only direct scope bindings count: a container holding the error might also
+  # be reachable outside the scope. Shared nodes keep their strong pin because
+  # inspecting another lane's bindings is not a permitted publication action.
+  if isSharedFlag(node.shared) or node.errorEvidence == nil or
+      node.errorEvidence.environment == nil:
+    return
+  let evidence = node.errorEvidence
+  let owner = evidence.environment
+  let references = node.refCount
+  var owned = 0
+  for i in 0 ..< owner.slots.len:
+    if owner.slots[i].bits == bits: inc owned
+  for binding in owner.vars.values:
+    if binding.bits == bits: inc owned
+  if owned == references and owned > 0:
+    evidence.weakEnvironment = cast[pointer](owner)
+    evidence.environment = nil
+  # Releasing `owner` may free `node`; callers must not touch it afterwards.
+
+proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
+  # The type keeps its nominal identity when it escapes. Once only its own
+  # declaration's bindings retain it, release the scope back-edge; a later
+  # read promotes it again in rcRetain. Do not inspect another lane's scope.
+  if isSharedFlag(typ.shared) or typ.scope == nil:
+    return
+  let owner = typ.scope
+  # A loaded module already owns its root namespace through this_mod. Its
+  # lifetime is managed by module activation/release; repeatedly walking that
+  # entire declaration graph cannot reclaim the type's environment here.
+  if owner.moduleRoot and owner.vars.hasKey("this_mod"):
+    let moduleBits = owner.vars.getOrDefault("this_mod").bits
+    if moduleBits shr TAG_SHIFT == OBJECT_TAG and
+        cast[GeneObjectData](cast[pointer](moduleBits and PAYLOAD_MASK)).objKind == okModule:
+      return
+  var references = initTable[uint64, int]()
+  template count(value: Value) =
+    block:
+      let key = value.bits
+      if key shr TAG_SHIFT >= MANAGED_MIN:
+        references[key] = references.getOrDefault(key) + 1
+  for i in 0 ..< owner.slots.len:
+    count(owner.slots[i])
+  for value in owner.vars.values:
+    count(value)
+  count(owner.annotationSelfType)
+  for value in owner.requiredImplTypes:
+    count(value)
+  for impl in owner.impls:
+    count(impl.receiver)
+    for binding in impl.selfBindings:
+      count(binding.selfType)
+    for source in impl.bodySources:
+      count(source.receiver)
+  # A scope can own the type indirectly through an instance or a subtype.
+  # Follow only containers whose *entire* reference count is already accounted
+  # for by this scope. An externally retained/shared container must keep the
+  # type's declaration environment alive, even if it is also stored here.
+  var visited = initHashSet[uint64]()
+  while true:
+    var ready: seq[uint64]
+    for key, owned in references:
+      if key == bits or key in visited:
+        continue
+      var total = -1
+      case key shr TAG_SHIFT
+      of LIST_TAG:
+        let value = cast[ptr GeneList](key and PAYLOAD_MASK)
+        if not isSharedFlag(value.shared): total = value.refCount
+      of MAP_TAG:
+        let value = cast[ptr GeneMap](key and PAYLOAD_MASK)
+        if not isSharedFlag(value.shared): total = value.refCount
+      of NODE_TAG:
+        let value = cast[ptr GeneNode](key and PAYLOAD_MASK)
+        if not isSharedFlag(value.shared): total = value.refCount
+      of OBJECT_TAG:
+        let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
+        if value.objKind == okType and not isSharedFlag(value.shared):
+          total = TypeData(value).valueRefs
+      else: discard
+      if owned == total:
+        ready.add key
+    if ready.len == 0:
+      break
+    for key in ready:
+      visited.incl key
+      case key shr TAG_SHIFT
+      of LIST_TAG:
+        for value in cast[ptr GeneList](key and PAYLOAD_MASK).items:
+          count(value)
+      of MAP_TAG:
+        for value in cast[ptr GeneMap](key and PAYLOAD_MASK).entries.values:
+          count(value)
+      of NODE_TAG:
+        let node = cast[ptr GeneNode](key and PAYLOAD_MASK)
+        count(node.head)
+        for value in node.props.values: count(value)
+        for value in node.body: count(value)
+        for value in node.meta.values: count(value)
+      of OBJECT_TAG:
+        let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
+        forObjectEdges(value, child):
+          if child shr TAG_SHIFT >= MANAGED_MIN:
+            references[child] = references.getOrDefault(child) + 1
+      else: discard
+  let owned = references.getOrDefault(bits)
+  if owned > 0 and owned == typ.valueRefs:
+    # Scope destruction can release this same type again. Detach first so a
+    # nested release cannot revisit the scope field being destroyed.
+    var retired = move typ.scope
+    retired = nil
 
 proc rcRelease(bits: uint64) =
   let payload = bits and PAYLOAD_MASK
@@ -2434,6 +2643,8 @@ proc rcRelease(bits: uint64) =
       if p.resourceAuthorityId != 0 and resourceAuthorityReleaseHook != nil:
         resourceAuthorityReleaseHook(p.resourceAuthorityId)
       reset(p[]); dealloc(p); trackFree()
+      return
+    weakenOwnedErrorEnvironment(p, bits)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     releaseManual(p):
@@ -2482,7 +2693,18 @@ proc rcRelease(bits: uint64) =
     if shouldTryCycle:
       tryCollectObjectCycle(data)
   of OBJECT_TAG:
-    GC_unref(cast[GeneObjectData](cast[pointer](payload)))
+    let data = cast[GeneObjectData](cast[pointer](payload))
+    if data.objKind == okType:
+      let typ = TypeData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchSub(addr typ.valueRefs, 1, ATOMIC_ACQ_REL)
+        else:
+          dec typ.valueRefs
+      else:
+        dec typ.valueRefs
+      weakenOwnedTypeEnvironment(typ, bits)
+    GC_unref(data)
   else: discard
 
 # ---------------------------------------------------------------------------
@@ -2875,6 +3097,97 @@ proc nodeImmutable*(v: Value): bool =
 proc nodeConstructing*(v: Value): bool {.inline.} =
   v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing
 
+proc errorEvidence*(v: Value): ErrorEvidence {.inline.} =
+  if v.tagOf == NODE_TAG:
+    let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    withErrorEvidenceLock(node):
+      result = node.errorEvidence
+
+proc cloneErrorEvidence(source: ErrorEvidence): ErrorEvidence =
+  result = ErrorEvidence(diagnostics: initPropTable())
+  if source != nil:
+    result.classification = source.classification
+    result.protocol = source.protocol
+    result.formatter = source.formatter
+    result.environment = if source.environment != nil: source.environment
+                         else: cast[Scope](source.weakEnvironment)
+    for key, value in source.diagnostics: result.diagnostics[key] = value
+
+proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.closure.}) =
+  ## Readers retain an immutable snapshot. Build each update outside the lock,
+  ## then publish it only if its source snapshot is still current. The callback
+  ## edits only its private copy and may be retried after a concurrent update.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "error evidence requires a node")
+  let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  while true:
+    let previous = v.errorEvidence
+    let candidate = cloneErrorEvidence(previous)
+    update(candidate)
+    # Published evidence can be read by another lane immediately. Prepare its
+    # value graph before publication, without holding a node lock recursively.
+    markSharedValue(candidate.protocol)
+    markSharedValue(candidate.formatter)
+    for _, item in candidate.diagnostics: markSharedValue(item)
+    var published = false
+    var retired: ErrorEvidence
+    withErrorEvidenceLock(node):
+      if node.errorEvidence == previous:
+        retired = move node.errorEvidence
+        node.errorEvidence = candidate
+        published = true
+    reset(retired) # releasing an old environment must happen outside the lock
+    if published: return
+
+proc installErrorWitness*(v, protocol, formatter: Value, environment: Scope) =
+  v.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+    # Concurrent first admissions agree on whichever complete witness wins.
+    if evidence.protocol.kind == vkProtocol: return
+    evidence.protocol = protocol
+    evidence.formatter = formatter
+    evidence.environment = environment)
+
+proc setFailureClassification*(v: Value, classification: FailureClassification) =
+  v.updateErrorEvidence(proc (evidence: ErrorEvidence) =
+    evidence.classification = classification)
+
+proc copyErrorEvidence*(copy, original: Value): Value =
+  ## Container copies keep the failure's origin and selected implementation,
+  ## but get their own diagnostic table. Mutating/rethrowing a copy must not
+  ## update the original's trace. Fresh constructors and serde do not call this.
+  let source = original.errorEvidence
+  if copy.tagOf == NODE_TAG and source != nil:
+    let node = cast[ptr GeneNode](copy.bits and PAYLOAD_MASK)
+    let candidate = cloneErrorEvidence(source)
+    var retired: ErrorEvidence
+    withErrorEvidenceLock(node):
+      retired = move node.errorEvidence
+      node.errorEvidence = candidate
+    reset(retired)
+  copy
+
+proc inheritErrorEvidence*(copy, original: Value): Value =
+  ## A transported node needs its own scope pin: weakening the original's
+  ## scope-owned back-edge must not weaken a separately reachable copy.
+  copy.copyErrorEvidence(original)
+
+proc generatedFailure*(v: Value): bool {.inline.} =
+  let evidence = v.errorEvidence
+  evidence != nil and evidence.classification != fcOrdinaryError
+
+proc hasErrorWitness*(v: Value): bool {.inline.} =
+  let evidence = v.errorEvidence
+  evidence != nil and evidence.protocol.kind == vkProtocol
+
+proc errorProperties*(v: Value): PropTable =
+  ## A diagnostic view for reporters. Ordinary node props/equality remain the
+  ## original payload; diagnostic selectors may fall back to this side data.
+  result = v.props
+  let evidence = v.errorEvidence
+  if evidence != nil:
+    for key, value in evidence.diagnostics:
+      if not result.hasKey(key): result[key] = value
+
 proc finishNodeConstruction*(v: Value) =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
@@ -3005,6 +3318,15 @@ proc fnErrorTypes*(v: Value): lent seq[Value] =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorTypes
 
+proc fnErrorLease*(v: Value): RootRef =
+  if v.kind == vkFunction: cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorLease
+  else: nil
+
+proc setFnErrorLease*(v: Value, lease: RootRef) =
+  if v.kind != vkFunction:
+    raise newException(FieldDefect, "error proof lease requires a function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorLease = lease
+
 
 proc nativeFnName*(v: Value): lent string {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
@@ -3030,6 +3352,11 @@ proc nativeFastKind*(v: Value): NativeFastKind {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).fastKind
+
+proc nativeErrorMetadata*(v: Value): lent NativeErrorMetadata {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).errorMetadata
 
 proc ffiCallableData(v: Value): FfiCallableData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiCallable:
@@ -3072,7 +3399,7 @@ proc newCallerEnv*(scope: Scope): Value
 proc callerEnvScope*(v: Value): Scope
 proc deactivateCallerEnv*(v: Value)
 
-proc escapeWeakFunctions*(v: Value): Value
+proc escapeWeakFunctions*(v: Value, protectedScope: Scope = nil): Value
 
 proc nsName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
@@ -3399,7 +3726,7 @@ proc newTaskState(done = false, cancelRequested = false, cancelled = false,
                   awaited = false, external = false, taskResult = NIL, errorMsg = "",
                   errorValue = NIL, hasErrorValue = false,
                   panicMsg = "", panicValue = NIL,
-                  hasPanicValue = false): TaskState =
+                  hasPanicValue = false, failed = false, panicked = false): TaskState =
   new(result)
   initLock(result.lock)
   when compileOption("threads") and defined(gcAtomicArc):
@@ -3410,9 +3737,11 @@ proc newTaskState(done = false, cancelRequested = false, cancelled = false,
   result.awaited = awaited
   result.external = external
   result.result = taskResult
+  result.failed = failed or errorMsg.len > 0 or hasErrorValue
   result.errorMsg = errorMsg
   result.errorValue = errorValue
   result.hasErrorValue = hasErrorValue
+  result.panicked = panicked or panicMsg.len > 0 or hasPanicValue
   result.panicMsg = panicMsg
   result.panicValue = panicValue
   result.hasPanicValue = hasPanicValue
@@ -3471,14 +3800,14 @@ proc fillStreamBuffer(stream: Value, data: StreamData): bool =
     var pulled: StreamPullResult
     try:
       pulled = data.pull(stream)
-    except CatchableError as producerError:
+    except CatchableError:
       # A producer failure is terminal. Close the adaptor and its owned source,
       # but preserve the producer's first error if cleanup also fails.
       try:
         stream.closeStream()
       except CatchableError:
         discard
-      raise producerError
+      raise
     if data.closed:
       return false
     if not pulled.has:
@@ -3506,7 +3835,7 @@ proc streamHasNext*(v: Value): bool =
         discard
       if data.checkFailure != nil:
         data.checkFailure(v, producerError)
-      raise producerError
+      raise
   data.skipStreamVoids()
   not data.closed and data.index < data.items.len
 
@@ -3526,7 +3855,7 @@ proc streamPeek*(v: Value): Value =
         discard
       if data.checkFailure != nil:
         data.checkFailure(v, producerError)
-      raise producerError
+      raise
   data.items[data.index]
 
 proc streamNext*(v: Value): Value =
@@ -3712,7 +4041,7 @@ proc taskResult*(v: Value): Value =
 proc taskHasError*(v: Value): bool =
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
-    result = data.errorMsg.len > 0 or data.hasErrorValue
+    result = data.failed
 
 proc taskErrorMsg*(v: Value): string =
   let data {.cursor.} = taskState(v)
@@ -3732,7 +4061,7 @@ proc taskHasErrorValue*(v: Value): bool =
 proc taskHasPanic*(v: Value): bool =
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
-    result = data.panicMsg.len > 0 or data.hasPanicValue
+    result = data.panicked
 
 proc taskPanicMsg*(v: Value): string =
   let data {.cursor.} = taskState(v)
@@ -3761,15 +4090,59 @@ proc taskBoundaryScope*(v: Value): Scope =
 proc taskSharesState*(a, b: Value): bool =
   a.kind == vkTask and b.kind == vkTask and taskData(a).state == taskData(b).state
 
+proc readTaskPayload(v: Value, consume: static bool): TaskPayload =
+  ## Checking consumption and taking the outcome are one operation. Separate
+  ## reads let concurrent awaiters observe a payload after another cleared it.
+  let data {.cursor.} = taskState(v)
+  withTaskStateLock(data):
+    if data.awaited:
+      when consume:
+        raise newException(GeneError, "task result has already been awaited")
+      else:
+        raise newException(GeneError, "task result has already been consumed by await")
+    if not data.done:
+      raise newException(GeneError, "task result is not ready")
+    result.cancelled = data.cancelled
+    result.hasError = data.failed
+    result.hasErrorValue = data.hasErrorValue
+    result.hasPanic = data.panicked
+    result.hasPanicValue = data.hasPanicValue
+    when consume:
+      data.awaited = true
+      data.cancelRequested = false
+      result.value = move data.result
+      result.errorMessage = move data.errorMsg
+      result.errorValue = move data.errorValue
+      result.panicMessage = move data.panicMsg
+      result.panicValue = move data.panicValue
+      data.failed = false
+      data.hasErrorValue = false
+      data.panicked = false
+      data.hasPanicValue = false
+    else:
+      result.value = data.result
+      result.errorMessage = data.errorMsg
+      result.errorValue = data.errorValue
+      result.panicMessage = data.panicMsg
+      result.panicValue = data.panicValue
+
+proc consumeTaskPayload*(v: Value): TaskPayload =
+  readTaskPayload(v, true)
+
+proc peekTaskPayload*(v: Value): TaskPayload =
+  readTaskPayload(v, false)
+
 proc clearTaskPayload*(v: Value) =
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     data.awaited = true
     data.cancelRequested = false
     data.result = NIL
+    data.failed = false
     data.errorMsg = ""
     data.errorValue = NIL
     data.hasErrorValue = false
+    data.panicked = false
     data.panicMsg = ""
     data.panicValue = NIL
     data.hasPanicValue = false
@@ -4693,6 +5066,10 @@ proc protocolName*(v: Value): lent string =
     raise newException(FieldDefect, "value is not a Protocol")
   ProtocolData(objData(v)).name
 
+proc isErrorProtocol*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okProtocol and
+    ProtocolData(objData(v)).errorRoot
+
 proc protocolScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
     raise newException(FieldDefect, "value is not a Protocol")
@@ -5389,7 +5766,9 @@ proc newFunction*(name: string, params: sink seq[string],
   p.syntaxFn = syntaxFn
   p.capturesCallerEnv = scope != nil and scope.borrowedCallerEnv
   p.errorTypes = errorTypes
-  boxPtr(FUNCTION_TAG, p)
+  result = boxPtr(FUNCTION_TAG, p)
+  if scope != nil and scope.application != nil and scope.application.errorFunctionCreated != nil:
+    scope.application.errorFunctionCreated(result, scope)
 
 proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
   let src = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
@@ -5406,13 +5785,20 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
   p.syntaxFn = src.syntaxFn
   p.capturesCallerEnv = src.capturesCallerEnv
   p.errorTypes = src.errorTypes
+  p.errorLease = src.errorLease
   boxPtr(FUNCTION_TAG, p)
 
 proc functionForScopeStorage*(v: Value, owner: Scope): Value =
   ## Store scope-owned functions with a weak back-edge so the owner can be
   ## reclaimed after its ordinary references are dropped.
-  if v.kind == vkFunction and not v.fnHasWeakScope and v.fnScope == owner:
-    return cloneFunctionCapture(v, owner, weak = true)
+  if v.kind == vkFunction:
+    let capture = v.fnScope
+    if not v.fnHasWeakScope and capture == owner:
+      return cloneFunctionCapture(v, owner, weak = true)
+    if v.fnHasWeakScope and capture != owner:
+      # A weak binding is borrowed from its exact owner. Passing/storing that
+      # function in a different scope must keep the original capture alive.
+      return cloneFunctionCapture(v, capture, weak = false)
   if v.kind == vkCallableView:
     let target = functionForScopeStorage(v.callableViewTarget, owner)
     if target.bits != v.callableViewTarget.bits:
@@ -5566,7 +5952,8 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
     for key, val in v.meta:
       meta[key] = weakenScopeFunctions(val, owner)
     newNode(weakenedHead, props = props, body = body, meta = meta,
-            immutable = v.nodeImmutable, constructing = v.nodeConstructing)
+            immutable = v.nodeImmutable, constructing = v.nodeConstructing).
+      inheritErrorEvidence(v)
   of vkBuffer:
     checkBuffer(v)
     let data {.cursor.} = bufferView(v)
@@ -5601,23 +5988,37 @@ proc escapeStreamReturn*(value: Value, caller: Scope): Value =
         if owner == nil:
           safe = false
           break
-      if escapeWeakFunctions(data.buffer).bits != data.buffer.bits:
+      if escapeWeakFunctions(data.buffer, caller).bits != data.buffer.bits:
         safe = false
         break
       current = data.source
     if safe:
       return value
-  escapeWeakFunctions(value)
+  escapeWeakFunctions(value, caller)
 
-proc escapeWeakFunctions*(v: Value): Value =
+proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
   ## Values that leave their defining run/eval boundary must keep weakly-stored
   ## lexical scopes alive. Rebuild only the containers that actually contain a
   ## weak function.
   if not v.isManaged:
     return v
+  template escapeNested(value: Value): Value =
+    escapeWeakFunctions(value, protectedScope)
   case v.kind
+  of vkType:
+    if objData(v).objKind == okType:
+      let data = TypeData(objData(v))
+      if data.scope == nil and data.weakScope != nil:
+        var current = protectedScope
+        while current != nil:
+          if cast[pointer](current) == data.weakScope:
+            return v
+          current = current.parent
+        data.scope = cast[Scope](data.weakScope)
+        data.scopeEscaped = true
+    v
   of vkCallableView:
-    let target = escapeWeakFunctions(v.callableViewTarget)
+    let target = escapeNested(v.callableViewTarget)
     if target.bits == v.callableViewTarget.bits:
       return v
     newCallableView(target, v.callableViewSignature,
@@ -5628,20 +6029,20 @@ proc escapeWeakFunctions*(v: Value): Value =
     v
   of vkList:
     for i, item in v.listItems:
-      let escaped = escapeWeakFunctions(item)
+      let escaped = escapeNested(item)
       if escaped.bits != item.bits:
         var items = newSeq[Value](v.listItems.len)
         for j in 0 ..< i:
           items[j] = v.listItems[j]
         items[i] = escaped
         for j in i + 1 ..< v.listItems.len:
-          items[j] = escapeWeakFunctions(v.listItems[j])
+          items[j] = escapeNested(v.listItems[j])
         return newList(items, v.listImmutable)
     v
   of vkMap:
     var changed = false
     for key, val in v.mapEntries:
-      let escaped = escapeWeakFunctions(val)
+      let escaped = escapeNested(val)
       if escaped.bits != val.bits:
         changed = true
         break
@@ -5649,25 +6050,25 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     var entries = initPropTable()
     for key, val in v.mapEntries:
-      entries[key] = escapeWeakFunctions(val)
+      entries[key] = escapeNested(val)
     newMap(entries, v.mapImmutable)
   of vkSet:
     for i, item in v.setItems:
-      let escaped = escapeWeakFunctions(item)
+      let escaped = escapeNested(item)
       if escaped.bits != item.bits:
         var items = newSeq[Value](v.setItems.len)
         for j in 0 ..< i:
           items[j] = v.setItems[j]
         items[i] = escaped
         for j in i + 1 ..< v.setItems.len:
-          items[j] = escapeWeakFunctions(v.setItems[j])
+          items[j] = escapeNested(v.setItems[j])
         return newSet(items)
     v
   of vkHashMap:
     var changed = false
     for entry in v.hashMapEntries:
-      let escapedKey = escapeWeakFunctions(entry.key)
-      let escapedVal = escapeWeakFunctions(entry.val)
+      let escapedKey = escapeNested(entry.key)
+      let escapedVal = escapeNested(entry.val)
       if escapedKey.bits != entry.key.bits or escapedVal.bits != entry.val.bits:
         changed = true
         break
@@ -5675,29 +6076,29 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     var entries: seq[HashMapEntry]
     for entry in v.hashMapEntries:
-      entries.add HashMapEntry(key: escapeWeakFunctions(entry.key),
-                               val: escapeWeakFunctions(entry.val))
+      entries.add HashMapEntry(key: escapeNested(entry.key),
+                               val: escapeNested(entry.val))
     newHashMap(entries)
   of vkPipeline:
-    let escapedInitial = escapeWeakFunctions(v.pipelineInitial)
+    let escapedInitial = escapeNested(v.pipelineInitial)
     var changed = escapedInitial.bits != v.pipelineInitial.bits
     if not changed:
       for stage in v.pipelineStages:
-        if escapeWeakFunctions(stage.head).bits != stage.head.bits:
+        if escapeNested(stage.head).bits != stage.head.bits:
           changed = true
           break
         for _, val in stage.props:
-          if escapeWeakFunctions(val).bits != val.bits:
+          if escapeNested(val).bits != val.bits:
             changed = true
             break
         if changed: break
         for item in stage.body:
-          if escapeWeakFunctions(item).bits != item.bits:
+          if escapeNested(item).bits != item.bits:
             changed = true
             break
         if changed: break
         for _, val in stage.meta:
-          if escapeWeakFunctions(val).bits != val.bits:
+          if escapeNested(val).bits != val.bits:
             changed = true
             break
         if changed: break
@@ -5707,37 +6108,37 @@ proc escapeWeakFunctions*(v: Value): Value =
     for stage in v.pipelineStages:
       var props = initPropTable()
       for key, val in stage.props:
-        props[key] = escapeWeakFunctions(val)
+        props[key] = escapeNested(val)
       var body: seq[Value]
       for item in stage.body:
-        body.add escapeWeakFunctions(item)
+        body.add escapeNested(item)
       var meta = initPropTable()
       for key, val in stage.meta:
-        meta[key] = escapeWeakFunctions(val)
+        meta[key] = escapeNested(val)
       stages.add PipelineStage(
         kind: stage.kind,
-        head: escapeWeakFunctions(stage.head),
+        head: escapeNested(stage.head),
         props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc, slot: stage.slot)
     newPipeline(escapedInitial, stages, v.pipelineImmutable)
   of vkNode:
-    let escapedHead = escapeWeakFunctions(v.head)
+    let escapedHead = escapeNested(v.head)
     var changed = escapedHead.bits != v.head.bits
     if not changed:
       for _, val in v.props:
-        let escaped = escapeWeakFunctions(val)
+        let escaped = escapeNested(val)
         if escaped.bits != val.bits:
           changed = true
           break
     if not changed:
       for item in v.body:
-        let escaped = escapeWeakFunctions(item)
+        let escaped = escapeNested(item)
         if escaped.bits != item.bits:
           changed = true
           break
     if not changed:
       for _, val in v.meta:
-        let escaped = escapeWeakFunctions(val)
+        let escaped = escapeNested(val)
         if escaped.bits != val.bits:
           changed = true
           break
@@ -5745,20 +6146,21 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     var props = initPropTable()
     for key, val in v.props:
-      props[key] = escapeWeakFunctions(val)
+      props[key] = escapeNested(val)
     var body: seq[Value]
     for item in v.body:
-      body.add escapeWeakFunctions(item)
+      body.add escapeNested(item)
     var meta = initPropTable()
     for key, val in v.meta:
-      meta[key] = escapeWeakFunctions(val)
+      meta[key] = escapeNested(val)
     newNode(escapedHead, props = props, body = body, meta = meta,
-            immutable = v.nodeImmutable, constructing = v.nodeConstructing)
+            immutable = v.nodeImmutable, constructing = v.nodeConstructing).
+      inheritErrorEvidence(v)
   of vkStream:
     let data = streamData(v)
-    let escapedSource = escapeWeakFunctions(data.source)
-    let escapedCallable = escapeWeakFunctions(data.callable)
-    let escapedBuffer = escapeWeakFunctions(data.buffer)
+    let escapedSource = escapeNested(data.source)
+    let escapedCallable = escapeNested(data.callable)
+    let escapedBuffer = escapeNested(data.buffer)
     if escapedSource.bits == data.source.bits and
         escapedCallable.bits == data.callable.bits and
         escapedBuffer.bits == data.buffer.bits:
@@ -5786,9 +6188,11 @@ proc escapeWeakFunctions*(v: Value): Value =
     var cancelled: bool
     var awaited: bool
     var sourceResult: Value
+    var failed: bool
     var errorMsg: string
     var sourceError: Value
     var hasErrorValue: bool
+    var panicked: bool
     var panicMsg: string
     var sourcePanic: Value
     var hasPanicValue: bool
@@ -5798,15 +6202,17 @@ proc escapeWeakFunctions*(v: Value): Value =
       cancelled = state.cancelled
       awaited = state.awaited
       sourceResult = state.result
+      failed = state.failed
       errorMsg = state.errorMsg
       sourceError = state.errorValue
       hasErrorValue = state.hasErrorValue
+      panicked = state.panicked
       panicMsg = state.panicMsg
       sourcePanic = state.panicValue
       hasPanicValue = state.hasPanicValue
-    let escapedResult = escapeWeakFunctions(sourceResult)
-    let escapedError = escapeWeakFunctions(sourceError)
-    let escapedPanic = escapeWeakFunctions(sourcePanic)
+    let escapedResult = escapeNested(sourceResult)
+    let escapedError = escapeNested(sourceError)
+    let escapedPanic = escapeNested(sourcePanic)
     if escapedResult.bits == sourceResult.bits and
         escapedError.bits == sourceError.bits and
         escapedPanic.bits == sourcePanic.bits:
@@ -5817,9 +6223,11 @@ proc escapeWeakFunctions*(v: Value): Value =
                          cancelled = cancelled,
                          awaited = awaited,
                          taskResult = escapedResult,
+                         failed = failed,
                          errorMsg = errorMsg,
                          errorValue = escapedError,
                          hasErrorValue = hasErrorValue,
+                         panicked = panicked,
                          panicMsg = panicMsg,
                          panicValue = escapedPanic,
                          hasPanicValue = hasPanicValue),
@@ -5838,7 +6246,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     var changed = false
     var escapedItems = newSeq[Value](sourceItems.len)
     for i, item in sourceItems:
-      escapedItems[i] = escapeWeakFunctions(item)
+      escapedItems[i] = escapeNested(item)
       if escapedItems[i].bits != item.bits:
         changed = true
     if not changed:
@@ -5880,15 +6288,15 @@ proc escapeWeakFunctions*(v: Value): Value =
       sourceParentFailureEvents = data.parentFailureEvents
       sourceParentFailureDeadLetters = data.parentFailureDeadLetters
       sourceQueue = data.queue
-    let escapedState = escapeWeakFunctions(sourceState)
-    let escapedRestartInit = escapeWeakFunctions(sourceRestartInit)
-    let escapedHandler = escapeWeakFunctions(sourceHandler)
-    let escapedFailureEvents = escapeWeakFunctions(sourceFailureEvents)
-    let escapedFailureDeadLetters = escapeWeakFunctions(sourceFailureDeadLetters)
+    let escapedState = escapeNested(sourceState)
+    let escapedRestartInit = escapeNested(sourceRestartInit)
+    let escapedHandler = escapeNested(sourceHandler)
+    let escapedFailureEvents = escapeNested(sourceFailureEvents)
+    let escapedFailureDeadLetters = escapeNested(sourceFailureDeadLetters)
     let escapedParentFailureEvents =
-      escapeWeakFunctions(sourceParentFailureEvents)
+      escapeNested(sourceParentFailureEvents)
     let escapedParentFailureDeadLetters =
-      escapeWeakFunctions(sourceParentFailureDeadLetters)
+      escapeNested(sourceParentFailureDeadLetters)
     var escapedQueue = newSeq[ActorMessage](sourceQueue.len)
     var changed = escapedState.bits != sourceState.bits or
       escapedRestartInit.bits != sourceRestartInit.bits or
@@ -5898,8 +6306,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       escapedParentFailureEvents.bits != sourceParentFailureEvents.bits or
       escapedParentFailureDeadLetters.bits != sourceParentFailureDeadLetters.bits
     for i, item in sourceQueue:
-      let escapedMessage = escapeWeakFunctions(item.message)
-      let escapedReply = escapeWeakFunctions(item.reply)
+      let escapedMessage = escapeNested(item.message)
+      let escapedReply = escapeNested(item.reply)
       escapedQueue[i] = ActorMessage(message: escapedMessage,
                                      reply: escapedReply,
                                      workerAllowed: item.workerAllowed)
@@ -5926,13 +6334,13 @@ proc escapeWeakFunctions*(v: Value): Value =
     boxObject(escapedData)
   of vkActorContext:
     let actor = v.actorContextActor
-    let escapedActor = escapeWeakFunctions(actor)
+    let escapedActor = escapeNested(actor)
     if escapedActor.bits == actor.bits:
       return v
     boxObject(ActorContextData(objKind: okActorContext, actor: escapedActor))
   of vkActorStep:
     let state = v.actorStepState
-    let escapedState = escapeWeakFunctions(state)
+    let escapedState = escapeNested(state)
     if escapedState.bits == state.bits:
       return v
     boxObject(ActorStepData(objKind: okActorStep,
@@ -5945,8 +6353,8 @@ proc escapeWeakFunctions*(v: Value): Value =
     withReplyToLock(data):
       sourceResult = data.result
       sourceTask = data.task
-    let escapedResult = escapeWeakFunctions(sourceResult)
-    let escapedTask = escapeWeakFunctions(sourceTask)
+    let escapedResult = escapeNested(sourceResult)
+    let escapedTask = escapeNested(sourceTask)
     if escapedResult.bits != sourceResult.bits or
         escapedTask.bits != sourceTask.bits:
       withReplyToLock(data):
@@ -5957,23 +6365,23 @@ proc escapeWeakFunctions*(v: Value): Value =
     v
   of vkEnv:
     let data = EnvData(objData(v))
-    let escapedParent = escapeWeakFunctions(data.parent)
+    let escapedParent = escapeNested(data.parent)
     var changed = escapedParent.bits != data.parent.bits
     var bindings = initTable[string, Value]()
     for key, val in data.bindings:
-      let escaped = escapeWeakFunctions(val)
+      let escaped = escapeNested(val)
       bindings[key] = escaped
       if escaped.bits != val.bits:
         changed = true
     var imports = newSeq[Value](data.imports.len)
     for i, item in data.imports:
-      let escaped = escapeWeakFunctions(item)
+      let escaped = escapeNested(item)
       imports[i] = escaped
       if escaped.bits != item.bits:
         changed = true
-    let escapedModule = escapeWeakFunctions(data.module)
-    let escapedCapabilities = escapeWeakFunctions(data.capabilities)
-    let escapedPolicy = escapeWeakFunctions(data.policy)
+    let escapedModule = escapeNested(data.module)
+    let escapedCapabilities = escapeNested(data.capabilities)
+    let escapedPolicy = escapeNested(data.policy)
     if escapedModule.bits != data.module.bits or
         escapedCapabilities.bits != data.capabilities.bits or
         escapedPolicy.bits != data.policy.bits:
@@ -5994,7 +6402,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     var changed = false
     var items = newSeq[Value](data.items.len)
     for i, item in data.items:
-      let escaped = escapeWeakFunctions(item)
+      let escaped = escapeNested(item)
       items[i] = escaped
       if escaped.bits != item.bits:
         changed = true
@@ -6004,7 +6412,7 @@ proc escapeWeakFunctions*(v: Value): Value =
                          elemScope: data.elemScope, items: items))
   of vkFfiCallable:
     let data = ffiCallableData(v)
-    let escapedLibrary = escapeWeakFunctions(data.library)
+    let escapedLibrary = escapeNested(data.library)
     if escapedLibrary.bits == data.library.bits:
       return v
     boxObject(FfiCallableData(objKind: okFfiCallable,
@@ -6065,6 +6473,7 @@ proc tryFailTask*(v: Value, message: string, value: Value = NIL,
     data.cancelRequested = false
     data.external = false
     data.errorMsg = message
+    data.failed = true
     data.errorValue = stored
     data.hasErrorValue = hasValue
     result = true
@@ -6085,6 +6494,7 @@ proc tryPanicTask*(v: Value, message: string, value: Value = NIL,
     data.cancelRequested = false
     data.external = false
     data.panicMsg = message
+    data.panicked = true
     data.panicValue = stored
     data.hasPanicValue = hasValue
     result = true
@@ -6098,6 +6508,7 @@ proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =
   boxObject(TaskData(objKind: okTask,
                      state: newTaskState(done = true,
+                       failed = true,
                        errorMsg = message,
                        errorValue = escapeWeakFunctions(value),
                        hasErrorValue = hasValue)))
@@ -6106,6 +6517,7 @@ proc newPanickedTask*(message: string, value: Value = NIL,
                       hasValue = false): Value =
   boxObject(TaskData(objKind: okTask,
                      state: newTaskState(done = true,
+                       panicked = true,
                        panicMsg = message,
                        panicValue = escapeWeakFunctions(value),
                        hasPanicValue = hasValue)))
@@ -6583,23 +6995,27 @@ proc classifyNativeFastKind(name: string): NativeFastKind =
   else: nfkNone
 
 proc newNativeFn*(name: string, impl: NativeProc,
-                  acceptsNamed = false): Value =
+                  acceptsNamed = false,
+                  errorMetadata = NativeErrorMetadata()): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.impl = impl
   p.acceptsNamed = acceptsNamed
   p.fastKind = classifyNativeFastKind(name)
+  p.errorMetadata = errorMetadata
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNativeCallFn*(name: string, impl: NativeCallProc,
-                      acceptsNamed = true): Value =
+                      acceptsNamed = true,
+                      errorMetadata = NativeErrorMetadata()): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.callImpl = impl
   p.acceptsNamed = acceptsNamed
   p.fastKind = nfkNone
+  p.errorMetadata = errorMetadata
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",
@@ -7057,7 +7473,8 @@ proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL, parents: sink seq[Value] = @[],
                   signatures: openArray[Value] = [],
                   hasDefaults: openArray[bool] = [],
-                  universal = false, scope: Scope = nil): Value =
+                  universal = false, scope: Scope = nil,
+                  errorRoot = false): Value =
   ## `parents` are already-constructed ^inherit ancestors (docs/spec/protocols.md).
   ## The message closure is flattened eagerly, ancestors first, deduped by
   ## message identity. A protocol message is identified by its defining
@@ -7081,7 +7498,7 @@ proc newProtocol*(name: string, messageNames: openArray[string],
   let data = ProtocolData(objKind: okProtocol, name: name,
                           weakScope: cast[pointer](scope),
                           messages: initOrderedTable[string, Value](),
-                          deriveFn: deriveFn, universal: universal,
+                          deriveFn: deriveFn, universal: universal, errorRoot: errorRoot,
                           parents: parents,
                           closure: closure)
   let protocol = boxObject(data)
