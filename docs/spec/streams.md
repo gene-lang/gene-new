@@ -61,9 +61,11 @@ bodies retain their execution kind and run with the actual receiver:
 ```
 
 An inheriting `impl ... ^^override` keeps omitted messages, including their
-generator bodies. A replacement declares its own execution kind: using yield
-still requires `^^generator`, while an ordinary Stream-returning body may
-satisfy the same inherited signature. Generator kind is not an additional
+generator bodies. The flag is local to each message definition: a replacement
+with an absent flag or `^generator false` is ordinary, even when the parent
+implementation or protocol default is a generator. A replacement using yield
+must declare `^^generator` itself. Both bodies may satisfy the same inherited
+Stream return contract. Generator kind is not an additional
 dimension of callable signature equality. The ordinary override and
 declaration-bound `Self` rules continue to apply.
 

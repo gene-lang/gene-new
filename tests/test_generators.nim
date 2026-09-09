@@ -134,6 +134,44 @@ suite "explicit generator declarations":
     """), newGlobalScope())
     check value.print == "[[8] \"child\"]"
 
+  test "impl replacements do not inherit a generator flag":
+    const source = """
+      (protocol Items
+        (message ^^generator values [events : (List Int)] : (Stream Int Never)
+          (yield 0)))
+      (type Parent ^props {})
+      (type Child : Parent ^props {})
+      (type Reused : Parent ^props {})
+      (impl Items for Parent
+        (message ^^generator values [events : (List Int)] : (Stream Int Never)
+          (events .push 1) (yield 1)))
+      (impl Items for Child ^^override
+        (message values CHILD_FLAG [events : (List Int)] : (Stream Int Never)
+          (events .push 2) ($to_stream [2])))
+      (let events : (List Int) [])
+      (let eager ((Child) .Items:values events))
+      (let at_call ($size events))
+      (let first (eager .next))
+      (let lazy ((Reused) .Items:values events))
+      (let before_pull ($size events))
+      (let inherited (lazy .next))
+      (eager .close)
+      (lazy .close)
+      [at_call first before_pull inherited ($size events)]
+    """
+    for flag in ["", "^generator false"]:
+      let value = run(compileSource(source.replace("CHILD_FLAG", flag)), newGlobalScope())
+      check value.print == "[1 2 1 1 2]"
+    expect GeneError:
+      discard compileSource("""
+        (protocol Items (message values [] : (Stream Int Never)))
+        (type Parent ^props {}) (type Child : Parent ^props {})
+        (impl Items for Parent
+          (message ^^generator values [] : (Stream Int Never) (yield 1)))
+        (impl Items for Child ^^override
+          (message values [] : (Stream Int Never) (yield 2)))
+      """)
+
   test "protocol defaults preserve generator behavior through protocol and type inheritance":
     let value = run(compileSource("""
       (protocol Items

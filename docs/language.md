@@ -381,9 +381,10 @@ Raw `yield void` emits nothing. Stream consumers and `close` manage upstream
 cleanup; an early close runs suspended `ensure` blocks. Do not assume a lazy
 pipeline has executed because it was constructed.
 
-Messages also accept `^^generator`; inherited messages retain their execution
-kind. Ordinary functions and messages may return Streams without being
-generators. See the [generator and Stream contract](spec/streams.md) and
+Messages also accept `^^generator`. Reusing a parent's message keeps that body's
+execution kind. A replacement uses its own flag; omitting it makes the new body
+ordinary, even when the parent was a generator. Ordinary functions and messages
+may return Streams. See the [generator and Stream contract](spec/streams.md) and
 [generator example](../examples/generators.gene).
 
 ## Modules
