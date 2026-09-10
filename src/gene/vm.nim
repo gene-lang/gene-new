@@ -4,7 +4,7 @@ import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, ne
             options, osproc, sets, strutils, tables, times, unicode]
 import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
           host_capabilities, package, printer, reader, types, type_contracts]
-import ./[error_analysis, native_errors]
+import ./[callable_reflection, error_analysis, native_errors]
 import ./ext/logging
 export type_contracts
 
@@ -7216,6 +7216,8 @@ proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeBindCall(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeSignature(args: openArray[Value]): Value {.nimcall.}
+proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeRequireRootLane(args: openArray[Value],
@@ -8245,6 +8247,10 @@ proc buildBuiltins(app: Application): Scope =
                                       acceptsNamed = false))
   runtimeScope.define("bind_call",
                       newNativeCallFn("runtime/bind_call", biRuntimeBindCall))
+  runtimeScope.define("signature",
+                      newNativeFn("runtime/signature", biRuntimeSignature))
+  runtimeScope.define("bind_shape",
+                      newNativeFn("runtime/bind_shape", biRuntimeBindShape))
   runtimeScope.define("require_root_lane",
                       newNativeCallFn("runtime/require_root_lane",
                                       biRuntimeRequireRootLane,
@@ -22419,13 +22425,41 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
     value.setReplyToResultType(resultType, scope)
   value
 
-proc callableRestType(value: Value): Value =
-  if value.kind == vkSymbol and value.symVal.len > 3 and
-      value.symVal.endsWith("..."):
-    return newSym(value.symVal[0 ..< value.symVal.len - 3])
-  if value.kind == vkNode and value.head.isSymbol("...") and value.body.len == 1:
-    return value.body[0]
-  NIL
+proc reflectionTypeLookup(expr: Value, scope: Scope): Value {.nimcall.} =
+  # Match normal boundary lookup precedence, but only read initialized static
+  # type bindings. No evaluation, module import, or impl dispatch occurs here.
+  if expr.kind == vkSymbol:
+    if expr.symVal == "Self": return lexicalSelfType(scope)
+    let builtin = matchesBuiltinType(expr.symVal, NIL)
+    if builtin.known and expr.symVal notin
+        ["Task", "Channel", "ActorRef", "ActorContext", "ActorStep", "ReplyTo"]:
+      return expr
+    if scope != nil:
+      let typ = staticImplOperand(scope, expr)
+      if typ.kind in {vkType, vkProtocol}:
+        if builtin.known and typ.isBuiltinSurfaceType: return expr
+        return typ
+    if builtin.known: return expr
+  elif scope != nil:
+    let typ = staticImplOperand(scope, expr)
+    if typ.kind in {vkType, vkProtocol}:
+      if typ.isBuiltinSurfaceType: return newSym(typ.typeName)
+      return typ
+  VOID
+
+proc biRuntimeSignature(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("runtime/signature", args)
+  describeCallable(args[0], reflectionTypeLookup)
+
+proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "runtime/bind_shape expects a signature, positional List, and named PropMap")
+  rejectCallerEnvEscape("runtime/bind_shape arguments", args[1])
+  rejectCallerEnvEscape("runtime/bind_shape named arguments", args[2])
+  bindArgumentShape(args[0], args[1], args[2])
+
+proc callableRestType(value: Value): Value = reflectedRestType(value)
 
 proc validateCallableSignature(signature: Value, scope: Scope): Value =
   if signature.kind != vkNode or not signature.head.isSymbol("Callable") or

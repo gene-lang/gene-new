@@ -112,6 +112,70 @@ retained Error conformance, and implementation status.
 Executable coverage: `tests/test_unify_callable.nim` and shared `callable.*`
 fixtures in `tests/transpile/fixtures.json`.
 
+## Callable reflection
+
+`$runtime/signature(target)` returns an immutable `SignatureDescription` node.
+Ordinary Gene functions and checked `Callable` views have known argument
+shapes. Other targets, including raw native functions, messages, constructors,
+selectors, custom callables, and fexprs, return `^shape_known false`; inspection
+does not invoke their behavior. A checked view over any of those ordinary
+callables still exposes its enforced outer contract.
+
+The format-1 description has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `category`, `origin`, `completeness`, `shape_known` | Callable category, declared/checked-view provenance, known/partial/unknown metadata, and whether shape binding is supported |
+| `positional`, `named`, `rest`, `minimum_positional` | Ordered parameter descriptions, optional rest description, and minimum positional count |
+| Parameter `name`, `local`, `required`, `has_default`, `type_known`, `type` | External name/local alias, omission rules, presence of explicit default code, and safely described type |
+| `result_known`, `result` | Declared result contract; an unannotated result is unknown, distinct from explicit `Any` |
+| `invocation_errors` | `checked`, `known`, and `types`; an unchecked row has unknown types, while a checked empty row has an empty list |
+| `deferred` | For a supported `(Stream T E)` or `(Task T E)` result, `known`, `kind`, `value_type`, and `error_type`; otherwise `known` is false |
+| `name`, `source`, `doc`, `execution` | Function name, source position, literal `@doc` text, and ordinary/generator execution kind when known |
+| `contract_identity`, `contract_version` | Compiler contract identifiers when available; these are descriptive and do not identify a particular closure instance |
+
+Checked views do not invent positional parameter names, target defaults,
+source information, or target execution kind. Their named parameters use the
+existing explicit nil-admission rule for omission. The description does not
+claim a checked target was statically proved compatible.
+
+Reflection only reads initialized type bindings and supported type structure.
+It never evaluates defaults or arbitrary annotations, imports modules, invokes
+getters or protocol methods, or exports frames/captures/native pointers. It
+copies annotation structure without meta and retains ordinary nominal type
+identities. Dynamic annotations and unsupported type forms have
+`type_known false` and `type nil`. Unannotated parameters have the existing
+`Any` admission contract. User `@signature`/`@wrapped` metadata cannot replace
+the effective contract. Only a literal string `@doc` is copied from declaration
+metadata.
+
+`$runtime/bind_shape(description, positional, named)` takes a positional List
+and named PropMap. It checks counts, required names, and unexpected names
+without evaluating defaults, adapting values, or invoking a target. Unknown
+shapes and invalid envelopes raise an ordinary RuntimeError. The result is an
+immutable `BoundShape` with shallow snapshots in `positional` and `named`, plus
+`omitted_positional` indices and `omitted_named` names. Nested mutable payloads
+retain identity; borrowed CallerEnv and construction values cannot escape
+through the envelope.
+
+Omitted values are never filled with nil or computed defaults. Supplied nil
+stays supplied. Raw Void values already present in positional input remain
+supplied. Ordinary Gene maps remove Void-valued entries before this API runs;
+a named Void therefore cannot be transported through its PropMap input. Use
+ordinary direct named invocation for that case. Reflection does not change
+the existing collection or call-envelope semantics.
+
+A description, including a copied or edited description, provides no authority
+and is not a reusable type-check proof. Invocation must still go through the
+real target's ordinary boundary. Descriptions are fresh snapshots with no
+function-name cache; existing descriptions retain their type identities after
+replacement. Read a fresh description when registering a replacement callable.
+
+The implementation is shared by the native and wasm VM. The transpiled web
+profile rejects this runtime surface. Coverage lives in
+`tests/test_callable_reflection.nim`, with a real tool adapter in the Harness
+package's `src/reflection.gene` and `tests/reflection_smoke.gene`.
+
 ## Binding an invocation
 
 `runtime/bind_call` returns an ordinary zero-argument function that invokes an

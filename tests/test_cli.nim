@@ -144,6 +144,8 @@ suite "cli — gene run":
     for (fixture, marker) in [
       ("examples/gene-harness/tests/registry_smoke.gene",
        "registry_smoke: ok"),
+      ("examples/gene-harness/tests/reflection_smoke.gene",
+       "reflection_smoke: ok"),
       ("examples/gene-harness/tests/seam_registry_smoke.gene",
        "seam_registry_smoke: ok"),
       ("examples/gene-harness/tests/turn_transaction_smoke.gene",

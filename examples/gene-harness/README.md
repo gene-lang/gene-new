@@ -188,6 +188,33 @@ chains or `Tool:*` prefixes. Help and model introspection render from the same
 rows the dispatcher uses. `transaction_diff` (and `diff` within an active turn)
 shows staged registry and composition changes before commit.
 
+## Tools from callable contracts
+
+The `src/reflection.gene` module builds a tool row from an ordinary function
+or checked `Callable` view. It derives parameter documentation and an input
+schema without evaluating defaults:
+
+```gene
+(import * : reflect from "./reflection")
+(fn search [query : Str, ^limit : Int = 10] : Str query)
+(contribute h "search_plugin" "tools" (reflect/tool_row "search" search))
+(invoke_registry_row h "tools" "search"
+  [{^positional ["gene"] ^named {}}])
+```
+
+The input is an envelope containing `positional` and `named`. Omitted
+arguments reach the target unchanged, so its defaults run at invocation.
+The existing registry owner, capability, and execution-budget boundaries
+still govern the call. A signature or an external schema does not authorize
+execution or replace the target's type checks.
+
+Automatic input schemas cover `Str`, `Int`, `Float`, `Bool`, `Nil`, optional
+types, and typed Lists. Other parameter contracts require an explicit
+`^input_schema`; unsupported callable shapes are rejected. Gene maps remove
+Void entries, so the named input envelope distinguishes omission from nil
+but cannot transport a named Void. Use ordinary direct invocation for that
+case. See [the reflection contract](../../docs/spec/calls.md#callable-reflection).
+
 ## Generated plugin contract
 
 Generated code imports the data-only stable API and returns a descriptor from

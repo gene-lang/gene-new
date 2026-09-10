@@ -167,6 +167,30 @@ Defaults run at call time and may refer to earlier parameters. For exact
 named-void and callable-shape rules, see [calls](spec/calls.md) and
 [optional binding](spec/nil-void.md).
 
+### Describing a callable
+
+`$runtime/signature` reads an ordinary function's parameters and declared
+contracts without calling it or evaluating its defaults. Checked `Callable`
+views describe their enforced outer contract. `$runtime/bind_shape` checks
+argument counts and names, preserving omitted arguments for the actual call:
+
+```gene runnable
+(fn greet [name : Str, ^ending : Str = "!"] : Str
+  $"Hello, ${name}${ending}")
+(let description ($runtime/signature greet))
+(let bound ($runtime/bind_shape description ["Ada"] {}))
+(let positional bound/positional)
+(let named bound/named)
+(greet positional ... named ...) # "Hello, Ada!"
+```
+
+Descriptions are immutable data. Unknown types or error contracts are marked
+unknown; inspecting a signature does not execute type expressions. Shape
+binding does not type-check values or create an invocation permission: the
+actual call still checks the target and its authority. This surface is
+available in the VM; the transpiled web profile rejects it. See the
+[reflection contract](spec/calls.md#callable-reflection) for fields and limits.
+
 ## Control flow
 
 Only false, nil, and void are falsy. Zero and an empty string are truthy.

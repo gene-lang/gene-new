@@ -1,0 +1,44 @@
+(mod reflection_smoke)
+(import [new_harness contribute row invoke_registry_row remove_owner] from "../src/kernel")
+(import * : reflect from "../src/reflection")
+
+(var defaults 0)
+(fn next [] (set defaults (+ defaults 1)) defaults)
+(fn search [query : Str, ^limit count : Int = (next)] : Str
+  ^errors [] $"${query}:${count}")
+(let h (new_harness))
+(let tool (reflect/tool_row "search" search))
+($assert (== defaults 0) "tool generation must not evaluate defaults")
+($assert (== tool/signature/named/0/name "limit"))
+($assert (== tool/signature/named/0/local "count"))
+($assert (== tool/input_schema/properties/positional/prefixItems/0/type "string"))
+(contribute h "search_plugin" "tools" tool)
+($assert (== (invoke_registry_row h "tools" "search"
+  [{^positional ["a"] ^named {}}]) "a:1"))
+($assert (== (invoke_registry_row h "tools" "search"
+  [{^positional ["b"] ^named {}}]) "b:2"))
+($assert (== (invoke_registry_row h "tools" "search"
+  [{^positional ["c"] ^named {^limit 8}}]) "c:8"))
+($assert (== defaults 2))
+($assert (try
+  (invoke_registry_row h "tools" "search" [{^positional [] ^named {}}])
+  false catch Error true))
+($assert (try
+  (invoke_registry_row h "tools" "search" [{^positional [1] ^named {}}])
+  false catch TypeError true))
+
+(fn opaque [value] value)
+($assert (try (reflect/tool_row "opaque" opaque) false catch Error true))
+(let explicit (reflect/tool_row "opaque" opaque ^input_schema {^type "object"}))
+($assert (== explicit/signature/positional/0/type (quote Any)))
+
+(let checked : (Callable [Int Int] Int ^errors []) +)
+(contribute h "math_plugin" "tools" (reflect/tool_row "add" checked))
+($assert (== (invoke_registry_row h "tools" "add"
+  [{^positional [2 3] ^named {}}]) 5))
+(remove_owner h "search_plugin")
+($assert (== (row h "tools" "search") void))
+($assert (try
+  (invoke_registry_row h "tools" "search" [{^positional ["old"] ^named {}}])
+  false catch Error true))
+($println "reflection_smoke: ok")

@@ -1,0 +1,94 @@
+# Callable reflection incubates in the Harness package. Runtime primitives
+# expose inert data; tools still enter through the kernel's owner boundary.
+(mod reflection)
+
+(type ReflectionError ^props {^message Str} ^impl [Error])
+(impl Error for ReflectionError)
+
+(fn signature [target] ($runtime/signature target))
+(fn bind_shape [description positional, ^named named = #{}]
+  ($runtime/bind_shape description positional named))
+
+(fn schema_type [typ]
+  (if (== typ (quote Str)) (return {^type "string"}))
+  (if (== typ (quote Int)) (return {^type "integer"}))
+  (if (== typ (quote Float)) (return {^type "number"}))
+  (if (== typ (quote Bool)) (return {^type "boolean"}))
+  (if (== typ (quote Nil)) (return {^type "null"}))
+  (if (&& (== ($head typ) (quote ?)) (== typ/body/.size 1))
+    (return {^anyOf [(schema_type typ/0) {^type "null"}]}))
+  (if (&& (== ($head typ) (quote List)) (== typ/body/.size 1))
+    (return {^type "array" ^items (schema_type typ/0)}))
+  (fail (ReflectionError
+    ^message "type has no automatic external schema; supply ^input_schema explicitly")))
+
+(fn parameter_schema [parameter]
+  (if_not parameter/type_known
+    (fail (ReflectionError
+      ^message "unknown parameter type; supply ^input_schema explicitly")))
+  (schema_type parameter/type))
+
+(fn input_schema [description]
+  (if_not description/shape_known
+    (fail (ReflectionError ^message "callable has no supported argument shape")))
+  (let items ($thaw #[]))
+  (for parameter in description/positional
+    (items .push (parameter_schema parameter)))
+  (let positional
+    {^type "array" ^minItems description/minimum_positional})
+  (if_yes (> items/.size 0) (positional .put "prefixItems" items))
+  (if (== description/rest nil)
+    (positional .put "maxItems" items/.size)
+    (positional .put "items" (parameter_schema description/rest)))
+  (let properties ($thaw #{}))
+  (let required ($thaw #[]))
+  (for parameter in description/named
+    (properties .put parameter/name (parameter_schema parameter))
+    (if_yes parameter/required (required .push parameter/name)))
+  {^type "object" ^additionalProperties false
+   ^required ["positional" "named"]
+   ^properties
+     {^positional positional
+      ^named {^type "object" ^properties properties
+              ^required required ^additionalProperties false}}})
+
+(fn parameter_doc [parameter, fallback : Str]
+  (let label (if (== parameter/name nil) fallback parameter/name))
+  (let typ (if parameter/type_known ($to_str parameter/type) "unknown"))
+  (let optional (if parameter/required "" " (optional)"))
+  $"${label}: ${typ}${optional}")
+
+(fn signature_doc [name : Str, description]
+  (let parts ($thaw #[]))
+  (var index 0)
+  (for parameter in description/positional
+    (parts .push (parameter_doc parameter $"arg${index}"))
+    (set index (+ index 1)))
+  (for parameter in description/named
+    (let text (parameter_doc parameter "named"))
+    (parts .push $"^${text}"))
+  (if_not (== description/rest nil)
+    (parts .push $"...: ${description/rest/type}"))
+  (let result (if description/result_known ($to_str description/result) "unknown"))
+  $"${name} ${parts} -> ${result}")
+
+(type ReflectedTool ^private true ^props {^target Any ^signature Any})
+(impl Callable for ReflectedTool
+  (message apply [call]
+    (if_not (== call/body/.size 1)
+      (fail (ReflectionError ^message "reflected tool expects one argument envelope")))
+    (let input call/0)
+    (let bound (bind_shape self/signature input/positional ^named input/named))
+    (let positional bound/positional)
+    (let named bound/named)
+    (self/target positional ... named ...)))
+
+(fn tool_row [name : Str, target, ^input_schema explicit_schema = nil]
+  (let description (signature target))
+  (if_not description/shape_known
+    (fail (ReflectionError ^message "tool requires a function or checked Callable view")))
+  (let schema
+    (if (== explicit_schema nil) (input_schema description) explicit_schema))
+  {^name name ^doc (signature_doc name description)
+   ^signature description ^input_schema ($freeze schema)
+   ^run (ReflectedTool ^target target ^signature description)})

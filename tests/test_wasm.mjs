@@ -49,6 +49,22 @@ const cases = [
   ['(type Box ^props {^n Int} (message value [] self/n)) ' +
    '([(Box ^n 2) (Box ^n 3)] => Self:value -> $into [])', 0, "[2 3]", ""],
   ['(let f : (Callable [Int Int] Int) +) (f 2 3)', 0, "5", ""],
+  ['(var count 0) (fn next [] (set count (+ count 1)) count) ' +
+   '(fn target [x : Int, ^n : Int = (next)] : Int (+ x n)) ' +
+   '(let s ($runtime/signature target)) ' +
+   '(let b ($runtime/bind_shape s [10] {})) ' +
+   '(let args b/positional) (let named b/named) ' +
+   '[count s/positional/0/type (target args ... named ...) (target args ... named ...)]',
+   0, '[0 Int 11 12]', ''],
+  ['(let checked : (Callable [Int Int] Int ^errors []) +) ' +
+   '(let s ($runtime/signature checked)) ' +
+   '(let b ($runtime/bind_shape s [2 3] {})) (let args b/positional) ' +
+   '[s/origin s/result (checked args ...)]',
+   0, '[checked_view Int 5]', ''],
+  ['(var called 0) (fn annotation [] (set called 1) Int) ' +
+   '(fn target [x : (annotation)] x) (let s ($runtime/signature target)) ' +
+   '[called s/positional/0/type_known s/result_known]',
+   0, '[0 false false]', ''],
   ['(type Box ^props {^n Int} (message value [] self/n)) ' +
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
