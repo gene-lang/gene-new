@@ -10,6 +10,10 @@ import std/[dynlib, json]
 import ./ext/logging
 import ./[types, vm]
 
+export vm.NativeSyncCallback, vm.newNativeSyncCallback,
+       vm.beginNativeCallbackCall, vm.withNativeSyncCallback,
+       vm.invokeNativeSyncCallback, vm.finishNativeCallbackCall
+
 type
   GeneRootProc* = proc(value: Value): GeneRoot
   GeneRootGetProc* = proc(root: GeneRoot): Value
@@ -78,6 +82,7 @@ type
     gsOk
     gsError
     gsPanic
+    gsCancelled
 
   GeneRoot* = ref object
     value: Value
@@ -85,6 +90,8 @@ type
 
   GeneCallbackHandle* = ref object
     callee: GeneRoot
+    ownerThreadId: int
+    active: bool
     released: bool
 
   GeneThreadAttachment* = ref object
@@ -148,8 +155,7 @@ type
     logEnabled*: GeneLogEnabledProc
     logEmit*: GeneLogEmitProc
 
-const GeneApiVersion* = 3   # 3: authority tokens were removed from the value
-                            #    ABI; hosts configure runtime capability context.
+const GeneApiVersion* = 4   # 4: explicit cancellation status and owned synchronous callbacks.
 const GeneApiFeatureCount* = 35
 const GeneModuleInitSymbol* = "gene_module_init"
 
@@ -198,10 +204,11 @@ proc panicResult(e: ref GenePanic): GeneResult =
   if e.hasErrVal:
     result.errorValue = e.errVal
 
+proc cancelResult(e: ref GeneCancel): GeneResult =
+  GeneResult(status: gsCancelled, message: e.msg)
+
 proc geneRoot*(value: Value): GeneRoot =
-  if vm.carriesConstruction(value):
-    raise newException(GeneError,
-      "native root cannot retain an in-progress constructed instance")
+  vm.requireNativeRootable(value)
   GeneRoot(value: value)
 
 proc geneRootGet*(root: GeneRoot): Value =
@@ -224,6 +231,8 @@ proc geneCall*(callee: Value, call: GeneCall): GeneResult =
     result = errorResult(e)
   except GenePanic as e:
     result = panicResult(e)
+  except GeneCancel as e:
+    result = cancelResult(e)
 
 proc newGeneModule*(name: string, path = "",
                     scope: Scope = nil): GeneModule =
@@ -482,12 +491,20 @@ proc geneTaskCancel*(task: Value, scope: Scope): GeneResult =
     result = panicResult(e)
 
 proc geneNewCallback*(callee: Value): GeneCallbackHandle =
-  GeneCallbackHandle(callee: geneRoot(callee))
+  GeneCallbackHandle(callee: geneRoot(callee), ownerThreadId: getThreadId())
 
 proc geneCallCallback*(callback: GeneCallbackHandle,
                        call: GeneCall): GeneResult =
   try:
-    if callback == nil or callback.released:
+    if callback == nil:
+      result.status = gsError
+      result.message = "native callback has been released"
+      return
+    if callback.ownerThreadId != getThreadId():
+      result.status = gsError
+      result.message = "native callback belongs to another lane"
+      return
+    if callback.released:
       result.status = gsError
       result.message = "native callback has been released"
       return
@@ -495,15 +512,39 @@ proc geneCallCallback*(callback: GeneCallbackHandle,
       result.status = gsError
       result.message = "native thread is not attached"
       return
-    result = geneCall(geneRootGet(callback.callee), call)
+    if callback.active:
+      result.status = gsError
+      result.message = "synchronous native callback re-entry is not supported"
+      return
+    callback.active = true
+    try:
+      let callee = geneRootGet(callback.callee)
+      let scope = if call.dispatchScope != nil: call.dispatchScope
+                  elif callee.kind == vkFunction: callee.fnScope
+                  else: nil
+      let frame = newNativeSyncCallback(callee, scope)
+      beginNativeCallbackCall(frame)
+      withNativeSyncCallback(frame):
+        result.value = invokeNativeSyncCallback(frame, call.args,
+          call.namedNames, call.namedValues, call.site)
+        result.status = gsOk
+      finishNativeCallbackCall(frame)
+    finally:
+      callback.active = false
   except GeneError as e:
     result = errorResult(e)
   except GenePanic as e:
     result = panicResult(e)
+  except GeneCancel as e:
+    result = cancelResult(e)
 
 proc geneReleaseCallback*(callback: GeneCallbackHandle) =
-  if callback == nil or callback.released:
-    return
+  if callback == nil: return
+  if callback.ownerThreadId != getThreadId():
+    raise newException(GeneError, "native callback belongs to another lane")
+  if callback.released: return
+  if callback.active:
+    raise newException(GeneError, "cannot release an executing native callback")
   geneRootRelease(callback.callee)
   callback.released = true
 

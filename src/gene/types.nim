@@ -1010,6 +1010,7 @@ type
     mutable: bool
     owned: bool
     closed: bool
+    activeBorrows: int     # owner-lane native calls pin disposal/transfer
     release: CPtrReleaseProc
     foreignRelease: pointer
 
@@ -4649,12 +4650,28 @@ proc cPtrIsNull*(v: Value): bool =
   let data = cPtrData(v)
   data.address == nil
 
+proc borrowCPtr*(v: Value) =
+  ## The caller keeps a strong Value until releaseCPtrBorrow. This pin only
+  ## prevents explicit disposal/transfer while a native operation is active.
+  let data = cPtrData(v)
+  if data.closed or data.address == nil:
+    raise newException(GeneError, "cannot borrow a closed C pointer")
+  inc data.activeBorrows
+
+proc releaseCPtrBorrow*(v: Value) =
+  let data = cPtrData(v)
+  if data.activeBorrows <= 0:
+    raise newException(GeneError, "C pointer has no active borrow")
+  dec data.activeBorrows
+
 proc closeCPtr*(v: Value) =
   let data = cPtrData(v)
   if not data.owned:
     raise newException(GeneError, "cannot close a borrowed C pointer")
   if data.closed:
     return
+  if data.activeBorrows > 0:
+    raise newException(GeneError, "cannot close a C pointer while a native call borrows it")
   if data.release != nil and data.address != nil:
     data.release(data.address)
   elif data.foreignRelease != nil and data.address != nil:
@@ -4673,6 +4690,8 @@ proc relinquishCPtr*(v: Value) =
   let data = cPtrData(v)
   if data.closed:
     return
+  if data.activeBorrows > 0:
+    raise newException(GeneError, "cannot transfer a C pointer while a native call borrows it")
   data.address = nil
   data.closed = true
 
@@ -4682,6 +4701,8 @@ proc restoreCPtr*(v: Value, address: pointer) =
   ## back, or the pointer has no owner at all — the wrapper is closed and
   ## nothing will ever release it.
   let data = cPtrData(v)
+  if data.activeBorrows > 0:
+    raise newException(GeneError, "cannot replace a C pointer while a native call borrows it")
   data.address = address
   data.closed = false
 

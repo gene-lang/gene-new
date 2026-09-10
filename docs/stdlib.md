@@ -108,6 +108,37 @@ Postgres is available through `$db/postgres` with the same Db operations and
 its backend-specific connection and placeholder syntax. Do not interpolate
 untrusted values into SQL.
 
+SQLite also supports synchronous C-backed row visitation:
+
+```gene runnable
+(import $db/sqlite [open Db visit_text_rows])
+(let db (open ":memory:"))
+(let rows [])
+(try
+  (visit_text_rows db "select 1 as id union all select 2"
+    (fn [columns values]
+      (rows .push [columns values])
+      true))
+  rows
+  ensure (db .Db:close))
+# [[["id"] ["1"]] [["id"] ["2"]]]
+```
+
+`visit_text_rows` accepts one query with result columns that SQLite reports as
+read-only, without SQL parameters. The callback receives copied column-name
+and value Lists, preserving duplicate names and SQL NULL as nil. Values follow
+SQLite's text/C-string conversion; use `Db:query` for typed results, blobs,
+embedded-NUL data, and parameter binding. The callback returns Bool: true
+continues and false stops normally. The operation returns the number of rows
+delivered, including the stopping row.
+
+This operation runs on the owning root lane. Callback errors, panic, and
+cancellation propagate after SQLite returns; waits and native callback re-entry
+are rejected. The active connection cannot be reused or closed by its callback,
+including through its raw owned handle. Disposal and ownership transfer remain
+blocked until the native borrow ends. See the
+[native callback contract](spec/modules.md#synchronous-native-callbacks).
+
 ## Serialization and persistence
 
 For Gene data, start with the data-only serde pair:

@@ -92,7 +92,10 @@ move. Do not recreate a second directory of overlapping feature designs.
 Current open areas include hosted registry publication/signing, native/resource
 build recipes and application distribution, JIT, production M:N scheduling,
 full compile-time function macros/hygiene, static effects and exhaustiveness,
-foreign callbacks, and optional runtime event instrumentation.
+general foreign callback factories and retained/queued callback modes, and
+optional runtime event instrumentation. Call-scoped synchronous native callbacks
+on the owning root lane are implemented, with SQLite text-row visitation as
+their first library consumer; see the [native callback contract](spec/modules.md#synchronous-native-callbacks).
 
 The application EventBus is implemented; VM-wide event production is not.
 Bundled Gene-source library delivery and general-intelligence experiments are

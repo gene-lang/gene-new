@@ -6026,12 +6026,18 @@ else:
 const SQLITE_OK = 0
 const SQLITE_ROW = 100
 const SQLITE_DONE = 101
+const SQLITE_ABORT = 4
 let SQLITE_TRANSIENT = cast[pointer](-1)
+
+type SqliteRowCallback = proc(context: pointer, columns: cint,
+                              values, names: ptr UncheckedArray[cstring]): cint {.cdecl.}
 
 type SqliteApi = object
   lib: LibHandle
   closeAddr: pointer      # sqlite3_close_v2, used as the owned-ptr release
   open: proc(filename: cstring, db: ptr pointer): cint {.cdecl.}
+  exec: proc(db: pointer, sql: cstring, callback: SqliteRowCallback,
+             context: pointer, message: ptr cstring): cint {.cdecl.}
   errmsg: proc(db: pointer): cstring {.cdecl.}
   prepare: proc(db: pointer, sql: cstring, nBytes: cint, stmt: ptr pointer,
                 tail: ptr cstring): cint {.cdecl.}
@@ -6064,6 +6070,7 @@ type SqliteApi = object
   free: proc(data: pointer) {.cdecl.}
 
 var gSqliteApi: SqliteApi
+var activeSqliteVisits {.threadvar.}: seq[pointer]
 
 proc loadSqliteApi(scope: Scope) =
   if gSqliteApi.lib != nil:
@@ -6084,6 +6091,7 @@ proc loadSqliteApi(scope: Scope) =
       address
   var api: SqliteApi
   api.open = cast[typeof(api.open)](sym"sqlite3_open")
+  api.exec = cast[typeof(api.exec)](sym"sqlite3_exec")
   api.closeAddr = sym"sqlite3_close_v2"
   api.errmsg = cast[typeof(api.errmsg)](sym"sqlite3_errmsg")
   api.prepare = cast[typeof(api.prepare)](sym"sqlite3_prepare_v2")
@@ -6115,7 +6123,9 @@ proc loadSqliteApi(scope: Scope) =
   gSqliteApi = api
 
 proc sqliteHandle(name: string, conn: Value, scope: Scope): pointer =
-  dbConnHandle(name, conn, "SqliteDb", scope)
+  result = dbConnHandle(name, conn, "SqliteDb", scope)
+  if result in activeSqliteVisits:
+    raiseDbError(name & ": connection is active in a native row callback", scope)
 
 proc sqliteError(db: pointer, where: string, scope: Scope) =
   let msg = if db == nil: "unknown sqlite error" else: $gSqliteApi.errmsg(db)
@@ -6328,6 +6338,88 @@ proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   sqlitePersistIfCommitted(args[0], db, mutated, call, scope)
   NIL
 
+type SqliteVisitContext = object
+  callback: NativeSyncCallback
+  rows: int64
+  stopped: bool
+
+proc sqliteVisitCallback(context: pointer, columns: cint,
+                         values, names: ptr UncheckedArray[cstring]): cint {.cdecl, raises: [].} =
+  # SQLite treats nonzero as abort. No C-owned array/string outlives this
+  # invocation: allocate the two Gene Lists only after the owning-lane gate.
+  result = 1
+  if context == nil: return
+  let visit = cast[ptr SqliteVisitContext](context)
+  let callback {.cursor.} = visit.callback
+  withNativeSyncCallback(callback):
+    if columns < 0 or (columns > 0 and (values == nil or names == nil)):
+      raise newException(GeneError, "SQLite callback supplied an invalid row")
+    var columnNames, row: seq[Value]
+    for i in 0 ..< int(columns):
+      if names[i] == nil:
+        raise newException(GeneError, "SQLite callback supplied an unnamed column")
+      columnNames.add newStr($names[i])
+      row.add(if values[i] == nil: NIL else: newStr($values[i]))
+    inc visit.rows
+    let keepGoing = invokeNativeSyncCallback(callback, [newList(columnNames), newList(row)])
+    visit.stopped = not keepGoing.boolVal
+    if not visit.stopped: result = 0
+
+proc biSqliteVisitTextRows(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  const operation = "sqlite/visit_text_rows"
+  if args.len != 3:
+    raise newException(GeneError, operation & " expects (conn, sql, callback)")
+  requireStr(operation & " sql", args[1])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let db = sqliteHandle(operation, args[0], scope)
+  let signature = newNode(newSym("Callable"), body = @[
+    newList(@[newNode(newSym("List"), body = @[newSym("Str")]),
+              newNode(newSym("List"), body = @[
+                newNode(newSym("?"), body = @[newSym("Str")])])]),
+    newSym("Bool")])
+  let callback = newNativeSyncCallback(args[2], scope, signature)
+  var visit = SqliteVisitContext(callback: callback)
+  var statement: pointer
+  var tail: cstring
+  var errorMessage: cstring
+  let handle = dbConnHandleValue(operation, args[0], "SqliteDb", scope)
+  borrowCPtr(handle)
+  var active = false
+  try:
+    if gSqliteApi.prepare(db, args[1].strVal.cstring, cint(args[1].strVal.len),
+                          addr statement, addr tail) != SQLITE_OK:
+      sqliteError(db, operation, scope)
+    if statement == nil:
+      raiseDbError(operation & ": expected one read-only query", scope)
+    if (tail != nil and ($tail).strip().len > 0) or
+        gSqliteApi.stmtReadonly(statement) == 0 or
+        gSqliteApi.columnCount(statement) == 0:
+      raiseDbError(operation & ": expected one read-only query", scope)
+    if gSqliteApi.bindParameterCount(statement) != 0:
+      raiseDbError(operation & ": SQL parameters are not supported", scope)
+    discard gSqliteApi.finalize(statement)
+    statement = nil
+    beginNativeCallbackCall(callback)
+    activeSqliteVisits.add db
+    active = true
+    let status = gSqliteApi.exec(db, args[1].strVal.cstring,
+      sqliteVisitCallback, addr visit, addr errorMessage)
+    # C has returned. Release the connection borrow before transporting a
+    # callback failure through the enclosing Gene boundary.
+    discard activeSqliteVisits.pop()
+    active = false
+    finishNativeCallbackCall(callback)
+    if status != SQLITE_OK and not (status == SQLITE_ABORT and visit.stopped):
+      raiseDbError(operation & ": " &
+        (if errorMessage == nil: $gSqliteApi.errmsg(db) else: $errorMessage), scope)
+    result = newInt(visit.rows)
+  finally:
+    if active: discard activeSqliteVisits.pop()
+    if statement != nil: discard gSqliteApi.finalize(statement)
+    if errorMessage != nil: gSqliteApi.free(errorMessage)
+    releaseCPtrBorrow(handle)
+    finishNativeCallbackCall(callback)
+
 proc biSqliteQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len < 2:
     raise newException(GeneError, "Db/query expects (conn, sql, params...)")
@@ -6369,6 +6461,8 @@ proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let handle = args[0].props.getOrDefault("handle", VOID)
   if handle.kind != vkCPtr:
     raiseDbError("Db/close: connection has no native handle", scope)
+  if nativeReceiverIs(scope, args[0], "SqliteDb") and handle.cPtrAddress in activeSqliteVisits:
+    raiseDbError("Db/close: connection is active in a native row callback", scope)
   if nativeReceiverIs(scope, args[0], "SqliteDb") and
       not handle.cPtrClosed and
       args[0].props.getOrDefault("path", VOID).kind == vkString and
@@ -8143,6 +8237,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let dbSqliteScope = newScope(root)
   dbSqliteScope.define("open", newNativeCallFn("sqlite/open", biSqliteOpen,
                                                acceptsNamed = false))
+  dbSqliteScope.define("visit_text_rows",
+    newNativeCallFn("sqlite/visit_text_rows", biSqliteVisitTextRows, acceptsNamed = false))
   dbSqliteScope.define("SqliteDb", sqliteDbType)
   dbSqliteScope.define("Db", dbProtocol)
   dbSqliteScope.define("DbError", dbError)

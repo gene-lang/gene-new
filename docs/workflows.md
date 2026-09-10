@@ -177,6 +177,12 @@ the exported ABI through Node.
 
 ## Native interop
 
+Call-scoped synchronous callbacks use typed native shims on the owning root
+lane. SQLite `visit_text_rows` is the first library adapter. The Nim-facing
+native API is version 4 and transports cancellation explicitly. See the
+[callback contract](spec/modules.md#synchronous-native-callbacks) for entry,
+lifetime, and failure rules.
+
 Native extensions use opaque Gene values and explicit root handles. Managed
 wrapper types own native resources; typed-native code uses explicit unboxed
 representations and generated ownership adapters.

@@ -895,6 +895,61 @@ var activeCapabilityPresence {.threadvar.}: CapabilityPresence
 var activeVmBudget {.threadvar.}: ptr EvalBudget
 var activeVmScope {.threadvar.}: ptr Scope
 var activeTask {.threadvar.}: Value
+var nativeSyncCallbackDepth {.threadvar.}: int
+
+type
+  NativeSyncCallbackState = enum
+    nscPrepared, nscCalling, nscClosed
+  NativeSyncCallback* = ref object
+    ## Native-only, call-scoped context. The foreign library borrows its
+    ## address until returning; only ownerThread may touch managed fields.
+    ownerThread: int
+    state: NativeSyncCallbackState
+    active: bool
+    foreignEntry: Atomic[bool]
+    callee: Value
+    scope: Scope
+    ceiling: CapabilityContext
+    failure: ref Exception
+
+proc nativeCallbackLane(): int {.inline, raises: [].} =
+  when defined(geneWasm) or defined(emscripten):
+    0 # C callback creation is rejected on this target.
+  else:
+    # Check OS identity even in a native --threads:off build: a C library
+    # can still attempt a callback on its own foreign thread.
+    getThreadId()
+
+proc newNativeSyncCallback*(callee: Value, scope: Scope,
+                            signature: Value = NIL): NativeSyncCallback
+proc beginNativeCallbackCall*(callback: NativeSyncCallback)
+proc enterNativeSyncCallback*(callback: NativeSyncCallback): bool {.raises: [].}
+proc leaveNativeSyncCallback*(callback: NativeSyncCallback) {.raises: [].}
+proc captureNativeCallbackFailure*(callback: NativeSyncCallback,
+                                   failure: ref Exception) {.raises: [].}
+proc invokeNativeSyncCallback*(callback: NativeSyncCallback,
+                               args: openArray[Value],
+                               namedNames: seq[string] = @[],
+                               namedValues: seq[Value] = @[],
+                               site: Value = NIL): Value
+proc finishNativeCallbackCall*(callback: NativeSyncCallback)
+
+template withNativeSyncCallback*(callback: NativeSyncCallback, body: untyped) =
+  ## Set an ABI-valid failure result before entering this template. All Gene
+  ## allocation/marshalling belongs inside it, after the foreign-lane gate.
+  if enterNativeSyncCallback(callback):
+    try:
+      body
+    except Exception as callbackFailure:
+      captureNativeCallbackFailure(callback, callbackFailure)
+    finally:
+      leaveNativeSyncCallback(callback)
+
+proc rejectNativeCallbackWait(operation: string) =
+  if nativeSyncCallbackDepth > 0:
+    raise newException(GeneError,
+      operation & " cannot suspend or run the scheduler inside a synchronous native callback")
+
 var activeSandboxCompileKey {.threadvar.}: string
 var activeSandboxCompileDir {.threadvar.}: string
 var activeSandboxGenerationId {.threadvar.}: uint64
@@ -2535,6 +2590,7 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     if state.closed:
       raiseChannelClosed(scope)
     if state.full:
+      rejectNativeCallbackWait("Channel/send")
       if currentFiberActive:
         # Inside a scheduled fiber: park the whole task until space frees up.
         var se: ref SuspendError
@@ -2606,6 +2662,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     if state.empty:
       if state.closed:
         raiseChannelClosed(scope)
+      rejectNativeCallbackWait("Channel/recv")
       if currentFiberActive:
         # Inside a scheduled fiber: park the whole task until a value arrives.
         var se: ref SuspendError
@@ -3071,6 +3128,7 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 # sends park the sender.
 
 proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  rejectNativeCallbackWait("actor/spawn")
   if args.len != 0:
     raise newException(GeneError, "actor/spawn expects no positional arguments")
   checkActorSpawnNames(call)
@@ -3138,6 +3196,7 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     if state.closed:
       raiseActorClosed(scope)
     if state.full:
+      rejectNativeCallbackWait("actor/send")
       if currentFiberActive:
         # Inside a scheduled fiber: park this task until the mailbox drains.
         var se: ref SuspendError
@@ -3161,7 +3220,7 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                                              "actor/send message", scope))
     if pushed.pushed:
       scheduleActor(actor, scope)
-      if not currentFiberActive:
+      if not currentFiberActive and nativeSyncCallbackDepth == 0:
         driveActor(actor)   # root send stays synchronous: process the message now
       return NIL
     if pushed.closed:
@@ -3221,6 +3280,7 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
         break
       if reserved.closed:
         raiseActorClosed(scope)
+      rejectNativeCallbackWait("actor/ask")
       if currentFiberActive:
         var se: ref SuspendError
         new(se)
@@ -3558,6 +3618,12 @@ proc carriesConstruction*(value: Value): bool =
   var seenValues = initHashSet[uint64]()
   var seenScopes = initHashSet[pointer]()
   carriesConstruction(value, seenValues, seenScopes)
+
+proc requireNativeRootable*(value: Value) =
+  rejectCallerEnvEscape("native root", value)
+  # Native callers can hold an in-progress value outside a VM ctor frame.
+  if value.carriesConstruction:
+    raise newException(GeneError, "native root cannot retain an in-progress constructed instance")
 
 proc scopeCarriesConstruction(scope: Scope): bool {.noinline.} =
   var seenValues = initHashSet[uint64]()
@@ -6741,6 +6807,7 @@ proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let milliseconds = requireInt64("sleep", args[0])
   if milliseconds < 0:
     raise newException(GeneError, "sleep duration must be non-negative")
+  rejectNativeCallbackWait("sleep")
   if milliseconds == 0:
     if currentFiberActive:
       var se: ref SuspendError
@@ -13726,6 +13793,7 @@ proc biTaskJoin(args: openArray[Value],
   requireTask("Task/join", args[0])
   let task = args[0]
   if not task.taskDone:
+    rejectNativeCallbackWait("Task/join")
     if currentFiberActive:
       var se: ref SuspendError
       new(se)
@@ -18517,6 +18585,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curOwnedScope = supervisorScope
           continue
         of opSpawn:
+          rejectNativeCallbackWait("spawn")
           # Spawn a child task as a scheduler fiber. The body is queued instead of
           # running inline, so CPU-only child work still cooperates through VM
           # safepoints. Worker-safe tasks receive a sparse captured-scope
@@ -18549,6 +18618,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # resume — the task is still on the stack. At the root, drive the queue.
           let task = stack[sp - 1]
           if task.kind == vkTask and not task.taskDone:
+            rejectNativeCallbackWait("await")
             if currentFiberActive and fiber != nil:
               captureContinuation(ip - 1)   # task stays on the stack for re-execution
               fiber.waitTask = task
@@ -19609,6 +19679,7 @@ proc scheduleActor(actor: Value, scope: Scope) =
     enqueueRunnable(f)
 
 proc runFiber(f: Fiber) =
+  rejectNativeCallbackWait("task execution")
   ## Run or resume `f` until it completes or parks. A spawn/await fiber settles its
   ## task and wakes its awaiters; an actor handler fiber applies its ActorStep (or
   ## failure strategy) and advances the actor to its next message. A parked fiber
@@ -20124,6 +20195,7 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   task
 
 proc schedulerRunOne(skipWorkerSafe = false): bool =
+  rejectNativeCallbackWait("scheduler")
   ## Run one runnable fiber to its next park/completion. If only timer waiters
   ## remain, sleep until the next timer expires and run the awakened fiber.
   if wakeExpiredTimers() and not hasRunnableFiber():
@@ -20144,6 +20216,7 @@ proc schedulerRunOne(skipWorkerSafe = false): bool =
   true
 
 proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool =
+  rejectNativeCallbackWait("scheduler")
   ## Run one fiber, waiting for timers only up to `deadline`. Used by root-level
   ## sleep so it can advance already-scheduled work without oversleeping its own
   ## timer.
@@ -20197,6 +20270,7 @@ proc cancelScheduledTask(task: Value): bool =
           result = true
 
 proc pumpUntilDone(task: Value, parentTask: Value) =
+  if not task.taskDone: rejectNativeCallbackWait("task wait")
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
   ## next park/completion; a parked fiber resumes only when a channel op wakes it.
   ## If the queue drains with the task unfinished, it can never finish.
@@ -28529,6 +28603,114 @@ proc call*(callee: Value, args: seq[Value], namedNames: seq[string],
     raise newException(GeneError, "native call named argument mismatch")
   applyCall(callee, args, NamedArgs(names: namedNames, values: namedValues),
             dispatchScope, site)
+
+proc requireNativeCallbackOwner(callback: NativeSyncCallback) =
+  if callback == nil:
+    raise newException(GeneError, "native callback context is nil")
+  if callback.ownerThread != nativeCallbackLane():
+    raise newException(GeneError, "native callback belongs to another lane")
+
+proc newNativeSyncCallback*(callee: Value, scope: Scope,
+                            signature: Value): NativeSyncCallback =
+  when defined(geneWasm) or defined(emscripten):
+    raise newException(GeneError, "native C callbacks are not supported by the wasm target")
+  else:
+    if scope == nil:
+      raise newException(GeneError, "synchronous native callback requires an owning scope")
+    withScopedScheduler(scope):
+      if currentEventLane() != currentScheduler().rootLane:
+        raise newException(GeneError, "synchronous native callbacks require the application's root lane")
+    if not callee.valueImplementsCallable(scope):
+      raiseTypeError("native callback target", "Callable", callee, scope)
+    requireNativeRootable(callee)
+    let target = if signature.kind == vkNil: escapeWeakFunctions(callee)
+                 else: adaptCallableView(signature, callee, scope)
+    NativeSyncCallback(ownerThread: nativeCallbackLane(), callee: target,
+      scope: scope, ceiling: scope.executionCapabilities())
+
+proc beginNativeCallbackCall*(callback: NativeSyncCallback) =
+  callback.requireNativeCallbackOwner()
+  if callback.state != nscPrepared:
+    raise newException(GeneError, "native callback context is already used or closed")
+  if nativeSyncCallbackDepth > 0:
+    raise newException(GeneError, "synchronous native callback re-entry is not supported")
+  callback.state = nscCalling
+
+proc captureNativeCallbackFailure*(callback: NativeSyncCallback,
+                                   failure: ref Exception) {.raises: [].} =
+  if callback.failure == nil:
+    if failure of GeneError or failure of GenePanic or failure of GeneCancel:
+      callback.failure = failure
+    elif failure of Defect:
+      callback.failure = newException(GenePanic, "native callback defect: " & failure.msg)
+    else:
+      callback.failure = newException(GeneError, "native callback: " & failure.msg)
+
+proc enterNativeSyncCallback*(callback: NativeSyncCallback): bool {.raises: [].} =
+  if callback == nil: return false
+  # No Gene allocations, VM entry, or mutable managed-field access before
+  # this test. The owner retains the context through foreign quiescence.
+  if callback.ownerThread != nativeCallbackLane():
+    callback.foreignEntry.store(true, moRelaxed)
+    return false
+  if callback.state != nscCalling or callback.failure != nil or
+      callback.foreignEntry.load(moRelaxed): return false
+  if callback.active or nativeSyncCallbackDepth > 0:
+    callback.captureNativeCallbackFailure(newException(GeneError,
+      "synchronous native callback re-entry is not supported"))
+    return false
+  callback.active = true
+  inc nativeSyncCallbackDepth
+  true
+
+proc leaveNativeSyncCallback*(callback: NativeSyncCallback) {.raises: [].} =
+  callback.active = false
+  dec nativeSyncCallbackDepth
+
+proc invokeNativeSyncCallback*(callback: NativeSyncCallback,
+                               args: openArray[Value],
+                               namedNames: seq[string], namedValues: seq[Value],
+                               site: Value): Value =
+  callback.requireNativeCallbackOwner()
+  if not callback.active or callback.state != nscCalling:
+    raise newException(GeneError, "native callback invocation is outside its entry boundary")
+  if namedNames.len != namedValues.len:
+    raise newException(GeneError, "native callback named argument mismatch")
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  activeCapabilityContext = intersectContexts(callback.scope.executionCapabilities(),
+                                               callback.ceiling)
+  activeCapabilityPresence = nil
+  try:
+    withScopedScheduler(callback.scope):
+      result = applyCall(callback.callee, args,
+        NamedArgs(names: namedNames, values: namedValues), callback.scope, site)
+    # A nested native entry can fail without throwing through its own C
+    # caller. Do not let the outer shim report success after that failure.
+    if callback.failure != nil: raise callback.failure
+    if callback.foreignEntry.load(moRelaxed):
+      raise newException(GeneError, "native callback attempted entry from another lane")
+  finally:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
+
+proc finishNativeCallbackCall*(callback: NativeSyncCallback) =
+  callback.requireNativeCallbackOwner()
+  if callback.active:
+    raise newException(GeneError, "cannot release an executing native callback")
+  if callback.state == nscClosed: return
+  callback.state = nscClosed
+  let failure = callback.failure
+  let foreignEntry = callback.foreignEntry.load(moRelaxed)
+  callback.failure = nil
+  callback.callee = NIL
+  callback.scope = nil
+  callback.ceiling = nil
+  # These raises occur only after the enclosing C call has returned. Keep
+  # the exact original exception and its private failure provenance.
+  if failure != nil: raise failure
+  if foreignEntry:
+    raise newException(GeneError, "native callback attempted entry from another lane")
 
 proc importFromPath(form: Value): string =
   ## The raw `from "path"` string of a top-level import form, or "" when the

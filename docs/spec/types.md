@@ -57,6 +57,10 @@ key”.
   Type identity and never by name. `^sealed` is reserved and rejected.
 - Persistent updates return a new root; explicit mutation operations change only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.
+- Native call borrows may pin a C pointer against explicit close, ownership
+  transfer, and address replacement. The native owner retains a strong Value
+  and releases the pin after the call. This protects aliases of a connection
+  handle during synchronous callbacks; it does not make the pointer Send.
 
 ## Numeric buffer storage
 
