@@ -191,6 +191,21 @@ actual call still checks the target and its authority. This surface is
 available in the VM; the transpiled web profile rejects it. See the
 [reflection contract](spec/calls.md#callable-reflection) for fields and limits.
 
+A message query can describe its protocol requirement or the implementation
+selected for a receiver. Type queries describe direct data construction;
+`constructor_signature` separately describes `new`, without running the ctor:
+
+```gene runnable
+(type Point ^props {^x Int}
+  (ctor [x : Int] (self .set_prop `x x))
+  (message copy [] : Self (Point ^x self/x)))
+(let data ($runtime/signature Point))
+(let ctor ($runtime/constructor_signature Point))
+(let message ($runtime/signature Self:copy (Point ^x 1)))
+[data/construction ctor/construction message/receiver_included]
+# [data new true]
+```
+
 ## Control flow
 
 Only false, nil, and void are falsy. Zero and an empty string are truthy.

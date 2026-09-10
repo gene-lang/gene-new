@@ -114,12 +114,14 @@ fixtures in `tests/transpile/fixtures.json`.
 
 ## Callable reflection
 
-`$runtime/signature(target)` returns an immutable `SignatureDescription` node.
-Ordinary Gene functions and checked `Callable` views have known argument
-shapes. Other targets, including raw native functions, messages, constructors,
-selectors, custom callables, and fexprs, return `^shape_known false`; inspection
-does not invoke their behavior. A checked view over any of those ordinary
-callables still exposes its enforced outer contract.
+`($runtime/signature target)` returns an immutable `SignatureDescription` node.
+Known argument shapes are available for ordinary Gene functions, checked
+`Callable` views, selectors, enum variants, direct ordinary Type construction,
+declared FFI callables, and message contracts with available signature metadata.
+Ordinary native functions without signature metadata and fexprs remain unknown.
+Custom `Callable` values expose the selected `apply_contract` separately;
+their outer argument shape remains unknown. A checked view still exposes its
+enforced outer contract over an opaque target.
 
 The format-1 description has these fields:
 
@@ -133,13 +135,82 @@ The format-1 description has these fields:
 | `deferred` | For a supported `(Stream T E)` or `(Task T E)` result, `known`, `kind`, `value_type`, and `error_type`; otherwise `known` is false |
 | `name`, `source`, `doc`, `execution` | Function name, source position, literal `@doc` text, and ordinary/generator execution kind when known |
 | `contract_identity`, `contract_version` | Compiler contract identifiers when available; these are descriptive and do not identify a particular closure instance |
+| `type_parameters` | Generic parameter names when available; uninstantiated generic annotations remain unknown rather than resolving to same-named outer bindings |
+| `resolution`, `protocol`, `declaring_protocol`, `abstract_self` | For messages: requirement versus implementation, qualifier, owning protocol identity, and whether `Self` is abstract |
+| `dispatch_scope`, `receiver_included`, `receiver_type` | For messages: authored/query dispatch, the leading receiver slot, and queried nominal receiver type without retaining the receiver value |
+| `construction`, `constructor_errors` | Direct `data`, explicit `new`, or unsupported `native` construction; the selected ctor's own error row is separate from the whole `new` operation |
+| `apply_contract` | A custom Callable implementation's `(self, Call)` method contract; these are not the outer caller's positional parameters |
+
+### Message requirements and receiver-aware queries
+
+`($runtime/signature P:message)` describes the declaring protocol requirement.
+It includes the leading receiver parameter and retains symbolic `Self` in
+parameter/result/error annotations with `abstract_self true`. This is a known
+abstract contract, not a concrete receiver type or proof of conformance. A
+protocol's default generator body does not imply the selected implementation
+will be a generator, so requirement `execution` stays unknown.
+
+`($runtime/signature P:message receiver)` resolves the implementation without
+executing it. The optional second argument is valid only for Messages; explicit
+nil still supplies a receiver. Held messages retain their authored dispatch
+scope. A raw protocol declaration supplied by a native caller uses the query's
+calling scope. To query ordinary send-site behavior, author a fresh message
+value at that site. Resolution uses the existing readiness, nearest-provider,
+ambiguity, and retained Error-witness rules; missing/pending implementations
+remain errors instead of invented signatures.
+
+`Self:message` has no protocol requirement, so its shape is unknown without a
+receiver. With a receiver it describes the selected type-direct message.
+Inherited signatures preserve their original declaration-bound `Self`;
+querying a Child never substitutes Child for Parent in an inherited contract.
+An inherited message's `declaring_protocol` also remains its original owner,
+even when `protocol` names a child protocol used as the query qualifier.
+Receiver-aware descriptions still include the leading receiver slot for held
+message application. They do not bind or retain the queried receiver, and shape
+binding does not prove that a later receiver selects the same implementation.
+
+### Data construction and new
+
+`($runtime/signature T)` describes `(T ...)`: inherited closed props become
+named parameters, body fields become positional parameters, and a trailing
+body rest field becomes the rest parameter. A nil-admitting body field still
+requires its positional slot, while an optional prop may be omitted. This
+query never runs a ctor. Aliases, enum type values, native wrappers, and types
+with native constructor metadata not supported by this API have unknown direct
+construction shapes. Enum variants separately expose exact payload slots.
+
+`($runtime/constructor_signature T)` describes `(new T ...)` using the nearest
+ctor in T's ancestry. It removes implicit `self` from the public parameters,
+preserves the ctor's original parameter contracts and default flags, and
+reports T as the result regardless of the ctor body's return annotation.
+No ctor means `shape_known false` with `reason no_constructor`; there is no
+fallback to direct data construction. A non-Type argument is an error.
+
+The ctor's error row appears in `constructor_errors`. The full invocation row
+remains unknown because `new` also validates the completed instance, which can
+fail after an otherwise successful ctor with `^errors []`.
+
+### Other callable categories
+
+Selectors expose one positional argument, no named arguments, and unknown
+result/error contracts. Describing a selector does not traverse any data or
+execute effectful stages. FFI callables expose their existing declared
+parameter/result types, with unknown error contracts; addresses, libraries,
+release callbacks, and foreign memory are not exported.
+
+A custom `Callable` is resolved in the query's calling scope. Its `apply`
+method receives `(self, Call)`, so that method signature cannot be substituted
+for the outer call's argument shape. Inspect `apply_contract` for diagnostics
+or use a checked view when an enforced outer signature is required. Reflection
+never calls the custom implementation.
 
 Checked views do not invent positional parameter names, target defaults,
 source information, or target execution kind. Their named parameters use the
 existing explicit nil-admission rule for omission. The description does not
 claim a checked target was statically proved compatible.
 
-Reflection only reads initialized type bindings and supported type structure.
+Reflection only reads initialized type bindings and supported type structure;
+normal message/type lookup may complete pending declaration metadata.
 It never evaluates defaults or arbitrary annotations, imports modules, invokes
 getters or protocol methods, or exports frames/captures/native pointers. It
 copies annotation structure without meta and retains ordinary nominal type
@@ -171,7 +242,8 @@ real target's ordinary boundary. Descriptions are fresh snapshots with no
 function-name cache; existing descriptions retain their type identities after
 replacement. Read a fresh description when registering a replacement callable.
 
-The implementation is shared by the native and wasm VM. The transpiled web
+The implementation is shared by the native and wasm VM, subject to each VM's
+existing feature admission (for example, native FFI availability). The transpiled web
 profile rejects this runtime surface. Coverage lives in
 `tests/test_callable_reflection.nim`, with a real tool adapter in the Harness
 package's `src/reflection.gene` and `tests/reflection_smoke.gene`.

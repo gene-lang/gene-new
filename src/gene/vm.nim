@@ -7216,7 +7216,8 @@ proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeBindCall(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
-proc biRuntimeSignature(args: openArray[Value]): Value {.nimcall.}
+proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeConstructorSignature(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
@@ -8248,7 +8249,10 @@ proc buildBuiltins(app: Application): Scope =
   runtimeScope.define("bind_call",
                       newNativeCallFn("runtime/bind_call", biRuntimeBindCall))
   runtimeScope.define("signature",
-                      newNativeFn("runtime/signature", biRuntimeSignature))
+                      newNativeCallFn("runtime/signature", biRuntimeSignature,
+                                      acceptsNamed = false))
+  runtimeScope.define("constructor_signature",
+                      newNativeFn("runtime/constructor_signature", biRuntimeConstructorSignature))
   runtimeScope.define("bind_shape",
                       newNativeFn("runtime/bind_shape", biRuntimeBindShape))
   runtimeScope.define("require_root_lane",
@@ -22447,9 +22451,100 @@ proc reflectionTypeLookup(expr: Value, scope: Scope): Value {.nimcall.} =
       return typ
   VOID
 
-proc biRuntimeSignature(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("runtime/signature", args)
-  describeCallable(args[0], reflectionTypeLookup)
+proc reflectedMessageDeclaration(message: Value, scope: Scope): Value =
+  if not message.protocolMessageIsBound: return message
+  let protocol = message.protocolMessageQualifier
+  if protocol.kind == vkNil: return NIL # Self:name needs a concrete receiver.
+  let name = message.protocolMessageName
+  result = protocol.protocolMessages.getOrDefault(name, NIL)
+  if result.kind == vkNil:
+    let candidates = protocol.protocolClosureByName(name)
+    if candidates.len == 1: return candidates[0]
+    if candidates.len > 1:
+      raise newException(GeneError,
+        "ambiguous message '" & name & "' in protocol " & protocol.protocolName)
+    raiseMessageError(name, protocol.protocolName, scope,
+                       protocol = protocol.protocolName, missingImpl = true)
+
+proc describeMessage(message, receiver: Value, hasReceiver: bool,
+                      caller: Scope): Value =
+  let bound = message.protocolMessageIsBound
+  let scope = if bound: message.protocolMessageScope else: caller
+  let protocol = if bound: message.protocolMessageQualifier else: message.protocolMessageProtocol
+  let declaration = reflectedMessageDeclaration(message, scope)
+  if hasReceiver:
+    # Resolve exactly as a held message is applied, including readiness,
+    # nearest-provider selection, conflicts, and retained Error witnesses.
+    # Resolution assembles metadata; no selected body or default is run.
+    let impl = resolveQualifiedSend(scope, protocol, message.protocolMessageName, receiver)
+    result = describeCallable(impl, reflectionTypeLookup,
+      ReflectionOptions(category: "message", origin: "implementation"))
+  else:
+    if declaration.kind == vkNil:
+      result = describeCallable(message, reflectionTypeLookup)
+    else:
+      let owner = declaration.protocolMessageProtocol
+      validateProtocolContract(PendingProtocolContract(protocol: owner))
+      let fn = declaration.protocolMessageSignatureFn
+      if fn.kind == vkFunction and fn.fnCode of FunctionProto:
+        result = describeCallable(fn, reflectionTypeLookup,
+          ReflectionOptions(category: "message", origin: "requirement",
+            abstractSelf: true, requirement: true,
+            prototype: normalizeOptionalParameters(FunctionProto(fn.fnCode), fn.fnScope)))
+      else:
+        result = describeCallable(message, reflectionTypeLookup)
+  result = result.withReflectionProperties([
+    ("name", newStr(message.protocolMessageName)),
+    ("protocol", protocol),
+    ("declaring_protocol", if declaration.kind == vkProtocolMessage:
+      declaration.protocolMessageProtocol else: NIL),
+    ("resolution", newSym(if hasReceiver: "implementation" else: "requirement")),
+    ("dispatch_scope", newSym(if bound: "authored" else: "query")),
+    ("receiver_included", TRUE),
+    ("receiver_type", if hasReceiver: receiver.receiverType else: NIL)])
+
+proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len notin 1..2:
+    raise newException(GeneError, "runtime/signature expects a target and optional message receiver")
+  let caller = if call == nil: nil else: call[].dispatchScope
+  let hasReceiver = args.len == 2
+  let receiver = if hasReceiver: args[1] else: NIL
+  let target = args[0]
+  if target.kind == vkProtocolMessage:
+    return describeMessage(target, receiver, hasReceiver, caller)
+  if hasReceiver:
+    raise newException(GeneError, "runtime/signature's second argument requires a Message target")
+  if target.kind == vkType and not target.isEnumType and not target.isTypeAlias:
+    ensureTypeContractReady(target.typeScope, target)
+  result = describeCallable(target, reflectionTypeLookup)
+  if not target.isBuiltinCallable and target.valueImplementsCallable(caller):
+    let implementation = resolveUserCallableImpl(target, caller)
+    let applyContract = describeCallable(implementation, reflectionTypeLookup)
+    # The apply method receives (self, Call); those are not the user's
+    # positional parameters. Keep the outer shape unknown, exposing the
+    # method contract separately for diagnostics and explicit adapters.
+    result = result.withReflectionProperties([
+      ("category", newSym("custom")),
+      ("origin", newSym("implementation")),
+      ("completeness", newSym("partial")),
+      ("dispatch_scope", newSym("query")),
+      ("apply_contract", applyContract)])
+
+proc biRuntimeConstructorSignature(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("runtime/constructor_signature", args)
+  let typ = args[0]
+  if typ.kind != vkType:
+    raise newException(GeneError, "runtime/constructor_signature expects a Type")
+  if not typ.isEnumType and not typ.isTypeAlias:
+    ensureTypeContractReady(typ.typeScope, typ)
+    let ctor = typ.typeConstructor
+    if ctor.kind != vkNil:
+      return describeCallable(ctor, reflectionTypeLookup,
+        ReflectionOptions(category: "constructor", origin: "declared",
+          skipReceiver: true, constructedType: typ))
+  describeCallable(NIL, reflectionTypeLookup).withReflectionProperties([
+    ("category", newSym("constructor")), ("name", newStr(typ.typeName)),
+    ("construction", newSym("new")), ("reason", newSym("no_constructor"))])
 
 proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:

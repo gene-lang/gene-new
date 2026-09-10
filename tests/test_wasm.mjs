@@ -65,6 +65,24 @@ const cases = [
    '(fn target [x : (annotation)] x) (let s ($runtime/signature target)) ' +
    '[called s/positional/0/type_known s/result_known]',
    0, '[0 false false]', ''],
+  ['(protocol P (message copy [other : Self] : Self)) ' +
+   '(type Parent ^props {}) (impl P for Parent (message copy [other : Self] : Self other)) ' +
+   '(type Child : Parent ^props {}) ' +
+   '(let declared ($runtime/signature P:copy)) ' +
+   '(let selected ($runtime/signature P:copy (Child))) ' +
+   '[declared/abstract_self declared/positional/1/type ' +
+   '(same? selected/positional/1/type Parent) selected/receiver_included ' +
+   '(same? selected/declaring_protocol P)]',
+   0, '[true Self true true true]', ''],
+  ['(var calls 0) (type Point ^props {^x Int} ' +
+   '(ctor [x : Int] (set calls (+ calls 1)) (self .set_prop `x x))) ' +
+   '(let direct ($runtime/signature Point)) (let ctor ($runtime/constructor_signature Point)) ' +
+   '[calls direct/construction ctor/construction ctor/minimum_positional ' +
+   '(same? ctor/result Point)]',
+   0, '[0 data new 1 true]', ''],
+  ['(let s ($runtime/signature /name)) ' +
+   '[s/category s/minimum_positional s/result_known]',
+   0, '[selector 1 false]', ''],
   ['(type Box ^props {^n Int} (message value [] self/n)) ' +
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
