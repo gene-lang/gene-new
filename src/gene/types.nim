@@ -424,6 +424,9 @@ type
     maxSteps*: int64
     maxMemoryMb*: int64
     timeoutMs*: int64
+    ## Optional host ceiling, sealed once before generation publication. A
+    ## prepared generation shares this policy across its owned module closure.
+    capabilityCeiling*: CapabilityContext
 
   TypeBoundaryToken* = ref object
     ## Stable identity shared by a transient scope and detached conformance

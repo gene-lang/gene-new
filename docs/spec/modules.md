@@ -48,6 +48,12 @@ execution policy are separate controls.
 - Preparation pauses worker module readers and restricts scheduler pumping to
   candidate-owned tasks. FFI, native/capability type, and embedded web-module
   declarations are rejected.
+- Before publishing a prepared generation, a host can call
+  `$runtime/configure_module` under its selected capability context to seal
+  that ceiling across the generation's owned module closure. The numeric
+  policy must match preparation. Once sealed, configuration is immutable
+  (an identical configuration is idempotent). Escaped functions and typed
+  methods retain the ceiling even after module capability materialization.
 - Transaction commit publishes every prepared generation in one non-yielding
   turn and rejects a changed module/impl base. Discard releases all prospective
   roots. A committed generation is removed explicitly with `release`; both

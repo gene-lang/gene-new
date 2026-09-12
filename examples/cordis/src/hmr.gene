@@ -9,7 +9,11 @@
   ^export true)
 
 (type LoaderWatcher
-  ^props {^loader Any ^watcher Any ^root Str ^task Any ^active Any}
+  ^props {^loader Any ^watcher Any ^root Str ^task Any ^active Any
+          ^failures Any ^last_error Any ^reloads Any}
+  (message inspect []
+    {^active (self/active .get) ^failures (self/failures .get)
+     ^last_error (self/last_error .get) ^reloads (self/reloads .get)})
   (message close [] : Nil (close_loader_watcher self))
   (message dispose [] : Nil (close_loader_watcher self))
   (impl Disposable
@@ -24,18 +28,27 @@
     (paths .push $"${adapter/root}/${change/from}"))
   paths)
 
+(fn watch_change ^^private [adapter, debounce_ms : Int] : Bool
+  (try
+    (var change (adapter/watcher .recv))
+    (if (> debounce_ms 0) ($sleep debounce_ms))
+    (adapter/loader .reload (changed_paths adapter change))
+    (adapter/reloads .set (+ (adapter/reloads .get) 1))
+  catch WatcherClosed
+    (return false)
+  catch Any
+    (let failure $err)
+    # A rejected candidate leaves the old composition live. The adapter
+    # continues observing so a later save can repair it.
+    (adapter/last_error .set
+      (try (failure .Error:message)
+       catch Any "watcher failure (message unavailable)"))
+    (adapter/failures .set (+ (adapter/failures .get) 1)))
+  true)
+
 (fn watch_loop ^^private [adapter, debounce_ms : Int]
   (while (adapter/active .get)
-    (try
-      (var change (adapter/watcher .recv))
-      (if (> debounce_ms 0) ($sleep debounce_ms))
-      (adapter/loader .reload (changed_paths adapter change))
-    catch WatcherClosed
-      (return)
-    catch Any
-      # A rejected candidate leaves the old composition live. The adapter
-      # continues observing so a later save can repair it.
-      nil)))
+    (if_not (watch_change adapter debounce_ms) (return))))
 
 (fn watch_loader
   [loader, root : Str, ^recursive recursive : Bool = true,
@@ -45,7 +58,8 @@
   (var native (watch canonical ^recursive recursive ^capacity capacity))
   (var adapter
     (LoaderWatcher ^loader loader ^watcher native ^root canonical
-                   ^task ($cell nil) ^active ($cell true)))
+                   ^task ($cell nil) ^active ($cell true)
+                   ^failures ($cell 0) ^last_error ($cell nil) ^reloads ($cell 0)))
   (var task (spawn ^lane root (watch_loop adapter debounce_ms)))
   (task .detach)
   (adapter/task .set task)

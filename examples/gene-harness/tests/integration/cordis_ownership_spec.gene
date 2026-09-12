@@ -1,0 +1,106 @@
+(mod cordis_ownership_spec)
+(import $test [describe it])
+(import [retain_callback] from "../../src/cordis_adapter")
+(import [RuntimeOptions PluginSpec EffectDisposed InstanceDisposed InstanceState InvocationLimits
+         invocation_limits default_plugin_invoker new_runtime]
+  from "." ^pkg "cordis")
+
+(fn runtime_with [limits]
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits limits)))
+
+(fn plugin_with [activate]
+  (PluginSpec ^id "harness/owned" ^config_schema nil ^requires []
+    ^provides [] ^reload nil ^activate activate))
+
+(describe "Cordis adapter ownership"
+  (it "retirement gates new calls and drains an admitted suspended call" []
+    (let retained ($cell nil))
+    (let started ($cell false))
+    (let finished ($cell false))
+    (let cleaned ($cell false))
+    (let release ($channel ^capacity 1))
+    (let runtime (runtime_with (invocation_limits)))
+    (var task nil)
+    (try
+      (let plugin
+        (plugin_with (fn [ctx, config]
+          (ctx .defer (fn []
+            ($assert (finished .get))
+            (cleaned .set true)))
+          (retained .set
+            (retain_callback ctx "suspended-tool" (fn []
+              (started .set true)
+              (release .recv)
+              (finished .set true)
+              "done"))))))
+      (let instance (runtime .install (runtime .root) plugin))
+      (instance .await_ready)
+      (let callback (retained .get))
+      (set task (spawn ^lane root (callback)))
+      (var deadline (+ ($os/monotonic_ms) 3000))
+      (while (&& (! (started .get)) (< ($os/monotonic_ms) deadline)) ($sleep 1))
+      ($assert (started .get))
+      (instance .dispose)
+      (set deadline (+ ($os/monotonic_ms) 3000))
+      (while (&& (!= (instance .state) InstanceState/unloading)
+                 (< ($os/monotonic_ms) deadline)) ($sleep 1))
+      ($assert (== (instance .state) InstanceState/unloading))
+      ($assert (! (cleaned .get)))
+      ($assert (try (callback) false catch InstanceDisposed true))
+      (release .send nil)
+      ($assert (== (task .join) (TaskOutcome/ok "done")))
+      (runtime .await_settled)
+      ($assert (cleaned .get))
+      ($assert (try (callback) false catch EffectDisposed true))
+    ensure
+      (release .try_send nil)
+      (if_not ($absent? task) (task .cancel) (task .join))
+      (runtime .close)
+      (release .close)))
+
+  (it "retired callbacks cannot attach to a restarted plugin ID" []
+    (let retained ($cell nil))
+    (let activations ($cell 0))
+    (let operations ($cell 0))
+    (let runtime (runtime_with (invocation_limits)))
+    (try
+      (let plugin
+        (plugin_with
+          (fn [ctx, config]
+            (activations .set (+ (activations .get) 1))
+            (let revision (activations .get))
+            (retained .set
+              (retain_callback ctx "tool"
+                (fn [value]
+                  (operations .set (+ (operations .get) 1))
+                  [revision value]))))))
+      (let instance (runtime .install (runtime .root) plugin))
+      (instance .await_ready)
+      (let old (retained .get))
+      ($assert (== (old "first") [1 "first"]))
+      (instance .restart)
+      (instance .await_ready)
+      ($assert (== (activations .get) 2))
+      ($assert (== (operations .get) 1))
+      ($assert (try (old "stale") false catch EffectDisposed true))
+      ($assert (== ((retained .get) "second") [2 "second"]))
+      ($assert (== (operations .get) 2))
+    ensure (runtime .close)))
+
+  (it "retained invocations keep the Cordis execution limit" []
+    (let retained ($cell nil))
+    (let runtime
+      (runtime_with (InvocationLimits ^max_steps 10000
+        ^max_memory_mb 64 ^timeout_ms 2000)))
+    (try
+      (let plugin
+        (plugin_with (fn [ctx, config]
+          (retained .set
+            (retain_callback ctx "bounded-tool" (fn [] (while true nil)))))))
+      (let instance (runtime .install (runtime .root) plugin))
+      (instance .await_ready)
+      ($assert (try ((retained .get)) false
+                catch Any ($str/contains? $err/message "eval max steps exceeded")))
+    ensure (runtime .close))))

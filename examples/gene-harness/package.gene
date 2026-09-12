@@ -5,4 +5,6 @@
  ^applications [
    (application "harness" ^entry "src/main.gene")
  ]
- ^dependencies {}}
+ ^tests {^root "tests/runner"}
+ ^dependencies {
+   ^cordis (dep "genex/cordis" "0.1.0" ^path "../cordis")}}

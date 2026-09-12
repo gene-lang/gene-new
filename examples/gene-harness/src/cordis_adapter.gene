@@ -1,0 +1,388 @@
+# Host-only Cordis integration. Generated plugins import the stable PluginHost
+# facade; no runtime, effect scope, or publication authority crosses it.
+(mod cordis_adapter)
+
+(import [PluginCallKind EffectDisposed invoke_effect_owner
+         RuntimeOptions LoaderOptions PluginSpec PublicationParticipant
+         Requirement service_key InstanceState CompositionError PluginInvoker
+         invocation_limits default_plugin_invoker new_runtime]
+  from "." ^pkg "cordis")
+(import [Plugin PluginContext default_execution_limits] from "./plugin_api")
+
+(protocol RegistryHost
+  (message enter_call [] : Nil)
+  (message leave_call [] : Nil)
+  (message prepare [retiring_ids] : Any)
+  (message describe [draft, module, id : Str, limits, selectors] : Plugin)
+  (message context [draft, plugin, effects, observer, policy] : PluginContext)
+  (message selected [draft, registry : Str, key : Str] : Any)
+  (message publish [draft] : Nil)
+  (message abort [draft] : Nil))
+
+(type HarnessInvoker ^private true
+  ^props {^host RegistryHost ^delegate PluginInvoker}
+  (impl PluginInvoker
+    (message invoke [call] : Any
+      (self/host .RegistryHost:enter_call)
+      (try
+        (self/delegate .PluginInvoker:invoke call)
+      ensure (self/host .RegistryHost:leave_call)))))
+
+(type Composition
+  ^props {^token Any}
+  (message reconcile [plugins, ^entries entries = #{}]
+    (reconcile_composition self plugins entries))
+  (message reconcile_available [plugins, entries, failed_ids]
+    (let record (composition_record self))
+    (let selected ($thaw #[]))
+    (let policies ($thaw #{}))
+    (for plugin in plugins
+      (if (failed_ids .contains? plugin/id)
+        (then
+          (for previous in (record/current .get)
+            (if_yes (== previous/id plugin/id)
+              (selected .push previous)
+              (let ticket (record/live_ticket .get))
+              (policies .put plugin/id (ticket/entries .get plugin/id)))))
+        (else
+          (selected .push plugin)
+          (policies .put plugin/id (?? (entries .get plugin/id) #{})))))
+    (reconcile_composition self selected policies))
+  (message inspect []
+    (let record (composition_record self))
+    (let snapshot ($thaw #{}))
+    (for [name value] in (record/loader .inspect) (snapshot .put name value))
+    (let selected ($thaw #[]))
+    (let ticket (record/live_ticket .get))
+    (if_not ($absent? ticket)
+      (for [id projection] in ticket/bindings
+        (let binding (ticket/keys .get id))
+        (selected .push {^registry binding/registry ^key binding/name
+                         ^row_id projection/row_id})))
+    (snapshot .put "bindings" selected)
+    ($freeze snapshot))
+  (message close [] (close_composition self)))
+
+(type CompositionRecord ^private true
+  ^props {^token Any ^host RegistryHost ^runtime Any ^loader Any
+          ^current Any ^pending Any ^pending_entries Any
+          ^draft Any ^busy Any ^keys Any ^live_ticket Any})
+
+(type EntrySelection ^private true
+  ^props {^row_id Str ^payload Any})
+
+(fn check_selection ^^private [selection : EntrySelection] selection)
+
+(fn requirement_pair ^^private [requirement]
+  (if (== ($head requirement) List)
+    requirement ["seams" ($to_str requirement)]))
+
+(fn binding_id ^^private [registry : Str, key : Str]
+  ($serde/write_data [registry key]))
+
+(fn admit_requirement ^^private [record, requirement]
+  (let pair (requirement_pair requirement))
+  (if_not (== pair/.size 2)
+    (fail (EffectDisposed ^message "a registry requirement needs registry and key")))
+  (let id (binding_id ($to_str pair/0) ($to_str pair/1)))
+  (let keys (record/keys .get))
+  (if_yes (== (keys .get id) void)
+    (let key (service_key $"harness/entry/${id}" EntrySelection ^check check_selection))
+    (record/runtime .admit_service_key key)
+    (keys .put id {^registry ($to_str pair/0) ^name ($to_str pair/1) ^key key}))
+  (let binding (keys .get id))
+  (Requirement ^key binding/key ^config nil))
+
+(fn selection_changed ^^private [record, ticket, registry : Str, key : Str]
+  (let id (binding_id registry key))
+  (if (== (ticket/keys .get id) void) (return nil))
+  (if_yes (== (ticket/updating .get id) true)
+    (ticket/dirty .put id true)
+    (return nil))
+  (ticket/updating .put id true)
+  (try
+    (var again true)
+    (while again
+      (ticket/dirty .delete id)
+      (reconcile_selection record ticket registry key)
+      (set again (== (ticket/dirty .get id) true)))
+  ensure
+    (ticket/updating .delete id)
+    (ticket/dirty .delete id))
+  nil)
+
+(fn reconcile_selection ^^private [record, ticket, registry : Str, key : Str]
+  (let id (binding_id registry key))
+  (let binding (ticket/keys .get id))
+  (if (== binding void) (return nil))
+  (let selected (record/host .RegistryHost:selected ticket/view registry key))
+  (let previous (ticket/bindings .get id))
+  (if_yes (!= previous void)
+    (if (&& (! ($absent? selected)) (== previous/row_id selected/row_id)) (return nil))
+    (previous/instance .dispose)
+    # dispose queues retirement while a provider validation is admitted. Wait
+    # for Cordis to release that reservation before installing its successor.
+    (while (!= (previous/instance .state) InstanceState/disposed) ($sleep 1))
+    (ticket/bindings .delete id))
+  (if ($absent? selected) (return nil))
+  (let owner (if ($absent? selected/effects) (ticket/base_owner .get) selected/effects))
+  (if ($absent? owner) (return nil))
+  (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
+  (let projection
+    (PluginSpec ^id $"harness/binding/${id}" ^config_schema nil
+      ^requires [] ^provides [binding/key] ^reload nil
+      ^activate (fn [ctx, config] (ctx .provide binding/key value))))
+  (let instance (owner .install projection))
+  (ticket/bindings .put id {^row_id selected/row_id ^instance instance})
+  nil)
+
+(type RegistryPublication ^private true
+  ^props {^token Any}
+  (impl PublicationParticipant
+    (message prepare [] : Any
+      (let record (composition_record self))
+      (let ids ($thaw #[]))
+      (for plugin in (record/current .get) (ids .push plugin/id))
+      (let keys ($thaw #{}))
+      (for plugin in (record/pending .get)
+        (for requirement in (?? plugin/requires #[])
+          (let pair (requirement_pair requirement))
+          (let id (binding_id ($to_str pair/0) ($to_str pair/1)))
+          (keys .put id ((record/keys .get) .get id))))
+      (let ticket {^view (record/host .RegistryHost:prepare ids)
+                   ^entries (record/pending_entries .get)
+                   ^keys keys ^bindings ($thaw #{}) ^base_owner ($cell nil)
+                   ^updating ($thaw #{}) ^dirty ($thaw #{})})
+      ((record/draft .get) .set ticket)
+      ticket)
+    (message publish [ticket] : Nil
+      (let record (composition_record self))
+      (record/host .RegistryHost:publish ticket/view)
+      (record/current .set (record/pending .get))
+      (record/live_ticket .set ticket)
+      (record/draft .set nil)
+      nil)
+    (message abort [ticket] : Nil
+      (let record (composition_record self))
+      (record/host .RegistryHost:abort ticket/view)
+      (record/draft .set nil)
+      nil)))
+
+(var compositions ^private true ($cell ($thaw #[])))
+
+(fn composition_record ^^private [handle]
+  (for record in (compositions .get)
+    (if_yes (== record/token handle/token) (return record)))
+  (fail (EffectDisposed ^message "Harness composition is closed or foreign")))
+
+(fn new_composition [host : RegistryHost, ^options options = nil, ^limits limits = nil]
+  (let configured
+    (if ($absent? options)
+      (LoaderOptions ^plugin_root "." ^shared [] ^max_namespaces []
+        ^capability_catalog #{} ^capability_ceiling nil
+        ^default_limits nil ^reload_policy nil)
+      options))
+  (let runtime
+    (new_runtime
+      (RuntimeOptions ^logger nil
+        ^invoker (HarnessInvoker ^host host ^delegate (default_plugin_invoker))
+        ^default_limits (if ($absent? limits) (invocation_limits)
+          (invocation_limits ^max_steps limits/max_steps
+            ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms)))))
+  (let token ($cell nil))
+  (let record
+    (CompositionRecord ^token token ^host host ^runtime runtime ^loader nil
+      ^current ($cell ($thaw #[])) ^pending ($cell nil) ^draft ($cell nil)
+      ^pending_entries ($cell nil)
+      ^busy ($cell false) ^keys ($cell ($thaw #{})) ^live_ticket ($cell nil)))
+  ((compositions .get) .push record)
+  (set record/loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root configured/plugin_root ^shared configured/shared
+        ^max_namespaces configured/max_namespaces
+        ^capability_catalog configured/capability_catalog
+        ^capability_ceiling configured/capability_ceiling
+        ^default_limits configured/default_limits ^reload_policy configured/reload_policy
+        ^allow_pending true
+        ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph))
+        ^publication (RegistryPublication ^token token))))
+  (Composition ^token token))
+
+(fn describe_source ^^private [record, module, row, graph]
+  (let ticket_ref (record/draft .get))
+  (let ticket (ticket_ref .get))
+  (let policy (ticket/entries .get row/id))
+  (if (|| ($absent? policy/digest) ($absent? policy/closure))
+    (fail (CompositionError ^message $"source ${row/id} requires a verified digest and closure")))
+  (for node in graph/nodes
+    (if_yes node/owned
+      (if_not (policy/closure .contains? node/source_digest)
+        (fail (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
+      (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
+        (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
+  (let plugin (record/host .RegistryHost:describe ticket/view module row/id row/limits policy/selectors))
+  (var expected nil)
+  (for descriptor in (record/pending .get)
+    (if (== descriptor/id row/id) (set expected descriptor)))
+  (if (|| ($absent? expected)
+          (!= (?? expected/requires #[]) (?? plugin/requires #[]))
+          (!= expected/provides plugin/provides))
+    (fail (CompositionError ^message $"source ${row/id} descriptor changed after preflight")))
+  (adapt_plugin record plugin ticket_ref))
+
+(fn adapt_plugin ^^private [record, plugin, ticket_ref]
+  (let requirements ($thaw #[]))
+  (for requirement in (?? plugin/requires #[])
+    (let pair (requirement_pair requirement))
+    (let binding ((record/keys .get) .get (binding_id ($to_str pair/0) ($to_str pair/1))))
+    (if ($absent? binding)
+      (fail (CompositionError ^message "descriptor introduced an unadmitted entry dependency")))
+    (requirements .push (Requirement ^key binding/key ^config nil)))
+  (PluginSpec ^id plugin/id ^config_schema nil ^requires requirements ^provides []
+    ^reload nil ^activate (fn [ctx, config] (activate_descriptor record plugin ctx ticket_ref))))
+
+(fn activate_descriptor ^^private [record, plugin, ctx, ticket_ref]
+  (ctx .effect $"harness/${plugin/id}"
+    (fn [fx]
+      (let ticket (ticket_ref .get))
+      (let ready ($cell false))
+      (let changed ($thaw #{}))
+      (let receiver
+        (record/host .RegistryHost:context ticket/view plugin fx
+          (fn [registry, key]
+            (if (ready .get)
+              (selection_changed record ticket registry key)
+              (changed .put (binding_id registry key) [registry key])))
+          (ticket/entries .get plugin/id)))
+      (let activation (plugin/activate))
+      (activation receiver)
+      (if_not ($absent? plugin/deactivate)
+        (fx .defer (fn []
+          (let deactivation (plugin/deactivate))
+          (deactivation receiver))))
+      # Children can activate while their parent is still loading. Publish
+      # selected-entry bindings only after all of this activation's rows exist.
+      (ready .set true)
+      (for [id pair] in changed
+        (selection_changed record ticket pair/0 pair/1)))))
+
+(fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options]
+  (let record (composition_record handle))
+  (if (record/busy .get)
+    (fail (EffectDisposed ^message "Harness reconciliation is already active")))
+  (let entries ($thaw #[]))
+  (let admitted ($thaw #{}))
+  (let policies ($thaw #{}))
+  (let metadata ($thaw #{}))
+  (let ticket_ref ($cell nil))
+  (entries .push {^id "_harness_bindings" ^module "host/bindings"})
+  (admitted .put "_harness_bindings"
+    (PluginSpec ^id "harness/bindings" ^config_schema nil ^requires [] ^provides []
+      ^reload nil ^activate (fn [ctx, config]
+        (ctx .effect "registry bindings" (fn [fx]
+          (let ticket (ticket_ref .get))
+          (ticket/base_owner .set fx)
+          (for [id binding] in ticket/keys
+            (selection_changed record ticket binding/registry binding/name)))))))
+  (for plugin in plugins
+    (if (|| (== plugin/id "core") (== plugin/id "_harness_bindings")
+            ($str/starts_with? plugin/id "descriptor:"))
+      (fail (CompositionError ^message $"plugin id ${plugin/id} is reserved by Harness")))
+    (if_not (== plugin/contextual true)
+      (fail (EffectDisposed ^message "Harness plugins require PluginContext activation")))
+    (let supplied (?? (entry_options .get plugin/id) #{}))
+    (for [name value] in supplied
+      (if_not (["module" "scope" "selectors" "namespaces" "limits" "inherit" "digest" "closure"] .contains? ($to_str name))
+        (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
+    (let source (supplied .get "module"))
+    (let limits (?? (supplied .get "limits") (default_execution_limits)))
+    (let selectors (?? (supplied .get "selectors") #[]))
+    (let inherit (?? (supplied .get "inherit") ($absent? source)))
+    (let state_scope (?? (supplied .get "scope") "session"))
+    (if_not (["session" "workspace"] .contains? state_scope)
+      (fail (CompositionError ^message "entry scope must be session or workspace")))
+    (let policy
+      {^scope state_scope ^selectors selectors ^inherit inherit ^limits limits
+       ^module source ^namespaces (?? (supplied .get "namespaces") #[])
+       ^digest (supplied .get "digest") ^closure (supplied .get "closure")})
+    (metadata .put plugin/id policy)
+    (entries .push {^id plugin/id ^plugin_id plugin/id
+      ^module (if ($absent? source) $"host/${plugin/id}" source)
+      ^namespaces (?? (supplied .get "namespaces") #[])
+      ^limits {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms}})
+    (policies .put plugin/id {^inherit inherit ^selectors selectors})
+    (for requirement in (?? plugin/requires #[])
+      (admit_requirement record requirement))
+    (if ($absent? source)
+      (admitted .put plugin/id (adapt_plugin record plugin ticket_ref))))
+  (let desired ($thaw #[]))
+  (for plugin in plugins (desired .push plugin))
+  (record/pending .set desired)
+  (record/pending_entries .set ($freeze metadata))
+  (record/draft .set ticket_ref)
+  (record/busy .set true)
+  (try
+    (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted ^policies policies)
+  ensure
+    (record/pending .set nil)
+    (record/pending_entries .set nil)
+    (record/draft .set nil)
+    (record/busy .set false)))
+
+(fn close_composition ^^private [handle]
+  (var record nil)
+  (for current in (compositions .get)
+    (if (== current/token handle/token) (set record current)))
+  (if ($absent? record) (return nil))
+  (record/runtime .close)
+  (let kept ($thaw #[]))
+  (for current in (compositions .get)
+    (if_not (== current/token handle/token) (kept .push current)))
+  (compositions .set kept)
+  nil)
+
+(type RetainedCallback ^private true
+  ^props {^token Any}
+  (impl Callable
+    (message apply [self, call] : Any
+      (invoke_retained self/token call/body))))
+
+(type CallbackRecord ^private true
+  ^props {^token Any ^scope Any ^callable Any ^host_context Any ^inject_context Bool})
+
+(var callbacks ^private true ($cell ($thaw #[])))
+
+(fn expire_callback ^^private [token]
+  (var kept ($thaw #[]))
+  (for record in (callbacks .get)
+    (if_not (== record/token token) (kept .push record)))
+  (callbacks .set kept)
+  nil)
+
+(fn invoke_retained ^^private [token, args]
+  (for record in (callbacks .get)
+    (if_yes (== record/token token)
+      (var forwarded ($thaw #[]))
+      (for arg in args (forwarded .push arg))
+      (if (&& record/inject_context (> forwarded/.size 0))
+        (forwarded .set 0 record/host_context))
+      (return
+        (invoke_effect_owner record/scope PluginCallKind/operation
+          record/callable forwarded))))
+  (fail (EffectDisposed ^message "callback activation revision has retired")))
+
+(fn retain_callback [owner, label : Str, callable,
+                     ^host_context host_context = nil, ^inject_context inject_context : Bool = false]
+  # The child EffectScope is the exact activation revision that contributed
+  # this callback. A plugin ID or later ActivationContext lookup cannot rebind
+  # it to a replacement. Cordis drains admitted calls before this cleanup.
+  (var lease
+    (owner .effect label
+      (fn [fx]
+        (var token ($cell nil))
+        (fx .defer (fn [] (expire_callback token)))
+        ((callbacks .get) .push
+          (CallbackRecord ^token token ^scope fx ^callable callable
+            ^host_context host_context ^inject_context inject_context))
+        (RetainedCallback ^token token))))
+  (lease .value))

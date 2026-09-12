@@ -1,6 +1,6 @@
 (mod hmr_probe)
 
-(import $fs [write_text])
+(import $fs [read_text write_text])
 (import [RuntimeOptions LoaderOptions PluginSpec ReloadRejected
          hmr_reloaded invocation_limits default_plugin_invoker new_runtime]
   from "../src/cordis")
@@ -78,6 +78,7 @@
     (if node/owned (set source_path node/path)))
   (assert (! ($absent? source_path))
     "generation graph must identify the owned source")
+  (var original_source (read_text source_path))
   (try
     (write_text source_path source_two)
     (var reloaded (loader .reload [source_path]))
@@ -97,7 +98,7 @@
     (assert (== (reload_events .get) 1)
       "rejected reload must not emit hmr_reloaded")
   ensure
-    (write_text source_path source_one))
+    (write_text source_path original_source))
   # Bring the live generation back to the restored source, then prove the
   # optional bounded watcher adapter drives the same reload seam.
   (loader .reload [source_path])
@@ -109,14 +110,50 @@
     (watch_loader loader "fixtures/plugins" ^debounce_ms 10))
   (try
     (write_text source_path source_two)
-    ($sleep 150)
+    (var deadline (+ ($os/monotonic_ms) 5000))
+    (var delivered false)
+    (while (&& (! delivered) (< ($os/monotonic_ms) deadline))
+      (set delivered
+        (try
+          (&& (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+              (== (reload_events .get) 3))
+        catch Any false))
+      (if_not delivered ($sleep 1)))
+    (assert delivered
+      $"watcher did not publish the expected event/value: ${(watcher .inspect)}")
     (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
       "filesystem watcher changes must reach Loader/reload")
     (assert (== (reload_events .get) 3)
       "watch-driven reload must emit hmr_reloaded")
+    (write_text source_path source_bad)
+    (set deadline (+ ($os/monotonic_ms) 5000))
+    (var diagnostics (watcher .inspect))
+    (while (&& (== diagnostics/failures 0)
+               (< ($os/monotonic_ms) deadline))
+      ($sleep 1)
+      (set diagnostics (watcher .inspect)))
+    (var rejected (watcher .inspect))
+    (assert (> rejected/failures 0)
+      "watcher diagnostics must record rejected candidates")
+    (assert (! ($absent? rejected/last_error))
+      "watcher diagnostics must retain the last failure")
+    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+      "a rejected watched candidate must preserve the live provider")
+    (write_text source_path original_source)
+    (set deadline (+ ($os/monotonic_ms) 5000))
+    (set delivered false)
+    (while (&& (! delivered) (< ($os/monotonic_ms) deadline))
+      (set delivered
+        (try
+          (&& (== (((runtime .root) .require loaded_key) .LoadedValue:value) 1)
+              (== (reload_events .get) 4))
+        catch Any false))
+      (if_not delivered ($sleep 1)))
+    (assert delivered
+      $"watcher did not recover after rejection: ${(watcher .inspect)}")
   ensure
     (watcher .close)
-    (write_text source_path source_one))
+    (write_text source_path original_source))
   (loader .dispose)
   (runtime .close)
   ($println "hmr: ok"))

@@ -8,7 +8,7 @@
 (mod runtime)
 
 (import [InstanceState PluginCallKind HookMode ReconcileMode
-         Disposable PluginInvoker EffectOwner
+         Disposable PluginInvoker PublicationParticipant EffectOwner
          InvocationLimits RuntimeOptions PluginCall LoaderOptions
          ServiceKey HookKey Requirement PluginSpec
          CordisError UndeclaredRequirement ServiceUnavailable
@@ -140,6 +140,8 @@
   ^props {^token Any}
   (message reconcile [manifest, mode = nil]
     (loader_reconcile self manifest mode))
+  (message reconcile_plugins [manifest, plugins, ^policies policies = #{}]
+    (loader_reconcile_plugins self manifest plugins policies))
   (message reload [changed_paths] (loader_reload self changed_paths))
   (message inspect [] (loader_inspect self))
   (message await_settled [] : Nil (loader_await_settled self))
@@ -197,6 +199,17 @@
   ^props {^scope Any ^label Str ^callable Any ^args List
           ^ready Channel ^result Cell ^error Cell ^cancelled Cell})
 
+(type TransitionTicket ^^private
+  ^props {^request Any}
+  (message join []
+    (var request self/request)
+    (if (&& (absent? (request/result .get)) (absent? (request/error .get)))
+      (try (request/ready .recv) catch ChannelClosed nil))
+    (var error (request/error .get))
+    (if_not (absent? error) (fail error))
+    (var task (request/result .get))
+    (task .join)))
+
 (type ContextRecord
   ^private true
   ^props {^token Any ^id Int ^runtime RuntimeRecord ^parent Any ^owner Any
@@ -252,7 +265,7 @@
   ^private true
   ^props {^token Any ^runtime RuntimeRecord ^options LoaderOptions
           ^entries Any ^order Any ^manifest Any ^state Any
-          ^generations Any ^watchers Any})
+          ^generations Any ^watchers Any ^host_plugins Any ^host_policies Any})
 
 (type LoaderEntryRecord
   ^private true
@@ -611,7 +624,11 @@
     (ActivationContext ^token record/token)))
 
 (fn finish_host_request ^^private [request]
-  (try (request/ready .try_send nil) catch ChannelClosed nil))
+  (try (request/ready .try_send nil) catch ChannelClosed nil)
+  (request/ready .close))
+
+(fn host_request_accepting? ^^private [request]
+  (|| (absent? request/scope) (request/scope/accepting .get)))
 
 (fn reject_host_request ^^private [request]
   (if (&& (absent? (request/result .get)) (absent? (request/error .get)))
@@ -627,17 +644,18 @@
       (set pending (executor/queue .swap (fresh_list)))
       (for request in pending
         (if (|| (request/cancelled .get)
-                (! (request/scope/accepting .get)))
+                (! (host_request_accepting? request)))
           (reject_host_request request)
           (try
             (scope
               (var task
                 (spawn ^lane root (request/callable request/args...)))
-              ((request/scope/entries .get) .push
-                {^kind "task" ^label request/label ^task task})
+              (if_not (absent? request/scope)
+                ((request/scope/entries .get) .push
+                  {^kind "task" ^label request/label ^task task}))
               (request/result .set task)
               (if (|| (request/cancelled .get)
-                      (! (request/scope/accepting .get)))
+                      (! (host_request_accepting? request)))
                 (task .cancel))
               (task .detach))
             (finish_host_request request)
@@ -1075,8 +1093,17 @@
   (instance/dirty .set true)
   (if retry (instance/retry .set true))
   (if_not (absent? (instance/transition .get)) (return nil))
-  (var task (spawn ^lane root (run_instance_transitions instance)))
-  (instance/transition .set task)
+  # A provider notification may originate inside restricted plugin code. The
+  # transition itself belongs to the host executor; each plugin invocation
+  # still receives its declared context and budget through invoke_call.
+  (var request
+    (HostRequest ^scope nil ^label "plugin-transition"
+      ^callable run_instance_transitions ^args [instance]
+      ^ready ($channel ^capacity 1) ^result ($cell nil) ^error ($cell nil)
+      ^cancelled ($cell false)))
+  (instance/transition .set (TransitionTicket ^request request))
+  ((instance/runtime/executor/queue .get) .push request)
+  (instance/runtime/executor/wake .try_send nil)
   nil)
 
 (fn notify_service ^^private [runtime, key]
@@ -1528,7 +1555,7 @@
   (executor/wake .try_send nil)
   (var accepted false)
   (try
-    (request/ready .recv)
+    (try (request/ready .recv) catch ChannelClosed nil)
     (var error (request/error .get))
     (if_not (absent? error) (fail error))
     (set accepted true)
@@ -2187,13 +2214,18 @@
     (if (absent? options/default_limits)
       runtime/default_limits
       (narrow_limits options/default_limits runtime/default_limits)))
+  (if (&& (! (absent? options/descriptor_factory))
+          (! (callable? options/descriptor_factory)))
+    (cordis_failure CompositionError "descriptor_factory must be a host callable"))
   (LoaderOptions
     ^plugin_root options/plugin_root
     ^shared ($freeze (copy_list options/shared))
     ^max_namespaces ($freeze (copy_list options/max_namespaces))
     ^capability_catalog ($freeze_shallow options/capability_catalog)
     ^capability_ceiling options/capability_ceiling
-    ^default_limits limits ^reload_policy options/reload_policy))
+    ^default_limits limits ^reload_policy options/reload_policy
+    ^publication options/publication ^allow_pending options/allow_pending
+    ^descriptor_factory options/descriptor_factory))
 
 (fn runtime_loader ^^private [handle : Runtime, options]
   (var runtime (require_runtime_open (runtime_record handle)))
@@ -2211,6 +2243,8 @@
                   ^entries ($cell (fresh_map)) ^order ($cell (fresh_list))
                   ^manifest ($cell nil) ^state ($cell "open")
                   ^generations ($cell (fresh_list))
+                  ^host_plugins ($cell (fresh_map))
+                  ^host_policies ($cell (fresh_map))
                   ^watchers ($cell (fresh_list))))
   (current .push record)
   (runtime/loaders .set current)
@@ -2394,12 +2428,18 @@
 (fn entry_context_signature ^^private [row, parent_signature : Str] : Str
   $"${parent_signature}|${row/isolate}|${row/intercept}|${row/capabilities}|${row/limits/max_steps}:${row/limits/max_memory_mb}:${row/limits/timeout_ms}")
 
-(fn derive_loader_context ^^private [loader, parent, row]
-  (parent .derive
-    {^isolate row/isolate ^intercept row/intercept
-     ^capabilities row/capabilities ^limits row/limits}))
+(fn derive_loader_context ^^private [loader, parent, row, host_policy = nil]
+  (var options {^isolate row/isolate ^intercept row/intercept ^limits row/limits})
+  (if (absent? host_policy)
+    (options .put "capabilities" row/capabilities)
+    (if_not (== host_policy/inherit true)
+      (options .put "capabilities" host_policy/selectors)))
+  (parent .derive options))
 
-(fn prepare_loader_entry ^^private [loader, row, transaction]
+(fn prepare_loader_entry ^^private [loader, row, transaction, host_plugin = nil]
+  (if_not (absent? host_plugin)
+    (validate_plugin_spec loader/runtime host_plugin)
+    (return {^generation nil ^module nil ^plugin host_plugin ^graph nil}))
   (var generation
     (transaction .prepare
       {^dir loader/options/plugin_root ^entry row/module
@@ -2409,9 +2449,11 @@
                 ^timeout_ms row/limits/timeout_ms}}))
   (var module (generation .module))
   (var plugin
-    (try module/plugin catch Any
-      (cordis_failure CompositionError
-        $"entry ${row/id} module must export one plugin binding" $err)))
+    (if (absent? loader/options/descriptor_factory)
+      (try module/plugin catch Any
+        (cordis_failure CompositionError
+          $"entry ${row/id} module must export one plugin binding" $err))
+      (loader/options/descriptor_factory module row (generation .graph))))
   (validate_plugin_spec loader/runtime plugin)
   (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
     (cordis_failure CompositionError
@@ -2575,7 +2617,11 @@
   (loader_snapshot loader "incremental" ($freeze changed)))
 
 (fn runtime_instance_is_loader_owned? ^^private [instance] : Bool
-  (! (absent? instance/entry_id)))
+  (var current instance)
+  (while (! (absent? current))
+    (if_not (absent? current/entry_id) (return true))
+    (set current current/parent_context/owner))
+  false)
 
 (fn clone_direct_provider_layer ^^private [live, candidate, replaced_direct]
   (var providers (fresh_map))
@@ -2624,10 +2670,17 @@
       (without_token (runtime_records .get) candidate/token)))
   nil)
 
-(fn staged_candidate_source ^^private [old_entries, row, transaction, loader, force_ids]
+(fn staged_candidate_source ^^private [old_entries, row, transaction, loader, force_ids, host_plugins]
+  (var host_plugin (host_plugins .get row/id))
+  (if_not (absent? host_plugin)
+    (return (prepare_loader_entry loader row transaction host_plugin)))
   (var existing (old_entries .get row/id))
   (if (&& (!= existing void) (! existing/group)
-          (! existing/disabled) (== existing/module_path row/module)
+          (! existing/disabled) (! (absent? existing/module))
+          (absent? loader/options/descriptor_factory)
+          (== existing/data/limits row/limits)
+          (== existing/data/namespaces row/namespaces)
+          (== existing/module_path row/module)
           (! (force_ids .contains? row/id)))
     (return
       {^generation existing/generation ^module existing/module
@@ -2636,7 +2689,7 @@
   {^generation prepared/generation ^module prepared/module
    ^plugin prepared/plugin ^graph prepared/graph ^prepared true})
 
-(fn build_staged_entries ^^private [loader, candidate, transaction, rows, force_ids]
+(fn build_staged_entries ^^private [loader, candidate, transaction, rows, force_ids, host_plugins, host_policies]
   (var old_entries (loader/entries .get))
   (var entries (fresh_map))
   (var order (fresh_list))
@@ -2652,7 +2705,7 @@
         (signatures .get row/parent_id)))
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
-    (var context (derive_loader_context loader parent_context row))
+    (var context (derive_loader_context loader parent_context row (host_policies .get row/id)))
     # `derive_loader_context` receives only the parent handle and row values;
     # use the candidate record for service/catalog lookups through that handle.
     (var context_record_value (context_record context))
@@ -2671,7 +2724,7 @@
       (else
         (var source
           (staged_candidate_source old_entries row transaction loader
-                                   force_ids))
+                                   force_ids host_plugins))
         (if source/prepared (prepared_generations .push source/generation))
         (var instance
           (runtime_install (Runtime ^token candidate/token) context
@@ -2687,10 +2740,14 @@
     (order .push row/id))
   {^entries entries ^order order ^prepared_generations prepared_generations})
 
-(fn require_candidate_active ^^private [candidate]
+(fn require_candidate_active ^^private [candidate, allow_pending = false]
   (runtime_await_settled (Runtime ^token candidate/token))
   (for instance in (candidate/instances .get)
-    (if_not (== (instance/state .get) InstanceState/active)
+    (if_not (|| (== (instance/state .get) InstanceState/active)
+                (&& (== allow_pending true)
+                    (== (instance/state .get) InstanceState/pending))
+                (&& (== (instance/state .get) InstanceState/disposed)
+                    (! (absent? instance/parent_context/owner))))
       (var epoch (compute_instance_epoch instance))
       (plugin_error CompositionError
         $"staged candidate did not activate; missing ${epoch/missing}"
@@ -2834,6 +2891,7 @@
 (fn retiring_consumer_closure ^^private [live, retiring]
   (var closure (fresh_list))
   (for [id instance] in retiring (closure .push instance))
+  (set closure (expand_owned_replacements closure))
   (var changed true)
   (while changed
     (set changed false)
@@ -2846,6 +2904,7 @@
                   (instance_in_records? closure provider/owner))
             (then
               (closure .push candidate)
+              (set closure (expand_owned_replacements closure))
               (set changed true)))))))
   closure)
 
@@ -2987,11 +3046,16 @@
   (loader/entries .set staged/entries)
   (loader/order .set staged/order)
   (loader/manifest .set ($freeze manifest))
+  (loader/host_plugins .set staged/host_plugins)
+  (loader/host_policies .set staged/host_policies)
   (rebuild_runtime_indexes live)
   (for instance in (candidate/instances .get)
-    (var epoch (compute_instance_epoch instance))
-    (instance/desired_epoch .set epoch/text)
-    (instance/active_epoch .set epoch/text))
+    (if_yes (== (instance/state .get) InstanceState/active)
+      (var epoch (compute_instance_epoch instance))
+      (instance/desired_epoch .set epoch/text)
+      (instance/active_epoch .set epoch/text)))
+  (if_not (absent? loader/options/publication)
+    (loader/options/publication .PublicationParticipant:publish staged/publication_ticket))
   (notify_published_provider_keys live closure candidate)
   # Candidate handles now resolve through the live record only.
   (runtime_records .set
@@ -3044,7 +3108,9 @@
     (if (== (staged_entries .get id) void) (changed .push id)))
   changed)
 
-(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[]]
+(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil, host_policies = nil]
+  (var admitted (if (absent? host_plugins) (loader/host_plugins .get) host_plugins))
+  (var policies (if (absent? host_policies) (loader/host_policies .get) host_policies))
   (var old_entries (copy_map (loader/entries .get)))
   (var old_order (copy_list (loader/order .get)))
   (var retiring (fresh_map))
@@ -3057,25 +3123,84 @@
   (var transaction ($runtime/sandbox_transaction))
   (var candidate nil)
   (var staged nil)
+  (var ticket nil)
+  (var prepared false)
   (try
+    (if_not (absent? loader/options/publication)
+      (set ticket (loader/options/publication .PublicationParticipant:prepare))
+      (set prepared true))
     (set candidate (new_candidate_runtime loader replaced_direct))
     (set staged
-      (build_staged_entries loader candidate transaction rows force_ids))
+      (build_staged_entries loader candidate transaction rows force_ids admitted policies))
+    (staged .put "publication_ticket" ticket)
+    (staged .put "host_plugins" admitted)
+    (staged .put "host_policies" policies)
     (staged .put "direct_revisions"
       (build_direct_candidate_revisions candidate direct_roots))
     (staged .put "direct_replaced" replaced_direct)
-    (require_candidate_active candidate)
+    (require_candidate_active candidate loader/options/allow_pending)
+    (transaction .commit)
   catch Any
+    (var failure $err)
     (discard_candidate_runtime candidate)
     (transaction .discard)
+    (if prepared (loader/options/publication .PublicationParticipant:abort ticket))
     (cordis_failure CompositionError
-      "staged composition rejected before publication" $err))
+      "staged composition rejected before publication" failure))
   (var changed (staged_changed_ids old_entries staged/entries))
   # Gene publishes every prepared module graph first; the following Cordis
   # table replacement is a non-yielding turn containing no plugin call.
-  (transaction .commit)
   (publish_staged_runtime loader candidate staged old_entries old_order manifest)
   (loader_snapshot loader "staged" ($freeze changed)))
+
+(fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins, policies]
+  ($runtime/require_root_lane)
+  (var loader (loader_record handle))
+  (if_not (== (loader/state .get) "open")
+    (cordis_failure CompositionError "loader is disposed"))
+  (if_not (== ($head plugins) Map)
+    (cordis_failure CompositionError "host plugin admissions must be a map"))
+  (var rows (validate_manifest loader manifest))
+  (var ids (fresh_map))
+  (for row in rows (ids .put row/id row))
+  (for [id plugin] in plugins
+    (var row (ids .get id))
+    (if (|| (absent? row) row/group)
+      (cordis_failure CompositionError $"host plugin ${id} has no plugin entry"))
+    (validate_plugin_spec loader/runtime plugin)
+    (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
+      (cordis_failure CompositionError $"host plugin ${id} does not match plugin_id")))
+  (if_not (== ($head policies) Map)
+    (cordis_failure CompositionError "host entry policies must be a map"))
+  (var checked (fresh_map))
+  (for [id policy] in policies
+    (var row (ids .get id))
+    (if (|| (absent? row) row/group (!= ($head policy) Map))
+      (cordis_failure CompositionError $"invalid host policy for entry ${id}"))
+    (for [name value] in policy
+      (if_not (["inherit" "selectors"] .contains? ($to_str name))
+        (cordis_failure CompositionError $"unknown host policy field ${name}")))
+    (var inherit (manifest_value policy "inherit" false))
+    (var selectors (manifest_value policy "selectors" #[]))
+    (if (|| (!= ($head inherit) Bool) (!= ($head selectors) List))
+      (cordis_failure CompositionError "host policy needs Bool inherit and List selectors"))
+    (if (&& inherit (absent? (plugins .get id)))
+      (cordis_failure CompositionError "only an admitted host plugin may inherit host authority"))
+    (if_not (absent? loader/options/capability_ceiling)
+      (var allowed (fresh_list))
+      (for [capability selector] in loader/options/capability_catalog
+        (var permitted
+          (if (== ($head loader/options/capability_ceiling) List)
+            (loader/options/capability_ceiling .contains? capability)
+            (!= (loader/options/capability_ceiling .get capability) void)))
+        (if permitted (allowed .push selector)))
+      (if inherit
+        (cordis_failure CompositionError "host inheritance cannot bypass a loader capability ceiling"))
+      (for selector in selectors
+        (if_not (allowed .contains? selector)
+          (cordis_failure CompositionError "host selector exceeds loader capability ceiling"))))
+    (checked .put id {^inherit inherit ^selectors ($freeze_shallow (copy_list selectors))}))
+  (loader_reconcile_staged loader manifest rows #[] (copy_map plugins) checked))
 
 (fn loader_reconcile ^^private [handle : Loader, manifest, mode]
   (var loader (loader_record handle))
@@ -3084,11 +3209,16 @@
   (var rows (validate_manifest loader manifest))
   (var selected_mode
     (if (absent? mode) ReconcileMode/incremental mode))
+  (var host_plugins (loader/host_plugins .get))
+  (if (&& (|| (! (absent? loader/options/publication))
+              (!= host_plugins #{}))
+          (!= selected_mode ReconcileMode/staged))
+    (cordis_failure CompositionError "a publication participant requires staged reconciliation"))
   (match selected_mode
     (when ReconcileMode/incremental
       (loader_reconcile_incremental loader manifest rows))
     (when ReconcileMode/staged
-      (loader_reconcile_staged loader manifest rows #[]))))
+      (loader_reconcile_staged loader manifest rows #[] (fresh_map) (fresh_map)))))
 
 (fn affected_uses_stop_start? ^^private [loader, affected] : Bool
   (for id in affected
@@ -3260,6 +3390,8 @@
   (var old_digests (entry_root_digests loader affected))
   (if (affected_uses_stop_start? loader affected)
     (then
+      (if_not (absent? loader/options/publication)
+        (cordis_failure ReloadRejected "a publication participant requires staged reload"))
       (var result
         (loader_reload_stop_start loader manifest rows affected))
       (emit_hmr_reloaded loader affected old_digests

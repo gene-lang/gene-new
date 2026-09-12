@@ -9226,6 +9226,13 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
       # ceiling even though that root has no file Module declaration.
       ceiling = proto.boundCapabilityCeiling
 
+    # A sandbox host's sealed entry policy remains authoritative even when a
+    # module's ordinary application ceiling is materialized again later.
+    if calleeRoot.moduleExecutionPolicy != nil and
+        calleeRoot.moduleExecutionPolicy.capabilityCeiling != nil:
+      let pinned = calleeRoot.moduleExecutionPolicy.capabilityCeiling
+      ceiling = if ceiling == nil: pinned else: intersectContexts(ceiling, pinned)
+
   when not (compileOption("threads") and defined(gcAtomicArc)):
     if proto != nil and proto.capabilityRow.isStatic and
         proto.capabilityCacheRegistryId == app.capabilityRegistry.identity and
@@ -9562,14 +9569,24 @@ proc biRuntimeConfigureModule(args: openArray[Value],
     let existing = root.moduleExecutionPolicy
     if existing.maxSteps != limits.maxSteps or
         existing.maxMemoryMb != limits.maxMemoryMb or
-        existing.timeoutMs != limits.timeoutMs or
-        args[0].moduleCapabilityCeiling != ceiling:
+        existing.timeoutMs != limits.timeoutMs:
       raise newException(GeneError,
         "sandbox module execution policy is immutable")
-    return args[0]
-  root.moduleExecutionPolicy = ModuleExecutionPolicy(
-    maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
-    timeoutMs: limits.timeoutMs)
+    if existing.capabilityCeiling != nil:
+      if existing.capabilityCeiling != ceiling:
+        raise newException(GeneError,
+          "sandbox module execution policy is immutable")
+      return args[0]
+    if not sandboxGenerationPrepared(root.sandboxGenerationId):
+      raise newException(GeneError,
+        "sandbox module capability ceiling must be sealed before publication")
+    # prepare already fixed the budget. Seal its shared closure policy once,
+    # while none of this generation's callbacks can yet be published.
+    existing.capabilityCeiling = ceiling
+  else:
+    root.moduleExecutionPolicy = ModuleExecutionPolicy(
+      maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
+      timeoutMs: limits.timeoutMs, capabilityCeiling: ceiling)
   args[0].setModuleCapabilityCeiling(ceiling)
   args[0]
 
@@ -29045,10 +29062,13 @@ proc compileModuleArtifact(app: Application, absPath: string): ModuleCompileArti
 proc resolvedModuleCeiling(app: Application, module: Value,
                            parent: CapabilityContext): CapabilityContext =
   let row = module.moduleCapabilityRow
-  if row.inheritsCapabilities:
+  result = if row.inheritsCapabilities:
     parent
   else:
     resolveCapabilityRow(app, row, parent, nil)
+  let policy = module.moduleRootNamespace.nsScope.moduleExecutionPolicy
+  if policy != nil and policy.capabilityCeiling != nil:
+    result = intersectContexts(result, policy.capabilityCeiling)
 
 proc materializeImportCeilings(app: Application, module: Value,
                                applicationContext: CapabilityContext) =

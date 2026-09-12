@@ -1359,6 +1359,38 @@ suite "modules — the capability sandbox (design §D5)":
       useLocalSlots = false), scope).strVal
     check "max steps" in callMessage
 
+  test "prepared generation capability sealing covers escaped dependency calls":
+    let root = modDir / "generation_sealed_capabilities"
+    let allowed = root / "allowed"
+    let denied = root / "denied"
+    createDir(allowed)
+    createDir(denied)
+    writeFile(allowed / "data", "allowed")
+    writeFile(denied / "data", "denied")
+    writeFile(root / "dependency.gene",
+      "(import $fs [read_text]) (fn read [path] (read_text path))")
+    writeFile(root / "entry.gene",
+      "(import [read] from \"./dependency\") (fn escape [] read)")
+    let result = runSandboxProgram(
+      "(var policy {^max_steps 10000 ^max_memory_mb 16 ^timeout_ms 1000}) " &
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      " ^entry \"entry.gene\" ^grants [\"fs\"] ^shared [] ^policy policy})) " &
+      "(var module (generation .module)) " &
+      "(with_capabilities [(fs/ReadDir \"" & allowed.replace("\\", "/") & "\")] " &
+      " ($runtime/configure_module module policy)) " &
+      "(var escaped (module/escape)) (tx .commit) " &
+      "(var allowed_result (escaped \"" & (allowed / "data").replace("\\", "/") & "\")) " &
+      "(var denied_result (try (escaped \"" & (denied / "data").replace("\\", "/") & "\") " &
+      " false catch Any ($str/contains? $err/message \"requires fs/ReadFile\"))) " &
+      "(var immutable (try ($runtime/configure_module module policy) false " &
+      " catch Any ($str/contains? $err/message \"immutable\"))) " &
+      "(generation .release) [allowed_result denied_result immutable]")
+    check result.listItems.len == 3
+    check result.listItems[0].strVal == "allowed"
+    check result.listItems[1].boolVal
+    check result.listItems[2].boolVal
+
   test "sandbox generation policy bounds macro expansion and compilation":
     let root = modDir / "generation_compile_policy"
     createDir(root)

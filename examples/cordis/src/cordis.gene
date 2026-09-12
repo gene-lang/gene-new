@@ -4,7 +4,7 @@
 (mod cordis)
 
 (import [InstanceState PluginCallKind HookMode ReconcileMode
-         Disposable PluginInvoker EffectOwner
+         Disposable PluginInvoker PublicationParticipant EffectOwner
          InvocationLimits RuntimeOptions PluginCall LoaderOptions
          ServiceKey HookKey Requirement PluginSpec
          CordisError UndeclaredRequirement ServiceUnavailable
@@ -16,5 +16,5 @@
          Runtime Context ActivationContext EffectScope EffectLease
          ProviderLease PluginInstance HookSubject RealmId Loader
          invocation_limits service_key hook_key default_plugin_invoker
-         config_update hmr_reloaded new_runtime]
+         invoke_effect_owner config_update hmr_reloaded new_runtime]
   from "./runtime" ^export true)

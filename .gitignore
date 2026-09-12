@@ -5,6 +5,7 @@ temp/
 tests/*
 !tests/*.nim
 !tests/*.mjs
+!tests/harness_migration_scenarios.json
 !tests/transpile/
 !tests/transpile/**
 # Hand-written Gene programs the capability suite loads as entry modules. They

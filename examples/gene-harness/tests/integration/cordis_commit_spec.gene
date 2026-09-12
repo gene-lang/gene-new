@@ -1,0 +1,105 @@
+(mod cordis_commit_spec)
+(import $test [describe it])
+(import $fs [make_dir])
+(import $crypto [random_hex])
+(import [new_cordis_harness run_turn_transaction contribute row log_append
+         status_of shutdown_harness resolve] from "../../src/kernel")
+(import [open_event_store close_event_store events_for] from "../../src/state")
+(import [open_workspace close_workspace run_workspace_turn register_module
+         composition_revision workspace_status] from "../../src/workspace")
+(import [CompositionConflict composition_entries] from "../../src/workspace")
+(import [search_source] from "../cordis_durable_fixture")
+
+(fn root_for_test []
+  (let root $"${this_pkg/root}/plugins/generated/cordis-${(random_hex 8)}")
+  (make_dir root)
+  (make_dir $"${root}/events")
+  (make_dir $"${root}/composition")
+  root)
+
+(fn oversized_text []
+  (var text "")
+  (repeat i in 100 (set text $"${text}0123456789"))
+  text)
+
+(describe "Cordis commit phases"
+  (it "a losing desired CAS performs no Cordis activation or publication" []
+    (let root (root_for_test))
+    (let first (open_workspace $"${root}/composition"))
+    (let stale (open_workspace $"${root}/composition"))
+    (let events (open_event_store $"${root}/events"))
+    (let winner (new_cordis_harness ^workspace first ^event_store events))
+    (let loser (new_cordis_harness ^workspace stale ^event_store events))
+    (try
+      (let committed (register_module first winner "search" (search_source "winner")
+        ^scope "workspace" ^selectors []))
+      ($assert (== committed/status "ready"))
+      ($assert (try (register_module stale loser "search" (search_source "loser")
+                      ^scope "workspace" ^selectors []) false
+                catch CompositionConflict true))
+      ($assert (== (status_of loser "search") "absent"))
+      ($assert (== (row loser "tools" "search") void))
+      ($assert (== (composition_revision stale) 1))
+      ($assert (== (composition_entries stale) (composition_entries first)))
+      ($assert (== ((resolve winner "Search") "query") "winner(query)"))
+    ensure
+      (shutdown_harness loser)
+      (shutdown_harness winner)
+      (close_workspace stale)
+      (close_workspace first)
+      (close_event_store events)))
+
+  (it "registry publication failure preserves the original error and committed rows" []
+    (let root (root_for_test))
+    (let events (open_event_store $"${root}/events" ^max_event_bytes 512))
+    (let h (new_cordis_harness ^event_store events ^event_stream "phase"))
+    (try
+      (let text (oversized_text))
+      (let result (run_turn_transaction h "registry-phase" (fn []
+        (contribute h "core" "tools" {^name "committed" ^doc "fixture" ^run (fn [] "ok")})
+        (log_append h "trace" text))))
+      ($assert (== result/status "recovery_required") ($to_str result))
+      ($assert result/registry_published)
+      ($assert ($str/contains? result/error/message "event exceeds 512 bytes"))
+      (let published (row h "tools" "committed"))
+      ($assert (== (published/run) "ok"))
+      (let persisted (events_for events "session" "phase"))
+      (var ended false)
+      (for event in persisted
+        (if_yes (== event/type "turn/end")
+          ($assert (== event/payload/reason "committed"))
+          (set ended true)))
+      ($assert ended)
+    ensure
+      (shutdown_harness h)
+      (close_event_store events)))
+
+  (it "failure after desired CAS never attempts to roll CURRENT backward" []
+    (let root (root_for_test))
+    (let workspace (open_workspace $"${root}/composition"))
+    (let events (open_event_store $"${root}/events" ^max_event_bytes 512))
+    (let h (new_cordis_harness ^workspace workspace ^event_store events ^event_stream "phase"))
+    (try
+      (let source
+        `(mod plugin
+           (import [Plugin DescriptorContext] from "../../../src/plugin_api")
+           (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
+             (Plugin ^id "new_tool" ^provides [] ^requires [] ^contextual true
+               ^activate (fn [] (fn [host] nil))))))
+      (let text (oversized_text))
+      (let result (run_workspace_turn workspace h "desired-phase" (fn [unused]
+        (register_module workspace h "new_tool" source ^selectors [])
+        (log_append h "trace" text))))
+      ($assert (== result/status "recovery_required") ($to_str result))
+      ($assert result/desired_committed)
+      ($assert result/registry_published)
+      ($assert ($str/contains? result/error/message "event exceeds 512 bytes"))
+      ($assert (== (composition_revision workspace) 1))
+      ($assert (== (status_of h "new_tool") "absent"))
+      (let facts (workspace_status workspace))
+      ($assert (== facts/desired_revision 1))
+      ($assert (== facts/active_revision 0))
+    ensure
+      (shutdown_harness h)
+      (close_workspace workspace)
+      (close_event_store events))))

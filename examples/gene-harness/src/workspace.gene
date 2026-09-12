@@ -9,15 +9,18 @@
 (import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
 (import [Harness ExecutionLimits default_execution_limits
          describe_plugin_module install_with_policy
+         put_cordis_plugin
          configure_plugin_module invoke_bounded
          uninstall status_of plugin_error
          active_transaction begin_turn commit_turn abort_turn log_append
+         recover_committed_turn
          record_turn_start record_turn_end
          record_composition_change
          flush_harness hydrate_harness_log
          contribute row rows remove_owner module_dir]
   from "./kernel")
 (import [validate_event_catalog repair_interrupted_turns] from "./state")
+(import [current_interfaces known_legacy_interfaces?] from "./interface_policy")
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
@@ -32,7 +35,7 @@
           ^store Any ^blob_store Any
           ^revision Any ^entries Any ^busy Any ^closed Any
           ^generated_dir Str ^shared Any ^interfaces Any
-          ^core_interface Str ^errors Any})
+          ^core_interface Str ^errors Any ^active_revision Any})
 
 (type WorkspaceRestorePlan
   ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})
@@ -132,14 +135,7 @@
       (else
         (make_dir generated_dir)
         (real_path generated_dir))))
-  (var core_path $"${package_root}/src/kernel.gene")
-  (var plugin_api_path $"${package_root}/src/plugin_api.gene")
-  (var seams_path $"${package_root}/src/seams.gene")
-  (var interfaces
-    {^core $"sha256:${(sha256 (read_text core_path))}"
-     ^plugin_api $"sha256:${(sha256 (read_text plugin_api_path))}"
-     ^harness_render $"sha256:${(sha256 (read_text seams_path))}"
-     ^harness_fs $"sha256:${(sha256 (read_text seams_path))}"})
+  (var interfaces (current_interfaces))
   (var workspace
     (Workspace ^root canonical_root ^state_root canonical_state_root
                ^workspace_root canonical_workspace_root
@@ -151,6 +147,7 @@
                ^shared ["src/plugin_api.gene" "src/kernel.gene"
                         "src/seams.gene"]
                ^interfaces interfaces ^core_interface interfaces/core
+               ^active_revision ($cell nil)
                ^errors ($cell (fresh_map))))
   (load_composition workspace))
 
@@ -346,10 +343,11 @@
   (tx/pending_plugins .set next))
 
 (fn load_entry_descriptor [workspace : Workspace, h : Harness, entry]
-  (for [name fingerprint] in workspace/interfaces
-    (if_not (== (entry/interfaces .get name) fingerprint)
-      (fail (CompositionError
-        ^message $"plugin ${entry/id} interface ${name} fingerprint changed"))))
+  (if_not (== entry/interfaces workspace/interfaces)
+    (fail (CompositionError
+      ^message (if (known_legacy_interfaces? entry/interfaces)
+        $"plugin ${entry/id} requires the explicit interface upgrade command"
+        $"plugin ${entry/id} has unknown or incompatible interfaces"))))
   (if_not (entry/closure .contains? entry/module_digest)
     (fail (CompositionError
       ^message $"plugin ${entry/id} dependency closure omits its root")))
@@ -375,6 +373,46 @@
     ^limits (runtime_limits entry)))
   (validate_descriptor_events h descriptor)
   descriptor)
+
+(fn validate_stored_source [workspace : Workspace, entry]
+  (for digest in entry/closure
+    (var key $"blob/${digest}")
+    (if_not (workspace/blob_store .Store:has? key)
+      (fail (CompositionError ^message $"stored module blob is missing: ${digest}")))
+    (var text (workspace/blob_store .Store:get key))
+    (if_not (== $"sha256:${(sha256 text)}" digest)
+      (fail (CompositionError ^message $"stored module blob digest mismatch: ${digest}")))
+    (var source ($read_one text))
+    (canonical_module_source source ^require_init (== digest entry/module_digest))
+    (validate_source_imports source entry/closure))
+  nil)
+
+(fn upgrade_workspace_interfaces [workspace : Workspace, h : Harness]
+  (require_open workspace)
+  (if_not ($absent? (active_transaction h))
+    (fail (CompositionError ^message "interface upgrade requires no active turn")))
+  (var revision (composition_revision workspace))
+  (var entries (composition_entries workspace))
+  (var changed false)
+  # Decide compatibility for the entire desired composition before loading any
+  # code. Disabled entries participate too and keep their disabled flag.
+  (for entry in entries
+    (if_not (== entry/interfaces workspace/interfaces)
+      (if_not (known_legacy_interfaces? entry/interfaces)
+        (fail (CompositionError
+          ^message $"plugin ${entry/id} has unknown or incompatible interfaces")))
+      (set changed true)))
+  (if_not changed (return revision))
+  (var next (fresh_list))
+  (for entry in entries
+    (validate_stored_source workspace entry)
+    (var updated (data_copy entry))
+    (updated .put "interfaces" (data_copy workspace/interfaces))
+    # This is the same capability-empty, bounded descriptor path as normal
+    # registration. It never calls activate or publishes a registry row.
+    (load_entry_descriptor workspace h updated)
+    (next .push updated))
+  (commit_composition workspace revision next))
 
 (fn validate_descriptor_events [h : Harness, descriptor]
   (var seen (fresh_map))
@@ -457,11 +495,41 @@
   out)
 
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
+  (if_not ($absent? h/composition)
+    (return (put_cordis_plugin h descriptor
+      {^module $"${(digest_hex entry/module_digest)}.gene"
+       ^digest entry/module_digest ^closure entry/closure
+       ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
+       ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
+       ^inherit false} ^replace true)))
   (var current (status_of h descriptor/id))
   (if_not (== current "absent") (uninstall h descriptor/id))
   (install_with_policy h descriptor (selector_forms workspace entry/selectors)
     ^scope ($to_str entry/scope) ^limits (runtime_limits entry))
   (status_of h descriptor/id))
+
+(fn update_active_revision [workspace : Workspace, h : Harness]
+  (if ($absent? h/composition) (return nil))
+  (if_not (== (workspace/errors .get) #{}) (return nil))
+  (var snapshot (h/composition .inspect))
+  (for desired in (composition_entries workspace)
+    (if_yes (entry_enabled? desired)
+      (var matched false)
+      (for live in snapshot/entries
+        (if_yes (&& (== live/id desired/id) (! ($absent? live/graph))
+                    (["active" "pending"] .contains? live/state))
+          (for node in live/graph/nodes
+            (if (&& (== node/identity live/graph/root)
+                    (== node/source_digest desired/module_digest))
+              (set matched true)))))
+      (if_not matched (return nil))))
+  (workspace/active_revision .set (composition_revision workspace))
+  nil)
+
+(fn workspace_status [workspace : Workspace]
+  {^desired_revision (composition_revision workspace)
+   ^active_revision (workspace/active_revision .get)
+   ^errors (data_copy (workspace/errors .get))})
 
 (fn register_module
   [workspace : Workspace, h : Harness, id : Str, source,
@@ -557,14 +625,20 @@
   (var previous_digest (previous_module_digest before id))
   (var next_entries (entries_with before entry replace))
   (var revision (commit_composition workspace expected next_entries))
-  (record_composition_change h id previous_digest digest revision
-    authenticated_turn
-    (if (== previous_digest nil) "registered" "replaced"))
-  (register_descriptor_events h descriptor)
-  (flush_harness h)
-  (var status (activate_descriptor workspace h descriptor entry))
-  (if_yes (== status "error")
-    (record_quarantine workspace id (plugin_error h id)))
+  (var status "error")
+  (try
+    (record_composition_change h id previous_digest digest revision
+      authenticated_turn
+      (if (== previous_digest nil) "registered" "replaced"))
+    (register_descriptor_events h descriptor)
+    (flush_harness h)
+    (set status (activate_descriptor workspace h descriptor entry))
+    (if (== status "error")
+      (record_quarantine workspace id (plugin_error h id))
+      ((workspace/errors .get) .delete id))
+  catch Any
+    (record_quarantine workspace id ($to_str $err)))
+  (update_active_revision workspace h)
   {^revision revision ^digest digest ^status status ^entry entry})
 
 (fn run_workspace_turn
@@ -580,6 +654,9 @@
   (tx/workspace_entries .set (composition_entries workspace))
   (tx/workspace_baseline .set (composition_entries workspace))
   (tx/workspace_revision .set (composition_revision workspace))
+  (var durable_committed false)
+  (var ended false)
+  (var revision (composition_revision workspace))
   (try
     (var bounded
       (if ($absent? limits) (default_execution_limits) limits))
@@ -588,9 +665,10 @@
     (var expected (tx/workspace_revision .get))
     (var pending_plugins (tx/pending_plugins .get))
     (var composition_changed (> pending_plugins/.size 0))
-    (var revision expected)
+    (set revision expected)
     (if_yes composition_changed
-      (set revision (commit_composition workspace expected staged_entries)))
+      (set revision (commit_composition workspace expected staged_entries))
+      (set durable_committed true))
     (var registry_result (commit_turn h tx))
     (for pending in pending_plugins
       (record_composition_change h pending/entry/id pending/previous_digest
@@ -606,17 +684,27 @@
         (if_yes (== activation_status "error")
           (record_quarantine workspace pending/entry/id
             (plugin_error h pending/entry/id)))
+        (if_not (== activation_status "error")
+          ((workspace/errors .get) .delete pending/entry/id))
       catch Any
         (record_quarantine workspace pending/entry/id ($to_str $err/message))))
+    (update_active_revision workspace h)
     (record_turn_end h id "committed")
+    (set ended true)
     (flush_harness h)
     {^status registry_result/status ^result result ^revision revision
      ^composition_changed composition_changed}
   catch Any
+    (var failure $err)
+    (if_yes (|| durable_committed (== (tx/phase .get) "published"))
+      (record_quarantine workspace $"turn/${id}" ($to_str failure))
+      (var recovery (recover_committed_turn h tx id failure ended ^desired_committed durable_committed))
+      (recovery .put "revision" revision)
+      (return recovery))
     (var aborted (abort_turn h tx))
     (record_turn_end h id "aborted")
     (flush_harness h)
-    (aborted .put "error" $err)
+    (aborted .put "error" failure)
     aborted
   ensure
     (if_yes (== (active_transaction h) tx)
@@ -707,6 +795,7 @@
           (else (pending .push entry/id)))
       catch Any
         (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))
+  (update_active_revision workspace h)
   {^ready ready ^pending pending ^errors (data_copy (workspace/errors .get))
    ^session plan/session})
 
@@ -717,8 +806,13 @@
 
 (fn doctor [workspace : Workspace]
   (var out (fresh_list))
+  (var active (workspace/active_revision .get))
+  (var desired (composition_revision workspace))
   (for [id message] in (workspace/errors .get)
-    (out .push $"${id}: ${message}"))
+    (out .push (if ($absent? active) $"${id}: ${message}"
+      $"${id}: ${message} (desired ${desired}, active ${active})")))
+  (if (&& (== out/.size 0) (! ($absent? active)) (!= desired active))
+    (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
   out)
 
 (fn set_entry_disabled

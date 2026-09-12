@@ -1,0 +1,173 @@
+(mod cordis_sources_spec)
+(import $test [describe it])
+(import $fs [make_dir write_text])
+(import $crypto [random_hex sha256])
+(import [LoaderOptions] from "." ^pkg "cordis")
+(import [new_harness resolve describe_plugin_module configure_plugin_module
+         make_cordis_registry_host default_execution_limits] from "../../src/kernel")
+(import [new_composition] from "../../src/cordis_adapter")
+(import [HarnessPrompt] from "../../src/seams")
+(import [open_event_store close_event_store plugin_state] from "../../src/state")
+
+(fn fixture_root []
+  (let root $"${this_pkg/root}/plugins/generated/cordis-${(random_hex 8)}")
+  (make_dir root)
+  root)
+
+(fn shared_files [] ["src/plugin_api.gene" "src/kernel.gene" "src/seams.gene"])
+
+(fn fixture_composition [h, root]
+  (new_composition (make_cordis_registry_host h)
+    ^options (LoaderOptions ^plugin_root root ^shared (shared_files)
+      ^max_namespaces ["fs"] ^capability_catalog #{} ^capability_ceiling nil
+      ^default_limits nil ^reload_policy nil)))
+
+(fn write_source [root, name, source]
+  (let text ($to_str source))
+  (write_text $"${root}/${name}.gene" text)
+  (let digest $"sha256:${(sha256 text)}")
+  {^module $"${name}.gene" ^digest digest ^closure [digest] ^inherit false})
+
+(fn preflight [h, root, name, namespaces = #[]]
+  (let module ($runtime/load_sandboxed root $"${name}.gene" namespaces
+    (shared_files) $"preflight/${name}"))
+  (configure_plugin_module module [] (default_execution_limits))
+  (describe_plugin_module h module "generated"))
+
+(fn value_source [version : Int]
+  `(mod plugin
+     (import [Plugin DescriptorContext PluginContext PluginHost]
+       from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+     (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
+       (Plugin ^id "generated" ^provides ["Generated"] ^requires [] ^contextual true
+         ^activate (fn [] (fn [host]
+           (host .PluginHost:provide "Generated" (fn [] (unquote version)))))))))
+
+(describe "Cordis adapter sources"
+  (it "generated workspace state flushes after an owned call and survives reopen" []
+    (let root (fixture_root))
+    (let event_root $"${root}/events")
+    (make_dir event_root)
+    (let events (open_event_store event_root))
+    (let h (new_harness ^event_store events ^event_stream "source-session"))
+    (let source
+      `(mod plugin
+         (import [Plugin DescriptorContext PluginContext PluginHost]
+           from "../../../src/plugin_api")
+         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+         (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
+           (Plugin ^id "generated" ^provides ["Counter"] ^requires [] ^contextual true
+             ^activate (fn [] (fn [host]
+               (host .PluginHost:provide "Counter" (fn []
+                 (let previous (host .PluginHost:state))
+                 (let count (+ (if ($absent? previous) 0 previous/count) 1))
+                 (host .PluginHost:update_state {^count count})
+                 count))))))))
+    (let options (write_source root "counter" source))
+    (options .put "scope" "workspace")
+    (let descriptor (preflight h root "counter"))
+    (let composition (fixture_composition h root))
+    (try
+      (composition .reconcile [descriptor] ^entries {^generated options})
+      ($assert (== ((resolve h "Counter")) 1))
+      # A separate store reader sees the flush before shutdown closes anything.
+      (let reader (open_event_store event_root))
+      (try
+        ($assert (== (plugin_state reader "workspace" "workspace" "generated") {^count 1}))
+        ($assert ($absent? (plugin_state reader "session" "source-session" "generated")))
+      ensure (close_event_store reader))
+    ensure
+      (composition .close)
+      (close_event_store events)))
+
+  (it "escaped typed provider methods retain their entry capability ceiling" []
+    (let root (fixture_root))
+    (let allowed $"${root}/allowed")
+    (let denied $"${root}/denied")
+    (make_dir allowed)
+    (make_dir denied)
+    (write_text $"${allowed}/data" "allowed")
+    (write_text $"${denied}/data" "denied")
+    (let source
+      `(mod plugin
+         (import $fs [read_text])
+         (import [Plugin DescriptorContext PluginContext PluginHost]
+           from "../../../src/plugin_api")
+         (import [HarnessPrompt] from "../../../src/seams")
+         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+         (type Reader)
+         (impl HarnessPrompt for Reader
+           (message handle [h, path : Str] : Str (read_text path)))
+         (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
+           (Plugin ^id "generated" ^provides ["Reader"] ^requires [] ^contextual true
+             ^activate (fn [] (fn [host] (host .PluginHost:provide "Reader" (Reader))))))))
+    (let options (write_source root "typed_reader" source))
+    (options .put "namespaces" ["fs"])
+    (options .put "selectors" [`(fs/ReadDir (unquote allowed))])
+    (let h (new_harness))
+    (let descriptor (preflight h root "typed_reader" ["fs"]))
+    (let composition (fixture_composition h root))
+    (try
+      (composition .reconcile [descriptor] ^entries {^generated options})
+      (let reader (resolve h "Reader"))
+      ($assert (== (reader .HarnessPrompt:handle nil $"${allowed}/data") "allowed"))
+      ($assert (try (reader .HarnessPrompt:handle nil $"${denied}/data") false
+                catch Any ($str/contains? ($to_str $err) "MissingCapability")))
+    ensure (composition .close)))
+
+  (it "generated descriptors load in owned sandbox generations and replace safely" []
+    (let root (fixture_root))
+    (let h (new_harness))
+    (let first_options (write_source root "first" (value_source 1)))
+    (let second_options (write_source root "second" (value_source 2)))
+    (let first (preflight h root "first"))
+    (let second (preflight h root "second"))
+    (let composition (fixture_composition h root))
+    (try
+      (composition .reconcile [first] ^entries {^generated first_options})
+      (let snapshot (composition .inspect))
+      ($assert (! ($absent? snapshot/entries/1/graph)))
+      (let old (resolve h "Generated"))
+      ($assert (== (old) 1))
+      (composition .reconcile [second] ^entries {^generated second_options})
+      ($assert (== ((resolve h "Generated")) 2))
+      ($assert (try (old) false catch Any true))
+      (let bad (write_source root "hostile"
+        `(mod plugin (fn init [ctx] ^capabilities [] (while true nil)))))
+      ($assert (try (composition .reconcile [second] ^entries {^generated bad}) false
+                catch Any ($str/contains? ($to_str $err) "max steps")))
+      ($assert (== ((resolve h "Generated")) 2))
+    ensure (composition .close)))
+
+  (it "generated call policy grants one read root and denies another" []
+    (let root (fixture_root))
+    (let allowed $"${root}/allowed")
+    (let denied $"${root}/denied")
+    (make_dir allowed)
+    (make_dir denied)
+    (write_text $"${allowed}/data" "allowed")
+    (write_text $"${denied}/data" "denied")
+    (let source
+      `(mod plugin
+         (import $fs [read_text])
+         (import [Plugin DescriptorContext PluginContext PluginHost]
+           from "../../../src/plugin_api")
+         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+         (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
+           (Plugin ^id "generated" ^provides ["Read"] ^requires [] ^contextual true
+             ^activate (fn [] (fn [host]
+               (host .PluginHost:provide "Read" (fn [path] (read_text path)))))))))
+    (let options (write_source root "reader" source))
+    (options .put "namespaces" ["fs"])
+    (options .put "selectors" [`(fs/ReadDir (unquote allowed))])
+    (let h (new_harness))
+    (let descriptor (preflight h root "reader" ["fs"]))
+    (let composition (fixture_composition h root))
+    (try
+      (composition .reconcile [descriptor] ^entries {^generated options})
+      (let reader (resolve h "Read"))
+      ($assert (== (reader $"${allowed}/data") "allowed"))
+      ($assert (try (reader $"${denied}/data") false
+                catch Any ($str/contains? ($to_str $err) "MissingCapability")))
+    ensure (composition .close))))

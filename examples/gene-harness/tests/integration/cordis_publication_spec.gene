@@ -1,0 +1,175 @@
+(mod cordis_publication_spec)
+(import $test [describe it])
+(import [Plugin PluginHost PluginContext] from "../../src/plugin_api")
+(import_impl PluginHost for PluginContext from "../../src/kernel")
+(import [new_harness registry row row_record resolve make_cordis_registry_host] from "../../src/kernel")
+(import [new_composition] from "../../src/cordis_adapter")
+(import [RecoveryRequired] from "." ^pkg "cordis")
+
+(fn search_plugin [version : Int, broken : Bool = false, probe = nil, cleanup = nil]
+  (Plugin ^id "search" ^provides [] ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host .PluginHost:contribute "tools"
+        {^name "search" ^doc "search fixture" ^run (fn [query] [version query])})
+      (host .PluginHost:provide "SearchVersion" version)
+      (if_not ($absent? probe) (probe))
+      (if broken ($panic "candidate rejected"))))
+    ^deactivate (fn [] (fn [host]
+      (if_not ($absent? cleanup) (cleanup version))))))
+
+(fn state_of [composition, id : Str]
+  (let snapshot (composition .inspect))
+  (for entry in snapshot/entries
+    (if (== entry/id id) (return entry/state)))
+  "absent")
+
+(fn report_plugin [activations, operations]
+  (Plugin ^id "report" ^provides ["Report"] ^requires [["tools" "search"]]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (activations .set (+ (activations .get) 1))
+      # Dynamic seam discovery is deliberately separate from the declared
+      # tools/search activation dependency.
+      (let version (host .PluginHost:resolve "SearchVersion"))
+      (host .PluginHost:provide "Report"
+        (fn []
+          (operations .set (+ (operations .get) 1))
+          version))))))
+
+(fn asset_plugin [version : Int, broken : Bool = false]
+  (Plugin ^id "asset" ^provides [] ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host .PluginHost:contribute "owned" {^name "resource" ^version version})
+      (if broken ($panic "asset rejected"))))))
+
+(fn prompt_plugin [id : Str]
+  (Plugin ^id id ^provides [] ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host .PluginHost:contribute "prompt" {^name "shared" ^text id})))))
+
+(fn assert_selected [composition, h, owner : Str]
+  (let selected (row_record h "prompt" "shared"))
+  ($assert (== selected/owner owner))
+  (let snapshot (composition .inspect))
+  ($assert (== snapshot/bindings/.size 1))
+  ($assert (== snapshot/bindings/0
+    {^registry "prompt" ^key "shared" ^row_id selected/row_id})))
+
+(describe "Cordis adapter publication"
+  (it "old cleanup failure reports recovery after publishing the new rows" []
+    (let h (new_harness))
+    (registry h "owned" ^unique true ^on_remove (fn [host, payload]
+      (if (== payload/version 1) ($panic "retired asset cleanup failed"))))
+    (let composition (new_composition (make_cordis_registry_host h)))
+    (try
+      (composition .reconcile [(asset_plugin 1)])
+      ($assert (try (composition .reconcile [(asset_plugin 2)]) false
+                catch RecoveryRequired
+                  ($str/contains? ($to_str $err) "retired asset cleanup failed")))
+      (let visible (row h "owned" "resource"))
+      ($assert (== visible/version 2))
+      ($assert (== (state_of composition "asset") "active"))
+    ensure (composition .close)))
+
+  (it "nonunique dependencies follow the registry selected row" []
+    (let h (new_harness))
+    (let composition (new_composition (make_cordis_registry_host h)))
+    (let consumer
+      (Plugin ^id "consumer" ^provides [] ^requires [["prompt" "shared"]]
+        ^contextual true ^activate (fn [] (fn [host] nil))))
+    (try
+      (composition .reconcile [(prompt_plugin "z") (prompt_plugin "a") consumer])
+      ($assert (== (state_of composition "consumer") "active"))
+      (assert_selected composition h "a")
+      (composition .reconcile [(prompt_plugin "z") consumer])
+      ($assert (== (state_of composition "consumer") "active"))
+      (assert_selected composition h "z")
+    ensure (composition .close)))
+
+  (it "registry cleanup runs once for invisible old rows after publication" []
+    (let h (new_harness))
+    (let observations ($cell ($thaw #[])))
+    (registry h "owned" ^unique true ^on_remove (fn [host, payload]
+      (let visible (row h "owned" "resource"))
+      ((observations .get) .push
+        [payload/version (if (== visible void) nil visible/version)])))
+    (let composition (new_composition (make_cordis_registry_host h)))
+    (try
+      (composition .reconcile [(asset_plugin 1)])
+      ($assert (try (composition .reconcile [(asset_plugin 2 true)]) false
+                catch Any ($str/contains? ($to_str $err) "asset rejected")))
+      ($assert (== (observations .get) [[2 1]]))
+      (composition .reconcile [(asset_plugin 3)])
+      ($assert (== (observations .get) [[2 1] [1 3]]))
+      (let visible (row h "owned" "resource"))
+      ($assert (== visible/version 3))
+    ensure (composition .close))
+    ($assert (== (observations .get) [[2 1] [1 3] [3 nil]])))
+
+  (it "failed candidate rows stay private and old cleanup preserves replacement rows" []
+    (let h (new_harness))
+    (let cleaned ($cell ($thaw #[])))
+    (let composition (new_composition (make_cordis_registry_host h)))
+    (try
+      (let cleanup (fn [version]
+        ((cleaned .get) .push version)
+        (if_yes (== version 1)
+          (let published (row h "tools" "search"))
+          ($assert (== (published/run "cleanup") [3 "cleanup"])))))
+      (composition .reconcile [(search_plugin 1 false nil cleanup)])
+      (let old (row h "tools" "search"))
+      ($assert (== (old/run "first") [1 "first"]))
+      (let during_candidate (fn []
+        (let live (row h "tools" "search"))
+        ($assert (== (live/run "during") [1 "during"]))))
+      ($assert (try (composition .reconcile [(search_plugin 2 true during_candidate)]) false
+                catch Any ($str/contains? ($to_str $err) "candidate rejected")))
+      (let after_failure (row h "tools" "search"))
+      ($assert (== (after_failure/run "still") [1 "still"]))
+      (composition .reconcile [(search_plugin 3 false during_candidate)])
+      ($assert (== (cleaned .get) [1]))
+      (let current (row h "tools" "search"))
+      ($assert (== (current/run "new") [3 "new"]))
+      ($assert (try (old/run "stale") false catch Any true))
+    ensure (composition .close)))
+
+  (it "selected entry dependencies handle absence appearance removal and replacement without replay" []
+    (let h (new_harness))
+    (let activations ($cell 0))
+    (let operations ($cell 0))
+    (let report (report_plugin activations operations))
+    (let service_consumer
+      (Plugin ^id "service_consumer" ^provides ["ServiceReport"]
+        ^requires ["SearchVersion"] ^contextual true
+        ^activate (fn [] (fn [host]
+          (host .PluginHost:provide "ServiceReport"
+            (host .PluginHost:resolve "SearchVersion"))))))
+    (let composition (new_composition (make_cordis_registry_host h)))
+    (try
+      (composition .reconcile [report service_consumer])
+      ($assert (== (state_of composition "report") "pending"))
+      ($assert (== (state_of composition "service_consumer") "pending"))
+      ($assert (== (activations .get) 0))
+      ($assert (== (row h "seams" "Report") void))
+      (composition .reconcile [report service_consumer (search_plugin 1)])
+      ($assert (== (state_of composition "report") "active"))
+      ($assert (== (activations .get) 1))
+      ($assert (== (resolve h "ServiceReport") 1))
+      (let old (resolve h "Report"))
+      ($assert (== (old) 1))
+      (composition .reconcile [report service_consumer (search_plugin 2)])
+      ($assert (== (activations .get) 2))
+      ($assert (== (operations .get) 1))
+      ($assert (try (old) false catch Any true))
+      ($assert (== ((resolve h "Report")) 2))
+      ($assert (== (resolve h "ServiceReport") 2))
+      (composition .reconcile [report service_consumer])
+      ($assert (== (state_of composition "report") "pending"))
+      ($assert (== (row h "seams" "Report") void))
+      ($assert (== (row h "seams" "ServiceReport") void))
+      ($assert (== (activations .get) 2))
+      (composition .reconcile [(search_plugin 3) report service_consumer])
+      ($assert (== ((resolve h "Report")) 3))
+      ($assert (== (activations .get) 3))
+      ($assert (== (operations .get) 3))
+    ensure (composition .close))))

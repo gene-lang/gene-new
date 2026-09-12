@@ -1,0 +1,1 @@
+(serde_v1 [{^format 2 ^origin "core" ^owner "core" ^projection "workspace_counter" ^scope "workspace" ^stream "workspace" ^seq 1 ^type "plugin/state" ^version 1 ^ignorable false ^payload {^type "plugin/state" ^plugin "workspace_counter" ^state_version 1 ^state {^count 1}}}])

@@ -1,0 +1,31 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:5c1ebea929dbaf10b2e5a1f4a95f57b620aac00a0400eacf4813897ae2b75e08"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:gene/harness@0.1.0#sha256:33afc849600e12c1c00d0d4c2adcfde90ebc6310c4fbfcbdba3b3683e7e333fc"]
+  ^packages [
+    (locked_package
+      ^id "path:genex/cordis@0.1.0#sha256:3ee79337c7c90ea0702ff1c783edbbbd6a911627d049dad298a19793692b47c3"
+      ^name "genex/cordis"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:1edd059df4b1812062dd8b34cd60f936755910e587f0cb2303055fcd7a524071"
+      ^source (path ^path "../cordis")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:gene/harness@0.1.0#sha256:33afc849600e12c1c00d0d4c2adcfde90ebc6310c4fbfcbdba3b3683e7e333fc"
+      ^name "gene/harness"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:5c1ebea929dbaf10b2e5a1f4a95f57b620aac00a0400eacf4813897ae2b75e08"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:3ee79337c7c90ea0702ff1c783edbbbd6a911627d049dad298a19793692b47c3")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}

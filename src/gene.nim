@@ -556,6 +556,7 @@ proc cmdBuildWeb(options: BuildWebCli) =
     quit(1)
 
 type ProjectBuildCli = object
+  testHost: RunCli
   product: string
   packageRoot: string
   targetTriple: string
@@ -594,6 +595,17 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
   while i <= paramCount():
     let arg = paramStr(i)
     case arg
+    of "--allow_read_dir", "--allow_write_dir", "--allow_read_write_dir":
+      if label != "test":
+        raise newException(ValueError, "unknown " & label & " option: " & arg)
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a value")
+      case arg
+      of "--allow_read_dir": result.testHost.allowReadDirs.add paramStr(i)
+      of "--allow_write_dir": result.testHost.allowWriteDirs.add paramStr(i)
+      of "--allow_read_write_dir": result.testHost.allowReadWriteDirs.add paramStr(i)
+      else: discard
     of "--target", "--profile", "--mode", "--debug_info", "--jobs",
        "--package-root":
       inc i
@@ -894,6 +906,7 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       let executionGraph = built.executionGraph
       let executionPackage = executionGraph.packagesById[pkg.id]
       let app = newApplication(executionGraph, executionPackage.root)
+      app.applyRunCapabilityPolicy(options.testHost)
       reportingScope = newGlobalScope(app)
       for artifact in built.artifacts:
         app.installCompiledModules(artifact.compiledModules)

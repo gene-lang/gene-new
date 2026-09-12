@@ -11,7 +11,7 @@
 
 (enum PluginCallKind
   activate availability validate_schema validate_service merge_config
-  bind_service hook cleanup)
+  bind_service hook cleanup operation)
 
 (enum HookMode emit parallel serial bail waterfall)
 
@@ -22,6 +22,14 @@
 
 (protocol PluginInvoker
   (message invoke [call] : Any))
+
+# Trusted host integration only. prepare allocates an isolated prospective
+# view; publish swaps prepared in-memory state without yielding or calling
+# plugins; abort discards the view after candidate effect cleanup.
+(protocol PublicationParticipant
+  (message prepare [] : Any)
+  (message publish [ticket] : Nil)
+  (message abort [ticket] : Nil))
 
 (protocol EffectOwner
   (message defer [cleanup] : Disposable)
@@ -58,7 +66,10 @@
           ^capability_catalog Map
           ^capability_ceiling Any
           ^default_limits InvocationLimits?
-          ^reload_policy Any?})
+          ^reload_policy Any?
+          ^publication PublicationParticipant?
+          ^allow_pending Bool?
+          ^descriptor_factory Any?})
 
 # `token` is not authority by itself. The trusted constructors register its
 # identity in private module state, and every consuming operation resolves the

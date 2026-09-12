@@ -1,0 +1,18 @@
+# Host-owned compatibility policy. Implementation-file hashes are historical
+# evidence, not the version of the supported generated-plugin contract.
+(mod interface_policy)
+
+(fn current_interfaces []
+  {^core "gene-harness/PluginHost:1"
+   ^plugin_api "gene-harness/Plugin:1"
+   ^harness_render "gene-harness/HarnessRender:1"
+   ^harness_fs "gene-harness/HarnessFs:1"})
+
+# Captured at 6558a8f, before the first Cordis migration kernel edit. Accept
+# only the complete known set: partial matches and unknown extra keys refuse.
+(fn known_legacy_interfaces? [interfaces] : Bool
+  (== interfaces
+    {^core "sha256:7f86df8350c161055d70e0b00641d63550933a6ee4cfc91e3472f5e1ff1fffd4"
+     ^plugin_api "sha256:60e9bd40f590cf573cefafcc634617f514d820851302f1f619e4a775dd6a5a72"
+     ^harness_render "sha256:a7075b96f3a13be45f67858c2515cb5d5c473d6ac125c9263428221427c06753"
+     ^harness_fs "sha256:a7075b96f3a13be45f67858c2515cb5d5c473d6ac125c9263428221427c06753"}))

@@ -1,0 +1,47 @@
+# Deferred selective imports retain each scenario's own module scope.
+(mod cordis_scenarios_spec)
+(import $test [describe it run])
+
+(describe "Cordis"
+  (it "actor" []
+    (import [assert : scenario_entry] from "./tests/actor.gene"))
+  (it "cycles" []
+    (import [assert : scenario_entry] from "./tests/cycles.gene"))
+  (it "effects" []
+    (import [main : scenario_entry] from "./tests/effects.gene")
+    (scenario_entry []))
+  (it "hooks" []
+    (import [assert : scenario_entry] from "./tests/hooks.gene"))
+  (it "include" []
+    (import [main : scenario_entry] from "./tests/include.gene")
+    (scenario_entry []))
+  (it "lifecycle" []
+    (import [assert : scenario_entry] from "./tests/lifecycle.gene"))
+  (it "lifecycle_edges" []
+    (import [main : scenario_entry] from "./tests/lifecycle_edges.gene")
+    (scenario_entry []))
+  (it "loader" []
+    (import [main : scenario_entry] from "./tests/loader.gene")
+    (scenario_entry []))
+  (it "loader_capabilities" []
+    (import [main : scenario_entry] from "./tests/loader_capabilities.gene")
+    (scenario_entry []))
+  (it "quiescence" []
+    (import [assert : scenario_entry] from "./tests/quiescence.gene"))
+  (it "recovery" []
+    (import [main : scenario_entry] from "./tests/recovery.gene")
+    (scenario_entry []))
+  (it "services" []
+    (import [assert : scenario_entry] from "./tests/services.gene"))
+  (it "stop_start" []
+    (import [main : scenario_entry] from "./tests/stop_start.gene")
+    (scenario_entry []))
+  (it "timer" []
+    (import [assert : scenario_entry] from "./tests/timer.gene"))
+  (it "timer_service" []
+    (import [assert : scenario_entry] from "./tests/timer_service.gene"))
+)
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)
