@@ -9,6 +9,7 @@
 # intentionally omit the repository-level language skill used by LLM fixtures.
 (let package_root (get_env "GENE_HARNESS_PACKAGE_ROOT" this_pkg/root))
 (var test_root (get_env "GENE_HARNESS_TEST_ROOT" ""))
+(let external_root (!= test_root ""))
 (if (== test_root "")
   (set test_root $"${this_pkg/root}/.cache/harness-tests-${(random_hex 8)}"))
 (make_dir test_root)
@@ -16,9 +17,15 @@
 (fn run_scenario [name : Str, root_count : Int, marker : Str]
   (let root $"${test_root}/${name}")
   (make_dir root)
-  (let command ["run" "--allow_read_write_dir" root
-    "--allow_read_dir" $"${package_root}/../../tools/gene-lang-skill"
-    $"${package_root}/tests/${name}.gene"])
+  (let command ["run"])
+  # The default scratch directory already has the child's package launch
+  # grant. An additional grant there would make filesystem lookup ambiguous.
+  (if_yes external_root
+    (command .push "--allow_read_write_dir")
+    (command .push root))
+  (command .push "--allow_read_dir")
+  (command .push $"${package_root}/../../tools/gene-lang-skill")
+  (command .push $"${package_root}/tests/${name}.gene")
   (var i 0)
   (while (< i root_count)
     (let data $"${root}/${i}")

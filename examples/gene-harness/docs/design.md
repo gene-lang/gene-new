@@ -210,9 +210,8 @@ writes:
 debris, never selected by load, and is reclaimed under the next publication
 lock. Corrupt published generations fall back without crossing `CURRENT`.
 
-Composition envelopes and event envelopes report format direction explicitly:
-a newer format asks the user to upgrade; an older unsupported format says this
-build ships no upgrade path. Corruption remains a separate error.
+Composition readers require format 1, and event readers reject unsupported
+envelope formats. Corruption remains a separate error.
 
 ## 7. Durable generated modules
 
@@ -262,11 +261,11 @@ unreferenced cache file now only ever comes from a preflight failure.
 
 Dependencies are also quoted modules. `module_digest` lets a caller construct a
 relative digest import, and `^dependencies` supplies the exact closure. Shared
-imports are restricted to fingerprinted contract modules. Ordinary generated
+imports are restricted to declared contract modules. Ordinary generated
 code imports `plugin_api`; kernel sharing is accepted only for
 `import_impl PluginHost for PluginContext`, so untrusted code cannot bind the
-recovery kernel as a utility module. Restore checks every digest and interface
-fingerprint before loading. A missing loader-cache file is rematerialized from
+recovery kernel as a utility module. Restore checks every digest and supported
+interface version before loading. A missing loader-cache file is rematerialized from
 the authoritative blob Store and verified.
 
 Activation failure does not roll desired state backward. The entry remains
@@ -609,8 +608,8 @@ fail closed).
 
 ## 14. Tests and deferred work
 
-Public-seam smoke programs live in `examples/gene-harness/tests/` and are run by
-`tests/test_cli.nim`. They cover registries and cleanup, seam migration,
+Public-seam smoke programs live in `examples/gene-harness/tests/` and run through
+`gene test` from the package directory. They cover registries and cleanup, seam replacement,
 transaction diff/abort/commit, event retention/catalog/concurrency and cold
 repair, cross-process Store claims, workspace CAS, module registration/reopen
 and cache rematerialization, dependency closure/shared-contract confinement,
@@ -623,7 +622,6 @@ session/workspace state conflicts.
 Still deferred:
 
 - human-reviewed promotion into a checked-in profile;
-- protocol migration beyond strict interface-fingerprint refusal;
 - cross-workspace sharing/GC of module blobs;
 - restoration of live in-flight resources (explicitly outside the resume
   boundary);

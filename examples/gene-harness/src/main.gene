@@ -26,7 +26,7 @@
   from "./kernel")
 (import [open_event_store close_event_store] from "./state")
 (import [open_workspace prepare_workspace activate_workspace_plan
-         doctor disable_entry enable_entry upgrade_workspace_interfaces close_workspace]
+         doctor disable_entry enable_entry close_workspace]
   from "./workspace")
 (import [HarnessView] from "./view_api")
 (import $os [get_env])
@@ -129,8 +129,6 @@
         ($println $"composition revision ${(disable_entry workspace recovery_target ^h h)}"))
       (elif (== recovery_command "enable")
         ($println $"composition revision ${(enable_entry workspace recovery_target ^h h)}"))
-      (elif (== recovery_command "upgrade")
-        ($println $"composition revision ${(upgrade_workspace_interfaces workspace h)}"))
       (elif (== recovery_command "doctor")
         (prepare_workspace workspace h ^session session)
         (for finding in (doctor workspace) ($println finding)))

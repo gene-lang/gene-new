@@ -4,18 +4,6 @@ A durable, capability-bounded plugin harness for a general-purpose Gene agent.
 It can add code while running, stop, and restore the same composition and
 plugin state at the last committed turn boundary.
 
-The offline migration gate runs from the repository root:
-
-```sh
-python3 tools/check_harness_migration.py --report tmp/harness-migration-gate.json
-```
-
-It builds a private executable, runs 15 named Cordis and 34 named Harness
-scenarios with separate writable roots, checks watcher recovery, and reopens
-the pre-migration durable fixture in a fresh process. It also checks that an
-intentional test failure and empty selection return failures. Use `--gene
-/path/to/gene` to reuse an executable. The CLI test suite invokes this same gate.
-
 From this package directory, `../../bin/gene test` runs the 34 baseline Harness
 scenarios plus the Cordis adapter integration examples in `tests/integration`.
 The package artifact test target uses the same wrapper; give it an explicit
@@ -29,14 +17,13 @@ GENE_HARNESS_PACKAGE_ROOT="$PWD" \
   ../../bin/gene test --package --allow_read_write_dir /tmp/harness-package-tests
 ```
 
-The Cordis migration is in progress. `new_cordis_harness` uses isolated registry
+`new_cordis_harness` uses isolated registry
 drafts, selected-entry dependencies, revision-owned callbacks, and generated
 modules loaded through Cordis sandbox generations. The deterministic integration
 path exercises the real registration and turn APIs, durable replacement, failed
 activation with old tools retained, fresh-process restore, and process death
-between desired CAS and live reconciliation. The normal profile entry still
-uses the existing constructor until the remaining operation, hook, and registry
-transaction contracts are migrated; the final cutover will remove that path.
+between desired CAS and live reconciliation. The command-line profile entry
+uses `new_harness`; `new_cordis_harness` selects the Cordis implementation.
 
 On the Cordis path, `workspace_status` reports desired and active revisions.
 Doctor includes both revisions when reconciliation fails. Post-commit failures
@@ -330,25 +317,10 @@ turn body, so it never becomes a revision.
 
 ## Capability selectors
 
-Generated composition entries now record explicit supported interface versions,
+Generated composition entries record explicit supported interface versions,
 defined in `src/interface_policy.gene`. Changes to implementation files alone
 do not change those contracts. Incompatible public API changes require a new
-version and a separately reviewed compatibility policy.
-
-For workspaces saved by the known pre-Cordis build at `6558a8f`, run
-`web upgrade` with the same `GENE_HARNESS_HOME` and filesystem grants used for
-normal startup. This recovery command runs before profile activation. It checks
-the entire old fingerprint set, verifies stored source and dependency imports,
-and runs bounded, capability-empty descriptor init for every entry, including
-disabled ones. Only then does it CAS a new desired revision with updated
-interface metadata. It preserves blobs, authorship, state, and disabled flags;
-it does not activate plugins. Repeating the command is a no-op once current.
-Unknown interfaces or failed validation refuse the upgrade.
-
-Before upgrading a real workspace, retain a copy of its stores and the matching
-verified old binary/source revision. Rollback uses that pair in a separate home;
-do not edit CURRENT pointers or rewrite immutable blobs. The golden test fixture
-and its hashes are under `tests/fixtures/harness_pre_cordis` at the repository root.
+version. Entries with unsupported interface versions are refused.
 
 Composition stores inert selector data. It never stores or restores grants:
 
@@ -426,14 +398,14 @@ before stores are flushed and closed.
 
 ## Verification
 
-Harness tests are part of `tests/test_cli.nim`. They cover registry ownership,
+Run Harness tests with `gene test` from this package directory. They cover registry ownership,
 transaction diff/commit/abort, event retention/catalog/concurrency/cold repair,
 cross-process Store publication, content-addressed registration, dependency
 closure and cache repair, quarantine, named-root attenuation, callback and
 typed-provider supervision, plugin events, provenance, active views/output,
 prompt-skill loading, and session/workspace state conflicts.
 
-Run the focused programs directly while developing, then the repository gates:
+Run the focused programs directly while developing. Repository gates are:
 
 ```bash
 python3 tools/generate_harness_event_catalog.py --check
@@ -443,5 +415,5 @@ nimble perf
 nimble wasm
 ```
 
-Human-reviewed promotion into checked-in profiles, protocol migrations beyond
-fingerprint refusal, and cross-workspace blob sharing remain deferred.
+Human-reviewed promotion into checked-in profiles and cross-workspace blob
+sharing remain deferred.

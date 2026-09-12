@@ -68,9 +68,6 @@ task test, "Run the test suite":
 task spec, "Run executable language surface specs":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
 
-task harness_migration, "Run offline Cordis and Harness migration scenarios":
-  exec "python3 tools/check_harness_migration.py"
-
 task transpile_spec, "Run shared VM/web-profile conformance fixtures":
   exec "node tools/check_host_bindings.mjs"
   exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"

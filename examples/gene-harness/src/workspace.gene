@@ -20,7 +20,7 @@
          contribute row rows remove_owner module_dir]
   from "./kernel")
 (import [validate_event_catalog repair_interrupted_turns] from "./state")
-(import [current_interfaces known_legacy_interfaces?] from "./interface_policy")
+(import [current_interfaces] from "./interface_policy")
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
@@ -89,12 +89,9 @@
       (if (== manifest void)
         (fail (CompositionError
           ^message "composition generation has no composition record")))
-      (if (> manifest/format 1)
+      (if_not (== manifest/format 1)
         (fail (CompositionError
-          ^message "composition was written by a newer harness; upgrade")))
-      (if (< manifest/format 1)
-        (fail (CompositionError
-          ^message "this harness ships no composition upgrade path")))
+          ^message $"unsupported composition format ${manifest/format}; expected 1")))
       (var checked (validate_entries manifest/entries))
       (workspace/revision .set manifest/revision)
       (workspace/entries .set checked)))
@@ -345,9 +342,7 @@
 (fn load_entry_descriptor [workspace : Workspace, h : Harness, entry]
   (if_not (== entry/interfaces workspace/interfaces)
     (fail (CompositionError
-      ^message (if (known_legacy_interfaces? entry/interfaces)
-        $"plugin ${entry/id} requires the explicit interface upgrade command"
-        $"plugin ${entry/id} has unknown or incompatible interfaces"))))
+      ^message $"plugin ${entry/id} has unknown or incompatible interfaces")))
   (if_not (entry/closure .contains? entry/module_digest)
     (fail (CompositionError
       ^message $"plugin ${entry/id} dependency closure omits its root")))
@@ -373,46 +368,6 @@
     ^limits (runtime_limits entry)))
   (validate_descriptor_events h descriptor)
   descriptor)
-
-(fn validate_stored_source [workspace : Workspace, entry]
-  (for digest in entry/closure
-    (var key $"blob/${digest}")
-    (if_not (workspace/blob_store .Store:has? key)
-      (fail (CompositionError ^message $"stored module blob is missing: ${digest}")))
-    (var text (workspace/blob_store .Store:get key))
-    (if_not (== $"sha256:${(sha256 text)}" digest)
-      (fail (CompositionError ^message $"stored module blob digest mismatch: ${digest}")))
-    (var source ($read_one text))
-    (canonical_module_source source ^require_init (== digest entry/module_digest))
-    (validate_source_imports source entry/closure))
-  nil)
-
-(fn upgrade_workspace_interfaces [workspace : Workspace, h : Harness]
-  (require_open workspace)
-  (if_not ($absent? (active_transaction h))
-    (fail (CompositionError ^message "interface upgrade requires no active turn")))
-  (var revision (composition_revision workspace))
-  (var entries (composition_entries workspace))
-  (var changed false)
-  # Decide compatibility for the entire desired composition before loading any
-  # code. Disabled entries participate too and keep their disabled flag.
-  (for entry in entries
-    (if_not (== entry/interfaces workspace/interfaces)
-      (if_not (known_legacy_interfaces? entry/interfaces)
-        (fail (CompositionError
-          ^message $"plugin ${entry/id} has unknown or incompatible interfaces")))
-      (set changed true)))
-  (if_not changed (return revision))
-  (var next (fresh_list))
-  (for entry in entries
-    (validate_stored_source workspace entry)
-    (var updated (data_copy entry))
-    (updated .put "interfaces" (data_copy workspace/interfaces))
-    # This is the same capability-empty, bounded descriptor path as normal
-    # registration. It never calls activate or publishes a registry row.
-    (load_entry_descriptor workspace h updated)
-    (next .push updated))
-  (commit_composition workspace revision next))
 
 (fn validate_descriptor_events [h : Harness, descriptor]
   (var seen (fresh_map))

@@ -42,13 +42,7 @@ From this directory:
 The HMR probe runs as an ad-hoc file because it deliberately rewrites and then
 restores a plugin fixture; the package test target remains read-only.
 
-`gene test` executes 15 named scenarios and fails on an empty selection. From
-the repository root, `python3 tools/check_harness_migration.py` builds a private
-executable and runs these scenarios together with the Harness scenarios, a
-bounded watcher reload/rejection/recovery probe in a temporary copy, and durable
-workspace restore checks. Pass `--gene /path/to/gene` to reuse a build and
-`--report /path/to/report.json` to retain commands and output. The same gate is
-available as `nimble harness_migration` and runs in the CLI test suite.
+`gene test` executes 15 named scenarios and fails on an empty selection.
 
 `LoaderWatcher.inspect` reports `active`, successful `reloads`, `failures`, and
 the last error message. A rejected save leaves the previous provider live and

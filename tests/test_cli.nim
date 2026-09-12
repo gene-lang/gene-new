@@ -140,14 +140,6 @@ suite "cli — gene run":
     check reported.output.count("Tail-call fallback [return_type]") == 1
     check "tail_fallback.gene" in reported.output
 
-  test "Cordis and Harness migration gate runs every named scenario":
-    buildGeneCli()
-    let ran = execCmdOnce("python3 tools/check_harness_migration.py --gene " &
-      shellQuote(geneExe))
-    if ran.exitCode != 0: checkpoint ran.output
-    check ran.exitCode == 0
-    check "migration gate: passed; cordis=15 harness=34" in ran.output
-
   test "gene harness recovery nucleus has no plugin imports":
     for path in [
       "examples/gene-harness/src/kernel.gene",
