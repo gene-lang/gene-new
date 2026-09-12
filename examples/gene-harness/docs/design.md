@@ -119,9 +119,10 @@ token is rejected.
 
 Generated command and view callback receiver slots are rewritten to that
 retained context; checked-in adapters may receive the Harness. Model programs
-get the complete structural operation set as functions already bound to the
-active transaction, but no `h` binding, so they cannot mutate Harness cells
-around the ledger.
+get the complete live Harness as `harness` and `h`, current session and payload,
+and the structural operation set as functions already bound to the active
+transaction. Those helpers stage changes through the ledger; direct mutation
+of exposed Harness or session cells is not automatically staged or undone.
 Deactivation and registry cleanup receive the still-valid owner context; it is
 expired only after reverse-order cleanup completes.
 
@@ -191,8 +192,9 @@ events refuse reconstruction. Ignorable records may be skipped. Cold recovery
 runs only after catalog validation and appends a synthetic
 `turn/end {^reason "interrupted" ^synthetic true}` for every unmatched start.
 Core event keys and the `core`/`descriptor:` owner ids are reserved.
-`event_types` replacement is owner-checked, and model code can record a fixed
-`message` event but cannot choose an arbitrary core event type.
+`event_types` replacement is owner-checked, and the model's `record_message`
+helper writes a fixed `message` event. Direct access to the live Harness log
+cell is also available and is not mediated by that helper.
 
 ## 6. Desired composition and CAS
 
@@ -307,9 +309,10 @@ the superseded blob stays in the store, and each attempt is a revision.
 
 The model provider sends the checked-in Gene skill (`SKILL.md`, the pitfalls
 and stdlib chapters) as its system prompt alongside the module contract, and
-reads the reply as data — `read_all`, never `eval` on text. One recovery is
-attempted for a reply that opens with prose, and none for a reply that is not
-readable Gene; a build is one turn.
+reads the reply as data — `read_all`, never `eval` on text. The author returns
+the shared Gene envelope with `^type "response"`, a `^response` string, and
+`^payload {^module (mod plugin ...)}`. The module node is extracted as inert
+data. Invalid envelopes are rejected; a build is one model request.
 
 Registration proves shape and `init`, never the body of `run`. `build`
 therefore invokes the new tool with its own name and with the request text, and
@@ -321,12 +324,35 @@ conditional tool passed on its nine-byte name while its long path was broken.
 
 ### 7.2 What the model's own program may reach
 
+`src/model_reply.gene` defines the shared reply format and validates exactly
+one map before code can execute:
+
+- `^type "code"` requires `^code (do ...)`, executes, and sends the result back
+  to the model for another round.
+- `^type "code-with-response"` requires `^code (do ...)`, executes, and returns
+  the execution result directly as the final answer, including errors/refusals.
+- `^type "response"` requires `^response` text and finishes without code.
+
+Both code types accept optional `^response` text as narration shown before
+execution. It never replaces a `code-with-response` execution result. All
+types accept an optional payload map. The old `^status` field, malformed
+fields, and extra top-level forms are rejected; the chat loop reports the
+validation problem to the model without executing the rejected reply.
+Final answers are retained in the session history, and continuing replies
+are bounded by the eight-round limit.
+
+The execution environment binds the whole Harness as `harness` and `h`.
+`session` contains its `id`/`scope`, the live history cell and agent
+`state_host` PluginContext. `payload` and `(get_payload)` expose the current
+reply's inert data map, defaulting to a fresh empty map each round. `context`
+groups the Harness, workspace, session, payload, user prompt and round number.
+
 A reply's `^code` is evaluated in an `Env` minted with the structural harness
 bindings and `^capabilities []`. The two authorities are deliberately opposite:
 structural authority over the harness is total, because every binding is an
 ordinary Gene call needing no grant and rebuilding the harness is the whole
 point; host authority is nil, so reading a file or the environment comes back
-as a `refused: ...` value the next round is shown.
+as a `refused: ...` value returned directly or shown in the next round.
 
 `register_module` is the one operation that needs both, and a grant only ever
 attenuates (§8) — nothing called from inside an empty context can recover the
@@ -544,9 +570,11 @@ than a live continuation. The alternative, capturing the in-flight
 continuation, runs straight into the resource that is explicitly outside the
 resume boundary: live fibers are not serialized.
 
-The model path already loops on `^status`, so it gains a third value —
-`"needs-input"` alongside `"done"` and `"in-progress"` — plus a `^request`
-prop. The offline command agent returns the same envelope from a command row.
+The current model protocol uses `^type "code"`, `"code-with-response"`, or
+`"response"`. A future needs-input reply must extend that tagged union and its
+validator explicitly, together with request payload handling; it cannot reuse
+the retired `^status` field. The offline command agent would return the same
+interaction request from a command row.
 
 Request ids are derived from the turn and the asking site, not minted per
 attempt, so a replayed turn matches its recorded reply instead of asking the
@@ -594,6 +622,7 @@ events, and closes all three stores.
 | `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
 | `src/agent.gene` | registry-backed commands, tools, offline prompt provider |
 | `src/llm.gene` | model provider; prompt rendered from registries |
+| `src/model_reply.gene` | shared reply envelope validation and format instructions |
 | `src/repl.gene` | terminal view plugin |
 | `src/view_api.gene`, `src/recording_view.gene` | typed view contract and deterministic recording view |
 | `src/profile.gene`, `src/profiles/` | checked-in baseline composition |

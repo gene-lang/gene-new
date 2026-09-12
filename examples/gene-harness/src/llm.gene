@@ -7,13 +7,13 @@
 # The shape is the archived `safe_ai_agent` example's, pointed at a different
 # subject. There
 # the evaluated program's world is a workspace directory; here it is the running
-# harness — the model gets transaction-aware operations bound to the current
-# Harness, never the mutable Harness record itself, so
+# harness — the model gets the live Harness, session, reply payload, and
+# transaction-aware operations bound to that Harness, so
 # "install a plugin", "swap that provider", "subscribe to activations" are
 # things it *writes*, not things it selects from a menu.
 #
-#   prompt -> LLM -> {^status ^response ^code (do ...)} -> eval -> result
-#          -> repeat while ^status is "in-progress"
+#   prompt -> LLM -> {^type ^response? ^code? ^payload?} -> eval -> result
+#          -> repeat for "code", finish for "response"/"code-with-response"
 #
 # There is no tool list. The previous version had one — the model replied
 # `RUN: <command>` and the harness matched it against ten verbs — and the
@@ -21,16 +21,15 @@
 # not name. A harness whose whole thesis is that it can be recomposed at runtime
 # should not hand a model a fixed menu of ten recompositions.
 #
-# What bounds the model is not the menu, then, but the two boundaries that were
-# already load-bearing: the Env's capability row for *host* authority, and the
-# fact that everything it does to the harness goes through the effect ledger and
-# is therefore reversible.
+# The Env's capability row still bounds host authority. The bound operations
+# use the effect ledger; direct mutation of the live Harness is available too
+# and is not automatically staged or undone by that ledger.
 
 (mod llm)
 
-(import $parse [read_all])
 (import $fs [read_text])
 (import [model_name chat_completion] from "./model_client")
+(import [parse_envelope reply_format_prompt] from "./model_reply")
 (import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent ToolInvoked
          PluginActivated PluginDeactivated PluginFailed PluginInstalled
          PluginUninstalled
@@ -81,17 +80,28 @@
   (for x in xs (if_not (== x v) (out .push x)))
   out)
 
-(fn harness_bindings [h : Harness, queued] : Any
-  # The model gets the complete structural operation vocabulary, bound to this
-  # Harness, but never the public Harness record itself. Every mutation must
-  # therefore pass through the ledger/transaction-aware functions below.
+(fn harness_bindings [h : Harness, queued,
+                      ^session session = nil, ^state_host state_host = nil,
+                      ^payload payload = nil, ^prompt prompt : Str = "",
+                      ^round round : Int = 1] : Any
+  # The complete Harness is deliberately exposed. The helpers below remain
+  # the transaction-aware way to change registries, lifecycle, and composition.
   #
   # `queued` is the current turn's registration queue: `^register_module`
   # appends to it and `run_program` owns it, drains it at the turn boundary and
   # never reuses it. It is a parameter rather than a private cell because the
   # vocabulary outlives no turn — a caller that only wants to read the bindings
   # (a test asking what a program may reach) passes a list it then ignores.
-  {
+  (var data (if ($absent? payload) {} payload))
+  (var current_session
+    {^id h/event_stream ^scope h/event_scope
+     ^history (if ($absent? session) ($cell []) session)
+     ^state_host state_host})
+  (var context
+    {^harness h ^workspace h/workspace ^session current_session
+     ^payload data ^prompt prompt ^round round})
+  {^h h ^harness h ^session current_session ^context context
+   ^payload data ^get_payload (fn [] data)
    # lifecycle
    ^install (fn [plugin] (install_with_policy h plugin []))
    ^uninstall (fn [id] (uninstall h id))
@@ -126,8 +136,8 @@
           ^limits limits ^dependencies dependencies ^by by ^model model
           ^at at_value ^replace replace_value})
        $"queued ${id}; the harness registers it when this turn ends")
-   # seams and registries. Mutations happen through a PluginContext acquired by
-   # `install`; registry reads return keys, not mutable row payloads.
+   # Transaction-aware seams and registries. These helpers use PluginContext
+   # ownership and return registry keys; the live h binding also exposes cells.
    ^resolve (fn [seam] (resolve h seam))
    ^seam_bound (fn [seam] (seam_bound h seam))
    ^row_keys (fn [registry_name] (registry_row_keys h registry_name))
@@ -149,7 +159,8 @@
    # observation
    ^publish (fn [event] (publish h event))
    # types a program needs to construct things
-   ^Plugin Plugin ^HarnessError HarnessError
+   ^Harness Harness ^Plugin Plugin ^PluginContext PluginContext ^PluginHost PluginHost
+   ^HarnessError HarnessError
    ^HarnessEvent HarnessEvent ^ToolInvoked ToolInvoked
    ^PluginActivated PluginActivated ^PluginDeactivated PluginDeactivated
    ^PluginFailed PluginFailed ^PluginInstalled PluginInstalled
@@ -169,7 +180,10 @@
    # the offline interpreter, still available as one call
    ^dispatch (fn [prompt] (dispatch h prompt))})
 
-(fn run_program [h : Harness, program] : Str
+(fn run_program [h : Harness, program,
+                 ^session session = nil, ^state_host state_host = nil,
+                 ^payload payload = nil, ^prompt prompt : Str = "",
+                 ^round round : Int = 1] : Str
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
   # shape that runs, so a program may define something and then use it.
   #
@@ -184,7 +198,8 @@
   # it gets them without the sandbox ever holding a grant.
   (var queued ($thaw #[]))
   (var sandbox
-    (env ^bindings (harness_bindings h queued)
+    (env ^bindings (harness_bindings h queued ^session session ^state_host state_host
+                    ^payload payload ^prompt prompt ^round round)
          ^capabilities []))
   (var existing_events (log_events h))
   (var turn_id $"model-${(+ existing_events/.size 1)}")
@@ -254,97 +269,51 @@
   (read_text $"${(repository_root)}/tools/gene-lang-skill/${relative}"))
 
 (fn system_prompt [h : Harness] : Str
-  # The format instruction leads *and* closes the prompt, with a filled-in
-  # example between them. Stating it once in the middle was not enough: the
-  # model replied with a sentence followed by a bare `(do ...)`, which is not
-  # readable as an envelope, and the turn was lost. A worked example is what
-  # moved it.
-  $"""Your entire reply is ONE Gene map. No prose outside it, no markdown fence,
-no explanation before or after. It looks exactly like this:
+  $"""${(reply_format_prompt)}
 
-{^status "done"
- ^response "Nine plugins are installed."
- ^code (do (plugin_states))}
+You are the agent inside a Gene plugin harness. Code runs against it live.
 
-Three props, always all three:
-  ^status    "done" if this reply finishes the task, "in-progress" if you need
-             to see the result before deciding what to do next
-  ^response  one short sentence: what you are doing, or your answer
-  ^code      ONE (do ...) block — the program to run. Use (do nil) if the task
-             needs no action.
+Execution bindings:
+  harness, h       The same complete, live Harness instance.
+  session          The current session: session/id, session/scope,
+                   session/history (the live history cell), session/state_host
+                   (the current agent's PluginContext).
+  payload          This reply's payload map; defaults to {} each round.
+  (get_payload)    Returns that same map without evaluating its contents.
+  context          context/harness, context/workspace, context/session,
+                   context/payload, context/prompt, and context/round.
 
-**A reply that runs code is never the last one.** You write ^status before your
-program has run, so you cannot know yet whether it worked — and the harness
-ignores "done" on any reply whose ^code does something. You will be shown the
-result and asked again. That next reply is where you finish: give your answer in
-^response with ^code (do nil) and ^status "done", or run more code if the result
-was not what you needed.
+For example:
+{^type "code-with-response"
+ ^response "I will report this session's identifier."
+ ^payload {^label "Session"}
+ ^code (do ($str/join [payload/label ": " session/id] ""))}
 
-So a normal task is two replies. First: ^status "in-progress", ^code that does
-the work. Then, having seen the output: ^status "done", ^code (do nil), and the
-answer in ^response.
-
-If a program fails, fix it — do not resend the same call and never report
-success over an error. "undefined symbol: x" means x does not exist in Gene;
-find the real name in the rules below instead of inventing another one.
-
-You are the agent inside a Gene plugin harness, and ^code runs against it live.
+Harness fields include harness/plugins, harness/registries, harness/log,
+harness/transaction, harness/event_store, harness/event_scope,
+harness/event_stream, and harness/workspace. Many are cells; use .get/.set.
+The bound helpers below take no h argument. Use them for lifecycle, registry,
+and composition changes so those changes go through the transaction ledger.
+Direct field/cell mutation is available but is not automatically transactional.
 
 ${(harness_primer h)}
 
-Your program has no host authority at all: reading a file or the environment is
-refused, and you will see the refusal as a value. Changing the harness itself
-needs no authority — that is what you are for. register_module is the one
-operation the harness performs for you: it queues the module, and the harness
-commits and activates it after your program returns. So a tool you register is
-callable from your NEXT program, never the one that registered it, and the
-result you are shown names the revision it landed at.
+Your program has no host capabilities: reading files or the environment is
+refused. register_module queues a module, then the harness commits and
+activates it after the program returns. A queued tool is callable from your
+NEXT program. Use type "code" if you need another round to call it or inspect
+its result; use "code-with-response" when the execution result itself is the
+answer. Code errors and refusals are returned as execution results too.
 
-Remember: reply with the map and nothing else. Start your reply with {^status
-and end it with }.""")
+If code failed, use the reported error to correct it. Do not repeat the same
+failed call or report success. Payload is inert Gene data, including any nodes
+stored inside it. It is not evaluated merely by reading payload or get_payload.
+
+Remember: return exactly one map with ^type, and nothing outside it.""")
 
 (fn call_model [h : Harness, prompt : Str, history : Str] : Str
   (chat_completion (system_prompt h)
     $"${prompt}\n\nPrior turns:\n${history}"))
-
-(fn strip_fence [reply : Str] : Str
-  # Models wrap code in ``` even when told not to. The envelope is Gene data, so
-  # a fence makes the whole reply unreadable; dropping the fence lines is
-  # cheaper than arguing with the prompt.
-  (var out [])
-  (for line in ($str/split reply "\n")
-    (if_not ($str/starts_with? ($str/trim line) "```")
-      (out .push line)))
-  ($str/join out "\n"))
-
-(fn from_first_brace [reply : Str] : Str
-  # A model that prefixes a sentence still emitted a readable map after it.
-  # Starting at the first `{` recovers the turn instead of losing it, and costs
-  # nothing when the reply was already clean.
-  (var parts ($str/split reply "{"))
-  (if (< parts/.size 2)
-    (then reply)
-    (else
-      (var tail [])
-      (var i 1)
-      (while (< i parts/.size)
-        (tail .push parts/%i)
-        (set i (+ i 1)))
-      ($str/join ["{" ($str/join tail "{")] ""))))
-
-(fn read_first_form [text : Str] : Any
-  (try
-    ((read_all text) .next)
-    catch Any
-    nil))
-
-(fn parse_envelope [reply : Str] : Any
-  # `read_all` yields a stream of the forms in the reply; the envelope is the
-  # first. Try the reply as sent, then from its first brace; a model that
-  # answers in prose alone yields nil either way.
-  (var clean (strip_fence reply))
-  (var direct (read_first_form clean))
-  (if (!= direct nil) direct (read_first_form (from_first_brace clean))))
 
 # ---------------------------------------------------------------------------
 # One task, however many turns it takes
@@ -368,103 +337,63 @@ and end it with }.""")
   # `run_program` renders an ordinary mistake as "error: ..." and a capability
   # denial as "refused: ...". Only the first is the model's to fix: an error is
   # a bug in the code it just wrote, while a refusal is a fact about authority
-  # that writing different code will not change. So errors force another turn
-  # and refusals leave the decision to the model.
+  # that writing different code will not change. A continuing code reply gets
+  # correction guidance for errors; code-with-response returns either directly.
   ($str/starts_with? result "error:"))
 
 (fn emit_output [h : Harness, text : Str]
   (log_append h "output" text))
 
-(fn no_op? [code] : Bool
-  # A program that does nothing has nothing worth showing. The model emits
-  # `(do nil)` when a turn is pure answer — printing the code and a result of
-  # `nil` under it is three lines saying "no".
-  (var text ($str/trim ($to_str code)))
-  (|| (== text "(do nil)") (== text "(do)")))
-
-(fn run_task [h : Harness, prompt : Str, session, state_host] : Str
-  # Prints each turn as it happens rather than returning one block at the end:
-  # a task may take several model round trips, and a shell that goes silent for
-  # thirty seconds looks hung. The value returned is the last thing said, which
-  # is what the driver prints.
-  # Earlier exchanges first, then this task's own turns accumulate after them.
-  (var history ($cell (remembered session)))
-  (var turn ($cell 0))
-  (var running ($cell true))
-  (var last ($cell ""))
-  (while (running .get)
-    (turn .set (+ (turn .get) 1))
-    # Turn one needs no marker — the `Gene>` label above it is the marker. Every
-    # turn after it is the agent going round again without being asked, which is
-    # the thing a reader wants delimited.
-    (if_yes (> (turn .get) 1)
-      (emit_output h $"== Round $(turn .get) =="))
-    (var raw (call_model h prompt (history .get)))
-    (var envelope (parse_envelope raw))
-    (if (== envelope nil)
+(fn run_task [h : Harness, prompt : Str, session, state_host,
+              ^complete complete = call_model] : Str
+  # Intermediate narration/results are emitted as they happen. The final
+  # response is returned to ask, which emits it once and flushes the session.
+  (var history (remembered session))
+  (var turn 0)
+  (var running true)
+  (var last "")
+  (while running
+    (set turn (+ turn 1))
+    (if_yes (> turn 1) (emit_output h $"== Round ${turn} =="))
+    (var raw (complete h prompt history))
+    (var problem "")
+    (var envelope
+      (try (parse_envelope raw)
+        catch HarnessError
+        (set problem $err/message)
+        nil))
+    (if ($absent? envelope)
       (then
-        # An unreadable reply is a mistake the model can fix, and it is the one
-        # mistake it cannot see: the harness is the only party that knows the
-        # text did not read as Gene. Ending the task here wasted a turn that
-        # the loop already exists to spend, so tell it what happened and let it
-        # try again. Say what arrived, too — "the model did not return Gene
-        # data" with nothing attached is the least useful thing this loop can
-        # print, because the fix is always in the reply.
-        (emit_output h "(reply was not readable Gene data; asking again)")
-        (last .set $"the model did not return Gene data. It said:\n  $(preview raw)")
-        (var prior (history .get))
-        (history .set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/.size on a named binding.")
-        (if_yes (>= (turn .get) turn_limit)
-          (running .set false)))
+        (set last $"invalid model reply: ${problem}")
+        (emit_output h $"(${last}; asking again)")
+        (set history $"${history}\nYOUR LAST REPLY WAS DISCARDED: ${problem}.\nIt began: $(preview raw)\n${(reply_format_prompt)}"))
+      (elif (== envelope/type "response")
+        (set last envelope/response)
+        (set running false))
       (else
-        (var response envelope/response)
-        (if_yes (!= response nil)
-          (emit_output h ($to_str response)))
-        # The program is shown before it runs. `^response` is a claim composed
-        # before the model could know the outcome; printing the code next to it
-        # lets a reader check the claim against what actually executes.
-        (var ran_code (== (no_op? envelope/code) false))
+        # Both code types may narrate intent before execution. That text is
+        # optional, and for code-with-response the result is the final answer.
+        (var narration (?? envelope/response ""))
+        (if_yes (!= narration "") (emit_output h narration))
+        (emit_output h ($to_str envelope/code))
         (var result
-          (if ran_code
-            (then
-              (emit_output h ($to_str envelope/code))
-              (var value (run_program h envelope/code))
-              (emit_output h "-- Result  --")
-              (emit_output h value)
-              value)
-            (else "(no action)")))
-        (last .set result)
-        # The whole reply goes back, not just the result: the model needs to see
-        # the code it wrote next to what that code did, or it cannot tell which
-        # form drew which complaint.
-        (var prior (history .get))
-        (history .set $"${prior}\nreply: ${envelope}\noutput: ${result}")
-        # **A reply that ran code is never done.** `^status` and `^code` arrive
-        # in the same message, so the model wrote "done" before its program had
-        # produced anything — the claim is about intent, not outcome. Believing
-        # it is how a task ends with a broken program and a confident sentence
-        # above it, which is precisely what happened before this rule existed.
-        #
-        # So the harness decides, not the model: running code always earns
-        # another round, and only a reply that *acted on* a result — one whose
-        # own code is `(do nil)` — may finish. The cost is one extra round per
-        # task; what it buys is that no answer is ever given by something that
-        # has not seen what it did.
-        (if_yes ran_code
-          (history .set $"$(history .get)\nYou ran code, so the task is NOT finished and any \"done\" in that reply was ignored.\nThe output above is what your program actually returned - you are seeing it now for\nthe first time. Decide from it: if it answers the task, reply with ^status \"done\",\nyour answer in ^response, and ^code (do nil). If it does not, run more code."))
-        (if_yes (failed? result)
-          (history .set $"$(history .get)\nThat program FAILED. The mistake is in the code you just sent - find it and emit a\ncorrected program. Do not send the same call again, and do not report success.\n\"undefined symbol: x\" means x does not exist in Gene; use a real name from the\nrules rather than inventing another one."))
-        (if_yes (&& (== ran_code false) (!= envelope/status "in-progress"))
-          (running .set false))
-        (if_yes (&& (running .get) (>= (turn .get) turn_limit))
-          (emit_output h
-            $"(gave up after ${turn_limit} rounds; the last program still fails)")
-          (running .set false)))))
-  # Everything has been printed as it happened, so there is nothing left for
-  # the driver to echo. Remembering happens here rather than in `answer`
-  # because this is where the real last result is known.
-  (remember session state_host prompt (last .get))
-  "")
+          (run_program h envelope/code ^session session ^state_host state_host
+            ^payload (?? envelope/payload {}) ^prompt prompt ^round turn))
+        (set last result)
+        (if (== envelope/type "code-with-response")
+          (then (set running false))
+          (else
+            (emit_output h "-- Result  --")
+            (emit_output h result)
+            (set history $"${history}\nreply: ${envelope}\noutput: ${result}\nThe code has executed. Decide from the result: finish with type response, or send more code.")
+            (if_yes (failed? result)
+              (set history $"${history}\nThat program failed. Correct the reported error; do not repeat the failed call or report success."))))))
+    (if_yes (&& running (>= turn turn_limit))
+      (set last $"stopped after ${turn_limit} rounds without a final response; last result: ${last}")
+      (set running false)))
+  # Retain the actual answer, not a progress sentence or a '(no action)' marker.
+  (remember session state_host prompt last)
+  last)
 
 (fn strip_slash [prompt : Str] : Str
   # Drop one leading `/` and keep every other one: `/read a/b` is `read a/b`,
@@ -545,16 +474,6 @@ and end it with }.""")
 # immutable policy to the sandbox module. A model that writes something hostile
 # is refused by the same code that refuses a typo.
 
-(fn from_first_mod [reply : Str] : Str
-  # `from_first_brace`'s argument, for a module: a model that prefixes a
-  # sentence still emitted a readable module after it, and starting at the
-  # first `(mod ` recovers the build instead of losing it. Trailing prose costs
-  # nothing — `read_all` yields the forms in order and only the first is taken.
-  (var parts ($str/split reply "(mod "))
-  (if (< parts/.size 2)
-    (then reply)
-    (else ($str/join ["(mod " ($str/join (drop_first parts 1) "(mod ")] ""))))
-
 (fn codegen_skill_text [] : Str
   # The same checked-in skill the agent plugin pushes and pulls from, and an
   # author needs it more than a dispatcher does. The module contract in the
@@ -625,8 +544,18 @@ reaching for authority you do not have.
 
 (fn codegen_system_prompt [skill : Str] : Str
   ($str/join [
-  """Your entire reply is ONE Gene module and nothing else: no prose, no
-markdown fence, no explanation before or after it.
+  (reply_format_prompt)
+  """
+
+For this plugin-authoring request, use type "response", a short ^response
+string, and ^payload {^module (mod plugin ...)}. The module is an inert Gene
+node in payload, not a string and not a quoted expression. Do not return ^code.
+The consumer validates and registers payload/module; it never evaluates it.
+Example envelope (replace the module with the complete implementation):
+{^type "response" ^response "Here is the plugin."
+ ^payload {^module (mod plugin ...)}}
+
+The module in payload/module must follow this contract:
 
 """
   (plugin_module_contract)
@@ -662,9 +591,9 @@ actually cost a build here:
     the user's hands. Build what you need from the list, or make the tool do
     the part you can and say so in its output.
 
-Reply with the module and nothing else, starting at `(mod plugin` and ending at
-its closing paren. The two import paths are "../../../src/plugin_api" and
-"../../../src/kernel".
+Return exactly one response envelope with the complete module in ^payload
+under ^module. The two import paths in that module are
+"../../../src/plugin_api" and "../../../src/kernel".
 
 # Gene reference
 
@@ -675,40 +604,28 @@ its closing paren. The two import paths are "../../../src/plugin_api" and
   $"""Tool name: ${name}
 It should: ${request}
 
-Reply with the module for that tool and nothing else.""")
+Reply with one Gene map: ^type "response", a short ^response, and
+^payload {^module (mod plugin ...)} containing the complete module.""")
 
-(fn read_module_form [text : Str] : Any
-  # `read_first_form` swallows the reader's complaint, which is right for an
-  # envelope — a model answering in prose has nothing to report. A module is
-  # different: "not readable Gene" on its own leaves you re-running a build to
-  # find out whether the reply was truncated, unbalanced, or never code at all.
-  (try
-    {^form ((read_all text) .next) ^problem ""}
-  catch Any
-    {^form nil ^problem ($to_str $err/message)}))
+(fn module_from_reply [reply : Str] : Any
+  (var envelope (parse_envelope reply))
+  (if_not (== envelope/type "response")
+    (fail (HarnessError ^message "plugin author must return a response envelope")))
+  (var payload (?? envelope/payload {}))
+  (var form payload/module)
+  (if_not (== ($head form) (quote mod))
+    (fail (HarnessError ^message "plugin author must return a module node in ^payload/^module")))
+  form)
 
 (fn model_plugin_source [name : Str, request : Str, skill : Str] : Any
-  # Text in, inert node out. Two recoveries, both cheap: drop a markdown fence,
-  # and start at the first `(mod ` if the model wrote a sentence first. What is
-  # deliberately *not* here is a retry loop — `build` is one turn, and a model
-  # that answered with prose should say so in the error rather than quietly
-  # cost three more requests.
+  # The envelope and module are read as inert data. The author never runs code;
+  # the existing registration path still validates and canonicalizes the module.
   (var reply
     (chat_completion (codegen_system_prompt skill) (codegen_request name request)))
-  (if_yes (== ($str/trim reply) "")
-    (fail (HarnessError ^message $"model returned nothing for ${name}")))
-  (var clean (strip_fence reply))
-  (var read (read_module_form clean))
-  (if_yes (== read/form nil)
-    (set read (read_module_form (from_first_mod clean))))
-  (var form read/form)
-  (if_yes (== form nil)
+  (try (module_from_reply reply)
+    catch HarnessError
     (fail (HarnessError
-      ^message $"model reply for ${name} is not readable Gene (${read/problem}); the reply ended: $(tail_preview reply)")))
-  (if_not (== ($head form) (quote mod))
-    (fail (HarnessError
-      ^message $"model reply for ${name} is not a module: $(preview reply)")))
-  form)
+      ^message $"invalid plugin reply for ${name}: ${$err/message}; reply ended: $(tail_preview reply)"))))
 
 (type ModelCodegen ^props {^model Str ^skill Str})
 
@@ -748,7 +665,7 @@ Reply with the module for that tool and nothing else.""")
   # found `invoke_registry`. A row is not a binding, and nothing in the primer
   # said so. The arity error a wrong shape produces names an anonymous
   # binding, so it does not point at the mistake either.
-  "register_module takes two positional arguments and queues a durable authored plugin: (register_module \"<id>\" (quote (mod plugin ...)) ^replace true). The source is a quoted module node, never a string, and `id` is a plain word. Pull the module the loader will accept with (doc \"plugin/module\") and copy its shape — a queued module that omits the two imports fails on `Plugin` as an unknown type annotation. The harness commits and activates once your program returns, so the tool is callable from your next program and not the one that queued it. Registry rows are not bindings: list one with (row_keys \"tools\") and call a row with (invoke_registry \"tools\" \"<name>\" [argument]). A program holds no host authority at all. Harness operations are already bound and take no h argument. Entries are content-addressed, capability selectors only attenuate named roots, and code-running replies must observe their result before claiming completion. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
+  "register_module takes two positional arguments and queues a durable authored plugin: (register_module \"<id>\" (quote (mod plugin ...)) ^replace true). The source is a quoted module node, never a string, and `id` is a plain word. Pull the module the loader will accept with (doc \"plugin/module\") and copy its shape — a queued module that omits the two imports fails on `Plugin` as an unknown type annotation. The harness commits and activates once your program returns, so the tool is callable from your next program and not the one that queued it. Registry rows are not bindings: list one with (row_keys \"tools\") and call a row with (invoke_registry \"tools\" \"<name>\" [argument]). A program holds no host authority at all. The live Harness is available as harness (also h); session carries id, scope, the live history cell, and state_host. payload and (get_payload) expose this reply's payload map; context also carries the workspace, user prompt, and round. Harness helpers are already bound and take no h argument. Entries are content-addressed and capability selectors only attenuate named roots. Use type code to inspect the execution result in another round, code-with-response to return that result directly, or response for a text answer. Both code types may include an optional response explanation shown before execution. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
 
 (fn llm_agent_plugin [] : Plugin
   (Plugin ^id "agent"

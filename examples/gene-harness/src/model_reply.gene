@@ -1,0 +1,71 @@
+# The one wire format for model replies. Reading is inert; only a validated
+# code reply can reach the evaluator, and payload nodes remain data.
+(mod model_reply)
+
+(import $parse [read_all])
+(import [HarnessError] from "./kernel")
+
+(fn reply_format_prompt [] : Str """Your entire reply must be exactly ONE Gene data map. Use straight double
+quotes, no markdown fence, and no prose before or after the map.
+
+The fields are:
+  ^type      REQUIRED: "code", "code-with-response", or "response".
+  ^code      ONE (do ...) block, REQUIRED for either code type, absent for response.
+  ^response  A string. REQUIRED for response; OPTIONAL for either code type.
+             With code, this is an explanation shown to the user BEFORE execution.
+  ^payload   OPTIONAL map of data. Omit it to use {}. It is never evaluated.
+
+"code" runs the code and sends its result back to you for another round.
+"code-with-response" runs the code and returns the execution result directly
+as the final response, without another model round. Its optional ^response is
+only a progress explanation; it does not replace the execution result.
+"response" finishes with the text in ^response and executes nothing.
+
+Examples:
+{^type "response" ^response "Hello."}
+{^type "code" ^response "I will inspect the installed plugins."
+ ^code (do (plugin_states))}
+{^type "code-with-response" ^response "I will count the supplied items."
+ ^payload {^items ["a" "b" "c"]}
+ ^code (do (var data (get_payload)) data/items/.size)}
+{^type "code-with-response" ^code (do (+ 1 2))}
+
+Code can access payload directly as `payload` or by calling `(get_payload)`.
+Do not use the old ^status field or "done"/"in-progress" reply values.""")
+
+(fn validate_envelope [value] : Any
+  (if_not (== ($head value) Map) (fail (HarnessError ^message "model reply must be one Gene map")))
+  (if_not (["code" "code-with-response" "response"] .contains? value/type)
+    (fail (HarnessError ^message "model reply ^type must be code, code-with-response, or response")))
+  (if_not (== value/status void)
+    (fail (HarnessError ^message "model reply uses ^type, not ^status")))
+  (if_not (== value/payload void)
+    (if_not (== ($head value/payload) Map)
+      (fail (HarnessError ^message "model reply ^payload must be a map"))))
+  (if_not (== value/response void)
+    (if_not (== ($head value/response) Str)
+      (fail (HarnessError ^message "model reply ^response must be a string"))))
+  (if (== value/type "response")
+    (then
+      (if_not (== ($head value/response) Str)
+        (fail (HarnessError ^message "response replies require ^response text")))
+      (if_not (== value/code void)
+        (fail (HarnessError ^message "response replies cannot contain ^code"))))
+    (else
+      (if_not (== ($head value/code) (quote do))
+        (fail (HarnessError ^message "code replies require ^code (do ...)")))))
+  value)
+
+(fn parse_envelope [reply : Str] : Any
+  (var value
+    (try
+      (var forms (read_all reply))
+      (var first (forms .next))
+      (if_yes (forms .has_next)
+        (fail (HarnessError ^message "model reply must contain exactly one map")))
+      first
+    catch HarnessError
+      (fail $err)
+    catch Any
+      (fail (HarnessError ^message "model reply is not readable Gene data"))))
+  (validate_envelope value))

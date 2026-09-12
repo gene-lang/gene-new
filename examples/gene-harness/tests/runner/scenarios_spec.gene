@@ -73,6 +73,8 @@
     (run_scenario "llm_session_resume_smoke" 1 "llm_session_resume_smoke: ok"))
   (it "model_client_smoke" []
     (run_scenario "model_client_smoke" 1 "model_client_smoke: ok"))
+  (it "model_reply_smoke" []
+    (run_scenario "model_reply_smoke" 1 "model_reply_smoke: ok"))
   (it "phased_boot_smoke" []
     (run_scenario "phased_boot_smoke" 1 "phased_boot_smoke: ok"))
   (it "plugin_event_smoke" []

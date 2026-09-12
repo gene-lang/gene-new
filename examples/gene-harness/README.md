@@ -341,19 +341,78 @@ operations, subscriptions, schema-validated event emission, and core-owned
 durable state. The context expires on demotion or uninstall.
 
 Generated command and view callbacks receive that retained context, not the
-Harness. Model code likewise receives Harness operations already bound to the
-current transaction and has no mutable `h` record to edit around the ledger.
+Harness. Model code receives the complete live Harness as `harness` (also `h`),
+plus helpers already bound to the current transaction.
 Deactivation and registry cleanup receive the still-valid owner context.
 Repeated module replacements in one turn coalesce, so only the final committed
 descriptor activates.
 
+## Model reply format
+
+Every model reply is exactly one Gene data map, using straight double quotes
+and no surrounding prose or Markdown fence:
+
+```gene
+{^type "code-with-response"
+ ^response "I will count the supplied items."
+ ^code (do (var data (get_payload)) data/items/.size)
+ ^payload {^items ["a" "b" "c"]}}
+```
+
+| `^type` | Required fields | Behavior |
+|---|---|---|
+| `"code"` | `^code (do ...)` | Executes and sends the result back to the model for another round. |
+| `"code-with-response"` | `^code (do ...)` | Executes and returns the execution result directly as the final response. |
+| `"response"` | `^response "..."` | Returns the text and finishes without executing code. |
+
+**Both code types may include an optional `^response` string.** It is shown
+before execution to explain what is happening. For `code-with-response`, that
+explanation accompanies the code; the execution result is still the final
+answer. Omitting `^response` is valid for either code type, including:
+
+```gene
+{^type "code-with-response" ^code (do (+ 1 2))}
+```
+
+`^payload` is optional for all three types and must be a map when supplied.
+An omitted payload becomes a fresh `{}` each execution. Payload values are
+read as inert data, including embedded Gene nodes. Only a validated `^code`
+block is evaluated. Invalid types, malformed fields, extra top-level forms,
+and the old `^status` format are rejected and explained to the model for
+correction. A `code` reply always continues, even for `(do nil)`; the loop stops
+after eight rounds if it never receives a final reply. Execution errors and
+capability refusals are execution results, so `code-with-response` returns
+those directly too. Session memory retains the final answer rather than the
+progress explanation.
+
+The plugin author uses this same envelope with `^type "response"` and an
+inert module node in `^payload {^module (mod plugin ...)}`. The `build` consumer
+extracts and validates that module through the existing registration path.
+
 ## What a model program may reach
+
+| Binding | Value |
+|---|---|
+| `harness`, `h` | The complete live Harness instance, including its registry, plugin, log, transaction, event-store, and workspace fields. |
+| `session` | Current session metadata: `id`, `scope`, the live `history` cell, and the agent's `state_host` PluginContext. |
+| `payload` | This reply's payload map. |
+| `(get_payload)` | Returns the same payload map. |
+| `context` | `harness`, `workspace`, `session`, `payload`, the current user `prompt`, and one-based model `round`. |
+
+For example, code can read `harness/event_stream`, inspect
+`(harness/transaction .get)`, read `(session/history .get)`, or bind
+`(var data (get_payload))` and use `data/name`. `Harness`, `PluginContext`, and
+`PluginHost` are available for typed/protocol operations. The helpers such as
+`plugin_states`, `resolve`, and `register_module` remain bound to this Harness
+and take no `h` argument. Use those helpers for changes that should be staged
+and rolled back by the effect ledger; direct mutation of Harness/session cells
+is available but is not automatically transactional.
 
 A reply's `^code` runs in an `Env` minted with the structural harness bindings
 and `^capabilities []`. Structural authority is total — every binding is an
 ordinary Gene call needing no grant, and the model may rebuild the harness with
 them — while host authority is nil: reading a file or the environment comes back
-as `refused: ...`, a value the next round is shown.
+as `refused: ...`, returned directly or sent to the next round according to type.
 
 `register_module` is the one operation that needs both. A grant only ever
 attenuates, so a program can never recover the authority a registration wants
@@ -450,6 +509,7 @@ before stores are flushed and closed.
 | `src/agent.gene` | command/tool registries and offline prompt provider |
 | `src/llm.gene` | model agent, plugin author, and registry-rendered prompt |
 | `src/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
+| `src/model_reply.gene` | shared Gene reply format, inert parsing, and field validation |
 | `src/repl.gene` | terminal subscriber, one prompt and one line |
 | `src/view_api.gene`, `src/recording_view.gene` | typed view contract and recording view |
 | `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
@@ -464,7 +524,8 @@ transaction diff/commit/abort, event retention/catalog/concurrency/cold repair,
 cross-process Store publication, content-addressed registration, dependency
 closure and cache repair, quarantine, named-root attenuation, callback and
 typed-provider supervision, plugin events, provenance, active views/output,
-prompt-skill loading, model configuration/credentials/response parsing, and
+prompt-skill loading, model configuration/credentials/response parsing,
+reply types, narration ordering, execution context/payload, and
 session/workspace state conflicts. Model client tests use synthetic credentials
 and responses and do not make network requests.
 
