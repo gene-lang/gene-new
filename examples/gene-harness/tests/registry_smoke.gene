@@ -1,7 +1,7 @@
 (mod registry_smoke)
 
 (import [new_harness registry registry_exists? contribute rows row remove_owner]
-  from "../src/kernel")
+  ^from "../src/kernel")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

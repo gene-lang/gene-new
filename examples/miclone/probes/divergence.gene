@@ -22,9 +22,9 @@
 
 (mod divergence ^profile web)
 
-(import [f64_key hash3 hash_unit3 wrap32 mix32] from "../core/exact.gene")
+(import [f64_key hash3 hash_unit3 wrap32 mix32] ^from "../core/exact.gene")
 (import [smoothstep lerp value2 value3 fbm2 fbm3 ridged2]
-        from "../core/noise.gene")
+        ^from "../core/noise.gene")
 
 (let sample_seed 1337.0)
 

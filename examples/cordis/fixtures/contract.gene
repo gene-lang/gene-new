@@ -1,6 +1,6 @@
 (mod loader_contract)
 
-(import [service_key] from "../src/cordis")
+(import [service_key] ^from "../src/cordis")
 
 (protocol LoadedValue
   (message value [] : Int))

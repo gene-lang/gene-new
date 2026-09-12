@@ -2,8 +2,8 @@
 
 (import [RuntimeOptions Requirement PluginSpec invocation_limits
          default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [Timer timer_key timer_plugin] from "../src/timer")
+  ^from "../src/cordis")
+(import [Timer timer_key timer_plugin] ^from "../src/timer")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

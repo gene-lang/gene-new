@@ -224,8 +224,8 @@ envelope formats. Corruption remains a separate error.
   (quote
     (mod plugin
       (import [Plugin DescriptorContext PluginContext PluginHost]
-        from "../../../src/plugin_api")
-      (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        ^from "../../../src/plugin_api")
+      (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
       (fn init [ctx : DescriptorContext] : Plugin
         ^capabilities []
         ...)))

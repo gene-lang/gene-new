@@ -3,8 +3,8 @@
 
 (mod timer)
 
-(import [Disposable EffectOwner PluginCallKind PluginSpec] from "./model")
-(import [service_key invoke_effect_owner spawn_effect_call] from "./runtime")
+(import [Disposable EffectOwner PluginCallKind PluginSpec] ^from "./model")
+(import [service_key invoke_effect_owner spawn_effect_call] ^from "./runtime")
 
 (protocol Timer
   (message timeout [callback, delay_ms : Int] : Disposable)

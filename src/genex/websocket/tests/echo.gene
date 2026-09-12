@@ -1,5 +1,5 @@
 (mod websocket_echo)
-(import [load connect send receive WebSocketError] from "../src/websocket.gene")
+(import [load connect send receive WebSocketError] ^from "../src/websocket.gene")
 
 (fn next_message [native socket]
   (var end (+ ($os/monotonic_ms) 10000))

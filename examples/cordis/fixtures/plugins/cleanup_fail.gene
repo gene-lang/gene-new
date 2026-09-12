@@ -1,7 +1,7 @@
 (mod cleanup_fail_provider)
 
-(import [PluginSpec] from "../../src/plugin_api")
-(import [LoadedValue loaded_key] from "../contract")
+(import [PluginSpec] ^from "../../src/plugin_api")
+(import [LoadedValue loaded_key] ^from "../contract")
 
 (type CleanupFailure ^props {^message Str} ^impl [Error])
 (impl Error for CleanupFailure)

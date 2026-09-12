@@ -2,12 +2,12 @@
 
 (import [new_harness install resolve status_of assemble_request log_events
          hydrate_harness_log shutdown_harness]
-  from "../src/kernel")
+  ^from "../src/kernel")
 (import [open_event_store append_event record_plugin_state flush_event_store
          validate_event_catalog close_event_store]
-  from "../src/state")
-(import [core_event_types] from "../src/generated_event_catalog")
-(import [llm_agent_plugin] from "../src/llm")
+  ^from "../src/state")
+(import [core_event_types] ^from "../src/generated_event_catalog")
+(import [llm_agent_plugin] ^from "../src/llm")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

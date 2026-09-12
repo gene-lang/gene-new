@@ -22,13 +22,13 @@
 (mod physics_spec ^profile web)
 
 (import [Registry new_registry register_uniform id_of draw_normal draw_liquid]
-        from "../core/registry.gene")
-(import [content_air abs_f64] from "../core/world.gene")
-(import [World new_world set_node node_at world_min_y] from "../core/loaded.gene")
+        ^from "../core/registry.gene")
+(import [content_air abs_f64] ^from "../core/world.gene")
+(import [World new_world set_node node_at world_min_y] ^from "../core/loaded.gene")
 (import [new_player step player_x player_y player_z player_vy
          on_ground? in_liquid? set_player_position box_blocked? drop_to_free
          player_eye_y surface_y standable? find_spawn]
-        from "../core/physics.gene")
+        ^from "../core/physics.gene")
 
 # --- reporting ---------------------------------------------------------------
 

@@ -93,7 +93,7 @@
 # `game` from the registration site breaks that cycle, and it is the better
 # shape anyway: what the engine hands an action is the state that changes per
 # call, and what the mod closes over is the state that does not.
-(import [World] from "./loaded.gene")
+(import [World] ^from "./loaded.gene")
 
 (let max_abms 64.0)
 # One pass's worth of queued changes. A falling column enqueues two per node it

@@ -7,7 +7,7 @@
 
 (mod run_abm_spec)
 
-(import [report failures] from "./abm_spec.gene")
+(import [report failures] ^from "./abm_spec.gene")
 
 (fn main [args] : Nil
   ($println (report))

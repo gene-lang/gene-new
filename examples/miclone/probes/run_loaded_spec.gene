@@ -10,7 +10,7 @@
 
 (mod run_loaded_spec)
 
-(import [report failures] from "./loaded_spec.gene")
+(import [report failures] ^from "./loaded_spec.gene")
 
 (fn main [args] : Nil
   ($println (report))

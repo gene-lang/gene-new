@@ -14,9 +14,9 @@
 # every route that reads a form field gets the same 400, worded the same way.
 #
 # This is the package entry (`^main_module "form"` in package.gene), so it is
-# reachable as `from "."`:
+# reachable as `^from "."`:
 #
-#   (import [with_str with_int] from "." ^pkg "utils")
+#   (import [with_str with_int] ^from "." ^pkg "utils")
 # =============================================================================
 
 (mod utils_form @doc "URL-encoded form decoding and validated field access")

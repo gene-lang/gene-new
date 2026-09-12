@@ -1,9 +1,9 @@
 (mod cordis_ownership_spec)
 (import $test [describe it])
-(import [retain_callback] from "../../src/cordis_adapter")
+(import [retain_callback] ^from "../../src/cordis_adapter")
 (import [RuntimeOptions PluginSpec EffectDisposed InstanceDisposed InstanceState InvocationLimits
          invocation_limits default_plugin_invoker new_runtime]
-  from "." ^pkg "cordis")
+  ^from "." ^pkg "cordis")
 
 (fn runtime_with [limits]
   (new_runtime

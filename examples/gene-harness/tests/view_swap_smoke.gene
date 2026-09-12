@@ -1,10 +1,10 @@
 (mod view_swap_smoke)
 
 (import [Plugin PluginContext PluginHost new_harness install row uninstall]
-  from "../src/kernel")
-(import_impl PluginHost for PluginContext from "../src/kernel")
-(import [HarnessView view_provider] from "../src/view_api")
-(import [RecordingView] from "../src/recording_view")
+  ^from "../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../src/kernel")
+(import [HarnessView view_provider] ^from "../src/view_api")
+(import [RecordingView] ^from "../src/recording_view")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

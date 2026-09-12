@@ -1,13 +1,13 @@
 # Procedural atlas recipes shared by the browser and native shells.
 (mod texture ^profile web)
 
-(import [hash_unit2] from "./exact.gene")
+(import [hash_unit2] ^from "./exact.gene")
 (import [TileRegistry tile_count tile_kind
          tile_r tile_g tile_b tile_spread tile_seed
          tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
          tile_density
          tile_solid tile_ore tile_overlay]
-        from "./tiles.gene")
+        ^from "./tiles.gene")
 
 (let tile_px 16.0)
 (let atlas_px 128.0)

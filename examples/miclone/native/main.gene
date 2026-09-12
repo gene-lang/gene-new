@@ -1,32 +1,32 @@
 (mod miclone_native)
 
-(import [store_block_and_light apply_delta hotbar_text] from "client_world" ^pkg "engine")
+(import [store_block_and_light apply_delta hotbar_text] ^from "client_world" ^pkg "engine")
 (import [count_faces build_mesh put_cube faces_per_cube item_cube_half]
-        from "mesh" ^pkg "engine")
+        ^from "mesh" ^pkg "engine")
 (import [SeenEntities new_seen apply_entity seen_rows seen_alive?
          seen_x seen_y seen_z seen_item seen_item_total seen_live seen_kind]
-        from "seen" ^pkg "engine")
-(import [entity_player] from "entity" ^pkg "engine")
+        ^from "seen" ^pkg "engine")
+(import [entity_player] ^from "entity" ^pkg "engine")
 (import [Registry new_registry id_of registered_count name_of solid?
          tile_top_of opens_form_of]
-        from "registry" ^pkg "engine")
+        ^from "registry" ^pkg "engine")
 (import [World new_world store_block block_base node_at light_at
          world_dx world_dy world_dz world_stride_z world_nodes]
-        from "loaded" ^pkg "engine")
-(import [relight_node queue_overhead] from "light" ^pkg "engine")
-(import [TileRegistry new_tiles] from "tiles" ^pkg "engine")
-(import [forward_x forward_y forward_z] from "vec" ^pkg "engine")
+        ^from "loaded" ^pkg "engine")
+(import [relight_node queue_overhead] ^from "light" ^pkg "engine")
+(import [TileRegistry new_tiles] ^from "tiles" ^pkg "engine")
+(import [forward_x forward_y forward_z] ^from "vec" ^pkg "engine")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? set_player_position box_overlaps_node?]
-        from "physics" ^pkg "engine")
+        ^from "physics" ^pkg "engine")
 (import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
-        from "raycast" ^pkg "engine")
-(import [diggable? placeable?] from "edit" ^pkg "engine")
+        ^from "raycast" ^pkg "engine")
+(import [diggable? placeable?] ^from "edit" ^pkg "engine")
 (import [new_inventory slot_item slot_count slot_empty?]
-        from "inventory" ^pkg "engine")
+        ^from "inventory" ^pkg "engine")
 (import [ItemRegistry new_items item_name item_named placeable_item? item_node]
-        from "item" ^pkg "engine")
-(import [new_cursor] from "wire" ^pkg "engine")
+        ^from "item" ^pkg "engine")
+(import [new_cursor] ^from "wire" ^pkg "engine")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
          msg_inventory msg_tiles msg_items
          new_hello decode_hello hello_version hello_span_x hello_span_y
@@ -47,20 +47,20 @@
          msg_open_form new_open_form decode_open_form open_x open_y open_z
          size_form_action_for encode_form_action
          protocol_version]
-        from "protocol" ^pkg "engine")
+        ^from "protocol" ^pkg "engine")
 (import [FormRegistry new_forms form_named form_title form_cols form_rows
          form_first form_len element_kind element_x element_y element_w
          element_text element_action kind_label kind_item kind_box kind_button]
-        from "formspec" ^pkg "engine")
+        ^from "formspec" ^pkg "engine")
 (import [load : load_sdl init_video window_opengl window_hidden window_resizable
          window_highdpi window_centered gl_major_version gl_minor_version
          gl_context_flags gl_profile_mask gl_profile_core gl_forward_compatible
          event_quit event_keydown event_keyup event_motion event_buttondown
-         event_buttonup event_wheel] from "." ^pkg "sdl2")
+         event_buttonup event_wheel] ^from "." ^pkg "sdl2")
 (import [load : load_ws connect : ws_connect send : ws_send receive : ws_receive
-         WebSocketError] from "." ^pkg "websocket")
+         WebSocketError] ^from "." ^pkg "websocket")
 (import [check new_program new_mesh upload_mesh atlas view_projection capture]
-        from "./render.gene")
+        ^from "./render.gene")
 
 (let block_dim 16.0)
 (let block_nodes 4096.0)

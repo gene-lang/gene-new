@@ -11,7 +11,7 @@
   ^require_strict_dependencies true
   ^capabilities [])
 
-(import [helper] from "./open_dep.gene")
+(import [helper] ^from "./open_dep.gene")
 
 (fn main [args]
   ^capabilities []

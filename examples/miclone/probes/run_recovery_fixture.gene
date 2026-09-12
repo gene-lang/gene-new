@@ -2,12 +2,12 @@
 # store can do. Recovery must preserve this block while saving the missing ones.
 (mod run_recovery_fixture)
 (import [open_world close_world world_exists? write_meta block_count]
-        from "../server/storage.gene")
-(import [put_block] from "../server/storage.gene")
-(import [encode_block] from "../server/blockfmt.gene")
-(import [load_mods_from_disk] from "../server/mods_runtime.gene")
-(import [id_of] from "../core/registry.gene")
-(import [seed origin_bx origin_by origin_bz] from "../server/main.gene")
+        ^from "../server/storage.gene")
+(import [put_block] ^from "../server/storage.gene")
+(import [encode_block] ^from "../server/blockfmt.gene")
+(import [load_mods_from_disk] ^from "../server/mods_runtime.gene")
+(import [id_of] ^from "../core/registry.gene")
+(import [seed origin_bx origin_by origin_bz] ^from "../server/main.gene")
 
 (fn main [args] : Nil
   (var argv args/.body)

@@ -160,8 +160,8 @@ Two import forms, and the source comes first in only one of them:
 
 ```gene
 (import $str [join, trim])                  # from a namespace
-(import [double, factor] from "./util")     # from a file, relative to this module
-(import [double : dbl] from "./util")       # `:` aliases
+(import [double, factor] ^from "./util")     # from a file, relative to this module
+(import [double : dbl] ^from "./util")       # `:` aliases
 ```
 
 `this_mod` and `this_pkg` are implicit lexical bindings for the current module

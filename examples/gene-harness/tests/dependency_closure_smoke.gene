@@ -1,8 +1,8 @@
 (mod dependency_closure_smoke)
 
-(import [new_harness resolve] from "../src/kernel")
+(import [new_harness resolve] ^from "../src/kernel")
 (import [open_workspace module_digest register_module close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -14,9 +14,9 @@
   (var path $"./${($str/slice_bytes digest 7 64)}.gene")
   (var root
     `(mod plugin
-       (import [answer] from %path)
-       (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-       (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       (import [answer] ^from %path)
+       (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+       (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
        (fn init [ctx] : Plugin
          ^capabilities []
          (Plugin ^id "dependent" ^provides ["Dependent"] ^requires []
@@ -36,8 +36,8 @@
   (var kernel_escape
     (quote
       (mod plugin
-        (import [Plugin] from "../../../src/plugin_api")
-        (import [install] from "../../../src/kernel")
+        (import [Plugin] ^from "../../../src/plugin_api")
+        (import [install] ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "kernel_escape" ^provides [] ^requires []
@@ -49,6 +49,22 @@
     (set refused ($str/contains? $err/message "only PluginHost impl identity")))
   (assert refused
     "generated modules must not bind the recovery kernel as a utility library")
+
+  (var impl_escape
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "./unlisted.gene")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "impl_escape" ^provides [] ^requires []
+            ^contextual true ^activate (fn [] (fn [host] nil)))))))
+  (set refused false)
+  (try
+    (register_module workspace h "impl_escape" impl_escape ^selectors [])
+  catch Any
+    (set refused ($str/contains? $err/message "dependency closure")))
+  (assert refused "an impl import must stay inside the dependency closure")
 
   (var registered
     (register_module workspace h "dependent" root

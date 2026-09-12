@@ -3,7 +3,7 @@
 (import [open_event_store append_event events_for flush_event_store
          repair_interrupted_turns
          close_event_store]
-  from "../src/state")
+  ^from "../src/state")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

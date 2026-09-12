@@ -42,7 +42,7 @@
          World abm_on_change abm_sampled
          tile_solid tile_ore tile_overlay draw_liquid
          shape_scatter shape_sheet shape_blob]
-        from "../../../core/api.gene")
+        ^from "../../../core/api.gene")
 # --- tiles -------------------------------------------------------------------
 #
 # Registered first, because a node's `^tiles` is resolved when the node is.

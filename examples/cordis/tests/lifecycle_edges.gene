@@ -4,7 +4,7 @@
          RuntimeOptions PluginSpec ConfigValidationError
          config_update invocation_limits hook_key default_plugin_invoker
          new_runtime]
-  from "../src/cordis")
+  ^from "../src/cordis")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

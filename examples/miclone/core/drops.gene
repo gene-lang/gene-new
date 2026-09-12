@@ -33,7 +33,7 @@
 
 (mod drops ^profile web)
 
-(import [ItemRegistry item_of_node no_item] from "./item.gene")
+(import [ItemRegistry item_of_node no_item] ^from "./item.gene")
 
 (let max_content 4096.0)
 

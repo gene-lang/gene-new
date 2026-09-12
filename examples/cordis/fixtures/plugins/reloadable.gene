@@ -1,7 +1,7 @@
 
 (mod reloadable_provider)
-(import [PluginSpec] from "../../src/plugin_api")
-(import [LoadedValue loaded_key] from "../contract")
+(import [PluginSpec] ^from "../../src/plugin_api")
+(import [LoadedValue loaded_key] ^from "../contract")
 (type ReloadedValue)
 (impl LoadedValue for ReloadedValue
   (message value [] : Int 1))

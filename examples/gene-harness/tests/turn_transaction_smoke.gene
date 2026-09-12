@@ -3,8 +3,8 @@
 (import [Plugin PluginContext PluginHost HarnessError new_harness registry
          contribute row resolve install uninstall status_of transaction_diff
          run_turn_transaction]
-  from "../src/kernel")
-(import_impl PluginHost for PluginContext from "../src/kernel")
+  ^from "../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../src/kernel")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

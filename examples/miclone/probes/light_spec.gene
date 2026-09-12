@@ -17,11 +17,11 @@
 
 (import [Registry new_registry register register_uniform id_of
          registered_count draw_normal draw_airlike draw_glasslike]
-        from "../core/registry.gene")
+        ^from "../core/registry.gene")
 (import [day_of night_of with_day with_night queue_overhead
          region_index light_region relight_node light_max]
-        from "../core/light.gene")
-(import [light_day light_night pack_light] from "../core/world.gene")
+        ^from "../core/light.gene")
+(import [light_day light_night pack_light] ^from "../core/world.gene")
 
 # --- reporting ---------------------------------------------------------------
 

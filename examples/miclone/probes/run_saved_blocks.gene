@@ -3,7 +3,7 @@
 # startup COMMIT by publishing the whole database image later.
 (mod run_saved_blocks)
 (import $db/sqlite [open Db])
-(import [origin_bx origin_by origin_bz] from "../server/main.gene")
+(import [origin_bx origin_by origin_bz] ^from "../server/main.gene")
 
 (fn main [args] : Nil
   (var argv args/.body)

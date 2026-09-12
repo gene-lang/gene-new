@@ -1,6 +1,6 @@
 (mod reflection_smoke)
-(import [new_harness contribute row invoke_registry_row remove_owner] from "../src/kernel")
-(import * : reflect from "../src/reflection")
+(import [new_harness contribute row invoke_registry_row remove_owner] ^from "../src/kernel")
+(import * : reflect ^from "../src/reflection")
 
 (var defaults 0)
 (fn next [] (set defaults (+ defaults 1)) defaults)

@@ -17,7 +17,7 @@
 
 (mod web_light_spec ^profile web)
 
-(import [report failures] from "./light_spec.gene")
+(import [report failures] ^from "./light_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

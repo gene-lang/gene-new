@@ -2,8 +2,8 @@
 
 (import [RuntimeOptions PluginSpec invocation_limits
          default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [timeout interval ticks throttle debounce] from "../src/timer")
+  ^from "../src/cordis")
+(import [timeout interval ticks throttle debounce] ^from "../src/timer")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

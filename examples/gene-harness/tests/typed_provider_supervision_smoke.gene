@@ -1,8 +1,8 @@
 (mod typed_provider_supervision_smoke)
 
-(import [new_harness resolve] from "../src/kernel")
-(import [HarnessFs HarnessRender] from "../src/seams")
-(import [open_workspace register_module close_workspace] from "../src/workspace")
+(import [new_harness resolve] ^from "../src/kernel")
+(import [HarnessFs HarnessRender] ^from "../src/seams")
+(import [open_workspace register_module close_workspace] ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -12,9 +12,9 @@
     (quote
       (mod plugin
         (import [Plugin DescriptorContext PluginContext PluginHost]
-          from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
-        (import [HarnessFs HarnessRender] from "../../../src/seams")
+          ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
+        (import [HarnessFs HarnessRender] ^from "../../../src/seams")
         (type SlowRender)
         (impl HarnessRender for SlowRender
           (message render [text : Str] : Str

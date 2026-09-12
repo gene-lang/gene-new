@@ -21,19 +21,19 @@
 
 (mod web_players_probe ^profile web)
 
-(import [new_cursor] from "../core/wire.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_items msg_entity
          new_hello decode_hello hello_spawn_x hello_spawn_y hello_spawn_z
          decode_registry decode_items
          new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item
          ent_count ent_kind
          size_input encode_input]
-        from "../core/protocol.gene")
-(import [Registry new_wire_registry name_of] from "../core/registry.gene")
-(import [ItemRegistry new_items item_node] from "../core/item.gene")
-(import [entity_player] from "../core/entity.gene")
+        ^from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of] ^from "../core/registry.gene")
+(import [ItemRegistry new_items item_node] ^from "../core/item.gene")
+(import [entity_player] ^from "../core/entity.gene")
 (import [SeenEntities new_seen apply_entity seen_rows seen_alive? seen_x
-         seen_item seen_kind seen_live] from "../core/seen.gene")
+         seen_item seen_kind seen_live] ^from "../core/seen.gene")
 
 (let port_url "ws://127.0.0.1:8790/")
 

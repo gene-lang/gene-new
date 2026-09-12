@@ -1,12 +1,12 @@
 # The received world's updates and hotbar presentation, shared by both shells.
 (mod client_world ^profile web)
 (import [World store_block store_light world_index array_x array_y array_z
-         world_dx world_dy world_dz] from "./loaded.gene")
-(import [Registry] from "./registry.gene")
-(import [relight_node] from "./light.gene")
-(import [delta_x delta_y delta_z delta_id] from "./protocol.gene")
-(import [ItemRegistry item_name] from "./item.gene")
-(import [slot_empty? slot_item slot_count] from "./inventory.gene")
+         world_dx world_dy world_dz] ^from "./loaded.gene")
+(import [Registry] ^from "./registry.gene")
+(import [relight_node] ^from "./light.gene")
+(import [delta_x delta_y delta_z delta_id] ^from "./protocol.gene")
+(import [ItemRegistry item_name] ^from "./item.gene")
+(import [slot_empty? slot_item slot_count] ^from "./inventory.gene")
 
 (fn store_block_and_light [w : World bx : F64 by : F64 bz : F64
                            content : (Buffer F32) light : (Buffer F32)] : Nil

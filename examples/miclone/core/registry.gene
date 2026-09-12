@@ -21,7 +21,7 @@
 (mod registry ^profile web)
 
 (import [content_air content_unknown content_ignore first_dynamic_content]
-        from "./world.gene")
+        ^from "./world.gene")
 
 (let max_content 4096.0)
 

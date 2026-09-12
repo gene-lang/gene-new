@@ -3,9 +3,9 @@
 (import $fs [make_dir])
 (import
   [HarnessError new_harness install resolve status_of log_events shutdown_harness]
-  from
+  ^from
   "../src/kernel")
-(import [parse_envelope] from "../src/model_reply")
+(import [parse_envelope] ^from "../src/model_reply")
 (import
   [
     run_task
@@ -15,10 +15,10 @@
     module_from_reply
     system_prompt
     codegen_system_prompt]
-  from
+  ^from
   "../src/llm")
-(import [open_workspace close_workspace] from "../src/workspace")
-(import [open_event_store close_event_store plugin_state] from "../src/state")
+(import [open_workspace close_workspace] ^from "../src/workspace")
+(import [open_event_store close_event_store plugin_state] ^from "../src/state")
 
 (fn rejects [call, expected : Str]
   (var message "")

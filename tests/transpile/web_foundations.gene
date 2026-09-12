@@ -1,7 +1,7 @@
 (mod web_foundations ^profile web)
 
 (import [Counter : Box factor values make read]
-  from "./web_foundations_api.gene")
+  ^from "./web_foundations_api.gene")
 
 (fn inspect_box [box : Box] : Int (read box))
 

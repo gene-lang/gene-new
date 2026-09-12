@@ -36,7 +36,7 @@
 
 (mod inventory ^profile web)
 
-(import [ItemRegistry item_stack_max] from "./item.gene")
+(import [ItemRegistry item_stack_max] ^from "./item.gene")
 
 # Per item now, out of §2's registry, which is what the registry is for. The
 # functions that need it take the registry; the ones that only move counts

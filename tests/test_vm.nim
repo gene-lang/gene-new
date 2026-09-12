@@ -849,7 +849,7 @@ suite "compiler — GIR emission":
 
   test "emits slots for imported bindings":
     let selectedChunk = compileSource(
-      "(import [foo, bar : baz] from \"./lib\") (fn use [] [foo baz])")
+      "(import [foo, bar : baz] ^from \"./lib\") (fn use [] [foo baz])")
     check selectedChunk.localNames == @["foo", "baz", "use"]
     let selectedProto = selectedChunk.functions[0]
     var sawFoo = false

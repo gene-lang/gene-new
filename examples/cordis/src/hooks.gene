@@ -2,4 +2,4 @@
 
 (import [HookMode HookKey HookSubject HookDispatchError
          ContinuationAlreadyCalled hook_key]
-  from "./runtime" ^export true)
+  ^from "./runtime" ^export true)

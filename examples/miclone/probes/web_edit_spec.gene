@@ -17,7 +17,7 @@
 
 (mod web_edit_spec ^profile web)
 
-(import [report failures] from "./edit_spec.gene")
+(import [report failures] ^from "./edit_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

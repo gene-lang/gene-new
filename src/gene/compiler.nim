@@ -87,7 +87,7 @@ type
     macroExpansionDepth: int
     allowAmbientImports: bool
     # Cross-module macros (design §11/§15): the module loader pre-loads each
-    # top-level `from "path"` dependency and hands us its macro exports keyed
+    # top-level `^from "path"` dependency and hands us its macro exports keyed
     # by the raw path string as written in the source. Selections that name a
     # macro are spliced into `macros` at compile time and recorded here so
     # they are not re-exported and not looked up as runtime bindings.
@@ -5070,11 +5070,15 @@ proc nsPathSegments(v: Value): seq[string]
 proc parseImportSpec*(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
     raise newException(GeneError, "expected import form")
-  # The allow-list stays closed and exhaustive: `^export` selects re-export,
-  # `^pkg` selects a package (docs/workflows.md), `^as` names its
-  # own removal, and everything else is an error.
+  # Module sources are properties, just like package and export options.
+  # Keep the allow-list closed so misspelled options cannot be ignored.
   for key, value in node.props:
     case key
+    of "from":
+      if value.kind != vkString:
+        raise newException(GeneError, "import ^from must be a path string")
+      result.fromModule = true
+      result.modulePath = value.strVal
     of "export":
       if value.kind != vkBool:
         raise newException(GeneError, "import ^export must be Bool")
@@ -5098,30 +5102,23 @@ proc parseImportSpec*(node: Value): ImportSpec =
       raise newException(GeneError, "import got unexpected option: ^" & key)
 
   let body = node.body
-  var fromIndex = -1
-  for i, item in body:
-    if item.isSymbol("from"):
-      fromIndex = i
-      break
-  if fromIndex >= 0:
-    result.fromModule = true
-    if fromIndex + 1 >= body.len or body[fromIndex + 1].kind != vkString or
-        fromIndex + 2 != body.len:
-      raise newException(GeneError,
-        "import: `from` requires one trailing path string")
-    result.modulePath = body[fromIndex + 1].strVal
-    if fromIndex == 0:
+  if body.len >= 2 and body[^2].isSymbol("from") and
+      body[^1].kind == vkString:
+    raise newException(GeneError,
+      "import: `from` was removed; use `^from \"path\"`")
+  if result.fromModule:
+    if body.len == 0:
       raise newException(GeneError,
         "import from a module requires a selection or wildcard")
     var segments: seq[string]
     let isWildcard = wildcardPath(body[0], segments)
-    if fromIndex == 1:
+    if body.len == 1:
       if isWildcard:
         result.wildcard = true
         result.wildcardSegments = segments
       else:
         result.selections = importSelections(body[0])
-    elif fromIndex == 3 and body[1].isSymbol(":") and
+    elif body.len == 3 and body[1].isSymbol(":") and
         body[2].kind == vkSymbol:
       if isWildcard:
         result.wildcard = true
@@ -5135,7 +5132,8 @@ proc parseImportSpec*(node: Value): ImportSpec =
         result.selections = @[
           ImportSelection(name: selections[0].name, local: body[2].symVal)]
     else:
-      raise newException(GeneError, "import: malformed `from` clause")
+      raise newException(GeneError,
+        "import ^from requires a selection, wildcard, or `source : alias`")
     result.sourceLabel = result.modulePath
     if result.wildcardSegments.len > 0:
       result.sourceLabel.add "/" & result.wildcardSegments.join("/")
@@ -5145,7 +5143,7 @@ proc parseImportSpec*(node: Value): ImportSpec =
     result.nsSegments = nsPathSegments(body[0])
     if "*" in result.nsSegments:
       raise newException(GeneError,
-        "wildcard imports require `from \"path\"`; a namespace-path import " &
+        "wildcard imports require `^from \"path\"`; a namespace-path import " &
         "has no `*` form")
     if body.len == 2:
       result.selections = importSelections(body[1])
@@ -5157,10 +5155,10 @@ proc parseImportSpec*(node: Value): ImportSpec =
         "namespace import requires selections or `source : alias`")
     result.sourceLabel = result.nsSegments.join("/")
   if result.pkgName.len > 0 and not result.fromModule:
-    # `^pkg` is valid only on the `from` form. A bare namespace path never
+    # `^pkg` is valid only on the `^from` form. A bare namespace path never
     # selects a package, so package selection is always explicit.
     raise newException(GeneError,
-      "import ^pkg requires `from \"path\"`; a namespace-path import never " &
+      "import ^pkg requires `^from \"path\"`; a namespace-path import never " &
       "selects a package")
   if result.pkgName.len > 0:
     result.sourceLabel = result.pkgName & "::" & result.sourceLabel
@@ -5180,7 +5178,7 @@ proc nsPathSegments(v: Value): seq[string] =
         raise newException(GeneError, "import namespace path must be symbols")
       result.add seg.symVal
   else:
-    raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
+    raise newException(GeneError, "import source must be a namespace path or `^from \"path\"`")
 
 proc propLiteral(node: Value, key, defaultValue, context: string): string
 proc propInt(node: Value, key: string, defaultValue: int,
@@ -6568,7 +6566,7 @@ proc compileImport(c: var Compiler, node: Value) =
     if not spec.fromModule:
       raise newException(GeneError,
         "import ^capabilities bounds a module dependency and requires " &
-        "`from \"path\"`")
+        "`^from \"path\"`")
     spec.capabilityRow = c.compileCapabilityRow(spec.capabilityRowSource)
   if spec.alias.len > 0:
     validateBindingName(spec.alias)
@@ -6649,15 +6647,24 @@ proc compileImportImpl(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError,
       "eval cannot use import_impl; add policy impls to the surrounding scope")
-  if node.props.len != 0 or node.body.len != 5 or
-      not node.body[1].isSymbol("for") or
-      not node.body[3].isSymbol("from") or node.body[4].kind != vkString:
+  for key in node.props.keys:
+    if key != "from":
+      raise newException(GeneError,
+        "import_impl got unexpected option: ^" & key)
+  if node.body.len >= 2 and node.body[^2].isSymbol("from") and
+      node.body[^1].kind == vkString:
     raise newException(GeneError,
-      "import_impl requires: (import_impl Protocol for Receiver from \"path\")")
+      "import_impl: `from` was removed; use `^from \"path\"`")
+  if node.body.len != 3 or not node.body[1].isSymbol("for") or
+      not node.props.hasKey("from"):
+    raise newException(GeneError,
+      "import_impl requires: (import_impl Protocol for Receiver ^from \"path\")")
+  if node.props["from"].kind != vkString:
+    raise newException(GeneError, "import_impl ^from must be a path string")
   compileExpr(c, node.body[0])
   compileExpr(c, node.body[2])
   discard c.emit(opImportImpl, c.chunk.addImportImpl(
-    ImportImplSpec(modulePath: node.body[4].strVal)))
+    ImportImplSpec(modulePath: node.props["from"].strVal)))
 
 proc markStaticImplForm(c: var Compiler, form: Value) =
   if form.kind == vkNode:
@@ -9784,7 +9791,7 @@ proc compileFormsWithMacros*(forms: openArray[Value],
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   ## Module-loader entry point (design §11/§15): compile a source unit with the
-  ## macro exports of its `from "path"` dependencies available (keyed by the
+  ## macro exports of its `^from "path"` dependencies available (keyed by the
   ## raw path string), and return this unit's own macro definitions — imported
   ## macros are usable but not re-exported. Fexpr names travel the same way so
   ## importers retain their declaration metadata; the fexpr values remain

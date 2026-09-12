@@ -10,10 +10,10 @@
 
 (mod repl)
 
-(import [Plugin PluginContext PluginHost Harness HarnessLog] from "./kernel")
-(import_impl PluginHost for PluginContext from "./kernel")
-(import [ask] from "./agent")
-(import [HarnessView view_provider] from "./view_api")
+(import [Plugin PluginContext PluginHost Harness HarnessLog] ^from "./kernel")
+(import_impl PluginHost for PluginContext ^from "./kernel")
+(import [ask] ^from "./agent")
+(import [HarnessView view_provider] ^from "./view_api")
 
 # A literal escape byte, because Gene has no string escape that produces one:
 # `\e`, `\x1b` and `\u001b` are all read errors, `$str/from_utf8` wants a

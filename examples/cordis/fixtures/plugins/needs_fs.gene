@@ -1,7 +1,7 @@
 (mod needs_fs)
 
 (import $fs [read_text])
-(import [PluginSpec] from "../../src/plugin_api")
+(import [PluginSpec] ^from "../../src/plugin_api")
 
 (fn activate [ctx, config]
   (read_text "fixtures/composition.gene"))

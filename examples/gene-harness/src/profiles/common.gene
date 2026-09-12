@@ -14,9 +14,9 @@
 (mod common)
 
 (import [Plugin PluginContext PluginHost resolve status_of Harness]
-  from "../kernel")
-(import_impl PluginHost for PluginContext from "../kernel")
-(import [report_tool] from "../seams")
+  ^from "../kernel")
+(import_impl PluginHost for PluginContext ^from "../kernel")
+(import [report_tool] ^from "../seams")
 
 (fn reporter_plugin [] : Plugin
   # The part that is identical across deployments. It requires two seams and

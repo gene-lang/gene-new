@@ -31,12 +31,12 @@
 (mod run_loader)
 
 (import $fs [write_text WriteDir])
-(import [load_mods_from_disk load_mod_at] from "../server/mods_runtime.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [new_game] from "../core/api.gene")
-(import [registered_count name_of id_of] from "../core/registry.gene")
-(import [item_count] from "../core/item.gene")
-(import [form_count] from "../core/formspec.gene")
+(import [load_mods_from_disk load_mod_at] ^from "../server/mods_runtime.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [new_game] ^from "../core/api.gene")
+(import [registered_count name_of id_of] ^from "../core/registry.gene")
+(import [item_count] ^from "../core/item.gene")
+(import [form_count] ^from "../core/formspec.gene")
 
 (var failures 0)
 

@@ -1,10 +1,10 @@
 (mod workspace_state_conflict_smoke)
 
-(import [new_harness resolve] from "../src/kernel")
+(import [new_harness resolve] ^from "../src/kernel")
 (import [HarnessStateConflict open_event_store close_event_store]
-  from "../src/state")
+  ^from "../src/state")
 (import [open_workspace register_module restore_workspace close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -14,8 +14,8 @@
     (quote
       (mod plugin
         (import [Plugin DescriptorContext PluginContext PluginHost]
-          from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+          ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx : DescriptorContext] : Plugin
           ^capabilities []
           (Plugin ^id "shared" ^provides ["Shared"] ^requires []

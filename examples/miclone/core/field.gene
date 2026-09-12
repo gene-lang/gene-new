@@ -35,7 +35,7 @@
 
 (mod field ^profile web)
 
-(import [fbm2 lerp] from "./noise.gene")
+(import [fbm2 lerp] ^from "./noise.gene")
 
 # The lattice point at or below `w`. `step` must be a power of two for this to
 # be exact; §3 uses 4 and 16.

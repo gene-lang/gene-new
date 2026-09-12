@@ -1,7 +1,7 @@
 (mod window_probe)
 (import [load init_video window_opengl window_hidden window_centered
          gl_major_version gl_minor_version gl_context_flags gl_profile_mask
-         gl_profile_core gl_forward_compatible] from "../src/sdl2.gene")
+         gl_profile_core gl_forward_compatible] ^from "../src/sdl2.gene")
 
 (fn main [args] : Nil
   (var argv args/.body)

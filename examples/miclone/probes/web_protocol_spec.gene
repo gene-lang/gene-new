@@ -17,7 +17,7 @@
 
 (mod web_protocol_spec ^profile web)
 
-(import [report failures] from "./protocol_spec.gene")
+(import [report failures] ^from "./protocol_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

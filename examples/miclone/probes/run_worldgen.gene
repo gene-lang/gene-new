@@ -7,18 +7,18 @@
 
 (mod run_worldgen)
 
-(import [new_registry id_of registered_count] from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [block_dim block_nodes pad_dim pad_nodes] from "../core/mapgen.gene")
-(import [carve] from "../core/cave.gene")
-(import [place_all] from "../core/ore.gene")
+(import [new_registry id_of registered_count] ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [block_dim block_nodes pad_dim pad_nodes] ^from "../core/mapgen.gene")
+(import [carve] ^from "../core/cave.gene")
+(import [place_all] ^from "../core/ore.gene")
 (import [budget_unit_ms budget_nodes_per_s walk_speed view_radius view_height
          blocks_per_second player_budget_ms
          allocate_block allocate_padded allocate_light allocate_sky
          allocate_queue light_blocks generate_blocks generate_padded
          column_profile cave_fraction biome_share underwater_share node_share]
-        from "./worldgen.gene")
+        ^from "./worldgen.gene")
 
 (let seed 1337.0)
 (let reps 16.0)

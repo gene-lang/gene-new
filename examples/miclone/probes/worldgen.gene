@@ -36,16 +36,16 @@
 (mod worldgen ^profile web)
 
 (import [Registry new_registry id_of name_of registered_count]
-        from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [BiomeRegistry biome_at biome_name biome_count] from "../core/biome.gene")
-(import [DecorRegistry] from "../core/decor.gene")
-(import [OreRegistry] from "../core/ore.gene")
+        ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [BiomeRegistry biome_at biome_name biome_count] ^from "../core/biome.gene")
+(import [DecorRegistry] ^from "../core/decor.gene")
+(import [OreRegistry] ^from "../core/ore.gene")
 (import [block_dim block_nodes pad_dim pad_nodes sea_level
          surface_height heat_at humidity_at fill_region]
-        from "../core/mapgen.gene")
-(import [light_region queue_overhead] from "../core/light.gene")
+        ^from "../core/mapgen.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
 
 # --- the budgets -------------------------------------------------------------
 

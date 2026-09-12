@@ -17,7 +17,7 @@
 
 (mod web_physics_spec ^profile web)
 
-(import [report failures] from "./physics_spec.gene")
+(import [report failures] ^from "./physics_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

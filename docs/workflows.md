@@ -46,11 +46,11 @@ a local dependency looks like this:
 Import through the declared dependency alias:
 
 ```gene
-(import [greet] from "." ^pkg "utils")
+(import [greet] ^from "." ^pkg "utils")
 ```
 
 For files within one package, use relative imports such as
-`(import [greet] from "./greetings.gene")`.
+`(import [greet] ^from "./greetings.gene")`.
 
 Useful commands:
 

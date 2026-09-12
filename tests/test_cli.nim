@@ -322,7 +322,7 @@ import socketserver
 
 ROUTES = {
     "/real/entry.gene":
-        b'(import [util_fn] from "./util") ($println (+ (util_fn) 1))',
+        b'(import [util_fn] ^from "./util") ($println (+ (util_fn) 1))',
     "/real/util.gene": b'(fn util_fn [] 41)',
 }
 
@@ -374,7 +374,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 
   test "gene run cannot import URL modules":
     let fixture = writeCliProgram("url_import.gene",
-      "(import [x] from \"https://127.0.0.1:1/x.gene\")")
+      "(import [x] ^from \"https://127.0.0.1:1/x.gene\")")
     let ran = runGene(["run", fixture])
     check ran.exitCode == 1
     check "URL module imports require a 'gene runurl' entry" in ran.output
@@ -1113,7 +1113,7 @@ suite "cli — gene eval":
     check ran.output.strip == "5"
 
   test "uses eval authority rules instead of ambient imports":
-    let ran = runGene(["eval", "(import [x] from \"./missing\") x"])
+    let ran = runGene(["eval", "(import [x] ^from \"./missing\") x"])
     check ran.exitCode == 1
     check "eval cannot use import; add imports to Env" in ran.output
 
@@ -1221,7 +1221,7 @@ suite "cli — gene repl":
     check "unknown repl option: --bogus" in ran.output
 
   test "uses eval authority rules for each input line":
-    let ran = runGeneInput(["repl"], "(import [x] from \"./missing\")\n(+ 1 2)\n")
+    let ran = runGeneInput(["repl"], "(import [x] ^from \"./missing\")\n(+ 1 2)\n")
     check ran.exitCode == 0
     check "eval cannot use import; add imports to Env" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
@@ -1393,7 +1393,7 @@ suite "cli — gene parse/fmt/compile":
       "(macro twice [x] `(+ %x %x))\n" &
       "(panic \"dependency runtime should not run\")\n")
     let path = writeCliProgram("compile_macro_user.gene",
-      "(import [twice] from \"./compile_macro_dep\")\n" &
+      "(import [twice] ^from \"./compile_macro_dep\")\n" &
       "(var answer (twice 21))\n")
     let ran = runGene(["compile", path])
     check ran.exitCode == 0
@@ -1637,7 +1637,7 @@ suite "cli — gene parse/fmt/compile":
       "(fn invert [value : Bool] : Bool (! value))\n")
     let path = writeCliProgram("web_importer.gene",
       "(mod web_importer ^profile web)\n" &
-      "(import [invert] from \"./web_dep.gene\")\n" &
+      "(import [invert] ^from \"./web_dep.gene\")\n" &
       "(fn result [] : Bool (invert false))\n")
     let outDir = cliDir / "web_import_out"
     createDir(outDir)
@@ -1736,7 +1736,7 @@ suite "cli — gene parse/fmt/compile":
     let prog = writeCliProgram("serde_refs.gene", """
 (import $serde [write read write_data SerdePolicy SerdeError])
 (import $str [contains? join])
-(import [Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY] from "./serde_geometry")
+(import [Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY] ^from "./serde_geometry")
 (fn check [label ok] ($println (join [label (if ok "ok" "FAIL")] " ")))
 # stage 3: references
 (check "type" (== Point (read (write Point))))
@@ -1882,7 +1882,7 @@ suite "cli — gene doc":
       "(var dep 1)")
     let path = writeCliProgram("doc_imports.gene",
       "(mod docs) " &
-      "(import [dep : local-dep] from \"./dep_for_doc\") " &
+      "(import [dep : local-dep] ^from \"./dep_for_doc\") " &
       "(ns source (var item 2)) " &
       "(import source [item : local-item]) " &
       "(var done true)")
@@ -2055,7 +2055,7 @@ suite "cli — example runner":
     let root = exampleCliRoot()
     writeExampleFixture(root, "src/math.gene", "(fn twice [n] (* n 2))")
     writeExampleFixture(root, "tests/math_spec.gene", """
-      (import [twice] from "../src/math.gene")
+      (import [twice] ^from "../src/math.gene")
       (import $test [describe : suite it : example])
       (suite "math" (example "twice" [] ($assert (== (twice 3) 6))))
     """)

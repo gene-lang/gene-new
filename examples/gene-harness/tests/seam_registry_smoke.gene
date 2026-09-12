@@ -2,7 +2,7 @@
 
 (import [new_harness provide replace resolve seam_bound bound_seams
          row remove_owner effects_of]
-  from "../src/kernel")
+  ^from "../src/kernel")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

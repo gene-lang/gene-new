@@ -10,12 +10,12 @@
 
 (mod build_provenance_smoke)
 
-(import [new_harness install] from "../src/kernel")
-(import [HarnessCodegen] from "../src/seams")
-(import [command_plugin template_codegen_plugin build_tool] from "../src/agent")
-(import [ModelCodegen] from "../src/llm")
+(import [new_harness install] ^from "../src/kernel")
+(import [HarnessCodegen] ^from "../src/seams")
+(import [command_plugin template_codegen_plugin build_tool] ^from "../src/agent")
+(import [ModelCodegen] ^from "../src/llm")
 (import [open_workspace composition_entries close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

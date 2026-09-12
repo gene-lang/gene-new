@@ -20,7 +20,7 @@
 
 (mod ore ^profile web)
 
-(import [mix32 hash3] from "./exact.gene")
+(import [mix32 hash3] ^from "./exact.gene")
 
 (let two32 4294967296.0)
 (let max_ores 64.0)

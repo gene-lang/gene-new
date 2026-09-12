@@ -18,12 +18,12 @@
          Block get_content set_content get_param1 set_param1
          get_param2 set_param2
          light_day light_night pack_light light_max]
-        from "../core/world.gene")
+        ^from "../core/world.gene")
 (import [Registry new_registry register id_of name_of registered?
          registered_count solid? opaque? propagates_light? light_source_of
          drawtype_of drawn? tile_top_of tile_side_of tile_bottom_of
          draw_normal draw_airlike draw_glasslike draw_liquid]
-        from "../core/registry.gene")
+        ^from "../core/registry.gene")
 
 # A passing line carries the label and nothing else, so the two backends'
 # reports are byte-identical when they agree — the VM prints a float as `0.0`

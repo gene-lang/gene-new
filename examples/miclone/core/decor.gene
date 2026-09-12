@@ -38,7 +38,7 @@
 
 (mod decor ^profile web)
 
-(import [hash_unit2 hash_unit3] from "./exact.gene")
+(import [hash_unit2 hash_unit3] ^from "./exact.gene")
 
 (let max_decors 16.0)
 

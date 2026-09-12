@@ -14,12 +14,12 @@
 (import [Plugin PluginContext PluginHost Harness provide resolve seam_bound
          row rows invoke_registry_row plugin_states bound_seams
          lifecycle_log log_append uninstall retry status_of
-         installed transaction_diff flush_harness HarnessError] from "./kernel")
-(import_impl PluginHost for PluginContext from "./kernel")
+         installed transaction_diff flush_harness HarnessError] ^from "./kernel")
+(import_impl PluginHost for PluginContext ^from "./kernel")
 (import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
          prompt_provider codegen_provider]
-  from "./seams")
-(import [register_module] from "./workspace")
+  ^from "./seams")
+(import [register_module] ^from "./workspace")
 
 # --- word handling ---------------------------------------------------------
 
@@ -58,8 +58,8 @@
   # never close a literal and become code.
   `(mod plugin
      (import [Plugin DescriptorContext PluginContext PluginHost]
-       from "../../../src/plugin_api")
-     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       ^from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
      (fn run [arg] : Str
        ($str/join [(unquote name) "(" arg ") -> " (unquote text)] ""))
      (fn init [ctx : DescriptorContext] : Plugin

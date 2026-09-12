@@ -1,8 +1,8 @@
 (mod bounded_preflight_smoke)
 
-(import [new_harness status_of] from "../src/kernel")
+(import [new_harness status_of] ^from "../src/kernel")
 (import [open_workspace register_module composition_revision doctor close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -12,15 +12,15 @@
   (var init_loop
     (quote
       (mod plugin
-        (import [Plugin] from "../../../src/plugin_api")
+        (import [Plugin] ^from "../../../src/plugin_api")
         (fn init [ctx] : Plugin
           ^capabilities []
           (while true nil)))))
   (var activation_loop
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "activation_loop" ^provides [] ^requires []
@@ -29,14 +29,14 @@
   (var init_panic
     (quote
       (mod plugin
-        (import [Plugin] from "../../../src/plugin_api")
+        (import [Plugin] ^from "../../../src/plugin_api")
         (fn init [ctx] : Plugin
           ^capabilities []
           ($panic "broken descriptor")))))
   (var top_level_const
     (quote
       (mod plugin
-        (import [Plugin] from "../../../src/plugin_api")
+        (import [Plugin] ^from "../../../src/plugin_api")
         (const surprise (while true nil))
         (fn init [ctx] : Plugin
           ^capabilities []

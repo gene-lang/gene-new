@@ -24,17 +24,17 @@
 
 (import [Registry new_registry register_uniform id_of registered_count
          draw_normal]
-        from "../core/registry.gene")
-(import [content_air content_ignore] from "../core/world.gene")
+        ^from "../core/registry.gene")
+(import [content_air content_ignore] ^from "../core/world.gene")
 (import [World new_world store_block block_base open_sky node_at light_at
          set_node set_light world_index inside? addressable?
          world_dx world_dy world_dz world_stride_z world_nodes
          world_min_x world_min_y world_min_z
          world_span_x world_span_y world_span_z]
-        from "../core/loaded.gene")
-(import [chunk_base] from "../core/mesh.gene")
+        ^from "../core/loaded.gene")
+(import [chunk_base] ^from "../core/mesh.gene")
 (import [light_region queue_overhead day_of light_max]
-        from "../core/light.gene")
+        ^from "../core/light.gene")
 
 # --- reporting ---------------------------------------------------------------
 

@@ -438,11 +438,27 @@ root namespace. For example, put these two files in the same directory:
 
 ```gene
 # main.gene
-(import [twice] from "./stats.gene")
+(import [twice] ^from "./stats.gene")
 ($println (twice 3)) # 6
 ```
 
 Run `gene run main.gene`. No `ns` wrapper is needed in `stats.gene`.
+
+`^from` is a named property containing a literal module-path string. It works
+with a single name, a selection list, or a wildcard:
+
+```gene
+(import twice ^from "./stats.gene")
+(import [twice : double] ^from "./stats.gene")
+(import * : stats ^from "./stats.gene")
+```
+
+The old `from "path"` clause is no longer accepted. Existing namespace imports
+such as `(import $str [join trim])` keep their syntax.
+
+To bring an exported scoped protocol implementation into the current module,
+use `(import_impl Protocol for Receiver ^from "./impls.gene")`. The protocol
+and receiver must already be in scope; `for` remains a positional keyword.
 File imports initialize a module once. Package dependency aliases identify
 external libraries; [workflows](workflows.md#packages) shows the project layout.
 

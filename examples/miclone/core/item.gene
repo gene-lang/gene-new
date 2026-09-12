@@ -51,7 +51,7 @@
 
 (import [GroupRegistry rating_of group_named group_entry_count
          entry_owner entry_rating]
-        from "./groups.gene")
+        ^from "./groups.gene")
 
 (let max_items 4096.0)
 # `core/registry.gene`'s ceiling, because `node_item` is indexed by node id.

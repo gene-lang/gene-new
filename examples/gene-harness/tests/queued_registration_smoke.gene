@@ -11,12 +11,12 @@
 
 (mod queued_registration_smoke)
 
-(import [new_harness install invoke_registry_row status_of] from "../src/kernel")
-(import [command_plugin] from "../src/agent")
-(import [run_program] from "../src/llm")
+(import [new_harness install invoke_registry_row status_of] ^from "../src/kernel")
+(import [command_plugin] ^from "../src/agent")
+(import [run_program] ^from "../src/llm")
 (import [open_workspace composition_revision composition_entries
          close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

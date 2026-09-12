@@ -2,7 +2,7 @@
 
 (import [ReconcileMode RuntimeOptions LoaderOptions CompositionError
          invocation_limits default_plugin_invoker new_runtime]
-  from "../src/cordis")
+  ^from "../src/cordis")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

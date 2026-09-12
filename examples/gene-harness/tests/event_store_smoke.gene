@@ -2,7 +2,7 @@
 
 (import [open_event_store append_event record_plugin_state
          events_for plugin_state flush_event_store close_event_store]
-  from "../src/state")
+  ^from "../src/state")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

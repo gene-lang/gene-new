@@ -29,7 +29,11 @@ execution policy are separate controls.
   origin and digest, so multiple versions can coexist through separate aliases.
   Sync materializes immutable source objects. A matching vendor object takes
   precedence over the user cache; a corrupt candidate is not silently bypassed.
-- `^pkg` on the `from` form selects a package; `"."` names that package's
+- File imports use a literal string property: `(import x ^from "x.gene")`.
+  Selections and `source : alias` remain positional; `^from` may appear before
+  or after them. The old positional `from "path"` clause is rejected.
+  Namespace imports retain `(import source [names])` and `(import source : alias)`.
+- `^pkg` on the `^from` form selects a package; `"."` names that package's
   `main_module`. A regular package may import only itself and its declared
   direct dependencies. No resolved module path may leave its package root after
   canonicalization. Runtime imports use the materialized graph and never run

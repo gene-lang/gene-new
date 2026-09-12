@@ -288,7 +288,7 @@ or checked `Callable` view. It derives parameter documentation and an input
 schema without evaluating defaults:
 
 ```gene
-(import * : reflect from "./reflection")
+(import * : reflect ^from "./reflection")
 (fn search [query : Str, ^limit : Int = 10] : Str query)
 (contribute h "search_plugin" "tools" (reflect/tool_row "search" search))
 (invoke_registry_row h "tools" "search"
@@ -317,8 +317,8 @@ impl identity:
 ```gene
 (mod plugin
   (import [Plugin DescriptorContext PluginContext PluginHost]
-    from "../../../src/plugin_api")
-  (import_impl PluginHost for PluginContext from "../../../src/kernel")
+    ^from "../../../src/plugin_api")
+  (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
 
   (fn init [ctx : DescriptorContext] : Plugin
     ^capabilities []

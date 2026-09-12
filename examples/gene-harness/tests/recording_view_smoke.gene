@@ -1,8 +1,8 @@
 (mod recording_view_smoke)
 
-(import [new_harness install log_append row] from "../src/kernel")
-(import [HarnessView] from "../src/view_api")
-(import [recording_view_plugin] from "../src/recording_view")
+(import [new_harness install log_append row] ^from "../src/kernel")
+(import [HarnessView] ^from "../src/view_api")
+(import [recording_view_plugin] ^from "../src/recording_view")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

@@ -7,4 +7,4 @@
 (import [InstanceState PluginCallKind HookMode
          Disposable PluginInvoker EffectOwner
          InvocationLimits PluginCall ServiceKey HookKey Requirement PluginSpec]
-  from "./model" ^export true)
+  ^from "./model" ^export true)

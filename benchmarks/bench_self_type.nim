@@ -13,7 +13,7 @@ proc benchSelfTypeContracts*() =
     (impl Tagged for Item)
     (fn check [items : (List Tagged)] : Int ($size items))
   """)
-  writeFile(consumerPath, "(import [check] from \"./provider.gene\")")
+  writeFile(consumerPath, "(import [check] ^from \"./provider.gene\")")
   defer:
     removeFile(providerPath)
     removeFile(consumerPath)

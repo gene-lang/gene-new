@@ -9,11 +9,11 @@
 
 (mod duplicate_blob_smoke)
 
-(import [new_harness] from "../src/kernel")
-(import [plugin_source] from "../src/agent")
+(import [new_harness] ^from "../src/kernel")
+(import [plugin_source] ^from "../src/agent")
 (import [open_workspace register_module run_workspace_turn module_digest
          module_path composition_revision close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 (import $store/fs [Store])
 (import $fs [list_dir exists?])
 

@@ -469,8 +469,8 @@ type
     errorType*: ErrorTypeSummary
 
   ImportSpec* = object
-    fromModule*: bool                 # true: `from "path"`; false: namespace path
-    modulePath*: string               # the `from "path"` string
+    fromModule*: bool                 # true: `^from "path"`; false: namespace path
+    modulePath*: string               # the `^from "path"` string
     pkgName*: string                  # `^pkg "owner/name"`, or "" for the
                                       # importing module's own package
     nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)

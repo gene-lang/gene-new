@@ -1,8 +1,8 @@
 (mod view_output_smoke)
 
-(import [new_harness install] from "../src/kernel")
-(import [command_plugin agent_plugin ask] from "../src/agent")
-(import [recording_view_plugin] from "../src/recording_view")
+(import [new_harness install] ^from "../src/kernel")
+(import [command_plugin agent_plugin ask] ^from "../src/agent")
+(import [recording_view_plugin] ^from "../src/recording_view")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

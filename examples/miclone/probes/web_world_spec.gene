@@ -17,7 +17,7 @@
 
 (mod web_world_spec ^profile web)
 
-(import [report failures] from "./world_spec.gene")
+(import [report failures] ^from "./world_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

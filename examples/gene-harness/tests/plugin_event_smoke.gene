@@ -1,11 +1,11 @@
 (mod plugin_event_smoke)
 
-(import [new_harness resolve] from "../src/kernel")
+(import [new_harness resolve] ^from "../src/kernel")
 (import [open_event_store events_for validate_event_catalog close_event_store]
-  from "../src/state")
+  ^from "../src/state")
 (import [open_workspace register_module restore_workspace known_event_types
          close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -15,8 +15,8 @@
     (quote
       (mod plugin
         (import [Plugin DescriptorContext PluginContext PluginHost]
-          from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+          ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn validate_tick [payload]
           (if (== payload/value void) ($panic "tick requires value") payload))
         (fn init [ctx : DescriptorContext] : Plugin

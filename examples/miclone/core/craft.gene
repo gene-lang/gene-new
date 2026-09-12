@@ -28,8 +28,8 @@
 
 (mod craft ^profile web)
 
-(import [ItemRegistry item_named no_item] from "./item.gene")
-(import [add take total_of find_item] from "./inventory.gene")
+(import [ItemRegistry item_named no_item] ^from "./item.gene")
+(import [add take total_of find_item] ^from "./inventory.gene")
 
 (let max_recipes 128.0)
 # Four is enough for every recipe a game of this size wants and keeps the table

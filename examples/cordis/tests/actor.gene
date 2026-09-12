@@ -2,8 +2,8 @@
 
 (import [RuntimeOptions PluginSpec invocation_limits
          default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [owned_actor] from "../src/actor")
+  ^from "../src/cordis")
+(import [owned_actor] ^from "../src/actor")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

@@ -11,31 +11,31 @@
 (mod inventory_spec ^profile web)
 
 (import [Registry new_registry register_uniform id_of draw_normal]
-        from "../core/registry.gene")
+        ^from "../core/registry.gene")
 (import [new_inventory slots_of slot_item slot_count slot_empty? set_slot
          slot_wear set_slot_worn wear_slot wear_max
          add take total_of find_item empty?]
-        from "../core/inventory.gene")
+        ^from "../core/inventory.gene")
 (import [ItemRegistry new_items add_item add_tool_cap item_name item_named
          item_node item_stack_max item_of_node placeable_item? dig_time_ms
          no_item no_node default_stack_max]
-        from "../core/item.gene")
+        ^from "../core/item.gene")
 (import [GroupRegistry new_groups intern_group set_rating rating_of in_group?]
-        from "../core/groups.gene")
+        ^from "../core/groups.gene")
 (import [FormRegistry new_forms add_form add_element form_count element_count
          form_named form_title form_cols form_rows form_first form_len
          element_kind element_x element_y element_text element_fits?
          el_label el_item el_box]
-        from "../core/formspec.gene")
+        ^from "../core/formspec.gene")
 (import [EntityRegistry new_entities spawn_item despawn entity_slots
          entity_alive? entity_id entity_item_of entity_count
          entity_x entity_y entity_z live_entities within_pickup? slot_of_id]
-        from "../core/entity.gene")
+        ^from "../core/entity.gene")
 (import [CraftRegistry new_crafts add_recipe recipe_count recipe_output
          recipe_yield recipe_matches? first_craftable apply_craft]
-        from "../core/craft.gene")
+        ^from "../core/craft.gene")
 (import [DropTable new_drop_table register_drop declared? drop_item drop_count]
-        from "../core/drops.gene")
+        ^from "../core/drops.gene")
 
 # --- reporting ---------------------------------------------------------------
 

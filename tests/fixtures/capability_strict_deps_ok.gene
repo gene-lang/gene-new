@@ -3,7 +3,7 @@
   ^require_strict_dependencies true
   ^capabilities [fs/*])
 
-(import [declared] from "./capability_strict_dep.gene")
+(import [declared] ^from "./capability_strict_dep.gene")
 
 (fn main []
   ^capabilities *

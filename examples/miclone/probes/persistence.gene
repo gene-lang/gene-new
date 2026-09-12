@@ -31,17 +31,17 @@
 (mod persistence)
 
 (import [Registry new_registry id_of name_of registered_count]
-        from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [block_dim block_nodes generate_block] from "../core/mapgen.gene")
+        ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [block_dim block_nodes generate_block] ^from "../core/mapgen.gene")
 (import [light_region relight_node queue_overhead day_of night_of]
-        from "../core/light.gene")
-(import [region_index] from "../core/light.gene")
+        ^from "../core/light.gene")
+(import [region_index] ^from "../core/light.gene")
 (import [open_world close_world write_meta read_meta world_exists?
          put_block get_block has_block? block_count stored_bytes
          begin_batch commit_batch WorldStore]
-        from "../server/storage.gene")
+        ^from "../server/storage.gene")
 
 (let seed 1337.0)
 (let span 4)                 # 4 x 4 blocks, one slab

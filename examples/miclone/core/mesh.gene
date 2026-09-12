@@ -32,7 +32,7 @@
 
 (mod mesh ^profile web)
 
-(import [Registry draw_airlike] from "./registry.gene")
+(import [Registry draw_airlike] ^from "./registry.gene")
 
 # --- geometry constants ------------------------------------------------------
 

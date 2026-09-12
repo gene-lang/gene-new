@@ -1,7 +1,7 @@
 (mod stop_start_provider)
 
-(import [PluginSpec] from "../../src/plugin_api")
-(import [LoadedValue loaded_key] from "../contract")
+(import [PluginSpec] ^from "../../src/plugin_api")
+(import [LoadedValue loaded_key] ^from "../contract")
 
 (type StopStartValue)
 (impl LoadedValue for StopStartValue

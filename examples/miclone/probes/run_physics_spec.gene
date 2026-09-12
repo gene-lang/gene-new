@@ -9,7 +9,7 @@
 
 (mod run_physics_spec)
 
-(import [report failures] from "./physics_spec.gene")
+(import [report failures] ^from "./physics_spec.gene")
 
 (fn main [args] : Nil
   ($println (report))

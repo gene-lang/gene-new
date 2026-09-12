@@ -17,27 +17,27 @@
 
 (mod mapgen_spec ^profile web)
 
-(import [f64_key wrap32] from "../core/exact.gene")
-(import [fbm2] from "../core/noise.gene")
+(import [f64_key wrap32] ^from "../core/exact.gene")
+(import [fbm2] ^from "../core/noise.gene")
 (import [lattice_origin lattice_dim sample_lattice lattice_value]
-        from "../core/field.gene")
+        ^from "../core/field.gene")
 (import [BiomeRegistry register_biome biome_count biome_at biome_name
          column_node cover_depth top_depth top_node filler_node stone_node
          underwater_node]
-        from "../core/biome.gene")
+        ^from "../core/biome.gene")
 (import [OreRegistry register_ore ore_count ore_name place shape_scatter]
-        from "../core/ore.gene")
-(import [carve_sphere] from "../core/cave.gene")
+        ^from "../core/ore.gene")
+(import [carve_sphere] ^from "../core/cave.gene")
 (import [new_registry id_of registered_count name_of drawn? opaque?
          tile_top_of tile_side_of tile_bottom_of]
-        from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
+        ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
 (import [block_dim block_nodes pad_dim pad_nodes
          terrain_scale terrain_octaves sea_level
          surface_height surface_from_noise terrain_noise heat_at humidity_at
          fill_run generate_block fill_padded]
-        from "../core/mapgen.gene")
+        ^from "../core/mapgen.gene")
 
 # --- reporting ---------------------------------------------------------------
 #

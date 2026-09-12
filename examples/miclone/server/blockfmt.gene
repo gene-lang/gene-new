@@ -45,7 +45,7 @@
 
 (mod blockfmt)
 
-(import [Registry name_of id_of] from "../core/registry.gene")
+(import [Registry name_of id_of] ^from "../core/registry.gene")
 
 (let magic "MICB")
 (let format_version 1)

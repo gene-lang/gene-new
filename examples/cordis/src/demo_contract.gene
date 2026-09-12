@@ -1,6 +1,6 @@
 (mod demo_contract)
 
-(import [service_key] from "./cordis")
+(import [service_key] ^from "./cordis")
 
 (protocol Clock
   (message tick [] : Int))

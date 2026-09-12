@@ -2,10 +2,10 @@
 
 (import [HarnessError ExecutionLimits new_harness resolve status_of
          transaction_diff]
-  from "../src/kernel")
+  ^from "../src/kernel")
 (import [open_workspace register_module run_workspace_turn
          composition_revision close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -14,8 +14,8 @@
   (var source
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []
@@ -26,8 +26,8 @@
     (quote
       (mod plugin
         (import [Plugin PluginContext PluginHost]
-          from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+          ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []

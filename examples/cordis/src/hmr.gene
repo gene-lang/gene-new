@@ -4,8 +4,8 @@
 (mod hmr)
 
 (import $fs [watch real_path WatcherClosed])
-(import [Disposable] from "./model")
-(import [hmr_reloaded register_loader_watcher] from "./runtime"
+(import [Disposable] ^from "./model")
+(import [hmr_reloaded register_loader_watcher] ^from "./runtime"
   ^export true)
 
 (type LoaderWatcher

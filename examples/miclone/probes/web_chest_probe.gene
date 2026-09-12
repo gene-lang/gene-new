@@ -39,7 +39,7 @@
 
 (mod web_chest_probe ^profile web)
 
-(import [new_cursor] from "../core/wire.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
          msg_items msg_forms msg_open_form
@@ -54,20 +54,20 @@
          size_dig encode_dig size_place encode_place
          size_craft encode_craft
          size_form_action_for encode_form_action]
-        from "../core/protocol.gene")
+        ^from "../core/protocol.gene")
 (import [Registry new_wire_registry id_of opens_form_of]
-        from "../core/registry.gene")
-(import [ItemRegistry new_items item_named item_node] from "../core/item.gene")
+        ^from "../core/registry.gene")
+(import [ItemRegistry new_items item_named item_node] ^from "../core/item.gene")
 (import [FormRegistry new_forms form_count element_count form_named
          form_first form_len element_kind el_button]
-        from "../core/formspec.gene")
-(import [CraftRegistry recipe_count recipe_output] from "../core/craft.gene")
+        ^from "../core/formspec.gene")
+(import [CraftRegistry recipe_count recipe_output] ^from "../core/craft.gene")
 # `Game` by name from where it is defined, not through `core/mods.gene`: a type
 # re-exports on neither backend (§D7.14), so `load_mods`'s return type is opaque
 # here without this line and `game/crafts` is "web type Game has no field".
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [World new_world store_block node_at set_node] ^from "../core/loaded.gene")
 
 (let block_dim 16.0)
 (let block_nodes 4096.0)

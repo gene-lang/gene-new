@@ -23,8 +23,8 @@
 
 (mod raycast ^profile web)
 
-(import [Registry drawn? drawtype_of draw_liquid] from "./registry.gene")
-(import [World node_at] from "./loaded.gene")
+(import [Registry drawn? drawtype_of draw_liquid] ^from "./registry.gene")
+(import [World node_at] ^from "./loaded.gene")
 
 # --- what can be pointed at ---------------------------------------------------
 

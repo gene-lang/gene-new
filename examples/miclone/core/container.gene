@@ -39,7 +39,7 @@
 
 (mod container ^profile web)
 
-(import [new_inventory] from "./inventory.gene")
+(import [new_inventory] ^from "./inventory.gene")
 
 (let max_containers 64.0)
 (let container_slots 8.0)

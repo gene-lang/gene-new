@@ -1462,16 +1462,22 @@ proc webErrorRow(analysis: WebAnalysis, form: Value, loc: SourceLoc): seq[WebTyp
 
 proc parseWebImport(form: Value, loc: SourceLoc,
                     importerPath: string): WebImport =
-  if form.body.len != 3 or form.body[0].kind != vkList or
-      not form.body[1].isSym("from") or form.body[2].kind != vkString:
+  if form.body.len >= 2 and form.body[^2].isSym("from") and
+      form.body[^1].kind == vkString:
     raise webError(loc,
-      "web imports must be `(import [names] from \"./relative.gene\")`")
-  rejectUnknownProps(form, loc, "import", ["export"])
+      "import: `from` was removed; use `^from \"path\"`")
+  if form.body.len != 1 or form.body[0].kind != vkList or
+      not form.props.hasKey("from"):
+    raise webError(loc,
+      "web imports must be `(import [names] ^from \"./relative.gene\")`")
+  rejectUnknownProps(form, loc, "import", ["from", "export"])
+  if form.props["from"].kind != vkString:
+    raise webError(loc, "web import ^from must be a path string")
   if form.props.hasKey("export"):
     if form.props["export"].kind != vkBool:
       raise webError(loc, "web import ^export must be a literal Bool")
     result.reexport = form.props["export"].boolVal
-  result.sourcePath = form.body[2].strVal
+  result.sourcePath = form.props["from"].strVal
   if not (result.sourcePath.startsWith("./") or
           result.sourcePath.startsWith("../")):
     raise webError(loc, "web imports must use a relative module path")

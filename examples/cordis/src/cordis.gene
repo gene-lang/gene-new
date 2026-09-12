@@ -17,4 +17,4 @@
          ProviderLease PluginInstance HookSubject RealmId Loader
          invocation_limits service_key hook_key default_plugin_invoker
          invoke_effect_owner config_update hmr_reloaded new_runtime]
-  from "./runtime" ^export true)
+  ^from "./runtime" ^export true)

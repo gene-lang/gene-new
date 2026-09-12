@@ -3,7 +3,7 @@
 (import [InstanceState RuntimeOptions Requirement PluginSpec
          DependenciesUnavailable
          invocation_limits service_key default_plugin_invoker new_runtime]
-  from "../src/cordis")
+  ^from "../src/cordis")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

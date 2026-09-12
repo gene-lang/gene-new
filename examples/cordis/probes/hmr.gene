@@ -3,9 +3,9 @@
 (import $fs [read_text write_text])
 (import [RuntimeOptions LoaderOptions PluginSpec ReloadRejected
          hmr_reloaded invocation_limits default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [watch_loader] from "../src/hmr")
-(import [LoadedValue loaded_key] from "../fixtures/contract")
+  ^from "../src/cordis")
+(import [watch_loader] ^from "../src/hmr")
+(import [LoadedValue loaded_key] ^from "../fixtures/contract")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -21,8 +21,8 @@
 
 (var source_one """
 (mod reloadable_provider)
-(import [PluginSpec] from "../../src/plugin_api")
-(import [LoadedValue loaded_key] from "../contract")
+(import [PluginSpec] ^from "../../src/plugin_api")
+(import [LoadedValue loaded_key] ^from "../contract")
 (type ReloadedValue)
 (impl LoadedValue for ReloadedValue
   (message value [] : Int 1))
@@ -35,8 +35,8 @@
 
 (var source_two """
 (mod reloadable_provider)
-(import [PluginSpec] from "../../src/plugin_api")
-(import [LoadedValue loaded_key] from "../contract")
+(import [PluginSpec] ^from "../../src/plugin_api")
+(import [LoadedValue loaded_key] ^from "../contract")
 (type ReloadedValue)
 (impl LoadedValue for ReloadedValue
   (message value [] : Int 2))

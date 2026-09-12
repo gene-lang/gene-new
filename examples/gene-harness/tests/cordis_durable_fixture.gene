@@ -1,20 +1,20 @@
 (mod cordis_durable_fixture)
 (import $fs [make_dir write_text])
-(import [Plugin PluginContext PluginHost] from "../src/plugin_api")
-(import_impl PluginHost for PluginContext from "../src/kernel")
+(import [Plugin PluginContext PluginHost] ^from "../src/plugin_api")
+(import_impl PluginHost for PluginContext ^from "../src/kernel")
 (import [new_cordis_harness install resolve invoke_registry_row status_of
-         shutdown_harness] from "../src/kernel")
+         shutdown_harness] ^from "../src/kernel")
 (import [open_workspace close_workspace register_module prepare_workspace
          activate_workspace_plan run_workspace_turn composition_revision
          workspace_status doctor composition_entries commit_composition
-         module_digest write_module_blob load_entry_descriptor] from "../src/workspace")
-(import [open_event_store close_event_store plugin_state] from "../src/state")
+         module_digest write_module_blob load_entry_descriptor] ^from "../src/workspace")
+(import [open_event_store close_event_store plugin_state] ^from "../src/state")
 
 (fn search_source [version : Str, broken : Bool = false]
   `(mod plugin
      (import [Plugin DescriptorContext PluginContext PluginHost]
-       from "../../../src/plugin_api")
-     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       ^from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
      (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
        (Plugin ^id "search" ^provides ["Search"] ^requires [] ^contextual true
          ^activate (fn [] (fn [host]

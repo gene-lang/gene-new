@@ -33,39 +33,39 @@
 
 (mod net_main ^profile web)
 
-(import [store_block_and_light apply_delta hotbar_text] from "../core/client_world.gene")
+(import [store_block_and_light apply_delta hotbar_text] ^from "../core/client_world.gene")
 
 (import [count_faces build_mesh put_cube faces_per_cube item_cube_half]
-        from "../core/mesh.gene")
+        ^from "../core/mesh.gene")
 (import [SeenEntities new_seen apply_entity seen_rows seen_alive?
          seen_x seen_y seen_z seen_item seen_item_total seen_live seen_kind]
-        from "../core/seen.gene")
-(import [entity_player] from "../core/entity.gene")
+        ^from "../core/seen.gene")
+(import [entity_player] ^from "../core/entity.gene")
 (import [Registry new_registry id_of registered_count name_of solid?
          tile_top_of opens_form_of]
-        from "../core/registry.gene")
+        ^from "../core/registry.gene")
 (import [World new_world store_block block_base node_at light_at
          world_dx world_dy world_dz world_stride_z world_nodes]
-        from "../core/loaded.gene")
-(import [relight_node queue_overhead] from "../core/light.gene")
+        ^from "../core/loaded.gene")
+(import [relight_node queue_overhead] ^from "../core/light.gene")
 (import [build_program init_state upload_atlas new_vertex_array new_buffer
          upload_chunk begin_frame set_view_projection draw_chunk]
-        from "./render.gene")
-(import [paint] from "./atlas.gene")
-(import [new_sound play_dig play_place play_craft] from "./sound.gene")
-(import [TileRegistry new_tiles] from "../core/tiles.gene")
-(import [forward_x forward_y forward_z] from "../core/vec.gene")
+        ^from "./render.gene")
+(import [paint] ^from "./atlas.gene")
+(import [new_sound play_dig play_place play_craft] ^from "./sound.gene")
+(import [TileRegistry new_tiles] ^from "../core/tiles.gene")
+(import [forward_x forward_y forward_z] ^from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? set_player_position box_overlaps_node?]
-        from "../core/physics.gene")
+        ^from "../core/physics.gene")
 (import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
-        from "../core/raycast.gene")
-(import [diggable? placeable?] from "../core/edit.gene")
+        ^from "../core/raycast.gene")
+(import [diggable? placeable?] ^from "../core/edit.gene")
 (import [new_inventory slot_item slot_count slot_empty?]
-        from "../core/inventory.gene")
+        ^from "../core/inventory.gene")
 (import [ItemRegistry new_items item_name placeable_item? item_node]
-        from "../core/item.gene")
-(import [new_cursor] from "../core/wire.gene")
+        ^from "../core/item.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
          msg_inventory msg_tiles msg_items
          new_hello decode_hello hello_version hello_span_x hello_span_y
@@ -86,7 +86,7 @@
          msg_open_form new_open_form decode_open_form open_x open_y open_z
          size_form_action_for encode_form_action
          protocol_version]
-        from "../core/protocol.gene")
+        ^from "../core/protocol.gene")
 
 # §13's forms. The layout arrives once at join and the contents arrive per open,
 # which is the split §13 already made: a form is a declaration and a chest's
@@ -94,7 +94,7 @@
 (import [FormRegistry new_forms form_named form_title form_cols form_rows
          form_first form_len element_kind element_x element_y element_w
          element_text element_action kind_label kind_item kind_box kind_button]
-        from "../core/formspec.gene")
+        ^from "../core/formspec.gene")
 
 (let block_dim 16.0)
 (let block_nodes 4096.0)

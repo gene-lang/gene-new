@@ -10,7 +10,7 @@ The supported library entry is `src/cordis.gene`. Sandboxed plugins import only
 ```gene
 (import [RuntimeOptions LoaderOptions invocation_limits
          default_plugin_invoker new_runtime]
-  from "./src/cordis")
+  ^from "./src/cordis")
 
 (var runtime
   (new_runtime

@@ -1,8 +1,8 @@
 (mod attenuation_smoke)
 
-(import [new_harness resolve status_of] from "../src/kernel")
+(import [new_harness resolve status_of] ^from "../src/kernel")
 (import [open_workspace register_module close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -12,8 +12,8 @@
   (var denied_source
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (import $fs [read_text])
         (fn init [ctx] : Plugin
           ^capabilities []
@@ -25,8 +25,8 @@
   (var allowed_source
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (import $fs [read_text])
         (fn init [ctx] : Plugin
           ^capabilities []

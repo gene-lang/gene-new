@@ -17,7 +17,7 @@
 
 (mod web_abm_spec ^profile web)
 
-(import [report failures] from "./abm_spec.gene")
+(import [report failures] ^from "./abm_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

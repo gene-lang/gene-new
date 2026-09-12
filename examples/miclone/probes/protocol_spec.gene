@@ -25,25 +25,25 @@
 (import [Registry new_registry registered_count name_of drawtype_of solid?
          opaque? propagates_light? merges_same? light_source_of tile_top_of tile_side_of
          tile_bottom_of register_uniform draw_normal draw_glasslike draw_liquid]
-        from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
+        ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
 (import [TileRegistry new_tiles tile_count tile_name tile_kind
          tile_r tile_g tile_b tile_spread tile_seed
          tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
          tile_density tile_ore tile_overlay]
-        from "../core/tiles.gene")
+        ^from "../core/tiles.gene")
 (import [ItemRegistry new_items item_count item_name item_description
          item_node item_stack_max placeable_item? no_node]
-        from "../core/item.gene")
-(import [load_mods] from "../core/mods.gene")
-(import [new_cursor cursor_at reset] from "../core/wire.gene")
+        ^from "../core/item.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [new_cursor cursor_at reset] ^from "../core/wire.gene")
 (import [FormRegistry new_forms form_count element_count form_name_of
          form_title form_cols form_rows form_len form_named
          element_kind element_x element_y element_w element_h
          element_text element_action action_element el_button]
-        from "../core/formspec.gene")
-(import [new_inventory add slot_item slot_count] from "../core/inventory.gene")
-(import [entity_item entity_player] from "../core/entity.gene")
+        ^from "../core/formspec.gene")
+(import [new_inventory add slot_item slot_count] ^from "../core/inventory.gene")
+(import [entity_item entity_player] ^from "../core/entity.gene")
 (import [protocol_version message_kind server_message? client_message?
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
          msg_forms msg_open_form msg_form_action
@@ -75,7 +75,7 @@
          in_x in_y in_z
          size_entity encode_entity decode_entity msg_entity ent_kind
          new_entity_msg ent_id ent_x ent_y ent_z ent_item ent_count]
-        from "../core/protocol.gene")
+        ^from "../core/protocol.gene")
 
 # --- reporting ---------------------------------------------------------------
 

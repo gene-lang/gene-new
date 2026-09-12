@@ -17,7 +17,7 @@
 
 (mod web_wire_spec ^profile web)
 
-(import [report failures] from "./wire_spec.gene")
+(import [report failures] ^from "./wire_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

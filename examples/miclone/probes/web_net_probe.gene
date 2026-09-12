@@ -23,7 +23,7 @@
 
 (mod web_net_probe ^profile web)
 
-(import [new_cursor byte_len] from "../core/wire.gene")
+(import [new_cursor byte_len] ^from "../core/wire.gene")
 (import [message_kind protocol_version
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
          msg_tiles msg_items msg_entity
@@ -38,12 +38,12 @@
          size_request_blocks encode_request_blocks
          size_dig encode_dig size_place encode_place
          size_craft encode_craft craft_any]
-        from "../core/protocol.gene")
-(import [Registry new_wire_registry name_of solid?] from "../core/registry.gene")
-(import [TileRegistry new_tiles tile_name] from "../core/tiles.gene")
+        ^from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of solid?] ^from "../core/registry.gene")
+(import [TileRegistry new_tiles tile_name] ^from "../core/tiles.gene")
 (import [ItemRegistry new_items item_name item_named item_node placeable_item?]
-        from "../core/item.gene")
-(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+        ^from "../core/item.gene")
+(import [World new_world store_block node_at set_node] ^from "../core/loaded.gene")
 
 (let block_nodes 4096.0)
 (let max_deltas 4096.0)

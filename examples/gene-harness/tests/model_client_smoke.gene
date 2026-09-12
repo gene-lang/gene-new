@@ -1,10 +1,10 @@
 (mod model_client_smoke)
 
 (import $fs [write_text])
-(import [HarnessError] from "../src/kernel")
+(import [HarnessError] ^from "../src/kernel")
 (import
   [resolve_config codex_credentials completion_request completion_text codex_stream_text]
-  from
+  ^from
   "../src/model_client")
 
 (fn rejects [call, expected : Str]

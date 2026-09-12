@@ -1,6 +1,6 @@
 (mod web_async ^profile web)
 
-(import [produce] from "./web_async_dep.gene")
+(import [produce] ^from "./web_async_dep.gene")
 
 # Neither function below mentions scope, spawn, or await: their asyncness comes
 # only from the callee's signature, across a module boundary and then again

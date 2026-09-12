@@ -9,7 +9,7 @@ proc checkWebExportRejection(facade, selection, expected: string) =
     "(fn make [] : Thing (Thing ^value count))")
   writeFile(root / "facade.gene", "(mod facade ^profile web) " & facade)
   writeFile(root / "entry.gene", "(mod entry ^profile web) " &
-    "(import [" & selection & "] from \"./facade.gene\") (fn run [] : Int 0)")
+    "(import [" & selection & "] ^from \"./facade.gene\") (fn run [] : Int 0)")
   var diagnostic = ""
   try:
     discard buildWebModule(root / "entry.gene", root / "out")
@@ -17,21 +17,51 @@ proc checkWebExportRejection(facade, selection, expected: string) =
     diagnostic = error.msg
   check expected in diagnostic
 
+suite "web module import syntax":
+  test "source properties work in either position with aliases and re-exports":
+    let root = createTempDir("gene-web-imports-", "")
+    defer: removeDir(root)
+    writeFile(root / "provider.gene", "(mod provider ^profile web) " &
+      "(let from 7)")
+    for source in [
+      "(import [from : value] ^from \"./provider.gene\")",
+      "(import ^from \"./provider.gene\" [from : value])",
+      "(import ^export true [from : value] ^from \"./provider.gene\")"
+    ]:
+      writeFile(root / "entry.gene", "(mod entry ^profile web) " & source &
+        " (fn run [] : Int value)")
+      discard buildWebModule(root / "entry.gene", root / "out")
+
+  test "old syntax and malformed source properties are rejected":
+    for (source, expected) in [
+      ("(import [Thing] from \"./provider.gene\")", "`from` was removed; use `^from"),
+      ("(import [Thing])", "web imports must be"),
+      ("(import ^from \"./provider.gene\")", "web imports must be"),
+      ("(import [Thing] extra ^from \"./provider.gene\")", "web imports must be"),
+      ("(import [Thing] ^from provider)", "^from must be a path string"),
+      ("(import [Thing] ^from 42)", "^from must be a path string"),
+      ("(import [Thing] ^from nil)", "^from must be a path string"),
+      ("(import [Thing] ^^from)", "^from must be a path string"),
+      ("(import [Thing] ^from \"./provider.gene\" ^form true)", "unexpected named argument: form")
+    ]:
+      checkpoint source
+      checkWebExportRejection(source, "Thing", expected)
+
 suite "web module export boundaries":
   test "ordinary imports do not implicitly re-export any declaration kind":
     for name in ["Thing", "count", "make"]:
       checkWebExportRejection(
-        "(import [Thing count make] from \"./provider.gene\")", name,
+        "(import [Thing count make] ^from \"./provider.gene\")", name,
         "no exported declaration: " & name)
 
   test "explicit false keeps an import private":
     checkWebExportRejection(
-      "(import [Thing] from \"./provider.gene\" ^export false)", "Thing",
+      "(import [Thing] ^from \"./provider.gene\" ^export false)", "Thing",
       "no exported declaration: Thing")
 
   test "export policy must be a literal boolean":
     checkWebExportRejection(
-      "(import [Thing] from \"./provider.gene\" ^export \"yes\")", "Thing",
+      "(import [Thing] ^from \"./provider.gene\" ^export \"yes\")", "Thing",
       "^export must be a literal Bool")
 
 suite "web optional parameter defaults":

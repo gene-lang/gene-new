@@ -36,7 +36,7 @@
 (mod mods_runtime)
 
 (import $os [get_env Env])
-(import [Game new_game] from "../core/api.gene")
+(import [Game new_game] ^from "../core/api.gene")
 
 # The manifest keys this reads. A mod's `package.gene` is Gene data, so this is
 # a read and a lookup rather than a parser.

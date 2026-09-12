@@ -10,7 +10,7 @@
 
 (mod run_wire_spec)
 
-(import [report failures] from "./wire_spec.gene")
+(import [report failures] ^from "./wire_spec.gene")
 
 (fn main [args] : Nil
   ($println (report))

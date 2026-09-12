@@ -9778,7 +9778,7 @@ proc resolvePackageModule*(app: Application, pkg: Package,
 
 proc resolveModuleRef*(app: Application, rawPath: string,
                        pkgName = ""): string =
-  ## Normalize a `from "path"` reference to a stable absolute module identity.
+  ## Normalize a `^from "path"` reference to a stable absolute module identity.
   ## `pkgName` is the import's `^pkg`: it selects a *package* before any module
   ## name is interpreted, which is what keeps module selection separate from
   ## package selection (§9, §10).
@@ -12428,7 +12428,7 @@ proc hiddenImplHint(app: Application, protocol, receiver: Value,
   "an impl " & pair & " exists in \"" & best.originPath &
     "\" but is not visible in \"" & target &
     "\", which governs this check; add (import_impl " & pair &
-    " from \"" & best.originPath & "\") there"
+    " ^from \"" & best.originPath & "\") there"
 
 proc receiverType(value: Value): Value =
   let builtin = gScalarTypes[value.kind]
@@ -28729,20 +28729,6 @@ proc finishNativeCallbackCall*(callback: NativeSyncCallback) =
   if foreignEntry:
     raise newException(GeneError, "native callback attempted entry from another lane")
 
-proc importFromPath(form: Value): string =
-  ## The raw `from "path"` string of a top-level import form, or "" when the
-  ## form is not a from-import.
-  if form.kind != vkNode or form.head.kind != vkSymbol or
-      form.head.symVal != "import":
-    return ""
-  let body = form.body
-  for i, e in body:
-    if e.kind == vkSymbol and e.symVal == "from":
-      if i + 1 < body.len and body[i + 1].kind == vkString:
-        return body[i + 1].strVal
-      return ""
-  ""
-
 proc collectStaticImportForms(forms: openArray[Value], first = 0): seq[Value] =
   if first > forms.high:
     return
@@ -28820,9 +28806,9 @@ proc compileModuleArtifactRaw(app: Application,
     var compileDependencies: seq[string]
     var ownInterface = cloneCompileInterface(header.compileInterface)
     for form in collectStaticImportForms(header.unit.forms):
-      if importFromPath(form).len == 0:
-        continue
       let importSpec = parseImportSpec(form)
+      if not importSpec.fromModule:
+        continue
       importSpecs.add importSpec
       let raw = importSpec.importKey
       let depPath = app.resolveModuleRef(importSpec.modulePath,
@@ -28842,8 +28828,8 @@ proc compileModuleArtifactRaw(app: Application,
         depInterface = depHeader.compileInterface
         var depHasReexports = false
         for depImport in collectStaticImportForms(depHeader.unit.forms):
-          if importFromPath(depImport).len > 0 and
-              parseImportSpec(depImport).reexport:
+          let depSpec = parseImportSpec(depImport)
+          if depSpec.fromModule and depSpec.reexport:
             depHasReexports = true
             break
         let needsDependency = importSpec.reexport or depHasReexports or
@@ -29567,7 +29553,7 @@ proc adoptEntryModule(app: Application, absPath: string) =
 
 proc loadFileModule*(app: Application, path: string): Value =
   ## Load a host file path as an application module. This is used by program
-  ## startup; source-level `from "path"` imports still go through
+  ## startup; source-level `^from "path"` imports still go through
   ## `resolveModulePath` so leading slash stays package-root-relative there.
   let absPath = app.entryModulePath(path)
   app.adoptEntryModule(absPath)

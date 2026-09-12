@@ -26,42 +26,42 @@
 
 (mod main ^profile web)
 
-(import [generate_block] from "../core/mapgen.gene")
-(import [count_faces build_mesh] from "../core/mesh.gene")
-(import [light_region queue_overhead] from "../core/light.gene")
-(import [id_of registered_count] from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [load_mods] from "../core/mods.gene")
+(import [generate_block] ^from "../core/mapgen.gene")
+(import [count_faces build_mesh] ^from "../core/mesh.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
+(import [id_of registered_count] ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
 (import [World new_world store_block block_base open_sky
          world_dx world_dy world_dz world_stride_z world_nodes]
-        from "../core/loaded.gene")
+        ^from "../core/loaded.gene")
 (import [build_program init_state upload_atlas new_vertex_array new_buffer
          upload_chunk begin_frame set_view_projection draw_chunk]
-        from "./render.gene")
-(import [paint] from "./atlas.gene")
-(import [new_sound play_dig play_place play_craft] from "./sound.gene")
+        ^from "./render.gene")
+(import [paint] ^from "./atlas.gene")
+(import [new_sound play_dig play_place play_craft] ^from "./sound.gene")
 (import [FormRegistry form_named form_title form_cols form_rows form_first
          form_len element_kind element_x element_y element_w element_h
          element_text el_label el_item el_box]
-        from "../core/formspec.gene")
-(import [forward_x forward_y forward_z] from "../core/vec.gene")
+        ^from "../core/formspec.gene")
+(import [forward_x forward_y forward_z] ^from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? box_overlaps_node? find_spawn]
-        from "../core/physics.gene")
-(import [node_at] from "../core/loaded.gene")
-(import [solid? name_of] from "../core/registry.gene")
+        ^from "../core/physics.gene")
+(import [node_at] ^from "../core/loaded.gene")
+(import [solid? name_of] ^from "../core/registry.gene")
 (import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
-        from "../core/raycast.gene")
+        ^from "../core/raycast.gene")
 (import [new_bounds apply_node diggable? placeable?
          bounds_min_x bounds_min_y bounds_min_z
          bounds_max_x bounds_max_y bounds_max_z]
-        from "../core/edit.gene")
+        ^from "../core/edit.gene")
 (import [new_inventory add take slot_item slot_count slot_empty?]
-        from "../core/inventory.gene")
-(import [drop_item drop_count] from "../core/drops.gene")
-(import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
+        ^from "../core/inventory.gene")
+(import [drop_item drop_count] ^from "../core/drops.gene")
+(import [CraftRegistry first_craftable apply_craft] ^from "../core/craft.gene")
 (import [ItemRegistry item_name item_node placeable_item? no_item]
-        from "../core/item.gene")
+        ^from "../core/item.gene")
 
 (let seed 1337.0)
 (let block_dim 16.0)

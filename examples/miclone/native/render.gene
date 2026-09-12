@@ -1,9 +1,9 @@
 (mod native_render)
-(import [vertex_source fragment_source] from "shaders" ^pkg "engine")
-(import [paint] from "texture" ^pkg "engine")
-(import [TileRegistry] from "tiles" ^pkg "engine")
-(import [mat4_perspective mat4_view mat4_multiply] from "vec" ^pkg "engine")
-(import [f32_bytes u32_bytes u8_bytes] from "buffers" ^pkg "sdl2")
+(import [vertex_source fragment_source] ^from "shaders" ^pkg "engine")
+(import [paint] ^from "texture" ^pkg "engine")
+(import [TileRegistry] ^from "tiles" ^pkg "engine")
+(import [mat4_perspective mat4_view mat4_multiply] ^from "vec" ^pkg "engine")
+(import [f32_bytes u32_bytes u8_bytes] ^from "buffers" ^pkg "sdl2")
 
 (fn check [sdl value] : Nil
   ($assert (>= value 0) (sdl/error)))

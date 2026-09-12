@@ -9,7 +9,7 @@
 
 (mod run_persistence)
 
-(import [create_world verify_report] from "./persistence.gene")
+(import [create_world verify_report] ^from "./persistence.gene")
 
 (let default_root "/tmp/miclone_world")
 

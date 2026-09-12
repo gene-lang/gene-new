@@ -2,10 +2,10 @@
 
 (import $fs [write_text])
 (import $str [contains?])
-(import [new_harness resolve status_of] from "../src/kernel")
+(import [new_harness resolve status_of] ^from "../src/kernel")
 (import [open_workspace module_digest register_module restore_workspace module_path
          doctor close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -15,8 +15,8 @@
   (var broken_source
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "broken" ^provides ["Broken"] ^requires []
@@ -26,8 +26,8 @@
   (var healthy_source
     (quote
       (mod plugin
-        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [Plugin PluginContext PluginHost] ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx] : Plugin
           ^capabilities []
           (Plugin ^id "healthy" ^provides ["Healthy"] ^requires []

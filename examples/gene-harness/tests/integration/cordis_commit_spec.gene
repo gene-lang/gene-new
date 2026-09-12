@@ -3,12 +3,12 @@
 (import $fs [make_dir])
 (import $crypto [random_hex])
 (import [new_cordis_harness run_turn_transaction contribute row log_append
-         status_of shutdown_harness resolve] from "../../src/kernel")
-(import [open_event_store close_event_store events_for] from "../../src/state")
+         status_of shutdown_harness resolve] ^from "../../src/kernel")
+(import [open_event_store close_event_store events_for] ^from "../../src/state")
 (import [open_workspace close_workspace run_workspace_turn register_module
-         composition_revision workspace_status] from "../../src/workspace")
-(import [CompositionConflict composition_entries] from "../../src/workspace")
-(import [search_source] from "../cordis_durable_fixture")
+         composition_revision workspace_status] ^from "../../src/workspace")
+(import [CompositionConflict composition_entries] ^from "../../src/workspace")
+(import [search_source] ^from "../cordis_durable_fixture")
 
 (fn root_for_test []
   (let root $"${this_pkg/root}/plugins/generated/cordis-${(random_hex 8)}")
@@ -82,7 +82,7 @@
     (try
       (let source
         `(mod plugin
-           (import [Plugin DescriptorContext] from "../../../src/plugin_api")
+           (import [Plugin DescriptorContext] ^from "../../../src/plugin_api")
            (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
              (Plugin ^id "new_tool" ^provides [] ^requires [] ^contextual true
                ^activate (fn [] (fn [host] nil))))))

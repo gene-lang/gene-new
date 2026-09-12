@@ -17,7 +17,7 @@
          InstanceDisposed ContextDisposed EffectDisposed
          ContinuationAlreadyCalled HookDispatchError CompositionError
          ReloadRejected RecoveryRequired invocation_limits]
-  from "./model" ^export true)
+  ^from "./model" ^export true)
 
 # --- public handles --------------------------------------------------------
 

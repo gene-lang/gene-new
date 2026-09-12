@@ -21,7 +21,7 @@ what Gene actually wants.
 | `no message 'size' on Str` | `Str` carries no messages | `$str/*` functions |
 | `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
 | `value is not callable: vkVoid` | Missing key read as `void`, then called | Check the path; supply `(?? m/k default)` |
-| `import source must be a namespace path or 'from "path"'` | Wrong import order | `(import [names] from "./path")` or `(import $str [names])` |
+| `import source must be a namespace path or '^from "path"'` | Wrong import order | `(import [names] ^from "./path")` or `(import $str [names])` |
 | `break expects no arguments` | Carrying a value out of a loop | Assign to a binding before `(break)` |
 | `channel expects no positional arguments` | Capacity is named | `($channel ^capacity 2)` |
 | `actor/spawn expects no positional arguments` | Actor config is named | `($actor/spawn ^init … ^handle …)` |

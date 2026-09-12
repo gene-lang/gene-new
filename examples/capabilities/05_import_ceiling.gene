@@ -10,7 +10,7 @@
 (mod cap_import_ceiling
   ^capabilities [(fs/WriteDir "out")])
 
-(import [write_where] from "./plugin.gene"
+(import [write_where] ^from "./plugin.gene"
   ^capabilities [(fs/WriteDir "plugin")])
 
 (fn main [args]

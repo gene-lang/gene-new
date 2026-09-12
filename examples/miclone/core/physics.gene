@@ -46,9 +46,9 @@
 
 (mod physics ^profile web)
 
-(import [Registry solid? drawtype_of draw_liquid] from "./registry.gene")
-(import [content_ignore abs_f64] from "./world.gene")
-(import [World node_at world_min_y] from "./loaded.gene")
+(import [Registry solid? drawtype_of draw_liquid] ^from "./registry.gene")
+(import [content_ignore abs_f64] ^from "./world.gene")
+(import [World node_at world_min_y] ^from "./loaded.gene")
 
 # --- the player's shape ------------------------------------------------------
 #

@@ -3,8 +3,8 @@
 (import [InstanceState ReconcileMode RuntimeOptions LoaderOptions
          Requirement PluginSpec CompositionError
          invocation_limits default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [LoadedValue loaded_key] from "../fixtures/contract")
+  ^from "../src/cordis")
+(import [LoadedValue loaded_key] ^from "../fixtures/contract")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

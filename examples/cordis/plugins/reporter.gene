@@ -1,7 +1,7 @@
 (mod reporter_plugin)
 
-(import [PluginSpec Requirement] from "../src/plugin_api")
-(import [Clock clock_key] from "../src/demo_contract")
+(import [PluginSpec Requirement] ^from "../src/plugin_api")
+(import [Clock clock_key] ^from "../src/demo_contract")
 
 (fn activate [ctx, config]
   (var clock (ctx .require clock_key))

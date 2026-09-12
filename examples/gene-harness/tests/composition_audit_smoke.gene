@@ -1,10 +1,10 @@
 (mod composition_audit_smoke)
 
-(import [new_harness] from "../src/kernel")
-(import [open_event_store events_for close_event_store] from "../src/state")
+(import [new_harness] ^from "../src/kernel")
+(import [open_event_store events_for close_event_store] ^from "../src/state")
 (import [open_workspace register_module run_workspace_turn
          composition_entries close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -12,8 +12,8 @@
 (fn source [value : Str]
   `(mod plugin
      (import [Plugin DescriptorContext PluginContext PluginHost]
-       from "../../../src/plugin_api")
-     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       ^from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
      (fn init [ctx : DescriptorContext] : Plugin
        ^capabilities []
        (Plugin ^id "audit" ^provides ["Audit"] ^requires []

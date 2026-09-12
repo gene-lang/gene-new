@@ -18,9 +18,9 @@
          record_composition_change
          flush_harness hydrate_harness_log
          contribute row rows remove_owner module_dir]
-  from "./kernel")
-(import [validate_event_catalog repair_interrupted_turns] from "./state")
-(import [current_interfaces] from "./interface_policy")
+  ^from "./kernel")
+(import [validate_event_catalog repair_interrupted_turns] ^from "./state")
+(import [current_interfaces] ^from "./interface_policy")
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
@@ -252,18 +252,17 @@
     (var form source/body/%i)
     (var kind ($to_str ($head form)))
     (if_yes (["import" "import_impl"] .contains? kind)
-      (for part in form/body
-        (if_yes (== ($head part) Str)
-          (var path ($to_str part))
-          (if (== path "../../../src/kernel")
-            (if_not (== kind "import_impl")
+      (var path form/from)
+      (if_yes (== ($head path) Str)
+        (if (== path "../../../src/kernel")
+          (if_not (== kind "import_impl")
+            (fail (CompositionError
+              ^message "generated modules may import only PluginHost impl identity from kernel")))
+          (if_not (["../../../src/plugin_api" "../../../src/seams"] .contains? path)
+            (var digest (relative_import_digest path))
+            (if (|| (== digest nil) (! (closure .contains? digest)))
               (fail (CompositionError
-                ^message "generated modules may import only PluginHost impl identity from kernel")))
-            (if_not (["../../../src/plugin_api" "../../../src/seams"] .contains? path)
-              (var digest (relative_import_digest path))
-              (if (|| (== digest nil) (! (closure .contains? digest)))
-                (fail (CompositionError
-                  ^message $"generated import is outside its dependency closure: ${path}"))))))))
+                ^message $"generated import is outside its dependency closure: ${path}")))))))
     (set i (+ i 1)))
   source)
 

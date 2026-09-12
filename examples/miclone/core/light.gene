@@ -46,7 +46,7 @@
 
 (mod light ^profile web)
 
-(import [Registry propagates_light? light_source_of] from "./registry.gene")
+(import [Registry propagates_light? light_source_of] ^from "./registry.gene")
 
 (let light_max 15.0)
 

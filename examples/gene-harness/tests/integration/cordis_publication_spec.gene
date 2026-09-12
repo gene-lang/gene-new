@@ -1,10 +1,10 @@
 (mod cordis_publication_spec)
 (import $test [describe it])
-(import [Plugin PluginHost PluginContext] from "../../src/plugin_api")
-(import_impl PluginHost for PluginContext from "../../src/kernel")
-(import [new_harness registry row row_record resolve make_cordis_registry_host] from "../../src/kernel")
-(import [new_composition] from "../../src/cordis_adapter")
-(import [RecoveryRequired] from "." ^pkg "cordis")
+(import [Plugin PluginHost PluginContext] ^from "../../src/plugin_api")
+(import_impl PluginHost for PluginContext ^from "../../src/kernel")
+(import [new_harness registry row row_record resolve make_cordis_registry_host] ^from "../../src/kernel")
+(import [new_composition] ^from "../../src/cordis_adapter")
+(import [RecoveryRequired] ^from "." ^pkg "cordis")
 
 (fn search_plugin [version : Int, broken : Bool = false, probe = nil, cleanup = nil]
   (Plugin ^id "search" ^provides [] ^requires [] ^contextual true

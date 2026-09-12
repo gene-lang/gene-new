@@ -62,9 +62,9 @@
 
 (mod loaded ^profile web)
 
-(import [content_air content_ignore] from "./world.gene")
-(import [light_max] from "./light.gene")
-(import [chunk_base] from "./mesh.gene")
+(import [content_air content_ignore] ^from "./world.gene")
+(import [light_max] ^from "./light.gene")
+(import [chunk_base] ^from "./mesh.gene")
 
 (let block_dim 16.0)
 

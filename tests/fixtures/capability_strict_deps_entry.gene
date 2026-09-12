@@ -3,7 +3,7 @@
   ^require_strict_dependencies true
   ^capabilities [fs/*])
 
-(import [attempt] from "./capability_ceiling_dep.gene")
+(import [attempt] ^from "./capability_ceiling_dep.gene")
 
 (fn main []
   ^capabilities *

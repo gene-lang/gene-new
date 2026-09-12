@@ -40,36 +40,36 @@
 # private imports. A mod can use one API module, and the sandbox needs to share
 # that one module rather than expose each registry's implementation surface.
 (import [draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
-         draw_liquid] from "./registry.gene" ^export true)
-(import [tile_solid tile_ore tile_overlay] from "./tiles.gene" ^export true)
-(import [shape_scatter shape_sheet shape_blob] from "./ore.gene" ^export true)
-(import [abm_on_change abm_sampled] from "./abm.gene" ^export true)
-(import [World] from "./loaded.gene" ^export true)
+         draw_liquid] ^from "./registry.gene" ^export true)
+(import [tile_solid tile_ore tile_overlay] ^from "./tiles.gene" ^export true)
+(import [shape_scatter shape_sheet shape_blob] ^from "./ore.gene" ^export true)
+(import [abm_on_change abm_sampled] ^from "./abm.gene" ^export true)
+(import [World] ^from "./loaded.gene" ^export true)
 
-(import [Registry new_registry register id_of] from "./registry.gene")
-(import [content_unknown world_limit] from "./world.gene")
-(import [TileRegistry new_tiles add_tile tile_id] from "./tiles.gene")
-(import [BiomeRegistry register_biome] from "./biome.gene")
+(import [Registry new_registry register id_of] ^from "./registry.gene")
+(import [content_unknown world_limit] ^from "./world.gene")
+(import [TileRegistry new_tiles add_tile tile_id] ^from "./tiles.gene")
+(import [BiomeRegistry register_biome] ^from "./biome.gene")
 (import [OreRegistry register_ore]
-        from "./ore.gene")
-(import [DropTable new_drop_table register_drop] from "./drops.gene")
+        ^from "./ore.gene")
+(import [DropTable new_drop_table register_drop] ^from "./drops.gene")
 (import [AbmRegistry new_abms add_abm queue_node]
-        from "./abm.gene")
-(import [DecorRegistry new_decors add_decor] from "./decor.gene")
-(import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
+        ^from "./abm.gene")
+(import [DecorRegistry new_decors add_decor] ^from "./decor.gene")
+(import [CraftRegistry new_crafts add_recipe] ^from "./craft.gene")
 (import [EntityRegistry new_entities add_entity_def entity_x entity_y entity_z
          move_entity despawn entity_alive? no_step no_activate]
-        from "./entity.gene")
+        ^from "./entity.gene")
 (import [FormRegistry new_forms add_form add_element form_count
          el_label el_item el_box el_button]
-        from "./formspec.gene")
-(import [ContainerStore new_containers] from "./container.gene")
-(import [node_at] from "./loaded.gene")
+        ^from "./formspec.gene")
+(import [ContainerStore new_containers] ^from "./container.gene")
+(import [node_at] ^from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
-        from "./groups.gene")
+        ^from "./groups.gene")
 (import [ItemRegistry new_items add_item add_tool_cap item_named item_of_node
          no_item no_node default_stack_max]
-        from "./item.gene")
+        ^from "./item.gene")
 
 # --- the game a mod registers into --------------------------------------------
 #

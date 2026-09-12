@@ -2,9 +2,9 @@
 
 (import [RuntimeOptions LoaderOptions CompositionError invocation_limits
          default_plugin_invoker new_runtime]
-  from "../src/cordis")
-(import [include_file] from "../src/include")
-(import [LoadedValue loaded_key] from "../fixtures/contract")
+  ^from "../src/cordis")
+(import [include_file] ^from "../src/include")
+(import [LoadedValue loaded_key] ^from "../fixtures/contract")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

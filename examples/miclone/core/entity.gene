@@ -54,7 +54,7 @@
 # imports it and nothing else: a callback's signature has to name it, and
 # naming `Game` instead would close an import cycle through `core/api.gene`.
 # What the mod needs beyond the world, it captures.
-(import [World] from "./loaded.gene")
+(import [World] ^from "./loaded.gene")
 
 (let max_entities 256.0)
 (let max_entity_defs 32.0)

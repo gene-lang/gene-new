@@ -7,7 +7,7 @@
 (mod render ^profile web)
 
 (import [mat4_identity mat4_perspective mat4_view mat4_multiply]
-        from "../core/vec.gene")
+        ^from "../core/vec.gene")
 
 # --- shaders -----------------------------------------------------------------
 #
@@ -24,7 +24,7 @@
 # cycle free.
 
 (import [vertex_source : shared_vertex fragment_source : shared_fragment]
-        from "../core/shaders.gene")
+        ^from "../core/shaders.gene")
 
 (fn vertex_source [] : Str
   (shared_vertex "#version 300 es\nprecision highp float;"))

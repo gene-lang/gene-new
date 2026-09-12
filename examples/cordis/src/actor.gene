@@ -3,8 +3,8 @@
 
 (mod actor)
 
-(import [PluginCallKind] from "./model")
-(import [invoke_effect_owner spawn_effect_call] from "./runtime")
+(import [PluginCallKind] ^from "./model")
+(import [invoke_effect_owner spawn_effect_call] ^from "./runtime")
 
 (type GuardedActorHandler
   ^private true

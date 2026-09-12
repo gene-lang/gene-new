@@ -17,7 +17,7 @@
 
 (mod web_inventory_spec ^profile web)
 
-(import [report failures] from "./inventory_spec.gene")
+(import [report failures] ^from "./inventory_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

@@ -1,8 +1,8 @@
 (mod descriptor_context_smoke)
 
 (import [open_workspace register_module composition_revision close_workspace]
-  from "../src/workspace")
-(import [new_harness] from "../src/kernel")
+  ^from "../src/workspace")
+(import [new_harness] ^from "../src/kernel")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -14,8 +14,8 @@
     (quote
       (mod plugin
         (import [Plugin DescriptorContext PluginContext PluginHost]
-          from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+          ^from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
         (fn init [ctx : DescriptorContext] : Plugin
           ^capabilities []
           # Descriptor construction must not inspect the live registry.

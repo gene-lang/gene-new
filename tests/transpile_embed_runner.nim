@@ -295,7 +295,7 @@ rejects("authored_import", """
 (mod embed_host)
 
 (web_module widget
-  (import [helper] from "./helper.gene")
+  (import [helper] ^from "./helper.gene")
 
   (fn on_click [event : Any] : Void void)
 

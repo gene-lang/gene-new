@@ -2,12 +2,12 @@
 (import $test [describe it])
 (import $fs [make_dir write_text])
 (import $crypto [random_hex sha256])
-(import [LoaderOptions] from "." ^pkg "cordis")
+(import [LoaderOptions] ^from "." ^pkg "cordis")
 (import [new_harness resolve describe_plugin_module configure_plugin_module
-         make_cordis_registry_host default_execution_limits] from "../../src/kernel")
-(import [new_composition] from "../../src/cordis_adapter")
-(import [HarnessPrompt] from "../../src/seams")
-(import [open_event_store close_event_store plugin_state] from "../../src/state")
+         make_cordis_registry_host default_execution_limits] ^from "../../src/kernel")
+(import [new_composition] ^from "../../src/cordis_adapter")
+(import [HarnessPrompt] ^from "../../src/seams")
+(import [open_event_store close_event_store plugin_state] ^from "../../src/state")
 
 (fn fixture_root []
   (let root $"${this_pkg/root}/plugins/generated/cordis-${(random_hex 8)}")
@@ -37,8 +37,8 @@
 (fn value_source [version : Int]
   `(mod plugin
      (import [Plugin DescriptorContext PluginContext PluginHost]
-       from "../../../src/plugin_api")
-     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       ^from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
      (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
        (Plugin ^id "generated" ^provides ["Generated"] ^requires [] ^contextual true
          ^activate (fn [] (fn [host]
@@ -54,8 +54,8 @@
     (let source
       `(mod plugin
          (import [Plugin DescriptorContext PluginContext PluginHost]
-           from "../../../src/plugin_api")
-         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+           ^from "../../../src/plugin_api")
+         (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
          (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
            (Plugin ^id "generated" ^provides ["Counter"] ^requires [] ^contextual true
              ^activate (fn [] (fn [host]
@@ -93,9 +93,9 @@
       `(mod plugin
          (import $fs [read_text])
          (import [Plugin DescriptorContext PluginContext PluginHost]
-           from "../../../src/plugin_api")
-         (import [HarnessPrompt] from "../../../src/seams")
-         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+           ^from "../../../src/plugin_api")
+         (import [HarnessPrompt] ^from "../../../src/seams")
+         (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
          (type Reader)
          (impl HarnessPrompt for Reader
            (message handle [h, path : Str] : Str (read_text path)))
@@ -152,8 +152,8 @@
       `(mod plugin
          (import $fs [read_text])
          (import [Plugin DescriptorContext PluginContext PluginHost]
-           from "../../../src/plugin_api")
-         (import_impl PluginHost for PluginContext from "../../../src/kernel")
+           ^from "../../../src/plugin_api")
+         (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
          (fn init [ctx : DescriptorContext] : Plugin ^capabilities []
            (Plugin ^id "generated" ^provides ["Read"] ^requires [] ^contextual true
              ^activate (fn [] (fn [host]

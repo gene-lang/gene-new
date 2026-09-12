@@ -2,9 +2,9 @@
 
 (mod recording_view)
 
-(import [Plugin PluginContext PluginHost HarnessLog] from "./kernel")
-(import_impl PluginHost for PluginContext from "./kernel")
-(import [HarnessView view_provider] from "./view_api")
+(import [Plugin PluginContext PluginHost HarnessLog] ^from "./kernel")
+(import_impl PluginHost for PluginContext ^from "./kernel")
+(import [HarnessView view_provider] ^from "./view_api")
 
 (type RecordingView ^props {^lines Any})
 

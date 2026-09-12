@@ -17,18 +17,18 @@
 #
 # demo.gene is the tour — it walks the kernel's properties one at a time.
 
-(import [profile_named] from "./profiles")
-(import [boot plugin_names] from "./profile")
-(import [report_of] from "./profiles/common")
-(import [ask] from "./agent")
+(import [profile_named] ^from "./profiles")
+(import [boot plugin_names] ^from "./profile")
+(import [report_of] ^from "./profiles/common")
+(import [ask] ^from "./agent")
 (import [new_harness plugin_states bound_seams lifecycle_log status_of
          seam_bound resolve row module_dir shutdown_harness]
-  from "./kernel")
-(import [open_event_store close_event_store] from "./state")
+  ^from "./kernel")
+(import [open_event_store close_event_store] ^from "./state")
 (import [open_workspace prepare_workspace activate_workspace_plan
          doctor disable_entry enable_entry close_workspace]
-  from "./workspace")
-(import [HarnessView] from "./view_api")
+  ^from "./workspace")
+(import [HarnessView] ^from "./view_api")
 (import $os [get_env])
 (import $fs [make_dir real_path])
 

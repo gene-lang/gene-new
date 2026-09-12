@@ -348,8 +348,8 @@ suite "package manager — format 1 workspace graph":
       writePackageFile(root / dir / "src/index.gene",
         "(var answer " & $answer & ")")
     writePackageFile(root / "app/src/main.gene", """
-(import [answer : one] from "." ^pkg "c_v1")
-(import [answer : two] from "." ^pkg "c_v2")
+(import [answer : one] ^from "." ^pkg "c_v1")
+(import [answer : two] ^from "." ^pkg "c_v2")
 (var answers [one two])
 """)
 
@@ -443,7 +443,7 @@ suite "package manager — format 1 workspace graph":
  ^dependencies {^dep (dep "acme/dep" "1.0.0" ^path "../dep")}}
 """)
     writePackageFile(root / "app/src/main.gene",
-      "(import [secret] from \"secret\" ^pkg \"dep\")")
+      "(import [secret] ^from \"secret\" ^pkg \"dep\")")
     writePackageFile(root / "dep/package.gene", """
 {^format 1 ^name "acme/dep" ^version "1.0.0"
  ^library {^entry "lib/index.gene"}}

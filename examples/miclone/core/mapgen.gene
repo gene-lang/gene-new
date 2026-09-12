@@ -46,16 +46,16 @@
 
 (mod mapgen ^profile web)
 
-(import [fbm2] from "./noise.gene")
+(import [fbm2] ^from "./noise.gene")
 (import [lattice_origin lattice_dim sample_lattice lattice_value]
-        from "./field.gene")
+        ^from "./field.gene")
 (import [BiomeRegistry biome_at cover_depth top_depth top_node filler_node
          stone_node underwater_node]
-        from "./biome.gene")
-(import [DecorRegistry decor_count decor_here? decor_height decor_trunk decor_leaf decor_leaf_at? decor_margin] from "./decor.gene")
-(import [OreRegistry place_all] from "./ore.gene")
-(import [carve] from "./cave.gene")
-(import [light_max] from "./light.gene")
+        ^from "./biome.gene")
+(import [DecorRegistry decor_count decor_here? decor_height decor_trunk decor_leaf decor_leaf_at? decor_margin] ^from "./decor.gene")
+(import [OreRegistry place_all] ^from "./ore.gene")
+(import [carve] ^from "./cave.gene")
+(import [light_max] ^from "./light.gene")
 
 # --- block geometry ----------------------------------------------------------
 

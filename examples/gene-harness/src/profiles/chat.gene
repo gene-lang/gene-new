@@ -16,13 +16,13 @@
 
 (mod chat)
 
-(import [Profile] from "../profile")
-(import [ExecutionLimits] from "../plugin_api")
-(import [reporter_plugin] from "./common")
-(import [cli_fs_plugin cli_render_plugin] from "./cli")
-(import [llm_agent_plugin model_codegen_plugin] from "../llm")
-(import [command_plugin] from "../agent")
-(import [driver_plugin] from "../repl")
+(import [Profile] ^from "../profile")
+(import [ExecutionLimits] ^from "../plugin_api")
+(import [reporter_plugin] ^from "./common")
+(import [cli_fs_plugin cli_render_plugin] ^from "./cli")
+(import [llm_agent_plugin model_codegen_plugin] ^from "../llm")
+(import [command_plugin] ^from "../agent")
+(import [driver_plugin] ^from "../repl")
 
 (fn chat_profile [] : Profile
   # The one place this deployment differs from `cli` beyond its two providers.

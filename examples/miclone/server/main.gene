@@ -39,23 +39,23 @@
 (import $net/http [Server serve listen ws_accept ws_send ws_close])
 (import $os [get_env Env])
 (import [Registry registered_count id_of opens_form_of]
-        from "../core/registry.gene")
-(import [Game] from "../core/api.gene")
-(import [TileRegistry] from "../core/tiles.gene")
-(import [load_mods_from_disk] from "./mods_runtime.gene")
-(import [generate_block] from "../core/mapgen.gene")
+        ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [TileRegistry] ^from "../core/tiles.gene")
+(import [load_mods_from_disk] ^from "./mods_runtime.gene")
+(import [generate_block] ^from "../core/mapgen.gene")
 (import [World new_world store_block store_light extract_block block_base
          open_sky node_at
          world_dx world_dy world_dz world_stride_z world_nodes
          world_min_x world_min_y world_min_z]
-        from "../core/loaded.gene")
+        ^from "../core/loaded.gene")
 (import [WorldStore open_world close_world world_exists? write_meta
          put_block get_block has_block? block_count stored_bytes
          begin_batch commit_batch]
-        from "./storage.gene")
-(import [light_region queue_overhead] from "../core/light.gene")
-(import [new_bounds apply_node diggable? placeable?] from "../core/edit.gene")
-(import [find_spawn] from "../core/physics.gene")
+        ^from "./storage.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
+(import [new_bounds apply_node diggable? placeable?] ^from "../core/edit.gene")
+(import [find_spawn] ^from "../core/physics.gene")
 (import [AbmRegistry abm_count abm_trigger abm_action abm_group abm_interval
          abm_chance abm_due
          set_abm_due queued_count queued_x queued_y queued_z queued_id
@@ -64,29 +64,29 @@
          queue_node abm_on_change abm_sampled
          queue_check check_count check_x_at check_y_at check_z_at
          clear_checks]
-        from "../core/abm.gene")
-(import [GroupRegistry rating_of] from "../core/groups.gene")
+        ^from "../core/abm.gene")
+(import [GroupRegistry rating_of] ^from "../core/groups.gene")
 (import [ContainerStore new_containers container_at container_row
          container_inventory container_slot_count container_live]
-        from "../core/container.gene")
+        ^from "../core/container.gene")
 (import [FormRegistry form_named action_element form_count]
-        from "../core/formspec.gene")
+        ^from "../core/formspec.gene")
 (import [CraftRegistry first_craftable apply_craft recipe_count recipe_output]
-        from "../core/craft.gene")
+        ^from "../core/craft.gene")
 (import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
          entity_count entity_x entity_y entity_z spawn_item despawn
          within_pickup? live_entities slot_of_id
          spawn_player entity_is_player? entity_kind entity_player move_entity
          entity_def_step entity_def_of entity_def_activate entity_def_named]
-        from "../core/entity.gene")
+        ^from "../core/entity.gene")
 
 (import [new_inventory add add_at take slot_item slot_count slot_empty?
          slots_of]
-        from "../core/inventory.gene")
-(import [drop_item drop_count] from "../core/drops.gene")
+        ^from "../core/inventory.gene")
+(import [drop_item drop_count] ^from "../core/drops.gene")
 (import [ItemRegistry item_node placeable_item? item_of_node item_name]
-        from "../core/item.gene")
-(import [new_cursor] from "../core/wire.gene")
+        ^from "../core/item.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind msg_input msg_dig msg_place msg_request_blocks msg_craft
          hello_size encode_hello
          registry_size encode_registry
@@ -105,7 +105,7 @@
          edit_at_x edit_at_y edit_at_z
          new_input decode_input in_x in_y in_z
          new_request decode_request_blocks req_from req_count]
-        from "../core/protocol.gene")
+        ^from "../core/protocol.gene")
 
 (let seed 1337.0)
 (let block_dim 16)

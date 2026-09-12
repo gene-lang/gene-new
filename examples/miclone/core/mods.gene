@@ -38,8 +38,8 @@
 
 (mod mods ^profile web)
 
-(import [Game new_game] from "./api.gene")
-(import [register_all] from "../mods/default/src/default.gene")
+(import [Game new_game] ^from "./api.gene")
+(import [register_all] ^from "../mods/default/src/default.gene")
 
 # The game, registered. Called once per process, before anything reads a
 # content id — which is every caller's first line, because §2 assigns ids at

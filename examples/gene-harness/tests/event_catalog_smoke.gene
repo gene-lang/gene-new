@@ -2,8 +2,8 @@
 
 (import [HarnessStateError open_event_store append_event flush_event_store
          events_for validate_event_catalog close_event_store]
-  from "../src/state")
-(import [core_event_types] from "../src/generated_event_catalog")
+  ^from "../src/state")
+(import [core_event_types] ^from "../src/generated_event_catalog")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

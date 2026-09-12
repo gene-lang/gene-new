@@ -3,8 +3,8 @@
 (import [Plugin PluginContext PluginHost ExecutionLimits HarnessLog
          new_harness install_with_policy invoke_registry_row contribute row
          publish uninstall status_of resolve]
-  from "../src/kernel")
-(import_impl PluginHost for PluginContext from "../src/kernel")
+  ^from "../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../src/kernel")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

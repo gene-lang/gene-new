@@ -10,11 +10,11 @@
 
 (mod profiles)
 
-(import [Profile] from "./profile")
-(import [HarnessError] from "./kernel")
-(import [cli_profile] from "./profiles/cli")
-(import [web_profile] from "./profiles/web")
-(import [chat_profile] from "./profiles/chat")
+(import [Profile] ^from "./profile")
+(import [HarnessError] ^from "./kernel")
+(import [cli_profile] ^from "./profiles/cli")
+(import [web_profile] ^from "./profiles/web")
+(import [chat_profile] ^from "./profiles/chat")
 
 (fn profile_names [] : Any
   ["cli" "web" "chat"])

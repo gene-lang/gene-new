@@ -8,11 +8,11 @@
 
 (import [Plugin PluginContext PluginHost new_harness install
          invoke_registry_row status_of]
-  from "../src/kernel")
-(import_impl PluginHost for PluginContext from "../src/kernel")
-(import [HarnessCodegen codegen_provider] from "../src/seams")
-(import [command_plugin template_codegen_plugin build_tool] from "../src/agent")
-(import [open_workspace close_workspace] from "../src/workspace")
+  ^from "../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../src/kernel")
+(import [HarnessCodegen codegen_provider] ^from "../src/seams")
+(import [command_plugin template_codegen_plugin build_tool] ^from "../src/agent")
+(import [open_workspace close_workspace] ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))
@@ -25,8 +25,8 @@
     # a legal module, not a faithful one, and the consumer cannot tell.
     `(mod plugin
        (import [Plugin DescriptorContext PluginContext PluginHost]
-         from "../../../src/plugin_api")
-       (import_impl PluginHost for PluginContext from "../../../src/kernel")
+         ^from "../../../src/plugin_api")
+       (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
        (fn run [arg] : Str "written by the stub")
        (fn init [ctx : DescriptorContext] : Plugin
          ^capabilities []

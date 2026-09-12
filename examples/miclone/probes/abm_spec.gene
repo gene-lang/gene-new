@@ -30,18 +30,18 @@
          queue_check check_count check_x_at check_y_at check_z_at clear_checks
          gcd walk_stride sample_index sample_x sample_y sample_z
          chance_passes?]
-        from "../core/abm.gene")
-(import [World new_world] from "../core/loaded.gene")
+        ^from "../core/abm.gene")
+(import [World new_world] ^from "../core/loaded.gene")
 (import [SeenEntities new_seen apply_entity seen_rows seen_live seen_alive?
          seen_id seen_x seen_y seen_z seen_item seen_count row_of
          seen_item_total seen_kind]
-        from "../core/seen.gene")
+        ^from "../core/seen.gene")
 (import [EntityRegistry new_entities add_entity_def entity_def_count
          entity_def_named entity_def_of entity_def_step entity_def_activate
          no_step no_activate entity_item entity_player
          spawn_item despawn slot_of_id entity_alive? move_entity
          entity_x entity_y entity_z]
-        from "../core/entity.gene")
+        ^from "../core/entity.gene")
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)

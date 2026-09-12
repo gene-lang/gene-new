@@ -14,7 +14,7 @@
 
 (mod plugin)
 
-(import [HarnessFs] from "../../src/seams")
+(import [HarnessFs] ^from "../../src/seams")
 
 (type StubFs)
 

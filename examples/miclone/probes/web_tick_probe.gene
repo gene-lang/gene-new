@@ -21,7 +21,7 @@
 
 (mod web_tick_probe ^profile web)
 
-(import [new_cursor] from "../core/wire.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
          new_hello decode_hello hello_bx hello_by hello_bz
          hello_span_x hello_span_y hello_span_z
@@ -30,9 +30,9 @@
          new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
          size_request_blocks encode_request_blocks
          size_dig encode_dig]
-        from "../core/protocol.gene")
-(import [Registry new_wire_registry id_of] from "../core/registry.gene")
-(import [World new_world store_block node_at] from "../core/loaded.gene")
+        ^from "../core/protocol.gene")
+(import [Registry new_wire_registry id_of] ^from "../core/registry.gene")
+(import [World new_world store_block node_at] ^from "../core/loaded.gene")
 
 (let block_dim 16.0)
 (let block_nodes 4096.0)

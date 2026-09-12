@@ -1,7 +1,7 @@
 (mod capability_ceiling_entry
   ^capabilities [fs/*])
 
-(import [attempt] from "./capability_ceiling_dep.gene")
+(import [attempt] ^from "./capability_ceiling_dep.gene")
 
 (fn main []
   ^capabilities *

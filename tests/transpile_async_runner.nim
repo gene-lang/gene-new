@@ -41,7 +41,7 @@ writeFile(producerPath, """
 let consumerPath = workDir / "cancel_consumer.gene"
 writeFile(consumerPath, """
 (mod cancel_consumer ^profile web)
-(import [cancelled_work] from "./cancel_producer.gene")
+(import [cancelled_work] ^from "./cancel_producer.gene")
 (js/fn mark2 [] : Void ^from "./async_host.mjs")
 (fn guarded [] : Int
   (try

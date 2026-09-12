@@ -34,25 +34,25 @@
          propagates_light? merges_same? opens_form_of
          light_source_of tile_top_of tile_side_of
          tile_bottom_of register max_content]
-        from "./registry.gene")
+        ^from "./registry.gene")
 (import [FormRegistry form_count element_count form_name_of form_title
          form_cols form_rows form_len add_form add_element
          element_kind element_x element_y element_w element_h
          element_text element_action]
-        from "./formspec.gene")
+        ^from "./formspec.gene")
 (import [ItemRegistry item_count item_name item_description item_node
          item_stack_max add_item]
-        from "./item.gene")
+        ^from "./item.gene")
 (import [TileRegistry tile_count tile_name tile_kind
          tile_r tile_g tile_b tile_spread tile_seed
          tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
          tile_density add_tile]
-        from "./tiles.gene")
+        ^from "./tiles.gene")
 (import [new_cursor cursor_at reset remaining exhausted? byte_len
          read_u8 read_u16 read_u32 read_i32
          write_u8 write_u16 write_u32 write_i32
          read_str write_str str_size]
-        from "./wire.gene")
+        ^from "./wire.gene")
 
 # --- version -----------------------------------------------------------------
 #

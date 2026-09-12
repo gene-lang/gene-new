@@ -13,14 +13,14 @@
 
 (import [Plugin DescriptorContext PluginContext PluginHost
          ExecutionLimits default_execution_limits]
-  from "./plugin_api" ^export true)
+  ^from "./plugin_api" ^export true)
 (import [append_core_event append_plugin_event
          record_plugin_state plugin_state events_for flush_event_store]
-  from "./state")
-(import [core_event_types] from "./generated_event_catalog")
-(import [HarnessView view_provider] from "./view_api")
-(import [RegistryHost retain_callback new_composition] from "./cordis_adapter")
-(import [LoaderOptions] from "." ^pkg "cordis")
+  ^from "./state")
+(import [core_event_types] ^from "./generated_event_catalog")
+(import [HarnessView view_provider] ^from "./view_api")
+(import [RegistryHost retain_callback new_composition] ^from "./cordis_adapter")
+(import [LoaderOptions] ^from "." ^pkg "cordis")
 
 (type HarnessError ^props {^message Str} ^impl [Error])
 

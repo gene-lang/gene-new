@@ -14,8 +14,8 @@
 
 (mod wire_bench)
 
-(import [new_cursor] from "../core/wire.gene")
-(import [block_size encode_block] from "../core/protocol.gene")
+(import [new_cursor] ^from "../core/wire.gene")
+(import [block_size encode_block] ^from "../core/protocol.gene")
 
 (fn build_layered [content : (Buffer F32) light : (Buffer F32)] : Nil
   # Layered, like real terrain: runs span rows, which is the case the encoder

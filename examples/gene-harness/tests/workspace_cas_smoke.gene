@@ -3,7 +3,7 @@
 (import [CompositionConflict open_workspace refresh_workspace
          composition_revision composition_entries commit_composition
          close_workspace]
-  from "../src/workspace")
+  ^from "../src/workspace")
 
 (fn assert [condition, message : Str]
   (if_not condition ($panic message)))

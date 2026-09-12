@@ -385,7 +385,7 @@
     {
       "id": "errors.imported_builtin_typed_catch",
       "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $err/message)) (reason)",
-      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $err/message))",
+      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] ^from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $err/message))",
       "web_files": {
         "fixture_div_dep.gene": "(mod fixture_div_dep ^profile web)\n(fn q [a : Int b : Int] : Int (/ a b))\n"
       },
@@ -457,7 +457,7 @@
     {
       "id": "module.imported_node_prop",
       "source": "(fn make [] : Node (quote (card ^title \"hello\"))) (let n (make)) n/title",
-      "web_source": "(mod imported_node_prop ^profile web) (import [make] from \"./fixture_node_dep.gene\") (fn run [] : Any (let n (make)) n/title)",
+      "web_source": "(mod imported_node_prop ^profile web) (import [make] ^from \"./fixture_node_dep.gene\") (fn run [] : Any (let n (make)) n/title)",
       "web_files": {
         "fixture_node_dep.gene": "(mod fixture_node_dep ^profile web)\n(fn make [] : Node (quote (card ^title \"hello\")))\n"
       },
@@ -582,7 +582,7 @@
     {
       "id": "module.relative_import",
       "source": "(fn invert [value : Bool] : Bool (! value)) (invert false)",
-      "web_source": "(mod module_relative_import ^profile web) (import [invert] from \"./fixture_import_dep.gene\") (fn run [] : Bool (invert false))",
+      "web_source": "(mod module_relative_import ^profile web) (import [invert] ^from \"./fixture_import_dep.gene\") (fn run [] : Bool (invert false))",
       "web_files": {
         "fixture_import_dep.gene": "(mod fixture_import_dep ^profile web) (fn invert [value : Bool] : Bool (! value))"
       },
@@ -624,7 +624,7 @@
     {
       "id": "module.declaration_imports",
       "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child : Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
-      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] from \"./fixture_decl_dep.gene\") (type Child : Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
+      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] ^from \"./fixture_decl_dep.gene\") (type Child : Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
       "web_files": {
         "fixture_decl_dep.gene": "(mod fixture_decl_dep ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (enum Choice none (some Int))"
       },
@@ -657,7 +657,7 @@
     {
       "id": "macro.relative_import",
       "source": "(macro invert_value [value] `(! %value)) (invert_value false)",
-      "web_source": "(mod macro_relative_import ^profile web) (import [invert_value] from \"./fixture_macro_dep.gene\") (fn run [] : Bool (invert_value false))",
+      "web_source": "(mod macro_relative_import ^profile web) (import [invert_value] ^from \"./fixture_macro_dep.gene\") (fn run [] : Bool (invert_value false))",
       "web_files": {
         "fixture_macro_dep.gene": "(mod fixture_macro_dep ^profile web) (macro invert_value [value] `(! %value))"
       },
@@ -940,7 +940,7 @@
     {
       "id": "errors.imported_checked_row",
       "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (try (raise_app) catch AppError $err/message)",
-      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch AppError $err/message))",
+      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] ^from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch AppError $err/message))",
       "web_files": {
         "fixture_error_dep.gene": "(mod fixture_error_dep ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError)"
       },
@@ -1189,7 +1189,7 @@
     {
       "id": "async.imported_composed_call",
       "source": "(fn inner [] : Int (scope (let task (spawn 42)) (await task))) (fn run [] : Int (inner)) (run)",
-      "web_source": "(mod async_imported_composed ^profile web) (import [inner] from \"./fixture_async_dep.gene\") (fn run [] : Int (inner))",
+      "web_source": "(mod async_imported_composed ^profile web) (import [inner] ^from \"./fixture_async_dep.gene\") (fn run [] : Int (inner))",
       "web_files": {
         "fixture_async_dep.gene": "(mod fixture_async_dep ^profile web)\n(fn inner [] : Int (scope (let task (spawn 42)) (await task)))\n"
       },
@@ -1935,7 +1935,7 @@
     {
       "id": "named_params.imported",
       "source": "(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (mix 1 ^b 2 ^a 3)",
-      "web_source": "(mod named_params_imported ^profile web) (import [mix] from \"./fixture_named_dep.gene\") (fn run [] : Int (mix 1 ^b 2 ^a 3))",
+      "web_source": "(mod named_params_imported ^profile web) (import [mix] ^from \"./fixture_named_dep.gene\") (fn run [] : Int (mix 1 ^b 2 ^a 3))",
       "web_files": {
         "fixture_named_dep.gene": "(mod fixture_named_dep ^profile web)\n(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100))))\n"
       },
@@ -2787,7 +2787,7 @@
     {
       "id": "named.default_definition_scope",
       "source": "(let factor 2) (fn f [^scale : Int = factor] : Int scale) (fn run [] : Int (let factor 99) (f)) (run)",
-      "web_source": "(mod default_scope ^profile web) (import [f] from \"./provider.gene\") (let factor 99) (fn run [] : Int (f))",
+      "web_source": "(mod default_scope ^profile web) (import [f] ^from \"./provider.gene\") (let factor 99) (fn run [] : Int (f))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -2820,10 +2820,10 @@
     {
       "id": "modules.explicit_reexports",
       "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (+ count (read (make)))) (run)",
-      "web_source": "(mod reexports ^profile web) (import [Point Value count make read scale] from \"./facade.gene\") (fn run [] : Int (+ count (read (make))))",
+      "web_source": "(mod reexports ^profile web) (import [Point Value count make read scale] ^from \"./facade.gene\") (fn run [] : Int (+ count (read (make))))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
-        "facade.gene": "(mod facade ^profile web) (import [Point Value count make read scale] from \"./provider.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [Point Value count make read scale] ^from \"./provider.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -2839,11 +2839,11 @@
     {
       "id": "modules.reexport_aliases_and_chain",
       "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (+ count (read (make)))) (run)",
-      "web_source": "(mod aliases ^profile web) (import [PublicPoint Value amount build inspect] from \"./outer.gene\") (fn run [] : Int (+ amount (inspect (build))))",
+      "web_source": "(mod aliases ^profile web) (import [PublicPoint Value amount build inspect] ^from \"./outer.gene\") (fn run [] : Int (+ amount (inspect (build))))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
-        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
-        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] ^from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] ^from \"./facade.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -2859,11 +2859,11 @@
     {
       "id": "modules.reexport_protocol_identity",
       "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int ((Point ^x 9) .Value:value)) (run)",
-      "web_source": "(mod identity ^profile web) (import [PublicPoint Value] from \"./outer.gene\") (fn run [] : Int ((PublicPoint ^x 9) .Value:value))",
+      "web_source": "(mod identity ^profile web) (import [PublicPoint Value] ^from \"./outer.gene\") (fn run [] : Int ((PublicPoint ^x 9) .Value:value))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
-        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
-        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] ^from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] ^from \"./facade.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -2879,11 +2879,11 @@
     {
       "id": "modules.reexport_default_scope",
       "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (let count 99) (scale)) (run)",
-      "web_source": "(mod default_reexport ^profile web) (import [scale] from \"./outer.gene\") (let count 99) (fn run [] : Int (scale))",
+      "web_source": "(mod default_reexport ^profile web) (import [scale] ^from \"./outer.gene\") (let count 99) (fn run [] : Int (scale))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
-        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
-        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] ^from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] ^from \"./facade.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -2899,10 +2899,10 @@
     {
       "id": "modules.imported_constant_identity",
       "source": "(const values #[1 2]) (fn get [] : (List Int) values) (fn run [] : Bool (same? values (get))) (run)",
-      "web_source": "(mod constant_identity ^profile web) (import [values get] from \"./facade.gene\") (fn run [] : Bool (same? values (get)))",
+      "web_source": "(mod constant_identity ^profile web) (import [values get] ^from \"./facade.gene\") (fn run [] : Bool (same? values (get)))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (const values #[1 2]) (fn get [] : (List Int) values)",
-        "facade.gene": "(mod facade ^profile web) (import [values get] from \"./provider.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [values get] ^from \"./provider.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -2918,10 +2918,10 @@
     {
       "id": "modules.reexport_protocol_parameter_alias",
       "source": "(type Box ^props {^n Int}) (protocol Add (message add [other : Box] : Int)) (impl Add for Box (message add [other : Box] : Int (+ self/n other/n))) (fn run [] : Int ((Box ^n 2) .Add:add (Box ^n 3))) (run)",
-      "web_source": "(mod alias_protocol ^profile web) (import [PublicBox Add] from \"./facade.gene\") (fn run [] : Int ((PublicBox ^n 2) .Add:add (PublicBox ^n 3)))",
+      "web_source": "(mod alias_protocol ^profile web) (import [PublicBox Add] ^from \"./facade.gene\") (fn run [] : Int ((PublicBox ^n 2) .Add:add (PublicBox ^n 3)))",
       "web_files": {
         "provider.gene": "(mod provider ^profile web) (type Box ^props {^n Int}) (protocol Add (message add [other : Box] : Int)) (impl Add for Box (message add [other : Box] : Int (+ self/n other/n)))",
-        "facade.gene": "(mod facade ^profile web) (import [Box : PublicBox Add] from \"./provider.gene\" ^export true)"
+        "facade.gene": "(mod facade ^profile web) (import [Box : PublicBox Add] ^from \"./provider.gene\" ^export true)"
       },
       "web_export": "run",
       "expected_value": {
@@ -3770,7 +3770,7 @@
     {
       "id": "self.imported_impl",
       "source": "(protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true)) (type Pup : Dog ^props {}) (impl Eq for Pup ^^override (message eq [other : Dog] : Bool false)) ((Pup) .Eq:label)",
-      "web_source": "(mod self_imported_impl ^profile web) (import [Eq Dog : Canine] from \"./provider.gene\") (type Pup : Canine ^props {}) (impl Eq for Pup ^^override (message eq [other : Canine] : Bool false)) (fn run [] : Str ((Pup) .Eq:label))",
+      "web_source": "(mod self_imported_impl ^profile web) (import [Eq Dog : Canine] ^from \"./provider.gene\") (type Pup : Canine ^props {}) (impl Eq for Pup ^^override (message eq [other : Canine] : Bool false)) (fn run [] : Str ((Pup) .Eq:label))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -3788,7 +3788,7 @@
     {
       "id": "self.imported_closure",
       "source": "(protocol Eq (message eq [other : Self] : Bool) (message label [] : Str \"base\")) (type Dog ^props {} (message checker [] : (Fn [Self] Bool) (fn [x : Self] : Bool true))) (impl Eq for Dog (message eq [other : Self] : Bool true)) (type Pup : Dog ^props {}) (let f ((Pup) .checker)) (f (Dog))",
-      "web_source": "(mod self_imported_closure ^profile web) (import [Dog : Canine] from \"./provider.gene\") (type Pup : Canine ^props {}) (fn run [] : Bool (let f ((Pup) .checker)) (f (Canine)))",
+      "web_source": "(mod self_imported_closure ^profile web) (import [Dog : Canine] ^from \"./provider.gene\") (type Pup : Canine ^props {}) (fn run [] : Bool (let f ((Pup) .checker)) (f (Canine)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3806,7 +3806,7 @@
     {
       "id": "self.imported_default_scope",
       "source": "(ns origin (fn private_label [x : Any] : Str \"source\") (protocol P (message label [other : Self] : Str (let mine : Self self) (private_label mine)))) (import origin [P]) (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) ((Item) .P:label (Item))",
-      "web_source": "(mod self_imported_default_scope ^profile web) (import [P] from \"./provider.gene\") (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label (Item)))",
+      "web_source": "(mod self_imported_default_scope ^profile web) (import [P] ^from \"./provider.gene\") (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label (Item)))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -3839,7 +3839,7 @@
     {
       "id": "self.default_type_collision",
       "source": "(ns origin (type Item ^props {} (message value [] : Str \"provider\")) (fn private_label [] : Str ((Item) .value)) (protocol P (message label [] : Str (private_label)))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label)) (run)",
-      "web_source": "(mod self_default_type_collision ^profile web) (import [P] from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label))",
+      "web_source": "(mod self_default_type_collision ^profile web) (import [P] ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -3857,7 +3857,7 @@
     {
       "id": "self.default_nested_binding",
       "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeError \"checked\")]) (run)",
-      "web_source": "(mod self_default_nested_binding ^profile web) (import [P] from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeError \"checked\")])",
+      "web_source": "(mod self_default_nested_binding ^profile web) (import [P] ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeError \"checked\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3884,7 +3884,7 @@
     {
       "id": "self.imported_universal_value",
       "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin [U]) (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box))) (run)",
-      "web_source": "(mod self_imported_universal_value ^profile web) (import [U] from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box)))",
+      "web_source": "(mod self_imported_universal_value ^profile web) (import [U] ^from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box)))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -4280,7 +4280,7 @@
     {
       "id": "nil_void.imported_alias",
       "source": "(ns provider (alias Maybe Int?) (fn f [x : Maybe = 9] : Int? x)) (import provider [Maybe f]) (alias LocalMaybe Maybe) (fn local [x : LocalMaybe] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)]) (run)",
-      "web_source": "(mod nil_void_imported_alias ^profile web) (import [Maybe f] from \"./provider.gene\") (alias LocalMaybe Maybe) (fn local [x : LocalMaybe] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)])",
+      "web_source": "(mod nil_void_imported_alias ^profile web) (import [Maybe f] ^from \"./provider.gene\") (alias LocalMaybe Maybe) (fn local [x : LocalMaybe] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -4309,7 +4309,7 @@
     {
       "id": "nil_void.alias_use_site",
       "source": "(ns provider (type Box ^props {^label Str}) (alias MaybeBox Box?)) (import provider [MaybeBox]) (type Box ^props {^value Int}) (fn value_of [x : MaybeBox] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))]) (run)",
-      "web_source": "(mod nil_void_alias_use_site ^profile web) (import [MaybeBox] from \"./provider.gene\") (type Box ^props {^value Int}) (fn value_of [x : MaybeBox] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))])",
+      "web_source": "(mod nil_void_alias_use_site ^profile web) (import [MaybeBox] ^from \"./provider.gene\") (type Box ^props {^value Int}) (fn value_of [x : MaybeBox] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",

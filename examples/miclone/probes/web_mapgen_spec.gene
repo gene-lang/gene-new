@@ -17,7 +17,7 @@
 
 (mod web_mapgen_spec ^profile web)
 
-(import [report failures] from "./mapgen_spec.gene")
+(import [report failures] ^from "./mapgen_spec.gene")
 
 (fn main [] : Void
   ($console/log (report))

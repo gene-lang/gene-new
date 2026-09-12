@@ -38,13 +38,13 @@
 (mod edit ^profile web)
 
 (import [Registry light_source_of propagates_light? drawtype_of draw_liquid]
-        from "./registry.gene")
-(import [content_air] from "./world.gene")
+        ^from "./registry.gene")
+(import [content_air] ^from "./world.gene")
 (import [World node_at light_at set_node inside? world_min_y
          world_dx world_dy world_dz array_x array_y array_z]
-        from "./loaded.gene")
-(import [relight_node day_of night_of light_max] from "./light.gene")
-(import [pointable?] from "./raycast.gene")
+        ^from "./loaded.gene")
+(import [relight_node day_of night_of light_max] ^from "./light.gene")
+(import [pointable?] ^from "./raycast.gene")
 
 # --- what an edit is allowed to do -------------------------------------------
 

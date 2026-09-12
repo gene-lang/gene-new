@@ -34,8 +34,8 @@
 (mod storage)
 
 (import $db/sqlite [open Db])
-(import [Registry] from "../core/registry.gene")
-(import [encode_block decode_block] from "./blockfmt.gene")
+(import [Registry] ^from "../core/registry.gene")
+(import [encode_block decode_block] ^from "./blockfmt.gene")
 
 (let store_version 1)
 

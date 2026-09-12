@@ -133,7 +133,7 @@ The importer bounds it once, at the import, rather than remembering to wrap
 every call site:
 
 ```gene
-(import [write_where] from "./plugin.gene"
+(import [write_where] ^from "./plugin.gene"
   ^capabilities [(fs/WriteDir "plugin")])
 ```
 

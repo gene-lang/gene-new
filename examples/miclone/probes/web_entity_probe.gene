@@ -31,7 +31,7 @@
 
 (mod web_entity_probe ^profile web)
 
-(import [new_cursor] from "../core/wire.gene")
+(import [new_cursor] ^from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_entity msg_inventory
          msg_node_delta
          new_hello decode_hello hello_bx hello_by hello_bz
@@ -43,9 +43,9 @@
          decode_inventory
          size_request_blocks encode_request_blocks
          size_dig encode_dig]
-        from "../core/protocol.gene")
-(import [Registry new_wire_registry name_of] from "../core/registry.gene")
-(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+        ^from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of] ^from "../core/registry.gene")
+(import [World new_world store_block node_at set_node] ^from "../core/loaded.gene")
 
 (let block_dim 16.0)
 (let block_nodes 4096.0)
