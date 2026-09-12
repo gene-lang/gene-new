@@ -1,0 +1,132 @@
+# Procedural atlas recipes shared by the browser and native shells.
+(mod texture ^profile web)
+
+(import [hash_unit2] from "./exact.gene")
+(import [TileRegistry tile_count tile_kind
+         tile_r tile_g tile_b tile_spread tile_seed
+         tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
+         tile_density
+         tile_solid tile_ore tile_overlay]
+        from "./tiles.gene")
+
+(let tile_px 16.0)
+(let atlas_px 128.0)
+(let atlas_cols 8.0)
+
+# Tile index to grid position, the inverse of what `core/mesh.gene` does to
+# reach the atlas: index `t` lives at column `t mod 8`, row `t / 8`.
+(fn tile_col [t : F64] : F64
+  (- t (* ($math/floor (/ t atlas_cols)) atlas_cols)))
+
+(fn tile_row [t : F64] : F64
+  ($math/floor (/ t atlas_cols)))
+
+# Per-texel variation from the same deterministic hash the world generator
+# uses, so the atlas is reproducible from its seed rather than from a file
+# nobody has the source for.
+(fn shade [base : F64 x : F64 y : F64 seed : F64 spread : F64] : F64
+  (var n (- (hash_unit2 x y seed) 0.5))
+  ($math/floor ($math/clamp (+ base (* n spread)) 0.0 255.0)))
+
+(fn paint_texel [painter : (Fn [F64 F64 F64 F64 F64] Nil) x : F64 y : F64
+                 r : F64 g : F64 b : F64] : Nil
+  (painter x y ($math/floor r) ($math/floor g) ($math/floor b)))
+
+# One tile at atlas slot `t`, tinted from a base colour.
+(fn paint_tile [painter : (Fn [F64 F64 F64 F64 F64] Nil) t : F64
+                r : F64 g : F64 b : F64 spread : F64 seed : F64] : Nil
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (paint_texel painter (+ ox x) (+ oy y)
+                   (shade r x y seed spread)
+                   (shade g x y (+ seed 1.0) spread)
+                   (shade b x y (+ seed 2.0) spread))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# A base colour with a ragged band of a second colour across the top few texels,
+# so the two do not meet in a straight line. Grass seen from the side is the
+# reason it exists and `miclone:grass_side` is the only tile that asks for it.
+(fn paint_overlay [painter : (Fn [F64 F64 F64 F64 F64] Nil) t : F64
+                   r : F64 g : F64 b : F64 spread : F64 seed : F64
+                   base_r : F64 base_g : F64 base_b : F64
+                   base_spread : F64 base_seed : F64] : Nil
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (var edge (+ 3.0 ($math/floor (* (hash_unit2 x 0.0 91.0) 2.5))))
+      (if (< y edge)
+        (then (paint_texel painter (+ ox x) (+ oy y)
+                           (shade r x y seed spread)
+                           (shade g x y (+ seed 1.0) spread)
+                           (shade b x y (+ seed 2.0) spread)))
+        (else (paint_texel painter (+ ox x) (+ oy y)
+                           (shade base_r x y base_seed base_spread)
+                           (shade base_g x y (+ base_seed 1.0) base_spread)
+                           (shade base_b x y (+ base_seed 2.0) base_spread))))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# An ore: a base tile with speckles of the ore's colour through it.
+#
+# The speckle test is hashed on the texel coordinate *halved and floored*, so a
+# hit covers a 2x2 patch rather than a single texel. Per-texel specks read as
+# noise at any distance; 2x2 blobs read as ore, which is the whole point of
+# drawing them.
+#
+# `density` is a percentage rather than a fraction — see `core/tiles.gene` for
+# why every column is a whole number.
+(fn paint_ore [painter : (Fn [F64 F64 F64 F64 F64] Nil) t : F64
+               r : F64 g : F64 b : F64 seed : F64 density : F64
+               base_r : F64 base_g : F64 base_b : F64
+               base_spread : F64 base_seed : F64] : Nil
+  (paint_tile painter t base_r base_g base_b base_spread base_seed)
+  (var threshold (/ density 100.0))
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (var bx ($math/floor (/ x 2.0)))
+      (var by ($math/floor (/ y 2.0)))
+      (if_yes (> (hash_unit2 bx by seed) threshold)
+        (paint_texel painter (+ ox x) (+ oy y)
+                     (shade r x y (+ seed 3.0) 24.0)
+                     (shade g x y (+ seed 4.0) 24.0)
+                     (shade b x y (+ seed 5.0) 24.0)))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# The atlas, in the registry's slot order — which is the order the mod
+# registered its tiles in, and the order `core/registry.gene`'s tile columns
+# already point into. An unregistered slot is simply not painted: §6's atlas
+# gained a row when the seventeenth tile arrived (M8's trees), and an 8x8 grid
+# with unpainted cells is what a seventeen-tile game looks like.
+(fn paint [painter : (Fn [F64 F64 F64 F64 F64] Nil) t : TileRegistry] : Nil
+  (var n (tile_count t))
+  (var i 0.0)
+  (while (< i n)
+    (var kind (tile_kind t i))
+    (if (== kind tile_ore)
+      (then (paint_ore painter i (tile_r t i) (tile_g t i) (tile_b t i)
+                       (tile_seed t i) (tile_density t i)
+                       (tile_base_r t i) (tile_base_g t i) (tile_base_b t i)
+                       (tile_base_spread t i) (tile_base_seed t i)))
+      (else
+        (if (== kind tile_overlay)
+          (then (paint_overlay painter i (tile_r t i) (tile_g t i) (tile_b t i)
+                               (tile_spread t i) (tile_seed t i)
+                               (tile_base_r t i) (tile_base_g t i)
+                               (tile_base_b t i)
+                               (tile_base_spread t i) (tile_base_seed t i)))
+          (else (paint_tile painter i (tile_r t i) (tile_g t i) (tile_b t i)
+                            (tile_spread t i) (tile_seed t i))))))
+    (set i (+ i 1.0))))

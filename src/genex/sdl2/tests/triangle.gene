@@ -1,0 +1,61 @@
+(mod triangle_probe)
+(import [load init_video window_opengl window_hidden window_centered
+         gl_major_version gl_minor_version gl_context_flags gl_profile_mask
+         gl_profile_core gl_forward_compatible] from "../src/sdl2.gene")
+(import [f32_bytes u32_bytes] from "../src/buffers.gene")
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (|| (== argv/.size 1) (== argv/.size 2)) "triangle.gene <compiled SDL2 library> [font]")
+  (var sdl (load argv/0))
+  (sdl/set_main_ready)
+  ($assert (== (sdl/init init_video) 0) (sdl/error))
+  (try
+    (sdl/gl_set_attribute gl_major_version 3)
+    (sdl/gl_set_attribute gl_minor_version 3)
+    (sdl/gl_set_attribute gl_profile_mask gl_profile_core)
+    (sdl/gl_set_attribute gl_context_flags gl_forward_compatible)
+    (var window (sdl/create_window "Gene native triangle"
+                  window_centered window_centered 64 64 (+ window_opengl window_hidden)))
+    (try
+      (var device (sdl/device_new window))
+      (try
+        (var program (sdl/program device
+          "#version 330 core
+layout(location=0) in vec3 position;
+void main() { gl_Position = vec4(position, 1.0); }"
+          "#version 330 core
+out vec4 color;
+void main() { color = vec4(0.1, 0.8, 0.3, 1.0); }"))
+        ($assert (> program 0) (sdl/error))
+        (var mesh (sdl/mesh_new device))
+        ($assert (>= mesh 0) (sdl/error))
+        (var vertices ($buffer F32 [-0.9 -0.9 0.0 0.9 -0.9 0.0 0.0 0.9 0.0]))
+        (var indices ($buffer U32 [0 1 2]))
+        ($assert (== (sdl/mesh_upload device mesh (f32_bytes vertices) (u32_bytes indices)) 0) (sdl/error))
+        ($assert (== (sdl/mesh_attribute device mesh 0 3 12 0) 0) (sdl/error))
+        (sdl/begin_frame device program 0.0 0.0 0.0)
+        ($assert (== (sdl/mesh_draw device mesh) 0) (sdl/error))
+        (var center (sdl/pixel device 32 32))
+        (var green ($bit/and ($bit/shr center 16) 255))
+        ($assert (&& (>= green 202) (<= green 206)) "triangle must cover the center pixel")
+        ($assert (== (sdl/pixel device 1 62) 255) "corner must retain the black background")
+        ($assert (== (sdl/gl_error device) 0) "OpenGL must report no errors")
+        ($assert (== (sdl/mesh_upload device mesh ($buffer C/UInt8 [1]) (u32_bytes indices)) -1)
+          "unaligned numeric uploads must be refused")
+        ($assert (== (sdl/rect device 0.0 0.0 8.0 8.0 4278190335) 0))
+        ($assert (== (sdl/pixel device 4 59) 4278190335) "UI rectangles use top-left coordinates")
+        (if_yes (== argv/.size 2)
+          (var font (sdl/font_open device argv/1 12))
+          ($assert (>= font 0) (sdl/error))
+          ($assert (== (sdl/text device font "Gene" 10.0 10.0 4294967295) 0) (sdl/error)))
+        ($assert (== (sdl/sound device 440.0 0.01 0.0 0) 0) (sdl/error))
+        ($assert (== (sdl/sound device 0.0 0.01 0.0 1) 0) (sdl/error))
+        ($assert (== (sdl/gl_error device) 0))
+        (sdl/present device)
+        ($assert (== (sdl/mesh_free device mesh) 0))
+        ($assert (== (sdl/mesh_draw device mesh) -1) "a released mesh must be rejected")
+        ($println $"PASS — native triangle pixels verified on $(sdl/gl_version device)")
+        ensure ($C/close device))
+      ensure ($C/close window))
+    ensure (sdl/quit)))

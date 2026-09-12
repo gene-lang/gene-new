@@ -52,6 +52,11 @@ task native_example, "Build and run the typed_native SQLite example":
   ## needs bin/gene, so run `nimble build` first.
   exec "examples/native/build.sh"
 
+task genex, "Build the genex SDL2 and WebSocket libraries":
+  ## Requires bin/gene, Python 3, a C compiler, pkg-config, SDL2/SDL2_ttf,
+  ## and libcurl with WebSocket support. See src/genex/README.md.
+  exec "python3 src/genex/tools/build.py"
+
 task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
   ## `gene fmt|lsp|view` exec these, resolved next to the running `gene` binary
   ## and then on PATH. Without them those three subcommands report a clear

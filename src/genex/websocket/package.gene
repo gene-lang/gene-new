@@ -1,0 +1,8 @@
+{^format 1
+ ^name "genex/websocket"
+ ^version "0.1.0"
+ ^description "Polling WebSocket client backed by libcurl and Gene compiled FFI"
+ ^library {^entry "src/websocket.gene"}
+ ^system_dependencies {
+   ^curl (system_library ^name "libcurl" ^version ">=8.11.0 <9"
+     ^providers [pkg_config] ^linkage either)}}

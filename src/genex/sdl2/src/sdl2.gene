@@ -1,0 +1,26 @@
+(mod sdl2)
+
+# Native resources returned by these bindings are owned pointers. Close the GL
+# context before its window, and close windows before calling quit.
+(fn load [library : Str]
+  ($aot/load library))
+
+(let init_video 32)
+(let window_opengl 2)
+(let window_hidden 8)
+(let window_resizable 32)
+(let window_highdpi 8192)
+(let window_centered 805240832)
+(let gl_major_version 17)
+(let gl_minor_version 18)
+(let gl_context_flags 20)
+(let gl_profile_mask 21)
+(let gl_profile_core 1)
+(let gl_forward_compatible 2)
+(let event_quit 256)
+(let event_keydown 768)
+(let event_keyup 769)
+(let event_motion 1024)
+(let event_buttondown 1025)
+(let event_buttonup 1026)
+(let event_wheel 1027)

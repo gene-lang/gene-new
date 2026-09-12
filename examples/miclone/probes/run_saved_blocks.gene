@@ -1,0 +1,23 @@
+# Read the persisted image through a separate connection. The network smoke
+# calls this before its first edit: an edit's autocommit used to mask a lost
+# startup COMMIT by publishing the whole database image later.
+(mod run_saved_blocks)
+(import $db/sqlite [open Db])
+(import [origin_bx origin_by origin_bz] from "../server/main.gene")
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (|| (== argv/.size 1) (== argv/.size 2))
+    "usage: run_saved_blocks.gene <world directory> [recovery]")
+  (var db (open $"${argv/0}/map.sqlite"))
+  (try
+    (var row (db .Db:query_one "select count(*) as n from blocks"))
+    (if_yes (== argv/.size 2)
+      ($assert (== argv/1 "recovery") "unknown snapshot check")
+      (var edited (db .Db:query_one
+        "select data from blocks where x = ? and y = ? and z = ?"
+        origin_bx origin_by origin_bz))
+      ($assert (== edited/data ($fs/read_bytes $"${argv/0}/recovery-block.bin"))
+        "recovery must preserve the existing edited block byte for byte"))
+    ($println row/n)
+    ensure (db .Db:close)))

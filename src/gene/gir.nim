@@ -2444,7 +2444,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
         cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
         name & "_view, &" & name & "_lease);"
       lines.add "  if (status != GENE_OK) return status;"
-      callArgs.add name & "_view.data"
+      callArgs.add "(void *)" & name & "_view.data"
       callArgs.add name & "_view.len"
       bufferLeases.add name & "_lease"
     else:

@@ -1,0 +1,28 @@
+(mod window_probe)
+(import [load init_video window_opengl window_hidden window_centered
+         gl_major_version gl_minor_version gl_context_flags gl_profile_mask
+         gl_profile_core gl_forward_compatible] from "../src/sdl2.gene")
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (== argv/.size 1) "window.gene <compiled SDL2 library>")
+  (var sdl (load argv/0))
+  (sdl/set_main_ready)
+  ($assert (== (sdl/init init_video) 0) (sdl/error))
+  (try
+    ($assert (== (sdl/gl_set_attribute gl_major_version 3) 0) (sdl/error))
+    ($assert (== (sdl/gl_set_attribute gl_minor_version 3) 0) (sdl/error))
+    ($assert (== (sdl/gl_set_attribute gl_profile_mask gl_profile_core) 0) (sdl/error))
+    ($assert (== (sdl/gl_set_attribute gl_context_flags gl_forward_compatible) 0) (sdl/error))
+    (var window (sdl/create_window "Gene SDL2 native probe"
+                  window_centered window_centered 64 64
+                  (+ window_opengl window_hidden)))
+    (try
+      (var context (sdl/gl_create_context window))
+      (try
+        ($assert (== (sdl/gl_make_current window context) 0) (sdl/error))
+        (sdl/gl_swap_window window)
+        ($println "PASS — Gene created a native SDL2 window and OpenGL context through compiled bindings")
+        ensure ($C/close context))
+      ensure ($C/close window))
+    ensure (sdl/quit)))

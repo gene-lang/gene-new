@@ -1,0 +1,34 @@
+(mod websocket_echo)
+(import [load connect send receive WebSocketError] from "../src/websocket.gene")
+
+(fn next_message [native socket]
+  (var end (+ ($os/monotonic_ms) 10000))
+  (var result (receive native socket))
+  (while (== result nil)
+    ($assert (< ($os/monotonic_ms) end) "timed out waiting for a message")
+    ($sleep 2)
+    (set result (receive native socket)))
+  result)
+
+(fn check_payload [data : (Buffer U8)] : Nil
+  ($assert (== data/.len 40001) "fragments must form one complete message")
+  (var i 0)
+  (while (< i data/.len)
+    ($assert (== (data .get i) ($bit/and i 255)) "binary byte changed")
+    (set i (+ i 1))))
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (== argv/.size 2) "echo.gene <native library> <ws URL>")
+  (var native (load argv/0))
+  (var socket (connect native argv/1))
+  (try
+    (var first (next_message native socket))
+    (check_payload first)
+    ($assert (== (native/kind socket) 2) "binary message kind")
+    (var empty (next_message native socket))
+    ($assert (== empty/.len 0) "an empty message is distinct from no message")
+    (send native socket first)
+    (check_payload (next_message native socket))
+    ($println "PASS — fragmented binary messages, empty messages and queued send round-trip")
+    ensure ($C/close socket)))

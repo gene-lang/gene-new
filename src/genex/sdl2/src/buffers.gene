@@ -1,0 +1,25 @@
+# Explicit little-endian numeric packing at the native boundary. Core modules
+# keep their portable buffers; only the graphics adapter needs C-byte buffers.
+(mod buffers)
+
+(fn c_bytes [bytes : Bytes] : (Buffer C/UInt8)
+  ($buffer C/UInt8 ($binary/to_list bytes)))
+
+(fn f32_bytes [values : (Buffer F32)] : (Buffer C/UInt8)
+  (var parts : (List Bytes) [])
+  (var i 0)
+  (while (< i values/.len)
+    (parts .push ($binary/put_f32 (values .get i)))
+    (set i (+ i 1)))
+  (c_bytes ($binary/concat parts)))
+
+(fn u32_bytes [values : (Buffer U32)] : (Buffer C/UInt8)
+  (var parts : (List Bytes) [])
+  (var i 0)
+  (while (< i values/.len)
+    (parts .push ($binary/put_u32 (values .get i)))
+    (set i (+ i 1)))
+  (c_bytes ($binary/concat parts)))
+
+(fn u8_bytes [values : (Buffer U8)] : (Buffer C/UInt8)
+  ($buffer C/UInt8 values/.to_list))

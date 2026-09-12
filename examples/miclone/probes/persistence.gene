@@ -150,6 +150,13 @@
     (set bx (+ bx 1)))
 
   (commit_batch w)
+  # The running server does not close its store after a batch. Reopen before
+  # closing this writer so Db/close cannot hide a commit that was never saved.
+  (var observer (open_world root))
+  (try
+    ($assert (== (block_count observer) (* span span))
+      "committed blocks must be visible before the writer closes")
+    ensure (close_world observer))
   (var report
     $"created $(block_count w) blocks, $(stored_bytes w) bytes; lamp id $($to_int edited_node) emitting $($to_int edited_light)")
   (close_world w)

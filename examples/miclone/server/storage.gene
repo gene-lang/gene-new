@@ -48,16 +48,13 @@
 
 # --- opening -----------------------------------------------------------------
 
-# `synchronous = normal` with WAL is the standard durable-enough pairing: a
-# crash loses at most the current transaction rather than the database, and it
-# is roughly an order of magnitude faster than `full` for the write-heavy
-# pattern §11 describes (a block per modification, batched).
+# File-backed SQLite publishes a connection's image through Gene's filesystem
+# provider. Transactions batch that publication; WAL/synchronous pragmas do not
+# configure durability for the provider-backed in-memory connection.
 (fn open_world [root : Str] : WorldStore
   (if_not ($fs/exists? root)
     ($fs/make_dir root))
   (var db (open $"${root}/map.sqlite"))
-  (db .Db:exec "pragma journal_mode = wal")
-  (db .Db:exec "pragma synchronous = normal")
   (db .Db:exec "create table if not exists blocks (
      x integer not null,
      y integer not null,

@@ -7,7 +7,7 @@ architecture, written in Gene, whose mod language is Gene.
 things in, and build with** — running as two processes, defined by a mod,
 changing on its own, and shared with other players who can see you.
 
-The server owns the world and answers a WebSocket; the browser client is handed
+The server owns the world and answers a WebSocket; each client is handed
 it and plays it, sharing every rule through `core/`. The game itself is
 `mods/default`, read off disk through a capability sandbox that grants it exactly
 the namespaces its manifest declares — which is none — while a client draws its
@@ -16,10 +16,17 @@ content from recipes on the wire without ever running mod code.
 Read [`docs/design.md`](docs/design.md) for the why. Part I is the direction and
 the decisions; §D2 is the platform constraint that shaped everything else.
 
-M0 through M8 are built. M9, a native shell outside the browser, is what is left
-and needs an N-argument FFI (design.md §D7.8).
+M0 through M9 are implemented. The native shell uses SDL2/OpenGL and a native
+WebSocket client through compiled Gene bindings (design.md §D7.8).
+See the current verification results under Checks.
 
 ## Running it
+
+Build optimized Gene from the repository root with `nimble speedy`, then use
+`export PATH="$(pwd)/bin:$PATH"` before changing directories. The absolute PATH
+entry keeps these commands on this checkout's compiler instead of another Gene
+installation. `tools/build_web.sh` selects the checkout's `bin/gene` by default;
+set `GENE_EXE` to override it. A failed module build prints its diagnostics.
 
 The reference source is a shallow clone of upstream, not vendored here, and only
 needed if you want to read it:
@@ -67,6 +74,41 @@ own copy.
 Chop a tree, press **E**, click *make* down the chain — plank, chest — place it
 and right-click it.
 
+### Native desktop client
+
+On macOS, install the desktop dependencies once:
+
+```sh
+brew install sdl2 sdl2_ttf curl pkg-config
+cd examples/miclone
+python3 tools/run_native.py
+```
+
+The launcher builds the libraries in `src/genex`, resolves the separate native package,
+starts a local server when needed, and opens the SDL window. The controls match
+the browser client. `--no-build` reuses compiled libraries; `--font PATH`
+selects a font, `--world PATH` selects a local world, and `--url ws://HOST:PORT/`
+connects to an existing server. The launcher stops servers it started when the
+client exits. A first launch can take several minutes to generate, transfer and
+mesh the world in the VM; the window shows loading progress.
+
+To build just the libraries, run `nimble genex` from the repository root.
+
+Linux needs the corresponding development libraries, a libcurl build with
+WebSockets, and an installed TrueType/OpenType font. Pass `--pkg-config-path`
+for SDKs outside pkg-config's default search path. The native package is
+separate so browser/server use does not acquire desktop SDK dependencies.
+
+```sh
+python3 tools/run_native.py --smoke
+```
+
+The smoke owns a temporary world and server, requires a free port 8790, drives
+SDL input, checks server-confirmed edits, crafting, chest actions and multiplayer
+entities, and requires at least 60 steady frames per second. It writes real
+framebuffer captures to `native/.gene/native-smoke.png` and
+`native/.gene/native-smoke.form.png`.
+
 ## Layout
 
 ```
@@ -103,12 +145,16 @@ core/       portable Gene — compiles for the VM and the web profile
   protocol.gene the messages, encoded as bytes (§10)
   formspec.gene §13's UI as data, validated at registration
   container.gene §13's node inventories: a chest's contents
+  client_world.gene received blocks, node deltas and hotbar labels
+  shaders.gene  shared GLSL shader bodies for WebGL2 and desktop OpenGL
+  texture.gene  shared procedural atlas painter
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome, ore, recipe and callback
 server/     VM only: the block format, the SQLite world store (§11),
             the sandboxed mod loader (§9.3), and main.gene (§10, §12)
 client/     the browser shell: WebGL2 renderer, atlas, sound, camera
               main.gene generates the world; net_main.gene is handed it
+native/     the SDL2/OpenGL shell, using genex/sdl2 and genex/websocket
 probes/     cross-backend specs and network probes. `run_*.gene` are the VM
             shells and `web_*.gene` the web-profile ones — the same shell
             twice, differing only in `$println` vs `$console/log`
@@ -125,6 +171,21 @@ builtin and a browser has no stdout — which is why each probe is a portable
 module with a shell per backend rather than one module with a conditional.
 
 ## Checks
+
+Rechecked on 2026-09-12: a clean build of all 68 web modules, the eleven
+VM/web output comparisons, the singleplayer client smoke test, and the meshing
+budget check pass. The real-network smoke also checks that all 576 blocks are
+on disk **before the first edit**, which could otherwise hide a missing startup
+commit. It can exercise recovery from interrupted initialization as well as
+fresh creation and cached loading.
+
+The native smoke passes on macOS with OpenGL 4.1: 576 received blocks,
+117,528 initial faces, SDL movement and dig/place, crafting planks and a chest,
+chest put/take actions, and another player appearing and leaving. The final
+five-second steady-rendering sample measured **171 fps** at 2560×1440 with
+vsync disabled. This excludes loading, edits and framebuffer capture. The GPU
+pixel/font/audio probe and independent WebSocket peer test also pass. Linux's
+build path is provided but has not been verified on a Linux host.
 
 ### Cross-backend specs
 
@@ -151,6 +212,7 @@ node tools/mesh_bench.mjs        # generation + meshing budget (§D6.1)
 node tools/world_build.mjs       # what opening a world costs, and a 2-minute walk
 node tools/client_smoke.mjs      # the in-tab client's wiring, DOM stubbed
 node tools/net_client_smoke.mjs  # boots its own server and plays it, ~40 s
+MICLONE_SMOKE_RECOVERY=1 node tools/net_client_smoke.mjs # resets its fixture, then recovers missing blocks
 
 gene run worldgen                # §D6.3's three budget readings
 gene run wire_bench              # what a block message costs to encode
@@ -196,6 +258,10 @@ is a pipe, so "listening on 8790" can sit unflushed for the whole run.
 its world at `/tmp/miclone_smoke_world` between runs, because the one edit it
 makes is a dig followed by a place of the same node. It discards that world if
 the run failed. `MICLONE_SMOKE_FRESH=1` forces a new one.
+`MICLONE_SMOKE_RECOVERY=1` also resets this test world, but leaves metadata and
+one edited block before startup. It checks that recovery saves the missing
+blocks and preserves the edited block byte for byte. The harness refuses an
+occupied port 8790 so it never runs against another server's world.
 
 **Two traps when measuring frame rate in a browser.** A backgrounded tab
 throttles `requestAnimationFrame` to nothing — measured at 6 fps against 166 for
@@ -208,7 +274,8 @@ so a plain reload can silently re-run the previous build.
 
 | | |
 |---|---:|
-| frame rate, either client | **166 fps** — the display's ceiling, not the engine's |
+| frame rate, either browser client | **166 fps** — the display's ceiling, not the engine's |
+| native steady frame rate, macOS | **171 fps** at 2560×1440, vsync off; loading and edits excluded |
 | drawn | 229 chunk meshes, 62,395 faces, no frustum culling |
 | chunk: generate + light + mesh (V8) | **0.22 ms**, worst chunk 0.91 against an 8 ms budget |
 | opening a 12×4×12 world (V8) | **114 ms** — 55 generate, 24.7 light 2.48M nodes, 32.8 mesh |

@@ -23,55 +23,13 @@
 # `u_time_of_day` does the mixing per fragment, which is what makes a day/night
 # cycle free.
 
-(fn vertex_source [] : Str
-  "#version 300 es
-precision highp float;
-layout(location = 0) in vec3 a_position;
-layout(location = 1) in vec2 a_uv;
-layout(location = 2) in float a_light;
-layout(location = 3) in float a_shade;
-uniform mat4 u_view_projection;
-out vec2 v_uv;
-out float v_light;
-out float v_shade;
-out float v_depth;
-void main() {
-  vec4 clip = u_view_projection * vec4(a_position, 1.0);
-  gl_Position = clip;
-  v_uv = a_uv;
-  v_light = a_light;
-  v_shade = a_shade;
-  v_depth = clip.w;
-}")
+(import [vertex_source : shared_vertex fragment_source : shared_fragment]
+        from "../core/shaders.gene")
 
+(fn vertex_source [] : Str
+  (shared_vertex "#version 300 es\nprecision highp float;"))
 (fn fragment_source [] : Str
-  "#version 300 es
-precision highp float;
-in vec2 v_uv;
-in float v_light;
-in float v_shade;
-in float v_depth;
-uniform sampler2D u_atlas;
-uniform vec3 u_fog;
-uniform float u_fog_far;
-uniform float u_time_of_day;
-out vec4 frag_color;
-void main() {
-  vec4 texel = texture(u_atlas, v_uv);
-  // Unpack param1: day in the high nibble, night in the low (design.md §4).
-  float packed = floor(v_light + 0.5);
-  float day = floor(packed / 16.0) / 15.0;
-  float night = (packed - floor(packed / 16.0) * 16.0) / 15.0;
-  // A floor of ambient light, because a 0 channel is pitch black and a voxel
-  // world with nothing visible in shadow is unreadable rather than moody.
-  float level = mix(night, day, u_time_of_day);
-  float brightness = 0.10 + 0.90 * level;
-  vec3 lit = texel.rgb * brightness * v_shade;
-  // Linear distance fog, so the loaded-region boundary fades instead of
-  // ending in mid-air.
-  float fog = clamp(v_depth / u_fog_far, 0.0, 1.0);
-  frag_color = vec4(mix(lit, u_fog, fog), 1.0);
-}")
+  (shared_fragment "#version 300 es\nprecision highp float;"))
 
 # --- program construction ----------------------------------------------------
 

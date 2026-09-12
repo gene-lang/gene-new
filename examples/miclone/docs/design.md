@@ -3,8 +3,8 @@
 A voxel game engine with Luanti's architecture, written in Gene, whose mod
 language is Gene.
 
-**Status: M0 through M8 are built and running.** §D8 says which milestone owns
-what; M9, the native shell, is the only one left.
+**Status: M0 through M9 are built and running.** The native shell is verified on
+macOS; its Linux build path is not yet host-tested. §D8 says which milestone owns what.
 
 ## How to read this document
 
@@ -70,16 +70,17 @@ Deliberately inherited:
 Deliberately not inherited:
 
 - **Irrlicht.** We target a modern programmable pipeline directly.
-- **The reliable-UDP transport** (`src/network/mtp/`). Gene has no socket API
-  at all (§D2), and the first client is a browser, which cannot open a UDP
+- **The reliable-UDP transport** (`src/network/mtp/`). The initial platform had
+  no general socket API (§D2), and the first client is a browser, which cannot open a UDP
   socket regardless. §10 designs the transport we can actually build.
 - **Formspec's string DSL.** Gene is homoiconic; a UI described as a string
   that a mod concatenates is a step backwards from describing it as data (§13).
 
 ## D2. The constraint: Gene cannot draw a triangle
 
-This is the finding that decides the project, so it comes before the design
-rather than after it.
+This initial platform audit explains the browser-first design. M9 subsequently
+established a working native route through compiled adapters (§D7.8); the
+dynamic FFI limitation below still applies.
 
 **Dynamic FFI cannot express the graphics API.** `ffi/open` + `ffi/bind` load a
 library and bind a symbol at runtime, but `isSupportedDynamicFfiSignature`
@@ -97,16 +98,19 @@ functions a renderer needs are all wider than that:
 Not "slow" or "awkward" — `ffi/bind` raises `unsupported dynamic FFI signature`
 and there is no workaround short of a C shim per call.
 
-**Static FFI is not an escape hatch.** `ffi/fn` declarations have no interpreter
-implementation. They lower through the experimental `typed_native` C backend,
-and there is no `gene build` producing a linked artifact.
+**Static FFI requires a compiled adapter.** `ffi/fn` declarations have no direct
+interpreter implementation. They lower through the C backend; a library build
+can compile the emitted C, link it with a system library, and expose its entries
+through `$aot/load`. M9 uses this existing path rather than adding signatures to
+dynamic FFI.
 
-**The web profile has no 3D**, and had no typed arrays of any kind.
+**The web profile initially had no 3D** or typed arrays. Both landed for M0.
 
-**There is no socket API.** `net/tcp_read_text_async` and its write counterpart
-are one-shot connect-transfer-close text helpers. The only persistent
-bidirectional transport Gene code can hold is the RFC 6455 **WebSocket server**
-in `src/gene/http_server.nim` — server side only, no client.
+**There was no persistent client socket API.** `net/tcp_read_text_async` and its
+write counterpart are one-shot connect-transfer-close text helpers. The original
+persistent transport, the RFC 6455 implementation in `src/gene/http_server.nim`,
+was server side only. The browser bindings and
+`genex/websocket` now provide the two client transports (§D7.7).
 
 **Two smaller gaps** that matter later: `fs` has `write_bytes` but no
 `read_bytes`, and `Buffer` was a `seq[Value]` — boxed, 8 bytes per element
@@ -194,12 +198,11 @@ decided.
 
 ## D4. The browser shell goes first
 
-**1. It is reachable; the native shell is not.** §D2. Adding WebGL2 to the web
+**1. It was the shortest path to a renderer.** §D2. Adding WebGL2 to the web
 profile is extending a binding table and its `lib.dom.d.ts` oracle — mechanical,
 verifiable, and the same kind of work that put canvas there. Making the native
-shell reachable means either a general N-argument FFI trampoline or a C
-extension module. Both are real projects. Neither should be on the critical path
-to seeing a voxel.
+shell required building and packaging compiled adapters for SDL/OpenGL. That
+work followed in M9, after the browser had validated the game and shared core.
 
 **2. There is a precedent.** The archived `new_world` example is a playable
 side-view voxel game whose world generation, physics, collision, and mining are
@@ -553,11 +556,14 @@ engine and wrong for a general library, which would want values and returns.
 Promoting it means designing that trade, and the second consumer that would pay
 for it does not exist.
 
-**7. WebSocket *client*, or a real socket API. Blocked M6. Landed for the
-browser; open for the native shell.**
+**7. WebSocket client. Landed for the browser in M6 and the native shell in M9.**
 
-The server side of RFC 6455 exists; nothing on the **VM** can open a connection,
-so a native client still needs either the client half or a general socket API.
+`genex/websocket` supplies a polling client through libcurl and compiled Gene
+bindings. It reassembles fragmented messages, bounds incoming messages and the
+outgoing queue, and lets the native frame loop send without waiting for socket
+writability. Its independent RFC 6455 peer test checks fragmentation, interleaved
+PING/PONG, empty frames and masked sends. The system libcurl must include
+WebSocket support; Apple's bundled curl does not.
 
 What M6 needed was the **browser** half plus binary frames on both ends, and
 neither end could carry a byte. Three gaps, all closed:
@@ -590,13 +596,36 @@ indistinguishable from a client that sent no message. Handler tasks are reaped
 each loop pass and a failure is logged. They remain fire-and-forget, but a
 failure is now *said*.
 
-**8. General N-argument FFI. Blocks the native shell.**
+**8. General N-argument FFI. Blocks the native shell's direct-binding route.**
 
-The §D2 finding. Either libffi (a new runtime dependency, which `AGENTS.md` says
-to avoid without an explicit request — so this needs a decision, not an
-assumption) or generated per-ABI trampolines. Large, strategically valuable to
-Gene far beyond this project, and correctly sequenced *after* there is a running
-game that justifies it.
+The §D2 finding still holds for dynamic binding. A general solution would use
+libffi or generated per-ABI trampolines. That language enhancement remains
+paused, but it is no longer a prerequisite for the native client.
+
+Rechecked on 2026-09-12: `isSupportedDynamicFfiSignature` in
+`src/gene/vm.nim` still rejects more than three arguments. With SDL2 installed,
+the current VM rejects this declaration before it can create a window:
+
+```gene
+(let sdl ($ffi/open "/opt/homebrew/lib/libSDL2.dylib"))
+($ffi/bind sdl "SDL_CreateWindow"
+  [C/CStr C/Int C/Int C/Int C/Int C/UInt]
+  (quote (C/Ptr SDL_Window)))
+# Error: unsupported dynamic FFI signature for 'SDL_CreateWindow'
+```
+
+The existing compiled route covers the needed signatures: Gene `ffi/fn`
+declarations become C adapters, and `aot/load` exposes them to ordinary Gene.
+`genex/sdl2` uses that path, with small C helpers for GPU resources, array
+uploads, SDL events, text and audio. `genex/websocket` wraps libcurl's native
+client and handles bounded message reassembly and queued sends. Neither needs
+an expanded dynamic FFI table or a native Gene callback factory.
+
+The native client runs the VM and imports the same `core/` physics, mesher,
+protocol, inventory and world code as the browser. Shader bodies, texture
+recipes and received-world updates are shared too. Its UI and platform loop
+live in `native/`, a separate package with desktop dependencies. The original
+§D2 audit predates this use of the compiled adapter path.
 
 **9. Audio. Landed, and much smaller than expected.**
 
@@ -611,6 +640,10 @@ One browser rule shapes the code: a context created before the user has
 interacted with the page is not an error, it is a context stuck in `suspended`
 that never plays. So the context is made on the first sound, which by
 construction is a click or a keypress.
+
+M9 supplies the same short tone/noise effects through SDL queued audio in
+`genex/sdl2`. The native adapter synthesizes bounded sample buffers and needs
+no audio-thread callback into Gene.
 
 **10. The VM's call and message-send cost. Blocks nothing; raises every
 ceiling.**
@@ -776,7 +809,7 @@ Each milestone ends in something runnable. No milestone is "infrastructure only"
 | ~~M6~~ | **Client/server split over WebSocket** — done | the same game, client and server as separate processes; §10, §10.1 | backlog 7 |
 | ~~M7~~ | **The mod API + the sandboxed runtime loader** — done | the game is `mods/default`, read off disk through §D5's capability boundary; §9.1, §9.3, §D5.2 | — |
 | ~~M8~~ | **Entities, crafting, UI, sound** — done | §12's tick, trees, crafting, dropped items, sound, formspecs, mod callbacks, a chest, players as entities | backlog 9 |
-| M9 | Native shell | the same game outside a browser | backlog 7, 8 |
+| ~~M9~~ | **Native shell** — done on macOS | SDL2/OpenGL client, shared core, native WebSocket transport, crafting/chests, multiplayer entities and 171 fps steady rendering | backlog 7; compiled route in 8 |
 
 **M7 is the point of the project.** Everything before it is the engine a mod API
 needs in order to be worth having, and M8's small-but-complete game is built
@@ -2186,6 +2219,23 @@ corruption into a refusal to load.
 Writes are batched (a transaction, so a crash leaves the world as it was rather
 than partly saved) but still not asynchronous. It has not hurt: an edit persists
 one block inside a click, and the measured end-to-end cost is 1.8–3.5 ms.
+
+**The batch must reach disk before the store closes.** The provider-backed
+SQLite adapter formerly missed a separate `COMMIT`: SQLite
+[classifies that statement as read-only](https://www.sqlite.org/c3ref/stmt_readonly.html).
+The world stayed in the connection's image until a later
+edit or explicit close published it. Both hid the defect from the old probes.
+The adapter now observes successful commits, publishes each committed script
+prefix, and never saves an unfinished transaction or stale reader on close.
+The persistence probe reopens the store before closing its writer, and the
+network smoke checks all 576 persisted blocks before its first edit.
+
+**Metadata alone does not mean initialization finished.** A start interrupted
+after `world.gene` was written leaves an existing world with missing blocks.
+Startup regenerates and saves those gaps, preserving blocks already present.
+`MICLONE_SMOKE_RECOVERY=1` exercises this with one edited block and 575 missing
+ones; its snapshot check requires the existing block's encoded bytes to survive
+unchanged, including the parameter column the loaded world does not yet carry.
 
 ## 12. Time, tick, and the server loop
 

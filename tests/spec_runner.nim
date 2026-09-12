@@ -1751,7 +1751,7 @@ int64_t total(const void *data, size_t len) {
       if fileExists(libPath): removeFile(libPath)
     let built = execCmdEx(
       quoteShell(getEnv("CC", "cc")) &
-        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        " -std=c11 -O2 -Werror -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
         (when defined(macosx): "-undefined dynamic_lookup " else: "") &
         quoteShell(sourcePath) & " -o " & quoteShell(libPath))
     checkpoint built.output
@@ -3100,7 +3100,7 @@ int main(void) {
     check "GeneFfiBufferLease b_lease;" in c
     check "status = gene_ffi_arg_buffer(ctx, call, 0, \"b\", " &
       "\"(Buffer C/UInt8)\", &b_view, &b_lease);" in c
-    check "consume_buffer(b_view.data, b_view.len);" in c
+    check "consume_buffer((void *)b_view.data, b_view.len);" in c
     check "gene_ffi_buffer_finalize(ctx, b_lease);" in c
     check "return gene_ffi_result_void(ctx, result);" in c
     ## The release function is passed as a pointer to a shim in this library,
@@ -8608,6 +8608,127 @@ suite "spec — store persistence protocol":
     check fileExists(path)
     for suffix in ["-wal", "-shm", "-journal"]:
       check not fileExists(path & suffix)
+
+  test "sqlite explicit commits persist before close through every SQL entry":
+    # Miclone commits its block batch through a separate Db:exec call and then
+    # stays alive serving clients. Closing the writer would hide a lost commit.
+    for entry in ["exec", "execute", "query", "query_one"]:
+      let path = getTempDir() / ("gene-sqlite-commit-" & entry & ".sqlite")
+      if fileExists(path): removeFile(path)
+      defer:
+        if fileExists(path): removeFile(path)
+      check_eval_at("""
+        (import $db/sqlite [open Db])
+        (let path """ & geneString(path) & """)
+        (let db (open path))
+        (db .Db:exec "create table t (x integer)")
+        (db .Db:exec "begin")
+        (db .Db:execute "insert into t values (?)" 7)
+        (let before (open path))
+        (before .Db:exec "begin")
+        (let uncommitted (before .Db:query_one "select count(*) as n from t"))
+        (db .Db:""" & entry & """ "commit")
+        (let after (open path))
+        (let committed (after .Db:query_one "select count(*) as n from t"))
+        # Closing an older reader must not replace the newly committed image.
+        (before .Db:exec "commit")
+        (before .Db:close)
+        (let reopened (open path))
+        (let kept (reopened .Db:query_one "select count(*) as n from t"))
+        (reopened .Db:close)
+        (after .Db:close)
+        (db .Db:close)
+        [uncommitted/n committed/n kept/n]
+      """, "[0 1 1]", parentDir(path))
+
+  test "sqlite close rolls back unfinished writes without publishing them":
+    let path = getTempDir() / "gene-sqlite-close-rollback.sqlite"
+    if fileExists(path): removeFile(path)
+    defer:
+      if fileExists(path): removeFile(path)
+    check_eval_at("""
+      (import $db/sqlite [open Db])
+      (let path """ & geneString(path) & """)
+      (let db (open path))
+      (db .Db:exec "create table t (x integer); insert into t values (7)")
+      (db .Db:exec "begin; insert into t values (8)")
+      (db .Db:close)
+      (let reader (open path))
+      (let rows (reader .Db:query "select x from t order by x"))
+      (reader .Db:close)
+      rows
+    """, "[{^x 7}]", parentDir(path))
+
+  test "sqlite publishes an outer savepoint release but not an inner release":
+    let path = getTempDir() / "gene-sqlite-savepoint-commit.sqlite"
+    if fileExists(path): removeFile(path)
+    defer:
+      if fileExists(path): removeFile(path)
+    check_eval_at("""
+      (import $db/sqlite [open Db])
+      (let path """ & geneString(path) & """)
+      (let db (open path))
+      (db .Db:exec "create table t (x integer)")
+      (db .Db:exec "savepoint outer_tx; savepoint inner_tx; insert into t values (7)")
+      (db .Db:exec "release inner_tx")
+      (let before (open path))
+      (let hidden (before .Db:query_one "select count(*) as n from t"))
+      (before .Db:close)
+      (db .Db:execute "release outer_tx")
+      (let after (open path))
+      (let committed (after .Db:query_one "select x from t"))
+      (after .Db:close)
+      (db .Db:close)
+      [hidden/n committed/x]
+    """, "[0 7]", parentDir(path))
+
+  test "sqlite scripts publish each commit before later statements or errors":
+    let path = getTempDir() / "gene-sqlite-script-commit.sqlite"
+    if fileExists(path): removeFile(path)
+    defer:
+      if fileExists(path): removeFile(path)
+    check_eval_at("""
+      (import $db/sqlite [open Db DbError])
+      (let path """ & geneString(path) & """)
+      (let db (open path))
+      (db .Db:exec "create table t (x integer)")
+      (let failed (try
+        (db .Db:exec "insert into t values (1); invalid_sql")
+        false
+        catch DbError true))
+      (let first (open path))
+      (let saved (first .Db:query_one "select count(*) as n from t"))
+      (first .Db:close)
+      (db .Db:exec "begin; insert into t values (2); commit; begin; insert into t values (3)")
+      (let second (open path))
+      (let committed (second .Db:query "select x from t order by x"))
+      (second .Db:close)
+      (db .Db:exec "rollback")
+      (db .Db:close)
+      [failed saved/n committed]
+    """, "[true 1 [{^x 1} {^x 2}]]", parentDir(path))
+
+  test "sqlite preserves committed partial writes when OR FAIL raises":
+    for entry in ["exec", "execute", "query", "query_one"]:
+      let path = getTempDir() / ("gene-sqlite-partial-" & entry & ".sqlite")
+      if fileExists(path): removeFile(path)
+      defer:
+        if fileExists(path): removeFile(path)
+      check_eval_at("""
+        (import $db/sqlite [open Db DbError])
+        (let path """ & geneString(path) & """)
+        (let db (open path))
+        (db .Db:exec "create table t (x integer primary key); insert into t values (1)")
+        (let failed (try
+          (db .Db:""" & entry & """ "insert or fail into t values (2), (1), (3)")
+          false
+          catch DbError true))
+        (let reader (open path))
+        (let rows (reader .Db:query "select x from t order by x"))
+        (reader .Db:close)
+        (db .Db:close)
+        [failed rows]
+      """, "[true [{^x 1} {^x 2}]]", parentDir(path))
 
   test "filesystem checkpoints fall back from a corrupt newest generation":
     let dir = getTempDir() / "gene-store-fs-checkpoint-spec"

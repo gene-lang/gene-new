@@ -33,12 +33,15 @@
 // - **A world costs 64 s to generate and 28 s to load.** So the world is kept
 //   between runs at `MICLONE_SMOKE_WORLD` (default `/tmp/miclone_smoke_world`)
 //   and a second run is ~38 s; `MICLONE_SMOKE_FRESH=1` deletes it first.
+//   `MICLONE_SMOKE_RECOVERY=1` resets it to metadata and one edited block,
+//   modeling an incomplete world store. Both modes check the saved block
+//   count before any edit can hide a missing startup commit.
 //   Keeping it is safe because the one edit made here is a dig followed by a
 //   place of the same node, and the face count asserts that round trip — but a
 //   run that *failed* may have dug and not placed, so a failed run discards the
 //   world rather than leave the next one a fixture nobody wrote.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import net from "node:net";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { hud, hotbar, fire, tick, key, click, lookDown, glDraws,
@@ -128,18 +131,24 @@ const serverLog = [];
 
 async function bootServer() {
   if (await portOpen(PORT)) {
-    console.log(`  joining the server already listening on ${PORT}`);
-    return "reused";
+    throw new Error(`port ${PORT} is occupied; this smoke needs to start its own server`);
   }
   startedServer = true;
-  if (process.env.MICLONE_SMOKE_FRESH) await rm(WORLD, { recursive: true, force: true });
+  const recovery = !!process.env.MICLONE_SMOKE_RECOVERY;
+  if (process.env.MICLONE_SMOKE_FRESH || recovery)
+    await rm(WORLD, { recursive: true, force: true });
   const fresh = !(await exists(WORLD));
   console.log(`  starting \`gene run server\` on ${WORLD}` +
-    (fresh ? " — generating a world, about a minute" : " — loading, about 30 s"));
+    (recovery ? " — recovering an interrupted first start" :
+      fresh ? " — generating a world, about a minute" : " — loading, about 30 s"));
 
   // The CLI grants filesystem access explicitly outside the package. Create
   // and grant only this harness's world directory, not the surrounding /tmp.
   await mkdir(WORLD, { recursive: true });
+  if (recovery)
+    execFileSync(GENE,
+      ["run", "--allow_read_write_dir", WORLD, "probes/run_recovery_fixture.gene", WORLD],
+      { cwd: MICLONE, stdio: "pipe" });
   child = spawn(GENE, ["run", "--allow_read_write_dir", WORLD, "server"], {
     cwd: MICLONE,
     env: { ...process.env, GENE_MICLONE_WORLD: WORLD },
@@ -252,6 +261,16 @@ try {
   // directly; this file is the reason those accessors still exist. 0 version, 1 seed, 2-4 origin block, 5-7 extent, 8-10 spawn.
   const hello = P.new_hello();
   P.decode_hello(helloFrame, new_cursor(), hello);
+  const expectedBlocks = hello[5] * hello[6] * hello[7];
+  const savedBlocks = Number(execFileSync(GENE,
+    ["run", "--allow_read_write_dir", WORLD, "probes/run_saved_blocks.gene", WORLD,
+      ...(process.env.MICLONE_SMOKE_RECOVERY ? ["recovery"] : [])],
+    { cwd: MICLONE, encoding: "utf8" }).trim());
+  say(savedBlocks === expectedBlocks,
+      "the initial world is durable before any edit or server close",
+      `${savedBlocks} of ${expectedBlocks} blocks on disk`);
+  if (process.env.MICLONE_SMOKE_RECOVERY)
+    console.log("  ok   recovery preserved the existing edited block byte for byte");
   const spawn = [hello[8], hello[9], hello[10]].map(Math.round);
   say(hello[0] === P.version(), "the handshake names the protocol version",
       `v${hello[0]}`);

@@ -1,0 +1,91 @@
+# These declarations compile to native entry adapters. Unlike dynamic
+# ffi/bind, that existing boundary handles SDL's full C signatures.
+(ffi/struct SDL_Window ^fields [])
+(ffi/struct GeneGLContext ^fields [])
+(ffi/struct GXDevice ^fields [])
+(ffi/struct SDL_Event ^fields [])
+
+(ffi/fn set_main_ready ^symbol "SDL_SetMainReady" [] : C/Void)
+(ffi/fn init ^symbol "SDL_Init" [flags : C/UInt32] : C/Int)
+(ffi/fn quit ^symbol "SDL_Quit" [] : C/Void)
+(ffi/fn error ^symbol "SDL_GetError" [] : C/CStr)
+(ffi/fn create_window ^symbol "SDL_CreateWindow" ^release "SDL_DestroyWindow"
+  [title : C/CStr x : C/Int y : C/Int width : C/Int height : C/Int flags : C/UInt32]
+  : (C/OwnedPtr SDL_Window))
+(ffi/fn gl_set_attribute ^symbol "SDL_GL_SetAttribute"
+  [attribute : C/Int value : C/Int] : C/Int)
+(ffi/fn gl_create_context ^symbol "SDL_GL_CreateContext" ^release "SDL_GL_DeleteContext"
+  [window : (C/Ptr SDL_Window)] : (C/OwnedPtr GeneGLContext))
+(ffi/fn gl_make_current ^symbol "SDL_GL_MakeCurrent"
+  [window : (C/Ptr SDL_Window) context : (C/Ptr GeneGLContext)] : C/Int)
+(ffi/fn gl_swap_window ^symbol "SDL_GL_SwapWindow"
+  [window : (C/Ptr SDL_Window)] : C/Void)
+(ffi/fn gl_set_swap_interval ^symbol "SDL_GL_SetSwapInterval"
+  [interval : C/Int] : C/Int)
+
+# Helpers own their GPU resources as a unit. Mesh handles are device-local
+# integer ids; device destruction deletes the VAOs, buffers, programs and textures.
+(ffi/fn device_new ^symbol "gx_device_new" ^release "gx_device_free"
+  [window : (C/Ptr SDL_Window)] : (C/OwnedPtr GXDevice))
+(ffi/fn gl_version ^symbol "gx_gl_version" [device : (C/Ptr GXDevice)] : C/CStr)
+(ffi/fn gl_error ^symbol "gx_gl_error" [device : (C/Ptr GXDevice)] : C/UInt32)
+(ffi/fn width ^symbol "gx_width" [device : (C/Ptr GXDevice)] : C/Int)
+(ffi/fn height ^symbol "gx_height" [device : (C/Ptr GXDevice)] : C/Int)
+(ffi/fn logical_width ^symbol "gx_logical_width" [device : (C/Ptr GXDevice)] : C/Int)
+(ffi/fn logical_height ^symbol "gx_logical_height" [device : (C/Ptr GXDevice)] : C/Int)
+(ffi/fn program ^symbol "gx_program"
+  [device : (C/Ptr GXDevice) vertex : C/CStr fragment : C/CStr] : C/UInt32)
+(ffi/fn begin_frame ^symbol "gx_begin"
+  [device : (C/Ptr GXDevice) program : C/UInt32 r : C/Double g : C/Double b : C/Double] : C/Int)
+(ffi/fn present ^symbol "gx_present" [device : (C/Ptr GXDevice)] : C/Void)
+(ffi/fn mesh_new ^symbol "gx_mesh_new" [device : (C/Ptr GXDevice)] : C/Int)
+(ffi/fn mesh_upload ^symbol "gx_mesh_upload"
+  [device : (C/Ptr GXDevice) mesh : C/Int vertices : (Buffer C/UInt8)
+   indices : (Buffer C/UInt8)] : C/Int)
+(ffi/fn mesh_attribute ^symbol "gx_mesh_attribute"
+  [device : (C/Ptr GXDevice) mesh : C/Int location : C/UInt32
+   count : C/Int stride : C/Int offset : C/Int] : C/Int)
+(ffi/fn mesh_draw ^symbol "gx_mesh_draw"
+  [device : (C/Ptr GXDevice) mesh : C/Int] : C/Int)
+(ffi/fn mesh_free ^symbol "gx_mesh_free"
+  [device : (C/Ptr GXDevice) mesh : C/Int] : C/Int)
+(ffi/fn uniform_matrix ^symbol "gx_uniform_matrix"
+  [device : (C/Ptr GXDevice) program : C/UInt32 name : C/CStr
+   values : (Buffer C/UInt8)] : C/Int)
+(ffi/fn uniform_f ^symbol "gx_uniform_f"
+  [device : (C/Ptr GXDevice) program : C/UInt32 name : C/CStr value : C/Double] : C/Int)
+(ffi/fn uniform_i ^symbol "gx_uniform_i"
+  [device : (C/Ptr GXDevice) program : C/UInt32 name : C/CStr value : C/Int] : C/Int)
+(ffi/fn uniform_3f ^symbol "gx_uniform_3f"
+  [device : (C/Ptr GXDevice) program : C/UInt32 name : C/CStr
+   x : C/Double y : C/Double z : C/Double] : C/Int)
+(ffi/fn texture ^symbol "gx_texture"
+  [device : (C/Ptr GXDevice) width : C/Int height : C/Int rgba : (Buffer C/UInt8)] : C/UInt32)
+(ffi/fn texture_bind ^symbol "gx_texture_bind"
+  [device : (C/Ptr GXDevice) texture : C/UInt32] : C/Int)
+(ffi/fn pixel ^symbol "gx_pixel"
+  [device : (C/Ptr GXDevice) x : C/Int y : C/Int] : C/UInt32)
+(ffi/fn rect ^symbol "gx_rect"
+  [device : (C/Ptr GXDevice) x : C/Double y : C/Double width : C/Double height : C/Double color : C/UInt32] : C/Int)
+(ffi/fn font_open ^symbol "gx_font_open"
+  [device : (C/Ptr GXDevice) path : C/CStr size : C/Int] : C/Int)
+(ffi/fn text ^symbol "gx_text"
+  [device : (C/Ptr GXDevice) font : C/Int text : C/CStr x : C/Double y : C/Double color : C/UInt32] : C/Int)
+(ffi/fn read_pixels ^symbol "gx_read_pixels"
+  [device : (C/Ptr GXDevice) rgba : (Buffer C/UInt8)] : C/Int)
+(ffi/fn event_new ^symbol "gx_event_new" ^release "free" [] : (C/OwnedPtr SDL_Event))
+(ffi/fn poll_event ^symbol "SDL_PollEvent" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_type ^symbol "gx_event_type" [event : (C/Ptr SDL_Event)] : C/UInt32)
+(ffi/fn event_key ^symbol "gx_event_key" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_repeat ^symbol "gx_event_repeat" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_button ^symbol "gx_event_button" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_x ^symbol "gx_event_x" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_y ^symbol "gx_event_y" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_dx ^symbol "gx_event_dx" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_dy ^symbol "gx_event_dy" [event : (C/Ptr SDL_Event)] : C/Int)
+(ffi/fn event_wheel ^symbol "gx_event_wheel" [event : (C/Ptr SDL_Event)] : C/Double)
+(ffi/fn push_key ^symbol "gx_push_key" [key : C/Int down : C/Int] : C/Int)
+(ffi/fn push_button ^symbol "gx_push_button" [button : C/Int down : C/Int x : C/Int y : C/Int] : C/Int)
+(ffi/fn push_motion ^symbol "gx_push_motion" [x : C/Int y : C/Int dx : C/Int dy : C/Int] : C/Int)
+(ffi/fn sound ^symbol "gx_sound"
+  [device : (C/Ptr GXDevice) frequency : C/Double duration : C/Double gain : C/Double noise : C/Int] : C/Int)

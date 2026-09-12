@@ -10,8 +10,14 @@
 #   tools/build_web.sh            # incremental
 #   tools/build_web.sh --clean    # after a module was added or removed
 set -e
-GENE_EXE=${GENE_EXE:-gene}
 cd "$(dirname "$0")/.."
+# Prefer this checkout: PATH may name a different Gene installation, or even
+# use a relative `bin` entry which changes meaning after the cd above.
+GENE_EXE=${GENE_EXE:-"$(pwd)/../../bin/gene"}
+if ! command -v "$GENE_EXE" >/dev/null 2>&1; then
+  echo "Gene executable not found: $GENE_EXE (build the checkout or set GENE_EXE)" >&2
+  exit 1
+fi
 
 if [ "$1" = "--clean" ]; then
   rm -rf dist
@@ -20,11 +26,11 @@ mkdir -p dist
 
 MODULES="
 core/exact core/noise core/field core/world core/registry
-core/tiles core/groups core/item core/biome core/cave core/ore
+core/tiles core/texture core/shaders core/groups core/item core/biome core/cave core/ore
 core/decor core/abm core/craft core/entity core/formspec
 core/api core/mods core/mapgen core/light core/mesh core/loaded
 core/physics core/raycast core/edit core/inventory core/drops
-core/vec core/container core/wire core/protocol
+core/vec core/container core/wire core/protocol core/client_world
 mods/default/src/default
 client/atlas client/render client/sound client/main client/net_main
 probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec
@@ -39,7 +45,13 @@ probes/web_entity_probe probes/web_net_probe probes/web_chest_probe
 "
 
 for m in $MODULES; do
-  "$GENE_EXE" build --target web "$m.gene" --out-dir dist >/dev/null
+  if output=$("$GENE_EXE" build --target web "$m.gene" --out-dir dist); then
+    :
+  else
+    echo "Failed to build $m.gene:" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
 done
 
 echo "built $(echo $MODULES | wc -w | tr -d ' ') modules into dist/"

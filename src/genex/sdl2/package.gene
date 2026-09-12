@@ -1,0 +1,13 @@
+{^format 1
+ ^name "genex/sdl2"
+ ^version "0.1.0"
+ ^description "SDL2 bindings compiled from Gene through the existing AOT boundary"
+ ^library {^entry "src/sdl2.gene"}
+ ^system_dependencies {
+   ^sdl (system_library
+     ^name "sdl2"
+     ^version ">=2.0.18 <3"
+     ^providers [pkg_config]
+     ^linkage either)
+   ^font (system_library ^name "SDL2_ttf" ^version ">=2.0.18 <3"
+     ^providers [pkg_config] ^linkage either)}}

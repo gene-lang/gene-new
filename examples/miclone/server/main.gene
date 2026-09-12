@@ -50,7 +50,7 @@
          world_min_x world_min_y world_min_z]
         from "../core/loaded.gene")
 (import [WorldStore open_world close_world world_exists? write_meta
-         put_block get_block block_count stored_bytes
+         put_block get_block has_block? block_count stored_bytes
          begin_batch commit_batch]
         from "./storage.gene")
 (import [light_region queue_overhead] from "../core/light.gene")
@@ -753,25 +753,30 @@
               (* ($to_float (+ origin_bz (/ span_z 2))) 16.0)
               (* ($to_float (+ origin_by span_y)) 16.0)
               96.0 spawn_at)
-  # A world generated for the first time is written whole, so the next start
-  # loads it. An existing one is already on disk and only its edits are written.
-  (if_yes fresh
-    (var scratch ($buffer F32 ($to_float block_nodes)))
-    (var scratch_l ($buffer F32 ($to_float block_nodes)))
-    (var scratch_p2 ($buffer F32 ($to_float block_nodes)))
-    (begin_batch store)
-    (var sz 0)
-    (while (< sz span_z)
-      (var sy 0)
-      (while (< sy span_y)
-        (var sx 0)
-        (while (< sx span_x)
+  # Metadata is written before generation. An interrupted first start can
+  # therefore leave an existing world with missing blocks. build_world fills
+  # those holes; publish them too, without replacing blocks already on disk.
+  (var scratch ($buffer F32 ($to_float block_nodes)))
+  (var scratch_l ($buffer F32 ($to_float block_nodes)))
+  (var scratch_p2 ($buffer F32 ($to_float block_nodes)))
+  (var saved 0)
+  (begin_batch store)
+  (var sz 0)
+  (while (< sz span_z)
+    (var sy 0)
+    (while (< sy span_y)
+      (var sx 0)
+      (while (< sx span_x)
+        (if_yes (|| fresh (! (has_block? store (+ origin_bx sx)
+                                        (+ origin_by sy) (+ origin_bz sz))))
           (persist_block store reg world (+ origin_bx sx) (+ origin_by sy)
                          (+ origin_bz sz) scratch scratch_l scratch_p2)
-          (set sx (+ sx 1)))
-        (set sy (+ sy 1)))
-      (set sz (+ sz 1)))
-    (commit_batch store)
+          (set saved (+ saved 1)))
+        (set sx (+ sx 1)))
+      (set sy (+ sy 1)))
+    (set sz (+ sz 1)))
+  (commit_batch store)
+  (if_yes (> saved 0)
     ($println $"  saved $(block_count store) blocks, $(stored_bytes store) bytes"))
 
   ($println $"  ready in $(- ($os/monotonic_ms) t0) ms; spawn at $(spawn_at .get 0.0), $(spawn_at .get 1.0), $(spawn_at .get 2.0)")

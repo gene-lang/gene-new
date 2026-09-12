@@ -1,0 +1,28 @@
+(mod websocket)
+
+(type WebSocketError ^props {^message Str}
+  (ctor [message : Str] (set self/message message)))
+(impl Error for WebSocketError)
+
+(fn load [path : Str] ($aot/load path))
+
+(fn connect [native url : Str]
+  (try (native/connect url 5000)
+    catch Error (fail (new WebSocketError (native/last_error)))))
+
+(fn send [native socket data : (Buffer U8)] : Nil
+  (var bytes ($buffer C/UInt8 data/.to_list))
+  (if (< (native/send socket bytes) 0)
+    (fail (new WebSocketError (native/error socket)))))
+
+# nil means no complete message yet; an empty buffer is a real empty message.
+(fn receive [native socket]
+  (var ready (native/poll socket))
+  (if (< ready 0) (fail (new WebSocketError (native/error socket))))
+  (if (== ready 0) (return nil))
+  (var n (native/size socket))
+  (var zero ($buffer U8 n))
+  (var bytes ($buffer C/UInt8 zero/.to_list))
+  (if (< (native/read socket bytes) 0)
+    (fail (new WebSocketError (native/error socket))))
+  ($buffer U8 bytes/.to_list))

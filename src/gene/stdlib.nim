@@ -6031,6 +6031,7 @@ let SQLITE_TRANSIENT = cast[pointer](-1)
 
 type SqliteRowCallback = proc(context: pointer, columns: cint,
                               values, names: ptr UncheckedArray[cstring]): cint {.cdecl.}
+type SqliteCommitCallback = proc(context: pointer): cint {.cdecl.}
 
 type SqliteApi = object
   lib: LibHandle
@@ -6062,6 +6063,8 @@ type SqliteApi = object
   columnName: proc(stmt: pointer, i: cint): cstring {.cdecl.}
   stmtReadonly: proc(stmt: pointer): cint {.cdecl.}
   getAutocommit: proc(db: pointer): cint {.cdecl.}
+  commitHook: proc(db: pointer, callback: SqliteCommitCallback,
+                   context: pointer): pointer {.cdecl.}
   serialize: proc(db: pointer, schema: cstring, size: ptr int64,
                   flags: cuint): pointer {.cdecl.}
   deserialize: proc(db: pointer, schema: cstring, data: pointer,
@@ -6115,6 +6118,7 @@ proc loadSqliteApi(scope: Scope) =
   api.columnName = cast[typeof(api.columnName)](sym"sqlite3_column_name")
   api.stmtReadonly = cast[typeof(api.stmtReadonly)](sym"sqlite3_stmt_readonly")
   api.getAutocommit = cast[typeof(api.getAutocommit)](sym"sqlite3_get_autocommit")
+  api.commitHook = cast[typeof(api.commitHook)](sym"sqlite3_commit_hook")
   api.serialize = cast[typeof(api.serialize)](sym"sqlite3_serialize")
   api.deserialize = cast[typeof(api.deserialize)](sym"sqlite3_deserialize")
   api.malloc64 = cast[typeof(api.malloc64)](sym"sqlite3_malloc64")
@@ -6157,8 +6161,17 @@ proc sqliteColumnValue(stmt: pointer, i: cint): Value =
     let text = gSqliteApi.columnText(stmt, i)
     if text == nil: newStr("") else: newStr($text)
 
+proc sqliteNoteCommit(context: pointer): cint {.cdecl, raises: [].} =
+  # An internal, synchronous observer: no Gene code, allocation, or database
+  # access runs in SQLite's hook. Publish after the statement finishes. COMMIT and
+  # outer RELEASE are reported readonly by sqlite3_stmt_readonly, so that
+  # predicate alone cannot establish a persistence boundary.
+  cast[ptr bool](context)[] = true
+  0
+
 proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
-                   where: string, scope: Scope):
+                   where: string, scope: Scope,
+                   afterStatement: proc(mutated: bool) = nil):
     tuple[rows: seq[Value], changes: int, mutated: bool] =
   var stmt: pointer
   var tail: cstring
@@ -6167,7 +6180,17 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
     sqliteError(db, where, scope)
   if stmt == nil:
     raiseDbError(where & ": empty SQL statement", scope)
-  defer: discard gSqliteApi.finalize(stmt)
+  var committed = false
+  var completed = false
+  var observing = false
+  defer:
+    discard gSqliteApi.finalize(stmt)
+    if observing: discard gSqliteApi.commitHook(db, nil, nil)
+    result.mutated = result.mutated or committed
+    # OR FAIL can commit earlier rows even though step raises on a later row.
+    # Publish that committed portion before transporting the SQL error.
+    if afterStatement != nil and (completed or committed):
+      afterStatement(result.mutated)
   result.mutated = gSqliteApi.stmtReadonly(stmt) == 0
   if tail != nil and ($tail).strip().len > 0:
     raiseDbError(where & " runs a single statement; use exec for scripts",
@@ -6206,6 +6229,8 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
         SQLITE_OK
     if rc != SQLITE_OK:
       sqliteError(db, where, scope)
+  discard gSqliteApi.commitHook(db, sqliteNoteCommit, addr committed)
+  observing = true
   while true:
     let rc = gSqliteApi.step(stmt)
     if rc == SQLITE_ROW:
@@ -6214,14 +6239,19 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
         entries[$gSqliteApi.columnName(stmt, i)] = sqliteColumnValue(stmt, i)
       result.rows.add newMap(entries)
     elif rc == SQLITE_DONE:
+      completed = true
       break
     else:
       sqliteError(db, where, scope)
   result.changes = int(gSqliteApi.changes(db))
 
 proc sqliteExecScript(db: pointer, sql: string, where: string,
-                      scope: Scope): bool =
+                      scope: Scope,
+                      afterStatement: proc(mutated: bool) = nil): bool =
   ## Run a possibly multi-statement SQL script without parameters.
+  var committed = false
+  discard gSqliteApi.commitHook(db, sqliteNoteCommit, addr committed)
+  defer: discard gSqliteApi.commitHook(db, nil, nil)
   var remaining = sql
   while remaining.strip().len > 0:
     var stmt: pointer
@@ -6231,16 +6261,26 @@ proc sqliteExecScript(db: pointer, sql: string, where: string,
       sqliteError(db, where, scope)
     let rest = if tail == nil: "" else: $tail
     if stmt != nil:
-      if gSqliteApi.stmtReadonly(stmt) == 0:
-        result = true
-      while true:
-        let rc = gSqliteApi.step(stmt)
-        if rc == SQLITE_ROW:
-          continue
+      let writes = gSqliteApi.stmtReadonly(stmt) == 0
+      committed = false
+      var completed = false
+      try:
+        while true:
+          let rc = gSqliteApi.step(stmt)
+          if rc == SQLITE_ROW:
+            continue
+          if rc != SQLITE_DONE:
+            sqliteError(db, where, scope)
+          completed = true
+          break
+      finally:
         discard gSqliteApi.finalize(stmt)
-        if rc != SQLITE_DONE:
-          sqliteError(db, where, scope)
-        break
+        let mutated = writes or committed
+        result = result or mutated
+        # Include OR FAIL's committed prefix on an error path. Never publish
+        # uncommitted writes or serialize inside the C commit callback.
+        if afterStatement != nil and (completed or committed):
+          afterStatement(mutated)
     remaining = rest
 
 proc sqlitePersistenceContext(conn: Value, call: ptr NativeCall,
@@ -6334,8 +6374,10 @@ proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   requireStr("Db/exec sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/exec", args[0], scope)
-  let mutated = sqliteExecScript(db, args[1].strVal, "Db/exec", scope)
-  sqlitePersistIfCommitted(args[0], db, mutated, call, scope)
+  let conn = args[0]
+  discard sqliteExecScript(db, args[1].strVal, "Db/exec", scope,
+    proc(mutated: bool) =
+      sqlitePersistIfCommitted(conn, db, mutated, call, scope))
   NIL
 
 type SqliteVisitContext = object
@@ -6426,9 +6468,10 @@ proc biSqliteQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   requireStr("Db/query sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query", args[0], scope)
+  let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/query",
-                                scope)
-  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+    scope, proc(mutated: bool) =
+      sqlitePersistIfCommitted(conn, db, mutated, call, scope))
   newList(resultSet.rows)
 
 proc biSqliteQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -6437,9 +6480,10 @@ proc biSqliteQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nim
   requireStr("Db/query_one sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query_one", args[0], scope)
+  let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1],
-                                "Db/query_one", scope)
-  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+    "Db/query_one", scope, proc(mutated: bool) =
+      sqlitePersistIfCommitted(conn, db, mutated, call, scope))
   if resultSet.rows.len == 0: NIL else: resultSet.rows[0]
 
 proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -6448,9 +6492,10 @@ proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   requireStr("Db/execute sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/execute", args[0], scope)
+  let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/execute",
-                                scope)
-  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+    scope, proc(mutated: bool) =
+      sqlitePersistIfCommitted(conn, db, mutated, call, scope))
   newInt(resultSet.changes)
 
 proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -6467,7 +6512,10 @@ proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
       not handle.cPtrClosed and
       args[0].props.getOrDefault("path", VOID).kind == vkString and
       args[0].props["path"].strVal != ":memory:":
-    sqlitePersist(args[0], handle.cPtrAddress, call, scope)
+    # Successful commits already publish the provider image. Serializing here
+    # would save an unfinished transaction, or let an older reader overwrite
+    # a newer writer's commit. Retain the file-resource authority check.
+    discard sqlitePersistenceContext(args[0], call, scope)
   if not handle.cPtrClosed:
     closeCPtr(handle)
   releaseResourceCapabilities(scope, args[0])

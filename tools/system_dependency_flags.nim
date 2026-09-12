@@ -5,8 +5,8 @@
 import gene/[package, system_dependency]
 import std/[os, tables]
 
-if paramCount() != 2:
-  stderr.writeLine "usage: system_dependency_flags <package-root> <alias>"
+if paramCount() < 2 or (paramCount() - 2) mod 2 != 0:
+  stderr.writeLine "usage: system_dependency_flags <package-root> <alias> [--pkg-config-path <directory>]..."
   quit(2)
 
 let root = normalizedPath(absolutePath(paramStr(1)))
@@ -17,6 +17,13 @@ if not pkg.systemDependencies.hasKey(alias):
   quit(2)
 
 var policy = defaultSystemDependencyPolicy()
+var option = 3
+while option <= paramCount():
+  if paramStr(option) != "--pkg-config-path":
+    stderr.writeLine "unknown option: " & paramStr(option)
+    quit(2)
+  policy.pkgConfig.searchPaths.add normalizedPath(absolutePath(paramStr(option + 1)))
+  option += 2
 let configured = getEnv("PKG_CONFIG")
 if configured.len > 0:
   policy.pkgConfig.executable = normalizedPath(absolutePath(configured))
@@ -38,4 +45,3 @@ for name in resolved.linkNames:
   echo "L\t-l" & name
 for option in resolved.linkOptions:
   echo "L\t" & option
-

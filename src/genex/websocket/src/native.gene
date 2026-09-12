@@ -1,0 +1,12 @@
+(ffi/struct GXSocket ^fields [])
+(ffi/fn connect ^symbol "gx_ws_connect" ^release "gx_ws_free"
+  [url : C/CStr timeout_ms : C/Int] : (C/OwnedPtr GXSocket))
+(ffi/fn last_error ^symbol "gx_ws_last_error" [] : C/CStr)
+(ffi/fn error ^symbol "gx_ws_error" [socket : (C/Ptr GXSocket)] : C/CStr)
+(ffi/fn send ^symbol "gx_ws_send"
+  [socket : (C/Ptr GXSocket) data : (Buffer C/UInt8)] : C/Int)
+(ffi/fn poll ^symbol "gx_ws_poll" [socket : (C/Ptr GXSocket)] : C/Int)
+(ffi/fn size ^symbol "gx_ws_size" [socket : (C/Ptr GXSocket)] : C/Size)
+(ffi/fn kind ^symbol "gx_ws_kind" [socket : (C/Ptr GXSocket)] : C/Int)
+(ffi/fn read ^symbol "gx_ws_read"
+  [socket : (C/Ptr GXSocket) data : (Buffer C/UInt8)] : C/Int)

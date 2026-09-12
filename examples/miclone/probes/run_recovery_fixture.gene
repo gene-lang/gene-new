@@ -1,0 +1,32 @@
+# Keep one edited block and omit the rest, as an interrupted or partial world
+# store can do. Recovery must preserve this block while saving the missing ones.
+(mod run_recovery_fixture)
+(import [open_world close_world world_exists? write_meta block_count]
+        from "../server/storage.gene")
+(import [put_block] from "../server/storage.gene")
+(import [encode_block] from "../server/blockfmt.gene")
+(import [load_mods_from_disk] from "../server/mods_runtime.gene")
+(import [id_of] from "../core/registry.gene")
+(import [seed origin_bx origin_by origin_bz] from "../server/main.gene")
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (== argv/.size 1) "usage: run_recovery_fixture.gene <empty world directory>")
+  (var root argv/0)
+  ($assert (! (world_exists? root)) "recovery fixture requires an empty directory")
+  ($assert (! ($fs/exists? $"${root}/map.sqlite")) "recovery fixture cannot replace a database")
+  (var store (open_world root))
+  (try
+    (write_meta store seed "miclone")
+    (var game (load_mods_from_disk))
+    (var content ($buffer F32 4096.0))
+    (content .set 0.0 (id_of game/nodes "miclone:lamp"))
+    (var light ($buffer F32 4096.0))
+    (var param2 ($buffer F32 4096.0))
+    (param2 .fill 42.0)
+    (put_block store game/nodes 16 origin_bx origin_by origin_bz
+               content light param2)
+    ($fs/write_bytes $"${root}/recovery-block.bin"
+      (encode_block game/nodes 16 content light param2))
+    ($assert (== (block_count store) 1))
+    ensure (close_world store)))

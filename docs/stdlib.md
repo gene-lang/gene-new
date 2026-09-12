@@ -104,6 +104,14 @@ Database backends expose the shared Db protocol. Bind SQL values as parameters:
 ```
 
 File-backed SQLite needs filesystem permission for its database location.
+It keeps a connection-local database image and publishes committed changes
+atomically through the filesystem provider. A separate `COMMIT` or outer
+`RELEASE` publishes the batch before returning; `Db:exec` also preserves a
+committed prefix if a later statement fails or starts another transaction.
+Closing a connection discards unfinished transactions and does not rewrite
+its image. Existing connections keep their snapshots, so reopen to observe
+another connection's commits.
+
 Postgres is available through `$db/postgres` with the same Db operations and
 its backend-specific connection and placeholder syntax. Do not interpolate
 untrusted values into SQL.

@@ -1,0 +1,53 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:581866c1a030a06f8a5810317352781bafa1417072ff559d97de66726ab980ee"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:gene/miclone_native@0.1.0#sha256:da5e6d0c2fc94e520161ce9c7c0f467b5818d5df9003e35fc23b12c25069b0dc"]
+  ^packages [
+    (locked_package
+      ^id "path:gene/miclone@0.1.0#sha256:e49c93eef6e4d9ee5d4fa296469e9980fe60492369e3edfbe542899a24e46ad9"
+      ^name "gene/miclone"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:1804d1c43e20145af9d318d1a0f01f74d0c432f63afaacc025386d8588a00bab"
+      ^source (path ^path "..")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "path:genex/sdl2@0.1.0#sha256:b16d781563d9578ca76d635a300b8baa66b10619591719cd5f7e64b60601bd72"
+      ^name "genex/sdl2"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:2b76277885ca1237253bcb1ea477c4dd6fcabf7457e9a4259e581c29f27ccaaa"
+      ^source (path ^path "../../../src/genex/sdl2")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "path:genex/websocket@0.1.0#sha256:ee2ca28415a33b5e3b657193cc0f7be257f3939c8ee8e81e57d5db62100d4a89"
+      ^name "genex/websocket"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:7764a3c9ff0548902714703b7666053642835146cbb7419ae4800382deb4dc5d"
+      ^source (path ^path "../../../src/genex/websocket")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:gene/miclone_native@0.1.0#sha256:da5e6d0c2fc94e520161ce9c7c0f467b5818d5df9003e35fc23b12c25069b0dc"
+      ^name "gene/miclone_native"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:581866c1a030a06f8a5810317352781bafa1417072ff559d97de66726ab980ee"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^engine (locked_edge ^scope runtime ^target "path:gene/miclone@0.1.0#sha256:e49c93eef6e4d9ee5d4fa296469e9980fe60492369e3edfbe542899a24e46ad9")
+        ^sdl2 (locked_edge ^scope runtime ^target "path:genex/sdl2@0.1.0#sha256:b16d781563d9578ca76d635a300b8baa66b10619591719cd5f7e64b60601bd72")
+        ^websocket (locked_edge ^scope runtime ^target "path:genex/websocket@0.1.0#sha256:ee2ca28415a33b5e3b657193cc0f7be257f3939c8ee8e81e57d5db62100d4a89")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}
