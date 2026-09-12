@@ -1,0 +1,78 @@
+(mod cordis_timer_spec)
+
+(import $test [describe it after_each assert_equal])
+
+(import [RuntimeOptions PluginSpec invocation_limits
+         default_plugin_invoker new_runtime]
+  ^from "../src/cordis")
+
+(import [timeout interval ticks throttle debounce] ^from "../src/timer")
+
+(describe "Cordis timer"
+  (after_each [t]
+    (if_not ($absent? t/runtime) (t/runtime .close)))
+
+  (it "delivers and coalesces callbacks until the owning instance is disposed" [t]
+    (var events ($cell ($thaw #[])))
+    (var tick_stream ($cell nil))
+    (var throttled ($cell nil))
+    (var debounced ($cell nil))
+
+    (fn note [value] ((events .get) .push value))
+
+    (fn activate [ctx, config]
+      (timeout ctx (fn [] (note "timeout")) 5)
+      (interval ctx (fn [] (note "interval")) 5)
+      (tick_stream .set (ticks ctx 5))
+      (throttled .set (throttle ctx note 10))
+      (debounced .set (debounce ctx note 10)))
+
+    (var plugin
+      (PluginSpec ^id "timer" ^config_schema nil ^requires [] ^provides []
+                  ^reload nil ^activate activate))
+    (var runtime
+      (new_runtime
+        (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                        ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (var instance (runtime .install (runtime .root) plugin nil))
+    (instance .await_ready)
+
+    ((throttled .get) "lead")
+    ((throttled .get) "trail-a")
+    ((throttled .get) "trail-b")
+    ((debounced .get) "drop")
+    ((debounced .get) "debounced")
+    # A timer's callback can need a further scheduler turn after its timer wakes.
+    # Wait for the observable deliveries, with a deadline, rather than assuming
+    # every owned callback has completed after one fixed sleep.
+    (var delivery_deadline (+ ($os/monotonic_ms) 500))
+    (while (&& (< ($os/monotonic_ms) delivery_deadline)
+               (! (&& ((events .get) .contains? "timeout")
+                      ((events .get) .contains? "interval")
+                      ((events .get) .contains? "trail-b")
+                      ((events .get) .contains? "debounced"))))
+      ($sleep 1))
+
+    ($assert ((events .get) .contains? "timeout")
+      "timeout must invoke once")
+    ($assert ((events .get) .contains? "interval")
+      "interval must invoke while owned")
+    ($assert ((events .get) .contains? "lead")
+      "throttle must deliver its leading call")
+    ($assert ((events .get) .contains? "trail-b"))
+    ($assert (! ((events .get) .contains? "trail-a"))
+      "throttle must not grow an unbounded trailing queue")
+    ($assert ((events .get) .contains? "debounced")
+      "debounce must deliver the latest call")
+    ($assert (! ((events .get) .contains? "drop"))
+      "debounce must cancel the replaced call")
+    (assert_equal ((tick_stream .get) .next) nil
+      "ticks must expose a bounded lazy stream")
+
+    (instance .dispose)
+    (runtime .await_settled)
+    (var after_dispose ($size (events .get)))
+    ($sleep 15)
+    (assert_equal ($size (events .get)) after_dispose
+      "disposing the owner must cancel interval and scheduled callbacks")))

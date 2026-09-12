@@ -35,6 +35,8 @@ From this directory:
 
 ```sh
 ../../bin/gene test
+../../bin/gene test tests/actor_spec.gene
+../../bin/gene test --name "Cordis loader"
 ../../bin/gene run cordis_demo
 ../../bin/gene run probes/hmr.gene
 ```
@@ -42,7 +44,10 @@ From this directory:
 The HMR probe runs as an ad-hoc file because it deliberately rewrites and then
 restores a plugin fixture; the package test target remains read-only.
 
-`gene test` executes 15 named scenarios and fails on an empty selection.
+`gene test` discovers the 15 native specs in `tests/*_spec.gene` and fails on
+an empty selection. Each example creates fresh state and closes its runtime in
+an `after_each` hook, including when an assertion fails. Specs use `$assert`,
+`assert_equal`, and `assert_raises` for ordinary test failure reports.
 
 `LoaderWatcher.inspect` reports `active`, successful `reloads`, `failures`, and
 the last error message. A rejected save leaves the previous provider live and

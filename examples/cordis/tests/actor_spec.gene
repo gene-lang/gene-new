@@ -1,0 +1,43 @@
+(mod cordis_actor_spec)
+
+(import $test [describe it after_each assert_equal assert_raises])
+
+(import [RuntimeOptions PluginSpec invocation_limits
+         default_plugin_invoker new_runtime]
+  ^from "../src/cordis")
+
+(import [owned_actor] ^from "../src/actor")
+
+(describe "Cordis actor"
+  (after_each [t]
+    (if_not ($absent? t/runtime) (t/runtime .close)))
+
+  (it "processes messages sequentially and closes the mailbox with its owner" [t]
+    (fn init [] 0)
+    (fn handle [ctx, state, message]
+      ($actor/continue (+ state message)))
+
+    (var actor_cell ($cell nil))
+    (fn activate [ctx, config]
+      (actor_cell .set
+        (owned_actor ctx "counter" init handle ^mailbox 4 ^type Int)))
+
+    (var plugin
+      (PluginSpec ^id "actor" ^config_schema nil ^requires [] ^provides []
+                  ^reload nil ^activate activate))
+    (var runtime
+      (new_runtime
+        (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                        ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (var instance (runtime .install (runtime .root) plugin nil))
+    (instance .await_ready)
+    ((actor_cell .get) .send 2)
+    ((actor_cell .get) .send 5)
+    (var snapshot ((actor_cell .get) .snapshot))
+    (assert_equal snapshot/state 7
+      "owned actor messages must execute sequentially through the invoker")
+    (instance .dispose)
+    (runtime .await_settled)
+    (assert_raises (fn [] ((actor_cell .get) .send 1)) Error
+      "disposing the effect owner must close the actor mailbox")))

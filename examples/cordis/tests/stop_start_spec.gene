@@ -1,0 +1,38 @@
+(mod cordis_stop_start_spec)
+
+(import $test [describe it after_each assert_equal])
+
+(import [RuntimeOptions LoaderOptions invocation_limits
+         default_plugin_invoker new_runtime]
+  ^from "../src/cordis")
+
+(import [LoadedValue loaded_key] ^from "../fixtures/contract")
+
+(describe "Cordis stop_start"
+  (after_each [t]
+    (if_not ($absent? t/runtime) (t/runtime .close)))
+
+  (it "tears down and replaces plugins with the reduced reload guarantee" [t]
+    (var runtime
+      (new_runtime
+        (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                        ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (runtime .admit_service_key loaded_key)
+    (var loader
+      (runtime .loader
+        (LoaderOptions ^plugin_root "fixtures/plugins"
+          ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
+          ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+          ^default_limits nil ^reload_policy nil)))
+    (loader .reconcile
+      {^format 1
+       ^entries [{^id "provider" ^module "stop_start.gene" ^config nil}]})
+    (var result (loader .reload ["*"]))
+    (assert_equal result/status "reloaded_stop_start"
+      "stop_start descriptors must select the reduced reload guarantee")
+    ($assert result/reduced_guarantee
+      "stop_start results must report their reduced guarantee")
+    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 5
+      "stop_start must activate the prepared replacement after teardown")
+    (loader .dispose)))
