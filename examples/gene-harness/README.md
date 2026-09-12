@@ -65,18 +65,75 @@ The `cli` profile installs the terminal view:
 bin/gene run examples/gene-harness/src/main.gene cli
 ```
 
-The `chat` profile swaps in the OpenRouter model provider, and with it the
-provider that writes plugins:
+The `chat` profile uses a model for both conversation and writing plugins.
+It supports Codex OAuth credentials from disk and OpenRouter API keys. With no
+OpenRouter key configured, it selects Codex; set `GENE_HARNESS_PROVIDER` to
+choose explicitly when both credentials are available.
+
+For Codex, first sign in with ChatGPT and file credential storage:
 
 ```bash
-OPENROUTER_API_KEY=... \
-  bin/gene run --allow_read_dir "$PWD/tools/gene-lang-skill" \
-  examples/gene-harness/src/main.gene chat
+codex -c cli_auth_credentials_store='"file"' login
+mkdir -p /tmp/harness-chat
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-chat GENE_HARNESS_PROVIDER=codex \
+    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
+    --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
+    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+    src/main.gene chat
+)
 ```
 
-The grant is for the checked-in Gene skill, which both the agent and the plugin
-author send to the model. Note that a home inside the repository is covered by
-two grants at once and is refused as ambiguous; give `chat` a home outside it.
+The client reads `CODEX_AUTH_FILE`, or `auth.json` under `CODEX_HOME` (default
+`~/.codex`). The file must contain `tokens.access_token` and `tokens.account_id`;
+API-key-only files and OS keychain credentials are not used. For a custom
+`CODEX_AUTH_FILE`, grant its containing directory instead. Credentials are
+reloaded for each request; Codex owns token refresh, and a 401 asks you to run
+`codex login` again. The harness never writes the auth file or stores tokens in
+conversation history. See [Codex credential storage](https://developers.openai.com/codex/auth/).
+
+OpenRouter remains available with either existing key spelling:
+
+```bash
+mkdir -p /tmp/harness-chat
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
+    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
+    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+    src/main.gene chat
+)
+```
+
+Both paths load the checked-in Gene skill for the agent and plugin author.
+Run from the package directory: running from the repository root makes the
+automatic launch-directory grant overlap the explicit skill grant, and file
+reads are refused as ambiguous. The subshells above keep your shell at the
+repository root afterward. Use an external state home to avoid overlapping
+grants there too; these commands share `/tmp/harness-chat`.
+
+| Environment variable | Behavior |
+|---|---|
+| `GENE_HARNESS_PROVIDER` | `codex` or `openrouter`. If unset, an OpenRouter key selects OpenRouter; otherwise Codex. |
+| `GENE_HARNESS_MODEL` | Model for both chat and plugin generation. Default: `gpt-6-astra` for Codex, `openai/gpt-6-astra` for OpenRouter. Supply the provider's exact model ID. |
+| `GENE_HARNESS_THINKING_EFFORT` | Default: `medium`. Accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; support depends on the chosen model/provider. |
+| `CODEX_AUTH_FILE` | Explicit path to the Codex OAuth JSON file; overrides `CODEX_HOME`. |
+| `CODEX_HOME` | Codex configuration directory; defaults to `$HOME/.codex`. |
+| `OPENROUTER_API_KEY`, `OPENROUTER_KEY` | OpenRouter key; the first nonempty value wins. |
+| `OPENROUTER_MODEL` | Existing OpenRouter model override; used when `GENE_HARNESS_MODEL` is unset. |
+
+Empty or whitespace-only settings use their defaults. For example, add
+`GENE_HARNESS_MODEL=gpt-6-astra GENE_HARNESS_THINKING_EFFORT=high` to the Codex
+command. Astra supports `low`, `medium`, `high`, `xhigh`, and `max` effort.
+See [the model reference](https://developers.openai.com/api/docs/models/gpt-6-astra).
+
+Codex requests use its Responses endpoint with `store=false` and streaming.
+The client waits for a completed response before returning text to the harness;
+failed or interrupted streams cannot execute partial programs. OpenRouter
+continues to use Chat Completions. The existing 3,000-token request budget
+applies to OpenRouter; Codex does not accept that token-limit parameter. Both
+transports retain the 90-second timeout and 2 MB response limit.
 
 ## Durable self-extension
 
@@ -100,11 +157,14 @@ property of the deployment: `web` and `cli` bind a template provider, and `chat`
 binds one that asks the model to write the module.
 
 ```bash
-GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
-  bin/gene run --allow_read_write_dir /tmp/harness-chat \
-  --allow_read_dir "$PWD/tools/gene-lang-skill" \
-  examples/gene-harness/src/main.gene chat \
-  /build wordcount "count the words in the argument and report the total"
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
+    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
+    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+    src/main.gene chat \
+    /build wordcount "count the words in the argument and report the total"
+)
 ```
 
 ```text
@@ -388,7 +448,8 @@ before stores are flushed and closed.
 | `src/state.gene` | scoped segmented event store and state projections |
 | `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
 | `src/agent.gene` | command/tool registries and offline prompt provider |
-| `src/llm.gene` | OpenRouter provider and registry-rendered prompt |
+| `src/llm.gene` | model agent, plugin author, and registry-rendered prompt |
+| `src/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
 | `src/repl.gene` | terminal subscriber, one prompt and one line |
 | `src/view_api.gene`, `src/recording_view.gene` | typed view contract and recording view |
 | `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
@@ -403,7 +464,9 @@ transaction diff/commit/abort, event retention/catalog/concurrency/cold repair,
 cross-process Store publication, content-addressed registration, dependency
 closure and cache repair, quarantine, named-root attenuation, callback and
 typed-provider supervision, plugin events, provenance, active views/output,
-prompt-skill loading, and session/workspace state conflicts.
+prompt-skill loading, model configuration/credentials/response parsing, and
+session/workspace state conflicts. Model client tests use synthetic credentials
+and responses and do not make network requests.
 
 Run the focused programs directly while developing. Repository gates are:
 

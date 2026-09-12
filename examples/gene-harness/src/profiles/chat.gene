@@ -6,7 +6,7 @@
 #     src/main.gene chat
 #
 # Identical to `cli` in five of its seven plugins. The two that differ are both
-# providers: `HarnessPrompt` — the offline interpreter becomes an OpenRouter
+# providers: `HarnessPrompt` — the offline interpreter becomes a model
 # client — and `HarnessCodegen`, where filling a template becomes asking that
 # same model to write the module. Nothing else in the deployment is told about
 # either, and `dispatch`, `build_tool` and `register_module` are the identical
@@ -26,7 +26,7 @@
 
 (fn chat_profile [] : Profile
   # The one place this deployment differs from `cli` beyond its two providers.
-  # `build` here reaches OpenRouter through the `HarnessCodegen` seam, and a
+  # `build` here reaches Codex or OpenRouter through the `HarnessCodegen` seam, and a
   # command that waits on a model cannot finish inside the 2 000 ms budget that
   # suits a local callback — the request alone takes tens of seconds. Steps and
   # memory stay exactly where they were: those are the guards against code that

@@ -1,0 +1,161 @@
+(mod model_client_smoke)
+
+(import $fs [write_text])
+(import [HarnessError] from "../src/kernel")
+(import
+  [resolve_config codex_credentials completion_request completion_text codex_stream_text]
+  from
+  "../src/model_client")
+
+(fn rejects [call, expected : Str]
+  (var message "")
+  (try
+    (call)
+  catch HarnessError
+    (set message $err/message))
+  ($assert ($str/contains? message expected) $"expected '${expected}', got '${message}'"))
+
+(fn sse [event] : Str
+  ($
+    "data: "
+    ($json/stringify event)
+    """
+
+"""))
+
+(fn main [args]
+  (var defaults (resolve_config {^HOME "/home/example"}))
+  ($assert (== defaults/provider "codex"))
+  ($assert (== defaults/model "gpt-6-astra"))
+  ($assert (== defaults/effort "medium"))
+  ($assert (== defaults/auth_file "/home/example/.codex/auth.json"))
+  (var custom_home (resolve_config {^CODEX_HOME "/custom/codex" ^HOME "/ignored"}))
+  ($assert (== custom_home/auth_file "/custom/codex/auth.json"))
+  (var blanks (resolve_config {^GENE_HARNESS_PROVIDER " " ^GENE_HARNESS_MODEL ""
+                              ^GENE_HARNESS_THINKING_EFFORT " "
+                              ^OPENROUTER_API_KEY " "}))
+  ($assert (== blanks/provider "codex"))
+  ($assert (== blanks/model "gpt-6-astra"))
+  ($assert (== blanks/effort "medium"))
+
+  (var router (resolve_config {^OPENROUTER_KEY "legacy-key"
+                              ^OPENROUTER_MODEL "deepseek/deepseek-v4-flash-0731"}))
+  ($assert (== router/provider "openrouter"))
+  ($assert (== router/api_key "legacy-key"))
+  ($assert (== router/model "deepseek/deepseek-v4-flash-0731"))
+  (var primary (resolve_config {^OPENROUTER_API_KEY "primary-key"
+                               ^OPENROUTER_KEY "legacy-key"}))
+  ($assert (== primary/api_key "primary-key"))
+  ($assert (== primary/model "openai/gpt-6-astra"))
+  (var fallback (resolve_config {^OPENROUTER_API_KEY " " ^OPENROUTER_KEY "legacy-key"}))
+  ($assert (== fallback/api_key "legacy-key"))
+  (var overridden (resolve_config {^GENE_HARNESS_PROVIDER "openrouter"
+                                  ^OPENROUTER_API_KEY "test-key"
+                                  ^OPENROUTER_MODEL "ignored/model"
+                                  ^GENE_HARNESS_MODEL "openai/custom-model"
+                                  ^GENE_HARNESS_THINKING_EFFORT "high"}))
+  (var router_request (completion_request overridden "system text" "user text" 4321))
+  ($assert (== router_request/url "https://openrouter.ai/api/v1/chat/completions"))
+  ($assert (== router_request/headers/authorization "Bearer test-key"))
+  ($assert (== router_request/body/model "openai/custom-model"))
+  ($assert (== router_request/body/messages/0/content "system text"))
+  ($assert (== router_request/body/messages/1/content "user text"))
+  ($assert (== router_request/body/max_tokens 4321))
+  ($assert (== router_request/body/reasoning/effort "high"))
+  ($assert (== (completion_text "openrouter"
+    {^status 200 ^body ($json/stringify
+      {^choices [{^message {^content "  router reply  "}}]})}) "router reply"))
+  (rejects (fn [] (completion_text "openrouter" {^status 429 ^body "rate limited"}))
+    "openrouter 429: rate limited")
+  (rejects (fn [] (resolve_config {^GENE_HARNESS_PROVIDER "typo"}))
+    "GENE_HARNESS_PROVIDER")
+  (rejects (fn [] (resolve_config {^GENE_HARNESS_THINKING_EFFORT "typo"}))
+    "GENE_HARNESS_THINKING_EFFORT")
+  (rejects (fn [] (completion_request
+    (resolve_config {^GENE_HARNESS_PROVIDER "openrouter"}) "s" "u" 3000))
+    "no OpenRouter API key")
+
+  # Synthetic credentials only. Rewriting proves each request sees refreshed
+  # tokens without persisting them in a provider or touching the user's login.
+  (var auth_file $"${args/0}/auth.json")
+  (write_text auth_file ($json/stringify
+    {^tokens {^access_token "fake-access-1" ^account_id "fake-account"}}))
+  (var codex (resolve_config {^GENE_HARNESS_PROVIDER "codex"
+                             ^OPENROUTER_API_KEY "must-not-use"
+                             ^OPENROUTER_MODEL "ignored/model"
+                             ^CODEX_AUTH_FILE auth_file ^CODEX_HOME "/ignored"}))
+  ($assert (== codex/provider "codex"))
+  ($assert (== codex/model "gpt-6-astra"))
+  ($assert (== codex/auth_file auth_file))
+  (var codex_request (completion_request codex "system text" "user text" 3000))
+  ($assert (== codex_request/url "https://chatgpt.com/backend-api/codex/responses"))
+  ($assert (== codex_request/headers/authorization "Bearer fake-access-1"))
+  ($assert (== codex_request/headers/chatgpt-account-id "fake-account"))
+  ($assert (== codex_request/headers/accept "text/event-stream"))
+  ($assert (== codex_request/body/model "gpt-6-astra"))
+  ($assert (== codex_request/body/instructions "system text"))
+  ($assert (== codex_request/body/input/0/content/0/text "user text"))
+  ($assert (== codex_request/body/reasoning/effort "medium"))
+  ($assert (== codex_request/body/store false))
+  ($assert (== codex_request/body/stream true))
+  ($assert ($absent? codex_request/body/max_output_tokens))
+  ($assert ($absent? codex_request/body/max_tokens))
+  (write_text auth_file ($json/stringify
+    {^tokens {^access_token "fake-access-2" ^account_id "fake-account"}}))
+  (set codex_request (completion_request codex "s" "u" 3000))
+  ($assert (== codex_request/headers/authorization "Bearer fake-access-2"))
+  (write_text auth_file "{malformed-secret-value")
+  (var malformed_message "")
+  (try (codex_credentials auth_file)
+    catch HarnessError (set malformed_message $err/message))
+  ($assert ($str/contains? malformed_message "cannot read Codex"))
+  ($assert (! ($str/contains? malformed_message "malformed-secret-value")))
+  (write_text auth_file "{\"OPENAI_API_KEY\":\"not-oauth\"}")
+  (rejects (fn [] (codex_credentials auth_file)) "no OAuth tokens")
+  (write_text auth_file "{\"tokens\":{\"access_token\":\"fake\"}}")
+  (rejects (fn [] (codex_credentials auth_file)) "tokens.account_id")
+  (write_text auth_file "{\"tokens\":{\"access_token\":\"\",\"account_id\":\"fake\"}}")
+  (rejects (fn [] (codex_credentials auth_file)) "credentials are empty")
+  (rejects (fn [] (codex_credentials $"${args/0}/missing.json")) "cannot read Codex")
+  (rejects (fn [] (codex_credentials nil)) "cannot locate Codex")
+  (rejects (fn [] (completion_text "codex" {^status 401 ^body "rejected"}))
+    "run codex login")
+
+  (var response {^status "completed"
+    ^output [{^type "reasoning" ^summary []}
+             {^type "message" ^role "assistant"
+              ^content [{^type "output_text" ^text "  hello "}
+                        {^type "output_text" ^text "世界  "}]}]})
+  (var completed {^type "response.completed" ^response response})
+  (var delta (sse {^type "response.output_text.delta" ^delta "ignore me"}))
+  (var item_done (sse {^type "response.output_item.done" ^item response/output/1}))
+  (var empty_completed
+    (sse {^type "response.completed" ^response {^status "completed" ^output []}}))
+  ($assert (== (codex_stream_text ($str/join [delta item_done empty_completed] ""))
+    "hello 世界"))
+  ($assert (== (codex_stream_text ($str/join [item_done (sse completed)] ""))
+    "hello 世界"))
+  (rejects (fn [] (codex_stream_text item_done)) "before response.completed")
+  ($assert (== (completion_text "codex"
+    {^status 200 ^body ($str/join [": keepalive\n\n" delta (sse completed)
+                                 "data: [DONE]\n\n"] "")}) "hello 世界"))
+  ($assert (== (codex_stream_text
+    $"event: response.completed\r\ndata: ${($json/stringify completed)}\r\n\r\n")
+    "hello 世界"))
+  ($assert (== (codex_stream_text
+    $"data: {\n data: \"type\":\"response.completed\",\n data: \"response\":${($json/stringify response)}}")
+    "hello 世界"))
+  ($assert (== (codex_stream_text (sse {^type "response.done" ^response response}))
+    "hello 世界"))
+  (rejects (fn [] (codex_stream_text delta)) "before response.completed")
+  (rejects (fn [] (codex_stream_text "data: [DONE]\n\n")) "before response.completed")
+  (rejects (fn [] (codex_stream_text "data: invalid\n\n")) "invalid stream event")
+  (for failure in ["error" "response.failed" "response.incomplete"]
+    (rejects (fn [] (codex_stream_text (sse {^type failure}))) "stream failed"))
+  (rejects (fn [] (codex_stream_text (sse
+    {^type "response.completed" ^response {^status "incomplete" ^output []}})))
+    "did not complete")
+  (rejects (fn [] (codex_stream_text (sse
+    {^type "response.completed" ^response {^status "completed" ^output []}})))
+    "no output text")
+  ($println "model_client_smoke: ok"))

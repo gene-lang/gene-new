@@ -28,9 +28,9 @@
 
 (mod llm)
 
-(import $net/http_client [request])
 (import $parse [read_all])
 (import $fs [read_text])
+(import [model_name chat_completion] from "./model_client")
 (import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent ToolInvoked
          PluginActivated PluginDeactivated PluginFailed PluginInstalled
          PluginUninstalled
@@ -49,17 +49,7 @@
 (import [dispatch bare_query? words words_from word plugin_source] from "./agent")
 (import [register_module run_workspace_turn] from "./workspace")
 
-(var endpoint "https://openrouter.ai/api/v1/chat/completions")
-(var default_model "deepseek/deepseek-v4-flash-0731")
 (var turn_limit 8)
-
-(fn model_name [] : Str
-  # `$os/get_env` *raises* when the variable is unset; `$os/env?` is the
-  # optional read. Using the first here put the whole agent plugin into `error`
-  # at boot, with the reason in the lifecycle log — §3.3.5 working on a real
-  # mistake rather than a hypothetical one.
-  (var configured ($os/env? "OPENROUTER_MODEL"))
-  (if (== configured nil) default_model ($to_str configured)))
 
 # ---------------------------------------------------------------------------
 # What the generated program may reach
@@ -312,45 +302,6 @@ result you are shown names the revision it landed at.
 
 Remember: reply with the map and nothing else. Start your reply with {^status
 and end it with }.""")
-
-(fn api_key [] : Any
-  # Both spellings, because both are in use: OPENROUTER_API_KEY is what the
-  # service's own docs call it, OPENROUTER_KEY is what this example started
-  # with. Reading one and failing on the other is a bad first five minutes.
-  (var primary ($os/env? "OPENROUTER_API_KEY"))
-  (if (== primary nil) ($os/env? "OPENROUTER_KEY") primary))
-
-(fn chat_completion [system : Str, user : Str,
-                     ^max_tokens max_tokens : Int = 3000] : Str
-  # One HTTP path for every kind of request this harness makes of a model.
-  # `call_model` answers a prompt; `model_plugin_source` writes a plugin. They
-  # differ only in what they put in the two messages, which is the whole reason
-  # a second use did not need a second client.
-  (var key (api_key))
-  (if_yes (== key nil)
-    (fail (HarnessError
-      ^message "no API key — set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
-  (var body ($json/stringify
-    {^model (model_name)
-     ^messages [{^role "system" ^content system}
-                {^role "user" ^content user}]
-     ^max_tokens max_tokens
-     # This model reasons by default and will spend the whole budget thinking
-     # before emitting a token of content — measured: at max_tokens 60 it
-     # returned the three characters "har".
-     ^reasoning {^enabled false}}))
-  (var resp
-    (await (request ^method "POST" ^url endpoint
-                    ^headers {^content-type "application/json"
-                              ^authorization $"Bearer ${key}"}
-                    ^body body ^timeout_ms 90000 ^max_bytes 2000000)))
-  # A non-2xx status is ordinary response data for this client, not a failed
-  # task, so it has to be checked rather than caught.
-  (if_yes (!= resp/status 200)
-    (fail (HarnessError ^message $"openrouter ${resp/status}: ${resp/body}")))
-  (var parsed ($json/parse resp/body))
-  (var text parsed/choices/0/message/content)
-  (if (== text nil) "" ($str/trim ($to_str text))))
 
 (fn call_model [h : Harness, prompt : Str, history : Str] : Str
   (chat_completion (system_prompt h)

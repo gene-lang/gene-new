@@ -1,0 +1,186 @@
+# Provider transport shared by chat and plugin generation. Credentials stay in
+# the host client; they never enter model prompts or durable harness state.
+(mod model_client)
+
+(import $net/http_client [request])
+(import $fs [read_text])
+(import [HarnessError] from "./kernel")
+
+(fn nonempty [value] : Any
+  (if ($absent? value)
+    nil
+    (if (== ($str/trim ($to_str value)) "")
+      nil
+      ($str/trim ($to_str value)))))
+
+(fn resolve_config [environment] : Any
+  (var key (?? (nonempty environment/OPENROUTER_API_KEY) (nonempty environment/OPENROUTER_KEY)))
+  (var provider
+    (?? (nonempty environment/GENE_HARNESS_PROVIDER) (if ($absent? key) "codex" "openrouter")))
+  (if_not (|| (== provider "codex") (== provider "openrouter"))
+    (fail (HarnessError ^message "GENE_HARNESS_PROVIDER must be codex or openrouter")))
+  (var model (nonempty environment/GENE_HARNESS_MODEL))
+  (if_yes (== provider "openrouter") (set model (?? model (nonempty environment/OPENROUTER_MODEL))))
+  (set model (?? model (if (== provider "codex") "gpt-6-astra" "openai/gpt-6-astra")))
+  (var effort (?? (nonempty environment/GENE_HARNESS_THINKING_EFFORT) "medium"))
+  (var valid_effort false)
+  (for supported in ["none" "minimal" "low" "medium" "high" "xhigh" "max"]
+    (if_yes (== effort supported) (set valid_effort true)))
+  (if_not valid_effort
+    (fail
+      (HarnessError ^message "GENE_HARNESS_THINKING_EFFORT must be none, minimal, low, medium, high, xhigh, or max")))
+  (var auth_file (nonempty environment/CODEX_AUTH_FILE))
+  (if_yes ($absent? auth_file)
+    (var home (nonempty environment/CODEX_HOME))
+    (if_yes ($absent? home)
+      (var user_home (nonempty environment/HOME))
+      (if_not ($absent? user_home) (set home $"${user_home}/.codex")))
+    (if_not ($absent? home) (set auth_file $"${home}/auth.json")))
+  {^provider provider ^model model ^effort effort ^api_key key ^auth_file auth_file})
+
+(fn model_config [] : Any
+  (var environment {})
+  (for name in ["GENE_HARNESS_PROVIDER" "GENE_HARNESS_MODEL" "GENE_HARNESS_THINKING_EFFORT" "OPENROUTER_API_KEY" "OPENROUTER_KEY" "OPENROUTER_MODEL" "CODEX_AUTH_FILE" "CODEX_HOME" "HOME"]
+    (environment .put name ($os/env? name)))
+  (resolve_config environment))
+
+(fn model_name [] : Str
+  (var config (model_config))
+  config/model)
+
+(fn codex_credentials [path] : Any
+  (if_yes ($absent? path)
+    (fail (HarnessError
+      ^message "cannot locate Codex auth.json; set CODEX_AUTH_FILE, CODEX_HOME, or HOME")))
+  # Never include parser diagnostics: malformed JSON may contain a token in
+  # the offending source excerpt. The file remains owned and refreshed by Codex.
+  (var auth
+    (try ($json/parse (read_text path))
+      catch Any
+      (fail (HarnessError
+        ^message $"cannot read Codex auth.json at ${path}; run codex login with file credential storage and grant --allow_read_dir for its directory"))))
+  (if_not (== ($head auth) Map)
+    (fail (HarnessError ^message "Codex auth.json must contain an object")))
+  (var tokens auth/tokens)
+  (if_not (== ($head tokens) Map)
+    (fail (HarnessError
+      ^message "Codex auth.json has no OAuth tokens; sign in with ChatGPT using codex login")))
+  (var access tokens/access_token)
+  (var account tokens/account_id)
+  (if_not (&& (== ($head access) Str) (== ($head account) Str))
+    (fail (HarnessError
+      ^message "Codex auth.json requires tokens.access_token and tokens.account_id; run codex login")))
+  (if_yes (|| ($absent? (nonempty access)) ($absent? (nonempty account)))
+    (fail (HarnessError
+      ^message "Codex OAuth credentials are empty; run codex login")))
+  {^access_token access ^account_id account})
+
+(fn completion_request [config, system : Str, user : Str, max_tokens : Int] : Any
+  (if (== config/provider "codex")
+    (then
+      (var credentials (codex_credentials config/auth_file))
+      {^url "https://chatgpt.com/backend-api/codex/responses"
+       ^headers {^content-type "application/json" ^accept "text/event-stream"
+                 ^authorization $"Bearer ${credentials/access_token}"
+                 ^chatgpt-account-id credentials/account_id
+                 ^OpenAI-Beta "responses=experimental"
+                 ^originator "gene-harness"}
+       # The Codex endpoint requires streaming and store=false, and does not
+       # accept max_output_tokens. The buffered HTTP client still bounds bytes
+       # and wall time; only completed responses are allowed to become code.
+       ^body {^model config/model ^instructions system
+              ^input [{^role "user" ^content [{^type "input_text" ^text user}]}]
+              ^reasoning {^effort config/effort}
+              ^store false ^stream true}})
+    (else
+      (if_yes ($absent? config/api_key)
+        (fail (HarnessError
+          ^message "no OpenRouter API key; set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
+      {^url "https://openrouter.ai/api/v1/chat/completions"
+       ^headers {^content-type "application/json"
+                 ^authorization $"Bearer ${config/api_key}"}
+       ^body {^model config/model
+              ^messages [{^role "system" ^content system}
+                         {^role "user" ^content user}]
+              ^max_tokens max_tokens ^reasoning {^effort config/effort}}})))
+
+(fn response_text [response] : Str
+  (if_not (== response/status "completed")
+    (fail (HarnessError ^message "codex response did not complete")))
+  (var texts [])
+  (for item in (?? response/output [])
+    (if_yes (&& (== item/type "message") (== item/role "assistant"))
+      (for part in (?? item/content [])
+        (if_yes (== part/type "refusal") (fail (HarnessError ^message "codex refused the request")))
+        (if_yes (== part/type "output_text") (texts .push part/text)))))
+  (var text ($str/trim ($str/join texts "")))
+  (if_yes (== text "") (fail (HarnessError ^message "codex returned no output text")))
+  text)
+
+(fn codex_event [data : Str, items] : Any
+  (if_yes (|| (== data "") (== data "[DONE]")) (return nil))
+  (var event
+    (try ($json/parse data)
+      catch Any
+      (fail (HarnessError ^message "codex returned an invalid stream event"))))
+  (if_yes (|| (== event/type "error") (== event/type "response.failed")
+               (== event/type "response.incomplete"))
+    (fail (HarnessError ^message $"codex stream failed (${event/type})")))
+  (if_yes (== event/type "response.output_item.done")
+    (items .push event/item))
+  (if (|| (== event/type "response.completed") (== event/type "response.done"))
+    (then
+      (var response event/response)
+      (var output (?? response/output []))
+      # Codex may send completed items separately and leave the terminal
+      # response's output empty. Keep those items, but release text only once
+      # the whole response has completed successfully.
+      (response_text {^status response/status
+                      ^output (if (== output/.size 0) items output)}))
+    (else nil)))
+
+(fn codex_stream_text [body : Str] : Str
+  # SSE data may span several lines; CRLF, comments, event names and other
+  # fields are legal too. Deltas are deliberately ignored: a severed stream
+  # must never send a partial Gene program to the evaluator.
+  (var data [])
+  (var items [])
+  (var completed nil)
+  (for raw_line in ($str/split body "\n")
+    (var line ($str/trim raw_line))
+    (if (== line "")
+      (then
+        (var text (codex_event ($str/join data "\n") items))
+        (if_not ($absent? text) (set completed text))
+        (set data []))
+      (elif ($str/starts_with? line "data:")
+        (data .push ($str/trim ($str/slice_bytes line 5 ($str/byte_size line)))))))
+  (var last_text (codex_event ($str/join data "\n") items))
+  (if_not ($absent? last_text) (set completed last_text))
+  (if_yes ($absent? completed)
+    (fail (HarnessError ^message "codex stream ended before response.completed")))
+  completed)
+
+(fn completion_text [provider : Str, response] : Str
+  (if_yes (!= response/status 200)
+    (if_yes (&& (== provider "codex") (== response/status 401))
+      (fail
+        (HarnessError ^message "codex 401: OAuth credentials expired or were rejected; run codex login to refresh auth.json")))
+    (fail (HarnessError ^message $"${provider} ${response/status}: ${response/body}")))
+  (if (== provider "codex")
+    (then
+      (codex_stream_text response/body))
+    (else
+      (var parsed ($json/parse response/body))
+      (var text parsed/choices/0/message/content)
+      (if ($absent? text)
+        ""
+        ($str/trim ($to_str text))))))
+
+(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens : Int = 3000] : Str
+  (var config (model_config))
+  (var spec (completion_request config system user max_tokens))
+  (var response
+    (await
+      (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms 90000 ^max_bytes 2000000)))
+  (completion_text config/provider response))
