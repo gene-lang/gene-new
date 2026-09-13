@@ -5,8 +5,8 @@
 #     gene run --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
 #     src/main.gene chat
 #
-# Identical to `cli` in five of its seven plugins. The two that differ are both
-# providers: `HarnessPrompt` — the offline interpreter becomes a model
+# Shares the CLI's commands, code execution and views. The two plugins that
+# differ are providers: `HarnessPrompt` — the offline interpreter becomes a model
 # client — and `HarnessCodegen`, where filling a template becomes asking that
 # same model to write the module. Nothing else in the deployment is told about
 # either, and `dispatch`, `build_tool` and `register_module` are the identical
@@ -22,6 +22,7 @@
 (import [cli_fs_plugin cli_render_plugin] ^from "./cli")
 (import [llm_agent_plugin model_codegen_plugin] ^from "../agents/llm")
 (import [command_plugin] ^from "../agents/agent")
+(import [code_command_plugin] ^from "../agents/code_command")
 (import [driver_plugin] ^from "../views/repl")
 
 (fn chat_profile [] : Profile
@@ -36,5 +37,5 @@
            ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
                                     ^timeout_ms 120000)
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (command_plugin) (llm_agent_plugin) (driver_plugin)
+                     (command_plugin) (code_command_plugin) (llm_agent_plugin) (driver_plugin)
                      (model_codegen_plugin)]))

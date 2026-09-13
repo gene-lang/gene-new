@@ -16,6 +16,7 @@
 (import [Profile] ^from "./profile")
 (import [reporter_plugin] ^from "./common")
 (import [agent_plugin command_plugin template_codegen_plugin] ^from "../agents/agent")
+(import [code_command_plugin] ^from "../agents/code_command")
 
 (fn web_fs_plugin [] : Plugin
   (Plugin ^id "fs" ^provides ["HarnessFs"]
@@ -38,5 +39,5 @@
   # does at the command line.
   (Profile ^name "web"
            ^plugins [(web_fs_plugin) (web_render_plugin) (reporter_plugin)
-                     (command_plugin) (agent_plugin)
+                     (command_plugin) (code_command_plugin) (agent_plugin)
                      (template_codegen_plugin)]))

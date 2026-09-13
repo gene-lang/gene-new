@@ -46,7 +46,7 @@ bin/gene run --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
 
 Write any prompt in the composer. Ordinary text, including a single word such
 as `help`, goes to the model. A leading slash selects special functionality:
-`/help`, `/status`, `/build`, and the other registered commands. Leading
+`/help`, `/status`, `/code`, `/build`, and the other registered commands. Leading
 whitespace before a slash is allowed. Unknown slash commands show command help
 guidance without contacting the model.
 
@@ -85,7 +85,7 @@ remain in the native process. `GENE_HARNESS_MODEL` and
 
 `--offline` (or `GENE_HARNESS_OFFLINE=1`) deliberately selects a **command-only
 demo**, with a visible notice in the browser. It supports `/help`, `/status`,
-and template-based `/build`, and cannot answer general prompts. Omit this
+direct `/code`, and template-based `/build`, and cannot answer general prompts. Omit this
 option and unset that environment variable for agent conversations.
 
 The client supports creating/renaming sessions, retained history, Gene code and
@@ -195,6 +195,44 @@ failed or interrupted streams cannot execute partial programs. OpenRouter
 continues to use Chat Completions. The existing 3,000-token request budget
 applies to OpenRouter; Codex does not accept that token-limit parameter. Both
 transports retain the 90-second timeout and 2 MB response limit.
+
+## Run Gene code directly
+
+Use `/code` to execute Gene without a model request:
+
+```text
+/code (+ 1 2)
+/code (plugin_states)
+```
+
+The first returns `3`. Multiple forms and multiline code are supported:
+
+```text
+/code
+# Comments and string spacing are preserved.
+(var greeting "hello  world")
+($str/byte_size greeting)
+```
+
+This returns `12`. All forms are parsed before execution and run together in
+one workspace turn. The source appears as a Gene code block and the last value
+is returned to the conversation. `/code` without source shows usage.
+
+The command is available in browser, chat, CLI, and offline profiles, and
+appears in `/help` and the browser's slash-command picker. It shares the
+model executor's harness bindings, capabilities, and transaction handling.
+Evaluation is bounded to 25,000 steps, 32 MB, and one second, leaving room in
+the command's outer budget for cleanup. Each invocation has a fresh local
+scope; use the harness helpers for lasting changes. Syntax and execution
+errors are shown as results.
+Queued module registrations default to `program/user` provenance with no model
+name. Explicit author fields on a registration still take precedence.
+
+For a command-line invocation:
+
+```sh
+bin/gene run examples/gene-harness/src/main.gene web /code '(+ 1 2)'
+```
 
 ## Durable self-extension
 
@@ -587,6 +625,7 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/storage/state.gene` | scoped segmented event store and state projections |
 | `src/storage/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
 | `src/agents/agent.gene` | command/tool registries and offline prompt provider |
+| `src/agents/code_command.gene` | direct `/code` execution using the shared program executor |
 | `src/agents/llm.gene` | model agent, plugin author, and registry-rendered prompt |
 | `src/agents/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
 | `src/agents/model_reply.gene` | shared Gene reply format, inert parsing, and field validation |

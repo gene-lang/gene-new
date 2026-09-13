@@ -16,6 +16,7 @@
 (import [Profile] ^from "./profile")
 (import [reporter_plugin] ^from "./common")
 (import [agent_plugin command_plugin template_codegen_plugin] ^from "../agents/agent")
+(import [code_command_plugin] ^from "../agents/code_command")
 (import [driver_plugin] ^from "../views/repl")
 
 # Each factory is nullary and references only module-level names, so the stored
@@ -43,5 +44,5 @@
   # view row; main runs the selected view and knows no profile-specific driver.
   (Profile ^name "cli"
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (command_plugin) (agent_plugin) (driver_plugin)
+                     (command_plugin) (code_command_plugin) (agent_plugin) (driver_plugin)
                      (template_codegen_plugin)]))

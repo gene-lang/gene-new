@@ -183,7 +183,8 @@
 (fn run_program [h : Harness, program,
                  ^session session = nil, ^state_host state_host = nil,
                  ^payload payload = nil, ^prompt prompt : Str = "",
-                 ^round round : Int = 1] : Str
+                 ^round round : Int = 1, ^author author = nil,
+                 ^evaluation_limits evaluation_limits = nil] : Str
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
   # shape that runs, so a program may define something and then use it.
   #
@@ -197,10 +198,15 @@
   # operation that needs both is `register_module`, and the queue below is how
   # it gets them without the sandbox ever holding a grant.
   (var queued ($thaw #[]))
+  (var bindings (harness_bindings h queued ^session session ^state_host state_host
+                  ^payload payload ^prompt prompt ^round round))
   (var sandbox
-    (env ^bindings (harness_bindings h queued ^session session ^state_host state_host
-                    ^payload payload ^prompt prompt ^round round)
-         ^capabilities []))
+    (if ($absent? evaluation_limits)
+      (env ^bindings bindings ^capabilities [])
+      (env ^bindings bindings ^capabilities []
+        ^policy {^max_steps evaluation_limits/max_steps
+                 ^max_memory_mb evaluation_limits/max_memory_mb
+                 ^timeout_ms evaluation_limits/timeout_ms})))
   (var existing_events (log_events h))
   (var turn_id $"model-${(+ existing_events/.size 1)}")
   (var run_id (current_run_id h))
@@ -224,13 +230,12 @@
         # registration needs. A failure raises like any other error in the
         # body, so a module that will not load never becomes a revision.
         (for request in queued
-          # A program that queued a module rarely names its own author, and the
-          # harness knows what the caller does not have to say: this turn came
-          # from a model reply. Stamping the blanks is the difference between a
-          # durable entry that says who wrote it and one that says nothing —
-          # the same gap `build` had before it started asking its provider.
-          (var by (if (== request/by "") "program/model" request/by))
-          (var model (if (== request/model "") (model_name) request/model))
+          # A direct user command supplies its own provenance; model callers
+          # retain the existing default. Explicit registration authors win.
+          (var by (if (== request/by "")
+            (if ($absent? author) "program/model" author/by) request/by))
+          (var model (if (== request/model "")
+            (if ($absent? author) (model_name) author/model) request/model))
           (var at (if (== request/at "") ($to_str (gene/now)) request/at))
           (var registered
             (register_module h/workspace h request/id request/source

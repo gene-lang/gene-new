@@ -200,13 +200,31 @@
 (fn command_retry [h, parts] (retry h (word parts 1)))
 (fn command_diff [h, parts] ($to_str (transaction_diff h)))
 
+(fn command_input [prompt : Str]
+  # Find the command's first whitespace separator without rewriting its tail.
+  # Source commands need original newlines, comments and spaces in strings.
+  (var text ($str/trim prompt))
+  (var bytes ($str/to_utf8 text))
+  (var length ($str/byte_size text))
+  (var end 0)
+  (while (< end length)
+    (if ([9 10 13 32] .contains? (bytes .get end)) (break))
+    (set end (+ end 1)))
+  {^name ($str/slice_bytes text 0 end)
+   ^source ($str/slice_bytes text end (- length end))})
+
 (fn dispatch [h : Harness, prompt : Str] : Str
-  (var parts (words prompt))
-  (var cmd (word parts 0))
+  (var input (command_input prompt))
+  (var cmd input/name)
   (var command (row h "commands" cmd))
   (if (== command void)
     $"I don't know \"${cmd}\". Try `/help`."
-    (invoke_registry_row h "commands" cmd [h parts])))
+    (if (== command/raw_input true)
+      (then (invoke_registry_row h "commands" cmd [h input/source]))
+      (else
+        (var parts [cmd])
+        (for part in (words input/source) (parts .push part))
+        (invoke_registry_row h "commands" cmd [h parts])))))
 
 # --- the provider, and the plugin that binds it ----------------------------
 

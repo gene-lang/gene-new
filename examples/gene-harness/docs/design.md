@@ -471,6 +471,14 @@ The command interpreter no longer contains a command-name branch chain.
 `command_plugin` contributes command rows with `name`, `doc`, and `run`;
 `dispatch` looks up the row. Help is rendered from those same rows.
 
+Rows may opt into `^raw_input true`: dispatch then passes the unchanged source
+after the command name instead of a word list. The `code_command` plugin uses
+this for `/code`, preserving string whitespace and line comments. It parses
+all forms before invoking the same workspace executor as model programs, and
+returns the last value or a readable error without calling the model. Its
+inner evaluation budget leaves room for transaction cleanup inside the command
+callback's outer budget. Queued modules default to `program/user` provenance.
+
 Generated tools contribute `tools` rows rather than `Tool:*` seams. A durable
 build therefore extends `tools`, help/introspection, and behavior without core
 knowing the tool name — or, under `chat`, without anyone having written the
