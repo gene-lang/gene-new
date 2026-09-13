@@ -217,6 +217,23 @@ The public transcript is an allowlisted projection. Never send raw
 envelopes to the browser. A session list/title is metadata; it is not another
 model conversation or a reason to call the model.
 
+Completed model replies are an explicit part of the transcript: an `output`
+record with phase `raw_response` and the model round records the returned text
+before envelope parsing. This includes malformed replies and final response
+envelopes. The browser presents each as a collapsed disclosure labelled with
+its step, with inert text and a copy action. It retains the open/closed choice
+by block ID across transcript refreshes and preview-to-durable replacement;
+switching sessions or reloading starts collapsed. Existing transcript storage,
+retention, and display limits apply, including the visible truncation notice.
+These records contain model output text, not HTTP headers or request bodies.
+
+Normal browser conversations use the model-backed profile. Every nonempty
+prompt without a leading slash reaches its model loop, even a bare word that
+matches a command name. A slash, after trimming leading whitespace, selects
+registered functionality such as `/help`; unknown slash commands stay local.
+The opt-in offline profile is labelled as a command-only demo in the browser
+and startup output, and is not the documented default launch path.
+
 ## 6. Live output and reconnect
 
 Durable envelope sequences are the replay cursor. Log array indexes and

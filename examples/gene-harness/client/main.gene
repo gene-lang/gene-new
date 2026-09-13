@@ -8,6 +8,7 @@
   ^ready Bool ^sending Bool ^busy Bool ^refreshing Bool ^autoscroll Bool
   ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool
   ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any)
+  ^expanded (List Str)
   ^run Any ^pending Any ^status Any ^socket Any ^session_revision Str
   ^root EventTarget ^list EventTarget ^transcript EventTarget
   ^prompt EventTarget ^notice EventTarget ^title EventTarget})
@@ -64,7 +65,8 @@
   (if_not ($absent? client/status)
     (var model : Str client/status/model)
     (var provider : Str client/status/provider)
-    (set mode (if client/status/offline "Offline · local workspace" $"${model} · ${provider}")))
+    (set mode (if client/status/offline "Command demo · no model" $"${model} · ${provider}")))
+  (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
   ($dom/set_text ($dom/element "mode") mode))
 
 (fn render_sessions [client : Client] : Void
@@ -91,17 +93,43 @@
       ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here.")))))
 
 (fn render_block [client : Client, block : Any, provisional : Bool] : Void
+  (var id : Str block/id)
+  (var generation client/generation)
+  (var expanded false)
+  (for previous in client/expanded
+    (if_yes (== previous id) (set expanded true)))
   ($dom/append client/transcript
     (block_view block provisional
       (fn [text : Str] : Void
         ($browser/copy text (fn [copied : Bool] : Void
-          (notice client (if copied "Copied." "Select the text to copy it."))))))))
+          (notice client (if copied "Copied." "Select the text to copy it.")))))
+      expanded
+      (fn [opened : Bool] : Void
+        (if_yes (!= generation client/generation) (return))
+        (var kept : (List Str) [])
+        (for previous in client/expanded
+          (if_yes (!= previous id) (kept .push previous)))
+        (if_yes opened (kept .push id))
+        (set client/expanded kept)))))
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
   (var old_top ($dom/scroll_top client/transcript))
   (var old_height ($dom/scroll_height client/transcript))
   (var follow (&& (! client/viewing_history)
     (|| client/autoscroll ($dom/near_end client/transcript 80.0))))
+  # Keep expansion state only for retained blocks, across preview-to-durable
+  # replacement and transcript refreshes. New model steps start collapsed.
+  (var expanded : (List Str) [])
+  (for id in client/expanded
+    (var retained false)
+    (for block in client/records
+      (var block_id : Str block/id)
+      (if_yes (== block_id id) (set retained true)))
+    (for block in client/preview
+      (var block_id : Str block/id)
+      (if_yes (== block_id id) (set retained true)))
+    (if_yes retained (expanded .push id)))
+  (set client/expanded expanded)
   ($dom/clear client/transcript)
   (if_yes client/has_older
     ($dom/append client/transcript
@@ -115,16 +143,16 @@
         `(div ^class_name "empty_state"
            (div ^class_name "gene_mark" "G")
            (h2 "What would you like to work on?")
-           (p "Ask a question, explore your workspace, or build a new tool.")
+           (p "Ask anything. Use /help for commands, or describe what you want to do.")
            (div ^class_name "suggestions"
              (button ^type "button"
                ^on_click %(fn [event : Any] : Void
-                 ($dom/set_input_value client/prompt "/help")
-                 ($dom/focus client/prompt)) "Explore commands")
+                 ($dom/set_input_value client/prompt "What can you help me with?")
+                 ($dom/focus client/prompt)) "Explore ideas")
              (button ^type "button"
                ^on_click %(fn [event : Any] : Void
-                 ($dom/set_input_value client/prompt "/status")
-                 ($dom/focus client/prompt)) "Check workspace"))))))
+                 ($dom/set_input_value client/prompt "/help")
+                 ($dom/focus client/prompt)) "Slash commands"))))))
   (for block in client/records (render_block client block false))
   (for block in client/preview
     (var found false)
@@ -279,6 +307,7 @@
   (set client/next_seq "1")
   (set client/records [])
   (set client/preview [])
+  (set client/expanded [])
   (set client/run nil)
   (set client/refreshing false)
   (set client/has_older false)
@@ -454,7 +483,7 @@
     ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^ready false ^sending false
     ^busy false ^refreshing false ^autoscroll true ^generation 0
     ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false
-    ^records [] ^preview [] ^sessions [] ^run nil ^pending nil ^status nil
+    ^records [] ^preview [] ^sessions [] ^expanded [] ^run nil ^pending nil ^status nil
     ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions")
     ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt")
     ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))

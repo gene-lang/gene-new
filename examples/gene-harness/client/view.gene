@@ -1,17 +1,26 @@
 (mod harness_client_view ^profile web)
 
-(fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void)] : EventTarget
+(fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
+                expanded : Bool, on_toggle : (Fn [Bool] Void)] : EventTarget
   (var role : Str block/role)
   (var phase : Str block/phase)
   (var text : Str block/text)
   (var label (if (== role "user") "You" (if (== role "log") "History" "Gene")))
   (var cls (if (== role "user") "message user" "message agent"))
   (if_yes provisional (set cls $"${cls} provisional"))
+  (var raw (== phase "raw_response"))
+  (var step : Int block/round)
+  (var summary (if raw $"Raw LLM response · Step ${step}"
+    (if (== phase "code") "Gene code" "Execution result")))
   (var content : EventTarget
-    (if (|| (== phase "code") (== phase "result"))
+    (if (|| raw (== phase "code") (== phase "result"))
       ($dom/render
-        `(details ^class_name "execution"
-           (summary %(if (== phase "code") "Gene code" "Execution result"))
+        `(details ^class_name %(if raw "execution raw_response" "execution")
+           ^open %expanded
+           ^on_toggle %(fn [event : Any] : Void
+             (var opened : Bool event/current_target/open)
+             (on_toggle opened))
+           (summary %summary)
            (button ^type "button" ^class_name "copy"
              ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy")
            (pre (code %text))))

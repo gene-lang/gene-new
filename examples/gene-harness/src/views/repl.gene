@@ -56,7 +56,7 @@
   # has to be the last thing before the first prompt.
   (if_not (greeted .get)
     (greeted .set true)
-    ($println "Gene Agent — type `help`, or `quit` / Ctrl-D to leave"))
+    ($println "Gene Agent — `/help` for commands, `quit` / Ctrl-D to leave"))
   # The prompt goes out with a newline rather than as `User> `. stdout is
   # line-buffered on a terminal and Gene exposes no flush, so a prompt
   # without a newline would sit in the buffer until after the answer it was

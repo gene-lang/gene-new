@@ -45,7 +45,7 @@
 (import [HarnessFs HarnessRender HarnessPrompt HarnessCodegen LocalFs MemFs
          TextRender HtmlRender fs_provider render_provider prompt_provider
          codegen_provider head_tool report_tool] ^from "../seams")
-(import [dispatch bare_query? words words_from word plugin_source] ^from "./agent")
+(import [dispatch words words_from word plugin_source] ^from "./agent")
 (import [register_module run_workspace_turn] ^from "../storage/workspace")
 
 (var turn_limit 8)
@@ -359,6 +359,10 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
     (set turn (+ turn 1))
     (if_yes (> turn 1) (emit_output h $"== Round ${turn} ==" ^round turn))
     (var raw (complete h prompt history))
+    # Browser runs retain the original reply, including malformed replies and
+    # final text envelopes. Capture before parsing; never evaluate this copy.
+    (if_yes (!= (current_run_id h) "")
+      (emit_output h raw ^phase "raw_response" ^round turn))
     (var problem "")
     (var envelope
       (try (parse_envelope raw)
@@ -409,19 +413,15 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
     (set i (+ i 1)))
   ($str/trim ($str/join out "/")))
 
-(fn answer [h : Harness, prompt : Str, session, state_host] : Str
-  # Two ways to reach the offline interpreter without a round trip, and both
-  # have to be unambiguous — the shell should not get slower or need a network
-  # for the things typed most, but it also must not mistake a sentence for a
-  # command. `/` is explicit; a bare one-word query cannot be anything else.
-  #
-  # The rule this replaced was "if the first word names a command, run it", and
-  # it read `build me a plugin called greeter` as a request for a tool named
-  # `me`. A prefix of a sentence is not a command.
-  (if ($str/starts_with? prompt "/")
-    (then (dispatch h (strip_slash prompt)))
-    (elif (bare_query? h prompt) (dispatch h prompt))
-    (else (run_task h prompt session state_host))))
+(fn answer [h : Harness, prompt : Str, session, state_host,
+            ^complete complete = call_model] : Str
+  # Only an explicit slash selects a command. Every other prompt, including
+  # one word such as "help" or a sentence starting with "build", reaches the
+  # same model loop. Trim for routing while preserving the model's input.
+  (var command ($str/trim prompt))
+  (if ($str/starts_with? command "/")
+    (then (dispatch h (strip_slash command)))
+    (else (run_task h prompt session state_host ^complete complete))))
 
 # ---------------------------------------------------------------------------
 # Session memory

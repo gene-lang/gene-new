@@ -47,12 +47,15 @@
                (section ^id "auth_notice" ^class "auth_notice" ^^hidden
                  (strong "Connect to your local Harness")
                  "Open the connection link printed by the server. It keeps access to this workspace private.")
+               (section ^id "offline_notice" ^class "auth_notice" ^^hidden
+                 (strong "Command demo mode — no model connected")
+                 "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
-                   (textarea ^id "prompt" ^rows "3" ^placeholder "Message Gene…"
+                   (textarea ^id "prompt" ^rows "3" ^placeholder "Ask anything, or /help for commands…"
                      ^aria-label "Message Gene")
                    (div ^class "composer_actions"
                      (span ^class "hint" "Shift+Enter for a new line · / for commands")
@@ -229,7 +232,9 @@
   (var server (listen ^host "127.0.0.1" ^port port))
   ($println "Gene Harness is ready.")
   ($println $"Open ${origin}/#token=${(bootstrap .get)}")
-  ($println (if offline "Offline command provider enabled." "Using the configured model provider."))
+  ($println (if offline
+    "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
+    "Ask anything. Use /help for commands. Model replies are available in the transcript."))
   (try
     (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
       ^max_body_bytes 400000 ^request_timeout_ms 10000

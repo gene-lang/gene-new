@@ -37,11 +37,25 @@ it does not start a web server or provide a browser interface.
 
 ## Browser client
 
-Start an offline workspace from the repository root:
+Start the agent from the repository root using your existing Codex login:
 
 ```sh
-bin/gene run examples/gene-harness/src/web/server.gene --offline
+bin/gene run --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
+  examples/gene-harness/src/web/server.gene
 ```
+
+Write any prompt in the composer. Ordinary text, including a single word such
+as `help`, goes to the model. A leading slash selects special functionality:
+`/help`, `/status`, `/build`, and the other registered commands. Leading
+whitespace before a slash is allowed. Unknown slash commands show command help
+guidance without contacting the model.
+
+Each model step includes a **Raw LLM response · Step N** disclosure, collapsed
+by default. Expand it to inspect or copy the returned reply before Gene parsing,
+including invalid replies that triggered another attempt. Its expansion state
+survives transcript updates; switching conversations resets disclosures.
+The raw reply uses the same durable transcript and display limits as other
+output, and is kept separate from the assistant's readable answer.
 
 Open the connection link printed by the server. It binds `127.0.0.1:8095` and
 uses a one-use connection token, then an HttpOnly browser cookie. Use
@@ -49,9 +63,8 @@ uses a one-use connection token, then an HttpOnly browser cookie. Use
 connected browser session lasts eight hours. Reloading preserves conversations
 and per-session drafts. Closing a tab does not stop a run; use **Stop**.
 
-The offline provider supports the existing commands, including `/help`,
-`/status`, and `/build`. To use the configured model, omit `--offline` and use
-the same provider variables and grants as the `chat` profile. For Codex:
+The browser uses the same provider variables and grants as the `chat` profile.
+To use a state home outside the repository with Codex:
 
 ```sh
 mkdir -p /tmp/harness-web
@@ -69,6 +82,11 @@ For OpenRouter, set `GENE_HARNESS_PROVIDER=openrouter` and
 `OPENROUTER_API_KEY`; the Codex-directory grant is then unnecessary. Credentials
 remain in the native process. `GENE_HARNESS_MODEL` and
 `GENE_HARNESS_THINKING_EFFORT` keep their existing meanings.
+
+`--offline` (or `GENE_HARNESS_OFFLINE=1`) deliberately selects a **command-only
+demo**, with a visible notice in the browser. It supports `/help`, `/status`,
+and template-based `/build`, and cannot answer general prompts. Omit this
+option and unset that environment variable for agent conversations.
 
 The client supports creating/renaming sessions, retained history, Gene code and
 result blocks, command suggestions, cancellation, and reconnect. One run is
@@ -219,9 +237,8 @@ $ ... web tool wordcount "the quick brown fox jumps over the lazy dog"
 word count: 9
 ```
 
-The `/` prefix forces the command interpreter; without it a sentence goes to the
-model as a task, which is the same distinction `bare_query?` draws everywhere
-else. Registration proves the module's shape and that its `init` runs, but
+The `/` prefix selects the command interpreter; every prompt without it goes
+to the model as a task. Registration proves the module's shape and that its `init` runs, but
 nothing exercises `run` until it is invoked — so `build` calls the new tool twice,
 with its own name and with the request text, and appends what it raised:
 

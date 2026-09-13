@@ -173,21 +173,6 @@
 
 # --- the command surface ---------------------------------------------------
 
-(fn bare_query? [h : Harness, prompt : Str] : Bool
-  # A one-word query that could not be anything but a command. `status` is
-  # `status`; no English sentence is one of these words on its own.
-  #
-  # The wider test this replaces — "does the first word name a command?" — was
-  # wrong once a model was bound, and wrong in the way that matters: "build me
-  # a plugin called greeter" begins with `build`, so the interpreter took it
-  # literally and created a tool named `me`. A prefix of a sentence is not a
-  # command, and guessing which is which from the first word cannot be made to
-  # work. Everything ambiguous goes to the model; `/` forces the interpreter.
-  (var found false)
-  (for command in (rows h "commands")
-    (if_yes (== command/name ($str/trim prompt)) (set found true)))
-  found)
-
 (fn help_text [h : Harness] : Str
   (var lines ($thaw #["commands:"]))
   (for command in (rows h "commands")
@@ -220,7 +205,7 @@
   (var cmd (word parts 0))
   (var command (row h "commands" cmd))
   (if (== command void)
-    $"I don't know \"${cmd}\". Try `help`."
+    $"I don't know \"${cmd}\". Try `/help`."
     (invoke_registry_row h "commands" cmd [h parts])))
 
 # --- the provider, and the plugin that binds it ----------------------------
