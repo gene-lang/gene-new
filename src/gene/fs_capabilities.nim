@@ -15,6 +15,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   #include <fcntl.h>
   #include <stdio.h>
   #include <sys/stat.h>
+  #include <sys/file.h>
   #include <unistd.h>
 
   static int gene_fs_open_root(const char *path) {
@@ -82,6 +83,12 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   static int gene_fs_owner_only_dir(int fd) {
     return fchmod(fd, 0700);
   }
+
+  static int gene_fs_try_lock(int fd) {
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) return 1;
+    if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
+    return -1;
+  }
   """.}
 
   proc openRoot(path: cstring): cint {.importc: "gene_fs_open_root", nodecl.}
@@ -108,6 +115,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     {.importc: "gene_fs_remove_dir_at", nodecl.}
   proc ownerOnlyDir(fd: cint): cint
     {.importc: "gene_fs_owner_only_dir", nodecl.}
+  proc tryLockFd(fd: cint): cint
+    {.importc: "gene_fs_try_lock", nodecl.}
   proc fdopendir(fd: cint): ptr DIR
     {.importc, header: "<dirent.h>", sideEffect.}
 
@@ -808,6 +817,31 @@ proc openWriteFile*(provider: FilesystemProvider, context: CapabilityContext,
       raise newException(FilesystemCapabilityError,
         "filesystem target could not be opened as a stream")
     result = (file, grant)
+
+proc tryFileLock*(provider: FilesystemProvider, context: CapabilityContext,
+                  path: string): int =
+  ## A lifetime claim on a stable inode. Never unlink lock files: a waiter
+  ## opening a replacement inode would otherwise acquire a second lock.
+  ## The kernel releases the claim on close or process death.
+  let grant = provider.resolveOperation(context, provider.types.writeFile,
+    path, [capNamed("append", capBool(true)), capNamed("create", capBool(true))])
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let fd = grant.openOperation(true)
+    let locked = tryLockFd(fd)
+    if locked == 1:
+      return int(fd)
+    discard posix.close(fd)
+    if locked == 0:
+      return -1
+    raise newException(FilesystemCapabilityError, "filesystem claim failed")
+  else:
+    raise newException(FilesystemCapabilityError,
+      "filesystem claims require a native POSIX runtime")
+
+proc closeFileLock*(fd: int) {.raises: [].} =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if fd >= 0:
+      discard posix.close(cint(fd))
 
 proc pathExists*(provider: FilesystemProvider, context: CapabilityContext,
                  path: string): bool =

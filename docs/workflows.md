@@ -168,6 +168,23 @@ The [Todo app](../examples/todo_app/src/main.gene) demonstrates the complete
 route/HTML/CSS/browser flow; [web_component.gene](../examples/web_component.gene)
 is a smaller browser example.
 
+For a browser client split across Gene files, load its entry with
+`($web/load "path/to/client.gene")` and pass that asset to
+`($web/script asset ^mount "root")`. The entry has the same
+`main [root : EventTarget] : Void` contract. `web/load` reads the import graph
+under the caller's filesystem capabilities and serves only compiled Gene;
+it does not admit `js/fn` imports. Generated mounts, dependencies, and source
+maps are content-addressed together. The
+[Harness browser client](../examples/gene-harness/README.md#browser-client)
+uses this path without an authored JavaScript bootstrap or a separate bundler.
+
+Browser bindings include `$http/request method url body headers callback`,
+whose callback receives `(Int status, Str body)` including non-2xx responses;
+status `0` means a transport failure. `$session_storage/get|set|remove` handles
+tab-local drafts, and `$browser/origin|hash|search|replace_url|request_id|copy`
+provides location, submission identity, and clipboard operations. All application
+state and interaction logic can remain in Gene.
+
 The alternative is the wasm VM. `nimble wasm` requires Emscripten and builds
 the runtime for the browser. Choose it when you need the evaluator and broader
 VM semantics; host facilities still depend on what the embedding provides.

@@ -1,0 +1,241 @@
+(mod harness_web_server)
+
+(import [open_session_host close_session_host list_sessions create_session rename_session
+         snapshot submit run_receipt cancel host_status RunError]
+  ^from "./session_host")
+(import [styles] ^from "./web_style")
+(import [module_dir] ^from "./kernel")
+(import [error_status] ^from "./web/contract")
+(import $net/http [listen serve html json ws_accept ws_send ws_close])
+(import $html [render])
+(import $web [script stylesheet])
+(import $crypto [random_hex])
+(import $os [get_env monotonic_ms])
+
+(var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../client/main.gene"))
+
+(fn page [] : Str
+  ($ "<!doctype html>"
+    (render
+      `(html ^lang "en"
+         (head (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+           (title "Gene Harness")
+           %(stylesheet "gene-harness" styles))
+         (body
+           (div ^id "harness_root" ^class "app"
+             (aside ^class "sidebar"
+               (div ^class "brand" (span ^class "brand_mark" "G") "Gene Harness"
+                 (span ^class "local" "LOCAL"))
+               (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
+               (button ^id "create_session" ^class "new_session" ^type "button" "+ New conversation")
+               (input ^id "session_filter" ^class "filter" ^type "search"
+                 ^placeholder "Find a conversation" ^aria-label "Find a conversation")
+               (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
+               (div ^class "sidebar_footer"
+                 (button ^id "status_button" ^type "button" "Workspace status")))
+             (main ^class "workspace"
+               (header ^class "topbar"
+                 (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
+                 (div ^class "heading"
+                   (h1 ^id "conversation_title" "New conversation")
+                   (div ^id "mode" ^class "mode" "Local workspace"))
+                 (button ^id "rename_session" ^class "quiet" ^type "button" "Rename"))
+               (form ^id "rename_form" ^class "rename_form" ^^hidden
+                 (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
+                 (button ^type "submit" "Save title"))
+               (section ^id "auth_notice" ^class "auth_notice" ^^hidden
+                 (strong "Connect to your local Harness")
+                 "Open the connection link printed by the server. It keeps access to this workspace private.")
+               (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
+               (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
+               (div ^class "composer_wrap"
+                 (div ^id "commands" ^class "commands" ^^hidden)
+                 (form ^id "composer" ^class "composer"
+                   (textarea ^id "prompt" ^rows "3" ^placeholder "Message Gene…"
+                     ^aria-label "Message Gene")
+                   (div ^class "composer_actions"
+                     (span ^class "hint" "Shift+Enter for a new line · / for commands")
+                     (button ^id "stop" ^class "stop" ^type "button" ^^hidden "Stop")
+                     (button ^id "send" ^class "send" ^type "submit" "Send")))
+                 (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
+                 (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")
+                 (div ^class "composer_footer"
+                   (span "Runs locally. Model requests use your configured provider.")
+                   (span "Built with Gene"))))
+             (aside ^id "status_drawer" ^class "drawer" ^^hidden
+               (h2 "Workspace status")
+               (div ^id "status_content")))
+           %(script harness_ui ^mount "harness_root"))))))
+
+(fn response [status : Int, value]
+  (json status ($json/stringify value)))
+
+(fn fail_request [code : Str, message : Str]
+  (fail (RunError ^code code ^message message)))
+
+(fn field [data, key : Str, ^default fallback = nil] : Str
+  (var value (try (data .get key) catch Any nil))
+  (if ($absent? value)
+    (if ($absent? fallback)
+      (fail_request "invalid_request" $"Missing ${key}.")
+      (return fallback)))
+  (if_not (== ($head value) Str)
+    (fail_request "invalid_request" $"${key} must be text."))
+  value)
+
+(fn number [data, key : Str, ^default fallback : Str = ""] : Int
+  (var value (field data key ^default fallback))
+  (if (|| (== value "") (> ($str/byte_size value) 24))
+    (fail_request "invalid_request" $"Invalid ${key}."))
+  (try ($parse/parse_int value)
+    catch Any (fail_request "invalid_request" $"Invalid ${key}.")))
+
+(fn request_data [request]
+  (try ($json/parse request/body)
+    catch Any (fail_request "invalid_request" "The request must contain JSON.")))
+
+(fn cookie_value [header : Str, name : Str] : Str
+  (for part in ($str/split header ";")
+    (var pair ($str/split ($str/trim part) "="))
+    (if_yes (&& (== pair/.size 2) (== pair/0 name)) (return pair/1)))
+  "")
+
+(fn secure_response [result]
+  (if_not ($absent? result/headers)
+    (result/headers .put "cache-control" "no-store")
+    (result/headers .put "x-content-type-options" "nosniff")
+    (result/headers .put "referrer-policy" "no-referrer")
+    (result/headers .put "content-security-policy"
+      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))
+  result)
+
+(fn main [argv]
+  (var args [])
+  (for arg in argv (args .push ($to_str arg)))
+  (var offline (== (get_env "GENE_HARNESS_OFFLINE" "") "1"))
+  (var port ($parse/parse_int (get_env "GENE_HARNESS_PORT" "8095")))
+  (var home "")
+  (var i 0)
+  (while (< i args/.size)
+    (var arg args/%i)
+    (if (== arg "--offline")
+      (then (set offline true))
+      (elif (&& (== arg "--port") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set port ($parse/parse_int args/%i)))
+      (elif (&& (== arg "--home") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set home args/%i))
+      (else (fail_request "invalid_request" $"Unknown server option ${arg}.")))
+    (set i (+ i 1)))
+  (if (|| (< port 1024) (> port 65535))
+    (fail_request "invalid_request" "Choose a port between 1024 and 65535."))
+  (var host (open_session_host ^home home ^offline offline))
+  (var origin $"http://127.0.0.1:${port}")
+  (var authority $"127.0.0.1:${port}")
+  (var bootstrap ($cell (random_hex 32)))
+  (var bootstrap_until (+ (monotonic_ms) 600000))
+  (var browser_sessions ($cell {}))
+  (var connections ($cell []))
+
+  (fn authorized [request]
+    (var value (cookie_value (?? request/headers/cookie "") "gene_harness_session"))
+    (var session ((browser_sessions .get) .get value))
+    (if (|| ($absent? session) (> (monotonic_ms) session/expires))
+      (fail_request "unauthorized" "Open the connection link printed by the local Harness server."))
+    session)
+
+  (fn handle [request]
+    (if (!= (?? request/headers/host "") authority)
+      (fail_request "forbidden" "Use the local address printed by the server."))
+    (var request_origin (?? request/headers/origin ""))
+    (if_yes (&& (!= request_origin "") (!= request_origin origin))
+      (fail_request "forbidden" "This origin is not allowed."))
+    (if_yes (&& (!= request/method "GET") (!= request_origin origin))
+      (fail_request "forbidden" "A same-origin request is required."))
+    (if_yes (&& (== request/method "GET") (== request/path "/"))
+      (return (html (page))))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v1/auth/exchange"))
+      (var data (request_data request))
+      (var token (field data "token"))
+      (if (|| (== (bootstrap .get) "") (!= token (bootstrap .get))
+              (> (monotonic_ms) bootstrap_until))
+        (fail_request "unauthorized" "This connection link has expired or was already used. Restart the server for a new link."))
+      (bootstrap .set "")
+      (var cookie (random_hex 32))
+      (var csrf (random_hex 32))
+      ((browser_sessions .get) .put cookie
+        {^csrf csrf ^expires (+ (monotonic_ms) 28800000)})
+      (var result (response 200 {^csrf csrf}))
+      (result/headers .put "set-cookie"
+        $"gene_harness_session=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800")
+      (return result))
+    (var browser (authorized request))
+    (if_yes (!= request/method "GET")
+      (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
+        (fail_request "forbidden" "Refresh this page before making a change.")))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v1/status"))
+      (var result (host_status host))
+      (result .put "csrf" browser/csrf)
+      (return (response 200 result)))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v1/events"))
+      (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
+      (return (ws_accept request
+        ^on_open (fn [connection] ((connections .get) .push connection))
+        ^on_close (fn [connection]
+          (var kept [])
+          (for item in (connections .get)
+            (if_not (same? item connection) (kept .push item)))
+          (connections .set kept)))))
+    (if_yes (== request/path "/api/v1/sessions")
+      (if (== request/method "GET")
+        (return (response 200 (list_sessions host
+          ^after (field request/params "after" ^default "")))))
+      (if (== request/method "POST")
+        (return (response 201 (create_session host
+          ^title (field (request_data request) "title" ^default "New conversation"))))))
+    (var parts ($str/split request/path "/"))
+    (if_yes (&& (>= parts/.size 5) (== parts/1 "api")
+                (== parts/2 "v1") (== parts/3 "sessions"))
+      (var id parts/4)
+      (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))
+        (var data (request_data request))
+        (return (response 200 (rename_session host id (field data "title")
+          (number data "revision")))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
+        (return (response 200 (snapshot host id
+          ^after (number request/params "after" ^default "-1")
+          ^before (number request/params "before" ^default "-1")))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "runs") (== request/method "POST"))
+        (var data (request_data request))
+        (return (response 202 (submit host id (field data "request_id")
+          (number data "submission_seq") (field data "text")))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "runs") (== request/method "GET"))
+        (return (response 200 (run_receipt host id parts/6))))
+      (if_yes (&& (== parts/.size 8) (== parts/5 "runs") (== parts/7 "cancel")
+                  (== request/method "POST"))
+        (return (response 200 (cancel host id parts/6)))))
+    (response 404 {^code "not_found" ^message "This route is not available."}))
+
+  (fn safe_handle [request]
+    (secure_response
+      (try (handle request)
+        catch RunError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch Any
+          ($println $"Harness ${request/method} ${request/path} failed: ${$err/message}")
+          (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
+
+  (var server (listen ^host "127.0.0.1" ^port port))
+  ($println "Gene Harness is ready.")
+  ($println $"Open ${origin}/#token=${(bootstrap .get)}")
+  ($println (if offline "Offline command provider enabled." "Using the configured model provider."))
+  (try
+    (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
+      ^max_body_bytes 400000 ^request_timeout_ms 10000
+      ^tick_ms 1000
+      ^on_tick (fn []
+        (for connection in (connections .get)
+          (var dropped (ws_send connection ($json/stringify {^epoch host/epoch ^changed true})))
+          (if (> dropped 0) (ws_close connection)))))
+  ensure (close_session_host host)))

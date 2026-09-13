@@ -1,0 +1,15 @@
+(mod session_claim)
+
+(import $fs [make_dir try_lock])
+(import $crypto [sha256])
+
+(type SessionBusy ^props {^message Str} ^impl [Error])
+(impl Error for SessionBusy)
+
+(fn claim_session [home : Str, session : Str]
+  (var directory $"${home}/claims")
+  (make_dir directory)
+  (var claim (try_lock $"${directory}/${(sha256 session)}.lock"))
+  (if ($absent? claim)
+    (fail (SessionBusy ^message "This session is already open in another Harness process.")))
+  claim)

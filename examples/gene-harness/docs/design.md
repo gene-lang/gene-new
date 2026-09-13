@@ -1,11 +1,14 @@
 # Gene Harness — implemented design
 
 Status: stages 1–7 implemented. Human-reviewed promotion into checked-in
-profiles remains deferred.
+profiles remains deferred. The local browser client is implemented as described
+in [web-client.md](web-client.md).
 
 The normative source is [`tmp/harness.md`](../../../tmp/harness.md). This file
 maps that design to the implementation in `examples/gene-harness` and records
-the behavior users and tests can rely on.
+the behavior users and tests can rely on. The tracked browser-client design
+extends that baseline for the local browser transport; it does not
+change the existing runtime's recovery or authority guarantees.
 
 ## 1. Purpose and resume boundary
 
@@ -635,18 +638,13 @@ module-entry budgets, immutable module ceilings, panic guard),
 (missing intermediate path is a false existence result, while symlinks still
 fail closed).
 
-## 14. Tests and deferred work
+## 14. Archived scenarios and deferred work
 
-Public-seam smoke programs live in `examples/gene-harness/tests/` and run through
-`gene test` from the package directory. They cover registries and cleanup, seam replacement,
-transaction diff/abort/commit, event retention/catalog/concurrency and cold
-repair, cross-process Store claims, workspace CAS, module registration/reopen
-and cache rematerialization, dependency closure/shared-contract confinement,
-quarantine, named-root attenuation, callback and typed-provider supervision,
-plugin events, active-view output/swap, prompt-skill loading, provenance audit
-and recorded build provenance, queued registration draining at the turn
-boundary, build replacement, duplicate-id refusal writing no blob, and
-session/workspace state conflicts.
+The former public-seam scenarios are archived locally under
+`tmp/gene-harness-tests`. They are no longer a package test target. App
+development currently uses builds and direct operation, as requested by the
+user. The scenario coverage remains useful design history, but no automated
+suite result is claimed for the browser implementation.
 
 Still deferred:
 
@@ -661,3 +659,28 @@ Still deferred:
   `ignorable`, so a view that does not understand a new output kind skips it —
   and only the vocabulary is missing. Every added kind is `ignorable` and
   carries a text fallback, or an old view breaks on a new one.
+
+## 15. Browser client
+
+[The browser-client design](web-client.md) specifies a local, single-operator
+chat and session client backed by the native Harness. The existing `web`
+profile remains the offline memory/HTML example; the `browser` profile
+uses the model-backed providers without the terminal driver.
+
+The client is authored in Gene's web profile. A native HTTP host serves it and
+owns session admission, run receipts, cancellation, and safe snapshots. HTTP
+provides authoritative reads and commands; WebSockets notify clients to refresh.
+One active runtime and one run at a time preserve current session isolation.
+No model credentials, live Harness objects, or raw plugin state cross to the
+browser.
+
+The new design distinguishes a submitted **run** from its internal composition
+**turns**. It requires durable submission deduplication, stable transcript IDs,
+explicit provisional output, and reconnect/recovery semantics before building
+the UI. It also adds a shared session-writer claim to browser and CLI boot;
+event-store CAS by itself cannot prevent duplicate external effects.
+
+The detailed scope, module ownership, interface, UI behavior, compatibility
+changes, and acceptance cases live in the linked design. Launch instructions
+are in the package README. The browser state and rendering modules, page markup,
+and styling are all authored in Gene.

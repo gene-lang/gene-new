@@ -660,6 +660,11 @@ type
     fileId: FileId
     modified: times.Time
 
+  FsFileLockRecord = ref object
+    application: Application
+    ownerLane: int
+    fd: int
+
   FsWatcherRecord = ref object
     application: Application
     ownerLane: int
@@ -995,6 +1000,7 @@ var resourceAuthorityRecords = initTable[uint64, ResourceCapabilityRecord]()
 var sandboxTransactionRecords = initTable[uint64, SandboxTransactionRecord]()
 var sandboxGenerationRecords = initTable[uint64, SandboxGenerationRecord]()
 var fsWatcherRecords = initTable[uint64, FsWatcherRecord]()
+var fsFileLockRecords = initTable[uint64, FsFileLockRecord]()
 
 proc releaseResourceAuthorityRecord(id: uint64) {.nimcall, raises: [].} =
   if id == 0:
@@ -1010,6 +1016,11 @@ proc releaseResourceAuthorityRecord(id: uint64) {.nimcall, raises: [].} =
   let watcher = fsWatcherRecords.getOrDefault(id)
   if watcher != nil and watcher.closed:
     fsWatcherRecords.del(id)
+  let fileLock = fsFileLockRecords.getOrDefault(id)
+  if fileLock != nil:
+    closeFileLock(fileLock.fd)
+    fileLock.fd = -1
+    fsFileLockRecords.del(id)
   release(resourceAuthorityLock)
 
 proc resourceAuthorityRecordCount*(): int =

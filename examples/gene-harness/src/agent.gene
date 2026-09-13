@@ -14,7 +14,8 @@
 (import [Plugin PluginContext PluginHost Harness provide resolve seam_bound
          row rows invoke_registry_row plugin_states bound_seams
          lifecycle_log log_append uninstall retry status_of
-         installed transaction_diff flush_harness HarnessError] ^from "./kernel")
+         installed transaction_diff flush_harness HarnessError current_run_id
+         run_needs_recovery?] ^from "./kernel")
 (import_impl PluginHost for PluginContext ^from "./kernel")
 (import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
          prompt_provider codegen_provider]
@@ -191,7 +192,8 @@
   (var lines ($thaw #["commands:"]))
   (for command in (rows h "commands")
     (lines .push $"  ${command/name}  ${command/doc}"))
-  (lines .push "  quit | exit | Ctrl-D  leave")
+  (if_yes (== (current_run_id h) "")
+    (lines .push "  quit | exit | Ctrl-D  leave"))
   ($str/join lines "\n"))
 
 (fn command_help [h, parts] (help_text h))
@@ -227,7 +229,10 @@
 
 (impl HarnessPrompt for CommandAgent
   (message handle [h, prompt : Str] : Str
-    (dispatch h prompt)))
+    (var command ($str/trim prompt))
+    (if_yes ($str/starts_with? command "/")
+      (set command ($str/slice_bytes command 1 (- ($str/byte_size command) 1))))
+    (dispatch h command)))
 
 (fn agent_prompt_text [] : Str
   "Commands and tools are registry rows. Query `commands` and `tools` through introspection; use `build <name> <text>` to register a durable generated tool.")
@@ -276,14 +281,29 @@
       (host .PluginHost:provide "HarnessPrompt"
         (prompt_provider (CommandAgent)))))))
 
-(fn ask [h : Harness, prompt : Str] : Str
+(fn ask_result [h : Harness, prompt : Str]
   # The one call a driver makes. Errors are answers too: a CLI that dies
   # because a command failed is not one you can explore a system with.
+  (var status "completed")
+  (var failure nil)
   (var out
     (try
       ((resolve h "HarnessPrompt") .HarnessPrompt:handle h prompt)
     catch Any
-      $"error: ${$err/message}"))
-  (if_yes (!= out "") (log_append h "output" out))
+      (set status "failed")
+      (set failure {^type ($to_str ($head $err))})
+      (if (== (current_run_id h) "")
+        $"error: ${$err/message}"
+        (do
+          ($println "Harness agent failed: " $err/message)
+          "The agent could not complete this run. Check the local Harness output."))))
+  (if_yes (run_needs_recovery? h)
+    (set status "recovery_required")
+    (set failure {^type "RecoveryRequired"}))
+  (if_yes (!= out "") (log_append h "output" out ^phase "final"))
   (flush_harness h)
-  out)
+  {^status status ^text out ^error failure})
+
+(fn ask [h : Harness, prompt : Str] : Str
+  (var result (ask_result h prompt))
+  result/text)

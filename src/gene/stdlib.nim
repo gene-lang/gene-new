@@ -8,6 +8,9 @@
 
 include ./ext/term/stdlib_term_decls
 
+proc activeFilesystem(call: ptr NativeCall):
+    tuple[provider: FilesystemProvider, context: CapabilityContext]
+
 
 # --- gene/bit ----------------------------------------------------------------
 # Bitwise operations over Int. These are the primitives a checksum or a binary
@@ -789,7 +792,21 @@ when not defined(geneWasm):
     let app = scope.application()
     result = app.webAssetFor(value)
     if result == nil:
-      raise newException(GeneError, label & " expects a value bound by web_module")
+      raise newException(GeneError, label & " expects a web_module or web/load asset")
+
+  proc biWebLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    requireOne("web/load", args)
+    requireStr("web/load path", args[0])
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let fs = activeFilesystem(call)
+    let readSource = proc(path: string): string =
+      fs.provider.readText(fs.context, path)
+    let asset = compileWebFileAsset(args[0].strVal, readSource)
+    let app = scope.application()
+    app.webAssets[webAssetIdentity(asset)] = asset
+    for route in webAssetRoutes(asset):
+      app.publishWebRoute(route)
+    webAssetValue(asset)
 
   proc biWebScript(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     ## (web/script asset ^mount "id") -> the complete script node.
@@ -2475,9 +2492,6 @@ proc biOsExecStdioAsync(args: openArray[Value],
   ## Task for its integer exit status. Cancellation terminates the child.
   biOsExecAsyncImpl("os/exec_stdio_async", false, true, args, call)
 
-proc activeFilesystem(call: ptr NativeCall):
-    tuple[provider: FilesystemProvider, context: CapabilityContext]
-
 # --- net/http_client: native libcurl client ---------------------------------
 #
 # libcurl owns TLS, certificate verification, proxies, and HTTP
@@ -3631,6 +3645,46 @@ proc raiseFilesystemOperationError(name, capability, message: string,
     raiseCapabilityGeneError(scope, "CapabilityScopeError",
       name & ": " & message, capability, name)
   raiseOsError(name & ": " & message, scope)
+
+proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("fs/try_lock", args)
+  requireStr("fs/try_lock path", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    let fs = activeFilesystem(call)
+    let fd = fs.provider.tryFileLock(fs.context, args[0].strVal)
+    if fd < 0:
+      return NIL
+    let id = nextRuntimeResourceId()
+    acquire(resourceAuthorityLock)
+    try:
+      fsFileLockRecords[id] = FsFileLockRecord(
+        application: scope.application(), ownerLane: currentEventLane(), fd: fd)
+    finally:
+      release(resourceAuthorityLock)
+    newRuntimeResourceHandle(scope, "FsFileLock", id)
+  except CatchableError as error:
+    raiseFilesystemOperationError("fs/try_lock", "fs/WriteFile", error.msg, scope)
+
+proc biFsFileLockClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("FsFileLock/close", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args[0].kind != vkNode or args[0].resourceAuthorityId == 0:
+    raise newException(GeneError, "FsFileLock/close expects an FsFileLock")
+  acquire(resourceAuthorityLock)
+  try:
+    let record = fsFileLockRecords.getOrDefault(args[0].resourceAuthorityId)
+    if record == nil:
+      raise newException(GeneError, "invalid filesystem claim")
+    if record.fd >= 0:
+      if record.application != scope.application() or record.ownerLane != currentEventLane():
+        raise newException(GeneError, "filesystem claim belongs to another application or lane")
+      closeFileLock(record.fd)
+      record.fd = -1
+      record.application = nil
+  finally:
+    release(resourceAuthorityLock)
+  NIL
 
 proc fsWatcherRecord(name: string, handle: Value,
                      call: ptr NativeCall): FsWatcherRecord =
@@ -7937,6 +7991,12 @@ proc registerStdlibNamespaces(root: Scope) =
   let fsWatcherType = newType("FsWatcher", NIL, @[], @[], root,
                               messages = fsWatcherMessages)
   root.define("FsWatcher", fsWatcherType)
+  var fsFileLockMessages = initTable[string, Value]()
+  fsFileLockMessages["close"] = newNativeCallFn("FsFileLock/close",
+    biFsFileLockClose, acceptsNamed = false)
+  let fsFileLockType = newType("FsFileLock", NIL, @[], @[], root,
+    messages = fsFileLockMessages)
+  root.define("FsFileLock", fsFileLockType)
   # Structured diagnostic logging (docs/stdlib.md). Logger methods
   # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
   # are compiler-known macros selected from this same namespace.
@@ -8112,6 +8172,8 @@ proc registerStdlibNamespaces(root: Scope) =
   when not defined(geneWasm):
     let webScope = newScope(root)
     webScope.define("script", newNativeCallFn("web/script", biWebScript))
+    webScope.define("load", newNativeCallFn("web/load", biWebLoad,
+                                            acceptsNamed = false))
     webScope.define("stylesheet", newNativeCallFn("web/stylesheet",
                                                   biWebStylesheet,
                                                   acceptsNamed = false))
@@ -8624,6 +8686,9 @@ proc registerStdlibNamespaces(root: Scope) =
   # agent file tools need.
   let fsNs = root.vars.getOrDefault("fs", VOID)
   if fsNs.kind == vkNamespace:
+    fsNs.nsScope.define("FsFileLock", fsFileLockType)
+    fsNs.nsScope.define("try_lock",
+      newNativeCallFn("fs/try_lock", biFsTryLock, acceptsNamed = false))
     fsNs.nsScope.define("FsWatcher", fsWatcherType)
     fsNs.nsScope.define("FsChange", fsChangeType)
     fsNs.nsScope.define("WatcherClosed", watcherClosed)

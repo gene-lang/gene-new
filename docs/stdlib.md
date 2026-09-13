@@ -48,6 +48,13 @@ and [authority contract](spec/authority.md).
 For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching is
 available through `$fs/watch`; close watchers when finished.
 
+`($fs/try_lock path)` acquires a nonblocking native POSIX file claim under
+`fs/WriteFile` authority, returning an `FsFileLock` or nil if already held.
+Call `(claim .close)` to release it; release is idempotent and process exit
+also releases the claim. The file's contents are preserved. Keep the lock file
+in place so every claimant uses the same inode. Paths use the normal confined,
+symlink-rejecting filesystem resolution.
+
 ## HTTP server
 
 Save this as `server.gene` and run it with `gene run server.gene`:

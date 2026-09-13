@@ -36,7 +36,7 @@
          new_harness install_with_policy uninstall retry resolve
          seam_bound bound_seams registry_row_keys invoke_registry_row
          plugin_states plugin_ids status_of installed
-         lifecycle_log log_append log_events assemble_request
+         lifecycle_log log_append log_events assemble_request current_run_id
          publish render_prompt doc transaction_diff
          module_dir]
   ^from "./kernel")
@@ -203,6 +203,8 @@
          ^capabilities []))
   (var existing_events (log_events h))
   (var turn_id $"model-${(+ existing_events/.size 1)}")
+  (var run_id (current_run_id h))
+  (if_not (== run_id "") (set turn_id $"${run_id}/round-${round}"))
   (var outcome
     (run_workspace_turn h/workspace h turn_id
       (fn [ignored]
@@ -341,8 +343,9 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   # correction guidance for errors; code-with-response returns either directly.
   ($str/starts_with? result "error:"))
 
-(fn emit_output [h : Harness, text : Str]
-  (log_append h "output" text))
+(fn emit_output [h : Harness, text : Str,
+                 ^phase phase : Str = "narration", ^round round : Int = 0]
+  (log_append h "output" text ^phase phase ^round round))
 
 (fn run_task [h : Harness, prompt : Str, session, state_host,
               ^complete complete = call_model] : Str
@@ -354,7 +357,7 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   (var last "")
   (while running
     (set turn (+ turn 1))
-    (if_yes (> turn 1) (emit_output h $"== Round ${turn} =="))
+    (if_yes (> turn 1) (emit_output h $"== Round ${turn} ==" ^round turn))
     (var raw (complete h prompt history))
     (var problem "")
     (var envelope
@@ -374,8 +377,8 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
         # Both code types may narrate intent before execution. That text is
         # optional, and for code-with-response the result is the final answer.
         (var narration (?? envelope/response ""))
-        (if_yes (!= narration "") (emit_output h narration))
-        (emit_output h ($to_str envelope/code))
+        (if_yes (!= narration "") (emit_output h narration ^round turn))
+        (emit_output h ($to_str envelope/code) ^phase "code" ^round turn)
         (var result
           (run_program h envelope/code ^session session ^state_host state_host
             ^payload (?? envelope/payload {}) ^prompt prompt ^round turn))
@@ -384,7 +387,7 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
           (then (set running false))
           (else
             (emit_output h "-- Result  --")
-            (emit_output h result)
+            (emit_output h result ^phase "result" ^round turn)
             (set history $"${history}\nreply: ${envelope}\noutput: ${result}\nThe code has executed. Decide from the result: finish with type response, or send more code.")
             (if_yes (failed? result)
               (set history $"${history}\nThat program failed. Correct the reported error; do not repeat the failed call or report success."))))))

@@ -48,6 +48,10 @@
   (var config (model_config))
   config/model)
 
+(fn public_model_config []
+  (var config (model_config))
+  {^provider config/provider ^model config/model ^effort config/effort})
+
 (fn codex_credentials [path] : Any
   (if_yes ($absent? path)
     (fail (HarnessError

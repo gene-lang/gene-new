@@ -15,6 +15,8 @@ TARGET = ROOT / "examples/gene-harness/src/generated_event_catalog.gene"
 def render() -> str:
     schema_fields = {
         "text": ["type", "text"],
+        "transcript": ["type", "text", "run_id", "block_id", "role", "phase"],
+        "core_state": ["type", "key", "state"],
         "turn_start": ["type", "turn"],
         "turn_end": ["type", "turn", "reason", "synthetic"],
         "composition_changed": [
@@ -71,11 +73,15 @@ def render() -> str:
     for index, (name, version, ignorable, schema) in enumerate(rows):
         prefix = "  #[" if index == 0 else "    "
         suffix = "]" if index == len(rows) - 1 else ""
+        versions = (
+            ' ^versions #{^v1 validate_text_event ^v2 validate_transcript_event}'
+            if schema == "transcript" else ""
+        )
         rendered.append(
             f'{prefix}#{{^name "{name}" ^version {version} '
             f'^ignorable {str(ignorable).lower()} '
             f'^origin "core" ^owner "core" '
-            f'^schema validate_{schema}_event}}{suffix}'
+            f'^schema validate_{schema}_event{versions}}}{suffix}'
         )
     rendered[-1] += ")"
     return "\n".join(rendered) + "\n"

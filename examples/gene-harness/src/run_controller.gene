@@ -1,0 +1,191 @@
+(mod run_controller)
+
+(import [ask_result] ^from "./agent")
+(import [begin_run_log end_run_log log_append run_needs_recovery?] ^from "./kernel")
+(import [core_state record_core_state flush_event_store copy_data] ^from "./state")
+(import $crypto [sha256])
+(import [terminal_run : terminal_run? receipt_limit] ^from "./web/contract")
+
+(type RunError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for RunError)
+
+(type RunController ^props {^runtime Any ^session Str ^events Any
+                           ^active Any ^watcher Any ^failed Any})
+
+(fn run_state [events, session : Str]
+  (?? (core_state events "session" session "runs") {^next_seq 1 ^receipts []}))
+
+(fn receipt_for [events, session : Str, id : Str]
+  (var state (run_state events session))
+  (for receipt in state/receipts
+    (if_yes (== receipt/id id) (return receipt)))
+  nil)
+
+(fn receipt_at [events, session : Str, sequence : Int]
+  (var state (run_state events session))
+  (for receipt in state/receipts
+    (if_yes (== receipt/submission_seq sequence) (return receipt)))
+  nil)
+
+(fn save_receipt [events, session : Str, receipt]
+  (var state (run_state events session))
+  (var receipts [])
+  (var found false)
+  (for current in state/receipts
+    (if (== current/id receipt/id)
+      (then (receipts .push (copy_data receipt)) (set found true))
+      (else (receipts .push current))))
+  (if_not found (receipts .push (copy_data receipt)))
+  (var retained [])
+  (var first ($math/max 0 (- receipts/.size receipt_limit)))
+  (var i first)
+  (while (< i receipts/.size)
+    (retained .push receipts/%i)
+    (set i (+ i 1)))
+  (record_core_state events "session" session "run/state" "runs"
+    {^next_seq ($math/max state/next_seq (+ receipt/submission_seq 1))
+     ^receipts retained})
+  receipt)
+
+(fn recover_runs [events, session : Str]
+  (var state (run_state events session))
+  (var changed false)
+  (for receipt in state/receipts
+    (if_not (terminal_run? receipt/status)
+      (receipt .put "status" "interrupted")
+      (receipt .put "finished_at" ($to_str ($now)))
+      (receipt .put "message" "The Harness stopped before this run finished. It was not replayed.")
+      (save_receipt events session receipt)
+      (set changed true)))
+  (if_yes changed (flush_event_store events))
+  changed)
+
+(fn new_run_controller [runtime] : RunController
+  (RunController ^runtime runtime ^session runtime/h/event_stream
+    ^events runtime/events ^active ($cell nil) ^watcher ($cell nil)
+    ^failed ($cell nil)))
+
+(fn controller_busy? [controller : RunController] : Bool
+  (! ($absent? (controller/active .get))))
+
+(fn duplicate_receipt [events, session : Str, request_id : Str,
+                       sequence : Int, text : Str]
+  (var state (run_state events session))
+  (if_yes (< sequence state/next_seq)
+    (var receipt (receipt_at events session sequence))
+    (if ($absent? receipt)
+      (fail (RunError ^code "receipt_expired"
+        ^message "This submission is older than retained receipts and cannot be submitted again.")))
+    (if (|| (!= receipt/request_id request_id) (!= receipt/digest (sha256 text)))
+      (fail (RunError ^code "submission_conflict"
+        ^message "Another submission already used this sequence. Refresh before sending.")))
+    (return receipt))
+  (if (!= sequence state/next_seq)
+    (fail (RunError ^code "submission_conflict"
+      ^message "The session changed. Refresh before sending.")))
+  nil)
+
+(fn finish_run [controller : RunController, receipt, outcome]
+  (var result (?? (receipt_for controller/events controller/session receipt/id)
+                 (copy_data receipt)))
+  (match outcome
+    (when (TaskOutcome/ok value)
+      (result .put "status" value/status)
+      (if_not ($absent? value/error)
+        (result .put "message" "The agent could not complete this run. See the local Harness output.")))
+    (when (TaskOutcome/error error)
+      ($println "Harness run failed: " error)
+      (result .put "status" "failed")
+      (result .put "message" "The run failed. See the local Harness output."))
+    (when (TaskOutcome/panic message)
+      ($println "Harness run stopped: " message)
+      (result .put "status" "failed")
+      (result .put "message" "The run stopped unexpectedly. See the local Harness output."))
+    (when TaskOutcome/cancelled
+      (result .put "status" "cancelled")
+      (result .put "message" "Stopped. Earlier committed changes are retained.")))
+  (result .put "finished_at" ($to_str ($now)))
+  (if_yes (run_needs_recovery? controller/runtime/h)
+    (result .put "status" "recovery_required")
+    (result .put "message" "Committed changes need recovery. Check workspace status before continuing."))
+  (try
+    (save_receipt controller/events controller/session result)
+    (flush_event_store controller/events)
+    (var log (controller/runtime/h/log .get))
+    (var maximum (* controller/events/segment_events controller/events/retained_segments))
+    (if_yes (> log/.size maximum)
+      (var retained [])
+      (var i (- log/.size maximum))
+      (while (< i log/.size)
+        (retained .push log/%i)
+        (set i (+ i 1)))
+      (controller/runtime/h/log .set retained))
+    (controller/active .set nil)
+    (if_yes (== result/status "recovery_required")
+      (controller/failed .set "The workspace needs recovery. Restart the Harness after inspecting its status."))
+  catch Any
+    ($println "Harness could not persist run outcome: " $err/message)
+    (controller/failed .set "Run persistence failed. Restart the Harness to recover.")
+  ensure
+    (end_run_log controller/runtime/h))
+  nil)
+
+(fn submit_run [controller : RunController, request_id : Str,
+                sequence : Int, text : Str]
+  (if_not ($absent? (controller/failed .get))
+    (fail (RunError ^code "recovery_required" ^message (controller/failed .get))))
+  (var previous (duplicate_receipt controller/events controller/session request_id sequence text))
+  (if_not ($absent? previous) (return previous))
+  (if (controller_busy? controller)
+    (fail (RunError ^code "busy" ^message "A run is already active. Stop it or wait for it to finish.")))
+  (var stream_id ($str/slice_bytes (sha256 controller/session) 0 20))
+  (var receipt {^id $"r-${stream_id}-${sequence}" ^request_id request_id
+    ^submission_seq sequence ^digest (sha256 text) ^status "accepted"
+    ^accepted_at ($to_str ($now))})
+  (try
+    (save_receipt controller/events controller/session receipt)
+    (begin_run_log controller/runtime/h receipt/id)
+    (log_append controller/runtime/h "message" text ^phase "message" ^role "user")
+    (flush_event_store controller/events)
+  catch Any
+    (end_run_log controller/runtime/h)
+    (controller/failed .set "Submission persistence failed. Restart the Harness to recover.")
+    (fail (RunError ^code "recovery_required" ^message (controller/failed .get))))
+  (var active {^receipt receipt ^task nil})
+  (controller/active .set active)
+  (var task (spawn ^lane root
+    (do
+      (var started (copy_data receipt))
+      (started .put "status" "running")
+      (started .put "started_at" ($to_str ($now)))
+      (save_receipt controller/events controller/session started)
+      (flush_event_store controller/events)
+      (active .put "receipt" started)
+      (ask_result controller/runtime/h text))))
+  (active .put "task" task)
+  (controller/watcher .set
+    (spawn ^lane root (finish_run controller receipt (task .join))))
+  (copy_data receipt))
+
+(fn cancel_run [controller : RunController, id : Str]
+  (var receipt (receipt_for controller/events controller/session id))
+  (if ($absent? receipt)
+    (fail (RunError ^code "not_found" ^message "This run is not available.")))
+  (if (terminal_run? receipt/status) (return receipt))
+  (var active (controller/active .get))
+  (if (|| ($absent? active) (!= active/receipt/id id))
+    (fail (RunError ^code "not_found" ^message "This run is not active in this process.")))
+  (receipt .put "status" "stopping")
+  (save_receipt controller/events controller/session receipt)
+  (flush_event_store controller/events)
+  (active/task .cancel)
+  receipt)
+
+(fn close_controller [controller : RunController]
+  (var active (controller/active .get))
+  (if_not ($absent? active)
+    (active/task .cancel)
+    (var watcher (controller/watcher .get))
+    (if_not ($absent? watcher) (watcher .join)))
+  (end_run_log controller/runtime/h)
+  nil)

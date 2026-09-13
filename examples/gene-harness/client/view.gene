@@ -1,0 +1,27 @@
+(mod harness_client_view ^profile web)
+
+(fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void)] : EventTarget
+  (var role : Str block/role)
+  (var phase : Str block/phase)
+  (var text : Str block/text)
+  (var label (if (== role "user") "You" (if (== role "log") "History" "Gene")))
+  (var cls (if (== role "user") "message user" "message agent"))
+  (if_yes provisional (set cls $"${cls} provisional"))
+  (var content : EventTarget
+    (if (|| (== phase "code") (== phase "result"))
+      ($dom/render
+        `(details ^class_name "execution"
+           (summary %(if (== phase "code") "Gene code" "Execution result"))
+           (button ^type "button" ^class_name "copy"
+             ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy")
+           (pre (code %text))))
+      ($dom/render `(div ^class_name "message_text" %text))))
+  (var article : EventTarget
+    ($dom/render
+      `(article ^class_name %cls
+         (div ^class_name "speaker" %label
+           %(if provisional " · in progress" "")))))
+  ($dom/append article content)
+  (if_yes block/truncated
+    ($dom/append article ($dom/render `(p ^class_name "muted" "Output shortened for display."))))
+  article)

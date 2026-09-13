@@ -2886,6 +2886,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/set_text":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
         returnType = webType(wtkVoid)
+      of "dom/clear", "dom/focus", "dom/scroll_end":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "dom/input_value":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkStr)
+      of "dom/set_input_value":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "dom/near_end":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64)]
+        returnType = webType(wtkBool)
+      of "dom/scroll_top", "dom/scroll_height":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkF64)
+      of "dom/set_scroll_top":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64)]
+        returnType = webType(wtkVoid)
       of "dom/text":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkStr)
@@ -2907,6 +2925,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "event/code", "event/key":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkStr)
+      of "event/shift_key", "event/is_composing":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkBool)
       of "event/button", "event/client_x", "event/client_y", "event/delta_y",
          "event/movement_x", "event/movement_y":
         paramTypes = @[webType(wtkAny)]
@@ -2950,11 +2971,29 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # scope's cancellation, and this is not work.
         paramTypes = @[webType(wtkF64)]
         returnType = webType(wtkTask, webType(wtkNil))
-      of "storage/get":
+      of "browser/origin", "browser/hash", "browser/search", "browser/request_id":
+        paramTypes = @[]
+        returnType = webType(wtkStr)
+      of "browser/replace_url":
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "browser/copy":
+        let onDone = webType(wtkCallback)
+        onDone.params = @[webType(wtkBool)]
+        onDone.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), onDone]
+        returnType = webType(wtkVoid)
+      of "storage/get", "session_storage/get":
         paramTypes = @[webType(wtkStr)]
         returnType = unionType(webType(wtkStr), webType(wtkNil))
       of "storage/set":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "session_storage/set":
+        paramTypes = @[webType(wtkStr), webType(wtkStr)]
+        returnType = webType(wtkBool)
+      of "session_storage/remove":
+        paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkVoid)
       of "image/load":
         # Load-then-callback rather than a Task, for the same reason http/get
@@ -3262,6 +3301,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                        webType(wtkF64), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "http/request":
+        # A result callback handles HTTP refusals and disconnected clients
+        # explicitly. Network failure has status 0; HTTP statuses are intact.
+        let onResult = webType(wtkCallback)
+        onResult.params = @[webType(wtkInt), webType(wtkStr)]
+        onResult.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), webType(wtkStr), webType(wtkStr),
+                       webType(wtkPropMap), onResult]
         returnType = webType(wtkVoid)
       of "http/post_form", "http/get":
         # Continuation-passing rather than `Task`-returning, because the only
@@ -5609,14 +5657,57 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "dom/element": "$gene_dom_element(" & arguments[0] & ")"
     of "dom/create_element": "document.createElement(" & arguments[0] & ")"
     of "dom/append":
-      "(" & arguments[0] & ".appendChild(" & arguments[1] & "), undefined)"
+      let parent = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      let child = if emitter.typescript: "(" & arguments[1] & " as Node)" else: arguments[1]
+      "(" & parent & ".appendChild(" & child & "), undefined)"
     of "dom/set_text":
-      "(" & arguments[0] & ".textContent = " & arguments[1] & ", undefined)"
-    of "dom/text": "(" & arguments[0] & ".textContent ?? \"\")"
+      let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      "(" & node & ".textContent = " & arguments[1] & ", undefined)"
+    of "dom/clear", "dom/focus", "dom/scroll_end", "dom/near_end",
+       "dom/scroll_top", "dom/scroll_height", "dom/set_scroll_top":
+      let element = if emitter.typescript:
+        "(" & arguments[0] & " as HTMLElement)" else: arguments[0]
+      case expr.text
+      of "dom/clear": "(" & element & ".replaceChildren(), undefined)"
+      of "dom/focus": "(" & element & ".focus(), undefined)"
+      of "dom/scroll_end":
+        "(" & element & ".scrollTop = " & element & ".scrollHeight, undefined)"
+      of "dom/scroll_top": element & ".scrollTop"
+      of "dom/scroll_height": element & ".scrollHeight"
+      of "dom/set_scroll_top":
+        "(" & element & ".scrollTop = " & arguments[1] & ", undefined)"
+      else:
+        "(" & element & ".scrollHeight - " & element & ".scrollTop - " &
+          element & ".clientHeight <= " & arguments[1] & ")"
+    of "dom/input_value", "dom/set_input_value":
+      let element = if emitter.typescript:
+        "(" & arguments[0] & " as HTMLInputElement | HTMLTextAreaElement)"
+        else: arguments[0]
+      if expr.text == "dom/input_value": element & ".value"
+      else: "(" & element & ".value = " & arguments[1] & ", undefined)"
+    of "dom/text":
+      let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
+      "(" & node & ".textContent ?? \"\")"
     of "dom/set_class":
-      "(" & arguments[0] & ".classList.toggle(" & arguments[1] & ", " &
+      let node = if emitter.typescript: "(" & arguments[0] & " as Element)" else: arguments[0]
+      "(" & node & ".classList.toggle(" & arguments[1] & ", " &
         arguments[2] & "), undefined)"
     of "dom/window": "window"
+    of "browser/origin": "window.location.origin"
+    of "browser/hash": "window.location.hash"
+    of "browser/search": "window.location.search"
+    of "browser/request_id": "crypto.randomUUID()"
+    of "browser/replace_url":
+      "(history.replaceState(null, \"\", " & arguments[0] & "), undefined)"
+    of "browser/copy": "$gene_clipboard_copy(" & arguments.join(", ") & ")"
+    of "session_storage/get": "$gene_session_storage_get(" & arguments[0] & ")"
+    of "session_storage/set": "$gene_session_storage_set(" & arguments.join(", ") & ")"
+    of "session_storage/remove": "$gene_session_storage_remove(" & arguments[0] & ")"
+    of "event/shift_key", "event/is_composing":
+      let event = if emitter.typescript:
+        "(" & arguments[0] & " as KeyboardEvent)" else: arguments[0]
+      "Boolean(" & event & "." &
+        (if expr.text == "event/shift_key": "shiftKey" else: "isComposing") & ")"
     of "dom/inner_width": "window.innerWidth"
     of "dom/inner_height": "window.innerHeight"
     of "dom/rect_left": "$gene_dom_rect(" & arguments[0] & ", \"left\")"
@@ -5806,6 +5897,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "http/post_form":
       "$gene_http_request(\"POST\", " & arguments[0] & ", " & arguments[1] &
         ", " & arguments[2] & ")"
+    of "http/request": "$gene_http_result(" & arguments.join(", ") & ")"
     of "size": "$gene_size(" & arguments[0] & ")"
     of "node/head": arguments[0] & ".head"
     of "node/props": arguments[0] & ".props"
@@ -8357,6 +8449,24 @@ proc emitModule(module: WebModule, typescript: bool,
       "throw new TypeError(\"dom/stop_propagation expected an Event\"); " &
       "event.stopPropagation(); }")
     emitter.line()
+  if moduleUsesBuiltin(module, ["session_storage/get", "session_storage/set", "session_storage/remove"]):
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_session_storage_get(key" & dynamic & ") { try { return sessionStorage.getItem(key); } catch { return null; } }")
+    emitter.line("function $gene_session_storage_set(key" & dynamic & ", value" & dynamic & ") { try { sessionStorage.setItem(key, value); return true; } catch { return false; } }")
+    emitter.line("function $gene_session_storage_remove(key" & dynamic & ") { try { sessionStorage.removeItem(key); } catch {} }")
+  if moduleUsesBuiltin(module, ["browser/copy"]):
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_clipboard_copy(text" & dynamic & ", done" & dynamic & ") { if (!navigator.clipboard) { done(false); return; } navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); }")
+  if moduleUsesBuiltin(module, ["http/request"]):
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_http_result(method" & dynamic & ", url" & dynamic & ", body" & dynamic & ", headers" & dynamic & ", done" & dynamic & ") {")
+    inc emitter.indent
+    emitter.line("const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 30000);")
+    emitter.line("fetch(url, { method, credentials: \"same-origin\", headers, signal: controller.signal, body: method === \"GET\" || method === \"HEAD\" ? undefined : body })")
+    emitter.line("  .then(response => response.text().then(text => ({ status: BigInt(response.status), text })))")
+    emitter.line("  .then(result => { clearTimeout(timer); done(result.status, result.text); }, () => { clearTimeout(timer); done(0n, \"\"); });")
+    dec emitter.indent
+    emitter.line("}")
   if moduleUsesBuiltin(module, ["http/get", "http/post_form"]):
     let dynamic = if typescript: ": any" else: ""
     let voidReturn = if typescript: ": void" else: ""
@@ -8868,6 +8978,7 @@ type
     sourceMap: string
     entryName: string
     entryAsync: bool
+    dependencies: seq[WebAssetRoute]
 
 # A compact SHA-256. Content addressing is the cache-correctness boundary for
 # every generated route, so a hash collision would serve stale bytes under a
@@ -8973,7 +9084,7 @@ proc webAssetRoutes*(asset: WebAsset): seq[WebAssetRoute] =
                   body: asset.js),
     WebAssetRoute(fileName: asset.mapFile,
                   contentType: "application/json; charset=utf-8",
-                  body: asset.sourceMap, isSourceMap: true)]
+                  body: asset.sourceMap, isSourceMap: true)] & asset.dependencies
 
 proc webAssetMountModule*(asset: WebAsset, mountId: string): WebAssetRoute =
   ## The placement bootstrap: the only code that knows a mount id. It is a
@@ -9089,9 +9200,10 @@ proc writeWebModule(module: WebModule, outDir: string,
     writeFile(path, content)
     resultPaths.add path
 
-proc buildWebModule*(sourcePath, outDir: string): seq[string] =
+proc loadWebGraph(sourcePath: string,
+                  readSource: proc(path: string): string {.closure.} = nil): seq[WebModule] =
   let entry = normalizedPath(absolutePath(sourcePath))
-  if not fileExists(entry):
+  if readSource == nil and not fileExists(entry):
     raise newException(WebProfileError, "file not found: " & sourcePath)
   var states = initTable[string, int]() # 1 visiting, 2 complete
   var modules = initTable[string, WebModule]()
@@ -9161,10 +9273,10 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
         "web module initialization cycle: " & path)
     if states.getOrDefault(path) == 2:
       return
-    if not fileExists(path):
+    if readSource == nil and not fileExists(path):
       raise newException(WebProfileError, "web import not found: " & path)
     states[path] = 1
-    let source = readFile(path)
+    let source = if readSource == nil: readFile(path) else: readSource(path)
     let unit = readAllWithLocs(source, path)
     var importSpecs: seq[WebImport]
     for i, form in unit.forms:
@@ -9374,4 +9486,51 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
 
   visit(entry)
   for path in order:
-    writeWebModule(modules[path], outDir, result)
+    result.add modules[path]
+
+proc buildWebModule*(sourcePath, outDir: string): seq[string] =
+  for module in loadWebGraph(sourcePath):
+    writeWebModule(module, outDir, result)
+
+proc compileWebFileAsset*(sourcePath: string,
+                          readSource: proc(path: string): string {.closure.}): WebAsset =
+  ## Publish an authored Gene module graph using the same mount mechanism as
+  ## web_module. The native caller supplies capability-checked source reads;
+  ## no application JS bootstrap or temporary emitted directory is required.
+  let modules = loadWebGraph(sourcePath, readSource)
+  let entry = modules[^1]
+  let main = checkWebEntry(entry, sourcePath)
+  var emitted: seq[WebArtifacts]
+  var fingerprint = ""
+  for module in modules:
+    if module.externs.len > 0:
+      raise webError(module.loc,
+        "web/load serves Gene modules only; js/fn imports require an explicit external asset host")
+    let artifacts = emitWebArtifacts(module)
+    emitted.add artifacts
+    fingerprint.add module.webAssetName() & "\x00" & artifacts.js & "\x00" & artifacts.sourceMap
+  let prefix = "client-" & webContentHash(fingerprint) & "-"
+  result = WebAsset(name: entry.webAssetName(), identity: prefix & entry.webAssetName(),
+    entryName: main.name, entryAsync: main.async)
+  for i, module in modules:
+    let base = module.webAssetName()
+    var js = emitted[i].js
+    for dependency in modules:
+      let name = dependency.webAssetName()
+      js = js.replace(jsString("./" & name & ".mjs"),
+                      jsString("./" & prefix & name & ".mjs"))
+    js = js.replace("sourceMappingURL=" & base & ".mjs.map",
+                    "sourceMappingURL=" & prefix & base & ".mjs.map")
+    let file = prefix & base & ".mjs"
+    let mapFile = file & ".map"
+    if i == modules.high:
+      result.entryFile = file
+      result.mapFile = mapFile
+      result.js = js
+      result.sourceMap = emitted[i].sourceMap
+    else:
+      result.dependencies.add WebAssetRoute(fileName: file,
+        contentType: "text/javascript; charset=utf-8", body: js)
+      result.dependencies.add WebAssetRoute(fileName: mapFile,
+        contentType: "application/json; charset=utf-8", body: emitted[i].sourceMap,
+        isSourceMap: true)

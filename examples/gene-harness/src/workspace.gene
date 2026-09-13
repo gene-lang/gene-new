@@ -723,7 +723,7 @@
         "required plugin event schema is unavailable"))
     # Repair is deliberately after catalog validation: recovery must never
     # modify a stream this build is about to refuse as unreadable.
-    (repair_interrupted_turns h/event_store)
+    (repair_interrupted_turns h/event_store ^session h/event_stream)
     (hydrate_harness_log h))
 
   (WorkspaceRestorePlan ^workspace workspace ^entries entries

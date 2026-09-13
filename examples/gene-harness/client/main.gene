@@ -1,0 +1,524 @@
+(mod harness_client ^profile web)
+
+(import [terminal merge_blocks query_value draft_key bounded_blocks] ^from "./state.gene")
+(import [block_view] ^from "./view.gene")
+
+(type Client ^props {
+  ^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str
+  ^ready Bool ^sending Bool ^busy Bool ^refreshing Bool ^autoscroll Bool
+  ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool
+  ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any)
+  ^run Any ^pending Any ^status Any ^socket Any ^session_revision Str
+  ^root EventTarget ^list EventTarget ^transcript EventTarget
+  ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+
+(fn notice [client : Client, text : Str] : Void
+  ($dom/set_text client/notice text))
+
+(fn set_hidden [id : Str, hidden : Bool] : Void
+  (var element ($dom/element id))
+  (set element/hidden hidden))
+
+(fn string_or [value : Any, fallback : Str] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var text : Str value)
+  text)
+
+(fn api [client : Client, method : Str, path : Str, payload : Any,
+         done : (Fn [Int Any] Void)] : Void
+  ($http/request method path ($json/stringify payload)
+    {^content-type "application/json" ^x-csrf-token client/csrf}
+    (fn [status : Int, body : Str] : Void
+      (var result : Any
+        (if (== body "") {^code "disconnected" ^message "Connection lost. Your draft is saved."}
+          (try ($json/parse body)
+            catch Any {^code "invalid_response" ^message "The Harness returned an unreadable response."})))
+      (done status result))))
+
+(fn show_error [client : Client, result : Any] : Void
+  (var message (string_or result/message "The request could not be completed."))
+  (notice client message))
+
+(fn remember_draft [client : Client] : Void
+  (if_yes (! client/ready) (return))
+  (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
+  (var key (draft_key (if (== client/selected "") "new" client/selected)))
+  (if_not ($session_storage/set key ($dom/input_value client/prompt))
+    (notice client "Browser storage is unavailable. Keep this tab open to preserve your draft.")))
+
+(fn controls [client : Client] : Void
+  (var send ($dom/element "send"))
+  (var stop ($dom/element "stop"))
+  ($dom/set_class client/root "working" client/busy)
+  ($dom/set_class client/root "sending" client/sending)
+  (set send/disabled (|| (! client/ready) client/sending client/busy))
+  (var rename ($dom/element "rename_session"))
+  (set rename/disabled (|| (! client/ready) (== client/selected "") client/busy))
+  (var create_button ($dom/element "create_session"))
+  (set create_button/disabled (|| (! client/ready) client/sending client/busy))
+  (set client/prompt/disabled (! client/ready))
+  (set stop/hidden (! client/busy))
+  (set send/text_content
+    (if client/sending "Sending…" (if ($absent? client/pending) "Send" "Resolve")))
+  (var mode "Local workspace")
+  (if_not ($absent? client/status)
+    (var model : Str client/status/model)
+    (var provider : Str client/status/provider)
+    (set mode (if client/status/offline "Offline · local workspace" $"${model} · ${provider}")))
+  ($dom/set_text ($dom/element "mode") mode))
+
+(fn render_sessions [client : Client] : Void
+  ($dom/clear client/list)
+  (var filter : Str (str/lower ($dom/input_value ($dom/element "session_filter"))))
+  (for session in client/sessions
+    (var title : Str session/title)
+    (var id : Str session/id)
+    (if_yes (|| (== filter "") (str/contains? (str/lower title) filter))
+      (var cls (if (== id client/selected) "session selected" "session"))
+      (var subtitle : Str "Conversation")
+      (if_not ($absent? session/last_run)
+        (set subtitle session/last_run/status))
+      (var button : EventTarget
+        ($dom/render
+          `(button ^type "button" ^class_name %cls
+             ^on_click %(fn [event : Any] : Void (select_session client id))
+             (span ^class_name "session_name" %title)
+             (span ^class_name "session_meta" %subtitle))))
+      (set button/title title)
+      ($dom/append client/list button)))
+  (if_yes (== ($size client/sessions) 0)
+    ($dom/append client/list
+      ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here.")))))
+
+(fn render_block [client : Client, block : Any, provisional : Bool] : Void
+  ($dom/append client/transcript
+    (block_view block provisional
+      (fn [text : Str] : Void
+        ($browser/copy text (fn [copied : Bool] : Void
+          (notice client (if copied "Copied." "Select the text to copy it."))))))))
+
+(fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
+  (var old_top ($dom/scroll_top client/transcript))
+  (var old_height ($dom/scroll_height client/transcript))
+  (var follow (&& (! client/viewing_history)
+    (|| client/autoscroll ($dom/near_end client/transcript 80.0))))
+  ($dom/clear client/transcript)
+  (if_yes client/has_older
+    ($dom/append client/transcript
+      ($dom/render
+        `(button ^type "button" ^class_name "older_messages" ^disabled %client/loading_older
+           ^on_click %(fn [event : Any] : Void (load_older client))
+           %(if client/loading_older "Loading…" "Load earlier messages")))))
+  (if (&& (== ($size client/records) 0) (== ($size client/preview) 0))
+    ($dom/append client/transcript
+      ($dom/render
+        `(div ^class_name "empty_state"
+           (div ^class_name "gene_mark" "G")
+           (h2 "What would you like to work on?")
+           (p "Ask a question, explore your workspace, or build a new tool.")
+           (div ^class_name "suggestions"
+             (button ^type "button"
+               ^on_click %(fn [event : Any] : Void
+                 ($dom/set_input_value client/prompt "/help")
+                 ($dom/focus client/prompt)) "Explore commands")
+             (button ^type "button"
+               ^on_click %(fn [event : Any] : Void
+                 ($dom/set_input_value client/prompt "/status")
+                 ($dom/focus client/prompt)) "Check workspace"))))))
+  (for block in client/records (render_block client block false))
+  (for block in client/preview
+    (var found false)
+    (for record in client/records
+      (if_yes (== record/id block/id) (set found true)))
+    (if_not found (render_block client block true)))
+  (if_not ($absent? client/run)
+    (var status : Str client/run/status)
+    (var text (if (== status "running") "Working…"
+      (if (== status "stopping") "Stopping…" status)))
+    (if_yes (! ($absent? client/run/message)) (set text client/run/message))
+    ($dom/append client/transcript
+      ($dom/render `(p ^class_name "run_status" %text))))
+  (if follow
+    (then ($dom/scroll_end client/transcript)
+      (set_hidden "new_output" true))
+    (else
+      ($dom/set_scroll_top client/transcript
+        (if prepend (+ old_top (- ($dom/scroll_height client/transcript) old_height)) old_top))
+      ($dom/set_text ($dom/element "new_output")
+        (if client/viewing_history "Return to latest ↓" "New output ↓"))
+      (set_hidden "new_output" false))))
+
+(fn refresh_status [client : Client] : Void
+  (api client "GET" "/api/v1/status" nil
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (then
+          (if_yes (== ($json/stringify client/status) ($json/stringify data)) (return))
+          (var was_busy client/busy)
+          (set client/status data)
+          (set client/busy data/busy)
+          (if_yes (!= was_busy client/busy) (refresh_sessions client))
+          (var drawer ($dom/element "status_content"))
+          ($dom/clear drawer)
+          (var profile : Str data/profile)
+          ($dom/append drawer ($dom/render `(p "Profile: " %profile)))
+          (var model : Str data/model)
+          (var provider : Str data/provider)
+          ($dom/append drawer ($dom/render `(p "Model: " %model)))
+          ($dom/append drawer ($dom/render `(p "Provider: " %provider)))
+          (var plugins : (List Any) data/plugins)
+          (for plugin in plugins
+            (var id : Str plugin/id)
+            (var state : Str plugin/state)
+            ($dom/append drawer
+              ($dom/render `(div ^class_name "plugin_status" (span %id) (span %state)))))
+          (var commands : (List Any) data/commands)
+          (var picker ($dom/element "commands"))
+          ($dom/clear picker)
+          (for command in commands
+            (var name : Str command/name)
+            (var doc : Str command/doc)
+            ($dom/append picker
+              ($dom/render
+                `(button ^type "button" ^class_name "command"
+                   ^on_click %(fn [event : Any] : Void
+                     ($dom/set_input_value client/prompt $"/${name} ")
+                     ($dom/focus client/prompt)
+                     (set picker/hidden true))
+                   (strong %($ "/" name)) (span %doc)))))
+          (controls client))
+        (else
+          (if_yes (== code 401) (set client/ready false) (controls client))
+          (show_error client data))))))
+
+(fn sessions_page [client : Client, after : Str, entries : (List Any)] : Void
+  (api client "GET" $"/api/v1/sessions?after=${after}" nil
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (then
+          (var page : (List Any) data/sessions)
+          (for entry in page (entries .push entry))
+          (var next (string_or data/next ""))
+          (if_yes (!= next "") (sessions_page client next entries) (return))
+          (set client/sessions entries)
+          (render_sessions client)
+          (if_yes (&& (== client/selected "") (> ($size client/sessions) 0)
+                      (== ($dom/input_value client/prompt) ""))
+            (var first : Any client/sessions/0)
+            (var id : Str first/id)
+            (select_session client id)))
+        (else (show_error client data))))))
+
+(fn refresh_sessions [client : Client] : Void
+  (sessions_page client "" []))
+
+(fn load_older [client : Client] : Void
+  (if_yes (|| client/loading_older (== ($size client/records) 0)) (return))
+  (set client/loading_older true)
+  (var generation client/generation)
+  (var first : Any client/records/0)
+  (var before : Str first/seq)
+  (api client "GET" $"/api/v1/sessions/${client/selected}/snapshot?before=${before}" nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= generation client/generation) (return))
+      (set client/loading_older false)
+      (if (== code 200)
+        (then
+          (var older : (List Any) data/records)
+          (set client/records (bounded_blocks (merge_blocks older client/records) false))
+          (set client/has_older data/has_older)
+          (set client/autoscroll false)
+          (set client/viewing_history true)
+          (set client/preview [])
+          (render_transcript client ^prepend true))
+        (else (show_error client data))))))
+
+(fn refresh [client : Client] : Void
+  (if_yes (|| (! client/ready) client/refreshing (== client/selected "")) (return))
+  (set client/refreshing true)
+  (var id client/selected)
+  (var generation client/generation)
+  (var initial (== client/cursor ""))
+  (var suffix (if (== client/cursor "") "" $"?after=${client/cursor}"))
+  (api client "GET" $"/api/v1/sessions/${id}/snapshot${suffix}" nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= generation client/generation) (return))
+      (set client/refreshing false)
+      (if (== code 200)
+        (then
+          (var changed (|| (== client/cursor "") (!= client/cursor data/cursor)
+                           (!= ($json/stringify client/preview) ($json/stringify data/preview))
+                           (!= ($json/stringify client/run) ($json/stringify data/run))))
+          (var run_changed (!= ($json/stringify client/run) ($json/stringify data/run)))
+          (if_yes data/reset (set client/records [])
+            (notice client "Earlier history is no longer retained."))
+          (if_yes (|| initial data/reset) (set client/has_older data/has_older))
+          (var records : (List Any) data/records)
+          (if_not client/viewing_history
+            (var merged (merge_blocks client/records records))
+            (if_yes (> ($size merged) 600) (set client/has_older true))
+            (set client/records (bounded_blocks merged true))
+            (set client/preview data/preview))
+          (set client/run data/run)
+          (if_yes run_changed (refresh_sessions client))
+          (set client/cursor data/cursor)
+          (set client/next_seq data/next_submission_seq)
+          (set client/session_revision data/session/revision)
+          (var title : Str data/session/title)
+          ($dom/set_text client/title title)
+          (if_yes changed (render_transcript client))
+          (if_yes data/has_more (refresh client))
+          (controls client))
+        (else (show_error client data))))))
+
+(fn select_session [client : Client, id : Str] : Void
+  (if_yes client/sending (notice client "Resolving your submission…") (return))
+  (remember_draft client)
+  (set client/selected id)
+  (set client/cursor "")
+  (set client/next_seq "1")
+  (set client/records [])
+  (set client/preview [])
+  (set client/run nil)
+  (set client/refreshing false)
+  (set client/has_older false)
+  (set client/loading_older false)
+  (set client/viewing_history false)
+  (set client/autoscroll true)
+  (set client/generation (+ client/generation 1))
+  ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key id)) ""))
+  ($browser/replace_url $"/?session=${($url/encode_component id)}")
+  ($dom/set_class client/root "menu_open" false)
+  (notice client "")
+  (render_sessions client)
+  (render_transcript client)
+  (refresh client)
+  (refresh_status client))
+
+(fn create [client : Client] : Void
+  (var draft (if (== client/selected "") ($dom/input_value client/prompt)
+    (?? ($session_storage/get (draft_key "new")) "")))
+  (api client "POST" "/api/v1/sessions" {^title "New conversation"}
+    (fn [code : Int, data : Any] : Void
+      (if (== code 201)
+        (then
+          (var id : Str data/id)
+          (refresh_sessions client)
+          (select_session client id)
+          (if_yes (!= draft "")
+            ($dom/set_input_value client/prompt draft)
+            (remember_draft client))
+          ($session_storage/remove (draft_key "new")))
+        (else (show_error client data))))))
+
+(fn send_pending [client : Client] : Void
+  (if_yes ($absent? client/pending) (return))
+  (var pending : Any client/pending)
+  (var session : Str pending/session)
+  (set client/sending true)
+  (controls client)
+  (api client "POST" $"/api/v1/sessions/${session}/runs" pending
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false)
+      (if (== code 202)
+        (then
+          (var run_status : Str data/status)
+          (set client/busy (! (terminal run_status)))
+          ($session_storage/remove "gene-harness/pending")
+          (var submitted : Str pending/text)
+          (if (== session client/selected)
+            (then
+              (if (== ($dom/input_value client/prompt) submitted)
+                (then
+                  ($dom/set_input_value client/prompt "")
+                  ($session_storage/remove (draft_key session)))
+                (else (remember_draft client))))
+            (else
+              (if_yes (== (?? ($session_storage/get (draft_key session)) "") submitted)
+                ($session_storage/remove (draft_key session)))))
+          (set client/pending nil)
+          (set_hidden "commands" true)
+          (notice client "")
+          (refresh client)
+          (refresh_sessions client)
+          (refresh_status client))
+        (else
+          (if_yes (|| (== code 400) (== code 409) (== code 410) (== code 413))
+            ($session_storage/remove "gene-harness/pending")
+            (set client/pending nil))
+          (show_error client data)
+          (refresh client)))
+      (set_hidden "resolve_submission" ($absent? client/pending))
+      (controls client))))
+
+(fn send [client : Client] : Void
+  (if_yes (|| (! client/ready) client/sending client/busy) (return))
+  (if_yes (! ($absent? client/pending)) (send_pending client) (return))
+  (var text ($dom/input_value client/prompt))
+  (if_yes (== (str/trim text) "") (return))
+  (remember_draft client)
+  (if_yes (== client/selected "")
+    (api client "POST" "/api/v1/sessions" {^title "New conversation"}
+      (fn [code : Int, data : Any] : Void
+        (if (== code 201)
+          (then
+            (var id : Str data/id)
+            (select_session client id)
+            ($dom/set_input_value client/prompt text)
+            (remember_draft client)
+            ($session_storage/remove (draft_key "new"))
+            (send client)
+            (refresh_sessions client))
+          (else (show_error client data)))))
+    (return))
+  (remember_draft client)
+  (set client/pending {^session client/selected ^request_id ($browser/request_id)
+    ^submission_seq client/next_seq ^text text})
+  (if_not ($session_storage/set "gene-harness/pending" ($json/stringify client/pending))
+    (set client/pending nil)
+    (notice client "Browser storage is required to safely recover a submission. Enable it and try again.")
+    (return))
+  (send_pending client))
+
+(fn stop [client : Client] : Void
+  (if_yes ($absent? client/status) (return))
+  (var active_session (string_or client/status/session ""))
+  (if_yes (!= active_session client/selected)
+    (select_session client active_session)
+    (notice client "The active conversation is shown. Press Stop to stop it.")
+    (return))
+  (if_yes ($absent? client/run) (return))
+  (var id : Str client/run/id)
+  (api client "POST" $"/api/v1/sessions/${client/selected}/runs/${id}/cancel" {}
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (then (notice client "Stop requested.") (refresh client))
+        (else (show_error client data))))))
+
+(fn connect_socket [client : Client] : Void
+  (set client/socket_epoch (+ client/socket_epoch 1))
+  (var epoch client/socket_epoch)
+  (if_not ($absent? client/socket)
+    (var old : EventTarget client/socket)
+    ($ws/close old))
+  (var origin ($browser/origin))
+  (var parts : (List Str) (str/split origin "://"))
+  (var scheme (if (== parts/0 "https") "wss" "ws"))
+  (var socket ($ws/connect $"${scheme}://${parts/1}/api/v1/events"))
+  (set client/socket socket)
+  ($ws/on_text socket (fn [text : Str] : Void (refresh client) (refresh_status client)))
+  ($ws/on_close socket (fn [] : Void
+    ($time/after 2500.0 (fn [] : Void
+      (if_yes (&& client/ready (== epoch client/socket_epoch))
+        (connect_socket client)))))))
+
+(fn poll [client : Client] : Void
+  ($time/after 1500.0 (fn [] : Void
+    (if_yes client/ready (refresh client) (refresh_status client))
+    (poll client))))
+
+(fn authenticated [client : Client, data : Any] : Void
+  (set client/csrf data/csrf)
+  (set client/ready true)
+  (set_hidden "auth_notice" true)
+  (var saved : Str (?? ($session_storage/get "gene-harness/pending") ""))
+  (if_yes (!= saved "")
+    (set client/pending (try ($json/parse saved) catch Any nil)))
+  (if_not ($absent? client/pending)
+    (var id : Str client/pending/session)
+    (set client/selected id))
+  (refresh_sessions client)
+  (if_yes (!= client/selected "") (select_session client client/selected))
+  (refresh_status client)
+  (controls client)
+  (connect_socket client)
+  (if_not ($absent? client/pending) (send_pending client)))
+
+(fn authenticate [client : Client] : Void
+  (var token (query_value ($browser/hash) "token"))
+  ($browser/replace_url (if (== client/selected "") "/" $"/?session=${client/selected}"))
+  (if (!= token "")
+    (api client "POST" "/api/v1/auth/exchange" {^token token}
+      (fn [code : Int, data : Any] : Void
+        (if (== code 200)
+          (then (authenticated client data))
+          (else (show_error client data) (set_hidden "auth_notice" false)))))
+    (api client "GET" "/api/v1/status" nil
+      (fn [code : Int, data : Any] : Void
+        (if (== code 200)
+          (then (authenticated client data))
+          (else (show_error client data) (set_hidden "auth_notice" false)))))))
+
+(fn main [root : EventTarget] : Void
+  (var client (Client ^selected (query_value ($browser/search) "session")
+    ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^ready false ^sending false
+    ^busy false ^refreshing false ^autoscroll true ^generation 0
+    ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false
+    ^records [] ^preview [] ^sessions [] ^run nil ^pending nil ^status nil
+    ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions")
+    ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt")
+    ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+  ($dom/add_event_listener ($dom/element "composer") "submit"
+    (fn [event : Any] : Void ($dom/prevent_default event) (send client)))
+  ($dom/add_event_listener client/prompt "keydown"
+    (fn [event : Any] : Void
+      (if_yes (&& (== ($event/key event) "Enter") (! ($event/shift_key event))
+                  (! ($event/is_composing event)))
+        ($dom/prevent_default event)
+        (send client))))
+  ($dom/add_event_listener client/prompt "input"
+    (fn [event : Any] : Void
+      (remember_draft client)
+      (set_hidden "commands"
+        (! (str/starts_with? ($dom/input_value client/prompt) "/")))))
+  ($dom/add_event_listener ($dom/element "create_session") "click"
+    (fn [event : Any] : Void (create client)))
+  ($dom/add_event_listener ($dom/element "session_filter") "input"
+    (fn [event : Any] : Void (render_sessions client)))
+  ($dom/add_event_listener ($dom/element "stop") "click"
+    (fn [event : Any] : Void (stop client)))
+  ($dom/add_event_listener ($dom/element "resolve_submission") "click"
+    (fn [event : Any] : Void (send_pending client)))
+  ($dom/add_event_listener ($dom/element "new_output") "click"
+    (fn [event : Any] : Void
+      (if client/viewing_history
+        (select_session client client/selected)
+        (do ($dom/scroll_end client/transcript) (set_hidden "new_output" true)))))
+  ($dom/add_event_listener client/transcript "scroll"
+    (fn [event : Any] : Void
+      (set client/autoscroll ($dom/near_end client/transcript 80.0))))
+  ($dom/add_event_listener ($dom/element "menu") "click"
+    (fn [event : Any] : Void ($dom/set_class root "menu_open" true)))
+  ($dom/add_event_listener ($dom/element "close_menu") "click"
+    (fn [event : Any] : Void ($dom/set_class root "menu_open" false)))
+  ($dom/add_event_listener ($dom/element "status_button") "click"
+    (fn [event : Any] : Void
+      (var drawer ($dom/element "status_drawer"))
+      (var hidden : Bool drawer/hidden)
+      (set drawer/hidden (! hidden))))
+  ($dom/add_event_listener ($dom/element "rename_session") "click"
+    (fn [event : Any] : Void
+      (set_hidden "rename_form" false)
+      ($dom/set_input_value ($dom/element "rename_title") ($dom/text client/title))
+      ($dom/focus ($dom/element "rename_title"))))
+  ($dom/add_event_listener ($dom/element "rename_form") "submit"
+    (fn [event : Any] : Void
+      ($dom/prevent_default event)
+      (api client "PATCH" $"/api/v1/sessions/${client/selected}"
+        {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
+        (fn [code : Int, data : Any] : Void
+          (if (== code 200)
+            (then (set_hidden "rename_form" true)
+              (refresh client) (refresh_sessions client))
+            (else (show_error client data)))))))
+  ($dom/add_event_listener ($dom/window) "focus"
+    (fn [event : Any] : Void (refresh client) (refresh_status client) (refresh_sessions client)))
+  ($dom/add_event_listener ($dom/window) "hashchange"
+    (fn [event : Any] : Void
+      (if_yes (!= (query_value ($browser/hash) "token") "") (authenticate client))))
+  (render_transcript client)
+  (if_yes (== client/selected "")
+    ($dom/set_input_value client/prompt (?? ($session_storage/get (draft_key "new")) "")))
+  (controls client)
+  (authenticate client)
+  (poll client))

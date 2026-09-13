@@ -4,18 +4,9 @@ A durable, capability-bounded plugin harness for a general-purpose Gene agent.
 It can add code while running, stop, and restore the same composition and
 plugin state at the last committed turn boundary.
 
-From this package directory, `../../bin/gene test` runs the 34 baseline Harness
-scenarios plus the Cordis adapter integration examples in `tests/integration`.
-The package artifact test target uses the same wrapper; give it an explicit
-scratch root and checkout path because materialized artifacts do not contain
-the repository's language skill:
-
-```sh
-mkdir -p /tmp/harness-package-tests
-GENE_HARNESS_TEST_ROOT=/tmp/harness-package-tests \
-GENE_HARNESS_PACKAGE_ROOT="$PWD" \
-  ../../bin/gene test --package --allow_read_write_dir /tmp/harness-package-tests
-```
+The browser client and terminal share the same agent, commands, plugins, and
+durable stores. The browser's state, rendering, and interactions are written in
+Gene and compiled to browser modules automatically when the server starts.
 
 `new_cordis_harness` uses isolated registry
 drafts, selected-entry dependencies, revision-owned callbacks, and generated
@@ -39,6 +30,58 @@ activation dependencies.
 
 The implementation follows [docs/design.md](docs/design.md); the normative
 design is [`tmp/harness.md`](../../tmp/harness.md).
+
+The local browser client follows [the browser-client design](docs/web-client.md).
+The existing `web` profile below is an offline memory/HTML deployment example;
+it does not start a web server or provide a browser interface.
+
+## Browser client
+
+Start an offline workspace from the repository root:
+
+```sh
+bin/gene run examples/gene-harness/src/web_server.gene --offline
+```
+
+Open the connection link printed by the server. It binds `127.0.0.1:8095` and
+uses a one-use connection token, then an HttpOnly browser cookie. Use
+`--port 8096` to choose another port. The link expires after ten minutes; a
+connected browser session lasts eight hours. Reloading preserves conversations
+and per-session drafts. Closing a tab does not stop a run; use **Stop**.
+
+The offline provider supports the existing commands, including `/help`,
+`/status`, and `/build`. To use the configured model, omit `--offline` and use
+the same provider variables and grants as the `chat` profile. For Codex:
+
+```sh
+mkdir -p /tmp/harness-web
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-web GENE_HARNESS_PROVIDER=codex \
+    ../../bin/gene run --allow_read_write_dir /tmp/harness-web \
+    --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
+    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+    src/web_server.gene
+)
+```
+
+For OpenRouter, set `GENE_HARNESS_PROVIDER=openrouter` and
+`OPENROUTER_API_KEY`; the Codex-directory grant is then unnecessary. Credentials
+remain in the native process. `GENE_HARNESS_MODEL` and
+`GENE_HARNESS_THINKING_EFFORT` keep their existing meanings.
+
+The client supports creating/renaming sessions, retained history, Gene code and
+result blocks, command suggestions, cancellation, and reconnect. One run is
+admitted at a time. A browser and CLI cannot simultaneously own the same session.
+Session claims are kernel-released on process exit; leave files under
+`<home>/claims` in place. New session/run projections use event-manifest format
+2; older homes are readable, but an older Harness binary cannot open a home
+after this upgrade.
+
+Use `--home <path>` or `GENE_HARNESS_HOME` to select a workspace. A path outside
+the launch directory still needs a matching `--allow_read_write_dir` grant.
+Remote access, multi-user hosting, graphical plugin administration, and live
+model token streaming are outside this release.
 
 ## Quick start
 
@@ -515,29 +558,13 @@ before stores are flushed and closed.
 | `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
 | `src/main.gene` | durable boot and irreducible recovery surface |
 | `events.catalog` | core persisted-event vocabulary source |
-| `tests/` | public-seam smoke programs |
+| `src/web_server.gene`, `src/web_style.gene` | local HTTP host, authentication, page layout and styling |
+| `src/session_host.gene`, `src/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
+| `src/bootstrap.gene`, `src/session_claim.gene` | runtime lifecycle and exclusive session ownership |
+| `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
 
-## Verification
-
-Run Harness tests with `gene test` from this package directory. They cover registry ownership,
-transaction diff/commit/abort, event retention/catalog/concurrency/cold repair,
-cross-process Store publication, content-addressed registration, dependency
-closure and cache repair, quarantine, named-root attenuation, callback and
-typed-provider supervision, plugin events, provenance, active views/output,
-prompt-skill loading, model configuration/credentials/response parsing,
-reply types, narration ordering, execution context/payload, and
-session/workspace state conflicts. Model client tests use synthetic credentials
-and responses and do not make network requests.
-
-Run the focused programs directly while developing. Repository gates are:
-
-```bash
-python3 tools/generate_harness_event_catalog.py --check
-nimble test
-nimble spec
-nimble perf
-nimble wasm
-```
+The former Harness scenarios have moved to `tmp/gene-harness-tests` in the
+repository workspace. They are no longer a package test target.
 
 Human-reviewed promotion into checked-in profiles and cross-workspace blob
 sharing remain deferred.

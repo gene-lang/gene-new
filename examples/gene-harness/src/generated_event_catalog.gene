@@ -11,6 +11,12 @@
 (fn validate_text_event [payload]
   (require_event_fields payload ["type" "text"] "text"))
 
+(fn validate_transcript_event [payload]
+  (require_event_fields payload ["type" "text" "run_id" "block_id" "role" "phase"] "transcript"))
+
+(fn validate_core_state_event [payload]
+  (require_event_fields payload ["type" "key" "state"] "core_state"))
+
 (fn validate_turn_start_event [payload]
   (require_event_fields payload ["type" "turn"] "turn_start"))
 
@@ -25,10 +31,12 @@
 
 (var core_event_types
   #[#{^name "lifecycle" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_text_event}
-    #{^name "message" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_text_event}
-    #{^name "output" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_text_event}
+    #{^name "message" ^version 2 ^ignorable false ^origin "core" ^owner "core" ^schema validate_transcript_event ^versions #{^v1 validate_text_event ^v2 validate_transcript_event}}
+    #{^name "output" ^version 2 ^ignorable false ^origin "core" ^owner "core" ^schema validate_transcript_event ^versions #{^v1 validate_text_event ^v2 validate_transcript_event}}
     #{^name "trace" ^version 1 ^ignorable true ^origin "core" ^owner "core" ^schema validate_text_event}
     #{^name "turn/start" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_start_event}
     #{^name "turn/end" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_end_event}
     #{^name "composition/changed" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_composition_changed_event}
-    #{^name "plugin/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_plugin_state_event}])
+    #{^name "plugin/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_plugin_state_event}
+    #{^name "session/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "run/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}])

@@ -1,13 +1,13 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:5c1ebea929dbaf10b2e5a1f4a95f57b620aac00a0400eacf4813897ae2b75e08"
+  ^root_manifest_digest "sha256:6193891c41ba255f48f38265ea02426800867d9b77d8e58c7244be0d1bdd2483"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/harness@0.1.0#sha256:33afc849600e12c1c00d0d4c2adcfde90ebc6310c4fbfcbdba3b3683e7e333fc"]
+  ^roots [ "workspace:gene/harness@0.1.0#sha256:c458b75150551689dab26a5d50fbddda72c31814df1bc5e165c43d89b18ad1e7"]
   ^packages [
     (locked_package
-      ^id "path:genex/cordis@0.1.0#sha256:3ee79337c7c90ea0702ff1c783edbbbd6a911627d049dad298a19793692b47c3"
+      ^id "path:genex/cordis@0.1.0#sha256:2a68b0b5000acc5cb99e0d000b4862ca1886503ce2484a4f7cf6cadc8e379118"
       ^name "genex/cordis"
       ^version "0.1.0"
       ^manifest_digest "sha256:1edd059df4b1812062dd8b34cd60f936755910e587f0cb2303055fcd7a524071"
@@ -17,14 +17,14 @@
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
     (locked_package
-      ^id "workspace:gene/harness@0.1.0#sha256:33afc849600e12c1c00d0d4c2adcfde90ebc6310c4fbfcbdba3b3683e7e333fc"
+      ^id "workspace:gene/harness@0.1.0#sha256:c458b75150551689dab26a5d50fbddda72c31814df1bc5e165c43d89b18ad1e7"
       ^name "gene/harness"
       ^version "0.1.0"
-      ^manifest_digest "sha256:5c1ebea929dbaf10b2e5a1f4a95f57b620aac00a0400eacf4813897ae2b75e08"
+      ^manifest_digest "sha256:6193891c41ba255f48f38265ea02426800867d9b77d8e58c7244be0d1bdd2483"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
-        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:3ee79337c7c90ea0702ff1c783edbbbd6a911627d049dad298a19793692b47c3")
+        ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:2a68b0b5000acc5cb99e0d000b4862ca1886503ce2484a4f7cf6cadc8e379118")
       }
       ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
   ]

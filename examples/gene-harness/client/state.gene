@@ -1,0 +1,39 @@
+(mod harness_client_state ^profile web)
+
+(import [terminal_run : terminal] ^from "../src/web/contract.gene" ^export true)
+
+(fn merge_blocks [previous : (List Any), incoming : (List Any)] : (List Any)
+  (var out : (List Any) [])
+  (for old in previous
+    (var replacement : Any old)
+    (for item in incoming
+      (if_yes (== old/id item/id) (set replacement item)))
+    (out .push replacement))
+  (for item in incoming
+    (var found false)
+    (for old in previous
+      (if_yes (== old/id item/id) (set found true)))
+    (if_not found (out .push item)))
+  out)
+
+(fn query_value [source : Str, name : Str] : Str
+  (var normalized : Str (str/join (str/split source "?") ""))
+  (set normalized (str/join (str/split normalized "#") ""))
+  (for part in (str/split normalized "&")
+    (var pair : (List Str) (str/split part "="))
+    (if_yes (&& (== ($size pair) 2) (== pair/0 name))
+      (return ($url/decode_component pair/1))))
+  "")
+
+(fn draft_key [session : Str] : Str
+  $"gene-harness/draft/${session}")
+
+(fn bounded_blocks [blocks : (List Any), latest : Bool] : (List Any)
+  (var out : (List Any) [])
+  (var count ($size blocks))
+  (var start (if (&& latest (> count 600)) (- count 600) 0))
+  (var i 0)
+  (for block in blocks
+    (if_yes (&& (>= i start) (< ($size out) 600)) (out .push block))
+    (set i (+ i 1)))
+  out)

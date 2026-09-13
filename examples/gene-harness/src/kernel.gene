@@ -709,6 +709,7 @@
   (for context in contexts_to_release (release_plugin_context context))
   (h/transaction .set nil)
   (tx/phase .set "aborted")
+  (if_yes (> errors/.size 0) (mark_run_recovery h))
   {^status (if (== errors/.size 0) "aborted" "recovery_required")
    ^errors errors})
 
@@ -750,14 +751,16 @@
     (if_not (== deferred/context nil)
       (release_plugin_context deferred/context)))
   (for event in (tx/events .get)
-    (append_committed_log h ($to_str event/kind) ($to_str event/text)))
+    (append_committed_record h event))
   (for event in (tx/notifications .get)
     (notify h event))
+  (if_yes (> errors/.size 0) (mark_run_recovery h))
   {^status (if (== errors/.size 0) "committed" "recovery_required")
    ^errors errors})
 
 (fn recover_committed_turn [h : Harness, tx, id : Str, failure, ended : Bool,
                            ^desired_committed desired_committed : Bool = false]
+  (mark_run_recovery h)
   (var errors (fresh_list))
   (var registry_published (== (tx/phase .get) "published"))
   (if_yes (== (active_transaction h) tx)
@@ -956,8 +959,11 @@
       (if_yes (["lifecycle" "message" "output" "trace"]
                 .contains? ($to_str envelope/type))
         (if_not (== envelope/payload/text void)
-          ((h/log .get) .push
-            {^kind envelope/type ^text envelope/payload/text})))))
+          (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
+          (for name in ["run_id" "block_id" "role" "phase" "round"]
+            (if_not (== (envelope/payload .get name) void)
+              (record .put name (envelope/payload .get name))))
+          ((h/log .get) .push record)))))
   (h/log_hydrated .set true)
   (h/log .get))
 
@@ -991,21 +997,76 @@
 # selects `message` events, so a lifecycle entry is durable, inspectable, and
 # structurally incapable of reaching a model request.
 
-(fn append_log_only [h : Harness, kind : Str, text : Str] : Any
+(var run_log_contexts ^private true ($cell (fresh_list)))
+
+(fn run_log_context [h : Harness] ^private true
+  (for entry in (run_log_contexts .get)
+    (if_yes (same? entry/h h) (return entry)))
+  nil)
+
+(fn end_run_log [h : Harness]
+  (var kept (fresh_list))
+  (for entry in (run_log_contexts .get)
+    (if_not (same? entry/h h) (kept .push entry)))
+  (run_log_contexts .set kept)
+  nil)
+
+(fn begin_run_log [h : Harness, id : Str]
+  (end_run_log h)
+  ((run_log_contexts .get) .push {^h h ^id id ^counter ($cell 0) ^recovery ($cell false)})
+  nil)
+
+(fn mark_run_recovery [h : Harness]
+  (var context (run_log_context h))
+  (if_not ($absent? context) (context/recovery .set true))
+  nil)
+
+(fn run_needs_recovery? [h : Harness] : Bool
+  (var context (run_log_context h))
+  (if ($absent? context) false (context/recovery .get)))
+
+(fn current_run_id [h : Harness] : Str
+  (var context (run_log_context h))
+  (if ($absent? context) "" context/id))
+
+(fn log_record [h : Harness, kind : Str, text : Str, phase : Str, round : Int, role : Str]
+  (var record {^kind kind ^text text})
+  (var context (run_log_context h))
+  (if_yes (&& (! ($absent? context)) (["message" "output"] .contains? kind))
+    (var index (+ (context/counter .get) 1))
+    (context/counter .set index)
+    (record .put "run_id" context/id)
+    (record .put "block_id" $"${context/id}/${index}")
+    (record .put "role" role)
+    (record .put "phase" phase)
+    (record .put "round" round))
+  record)
+
+(fn append_log_record [h : Harness, record] : Any
   (var events (h/log .get))
-  (events .push {^kind kind ^text text})
+  (events .push record)
   # Views observe the same typed feed core persists. Publication errors are
   # collected by the bus and intentionally do not recursively append another
   # log record.
-  (publish h (HarnessLog ^kind kind ^text text))
+  (publish h (HarnessLog ^kind record/kind ^text record/text))
   events)
 
-(fn append_committed_log [h : Harness, kind : Str, text : Str] : Any
-  (var events (append_log_only h kind text))
+(fn append_log_only [h : Harness, kind : Str, text : Str] : Any
+  (append_log_record h {^kind kind ^text text}))
+
+(fn append_committed_record [h : Harness, record] : Any
   (if_not ($absent? h/event_store)
-    (append_core_event h/event_store h/event_scope h/event_stream
-      {^type kind ^text text}))
-  events)
+    (var payload {^type record/kind ^text record/text})
+    (if_not (== record/run_id void)
+      (payload .put "version" 2)
+      (for name in ["run_id" "block_id" "role" "phase" "round"]
+        (payload .put name (record .get name))))
+    (var envelope (append_core_event h/event_store h/event_scope h/event_stream payload))
+    (record .put "seq" envelope/seq))
+  (append_log_record h record))
+
+(fn append_committed_log [h : Harness, kind : Str, text : Str] : Any
+  (append_committed_record h (log_record h kind text "text" 0 "assistant")))
 
 (fn record_turn_start [h : Harness, id : Str]
   (append_log_only h "turn" $"started ${id}")
@@ -1037,12 +1098,15 @@
        ^revision revision ^session h/event_stream ^turn turn}))
   nil)
 
-(fn log_append [h : Harness, kind : Str, text : Str] : Any
+(fn log_append [h : Harness, kind : Str, text : Str,
+                ^phase phase : Str = "text", ^round round : Int = 0,
+                ^role role : Str = "assistant"] : Any
+  (var record (log_record h kind text phase round role))
   (var tx (active_transaction h))
   (if ($absent? tx)
-    (then (append_committed_log h kind text))
+    (then (append_committed_record h record))
     (else
-      ((tx/events .get) .push {^kind kind ^text text})
+      ((tx/events .get) .push record)
       (tx/events .get))))
 
 (fn flush_harness [h : Harness]

@@ -18,6 +18,7 @@
 
 (type EventStore
   ^props {^backend Any ^streams Any ^next_sequences Any ^projections Any
+          ^core_projections Any
           ^generation Any ^last_manifest Any ^dirty Any
           ^dirty_streams Any ^dirty_bases Any ^closed Any
           ^formats_validated Any
@@ -86,6 +87,16 @@
   (all .put key stream_states)
   (events/projections .set all))
 
+(fn copy_data [value] ($thaw ($freeze value)))
+
+(fn update_core_projection [events : EventStore, key : Str, name : Str, state]
+  (var all (events/core_projections .get))
+  (var states (all .get key))
+  (if (== states void) (set states (fresh_map)))
+  (states .put name (copy_data state))
+  (all .put key states)
+  (events/core_projections .set all))
+
 (fn append_stamped_event
   [events : EventStore, scope : Str, stream : Str, event,
    origin : Str, owner : Str, projection : Str]
@@ -115,6 +126,9 @@
   (set_next_sequence events key (+ seq 1))
   (if_yes (== ($to_str event/type) "plugin/state")
     (update_projection events key ($to_str event/plugin) event/state))
+  (if_yes (&& (== origin "core")
+              (["session/state" "run/state"] .contains? event/type))
+    (update_core_projection events key event/key event/state))
   envelope)
 
 (fn append_core_event
@@ -146,6 +160,27 @@
   (append_core_event events scope stream
     {^type "plugin/state" ^plugin plugin ^state_version version ^state state}
     ^projection plugin))
+
+# Core projections are deliberately separate from plugin state. Checkpoints
+# retain them even when the event that established them leaves the log window.
+(fn record_core_state
+  [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
+  (if_not (["session/state" "run/state"] .contains? kind)
+    (fail (HarnessStateError ^message "unknown core state kind")))
+  (append_core_event events scope stream
+    {^type kind ^key key ^state (copy_data state)}))
+
+(fn core_state [events : EventStore, scope : Str, stream : Str, key : Str]
+  (require_open events)
+  (var states ((events/core_projections .get) .get (stream_key scope stream)))
+  (if (== states void) (return nil))
+  (var state (states .get key))
+  (if ($absent? state) nil (copy_data state)))
+
+(fn core_states [events : EventStore, scope : Str, stream : Str]
+  (require_open events)
+  (var states ((events/core_projections .get) .get (stream_key scope stream)))
+  (if (== states void) (fresh_map) (copy_data states)))
 
 (fn events_for [events : EventStore, scope : Str, stream : Str]
   (require_open events)
@@ -191,7 +226,10 @@
           (!= envelope/owner known/owner))
     (fail (HarnessStateError
       ^message $"event ${envelope/type} origin does not match its catalog row")))
-  (if_yes (!= envelope/version known/version)
+  (var accepted_version (== envelope/version known/version))
+  (if_yes (&& (! accepted_version) (!= known/versions void))
+    (set accepted_version (!= (known/versions .get $"v${envelope/version}") void)))
+  (if_yes (! accepted_version)
     (if_yes (== envelope/ignorable true) (return))
     (if (== envelope/origin "core")
       (fail (HarnessStateError
@@ -206,7 +244,11 @@
       (var schema_payload
         (if (== known/origin "plugin")
           envelope/payload/data envelope/payload))
-      (var guarded ($runtime/guard_call known/schema schema_payload))
+      (var schema known/schema)
+      (if_yes (!= known/versions void)
+        (var version_schema (known/versions .get $"v${envelope/version}"))
+        (if_not (== version_schema void) (set schema version_schema)))
+      (var guarded ($runtime/guard_call schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
     catch Any
       (set schema_error ($to_str $err/message))))
@@ -332,12 +374,16 @@
     (while (&& (< i previous/history/.size) (< history/.size 3))
       (history .push previous/history/%i)
       (set i (+ i 1))))
+  (var core (events/core_projections .get))
   (var manifest
-    {^format 1 ^generation generation ^streams descriptors
-     ^projections (events/projections .get) ^history history})
+    {^format (if (== ($size core) 0) 1 2)
+     ^generation generation ^streams descriptors
+     ^projections (events/projections .get) ^core_projections core ^history history})
   manifest)
 
 (fn manifest_data [events : EventStore, manifest]
+  (if_not ([1 2] .contains? manifest/format)
+    (fail (HarnessStateError ^message "event store format is unsupported")))
   (var streams (fresh_map))
   (var sequences (fresh_map))
   (for [key descriptor] in manifest/streams
@@ -351,12 +397,14 @@
   (var projections (fresh_map))
   (for [key value] in manifest/projections
     (projections .put key value))
-  {^streams streams ^sequences sequences ^projections projections})
+  {^streams streams ^sequences sequences ^projections projections
+   ^core_projections (copy_data (?? manifest/core_projections (fresh_map)))})
 
 (fn install_manifest_data [events : EventStore, manifest, data]
   (events/streams .set data/streams)
   (events/next_sequences .set data/sequences)
   (events/projections .set data/projections)
+  (events/core_projections .set data/core_projections)
   (events/generation .set manifest/generation)
   (events/last_manifest .set manifest)
   (events/formats_validated .set false))
@@ -379,6 +427,7 @@
   (var local_streams (events/streams .get))
   (var local_sequences (events/next_sequences .get))
   (var local_projections (events/projections .get))
+  (var local_core (events/core_projections .get))
   (var dirty_streams (events/dirty_streams .get))
   (var bases (events/dirty_bases .get))
 
@@ -406,7 +455,11 @@
     (var projection (local_projections .get key))
     (if (== projection void)
       (remote_data/projections .delete key)
-      (remote_data/projections .put key projection)))
+      (remote_data/projections .put key projection))
+    (var core (local_core .get key))
+    (if (== core void)
+      (remote_data/core_projections .delete key)
+      (remote_data/core_projections .put key core)))
   (install_manifest_data events remote remote_data)
   (validate_envelope_formats events))
 
@@ -446,9 +499,23 @@
 (fn restore_manifest [events : EventStore, manifest]
   (install_manifest_data events manifest (manifest_data events manifest)))
 
-(fn repair_interrupted_turns [events : EventStore] : Int
+(fn refresh_event_store [events : EventStore] : Bool
+  (require_open events)
+  (if (events/dirty .get)
+    (fail (HarnessStateError ^message "cannot refresh unflushed event state")))
+  (var loaded (events/backend .Store:load_checkpoint))
+  (if ($absent? loaded) (return false))
+  (var manifest (loaded/records .get "event_manifest"))
+  (if (== manifest/generation (events/generation .get)) (return false))
+  (restore_manifest events manifest)
+  (validate_envelope_formats events)
+  true)
+
+(fn repair_interrupted_turns [events : EventStore, ^session session = nil] : Int
   (var repairs (fresh_list))
   (for [key values] in (events/streams .get)
+    (if_yes (&& (! ($absent? session)) (!= ($to_str key) (stream_key "session" session)))
+      (continue))
     (var open_turns (fresh_map))
     (for envelope in values
       (if (== envelope/type "turn/start")
@@ -486,6 +553,7 @@
     (EventStore ^backend backend ^streams ($cell (fresh_map))
                 ^next_sequences ($cell (fresh_map))
                 ^projections ($cell (fresh_map)) ^generation ($cell 0)
+                ^core_projections ($cell (fresh_map))
                 ^last_manifest ($cell nil) ^dirty ($cell false)
                 ^dirty_streams ($cell (fresh_map))
                 ^dirty_bases ($cell (fresh_map))
@@ -498,7 +566,7 @@
   (var loaded (backend .Store:load_checkpoint))
   (if_yes (! ($absent? loaded))
     (var manifest (loaded/records .get "event_manifest"))
-    (if (== manifest/format 1)
+    (if ([1 2] .contains? manifest/format)
       (restore_manifest events manifest)
       (fail (HarnessStateError
         ^message "event store format is unsupported"))))

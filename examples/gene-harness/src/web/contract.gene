@@ -1,0 +1,20 @@
+(mod harness_web_contract ^profile web)
+
+(const protocol_version 1)
+(const prompt_limit 65536)
+(const receipt_limit 128)
+(const history_page_limit 200)
+
+(fn terminal_run [status : Str] : Bool
+  (|| (== status "completed") (== status "failed") (== status "cancelled")
+      (== status "interrupted") (== status "recovery_required")))
+
+(fn error_status [code : Str] : Int
+  (if (== code "unauthorized") 401
+    (if (== code "forbidden") 403
+      (if (== code "not_found") 404
+        (if (== code "receipt_expired") 410
+          (if (== code "too_large") 413
+            (if (|| (== code "busy") (== code "session_busy")
+                    (== code "revision_conflict") (== code "submission_conflict")) 409
+              (if (|| (== code "unavailable") (== code "recovery_required")) 503 400))))))))

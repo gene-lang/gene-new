@@ -1,0 +1,392 @@
+(mod session_host)
+
+(import [prepare_home open_runtime close_runtime RuntimeCleanupError] ^from "./bootstrap")
+(import [open_event_store close_event_store refresh_event_store flush_event_store
+         core_state core_states record_core_state events_for copy_data] ^from "./state")
+(import [RunError new_run_controller controller_busy? close_controller
+         duplicate_receipt run_state receipt_for recover_runs submit_run cancel_run]
+  ^from "./run_controller" ^export true)
+(import [SessionBusy claim_session] ^from "./session_claim")
+(import [repair_interrupted_turns validate_event_catalog] ^from "./state")
+(import [core_event_types] ^from "./generated_event_catalog")
+(import [browser_profile] ^from "./profiles/browser")
+(import [public_model_config] ^from "./model_client")
+(import [rows plugin_ids status_of] ^from "./kernel")
+(import [refresh_workspace composition_revision workspace_status] ^from "./workspace")
+(import $crypto [random_hex sha256])
+(import [prompt_limit history_page_limit protocol_version] ^from "./web/contract")
+
+(type SessionHost ^props {^home Str ^events Any ^profile Any ^offline Bool
+                         ^epoch Str ^runtime Any ^controller Any ^session Any
+                         ^closed Any ^revision Any ^status_snapshot Any ^model_info Any})
+
+(fn id_before? [left : Str, right : Str] : Bool
+  (var a ($str/to_utf8 left))
+  (var b ($str/to_utf8 right))
+  (var al ($str/byte_size left))
+  (var bl ($str/byte_size right))
+  (var i 0)
+  (while (< i ($math/min al bl))
+    (var x (a .get i))
+    (var y (b .get i))
+    (if (!= x y) (return (< x y)))
+    (set i (+ i 1)))
+  (< al bl))
+
+(fn sorted_ids [ids]
+  (var result [])
+  (for id in ids
+    (var next [])
+    (var inserted false)
+    (for other in result
+      (if_yes (&& (! inserted) (id_before? id other))
+        (next .push id)
+        (set inserted true))
+      (next .push other))
+    (if_not inserted (next .push id))
+    (set result next))
+  result)
+
+(fn clipped [text : Str, limit : Int] : Str
+  (if (<= ($str/byte_size text) limit) (return text))
+  (var end limit)
+  (while (> end 0)
+    (var value (try ($str/slice_bytes text 0 end) catch Any nil))
+    (if_not ($absent? value) (return $"${value}…"))
+    (set end (- end 1)))
+  "")
+
+(fn host_busy? [host : SessionHost] : Bool
+  (var controller (host/controller .get))
+  (&& (! ($absent? controller)) (controller_busy? controller)))
+
+(fn require_idle [host : SessionHost]
+  (if (host/closed .get)
+    (fail (RunError ^code "unavailable" ^message "The Harness is shutting down.")))
+  (if (host_busy? host)
+    (fail (RunError ^code "busy" ^message "A run is active. Stop it or wait for it to finish.")))
+  (var controller (host/controller .get))
+  (if_yes (&& (! ($absent? controller)) (! ($absent? (controller/failed .get))))
+    (fail (RunError ^code "recovery_required" ^message (controller/failed .get))))
+  nil)
+
+(fn refresh_idle [host : SessionHost]
+  (require_idle host)
+  (flush_event_store host/events)
+  (refresh_event_store host/events))
+
+(fn session_metadata [events, id : Str]
+  (core_state events "workspace" "workspace" $"session/${id}"))
+
+(fn require_session [events, id : Str]
+  (var session (session_metadata events id))
+  (if ($absent? session)
+    (fail (RunError ^code "not_found" ^message "This session is not available.")))
+  session)
+
+(fn save_session [events, metadata]
+  (record_core_state events "workspace" "workspace" "session/state"
+    $"session/${metadata/id}" metadata))
+
+(fn discover_sessions [events]
+  (var indexed {})
+  (for [key metadata] in (core_states events "workspace" "workspace")
+    (if_yes ($str/starts_with? ($to_str key) "session/") (indexed .put metadata/stream true)))
+  (for [key values] in (events/streams .get)
+    (var name ($to_str key))
+    (if_yes ($str/starts_with? name "session:")
+      (var stream ($str/slice_bytes name 8 (- ($str/byte_size name) 8)))
+      (if_yes (== (indexed .get stream) void)
+        (var id $"s_${($str/slice_bytes (sha256 stream) 0 20)}")
+        (save_session events {^id id ^stream stream ^title (clipped stream 200)
+          ^revision 1 ^created_at "" ^last_activity "" ^legacy true})
+        (indexed .put stream true))))
+  (flush_event_store events))
+
+(fn open_session_host [^home home : Str = "", ^offline offline : Bool = false] : SessionHost
+  (var root (prepare_home ^root home))
+  (var events (open_event_store $"${root}/events"))
+  (var catalog {})
+  (for entry in core_event_types (catalog .put entry/name entry))
+  (validate_event_catalog events catalog)
+  (discover_sessions events)
+  # Only repair streams we can exclusively claim. A different CLI session may
+  # still be executing against the same event store.
+  (for [key metadata] in (core_states events "workspace" "workspace")
+    (if_yes ($str/starts_with? ($to_str key) "session/")
+      (var claim (try (claim_session root metadata/stream) catch SessionBusy nil))
+      (if_not ($absent? claim)
+        (try
+          (recover_runs events metadata/stream)
+          (repair_interrupted_turns events ^session metadata/stream)
+        ensure (claim .close)))))
+  (SessionHost ^home root ^events events ^profile (browser_profile ^offline offline)
+    ^offline offline ^epoch (random_hex 16) ^runtime ($cell nil)
+    ^controller ($cell nil) ^session ($cell nil) ^closed ($cell false)
+    ^revision ($cell 0) ^status_snapshot ($cell {^commands [] ^plugins [] ^composition nil})
+    ^model_info (if offline {^provider "offline" ^model "Command agent" ^effort ""}
+      (public_model_config))))
+
+(fn create_session [host : SessionHost, ^title title : Str = "New conversation"]
+  (refresh_idle host)
+  (var name ($str/trim title))
+  (if (|| (== name "") (> ($str/byte_size name) 256))
+    (fail (RunError ^code "invalid_request" ^message "Use a session title of 1–256 bytes.")))
+  (var id $"s_${(random_hex 12)}")
+  (var metadata {^id id ^stream id ^title name ^revision 1
+    ^created_at ($to_str ($now)) ^last_activity ($to_str ($now))})
+  (save_session host/events metadata)
+  (flush_event_store host/events)
+  (copy_data metadata))
+
+(fn rename_session [host : SessionHost, id : Str, title : Str, revision : Int]
+  (refresh_idle host)
+  (var metadata (require_session host/events id))
+  (if (!= metadata/revision revision)
+    (fail (RunError ^code "revision_conflict" ^message "This session was renamed elsewhere. Refresh and try again.")))
+  (var name ($str/trim title))
+  (if (|| (== name "") (> ($str/byte_size name) 256))
+    (fail (RunError ^code "invalid_request" ^message "Use a session title of 1–256 bytes.")))
+  (metadata .put "title" name)
+  (metadata .put "revision" (+ revision 1))
+  (save_session host/events metadata)
+  (flush_event_store host/events)
+  metadata)
+
+(fn public_receipt [receipt]
+  (if ($absent? receipt) (return nil))
+  (var result {^id receipt/id ^request_id receipt/request_id
+    ^submission_seq ($to_str receipt/submission_seq) ^status receipt/status
+    ^accepted_at receipt/accepted_at})
+  (for key in ["started_at" "finished_at" "message"]
+    (if_not (== (receipt .get key) void) (result .put key (receipt .get key))))
+  result)
+
+(fn public_session [events, metadata]
+  (var state (run_state events metadata/stream))
+  (var last nil)
+  (for receipt in state/receipts (set last receipt))
+  {^id metadata/id ^title metadata/title ^revision ($to_str metadata/revision)
+   ^created_at metadata/created_at ^last_activity metadata/last_activity
+   ^last_run (public_receipt last)})
+
+(fn list_sessions [host : SessionHost, ^after after : Str = "", ^limit limit : Int = 100]
+  (var events (open_event_store $"${host/home}/events"))
+  (try
+    (var all [])
+    (for [key metadata] in (core_states events "workspace" "workspace")
+      (if_yes ($str/starts_with? ($to_str key) "session/") (all .push metadata)))
+    # Stable server-owned IDs give pagination a deterministic order.
+    (var ids [])
+    (var by_id {})
+    (for metadata in all (ids .push metadata/id) (by_id .put metadata/id metadata))
+    (set ids (sorted_ids ids))
+    (var page [])
+    (var maximum ($math/min 200 ($math/max 1 limit)))
+    (var next nil)
+    (for id in ids
+      (if_yes (|| (== after "") (id_before? after id))
+        (if_yes (>= page/.size maximum)
+          (var last_index (- page/.size 1))
+          (set next page/%last_index/id)
+          (break))
+        (page .push (public_session events (by_id .get id)))))
+    {^sessions page ^next next}
+  ensure (close_event_store events)))
+
+(fn ensure_runtime [host : SessionHost, metadata]
+  (require_idle host)
+  (var runtime (host/runtime .get))
+  (if_not ($absent? runtime)
+    (var old_revision (composition_revision runtime/workspace))
+    (refresh_workspace runtime/workspace)
+    (if_yes (&& (== runtime/h/event_stream metadata/stream)
+                (== old_revision (composition_revision runtime/workspace)))
+      (return runtime))
+    (close_controller (host/controller .get))
+    (try (close_runtime runtime)
+    catch RuntimeCleanupError
+      (var message $err/message)
+      (var controller (host/controller .get))
+      (controller/failed .set message)
+      (host/runtime .set nil)
+      (fail (RunError ^code "recovery_required" ^message message)))
+    (host/runtime .set nil)
+    (host/controller .set nil)
+    (flush_event_store host/events))
+  (try
+    (set runtime (open_runtime host/home metadata/stream host/profile ^events host/events))
+  catch SessionBusy
+    (fail (RunError ^code "session_busy" ^message $err/message)))
+  (recover_runs host/events metadata/stream)
+  (host/runtime .set runtime)
+  (host/controller .set (new_run_controller runtime))
+  (host/session .set metadata/id)
+  (capture_status host)
+  runtime)
+
+(fn submit [host : SessionHost, id : Str, request_id : Str,
+            sequence : Int, text : Str]
+  (if (|| (== ($str/trim text) "") (== request_id "")
+          (> ($str/byte_size request_id) 128) (< sequence 1))
+    (fail (RunError ^code "invalid_request" ^message "A prompt and submission identity are required.")))
+  (if (> ($str/byte_size text) prompt_limit)
+    (fail (RunError ^code "too_large" ^message "The prompt exceeds 64 KiB.")))
+  (if_not (host_busy? host) (refresh_idle host))
+  (var metadata (require_session host/events id))
+  (var previous (duplicate_receipt host/events metadata/stream request_id sequence text))
+  (if_not ($absent? previous) (return (public_receipt previous)))
+  (require_idle host)
+  (ensure_runtime host metadata)
+  (if_yes (== metadata/title "New conversation")
+    (var lines ($str/split ($str/trim text) "\n"))
+    (metadata .put "title" (clipped lines/0 160))
+    (metadata .put "revision" (+ metadata/revision 1)))
+  (metadata .put "last_activity" ($to_str ($now)))
+  (save_session host/events metadata)
+  (public_receipt (submit_run (host/controller .get) request_id sequence text)))
+
+(fn run_receipt [host : SessionHost, id : Str, run_id : Str]
+  (var events (open_event_store $"${host/home}/events"))
+  (try
+    (var metadata (require_session events id))
+    (var receipt (receipt_for events metadata/stream run_id))
+    (if ($absent? receipt)
+      (fail (RunError ^code "not_found" ^message "This run is not available.")))
+    (public_receipt receipt)
+  ensure (close_event_store events)))
+
+(fn cancel [host : SessionHost, id : Str, run_id : Str]
+  (if_yes (|| ($absent? (host/controller .get)) (!= (host/session .get) id))
+    (var receipt (run_receipt host id run_id))
+    (if (["accepted" "running" "stopping"] .contains? receipt/status)
+      (fail (RunError ^code "session_busy" ^message "This run is owned by another Harness process.")))
+    (return receipt))
+  (public_receipt (cancel_run (host/controller .get) run_id)))
+
+(fn display_record [record, sequence : Int, durable : Bool]
+  (var text (clipped record/text 65536))
+  {^id (?? record/block_id $"legacy-${sequence}") ^seq ($to_str sequence)
+   ^run_id (?? record/run_id "") ^role (?? record/role "log")
+   ^phase (?? record/phase "text") ^round (?? record/round 0)
+   ^text text ^truncated (!= text record/text) ^durable durable})
+
+(fn snapshot [host : SessionHost, id : Str, ^after after : Int = -1,
+              ^before before : Int = -1, ^limit limit : Int = 200]
+  (var events (open_event_store $"${host/home}/events"))
+  (try
+    (var metadata (require_session events id))
+    (var history (events_for events "session" metadata/stream))
+    (var through 0)
+    (var earliest 1)
+    (if_yes (> history/.size 0)
+      (set earliest history/0/seq)
+      (for event in history (set through event/seq)))
+    (var reset (&& (>= after 0) (< after (- earliest 1))))
+    (var records [])
+    (var durable_ids {})
+    (for event in history
+      (if_yes (["message" "output"] .contains? event/type)
+        (var record (display_record event/payload event/seq true))
+        (durable_ids .put record/id true)
+        (if_yes (&& (|| (< after 0) reset (> event/seq after))
+                    (|| (< before 0) (< event/seq before)))
+          (records .push record))))
+    (var maximum ($math/min history_page_limit ($math/max 1 limit)))
+    (var start 0)
+    (var page [])
+    (var bytes 0)
+    (var index 0)
+    (if (|| (< after 0) reset (>= before 0))
+      (then
+        (var reverse [])
+        (var position (- records/.size 1))
+        (while (&& (>= position 0) (< reverse/.size maximum))
+          (var record records/%position)
+          (var length ($str/byte_size ($json/stringify record)))
+          (if (&& (> reverse/.size 0) (> (+ bytes length) 900000)) (break))
+          (reverse .push record)
+          (set bytes (+ bytes length))
+          (set position (- position 1)))
+        (set start (+ position 1))
+        (set position (- reverse/.size 1))
+        (while (>= position 0)
+          (page .push reverse/%position)
+          (set position (- position 1)))
+        (set index records/.size))
+      (else
+        (while (&& (< index records/.size) (< page/.size maximum))
+          (var record records/%index)
+          (var length ($str/byte_size ($json/stringify record)))
+          (if (&& (> page/.size 0) (> (+ bytes length) 900000)) (break))
+          (page .push record)
+          (set bytes (+ bytes length))
+          (set index (+ index 1)))))
+    (var cursor through)
+    (if_yes (< index records/.size)
+      (var last_index (- page/.size 1))
+      (set cursor ($parse/parse_int page/%last_index/seq)))
+    (var state (run_state events metadata/stream))
+    (var last nil)
+    (for receipt in state/receipts (set last receipt))
+    (var preview [])
+    (var preview_bytes bytes)
+    (var preview_truncated false)
+    (var controller (host/controller .get))
+    (if_yes (&& (! ($absent? controller)) (== controller/session metadata/stream)
+                (controller_busy? controller))
+      (var active (controller/active .get))
+      (var log (controller/runtime/h/log .get))
+      (for record in log
+        (if_yes (&& (== record/run_id active/receipt/id)
+                    (> (?? record/seq (+ through 1)) through)
+                    (== (durable_ids .get record/block_id) void))
+          (var visible (display_record record (?? record/seq 0) false))
+          (set preview_bytes (+ preview_bytes ($str/byte_size ($json/stringify visible))))
+          (if (<= preview_bytes 900000)
+            (preview .push visible)
+            (set preview_truncated true)))))
+    {^session (public_session events metadata) ^records page
+     ^cursor ($to_str cursor) ^through ($to_str through)
+     ^earliest ($to_str earliest) ^reset reset ^has_more (< cursor through)
+     ^has_older (> start 0) ^next_submission_seq ($to_str state/next_seq)
+     ^run (public_receipt last) ^preview preview ^preview_truncated preview_truncated
+     ^epoch host/epoch}
+  ensure (close_event_store events)))
+
+(fn capture_status [host : SessionHost]
+  (var runtime (host/runtime .get))
+  (var commands [])
+  (var plugins [])
+  (var status nil)
+  (if_not ($absent? runtime)
+    (for row in (rows runtime/h "commands")
+      (commands .push {^name row/name ^doc (clipped (?? row/doc "") 1024)}))
+    (for id in (plugin_ids runtime/h)
+      (plugins .push {^id id ^state (status_of runtime/h id)}))
+    (var summary (workspace_status runtime/workspace))
+    (set status {^desired_revision ($to_str summary/desired_revision)
+      ^active_revision ($to_str summary/active_revision)
+      ^errors ($size summary/errors)}))
+  (host/status_snapshot .set {^commands commands ^plugins plugins ^composition status}))
+
+(fn host_status [host : SessionHost]
+  (if_not (host_busy? host) (capture_status host))
+  (var status (host/status_snapshot .get))
+  {^protocol protocol_version ^epoch host/epoch ^offline host/offline ^profile "browser"
+   ^provider host/model_info/provider ^model host/model_info/model ^effort host/model_info/effort
+   ^workspace "Gene Harness" ^session (host/session .get) ^busy (host_busy? host)
+   ^commands status/commands ^plugins status/plugins ^composition status/composition})
+
+(fn close_session_host [host : SessionHost]
+  (if (host/closed .get) (return nil))
+  (host/closed .set true)
+  (try
+    (var controller (host/controller .get))
+    (if_not ($absent? controller) (close_controller controller))
+  ensure
+    (try
+      (var runtime (host/runtime .get))
+      (if_not ($absent? runtime) (close_runtime runtime))
+    ensure (close_event_store host/events)))
+  nil)
