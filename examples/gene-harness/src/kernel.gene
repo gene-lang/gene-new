@@ -869,7 +869,10 @@
 # first thing worth observing: a plugin can watch its own dependencies come and
 # go without the kernel knowing anything about it.
 (type HarnessEvent : $event/Event)
-(type HarnessLog : HarnessEvent ^props {^kind Str ^text Str})
+(type HarnessLog : HarnessEvent ^props {^kind Str ^text Str ^record Any?})
+(type HarnessFlushed : HarnessEvent ^props {^through Int})
+(type HarnessPreview : HarnessEvent
+  ^props {^run_id Str ^block_id Str ^text Str ^phase Str ^round Int})
 (type ToolInvoked : HarnessEvent ^props {^tool Str ^arg Str})
 (type PluginInstalled : HarnessEvent ^props {^plugin Str})
 (type PluginActivated : HarnessEvent ^props {^plugin Str})
@@ -1029,14 +1032,15 @@
   (var context (run_log_context h))
   (if ($absent? context) "" context/id))
 
-(fn log_record [h : Harness, kind : Str, text : Str, phase : Str, round : Int, role : Str]
+(fn log_record [h : Harness, kind : Str, text : Str, phase : Str, round : Int, role : Str,
+                ^block_id block_id : Str = ""]
   (var record {^kind kind ^text text})
   (var context (run_log_context h))
   (if_yes (&& (! ($absent? context)) (["message" "output"] .contains? kind))
     (var index (+ (context/counter .get) 1))
     (context/counter .set index)
     (record .put "run_id" context/id)
-    (record .put "block_id" $"${context/id}/${index}")
+    (record .put "block_id" (if (== block_id "") $"${context/id}/${index}" block_id))
     (record .put "role" role)
     (record .put "phase" phase)
     (record .put "round" round))
@@ -1048,7 +1052,7 @@
   # Views observe the same typed feed core persists. Publication errors are
   # collected by the bus and intentionally do not recursively append another
   # log record.
-  (publish h (HarnessLog ^kind record/kind ^text record/text))
+  (publish h (HarnessLog ^kind record/kind ^text record/text ^record record))
   events)
 
 (fn append_log_only [h : Harness, kind : Str, text : Str] : Any
@@ -1100,8 +1104,8 @@
 
 (fn log_append [h : Harness, kind : Str, text : Str,
                 ^phase phase : Str = "text", ^round round : Int = 0,
-                ^role role : Str = "assistant"] : Any
-  (var record (log_record h kind text phase round role))
+                ^role role : Str = "assistant", ^block_id block_id : Str = ""] : Any
+  (var record (log_record h kind text phase round role ^block_id block_id))
   (var tx (active_transaction h))
   (if ($absent? tx)
     (then (append_committed_record h record))
@@ -1111,7 +1115,10 @@
 
 (fn flush_harness [h : Harness]
   (if_not ($absent? h/event_store)
-    (flush_event_store h/event_store)))
+    (var flushed (flush_event_store h/event_store))
+    (var next ((h/event_store/next_sequences .get) .get $"${h/event_scope}:${h/event_stream}"))
+    (publish h (HarnessFlushed ^through (- (?? next 1) 1)))
+    flushed))
 
 (fn log_events [h : Harness] : Any
   (h/log .get))

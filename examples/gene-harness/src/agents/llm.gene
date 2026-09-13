@@ -30,7 +30,7 @@
 (import $fs [read_text])
 (import [model_name chat_completion] ^from "./model_client")
 (import [parse_envelope reply_format_prompt] ^from "./model_reply")
-(import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent ToolInvoked
+(import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent HarnessPreview ToolInvoked
          PluginActivated PluginDeactivated PluginFailed PluginInstalled
          PluginUninstalled
          new_harness install_with_policy uninstall retry resolve
@@ -318,9 +318,9 @@ stored inside it. It is not evaluated merely by reading payload or get_payload.
 
 Remember: return exactly one map with ^type, and nothing outside it.""")
 
-(fn call_model [h : Harness, prompt : Str, history : Str] : Str
+(fn call_model [h : Harness, prompt : Str, history : Str, ^on_delta on_delta = nil] : Str
   (chat_completion (system_prompt h)
-    $"${prompt}\n\nPrior turns:\n${history}"))
+    $"${prompt}\n\nPrior turns:\n${history}" ^on_delta on_delta))
 
 # ---------------------------------------------------------------------------
 # One task, however many turns it takes
@@ -349,11 +349,12 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   ($str/starts_with? result "error:"))
 
 (fn emit_output [h : Harness, text : Str,
-                 ^phase phase : Str = "narration", ^round round : Int = 0]
-  (log_append h "output" text ^phase phase ^round round))
+                 ^phase phase : Str = "narration", ^round round : Int = 0,
+                 ^block_id block_id : Str = ""]
+  (log_append h "output" text ^phase phase ^round round ^block_id block_id))
 
 (fn run_task [h : Harness, prompt : Str, session, state_host,
-              ^complete complete = call_model] : Str
+              ^complete complete = nil] : Str
   # Intermediate narration/results are emitted as they happen. The final
   # response is returned to ask, which emits it once and flushes the session.
   (var history (remembered session))
@@ -363,11 +364,20 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   (while running
     (set turn (+ turn 1))
     (if_yes (> turn 1) (emit_output h $"== Round ${turn} ==" ^round turn))
-    (var raw (complete h prompt history))
+    (var run_id (current_run_id h))
+    (var raw_id $"${run_id}/raw-${turn}")
+    (var raw
+      (if ($absent? complete)
+        (call_model h prompt history
+          ^on_delta (fn [text]
+            (if_yes (!= run_id "")
+              (publish h (HarnessPreview ^run_id run_id ^block_id raw_id
+                ^text text ^phase "raw_response" ^round turn)))))
+        (complete h prompt history)))
     # Browser runs retain the original reply, including malformed replies and
     # final text envelopes. Capture before parsing; never evaluate this copy.
     (if_yes (!= (current_run_id h) "")
-      (emit_output h raw ^phase "raw_response" ^round turn))
+      (emit_output h raw ^phase "raw_response" ^round turn ^block_id raw_id))
     (var problem "")
     (var envelope
       (try (parse_envelope raw)
@@ -419,7 +429,7 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   ($str/trim ($str/join out "/")))
 
 (fn answer [h : Harness, prompt : Str, session, state_host,
-            ^complete complete = call_model] : Str
+            ^complete complete = nil] : Str
   # Only an explicit slash selects a command. Every other prompt, including
   # one word such as "help" or a sentence starting with "build", reaches the
   # same model loop. Trim for routing while preserving the model's input.

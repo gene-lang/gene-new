@@ -10,7 +10,7 @@
 (impl Error for RunError)
 
 (type RunController ^props {^runtime Any ^session Str ^events Any
-                           ^active Any ^watcher Any ^failed Any})
+                           ^active Any ^watcher Any ^failed Any ^on_change Any?})
 
 (fn run_state [events, session : Str]
   (?? (core_state events "session" session "runs") {^next_seq 1 ^receipts []}))
@@ -60,10 +60,16 @@
   (if_yes changed (flush_event_store events))
   changed)
 
-(fn new_run_controller [runtime] : RunController
+(fn new_run_controller [runtime, ^on_change on_change = nil] : RunController
   (RunController ^runtime runtime ^session runtime/h/event_stream
     ^events runtime/events ^active ($cell nil) ^watcher ($cell nil)
-    ^failed ($cell nil)))
+    ^failed ($cell nil) ^on_change on_change))
+
+(fn controller_changed [controller : RunController]
+  (if_not ($absent? controller/on_change)
+    (try (controller/on_change)
+      catch Any ($println "Harness live update failed: " $err/message)))
+  nil)
 
 (fn controller_busy? [controller : RunController] : Bool
   (! ($absent? (controller/active .get))))
@@ -127,7 +133,8 @@
     ($println "Harness could not persist run outcome: " $err/message)
     (controller/failed .set "Run persistence failed. Restart the Harness to recover.")
   ensure
-    (end_run_log controller/runtime/h))
+    (end_run_log controller/runtime/h)
+    (controller_changed controller))
   nil)
 
 (fn submit_run [controller : RunController, request_id : Str,
@@ -153,6 +160,7 @@
     (fail (RunError ^code "recovery_required" ^message (controller/failed .get))))
   (var active {^receipt receipt ^task nil})
   (controller/active .set active)
+  (controller_changed controller)
   (var task (spawn ^lane root
     (do
       (var started (copy_data receipt))
@@ -161,6 +169,7 @@
       (save_receipt controller/events controller/session started)
       (flush_event_store controller/events)
       (active .put "receipt" started)
+      (controller_changed controller)
       (ask_result controller/runtime/h text))))
   (active .put "task" task)
   (controller/watcher .set
@@ -179,6 +188,7 @@
   (save_receipt controller/events controller/session receipt)
   (flush_event_store controller/events)
   (active/task .cancel)
+  (controller_changed controller)
   receipt)
 
 (fn close_controller [controller : RunController]

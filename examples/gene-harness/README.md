@@ -98,8 +98,16 @@ after this upgrade.
 
 Use `--home <path>` or `GENE_HARNESS_HOME` to select a workspace. A path outside
 the launch directory still needs a matching `--allow_read_write_dir` grant.
-Remote access, multi-user hosting, graphical plugin administration, and live
-model token streaming are outside this release.
+Prompts and cancellation use HTTP POST. Transcript blocks and run-state changes
+are pushed over the authenticated WebSocket as they occur; the connected client
+does not poll. Reconnect restores a bounded snapshot and then resumes live
+delivery. Older messages remain available through history pagination.
+
+Codex output text is streamed into the provisional **Raw LLM response** panel.
+The completed reply replaces that preview using the same block ID. Gene code
+executes only after the complete response and envelope have been validated.
+OpenRouter currently delivers complete response blocks. Remote access,
+multi-user hosting, and graphical plugin administration remain outside this release.
 
 ## Quick start
 
@@ -190,8 +198,9 @@ command. Astra supports `low`, `medium`, `high`, `xhigh`, and `max` effort.
 See [the model reference](https://developers.openai.com/api/docs/models/gpt-6-astra).
 
 Codex requests use its Responses endpoint with `store=false` and streaming.
-The client waits for a completed response before returning text to the harness;
-failed or interrupted streams cannot execute partial programs. OpenRouter
+The client forwards output-text deltas as provisional previews and waits for a
+completed response before returning executable text to the harness; failed or
+interrupted streams cannot execute partial programs. OpenRouter
 continues to use Chat Completions. The existing 3,000-token request budget
 applies to OpenRouter; Codex does not accept that token-limit parameter. Both
 transports retain the 90-second timeout and 2 MB response limit.
@@ -636,6 +645,7 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/main.gene` | durable boot and irreducible recovery surface |
 | `events.catalog`, `src/storage/generated_event_catalog.gene` | core persisted-event vocabulary source and generated validators |
 | `src/web/server.gene`, `src/web/style.gene` | local HTTP host, authentication, page layout and styling |
+| `src/web/push.gene` | ordered WebSocket messages, initial/recovery snapshots and connection lifetime |
 | `src/runtime/session_host.gene`, `src/runtime/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
 | `src/runtime/bootstrap.gene`, `src/runtime/session_claim.gene` | runtime lifecycle and exclusive session ownership |
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |

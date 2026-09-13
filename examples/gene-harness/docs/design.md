@@ -682,7 +682,10 @@ uses the model-backed providers without the terminal driver.
 
 The client is authored in Gene's web profile. A native HTTP host serves it and
 owns session admission, run receipts, cancellation, and safe snapshots. HTTP
-provides authoritative reads and commands; WebSockets notify clients to refresh.
+provides commands and history reads; WebSockets push transcript and run-state
+updates directly, with snapshots restoring state on reconnect. Codex output
+text can appear as a provisional raw preview before the complete response is
+validated for execution.
 One active runtime and one run at a time preserve current session isolation.
 No model credentials, live Harness objects, or raw plugin state cross to the
 browser.

@@ -2,7 +2,7 @@
 # the host client; they never enter model prompts or durable harness state.
 (mod model_client)
 
-(import $net/http_client [request])
+(import $net/http_client [request stream : http_stream])
 (import $fs [read_text])
 (import [HarnessError] ^from "../kernel")
 
@@ -181,9 +181,55 @@
         ""
         ($str/trim ($to_str text))))))
 
-(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens : Int = 3000] : Str
+(fn feed_codex_preview [state, chunk : Str]
+  (state .put "pending" $"${state/pending}${chunk}")
+  (var lines ($str/split state/pending "\n"))
+  (var last (- lines/.size 1))
+  (state .put "pending" lines/%last)
+  (var i 0)
+  (while (< i last)
+    (var line ($str/trim lines/%i))
+    (if (== line "")
+      (then
+        (var data ($str/join state/data "\n"))
+        (state .put "data" [])
+        (if_yes (&& (!= data "") (!= data "[DONE]"))
+          # Preview parsing never authorizes execution. The complete response
+          # still passes completion_text and the Gene envelope validator.
+          (var event (try ($json/parse data) catch Any nil))
+          (if_yes (&& (! ($absent? event)) (== event/type "response.output_text.delta")
+                      (== ($head event/delta) Str))
+            (state .put "text" $"${state/text}${event/delta}"))))
+      (elif ($str/starts_with? line "data:")
+        (state/data .push ($str/trim ($str/slice_bytes line 5 ($str/byte_size line))))))
+    (set i (+ i 1)))
+  state/text)
+
+(fn stream_codex_completion [spec, on_delta] : Str
+  (var transfer (http_stream ^method "POST" ^url spec/url ^headers spec/headers
+    ^body ($json/stringify spec/body) ^timeout_ms 90000 ^max_bytes 2000000
+    ^max_pending_bytes 2000000 ^channel_capacity 256))
+  (var state {^pending "" ^data [] ^text ""})
+  (var emitted "")
+  (try
+    (try
+      (loop
+        (var chunk (transfer/channel .recv))
+        (var text (feed_codex_preview state chunk))
+        (if_yes (!= text emitted)
+          (set emitted text)
+          (on_delta text)))
+    catch ChannelClosed nil)
+    (var response (await transfer/task))
+    (completion_text "codex" response)
+  ensure (transfer/task .cancel)))
+
+(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens : Int = 3000,
+                     ^on_delta on_delta = nil] : Str
   (var config (model_config))
   (var spec (completion_request config system user max_tokens))
+  (if_yes (&& (== config/provider "codex") (! ($absent? on_delta)))
+    (return (stream_codex_completion spec on_delta)))
   (var response
     (await
       (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms 90000 ^max_bytes 2000000)))

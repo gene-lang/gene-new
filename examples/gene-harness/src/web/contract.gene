@@ -1,6 +1,6 @@
 (mod harness_web_contract ^profile web)
 
-(const protocol_version 1)
+(const protocol_version 2)
 (const prompt_limit 65536)
 (const receipt_limit 128)
 (const history_page_limit 200)

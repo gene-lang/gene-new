@@ -11,14 +11,86 @@
 (import [core_event_types] ^from "../storage/generated_event_catalog")
 (import [browser_profile] ^from "../profiles/browser")
 (import [public_model_config] ^from "../agents/model_client")
-(import [rows plugin_ids status_of] ^from "../kernel")
+(import [rows plugin_ids status_of flush_harness Harness HarnessEvent HarnessLog HarnessFlushed HarnessPreview]
+  ^from "../kernel")
 (import [refresh_workspace composition_revision workspace_status] ^from "../storage/workspace")
 (import $crypto [random_hex sha256])
 (import [prompt_limit history_page_limit protocol_version] ^from "../web/contract")
 
 (type SessionHost ^props {^home Str ^events Any ^profile Any ^offline Bool
                          ^epoch Str ^runtime Any ^controller Any ^session Any
-                         ^closed Any ^revision Any ^status_snapshot Any ^model_info Any})
+                         ^closed Any ^revision Any ^status_snapshot Any ^model_info Any
+                         ^publisher Any ^subscription Any ^previews Any})
+
+(fn push_message [host : SessionHost, kind : Str, session : Str, data]
+  (var publisher (host/publisher .get))
+  (if_not ($absent? publisher)
+    (host/revision .set (+ (host/revision .get) 1))
+    (publisher {^type kind ^session session ^data data}))
+  nil)
+
+(fn push_records [host : SessionHost, session : Str, records, cursor : Str]
+  (var page [])
+  (var bytes 0)
+  (for record in records
+    (var size ($str/byte_size ($json/stringify record)))
+    (if_yes (&& (> page/.size 0) (> (+ bytes size) 200000))
+      (push_message host "records" session {^records page ^cursor ""})
+      (set page []) (set bytes 0))
+    (page .push record)
+    (set bytes (+ bytes size)))
+  (push_message host "records" session {^records page ^cursor cursor}))
+
+(type SessionObserver ^props {^host SessionHost ^h Harness ^session Str ^through Any})
+(impl Callable for SessionObserver
+  (message apply [self call]
+    (var event (/0 call))
+    (if (== ($head event) HarnessLog)
+      (then
+        (var record event/record)
+        (if_yes (&& (! ($absent? record)) (! ($absent? record/block_id))
+                    (["message" "output"] .contains? record/kind))
+          ((self/host/previews .get) .delete record/block_id)
+          (push_message self/host "record" self/session
+            (display_record record (?? record/seq 0) false))))
+      (elif (== ($head event) HarnessFlushed)
+        (var records [])
+        (for record in (self/h/log .get)
+          (if_yes (&& (! ($absent? record/block_id))
+                      (> (?? record/seq 0) (self/through .get))
+                      (<= (?? record/seq 0) event/through))
+            (records .push (display_record record record/seq true))))
+        (if_yes (> event/through (self/through .get))
+          (push_records self/host self/session records ($to_str event/through))
+          (self/through .set event/through)))
+      (elif (== ($head event) HarnessPreview)
+        (var record {^block_id event/block_id ^run_id event/run_id
+          ^role "assistant" ^phase event/phase ^round event/round ^text event/text})
+        (var visible (display_record record 0 false))
+        (var previous ((self/host/previews .get) .get event/block_id))
+        (if_yes (|| ($absent? previous) (!= previous/text visible/text))
+          ((self/host/previews .get) .put event/block_id visible)
+          (push_message self/host "record" self/session visible))))))
+
+(fn detach_observer [host : SessionHost]
+  (var subscription (host/subscription .get))
+  (if_not ($absent? subscription) (subscription .cancel))
+  (host/subscription .set nil)
+  (host/previews .set {}))
+
+(fn push_run_state [host : SessionHost, id : Str]
+  (try
+    (var runtime (host/runtime .get))
+    (if_yes (&& (! ($absent? runtime)) (! (host/events/dirty .get)))
+      (flush_harness runtime/h))
+    (if_not (host_busy? host) (host/previews .set {}))
+    (var metadata (require_session host/events id))
+    (var state (run_state host/events metadata/stream))
+    (push_message host "run" id
+      {^status (host_status host) ^session (public_session host/events metadata)
+       ^next_submission_seq ($to_str state/next_seq)})
+  catch Any
+    (push_message host "resync" "" nil)))
 
 (fn id_before? [left : Str, right : Str] : Bool
   (var a ($str/to_utf8 left))
@@ -124,6 +196,7 @@
     ^offline offline ^epoch (random_hex 16) ^runtime ($cell nil)
     ^controller ($cell nil) ^session ($cell nil) ^closed ($cell false)
     ^revision ($cell 0) ^status_snapshot ($cell {^commands [] ^plugins [] ^composition nil})
+    ^publisher ($cell nil) ^subscription ($cell nil) ^previews ($cell {})
     ^model_info (if offline {^provider "offline" ^model "Command agent" ^effort ""}
       (public_model_config))))
 
@@ -137,6 +210,7 @@
     ^created_at ($to_str ($now)) ^last_activity ($to_str ($now))})
   (save_session host/events metadata)
   (flush_event_store host/events)
+  (push_message host "session" metadata/id (public_session host/events metadata))
   (copy_data metadata))
 
 (fn rename_session [host : SessionHost, id : Str, title : Str, revision : Int]
@@ -151,6 +225,7 @@
   (metadata .put "revision" (+ revision 1))
   (save_session host/events metadata)
   (flush_event_store host/events)
+  (push_message host "session" metadata/id (public_session host/events metadata))
   metadata)
 
 (fn public_receipt [receipt]
@@ -204,6 +279,7 @@
                 (== old_revision (composition_revision runtime/workspace)))
       (return runtime))
     (close_controller (host/controller .get))
+    (detach_observer host)
     (try (close_runtime runtime)
     catch RuntimeCleanupError
       (var message $err/message)
@@ -220,8 +296,13 @@
     (fail (RunError ^code "session_busy" ^message $err/message)))
   (recover_runs host/events metadata/stream)
   (host/runtime .set runtime)
-  (host/controller .set (new_run_controller runtime))
+  (host/controller .set (new_run_controller runtime
+    ^on_change (fn [] (push_run_state host metadata/id))))
   (host/session .set metadata/id)
+  (var next ((host/events/next_sequences .get) .get $"session:${metadata/stream}"))
+  (host/subscription .set (runtime/h/bus .subscribe HarnessEvent
+    (SessionObserver ^host host ^h runtime/h ^session metadata/id
+      ^through ($cell (- (?? next 1) 1)))))
   (capture_status host)
   runtime)
 
@@ -345,7 +426,12 @@
           (set preview_bytes (+ preview_bytes ($str/byte_size ($json/stringify visible))))
           (if (<= preview_bytes 900000)
             (preview .push visible)
-            (set preview_truncated true)))))
+            (set preview_truncated true))))
+      (for [key visible] in (host/previews .get)
+        (set preview_bytes (+ preview_bytes ($str/byte_size ($json/stringify visible))))
+        (if (<= preview_bytes 900000)
+          (preview .push visible)
+          (set preview_truncated true))))
     {^session (public_session events metadata) ^records page
      ^cursor ($to_str cursor) ^through ($to_str through)
      ^earliest ($to_str earliest) ^reset reset ^has_more (< cursor through)
@@ -385,6 +471,7 @@
     (var controller (host/controller .get))
     (if_not ($absent? controller) (close_controller controller))
   ensure
+    (detach_observer host)
     (try
       (var runtime (host/runtime .get))
       (if_not ($absent? runtime) (close_runtime runtime))

@@ -1,0 +1,69 @@
+# Ordered, bounded server-to-browser delivery. Commands stay on HTTP POST.
+(mod harness_web_push)
+
+(import [host_status list_sessions snapshot RunError] ^from "../runtime/session_host")
+(import [protocol_version] ^from "./contract")
+(import $net/http [ws_send ws_close])
+(import $os [monotonic_ms])
+
+(type PushHub ^props {^host Any ^peers Any})
+
+(fn send_frame [hub : PushHub, peer, message]
+  (if peer/closed (return))
+  (if_yes (> (monotonic_ms) peer/expires)
+    (peer .put "closed" true)
+    (ws_close peer/connection)
+    (return))
+  (peer .put "sequence" (+ peer/sequence 1))
+  (var frame {^protocol protocol_version ^epoch hub/host/epoch
+    ^sequence ($to_str peer/sequence) ^type message/type
+    ^session message/session ^data message/data})
+  (try
+    (if_yes (!= (ws_send peer/connection ($json/stringify frame)) 0)
+      # A dropped frame invalidates the stream. Reconnect gets a fresh snapshot.
+      (peer .put "closed" true)
+      (ws_close peer/connection))
+  catch Any
+    (peer .put "closed" true)
+    (ws_close peer/connection)))
+
+(fn broadcast [hub : PushHub, message]
+  (for peer in (hub/peers .get)
+    (if_yes (|| (! (["record" "records"] .contains? message/type))
+                (== peer/session message/session))
+      (send_frame hub peer message))))
+
+(fn new_push_hub [host] : PushHub
+  (var hub (PushHub ^host host ^peers ($cell [])))
+  (host/publisher .set (fn [message] (broadcast hub message)))
+  hub)
+
+(fn add_peer [hub : PushHub, connection, session : Str, expires : Int]
+  (var peer {^connection connection ^session session ^expires expires
+    ^sequence 0 ^closed false})
+  ((hub/peers .get) .push peer)
+  (try
+    (send_frame hub peer {^type "status" ^session "" ^data (host_status hub/host)})
+    (send_frame hub peer {^type "sessions" ^session "" ^data (list_sessions hub/host)})
+    (if_yes (!= session "")
+      (try
+        (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot hub/host session)})
+      catch RunError
+        (send_frame hub peer {^type "error" ^session session
+          ^data {^code $err/code ^message $err/message}})))
+    (send_frame hub peer {^type "ready" ^session session ^data nil})
+  catch Any
+    (peer .put "closed" true)
+    (ws_close connection)))
+
+(fn remove_peer [hub : PushHub, connection]
+  (var kept [])
+  (for peer in (hub/peers .get)
+    (if_not (same? peer/connection connection) (kept .push peer)))
+  (hub/peers .set kept))
+
+(fn expire_peers [hub : PushHub]
+  (for peer in (hub/peers .get)
+    (if_yes (&& (! peer/closed) (> (monotonic_ms) peer/expires))
+      (peer .put "closed" true)
+      (ws_close peer/connection))))

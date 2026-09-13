@@ -42,8 +42,8 @@ Leaving graphical administration out does not remove commands from the agent.
 | `ask` calls `HarnessPrompt`, emits its final output, and flushes state | Keep one execution path for terminal and browser, with structured run outcomes added below the drivers. |
 | `HarnessLog` exposes only `kind` and `text`; hydration drops durable envelope IDs | It is insufficient as a reconnect protocol or a source of stable message IDs. |
 | `events.catalog` has text events and composition turn events | Add explicit session/run projections; do not infer run status from printed text. |
-| The model client awaits a completed, buffered provider response | First release streams complete narration/code/result blocks, not incomplete model programs. |
-| `net/http` supports request tasks and WebSockets; `ws_send` can drop queued frames | Use HTTP snapshots as authoritative and WebSocket notifications as hints. |
+| The model client validates completed provider responses | Codex output-text deltas are provisional raw previews; only complete validated Gene envelopes execute. |
+| `net/http` supports request tasks and WebSockets; `ws_send` can drop queued frames | Push ordered output/state messages; a dropped frame closes that peer so reconnect restores a snapshot. |
 | Gene's web profile supports DOM/HTTP interop but excludes runtime eval and VM capabilities | Author the client in Gene's web subset; keep execution in the native process. |
 
 ## 3. Module ownership
@@ -51,12 +51,13 @@ Leaving graphical administration out does not remove commands from the agent.
 ```mermaid
 flowchart LR
     Browser["Browser client\nGene web profile"]
-    Transport["Web host\nHTTP, assets, authentication, notifications"]
+    Transport["Web host\nHTTP commands, authentication, WebSocket delivery"]
     Sessions["Session host\nreceipts, snapshots, one active runtime"]
     Execution["Run controller\nHarnessPrompt and existing commands"]
     Runtime["Harness\nplugins, model, generated programs"]
     Stores["Existing stores\ncomposition, modules, events"]
-    Browser <-->|"JSON / notification hints"| Transport
+    Browser -->|"HTTP POST commands"| Transport
+    Transport -->|"WebSocket output and state"| Browser
     Transport --> Sessions
     Sessions --> Execution
     Execution --> Runtime
@@ -247,16 +248,33 @@ blocks for the current run; once their records flush, the client replaces them
 with committed blocks of the same ID. A crash may discard provisional output.
 Committed output appears once, including the final answer emitted by `ask`.
 
-The WebSocket sends only “snapshot changed” hints, containing the session and
-host epoch. The browser then fetches a bounded HTTP update. It also refreshes
-periodically while a run is active and on focus/reconnect, so a lost hint cannot
-hide completion. A dropped `ws_send` queue or a dead socket causes resync, not
-loss of authoritative history. Polling is a functional fallback.
+Protocol 2 pushes `record`, `records`, `run`, and `session` messages directly.
+`record` is a provisional output block; `records` promotes committed blocks by
+stable ID and advances the durable cursor. `run` carries the public receipt,
+next submission sequence, session metadata, and authoritative host busy state.
+POST acknowledges admission and never overwrites a newer pushed completion.
+The client tracks outstanding admission by session and request ID.
+
+Each connection starts with `status`, `sessions`, an optional selected-session
+`snapshot`, and `ready`. Frames carry a host epoch and a per-connection sequence
+encoded as a decimal string. A gap, queue overflow, disconnect, or session switch
+opens a new stream and restores its snapshot; old-socket callbacks are ignored.
+There is no connected-client polling. HTTP remains available for initial
+authentication, disconnection recovery, session-list pagination, and older
+history. Native WebSocket ping/pong maintains idle connections, and expired
+browser credentials close their streams. A missing initial `ready` or an
+explicit `resync` also reconnects. Changes made by other processes are picked
+up by snapshot/history reads on focus or reconnect; they do not emit this
+host's in-memory push events.
+
+Codex deltas update a provisional raw-response block. The complete validated raw
+reply uses the same block ID and is persisted once; an interrupted partial
+response is never executable and can be discarded during recovery.
 
 Snapshots distinguish a committed stream cursor from a provisional snapshot
 revision. The server captures each snapshot consistently on its owning lane;
 the client discards stale responses after switching sessions. Reconnect starts
-with a snapshot and then resumes hints. A cursor older than retained history
+with the latest bounded snapshot and then resumes direct updates. A cursor older than retained history
 returns an explicit reset with the earliest available cursor; the UI shows that
 older history is unavailable. Recovery does not reconstruct discarded history.
 
@@ -300,7 +318,8 @@ page. Links, if recognized, are limited to safe web schemes.
 ## 8. HTTP interface and local access
 
 Use same-origin JSON HTTP for commands and snapshots, and a same-origin
-WebSocket for notifications. The paths below are the version-1 interfaces.
+WebSocket for server-to-client delivery. HTTP paths retain their `/api/v1`
+names; WebSocket payloads use protocol version 2.
 
 | Method/path | Behavior |
 |---|---|
@@ -313,7 +332,7 @@ WebSocket for notifications. The paths below are the version-1 interfaces.
 | `POST /api/v1/sessions/{id}/runs` | Submit `{request_id, submission_seq, text}`; return a durable receipt, normally HTTP 202. |
 | `GET /api/v1/sessions/{id}/runs/{run_id}` | Resolve an uncertain submission's current outcome when its receipt is retained. |
 | `POST /api/v1/sessions/{id}/runs/{run_id}/cancel` | Idempotently request stop. |
-| `GET /api/v1/events` | Authenticated WebSocket upgrade for change hints. |
+| `GET /api/v1/events?session=<id>` | Authenticated WebSocket upgrade, initial snapshot and live output/state. |
 
 Errors have a stable `code`, safe `message`, and relevant current state. Use
 400 for invalid requests, 401/403 for access refusal, 404 for missing IDs, 409
@@ -357,7 +376,7 @@ File ownership:
 | `src/runtime/session_host.gene` | Session claims, shared boot/shutdown, admission, immutable snapshots. |
 | `src/runtime/run_controller.gene` | Driver-independent run lifecycle, structured results, cancellation. |
 | `src/storage/state.gene`, `events.catalog`, catalog generator | Session/run core projections, retained receipts, text-event version readers. |
-| `src/web/server.gene` | Native entry point, authentication, HTTP routing, static assets, notification lifetime. |
+| `src/web/server.gene`, `src/web/push.gene` | Native entry point, authentication, HTTP routing, static assets, ordered WebSocket delivery. |
 | `src/web/contract.gene` | Small portable wire data definitions/validation shared by native and web code where supported. |
 | `src/profiles/browser.gene` | Headless model-backed profile composition. |
 | `client/main.gene`, `client/state.gene`, `client/view.gene`, `src/web/style.gene` | Browser startup/transport, client state, accessible rendering, responsive layout. |
@@ -375,7 +394,7 @@ The implementation follows four slices:
    deduplication, and recovery; deterministic recording/command tests, with
    terminal compatibility preserved.
 2. **Local web host:** authenticated HTTP, snapshots, durable receipts,
-   host-owned task lifecycle, and notification hints; test with a real HTTP
+   host-owned task lifecycle, and pushed output/state; test with a real HTTP
    client and an offline agent.
 3. **Browser workflow:** session navigation, composer, transcript, code/results,
    status, Stop, and reconnect; compile client modules and test in a browser.
