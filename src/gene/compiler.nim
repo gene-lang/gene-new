@@ -72,6 +72,7 @@ type
     inGenerator: bool
     loopDepth: int
     loopStack: seq[LoopCompileContext]
+    repeatBindings: bool # shared-scope chunks reentered by an enclosing loop
     gensym: ref int   # shared with child compilers; see nextGensym
     useLocalSlots: bool
     localSlots: Table[string, int]
@@ -799,7 +800,7 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false,
   # already get from their own compiler, and what the web profile already gets
   # from JavaScript block scope. `childCompiler` does not inherit `loopDepth`,
   # so a `fn` defined inside a loop starts fresh and keeps the strict rule.
-  let inLoop = c.loopDepth > 0
+  let inLoop = c.loopDepth > 0 or c.repeatBindings
   if c.useLocalSlots:
     discard c.emit(if inLoop: opRedefineLocal else: opDefineLocal,
                    c.reserveLocal(name, allowFexprName), name = name)
@@ -1607,8 +1608,13 @@ proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq
 
 proc compileSubBody(c: var Compiler, forms: openArray[Value],
                     pattern: Value = NIL, scoped = false,
-                    tail = false): Chunk =
+                    tail = false, repeatBindings = false): Chunk =
   var child = c.childCompiler()
+  # try/ensure chunks reuse the caller's scope, including declarations that
+  # execute again on the next loop iteration. Fresh scopes and functions
+  # keep the default depth so genuine redeclarations remain errors.
+  # This concerns bindings only: loop jump targets belong to their own chunk.
+  child.repeatBindings = repeatBindings
   if scoped:
     child.enableLocalSlots()
     child.parentSlots = c.parentFrames()
@@ -7985,7 +7991,8 @@ proc compileTry(c: var Compiler, node: Value) =
   while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
     tryForms.add body[i]
     inc i
-  let tp = TryProto(body: c.compileSubBody(tryForms))
+  let tp = TryProto(body: c.compileSubBody(tryForms,
+    repeatBindings = c.loopDepth > 0 or c.repeatBindings))
   while i < body.len and body[i].isSymbol("catch"):
     inc i
     if i >= body.len:
@@ -8013,7 +8020,8 @@ proc compileTry(c: var Compiler, node: Value) =
     while i < body.len:
       ensureForms.add body[i]
       inc i
-    tp.ensureBody = c.compileSubBody(ensureForms)
+    tp.ensureBody = c.compileSubBody(ensureForms,
+      repeatBindings = c.loopDepth > 0 or c.repeatBindings)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
 proc compileWithCapabilities(c: var Compiler, node: Value) =

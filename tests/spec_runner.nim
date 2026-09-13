@@ -4019,6 +4019,29 @@ suite "spec — loop body scoping from design (§9)":
                "[0 2 4]")
     check_eval("(var acc []) (for i in [0 1 2] (var x (* i 2)) (acc .push x)) acc",
                "[0 2 4]")
+  test "try and ensure bodies retain enclosing loop declarations":
+    let body = "(var i 0) (var acc []) (var cleaned []) " &
+               "(while (< i 3) " &
+               "  (try (var x (* i 2)) (acc .push x) " &
+               "    catch Any (fail $err) " &
+               "    ensure (var item i) (cleaned .push item)) " &
+               "  (set i (+ i 1))) [acc cleaned]"
+    check_eval(body, "[[0 2 4] [0 1 2]]")
+    check_eval("(fn f [] " & body & ") (f)", "[[0 2 4] [0 1 2]]")
+    check_eval("(var i 0) (var acc []) " &
+               "(repeat 3 (try (try (var x i) (acc .push x) ensure nil) " &
+               "  ensure (var next (+ i 1)) (set i next))) acc",
+               "[0 1 2]")
+  test "try subchunks retain strict declarations outside shared loop scope":
+    check_runtime_error("(try (var x 1) (var x 2) x)", "duplicate binding")
+    check_runtime_error("(try nil ensure (var x 1) (var x 2))", "duplicate binding")
+    check_runtime_error("(var i 0) (while (< i 1) " &
+                        "  (try (var f (fn [] (var x 1) (var x 2) x)) (f)) " &
+                        "  (set i (+ i 1)))", "duplicate binding")
+    check_runtime_error("(var i 0) (while (< i 1) " &
+                        "  (try (fail (RuntimeError ^message \"probe\")) " &
+                        "    catch Any (var x 1) (var x 2)) " &
+                        "  (set i (+ i 1)))", "duplicate binding")
   test "a genuine redeclaration is still an error":
     check_runtime_error("(fn f [] (var x 1) (var x 2) x) (f)", "duplicate binding")
     check_runtime_error("(var y 1) (var y 2) y", "duplicate binding")
