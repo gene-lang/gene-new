@@ -31,9 +31,9 @@ Three stores have distinct jobs:
 
 | Store | Contents | Implementation |
 |---|---|---|
-| composition generations | desired plugin entries and config | `src/workspace.gene`, atomic `Store/checkpoint` generations |
+| composition generations | desired plugin entries and config | `src/storage/workspace.gene`, atomic `Store/checkpoint` generations |
 | module blobs | canonical generated Gene modules | owner-only atomic Store records, materialized under a workspace-keyed loader cache |
-| event streams | history and full plugin state | `src/state.gene`, scoped segmented streams and projection checkpoints |
+| event streams | history and full plugin state | `src/storage/state.gene`, scoped segmented streams and projection checkpoints |
 
 No past program is replayed.
 
@@ -154,7 +154,7 @@ claimed.
 
 ## 5. Event streams and plugin state
 
-`src/state.gene` stores version-2 recovery-self-describing event envelopes:
+`src/storage/state.gene` stores version-2 recovery-self-describing event envelopes:
 
 ```gene
 {^format 2 ^origin "core" ^owner "core" ^projection "todo"
@@ -183,7 +183,7 @@ by the newest fallback generations before garbage-collecting older segment
 records. Event and state byte caps reject oversized records.
 
 Core event vocabulary comes from `events.catalog` and the generated
-`src/generated_event_catalog.gene`. CI checks it with:
+`src/storage/generated_event_catalog.gene`. CI checks it with:
 
 ```bash
 python3 tools/generate_harness_event_catalog.py --check
@@ -201,7 +201,7 @@ cell is also available and is not mediated by that helper.
 
 ## 6. Desired composition and CAS
 
-`src/workspace.gene` opens the composition Store and exposes revision-CAS
+`src/storage/workspace.gene` opens the composition Store and exposes revision-CAS
 writes:
 
 - one Gene lane serializes in-process writes;
@@ -327,7 +327,7 @@ conditional tool passed on its nine-byte name while its long path was broken.
 
 ### 7.2 What the model's own program may reach
 
-`src/model_reply.gene` defines the shared reply format and validates exactly
+`src/agents/model_reply.gene` defines the shared reply format and validates exactly
 one map before code can execute:
 
 - `^type "code"` requires `^code (do ...)`, executes, and sends the result back
@@ -617,18 +617,23 @@ events, and closes all three stores.
 
 ## 13. Implementation map
 
+The [source directory guide](../README.md#files) groups modules into agents,
+runtime, storage, views, profiles, and web hosting. The source-root
+`kernel.gene`, `plugin_api.gene`, and `seams.gene` paths are stable imports
+embedded in persisted generated modules and shared by the sandbox loader.
+
 | File | Responsibility |
 |---|---|
 | `src/kernel.gene` | registry, ledger, transactions/diff, lifecycle, PluginContext, prompt/output events |
 | `src/plugin_api.gene` | stable generated-plugin types and protocol |
-| `src/state.gene` | scoped durable event segments and full-state projections |
-| `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
-| `src/agent.gene` | registry-backed commands, tools, offline prompt provider |
-| `src/llm.gene` | model provider; prompt rendered from registries |
-| `src/model_reply.gene` | shared reply envelope validation and format instructions |
-| `src/repl.gene` | terminal view plugin |
-| `src/view_api.gene`, `src/recording_view.gene` | typed view contract and deterministic recording view |
-| `src/profile.gene`, `src/profiles/` | checked-in baseline composition |
+| `src/storage/state.gene` | scoped durable event segments and full-state projections |
+| `src/storage/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
+| `src/agents/agent.gene` | registry-backed commands, tools, offline prompt provider |
+| `src/agents/llm.gene` | model provider; prompt rendered from registries |
+| `src/agents/model_reply.gene` | shared reply envelope validation and format instructions |
+| `src/views/repl.gene` | terminal view plugin |
+| `src/views/view_api.gene`, `src/views/recording_view.gene` | typed view contract and deterministic recording view |
+| `src/profiles/profile.gene`, `src/profiles/` | checked-in baseline composition |
 | `src/main.gene` | durable boot, recovery nucleus, view/one-shot dispatch |
 
 Runtime support used by the harness lives in `src/gene/vm.nim` (transitive and

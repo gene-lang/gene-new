@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "examples/gene-harness/events.catalog"
-TARGET = ROOT / "examples/gene-harness/src/generated_event_catalog.gene"
+TARGET = ROOT / "examples/gene-harness/src/storage/generated_event_catalog.gene"
 
 
 def render() -> str:

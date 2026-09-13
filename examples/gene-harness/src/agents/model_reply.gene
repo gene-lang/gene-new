@@ -3,7 +3,7 @@
 (mod model_reply)
 
 (import $parse [read_all])
-(import [HarnessError] ^from "./kernel")
+(import [HarnessError] ^from "../kernel")
 
 (fn reply_format_prompt [] : Str """Your entire reply must be exactly ONE Gene data map. Use straight double
 quotes, no markdown fence, and no prose before or after the map.

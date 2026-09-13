@@ -13,10 +13,10 @@
 (import [Plugin PluginContext PluginHost] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
 (import [LocalFs TextRender fs_provider render_provider] ^from "../seams")
-(import [Profile] ^from "../profile")
+(import [Profile] ^from "./profile")
 (import [reporter_plugin] ^from "./common")
-(import [agent_plugin command_plugin template_codegen_plugin] ^from "../agent")
-(import [driver_plugin] ^from "../repl")
+(import [agent_plugin command_plugin template_codegen_plugin] ^from "../agents/agent")
+(import [driver_plugin] ^from "../views/repl")
 
 # Each factory is nullary and references only module-level names, so the stored
 # activation captures nothing from the frame that built it — see the note on the

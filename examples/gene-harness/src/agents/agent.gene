@@ -15,12 +15,12 @@
          row rows invoke_registry_row plugin_states bound_seams
          lifecycle_log log_append uninstall retry status_of
          installed transaction_diff flush_harness HarnessError current_run_id
-         run_needs_recovery?] ^from "./kernel")
-(import_impl PluginHost for PluginContext ^from "./kernel")
+         run_needs_recovery?] ^from "../kernel")
+(import_impl PluginHost for PluginContext ^from "../kernel")
 (import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
          prompt_provider codegen_provider]
-  ^from "./seams")
-(import [register_module] ^from "./workspace")
+  ^from "../seams")
+(import [register_module] ^from "../storage/workspace")
 
 # --- word handling ---------------------------------------------------------
 

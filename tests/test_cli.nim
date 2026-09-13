@@ -144,9 +144,9 @@ suite "cli — gene run":
     for path in [
       "examples/gene-harness/src/kernel.gene",
       "examples/gene-harness/src/plugin_api.gene",
-      "examples/gene-harness/src/state.gene",
-      "examples/gene-harness/src/view_api.gene",
-      "examples/gene-harness/src/workspace.gene"
+      "examples/gene-harness/src/storage/state.gene",
+      "examples/gene-harness/src/views/view_api.gene",
+      "examples/gene-harness/src/storage/workspace.gene"
     ]:
       for line in readFile(path).splitLines:
         let stripped = line.strip

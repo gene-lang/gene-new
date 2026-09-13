@@ -40,7 +40,7 @@ it does not start a web server or provide a browser interface.
 Start an offline workspace from the repository root:
 
 ```sh
-bin/gene run examples/gene-harness/src/web_server.gene --offline
+bin/gene run examples/gene-harness/src/web/server.gene --offline
 ```
 
 Open the connection link printed by the server. It binds `127.0.0.1:8095` and
@@ -61,7 +61,7 @@ mkdir -p /tmp/harness-web
     ../../bin/gene run --allow_read_write_dir /tmp/harness-web \
     --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
     --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
-    src/web_server.gene
+    src/web/server.gene
 )
 ```
 
@@ -326,12 +326,12 @@ shows staged registry and composition changes before commit.
 
 ## Tools from callable contracts
 
-The `src/reflection.gene` module builds a tool row from an ordinary function
+The `src/agents/reflection.gene` module builds a tool row from an ordinary function
 or checked `Callable` view. It derives parameter documentation and an input
 schema without evaluating defaults:
 
 ```gene
-(import * : reflect ^from "./reflection")
+(import * : reflect ^from "./src/agents/reflection")
 (fn search [query : Str, ^limit : Int = 10] : Str query)
 (contribute h "search_plugin" "tools" (reflect/tool_row "search" search))
 (invoke_registry_row h "tools" "search"
@@ -480,7 +480,7 @@ turn body, so it never becomes a revision.
 ## Capability selectors
 
 Generated composition entries record explicit supported interface versions,
-defined in `src/interface_policy.gene`. Changes to implementation files alone
+defined in `src/runtime/interface_policy.gene`. Changes to implementation files alone
 do not change those contracts. Incompatible public API changes require a new
 version. Entries with unsupported interface versions are refused.
 
@@ -543,24 +543,45 @@ before stores are flushed and closed.
 
 ## Files
 
+`src/` is grouped by responsibility. Start with `main.gene` for terminal boot
+or `web/server.gene` for the browser host, then follow imports into these groups:
+
+| Directory | Responsibility |
+|---|---|
+| `src/agents/` | prompt handling, commands, model transport/replies, plugin generation, callable reflection |
+| `src/runtime/` | boot/shutdown, Cordis integration, interface policy, session ownership and run lifecycle |
+| `src/storage/` | durable event streams, generated event catalog, workspace composition and module blobs |
+| `src/views/` | typed view contract, terminal interaction and recording view |
+| `src/profiles/` | profile type/boot, named-profile registry and deployment compositions |
+| `src/web/` | HTTP entry point, page styling and the shared browser wire contract |
+| `client/` | Gene modules compiled for the browser: interaction, transcript state and rendering |
+
+`kernel.gene`, `plugin_api.gene`, and `seams.gene` stay at the source root.
+Persisted generated plugins import these exact paths, and sandbox loading
+shares their module identities. Keeping them stable lets existing workspaces
+restore their plugins without rewriting stored source or changing its digest.
+
 | Path | Responsibility |
 |---|---|
 | `src/kernel.gene` | registry, ledger, lifecycle, transaction/diff, PluginContext, output events |
 | `src/plugin_api.gene` | stable generated-plugin types/protocol |
-| `src/state.gene` | scoped segmented event store and state projections |
-| `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
-| `src/agent.gene` | command/tool registries and offline prompt provider |
-| `src/llm.gene` | model agent, plugin author, and registry-rendered prompt |
-| `src/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
-| `src/model_reply.gene` | shared Gene reply format, inert parsing, and field validation |
-| `src/repl.gene` | terminal subscriber, one prompt and one line |
-| `src/view_api.gene`, `src/recording_view.gene` | typed view contract and recording view |
-| `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
+| `src/seams.gene` | filesystem, rendering, prompt and code-generation protocols and example providers |
+| `src/runtime/cordis_adapter.gene`, `src/runtime/interface_policy.gene` | Cordis lifecycle integration and supported generated-plugin interface versions |
+| `src/storage/state.gene` | scoped segmented event store and state projections |
+| `src/storage/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
+| `src/agents/agent.gene` | command/tool registries and offline prompt provider |
+| `src/agents/llm.gene` | model agent, plugin author, and registry-rendered prompt |
+| `src/agents/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
+| `src/agents/model_reply.gene` | shared Gene reply format, inert parsing, and field validation |
+| `src/views/repl.gene` | terminal subscriber, one prompt and one line |
+| `src/views/view_api.gene`, `src/views/recording_view.gene` | typed view contract and recording view |
+| `src/agents/reflection.gene` | callable signatures, input schemas and reflected tool rows |
+| `src/profiles/profile.gene`, `src/profiles/registry.gene` | profile type/boot and named-profile lookup; sibling files define deployments |
 | `src/main.gene` | durable boot and irreducible recovery surface |
-| `events.catalog` | core persisted-event vocabulary source |
-| `src/web_server.gene`, `src/web_style.gene` | local HTTP host, authentication, page layout and styling |
-| `src/session_host.gene`, `src/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
-| `src/bootstrap.gene`, `src/session_claim.gene` | runtime lifecycle and exclusive session ownership |
+| `events.catalog`, `src/storage/generated_event_catalog.gene` | core persisted-event vocabulary source and generated validators |
+| `src/web/server.gene`, `src/web/style.gene` | local HTTP host, authentication, page layout and styling |
+| `src/runtime/session_host.gene`, `src/runtime/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
+| `src/runtime/bootstrap.gene`, `src/runtime/session_claim.gene` | runtime lifecycle and exclusive session ownership |
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
 
 The former Harness scenarios have moved to `tmp/gene-harness-tests` in the

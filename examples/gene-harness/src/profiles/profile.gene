@@ -1,6 +1,6 @@
 # What a profile *is*, and how to boot one.
 #
-# This file knows nothing about any particular deployment. `src/profiles.gene`
+# This file knows nothing about any particular deployment. `src/profiles/registry.gene`
 # is the registry of the ones that exist, and `src/profiles/` holds them.
 #
 # **A profile is a set, not a stack.** It names the plugins a deployment starts
@@ -23,7 +23,7 @@
 
 (mod profile)
 
-(import [Harness new_harness install install_with_policy] ^from "./kernel")
+(import [Harness new_harness install install_with_policy] ^from "../kernel")
 
 (type Profile ^props {^name Str ^plugins Any ^limits Any?})
 

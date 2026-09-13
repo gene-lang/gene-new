@@ -1,10 +1,10 @@
 (mod run_controller)
 
-(import [ask_result] ^from "./agent")
-(import [begin_run_log end_run_log log_append run_needs_recovery?] ^from "./kernel")
-(import [core_state record_core_state flush_event_store copy_data] ^from "./state")
+(import [ask_result] ^from "../agents/agent")
+(import [begin_run_log end_run_log log_append run_needs_recovery?] ^from "../kernel")
+(import [core_state record_core_state flush_event_store copy_data] ^from "../storage/state")
 (import $crypto [sha256])
-(import [terminal_run : terminal_run? receipt_limit] ^from "./web/contract")
+(import [terminal_run : terminal_run? receipt_limit] ^from "../web/contract")
 
 (type RunError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for RunError)

@@ -337,13 +337,13 @@ File ownership:
 
 | File/module | Responsibility |
 |---|---|
-| `src/session_host.gene` | Session claims, shared boot/shutdown, admission, immutable snapshots. |
-| `src/run_controller.gene` | Driver-independent run lifecycle, structured results, cancellation. |
-| `src/state.gene`, `events.catalog`, catalog generator | Session/run core projections, retained receipts, text-event version readers. |
-| `src/web_server.gene` | Native entry point, authentication, HTTP routing, static assets, notification lifetime. |
+| `src/runtime/session_host.gene` | Session claims, shared boot/shutdown, admission, immutable snapshots. |
+| `src/runtime/run_controller.gene` | Driver-independent run lifecycle, structured results, cancellation. |
+| `src/storage/state.gene`, `events.catalog`, catalog generator | Session/run core projections, retained receipts, text-event version readers. |
+| `src/web/server.gene` | Native entry point, authentication, HTTP routing, static assets, notification lifetime. |
 | `src/web/contract.gene` | Small portable wire data definitions/validation shared by native and web code where supported. |
 | `src/profiles/browser.gene` | Headless model-backed profile composition. |
-| `client/main.gene`, `client/state.gene`, `client/view.gene`, `src/web_style.gene` | Browser startup/transport, client state, accessible rendering, responsive layout. |
+| `client/main.gene`, `client/state.gene`, `client/view.gene`, `src/web/style.gene` | Browser startup/transport, client state, accessible rendering, responsive layout. |
 
 `bootstrap.gene` shares boot/shutdown behavior with the terminal entry;
 recovery commands open a runtime without descriptor or profile activation. The browser profile initially uses the same

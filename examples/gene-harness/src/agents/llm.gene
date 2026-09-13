@@ -39,14 +39,14 @@
          lifecycle_log log_append log_events assemble_request current_run_id
          publish render_prompt doc transaction_diff
          module_dir]
-  ^from "./kernel")
-(import [ExecutionLimits] ^from "./plugin_api")
-(import_impl PluginHost for PluginContext ^from "./kernel")
+  ^from "../kernel")
+(import [ExecutionLimits] ^from "../plugin_api")
+(import_impl PluginHost for PluginContext ^from "../kernel")
 (import [HarnessFs HarnessRender HarnessPrompt HarnessCodegen LocalFs MemFs
          TextRender HtmlRender fs_provider render_provider prompt_provider
-         codegen_provider head_tool report_tool] ^from "./seams")
+         codegen_provider head_tool report_tool] ^from "../seams")
 (import [dispatch bare_query? words words_from word plugin_source] ^from "./agent")
-(import [register_module run_workspace_turn] ^from "./workspace")
+(import [register_module run_workspace_turn] ^from "../storage/workspace")
 
 (var turn_limit 8)
 
@@ -265,7 +265,7 @@
   (render_prompt h))
 
 (fn repository_root [] : Str
-  (module_dir (module_dir (module_dir (module_dir this_mod/.path)))))
+  (module_dir (module_dir (module_dir (module_dir (module_dir this_mod/.path))))))
 
 (fn gene_skill_file [relative : Str] : Str
   (read_text $"${(repository_root)}/tools/gene-lang-skill/${relative}"))

@@ -7,7 +7,7 @@
          Requirement service_key InstanceState CompositionError PluginInvoker
          invocation_limits default_plugin_invoker new_runtime]
   ^from "." ^pkg "cordis")
-(import [Plugin PluginContext default_execution_limits] ^from "./plugin_api")
+(import [Plugin PluginContext default_execution_limits] ^from "../plugin_api")
 
 (protocol RegistryHost
   (message enter_call [] : Nil)

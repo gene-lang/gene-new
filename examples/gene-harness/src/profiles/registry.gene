@@ -1,7 +1,7 @@
 # The registry: which profiles this application offers.
 #
 # One file to change when a deployment is added, and the only file that has to
-# know the whole list. `src/profile.gene` is what a profile *is*; `src/profiles/`
+# know the whole list. `src/profiles/profile.gene` is what a profile *is*; `src/profiles/`
 # holds them; this is the lookup.
 #
 # Note there is no precedence between the entries. Two profiles are
@@ -11,10 +11,10 @@
 (mod profiles)
 
 (import [Profile] ^from "./profile")
-(import [HarnessError] ^from "./kernel")
-(import [cli_profile] ^from "./profiles/cli")
-(import [web_profile] ^from "./profiles/web")
-(import [chat_profile] ^from "./profiles/chat")
+(import [HarnessError] ^from "../kernel")
+(import [cli_profile] ^from "./cli")
+(import [web_profile] ^from "./web")
+(import [chat_profile] ^from "./chat")
 
 (fn profile_names [] : Any
   ["cli" "web" "chat"])

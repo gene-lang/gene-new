@@ -17,16 +17,16 @@
 #
 # demo.gene is the tour — it walks the kernel's properties one at a time.
 
-(import [profile_named] ^from "./profiles")
-(import [plugin_names] ^from "./profile")
+(import [profile_named] ^from "./profiles/registry")
+(import [plugin_names] ^from "./profiles/profile")
 (import [report_of] ^from "./profiles/common")
-(import [ask] ^from "./agent")
+(import [ask] ^from "./agents/agent")
 (import [plugin_states bound_seams lifecycle_log status_of row]
   ^from "./kernel")
 (import [prepare_workspace doctor disable_entry enable_entry]
-  ^from "./workspace")
-(import [HarnessView] ^from "./view_api")
-(import [prepare_home open_runtime close_runtime] ^from "./bootstrap")
+  ^from "./storage/workspace")
+(import [HarnessView] ^from "./views/view_api")
+(import [prepare_home open_runtime close_runtime] ^from "./runtime/bootstrap")
 (import $os [get_env])
 
 (fn arg_list [args] : Any

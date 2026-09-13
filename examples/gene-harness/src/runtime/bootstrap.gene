@@ -1,10 +1,10 @@
 (mod bootstrap)
 
-(import [new_harness module_dir shutdown_harness] ^from "./kernel")
-(import [boot] ^from "./profile")
-(import [open_event_store close_event_store flush_event_store] ^from "./state")
+(import [new_harness module_dir shutdown_harness] ^from "../kernel")
+(import [boot] ^from "../profiles/profile")
+(import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_workspace close_workspace prepare_workspace activate_workspace_plan]
-  ^from "./workspace")
+  ^from "../storage/workspace")
 (import [claim_session] ^from "./session_claim")
 (import $fs [make_dir real_path])
 (import $os [get_env])
@@ -18,7 +18,7 @@
   (var chosen root)
   (if (== chosen "")
     (set chosen (get_env "GENE_HARNESS_HOME"
-      $"${(module_dir (module_dir this_mod/.path))}/tmp/workspace")))
+      $"${(module_dir (module_dir (module_dir this_mod/.path)))}/tmp/workspace")))
   (make_dir chosen)
   (for directory in ["composition" "modules" "events" "claims"]
     (make_dir $"${chosen}/${directory}"))

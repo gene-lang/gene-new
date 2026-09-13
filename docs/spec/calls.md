@@ -246,7 +246,7 @@ The implementation is shared by the native and wasm VM, subject to each VM's
 existing feature admission (for example, native FFI availability). The transpiled web
 profile rejects this runtime surface. Coverage lives in
 `tests/test_callable_reflection.nim`, with a real tool adapter in the Harness
-package's `src/reflection.gene` and `tests/reflection_smoke.gene`.
+package's `src/agents/reflection.gene` and `tests/reflection_smoke.gene`.
 
 ## Binding an invocation
 

@@ -2,17 +2,17 @@
 
 (import [open_session_host close_session_host list_sessions create_session rename_session
          snapshot submit run_receipt cancel host_status RunError]
-  ^from "./session_host")
-(import [styles] ^from "./web_style")
-(import [module_dir] ^from "./kernel")
-(import [error_status] ^from "./web/contract")
+  ^from "../runtime/session_host")
+(import [styles] ^from "./style")
+(import [module_dir] ^from "../kernel")
+(import [error_status] ^from "./contract")
 (import $net/http [listen serve html json ws_accept ws_send ws_close])
 (import $html [render])
 (import $web [script stylesheet])
 (import $crypto [random_hex])
 (import $os [get_env monotonic_ms])
 
-(var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../client/main.gene"))
+(var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../../client/main.gene"))
 
 (fn page [] : Str
   ($ "<!doctype html>"

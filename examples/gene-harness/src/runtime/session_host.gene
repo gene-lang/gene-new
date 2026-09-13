@@ -2,19 +2,19 @@
 
 (import [prepare_home open_runtime close_runtime RuntimeCleanupError] ^from "./bootstrap")
 (import [open_event_store close_event_store refresh_event_store flush_event_store
-         core_state core_states record_core_state events_for copy_data] ^from "./state")
+         core_state core_states record_core_state events_for copy_data] ^from "../storage/state")
 (import [RunError new_run_controller controller_busy? close_controller
          duplicate_receipt run_state receipt_for recover_runs submit_run cancel_run]
   ^from "./run_controller" ^export true)
 (import [SessionBusy claim_session] ^from "./session_claim")
-(import [repair_interrupted_turns validate_event_catalog] ^from "./state")
-(import [core_event_types] ^from "./generated_event_catalog")
-(import [browser_profile] ^from "./profiles/browser")
-(import [public_model_config] ^from "./model_client")
-(import [rows plugin_ids status_of] ^from "./kernel")
-(import [refresh_workspace composition_revision workspace_status] ^from "./workspace")
+(import [repair_interrupted_turns validate_event_catalog] ^from "../storage/state")
+(import [core_event_types] ^from "../storage/generated_event_catalog")
+(import [browser_profile] ^from "../profiles/browser")
+(import [public_model_config] ^from "../agents/model_client")
+(import [rows plugin_ids status_of] ^from "../kernel")
+(import [refresh_workspace composition_revision workspace_status] ^from "../storage/workspace")
 (import $crypto [random_hex sha256])
-(import [prompt_limit history_page_limit protocol_version] ^from "./web/contract")
+(import [prompt_limit history_page_limit protocol_version] ^from "../web/contract")
 
 (type SessionHost ^props {^home Str ^events Any ^profile Any ^offline Bool
                          ^epoch Str ^runtime Any ^controller Any ^session Any

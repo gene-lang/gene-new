@@ -18,9 +18,9 @@
          record_composition_change
          flush_harness hydrate_harness_log
          contribute row rows remove_owner module_dir]
-  ^from "./kernel")
+  ^from "../kernel")
 (import [validate_event_catalog repair_interrupted_turns] ^from "./state")
-(import [current_interfaces] ^from "./interface_policy")
+(import [current_interfaces] ^from "../runtime/interface_policy")
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
@@ -98,7 +98,7 @@
   workspace)
 
 (fn harness_package_root [] : Str
-  (module_dir (module_dir this_mod/.path)))
+  (module_dir (module_dir (module_dir this_mod/.path))))
 
 (fn open_workspace
   [root : Str,

@@ -1,11 +1,11 @@
 (mod browser)
 
-(import [Profile] ^from "../profile")
+(import [Profile] ^from "./profile")
 (import [ExecutionLimits] ^from "../plugin_api")
 (import [web_fs_plugin] ^from "./web")
 (import [cli_fs_plugin cli_render_plugin] ^from "./cli")
-(import [command_plugin agent_plugin template_codegen_plugin] ^from "../agent")
-(import [llm_agent_plugin model_codegen_plugin] ^from "../llm")
+(import [command_plugin agent_plugin template_codegen_plugin] ^from "../agents/agent")
+(import [llm_agent_plugin model_codegen_plugin] ^from "../agents/llm")
 
 (fn browser_profile [^offline offline : Bool = false] : Profile
   (var plugins [(cli_render_plugin) (command_plugin)])

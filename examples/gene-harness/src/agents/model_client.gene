@@ -4,7 +4,7 @@
 
 (import $net/http_client [request])
 (import $fs [read_text])
-(import [HarnessError] ^from "./kernel")
+(import [HarnessError] ^from "../kernel")
 
 (fn nonempty [value] : Any
   (if ($absent? value)
