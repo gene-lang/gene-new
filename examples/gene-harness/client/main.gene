@@ -181,11 +181,16 @@
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
         (then
-          (if_yes (== ($json/stringify client/status) ($json/stringify data)) (return))
+          (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
           (var was_busy client/busy)
           (set client/status data)
           (set client/busy data/busy)
           (if_yes (!= was_busy client/busy) (refresh_sessions client))
+          # Sending sets busy before a poll observes the run. A fast run can
+          # finish with the same idle status we cached before submitting it.
+          # Always reconcile controls; only the status display is cached.
+          (controls client)
+          (if_yes unchanged (return))
           (var drawer ($dom/element "status_content"))
           ($dom/clear drawer)
           (var profile : Str data/profile)
@@ -213,8 +218,7 @@
                      ($dom/set_input_value client/prompt $"/${name} ")
                      ($dom/focus client/prompt)
                      (set picker/hidden true))
-                   (strong %($ "/" name)) (span %doc)))))
-          (controls client))
+                   (strong %($ "/" name)) (span %doc))))))
         (else
           (if_yes (== code 401) (set client/ready false) (controls client))
           (show_error client data))))))
