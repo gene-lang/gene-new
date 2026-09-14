@@ -23,27 +23,27 @@
 
 (mod profile)
 
-(import [Harness new_harness install install_with_policy] ^from "../kernel")
+(import [Harness new_harness put_cordis_plugins] ^from "../kernel")
 
 (type Profile ^props {^name Str ^plugins Any ^limits Any?})
 
 (fn boot [p : Profile, ^h supplied = nil] : Harness
-  # The whole of it. There is no merge step, no overlay resolution, and nothing
-  # to dump: the profile *is* the configuration, and the kernel works out the
-  # rest.
-  (var h (if (== supplied nil) (new_harness) supplied))
+  # The whole of it: stage every plugin, then reconcile once. There is no merge
+  # step and no overlay resolution; the profile *is* the configuration.
+  #
+  # `^limits` is the one deployment-wide knob a profile carries. A callback
+  # budget states what callbacks do in this deployment, and it is also the
+  # ceiling every plugin's limits narrow from. `^inherit true` leaves the
+  # launcher's capability context where the baseline puts it.
+  (var h (if (== supplied nil) (new_harness ^limits p/limits) supplied))
+  (var admissions [])
   (for plugin in p/plugins
-    # `^limits` is the one deployment-wide knob a profile carries, and it exists
-    # because a callback budget is a statement about *what a callback does here*
-    # rather than about the code that registered it. The default suits local
-    # computation. A deployment whose author is a remote model has commands that
-    # legitimately wait on a network round trip, and 2 000 ms is then not a
-    # guard against runaway code but a guarantee the deployment cannot work.
-    # Authority is untouched: `^inherit true` leaves the capability context
-    # exactly where the baseline puts it.
-    (if ($absent? p/limits)
-      (install h plugin)
-      (install_with_policy h plugin [] ^limits p/limits ^inherit true)))
+    (admissions .push
+      {^plugin plugin
+       ^options (if ($absent? p/limits)
+         {^inherit true}
+         {^scope "session" ^selectors [] ^inherit true ^limits p/limits})}))
+  (put_cordis_plugins h admissions)
   h)
 
 (fn reversed [xs] : Any

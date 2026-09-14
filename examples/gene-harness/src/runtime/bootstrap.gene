@@ -57,7 +57,10 @@
       ^blob_root $"${home}/modules" ^state_root home
       ^workspace_root (if (== project_root "") (get_env "GENE_HARNESS_PROJECT" "") project_root)))
     (set h (new_harness ^event_store events ^event_scope "session"
-      ^event_stream session ^workspace workspace))
+      ^event_stream session ^workspace workspace
+      # Cordis derives every plugin's limits from this ceiling and refuses a
+      # wider one, so the profile's deployment-wide budget is the ceiling.
+      ^limits profile/limits))
     (if_yes activate
       (var prepared (prepare_workspace workspace h ^session session))
       (boot profile ^h h)

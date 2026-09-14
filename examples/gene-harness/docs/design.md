@@ -99,10 +99,16 @@ registry/key pair:
 ^provides [["commands" "status"] ["prompt" "status_help"]]
 ```
 
-Lifecycle states remain `pending`, `ready`, and `error`. `settle` demotes before
-it promotes and continues to a fixpoint, so dependencies may arrive in any
-profile order. A failed activation is unwound and remains inspectable in
-`error`; it is retried only by an explicit operator action.
+Lifecycle states remain `pending`, `ready`, and `error`, and are reported by a
+Cordis composition. Installing a plugin records it with its entry policy and
+reconciles: Cordis activates the complete desired set in a staged candidate
+against a registry draft, then publishes rows, policies and callbacks together.
+Dependencies may arrive in any profile order; missing ones leave a plugin
+`pending`. A failed activation rejects that candidate, leaves the published
+composition in place, and is recorded as `error`; it is retried only by an
+explicit operator action. Every contribution and callback belongs to the exact
+activation revision that made it, and one deferred cleanup per revision removes
+its rows and expires its callbacks.
 
 Generated `init` receives an inert `DescriptorContext` containing stable module
 and core-interface identity only. It cannot discover registries, contribute

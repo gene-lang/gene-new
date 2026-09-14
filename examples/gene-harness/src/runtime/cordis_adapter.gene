@@ -373,16 +373,23 @@
 
 (fn retain_callback [owner, label : Str, callable,
                      ^host_context host_context = nil, ^inject_context inject_context : Bool = false]
-  # The child EffectScope is the exact activation revision that contributed
-  # this callback. A plugin ID or later ActivationContext lookup cannot rebind
-  # it to a replacement. Cordis drains admitted calls before this cleanup.
-  (var lease
-    (owner .effect label
-      (fn [fx]
-        (var token ($cell nil))
-        (fx .defer (fn [] (expire_callback token)))
-        ((callbacks .get) .push
-          (CallbackRecord ^token token ^scope fx ^callable callable
-            ^host_context host_context ^inject_context inject_context))
-        (RetainedCallback ^token token))))
-  (lease .value))
+  # `owner` is the EffectScope of the exact activation revision that
+  # contributed this callback, so a plugin ID or later ActivationContext lookup
+  # cannot rebind it to a replacement. Cordis drains admitted calls before that
+  # revision's single cleanup runs `expire_scope_callbacks`; acquiring a child
+  # effect per callback cost a bounded plugin invocation per contributed row.
+  (var token ($cell nil))
+  ((callbacks .get) .push
+    (CallbackRecord ^token token ^scope owner ^callable callable
+      ^host_context host_context ^inject_context inject_context))
+  (RetainedCallback ^token token))
+
+(fn retained_callback? [value] : Bool
+  (== ($head value) RetainedCallback))
+
+(fn expire_scope_callbacks [scope]
+  (var kept ($thaw #[]))
+  (for record in (callbacks .get)
+    (if_not (same? record/scope scope) (kept .push record)))
+  (callbacks .set kept)
+  nil)

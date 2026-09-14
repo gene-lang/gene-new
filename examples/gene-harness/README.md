@@ -8,15 +8,14 @@ The browser client and terminal share the same agent, commands, plugins, and
 durable stores. The browser's state, rendering, and interactions are written in
 Gene and compiled to browser modules automatically when the server starts.
 
-`new_cordis_harness` uses isolated registry
-drafts, selected-entry dependencies, revision-owned callbacks, and generated
-modules loaded through Cordis sandbox generations. The deterministic integration
-path exercises the real registration and turn APIs, durable replacement, failed
-activation with old tools retained, fresh-process restore, and process death
-between desired CAS and live reconciliation. The command-line profile entry
-uses `new_harness`; `new_cordis_harness` selects the Cordis implementation.
+Plugin lifecycle is a Cordis composition (`examples/cordis`). Each reconcile
+activates plugins in an isolated registry draft that publishes as a whole, with
+selected-entry dependencies, revision-owned callbacks, and generated modules
+loaded through Cordis sandbox generations. Profiles stage all of their plugins
+and reconcile once. The profile's `^limits` is the Cordis ceiling that every
+plugin's limits narrow from.
 
-On the Cordis path, `workspace_status` reports desired and active revisions.
+`workspace_status` reports desired and active revisions.
 Doctor includes both revisions when reconciliation fails. Post-commit failures
 report `recovery_required` with the original cause; they do not attempt to abort
 an already published registry transaction or rewrite CURRENT backward.

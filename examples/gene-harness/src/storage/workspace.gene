@@ -8,10 +8,10 @@
 (import $crypto [sha256])
 (import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
 (import [Harness ExecutionLimits default_execution_limits
-         describe_plugin_module install_with_policy
+         describe_plugin_module
          put_cordis_plugin
          configure_plugin_module invoke_bounded
-         uninstall status_of plugin_error
+         plugin_error
          active_transaction begin_turn commit_turn abort_turn log_append
          recover_committed_turn
          record_turn_start record_turn_end
@@ -449,21 +449,14 @@
   out)
 
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
-  (if_not ($absent? h/composition)
-    (return (put_cordis_plugin h descriptor
-      {^module $"${(digest_hex entry/module_digest)}.gene"
-       ^digest entry/module_digest ^closure entry/closure
-       ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
-       ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
-       ^inherit false} ^replace true)))
-  (var current (status_of h descriptor/id))
-  (if_not (== current "absent") (uninstall h descriptor/id))
-  (install_with_policy h descriptor (selector_forms workspace entry/selectors)
-    ^scope ($to_str entry/scope) ^limits (runtime_limits entry))
-  (status_of h descriptor/id))
+  (put_cordis_plugin h descriptor
+    {^module $"${(digest_hex entry/module_digest)}.gene"
+     ^digest entry/module_digest ^closure entry/closure
+     ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
+     ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
+     ^inherit false} ^replace true))
 
 (fn update_active_revision [workspace : Workspace, h : Harness]
-  (if ($absent? h/composition) (return nil))
   (if_not (== (workspace/errors .get) #{}) (return nil))
   (var snapshot (h/composition .inspect))
   (for desired in (composition_entries workspace)
@@ -752,11 +745,6 @@
   (update_active_revision workspace h)
   {^ready ready ^pending pending ^errors (data_copy (workspace/errors .get))
    ^session plan/session})
-
-(fn restore_workspace
-  [workspace : Workspace, h : Harness, ^session session : Str = "default"]
-  (activate_workspace_plan
-    (prepare_workspace workspace h ^session session) h))
 
 (fn doctor [workspace : Workspace]
   (var out (fresh_list))

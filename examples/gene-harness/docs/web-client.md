@@ -456,9 +456,8 @@ File ownership:
 | `client/highlight.gene`, `client/markdown.gene` | Bounded Gene lexical coloring, safe code DOM, and restricted Markdown. |
 
 `bootstrap.gene` shares boot/shutdown behavior with the terminal entry;
-recovery commands open a runtime without descriptor or profile activation. The browser profile initially uses the same
-`new_harness` composition implementation as the CLI. Switching to Cordis is a
-separate decision; preserve the existing Cordis tests and status distinctions.
+recovery commands open a runtime without descriptor or profile activation. The browser profile uses the same
+Cordis-backed `new_harness` composition as the CLI.
 
 ## 10. Delivery and acceptance
 
