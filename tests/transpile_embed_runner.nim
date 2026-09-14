@@ -8,7 +8,7 @@
 ## depends on itself, a source map carrying the server.
 
 import gene/[vm, web, types]
-import std/[json, os, osproc, strutils]
+import std/[algorithm, json, os, osproc, strutils]
 
 proc fail(label, message: string) {.noreturn.} =
   stderr.writeLine("embedded web module " & label & ": " & message)
@@ -520,5 +520,81 @@ let displayRun = execCmdEx("node " & quoteShell(displayRunnerPath))
 if "embedded display concat passed" notin displayRun.output:
   stderr.write(displayRun.output)
   fail("display", "web `$` does not display scalars the way the VM does")
+
+# --- 12. a static export writes exactly what the application answers for ----
+#
+# `$web/published_routes` is the export half of the deployment table: render a
+# page, then write every returned file beside it. Each file must resolve under
+# the configured base with the served bytes, every URL the page names must be
+# in the list, and the list must follow the server's source-map policy.
+
+const exportModule = """
+(mod export_host)
+
+(web_module widget
+  (fn main [root : EventTarget] : Void
+    (set root/text_content "exported")
+    void))
+
+($web/set_asset_base "/site/assets")
+(var page ($html/render
+  `(body
+     %($web/stylesheet "site" "body { margin: 0; }")
+     %($web/script widget ^mount "root"))))
+(var routes ($web/published_routes))
+"""
+
+const exportWithoutMapsModule = """
+(mod export_host_without_maps)
+(var routes ($web/published_routes))
+"""
+
+let exportPath = writeModule(workDir / "export", "app", exportModule)
+let exportApp = newApplication(workDir / "export")
+let exportScope = exportApp.loadFileModule(exportPath).moduleRootNamespace.nsScope
+let exportPage = exportScope.lookup("page")
+let exportRoutes = exportScope.lookup("routes")
+check("export", exportPage.kind == vkString and exportRoutes.kind == vkList,
+      "export module did not bind a rendered page and a route list")
+var exportFiles: seq[string]
+var exportHasMap = false
+for item in exportRoutes.listItems:
+  check("export", item.kind == vkMap, "a published route is not a map")
+  let file = item.mapEntries["file"].strVal
+  exportFiles.add file
+  let served = exportApp.lookupWebRoute(exportApp.webAssetUrl(file))
+  check("export", served.found,
+        "published file does not resolve under the configured base: " & file)
+  check("export", served.route.body == item.mapEntries["body"].strVal and
+        served.route.contentType == item.mapEntries["content_type"].strVal,
+        "published file differs from the served route: " & file)
+  if item.mapEntries["source_map"].boolVal:
+    exportHasMap = true
+for item in exportRoutes.listItems:
+  for part in item.mapEntries["body"].strVal.split("from \"./")[1 .. ^1]:
+    let imported = part.split("\"")[0]
+    check("export", imported in exportFiles,
+          "a published module imports a file missing from the export: " & imported)
+check("export", exportFiles == sorted(exportFiles),
+      "published routes are not sorted by file name")
+check("export", exportHasMap, "the development policy omitted the source map")
+let pageUrls = exportPage.strVal.split("\"/site/assets/")[1 .. ^1]
+check("export", pageUrls.len == 2,
+      "expected a stylesheet and a script URL under the base: " & exportPage.strVal)
+for part in pageUrls:
+  let file = part.split("\"")[0]
+  check("export", file in exportFiles, "the page names an unpublished file: " & file)
+
+exportApp.webSourceMapsEnabled = false
+let withoutMapsPath = writeModule(workDir / "export", "without_maps",
+                                  exportWithoutMapsModule)
+let withoutMaps = exportApp.loadFileModule(withoutMapsPath)
+  .moduleRootNamespace.nsScope.lookup("routes")
+check("export", withoutMaps.kind == vkList and
+      withoutMaps.listItems.len == exportRoutes.listItems.len - 1,
+      "withholding source maps did not remove exactly the map from the export")
+for item in withoutMaps.listItems:
+  check("export", not item.mapEntries["source_map"].boolVal,
+        "an export lists a source map the server withholds")
 
 echo "embedded web module lifecycle passed"

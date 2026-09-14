@@ -86,7 +86,7 @@ Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
 | `$url` | `decode_component` `encode_component` `format_query` `parse_query` | `UrlError` |
 | `$html` | `attr_escape` `escape` `render` | — |
 | `$css` | `class_name` `css` `decl_value` `frame` `keyframes` `media` `render` `rule` `scoped` | — |
-| `$web` | `asset_base` `script` `set_asset_base` `set_source_maps` `stylesheet` | — |
+| `$web` | `asset_base` `load` `published_routes` `script` `set_asset_base` `set_source_maps` `stylesheet` | — |
 | `$net/http` | `actor_pool` `bytes` `html` `json` `listen` `not_found` `redirect` `route` `serve` `status` `stop` `supervisor_policy` `text` `ws_accept` `ws_close` `ws_send` | `HttpError` `Request` `RequestMsg` `Response` `Server` |
 | `$net/http_client` | `request` `stream` | `Http` `HttpClientError` |
 | `$net` | `tcp_read_text_async` `tcp_write_text_async` | `Connect` `Listen` |

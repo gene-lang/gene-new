@@ -879,6 +879,35 @@ when not defined(geneWasm):
     scope.application().webSourceMapsEnabled = args[0].boolVal
     NIL
 
+  proc biWebPublishedRoutes(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## (web/published_routes) -> the generated files this application answers
+    ## for, sorted by file name, each `{^file ^content_type ^body ^source_map}`.
+    ##
+    ## What a static export writes beside the page it rendered. It reads the
+    ## table the HTTP server reads, source-map policy included, so an export
+    ## can neither miss a file its page names nor ship one the server would
+    ## withhold. Publishing is still a side effect of referring to an asset:
+    ## render the page first, then ask.
+    if args.len != 0:
+      raise newException(GeneError, "web/published_routes takes no arguments")
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let app = scope.application()
+    var fileNames: seq[string]
+    for fileName, route in app.webRoutes:
+      if route.isSourceMap and not app.webSourceMapsEnabled(): continue
+      fileNames.add fileName
+    fileNames.sort()
+    var items: seq[Value]
+    for fileName in fileNames:
+      let route = app.webRoutes[fileName]
+      var props = initPropTable()
+      props["file"] = newStr(route.fileName)
+      props["content_type"] = newStr(route.contentType)
+      props["body"] = newStr(route.body)
+      props["source_map"] = if route.isSourceMap: TRUE else: FALSE
+      items.add newMap(props)
+    newList(items)
+
 # CSS is ordered node data. Declarations deliberately live in the body rather
 # than a PropTable: duplicate fallbacks and interleaving with nested rules are
 # observable CSS semantics (docs/workflows.md).
@@ -8186,6 +8215,9 @@ proc registerStdlibNamespaces(root: Scope) =
     webScope.define("set_source_maps", newNativeCallFn("web/set_source_maps",
                                                        biWebSetSourceMaps,
                                                        acceptsNamed = false))
+    webScope.define("published_routes", newNativeCallFn("web/published_routes",
+                                                        biWebPublishedRoutes,
+                                                        acceptsNamed = false))
     root.define("web", newNamespace("web", webScope))
   let cssScope = newScope(root)
   cssScope.define("css", newNativeFn("css/css", biCss))
