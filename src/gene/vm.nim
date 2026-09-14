@@ -14520,12 +14520,17 @@ proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
       let kept = int(summary.kept)
       if kept > 0:
         let segmentStart = tailIndex - kept + 1
-        doAssert segmentStart >= 0
+        # A trace is diagnostic. If the depth-ordered ring bookkeeping is ever
+        # inconsistent, report the frames that are still consistent rather than
+        # aborting the process while it is already handling an error.
+        if segmentStart < 0:
+          break walkTailTraces
         for offset in 0 ..< kept:
           let ringIndex =
             (int(summary.start) + kept - 1 - offset) mod kept
           let tail = tailTraceFrames[segmentStart + ringIndex]
-          doAssert tail.frameDepth == depth
+          if tail.frameDepth != depth:
+            break walkTailTraces
           if tail.fnName.len > 0:
             traceFrames.add stackFrameValue(tail.fnName, "bytecode",
                                             instructionLocBefore(tail.chunk,
@@ -14535,13 +14540,14 @@ proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
         traceFrames.add stackFrameValue(
           "... (" & $summary.omitted & " tail calls elided) ...",
           "tail_elision")
-  appendTailTracesAtDepth(frames.len)
-  for i in countdown(frames.len - 1, 0):
-    if frames[i].fnName.len > 0:
-      traceFrames.add stackFrameValue(frames[i].fnName, "bytecode",
-                                      instructionLocBefore(frames[i].chunk,
-                                                           frames[i].ip))
-    appendTailTracesAtDepth(i)
+  block walkTailTraces:
+    appendTailTracesAtDepth(frames.len)
+    for i in countdown(frames.len - 1, 0):
+      if frames[i].fnName.len > 0:
+        traceFrames.add stackFrameValue(frames[i].fnName, "bytecode",
+                                        instructionLocBefore(frames[i].chunk,
+                                                             frames[i].ip))
+      appendTailTracesAtDepth(i)
   appendTraceFrames(e, traceFrames)
 
 proc appendNativeTrace(e: ref GeneError, calleeName: string,
@@ -18976,6 +18982,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             break
           else:
             # No catch matched: keep unwinding the (possibly re-labelled) error.
+            # The discarded frame's tail-call trace goes with it; a stale entry
+            # would break the depth ordering the next trace walk relies on.
+            trimTailTraceFrames(frames.len)
             var f = frames.pop()
             strunc(curStackBase)
             loadFrameRegs(f)
@@ -18990,6 +18999,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           raise err
         else:
           strunc(curStackBase)    # drop the failing frame's region
+          trimTailTraceFrames(frames.len)
           var f = frames.pop()
           loadFrameRegs(f)
           closeCurrentForStream()
@@ -19116,6 +19126,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             curPendingReturn = r
             cleanupStarted = true
             break
+          trimTailTraceFrames(frames.len)
           var owner = frames.pop()
           loadFrameRegs(owner)
           closeCurrentForStream()
@@ -19129,6 +19140,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           return RunStop(kind: rskReturn, value: r.value)
         else:
           strunc(curStackBase)
+          trimTailTraceFrames(frames.len)
           var owner = frames.pop()
           loadFrameRegs(owner)
           closeCurrentForStream()
