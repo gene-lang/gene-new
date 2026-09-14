@@ -22,5 +22,8 @@
       (plugins .push (llm_agent_plugin))
       (plugins .push (model_codegen_plugin))))
   (Profile ^name "browser"
-    ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64 ^timeout_ms 120000)
+    # The author may repair twice: three 180-second requests plus registration.
+    # This is the checked-in provider budget; generated callbacks stay bounded
+    # by default_execution_limits when their modules are registered.
+    ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64 ^timeout_ms 600000)
     ^plugins plugins))

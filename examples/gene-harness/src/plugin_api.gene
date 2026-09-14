@@ -26,6 +26,11 @@
 (type ToolError ^props {^code Str ^message Str ^data Any?} ^impl [Error])
 (impl Error for ToolError)
 
+# Admit the error where its canonical Error implementation is visible. A
+# sandbox importing ToolError's type identity cannot inherit that evidence.
+(fn fail_tool [code : Str, message : Str, ^data data = nil]
+  (fail (ToolError ^code code ^message message ^data data)))
+
 (type ExecutionLimits
   ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
 

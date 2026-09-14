@@ -207,7 +207,7 @@
 
 (fn stream_codex_completion [spec, on_delta] : Str
   (var transfer (http_stream ^method "POST" ^url spec/url ^headers spec/headers
-    ^body ($json/stringify spec/body) ^timeout_ms 90000 ^max_bytes 2000000
+    ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000
     ^max_pending_bytes 2000000 ^channel_capacity 256))
   (var state {^pending "" ^data [] ^text ""})
   (var emitted "")
@@ -232,5 +232,5 @@
     (return (stream_codex_completion spec on_delta)))
   (var response
     (await
-      (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms 90000 ^max_bytes 2000000)))
+      (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000)))
   (completion_text config/provider response))

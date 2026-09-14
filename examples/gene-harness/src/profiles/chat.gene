@@ -36,10 +36,11 @@
   # suits a local callback — the request alone takes tens of seconds. Steps and
   # memory stay exactly where they were: those are the guards against code that
   # runs away, and neither of them is loosened by admitting that a network
-  # round trip takes time.
+  # round trip takes time. Authoring permits three 180-second requests including
+  # repairs, plus registration; generated modules retain their own limits.
   (Profile ^name "chat"
            ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64
-                                    ^timeout_ms 120000)
+                                    ^timeout_ms 600000)
            ^plugins [(cli_render_plugin) (filesystem_plugin) (interaction_plugin)
                      (process_plugin) (http_plugin)
                      (command_plugin) (code_command_plugin) (llm_agent_plugin) (driver_plugin)

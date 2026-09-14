@@ -455,13 +455,13 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
   """A plugin is an inert module node with a descriptor and plugin-owned tools:
 
 (mod plugin
-  (import [Plugin DescriptorContext PluginContext PluginHost ToolError]
+  (import [Plugin DescriptorContext PluginContext PluginHost fail_tool]
     ^from "../../../src/plugin_api")
   (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
   (fn measured [result]
     (if_not result/ok
-      (fail (ToolError ^code result/error/code ^message result/error/message
-        ^data (?? result/error/details nil))))
+      (fail_tool result/error/code result/error/message
+        ^data (?? result/error/details nil)))
     ($str/byte_size result/value/text))
   (fn run [host input]
     (host .PluginHost:request_tool "fs.read" input ^continuation measured))
@@ -530,6 +530,10 @@ Additional imports must be capability-enabled namespaces, versioned shared
 contracts, or declared content-addressed dependencies. The kernel import above
 is allowed only for import_impl PluginHost for PluginContext, never utilities.
 Shared seam protocols may be imported from ../../../src/seams.
+For structured failures import fail_tool from ../../../src/plugin_api and call
+(fail_tool "code" "message" ^data {^stage "read" ^path "file"}). This admits
+ToolError in its defining module; constructing and failing an imported ToolError
+inside a sandbox does not carry its canonical Error implementation.
 """)
 
 (fn codegen_system_prompt [skill : Str] : Str

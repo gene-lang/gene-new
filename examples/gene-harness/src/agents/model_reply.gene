@@ -88,5 +88,5 @@ Do not use the old ^status field or "done"/"in-progress" reply values.""")
     catch HarnessError
       (fail $err)
     catch Any
-      (fail (HarnessError ^message "model reply is not readable Gene data"))))
+      (fail (HarnessError ^message $"model reply is not readable Gene data: ${$err/message}"))))
   (validate_envelope value))

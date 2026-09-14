@@ -285,7 +285,11 @@ the agent must make real tool calls to verify the requested behavior.
 
 Author responses are captured in expandable raw-response blocks. Malformed
 syntax and mixed conditional styles receive up to three bounded author repair
-attempts before the build fails. Validation is inert and does not run tools.
+attempts before the build fails. Repairs receive the parser's diagnostic.
+Model-backed profiles allow ten minutes for checked-in callbacks, covering
+three requests of up to 180 seconds and registration. Generated plugin callbacks
+retain their separate two-second default limit. Validation is inert and does
+not run tools.
 
 Building the same plugin name replaces its durable entry at the next revision.
 `plugins.inspect` returns the source and metadata for revision work.
@@ -504,6 +508,10 @@ plus an argument list, with bounded output and timeout; its working directory
 is not a subprocess filesystem sandbox. It uses the launcher's `os/Exec`
 authority. HTTP uses `net/Http`; nonzero process exits and HTTP errors retain
 structured details. Custom plugins can delegate to these installed tools.
+Generated callbacks can import `fail_tool` from `../../../src/plugin_api` to
+raise structured tool errors with code, message, and optional `^data` details.
+The helper admits the error in its defining module before it crosses the
+sandbox boundary.
 
 The agent can ask a text, select, or confirm question. The web client displays
 answer controls; the CLI prints options and accepts an answer or `/cancel`.
