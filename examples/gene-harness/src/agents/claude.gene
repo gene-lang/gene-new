@@ -1,0 +1,104 @@
+# Claude transports. The CLI owns subscription authentication; this module
+# never reads Claude's credential store or impersonates its HTTP client.
+(mod claude_transport)
+
+(import [HarnessError] ^from "../kernel")
+(import $os [exec_async])
+
+(fn anthropic_request [config, system : Str, user : Str, max_tokens : Int]
+  (if_yes ($absent? config/anthropic_key)
+    (fail (HarnessError ^message "no Anthropic API key; set ANTHROPIC_API_KEY, or use GENE_HARNESS_PROVIDER=claude with Claude Code login")))
+  (if_yes ($str/starts_with? config/anthropic_key "sk-ant-oat")
+    (fail (HarnessError ^message "ANTHROPIC_API_KEY must be an API key; use the claude provider for Claude Code authentication")))
+  (var body {^model config/model ^system system ^max_tokens max_tokens
+    ^messages [{^role "user" ^content user}]})
+  (if (== config/effort "none")
+    (body .put "thinking" {^type "disabled"})
+    (do
+      (body .put "thinking" {^type "adaptive"})
+      (body .put "output_config" {^effort config/effort})))
+  {^url "https://api.anthropic.com/v1/messages"
+   ^headers {^content-type "application/json" ^x-api-key config/anthropic_key
+             ^anthropic-version "2023-06-01"}
+   ^body body})
+
+(fn anthropic_text [response] : Str
+  (if_yes (!= response/status 200)
+    # Provider error bodies can echo input. Keep them out of durable logs.
+    (var help (if (== response/status 401) "check ANTHROPIC_API_KEY"
+      (if (== response/status 429) "rate or usage limit reached; try again later"
+        "check model access, thinking support, and request limits")))
+    (fail (HarnessError ^message $"anthropic ${response/status}: ${help}")))
+  (var parsed (try ($json/parse response/body)
+    catch Any (fail (HarnessError ^message "anthropic returned invalid JSON"))))
+  (if_not (== ($head parsed) Map)
+    (fail (HarnessError ^message "anthropic returned an invalid message")))
+  (if (|| (!= parsed/type "message") (!= parsed/role "assistant"))
+    (fail (HarnessError ^message "anthropic returned an invalid assistant message")))
+  (if_yes (== parsed/stop_reason "max_tokens")
+    (fail (HarnessError ^message "anthropic reached the output token limit; incomplete output was not executed")))
+  (if (|| (== parsed/stop_reason "refusal") (== parsed/stop_details/type "refusal"))
+    (fail (HarnessError ^message "anthropic refused the request")))
+  (if_not (== parsed/stop_reason "end_turn")
+    (fail (HarnessError ^message "anthropic response did not finish its turn; incomplete output was not executed")))
+  (if_not (== ($head parsed/content) List)
+    (fail (HarnessError ^message "anthropic returned invalid content")))
+  (var parts [])
+  (for block in parsed/content
+    (if_yes (== block/type "text")
+      (if_not (== ($head block/text) Str)
+        (fail (HarnessError ^message "anthropic returned invalid text content")))
+      (parts .push block/text)))
+  (var text ($str/trim ($str/join parts "")))
+  (if_yes (== text "") (fail (HarnessError ^message "anthropic returned no output text")))
+  text)
+
+(fn claude_request [config, system : Str, user : Str]
+  # Gene's subprocess API takes argv, without shell parsing. Keep a conservative
+  # bound below common argv limits rather than silently shortening the context.
+  (if (>= (+ ($str/byte_size system) ($str/byte_size user)) 131072)
+    (fail (HarnessError ^message "Claude CLI prompt exceeds 128 KiB; use the anthropic provider for larger contexts")))
+  (var settings {^disableAllHooks true})
+  (if_yes (== config/effort "none") (settings .put "alwaysThinkingEnabled" false))
+  (var args ["--print" "--output-format" "json"
+    "--safe-mode" "--setting-sources" "" "--settings" ($json/stringify settings)
+    "--tools" "" "--strict-mcp-config" "--mcp-config" "{\"mcpServers\":{}}"
+    "--disallowedTools" "mcp__*" "--permission-mode" "dontAsk"
+    "--no-chrome" "--disable-slash-commands" "--no-session-persistence"
+    "--max-turns" "1" "--model" config/model "--system-prompt" system])
+  (if_not (== config/effort "none")
+    (args .push "--effort") (args .push config/effort))
+  (args .push "--") (args .push user)
+  {^cmd config/claude_command ^args args})
+
+(fn claude_text [response] : Str
+  (if_yes response/timed_out
+    (fail (HarnessError ^message "Claude CLI timed out; incomplete output was not executed")))
+  (if_yes (|| response/stdout_truncated response/stderr_truncated)
+    (fail (HarnessError ^message "Claude CLI output exceeded its byte limit; incomplete output was not executed")))
+  (var parsed (try ($json/parse response/stdout) catch Any nil))
+  (if_not (== ($head parsed) Map)
+    (fail (HarnessError ^message "Claude CLI returned no valid JSON result; check claude auth status and update Claude Code if a flag is unsupported")))
+  (if (|| (!= response/status 0) (== parsed/is_error true))
+    (fail (HarnessError ^message "Claude CLI request failed; check claude auth status, model access, and subscription/API usage limits")))
+  (if (|| (!= parsed/type "result") (!= parsed/subtype "success") (!= parsed/is_error false))
+    (fail (HarnessError ^message "Claude CLI did not complete successfully; incomplete output was not executed")))
+  (if_yes (! ($absent? parsed/stop_reason))
+    (if_not (== parsed/stop_reason "end_turn")
+      (fail (HarnessError ^message "Claude CLI response did not finish its turn; incomplete output was not executed"))))
+  (if_not (== ($head parsed/result) Str)
+    (fail (HarnessError ^message "Claude CLI returned no text result")))
+  (var text ($str/trim parsed/result))
+  (if_yes (== text "") (fail (HarnessError ^message "Claude CLI returned empty output")))
+  text)
+
+(fn claude_completion [config, system : Str, user : Str] : Str
+  (var spec (claude_request config system user))
+  (var task
+    (try (exec_async ^cmd spec/cmd ^args spec/args ^timeout_ms 180000 ^max_bytes 2000000)
+      catch Any (fail (HarnessError ^message "Cannot start Claude Code; install/update claude and grant the launcher os/Exec authority"))))
+  (var response
+    (try (await task)
+      catch Any (fail (HarnessError ^message "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND and launcher os/Exec authority"))
+      ensure (task .cancel)))
+  (claude_text response))

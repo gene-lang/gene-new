@@ -8,6 +8,13 @@
 (fn reply_format_prompt [] : Str """Your entire reply must be exactly ONE Gene data map. Use straight double
 quotes, no markdown fence, and no prose before or after the map.
 
+Property markers are unquoted Gene syntax: write ^type, ^tool, ^input, and
+^path directly, with double quotes only around string values. For example:
+{^type "tool" ^tool "fs.read" ^input {^path "orders.json"}}
+Never put a property marker inside a string (such as "^type"), and never use
+JSON's quoted-key/colon syntax for this envelope. Apply this rule to nested maps
+and to every reply after a tool result, even when the tool returned JSON text.
+
 The fields are:
   ^type      REQUIRED: "code", "code-with-response", "tool", "input", or "response".
   ^code      ONE (do ...) block, REQUIRED for either code type, absent for response.

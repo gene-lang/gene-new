@@ -5,6 +5,7 @@
 (import $net/http_client [request stream : http_stream])
 (import $fs [read_text])
 (import [HarnessError] ^from "../kernel")
+(import [anthropic_request anthropic_text claude_completion] ^from "./claude")
 
 (fn nonempty [value] : Any
   (if ($absent? value)
@@ -15,13 +16,17 @@
 
 (fn resolve_config [environment] : Any
   (var key (?? (nonempty environment/OPENROUTER_API_KEY) (nonempty environment/OPENROUTER_KEY)))
+  (var anthropic_key (nonempty environment/ANTHROPIC_API_KEY))
   (var provider
-    (?? (nonempty environment/GENE_HARNESS_PROVIDER) (if ($absent? key) "codex" "openrouter")))
-  (if_not (|| (== provider "codex") (== provider "openrouter"))
-    (fail (HarnessError ^message "GENE_HARNESS_PROVIDER must be codex or openrouter")))
+    (?? (nonempty environment/GENE_HARNESS_PROVIDER)
+      (if (! ($absent? key)) "openrouter" (if (! ($absent? anthropic_key)) "anthropic" "codex"))))
+  (if_not (["codex" "openrouter" "claude" "anthropic"] .contains? provider)
+    (fail (HarnessError ^message "GENE_HARNESS_PROVIDER must be codex, openrouter, claude, or anthropic")))
   (var model (nonempty environment/GENE_HARNESS_MODEL))
   (if_yes (== provider "openrouter") (set model (?? model (nonempty environment/OPENROUTER_MODEL))))
-  (set model (?? model (if (== provider "codex") "gpt-6-astra" "openai/gpt-6-astra")))
+  (set model (?? model (if (== provider "codex") "gpt-6-astra"
+    (if (== provider "claude") "sonnet"
+      (if (== provider "anthropic") "claude-sonnet-5" "openai/gpt-6-astra")))))
   (var effort (?? (nonempty environment/GENE_HARNESS_THINKING_EFFORT) "medium"))
   (var valid_effort false)
   (for supported in ["none" "minimal" "low" "medium" "high" "xhigh" "max"]
@@ -29,6 +34,8 @@
   (if_not valid_effort
     (fail
       (HarnessError ^message "GENE_HARNESS_THINKING_EFFORT must be none, minimal, low, medium, high, xhigh, or max")))
+  (if_yes (&& (["claude" "anthropic"] .contains? provider) (== effort "minimal"))
+    (set effort "low"))
   (var auth_file (nonempty environment/CODEX_AUTH_FILE))
   (if_yes ($absent? auth_file)
     (var home (nonempty environment/CODEX_HOME))
@@ -36,11 +43,13 @@
       (var user_home (nonempty environment/HOME))
       (if_not ($absent? user_home) (set home $"${user_home}/.codex")))
     (if_not ($absent? home) (set auth_file $"${home}/auth.json")))
-  {^provider provider ^model model ^effort effort ^api_key key ^auth_file auth_file})
+  {^provider provider ^model model ^effort effort ^api_key key ^auth_file auth_file
+   ^anthropic_key anthropic_key
+   ^claude_command (?? (nonempty environment/GENE_HARNESS_CLAUDE_COMMAND) "claude")})
 
 (fn model_config [] : Any
   (var environment {})
-  (for name in ["GENE_HARNESS_PROVIDER" "GENE_HARNESS_MODEL" "GENE_HARNESS_THINKING_EFFORT" "OPENROUTER_API_KEY" "OPENROUTER_KEY" "OPENROUTER_MODEL" "CODEX_AUTH_FILE" "CODEX_HOME" "HOME"]
+  (for name in ["GENE_HARNESS_PROVIDER" "GENE_HARNESS_MODEL" "GENE_HARNESS_THINKING_EFFORT" "GENE_HARNESS_CLAUDE_COMMAND" "ANTHROPIC_API_KEY" "OPENROUTER_API_KEY" "OPENROUTER_KEY" "OPENROUTER_MODEL" "CODEX_AUTH_FILE" "CODEX_HOME" "HOME"]
     (environment .put name ($os/env? name)))
   (resolve_config environment))
 
@@ -80,6 +89,10 @@
   {^access_token access ^account_id account})
 
 (fn completion_request [config, system : Str, user : Str, max_tokens : Int] : Any
+  (if_yes (== config/provider "anthropic")
+    (return (anthropic_request config system user max_tokens)))
+  (if_yes (== config/provider "claude")
+    (fail (HarnessError ^message "Claude Code uses the local CLI, not an HTTP completion request")))
   (if (== config/provider "codex")
     (then
       (var credentials (codex_credentials config/auth_file))
@@ -166,6 +179,7 @@
   completed)
 
 (fn completion_text [provider : Str, response] : Str
+  (if_yes (== provider "anthropic") (return (anthropic_text response)))
   (if_yes (!= response/status 200)
     (if_yes (&& (== provider "codex") (== response/status 401))
       (fail
@@ -224,10 +238,13 @@
     (completion_text "codex" response)
   ensure (transfer/task .cancel)))
 
-(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens : Int = 3000,
+(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens = nil,
                      ^on_delta on_delta = nil] : Str
   (var config (model_config))
-  (var spec (completion_request config system user max_tokens))
+  (if_yes (== config/provider "claude")
+    (return (claude_completion config system user)))
+  (var budget (?? max_tokens (if (== config/provider "anthropic") 8192 3000)))
+  (var spec (completion_request config system user budget))
   (if_yes (&& (== config/provider "codex") (! ($absent? on_delta)))
     (return (stream_codex_completion spec on_delta)))
   (var response

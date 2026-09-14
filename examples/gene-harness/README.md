@@ -97,6 +97,12 @@ For OpenRouter, set `GENE_HARNESS_PROVIDER=openrouter` and
 remain in the native process. `GENE_HARNESS_MODEL` and
 `GENE_HARNESS_THINKING_EFFORT` keep their existing meanings.
 
+For Claude, use `GENE_HARNESS_PROVIDER=claude` with an authenticated local
+Claude Code CLI, or `GENE_HARNESS_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`.
+Both support chat and plugin generation. See [Claude setup and subscription
+details](docs/claude.md); the CLI owns its login, and the Harness does not read
+Claude OAuth credentials.
+
 `--offline` (or `GENE_HARNESS_OFFLINE=1`) deliberately selects a **command-only
 demo**, with a visible notice in the browser. It supports `/help`, `/status`,
 direct `/code`, and template-based `/build`, and cannot answer general prompts. Omit this
@@ -191,7 +197,7 @@ mkdir -p /tmp/harness-chat
 )
 ```
 
-Both paths load the checked-in Gene skill for the agent and plugin author.
+All model-backed profiles load the checked-in Gene skill for the agent and plugin author.
 Run from the package directory: running from the repository root makes the
 automatic launch-directory grant overlap the explicit skill grant, and file
 reads are refused as ambiguous. The subshells above keep your shell at the
@@ -200,9 +206,11 @@ grants there too; these commands share `/tmp/harness-chat`.
 
 | Environment variable | Behavior |
 |---|---|
-| `GENE_HARNESS_PROVIDER` | `codex` or `openrouter`. If unset, an OpenRouter key selects OpenRouter; otherwise Codex. |
-| `GENE_HARNESS_MODEL` | Model for both chat and plugin generation. Default: `gpt-6-astra` for Codex, `openai/gpt-6-astra` for OpenRouter. Supply the provider's exact model ID. |
-| `GENE_HARNESS_THINKING_EFFORT` | Default: `medium`. Accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; support depends on the chosen model/provider. |
+| `GENE_HARNESS_PROVIDER` | `codex`, `openrouter`, `claude` (local CLI), or `anthropic` (API). If unset, an OpenRouter key wins, then an Anthropic key, then Codex. CLI use is explicit. |
+| `GENE_HARNESS_MODEL` | Model for chat and plugin generation. Defaults: `gpt-6-astra` (Codex), `openai/gpt-6-astra` (OpenRouter), `sonnet` (Claude CLI), `claude-sonnet-5` (Anthropic API). CLI aliases are resolved by Claude Code. |
+| `GENE_HARNESS_THINKING_EFFORT` | Default: `medium`. Accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; model/provider support varies. Claude maps `minimal` to `low`; `none` disables thinking. |
+| `GENE_HARNESS_CLAUDE_COMMAND` | Claude Code executable or path; defaults to `claude`. No shell parsing. |
+| `ANTHROPIC_API_KEY` | API key for the native Anthropic provider; separate from Claude subscription authentication. |
 | `CODEX_AUTH_FILE` | Explicit path to the Codex OAuth JSON file; overrides `CODEX_HOME`. |
 | `CODEX_HOME` | Codex configuration directory; defaults to `$HOME/.codex`. |
 | `OPENROUTER_API_KEY`, `OPENROUTER_KEY` | OpenRouter key; the first nonempty value wins. |
@@ -217,9 +225,12 @@ Codex requests use its Responses endpoint with `store=false` and streaming.
 The client forwards output-text deltas as provisional previews and waits for a
 completed response before returning executable text to the harness; failed or
 interrupted streams cannot execute partial programs. OpenRouter
-continues to use Chat Completions. The existing 3,000-token request budget
-applies to OpenRouter; Codex does not accept that token-limit parameter. Both
-transports retain the 90-second timeout and 2 MB response limit.
+continues to use Chat Completions. Normal request budgets are 3,000 tokens for
+OpenRouter and 8,192 for Anthropic; plugin authoring requests 16,384 tokens.
+Codex does not accept that token-limit parameter, and Claude Code manages its
+own token budget. Provider requests retain a 180-second timeout and 2 MB response
+limit. Claude CLI and Anthropic currently deliver completed replies rather than
+token previews.
 
 ## Run Gene code directly
 
@@ -620,7 +631,7 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/agents/agent.gene` | command/tool registries and offline prompt provider |
 | `src/agents/code_command.gene` | direct `/code` execution using the shared program executor |
 | `src/agents/llm.gene` | model agent, plugin author, and registry-rendered prompt |
-| `src/agents/model_client.gene` | Codex OAuth / OpenRouter transport and environment configuration |
+| `src/agents/model_client.gene`, `src/agents/claude.gene` | provider configuration and Codex, OpenRouter, Claude CLI, and Anthropic transports |
 | `src/agents/model_reply.gene` | shared Gene reply format, inert parsing, and field validation |
 | `src/views/repl.gene` | terminal subscriber, one prompt and one line |
 | `src/views/view_api.gene`, `src/views/recording_view.gene` | typed view contract and recording view |

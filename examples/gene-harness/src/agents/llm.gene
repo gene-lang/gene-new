@@ -649,7 +649,7 @@ Reply with one Gene map: ^type "response", a short ^response, and
   (var problem "")
   (while (< attempt 3)
     (set attempt (+ attempt 1))
-    (var reply (chat_completion (codegen_system_prompt skill) prompt))
+    (var reply (chat_completion (codegen_system_prompt skill) prompt ^max_tokens 16384))
     (if_not ($absent? on_reply) (on_reply reply))
     (var plan
       (try
