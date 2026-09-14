@@ -1,0 +1,125 @@
+(mod harness_website_client ^profile web)
+
+# Progressive enhancement for the Gene Harness website. The page is complete
+# without it: every example view is shown in order, the navigation is a plain
+# row of links, and code is plain text. This module adds the example tabs,
+# copy buttons, Gene highlighting, and the narrow-screen menu. It never runs
+# example code and never calls the Harness API.
+
+(import [code_view] ^from "./highlight.gene")
+
+(fn view_names [] : (List Str)
+  ["request" "plugin" "result"])
+
+(fn select_view [name : Str, focus : Bool] : Void
+  (for candidate in (view_names)
+    (var selected (== candidate name))
+    (var tab ($dom/element $"tab_${candidate}"))
+    (var panel ($dom/element $"view_${candidate}"))
+    (set tab/aria_selected (if selected "true" "false"))
+    (set tab/tab_index (if selected "0" "-1"))
+    (set panel/hidden (! selected))
+    (if_yes (&& selected focus) ($dom/focus tab))))
+
+(fn view_of [tab : Any] : Str
+  (var id : Str tab/id)
+  (var parts (str/split id "_"))
+  parts/1)
+
+# Arrow keys move between tabs and wrap; Home and End jump to the ends.
+(fn next_view [name : Str, key : Str] : Str
+  (var names (view_names))
+  (var last (- ($size names) 1))
+  (var index 0)
+  (var i 0)
+  (for candidate in names
+    (if_yes (== candidate name) (set index i))
+    (set i (+ i 1)))
+  (var next index)
+  (if_yes (== key "ArrowRight") (set next (if (== index last) 0 (+ index 1))))
+  (if_yes (== key "ArrowLeft") (set next (if (== index 0) last (- index 1))))
+  (if_yes (== key "Home") (set next 0))
+  (if_yes (== key "End") (set next last))
+  names/%next)
+
+(fn on_tab_click [event : Any] : Void
+  (select_view (view_of event/current_target) false))
+
+(fn on_tab_key [event : Any] : Void
+  (var key ($event/key event))
+  (if_yes (|| (== key "ArrowRight") (== key "ArrowLeft") (== key "Home") (== key "End"))
+    ($dom/prevent_default event)
+    (select_view (next_view (view_of event/current_target) key) true)))
+
+(fn set_menu [open : Bool] : Void
+  (var toggle ($dom/element "nav_toggle"))
+  ($dom/set_class ($dom/element "site_header") "nav_open" open)
+  (set toggle/aria_expanded (if open "true" "false"))
+  (set toggle/text_content (if open "Close" "Menu")))
+
+(fn menu_open? [] : Bool
+  (var toggle ($dom/element "nav_toggle"))
+  (var expanded : Str toggle/aria_expanded)
+  (== expanded "true"))
+
+(fn on_menu_click [event : Any] : Void
+  (set_menu (! (menu_open?))))
+
+(fn on_nav_click [event : Any] : Void
+  (set_menu false))
+
+(fn on_header_key [event : Any] : Void
+  (if_yes (&& (== ($event/key event) "Escape") (menu_open?))
+    (set_menu false)
+    ($dom/focus ($dom/element "nav_toggle"))))
+
+# Copy reads the text the server rendered, before any highlighting, so the
+# clipboard receives the source exactly.
+(fn add_copy_button [id : Str] : Void
+  (var text ($dom/text ($dom/element id)))
+  ($dom/append ($dom/element $"${id}_bar")
+    ($dom/render
+      `(button ^type "button" ^class_name "copy_button"
+         ^on_click %(fn [event : Any] : Void
+           (var button event/current_target)
+           ($browser/copy text (fn [copied : Bool] : Void
+             (set button/text_content (if copied "Copied" "Copy failed")))))
+         "Copy"))))
+
+(fn highlight [id : Str] : Void
+  (var code ($dom/element id))
+  (var pre : EventTarget code/parent_element)
+  (var colored (code_view ($dom/text code) true))
+  ($dom/clear pre)
+  ($dom/append pre colored))
+
+(fn ids [text : Str] : (List Str)
+  (var out : (List Str) [])
+  (for id in (str/split text " ")
+    (if_yes (!= id "") (out .push id)))
+  out)
+
+(fn main [root : EventTarget] : Void
+  ($dom/set_class root "enhanced" true)
+  (var toggle ($dom/element "nav_toggle"))
+  (set toggle/hidden false)
+  ($dom/add_event_listener toggle "click" on_menu_click)
+  ($dom/add_event_listener ($dom/element "site_nav") "click" on_nav_click)
+  ($dom/add_event_listener ($dom/element "site_header") "keydown" on_header_key)
+  (for name in (view_names)
+    (var tab ($dom/element $"tab_${name}"))
+    ($dom/add_event_listener tab "click" on_tab_click)
+    ($dom/add_event_listener tab "keydown" on_tab_key)
+    (var panel ($dom/element $"view_${name}"))
+    (set panel/role "tabpanel"))
+  (var tabs ($dom/element "view_tabs"))
+  (set tabs/hidden false)
+  (select_view "request" false)
+  (var code_ids : Str root/dataset/code_ids)
+  (for id in (ids code_ids)
+    (var code ($dom/element id))
+    (var lang : Str code/dataset/lang)
+    (add_copy_button id)
+    (if_yes (== lang "gene") (highlight id)))
+  (var highlight_ids : Str root/dataset/highlight_ids)
+  (for id in (ids highlight_ids) (highlight id)))

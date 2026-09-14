@@ -1,0 +1,65 @@
+# Writes the Gene Harness website for a static host, from the same source the
+# local Harness serves at /about/.
+#
+#   bin/gene run examples/gene-harness/src/website/export.gene \
+#     --out examples/gene-harness/tmp/website --base /
+#
+# `--base` is the URL path the directory will be served from. Generated asset
+# URLs are absolute, so export once per base. `--app_url` adds an Open Harness
+# link. The output is index.html plus assets/, and needs no Gene process.
+(mod harness_website_export)
+
+(import [website_page] ^from "./page")
+(import [WebsiteError package_dir] ^from "./content")
+(import $fs [write_text make_dir exists? list_dir remove])
+
+(fn option_value [args, index : Int, name : Str] : Str
+  (var next (+ index 1))
+  (if_yes (>= next args/.size)
+    (fail (WebsiteError ^message $"${name} needs a value.")))
+  args/%next)
+
+(fn url_base [value : Str] : Str
+  (var base value)
+  (if_not ($str/starts_with? base "/") (set base $"/${base}"))
+  (if_not ($str/ends_with? base "/") (set base $"${base}/"))
+  base)
+
+(fn ensure_dir [path : Str]
+  (if_not (exists? path) (make_dir path)))
+
+(fn main [argv]
+  (var args [])
+  (for arg in argv (args .push ($to_str arg)))
+  (var default_out $"${package_dir}/tmp/website")
+  (var out default_out)
+  (var base "/")
+  (var app_url "")
+  (var i 0)
+  (while (< i args/.size)
+    (var arg args/%i)
+    (if (== arg "--out")
+      (then (set out (option_value args i arg)) (set i (+ i 1)))
+      (elif (== arg "--base")
+        (set base (option_value args i arg)) (set i (+ i 1)))
+      (elif (== arg "--app_url")
+        (set app_url (option_value args i arg)) (set i (+ i 1)))
+      (else
+        (fail (WebsiteError ^message $"Unknown option ${arg}. Use --out, --base, or --app_url."))))
+    (set i (+ i 1)))
+  (set base (url_base base))
+  # Asset URLs are resolved when the page renders, so the base is set first.
+  ($web/set_asset_base $"${base}assets")
+  (var page (website_page ^mode "standalone" ^app_url app_url))
+  (if_yes (== out default_out) (ensure_dir $"${package_dir}/tmp"))
+  (ensure_dir out)
+  (var assets $"${out}/assets")
+  (ensure_dir assets)
+  # Content-addressed names are never reused; clear the previous build so the
+  # directory holds only files this page refers to.
+  (for name in (list_dir assets) (remove $"${assets}/${name}"))
+  (write_text $"${out}/index.html" page)
+  (var routes ($web/published_routes))
+  (for route in routes
+    (write_text $"${assets}/${route/file}" route/body))
+  ($println $"Wrote ${out}/index.html and ${routes/.size} files under assets/ for ${base}"))

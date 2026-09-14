@@ -1,0 +1,3 @@
+{^scan "/tool project_audit.scan {\"paths\":[\"src/orders.gene\",\"src/report.gene\"],\"report_path\":\"audit-report.md\"}"
+ ^missing "/tool project_audit.scan {\"paths\":[\"src/missing.gene\"],\"report_path\":\"missing-report.md\"}"
+ ^last "/tool project_audit.last {}"}

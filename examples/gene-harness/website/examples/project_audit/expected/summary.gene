@@ -1,0 +1,1 @@
+{^^ok ^value {^report_path "audit-report.md" ^files [{^path "src/orders.gene" ^non_empty 7 ^todo 1 ^fixme 1} {^path "src/report.gene" ^non_empty 5 ^todo 2 ^fixme 0}] ^totals {^non_empty 12 ^todo 3 ^fixme 1}}}

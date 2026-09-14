@@ -1,0 +1,1 @@
+{^ok false ^error {^code "tool_failed" ^message "fs/read_text: filesystem target is unavailable or is a symlink" ^details {^stage "read" ^path "src/missing.gene"}}}

@@ -1,0 +1,195 @@
+(mod harness_website_content)
+
+# What the Gene Harness website says, and the example it shows. The page
+# renderer takes every word from here. Example text is read from the fixtures
+# under website/examples, which check.gene re-verifies, so the page cannot show
+# output the fixtures do not produce.
+
+(import $fs [read_text])
+
+(type WebsiteError ^props {^message Str} ^impl [Error])
+(impl Error for WebsiteError)
+
+(fn parent_dir [path : Str] : Str
+  (var parts ($str/split path "/"))
+  (var kept [])
+  (var i 0)
+  (while (< i (- parts/.size 1))
+    (kept .push parts/%i)
+    (set i (+ i 1)))
+  ($str/join kept "/"))
+
+(var website_dir (parent_dir this_mod/.path))
+(var package_dir (parent_dir (parent_dir website_dir)))
+(var example_dir $"${package_dir}/website/examples/project_audit")
+
+(fn package_file [relative : Str] : Str
+  (read_text $"${package_dir}/${relative}"))
+
+(fn example_file [relative : Str] : Str
+  (read_text $"${example_dir}/${relative}"))
+
+(fn example_data [relative : Str]
+  (($parse/read_all (example_file relative)) .next))
+
+# --- Excerpts from real source ------------------------------------------------
+
+(fn indent_of [line : Str] : Int
+  (- ($str/byte_size line) ($str/byte_size ($str/trim line))))
+
+(fn occurrences [text : Str, token : Str] : Int
+  (var parts ($str/split text token))
+  (- parts/.size 1))
+
+(fn delimiter_balance [text : Str] : Int
+  (- (+ (occurrences text "(") (occurrences text "[") (occurrences text "{"))
+     (+ (occurrences text ")") (occurrences text "]") (occurrences text "}"))))
+
+# The form beginning with `opening`, as written: its first line and every
+# following line indented deeper, dedented. Closing delimiters that belong to
+# enclosing forms are trimmed from the end.
+(fn excerpt [text : Str, opening : Str] : Str
+  (var lines ($str/split text "\n"))
+  (var start -1)
+  (var i 0)
+  (while (&& (< i lines/.size) (== start -1))
+    (if_yes ($str/starts_with? ($str/trim lines/%i) opening) (set start i))
+    (set i (+ i 1)))
+  (if_yes (== start -1)
+    (fail (WebsiteError ^message $"No excerpt begins with ${opening}")))
+  (var first_line lines/%start)
+  (var depth (indent_of first_line))
+  (var picked [])
+  (var j start)
+  (var ended false)
+  (while (&& (< j lines/.size) (! ended))
+    (var line lines/%j)
+    (if (&& (> j start) (!= ($str/trim line) "") (<= (indent_of line) depth))
+      (then (set ended true))
+      (else
+        (var width ($str/byte_size line))
+        (picked .push (if (> width depth) ($str/slice_bytes line depth (- width depth)) ""))
+        (set j (+ j 1)))))
+  (var result ($str/trim ($str/join picked "\n")))
+  (var balance (delimiter_balance result))
+  (while (&& (< balance 0)
+             (|| ($str/ends_with? result ")") ($str/ends_with? result "]")
+                 ($str/ends_with? result "}")))
+    (set result ($str/slice_bytes result 0 (- ($str/byte_size result) 1)))
+    (set balance (+ balance 1)))
+  result)
+
+(fn source_line [text : Str, prefix : Str] : Str
+  (for line in ($str/split text "\n")
+    (if_yes ($str/starts_with? ($str/trim line) prefix) (return ($str/trim line))))
+  (fail (WebsiteError ^message $"No source line begins with ${prefix}")))
+
+# --- Links -----------------------------------------------------------------------
+
+(var repository_url "https://github.com/gene-lang/gene-new")
+
+(fn repository_file [relative : Str] : Str
+  $"${repository_url}/blob/main/${relative}")
+
+(var links
+  {^package $"${repository_url}/tree/main/examples/gene-harness"
+   ^example $"${repository_url}/tree/main/examples/gene-harness/website/examples/project_audit"
+   ^readme (repository_file "examples/gene-harness/README.md")
+   ^design (repository_file "examples/gene-harness/docs/design.md")
+   ^web_client (repository_file "examples/gene-harness/docs/web-client.md")
+   ^claude (repository_file "examples/gene-harness/docs/claude.md")
+   ^workflows (repository_file "docs/workflows.md")
+   ^page (repository_file "examples/gene-harness/src/website/page.gene")
+   ^style (repository_file "examples/gene-harness/src/website/style.gene")
+   ^client (repository_file "examples/gene-harness/client/website.gene")})
+
+# --- Copy ------------------------------------------------------------------------
+
+(var hero
+  {^eyebrow "Gene Harness"
+   ^title "An agent that can build its own tools."
+   ^lede "Gene Harness turns new capabilities into durable Gene plugins. Build a tool, inspect its code, use it on your project, and pick it up in another conversation."})
+
+(var capabilities
+  [{^title "Build a missing tool."
+    ^text "Describe the behavior and have the Harness author a Gene plugin with an inspectable contract."
+    ^detail "plugins.build · plugins.inspect"}
+   {^title "Use it on real files."
+    ^text "Plugins can compose installed tools under the launcher's permissions."
+    ^detail "fs.read · fs.write · process.run · http.request"}
+   {^title "Keep what you built."
+    ^text "Workspace plugins and committed state can be restored in another conversation."
+    ^detail "composition · module store · events"}])
+
+(var steps
+  [{^title "Describe a capability"
+    ^text "Ask in the browser or the terminal. Ordinary text goes to your configured model; commands such as /tool and /build call the Harness directly."
+    ^note "A leading slash never reaches the model."}
+   {^title "Generate and inspect Gene"
+    ^text "The author returns an inert (mod plugin …) module. The Harness reads it as data, validates it, content-addresses it, and commits it before any of it runs."
+    ^note "plugins.inspect returns the source and its provenance."}
+   {^title "Activate and use tools"
+    ^text "Activation contributes tools the agent calls with real inputs. A plugin reaches the host only through the tools it declares and the filesystem selectors it records, narrowed from the grants you gave the launcher."
+    ^note "Generated callbacks are bounded by steps, memory, and time — two seconds by default."}
+   {^title "Restore in another conversation"
+    ^text "Workspace plugins and their committed state load in new conversations and after a restart. A plugin that fails to activate stays inspectable instead of silently disappearing."
+    ^note "Live processes and partial model replies are not resumed."}])
+
+(var faq
+  [{^question "What persists?"
+    ^answer "The Harness home keeps conversations, the plugin composition, content-addressed module sources, and committed plugin state. Workspace plugins return in every conversation; session plugins return in their own. Running tasks, sockets, subprocesses, and partial model replies are not saved — after a crash the Harness resumes from the last committed turn."}
+   {^question "Where does the model run?"
+    ^answer "The Harness runs on your machine and listens on 127.0.0.1. Model requests go to the provider you configure: Codex, OpenRouter, the Claude Code CLI, or the Anthropic API. Credentials stay in the native process and are never written to conversation history."}
+   {^question "What can plugins access?"
+    ^answer "Only what the launcher was granted, narrowed for each plugin. A plugin declares the installed tools it calls, and requests for undeclared tools are refused. Filesystem tools stay inside the project and state roots. process.run uses the launcher's exec authority and its working directory is not a sandbox, so grant it deliberately."}
+   {^question "What happens when a run fails?"
+    ^answer "Errors come back as results in the conversation. Tools return structured errors, like the missing-file case above. A plugin that fails to activate is quarantined with its reason while healthy plugins keep working. Effects that already happened, such as a file that was written, are not rolled back."}
+   {^question "How is Gene different from Gene Harness?"
+    ^answer "Gene is the programming language: Lisp-like expressions, gradual types, and a compiler that also targets the browser. Gene Harness is an agent application written in Gene, with plugins, durable storage, and the local browser client."}])
+
+# --- The recorded example ----------------------------------------------------------
+
+(var plugin_source (example_file "plugin.gene"))
+(var example_commands (example_data "commands.gene"))
+(var summary_text ($str/trim (example_file "expected/summary.gene")))
+(var summary_data (($parse/read_all summary_text) .next))
+(var request_text ($str/trim (example_file "request.txt")))
+(var request_sentences ($str/split request_text ". "))
+(var provides_line (source_line plugin_source "^provides"))
+(var requires_line (source_line plugin_source "^requires"))
+
+(var example
+  {^request request_text
+   ^request_opening $"${request_sentences/0}. …"
+   ^declaration $"${provides_line}\n${requires_line}"
+   ^plugin plugin_source
+   ^contract (excerpt plugin_source "(fn init")
+   ^report_step (excerpt plugin_source "(fn write_report")
+   ^scan_command example_commands/scan
+   ^missing_command example_commands/missing
+   ^last_command example_commands/last
+   ^summary summary_text
+   ^missing ($str/trim (example_file "expected/missing.gene"))
+   ^report (example_file "expected/audit-report.md")
+   ^files summary_data/value/files
+   ^totals summary_data/value/totals
+   ^check_command "bin/gene run examples/gene-harness/website/examples/project_audit/check.gene"})
+
+# --- This website, as Gene -----------------------------------------------------------
+
+(var site_excerpts
+  {^html (excerpt (package_file "src/website/page.gene") "(fn capability_card")
+   ^css (excerpt (package_file "src/website/style.gene") "(media \"(max-width: 760px)\"")
+   ^browser (excerpt (package_file "client/website.gene") "(fn select_view")})
+
+# --- Running locally -----------------------------------------------------------------
+
+(var run_commands
+  {^build "git clone https://github.com/gene-lang/gene-new.git\ncd gene-new\nnimble build"
+   ^codex_login "codex -c cli_auth_credentials_store='\"file\"' login"
+   ^start "bin/gene run --allow_read_dir \"${CODEX_HOME:-$HOME/.codex}\" \\\n  examples/gene-harness/src/web/server.gene"
+   ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
+   ^anthropic "GENE_HARNESS_PROVIDER=anthropic ANTHROPIC_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
+   ^offline "bin/gene run examples/gene-harness/src/web/server.gene --offline"
+   ^prompt "Build a workspace-scoped line_count plugin that accepts a filename and counts non-empty lines by composing fs.read. Inspect its contract and test it against README.md before reporting success."
+   ^dirs "mkdir -p /tmp/harness-home\nbin/gene run \\\n  --allow_read_write_dir /tmp/harness-home \\\n  --allow_read_write_dir \"$HOME/code/my-app\" \\\n  --allow_read_dir \"${CODEX_HOME:-$HOME/.codex}\" \\\n  examples/gene-harness/src/web/server.gene \\\n  --home /tmp/harness-home --project \"$HOME/code/my-app\""})

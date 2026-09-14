@@ -7,13 +7,16 @@
 (import [module_dir] ^from "../kernel")
 (import [error_status] ^from "./contract")
 (import [new_push_hub add_peer remove_peer expire_peers] ^from "./push")
-(import $net/http [listen serve html json ws_accept])
+(import [website_page] ^from "../website/page")
+(import $net/http [listen serve html json redirect ws_accept])
 (import $html [render])
 (import $web [script stylesheet])
 (import $crypto [random_hex])
 (import $os [get_env monotonic_ms])
 
 (var harness_ui ($web/load $"${(module_dir this_mod/.path)}/../../client/main.gene"))
+# The informational page is static for the life of the server.
+(var about_page (website_page ^mode "embedded"))
 
 (fn page [] : Str
   ($ "<!doctype html>"
@@ -34,7 +37,8 @@
                  ^placeholder "Find a conversation" ^aria-label "Find a conversation")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
                (div ^class "sidebar_footer"
-                 (button ^id "status_button" ^type "button" "Workspace status")))
+                 (button ^id "status_button" ^type "button" "Workspace status")
+                 (a ^href "/about/" "About Gene Harness")))
              (main ^class "workspace"
                (header ^class "topbar"
                  (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
@@ -175,6 +179,12 @@
       (fail_request "forbidden" "A same-origin request is required."))
     (if_yes (&& (== request/method "GET") (== request/path "/"))
       (return (html (page))))
+    # The website needs no session: it reads no workspace records and makes no
+    # model call, so it is answered before authentication.
+    (if_yes (&& (== request/method "GET") (== request/path "/about"))
+      (return (redirect "/about/")))
+    (if_yes (&& (== request/method "GET") (== request/path "/about/"))
+      (return (html about_page)))
     (if_yes (&& (== request/method "POST") (== request/path "/api/v1/auth/exchange"))
       (var data (request_data request))
       (var token (field data "token"))

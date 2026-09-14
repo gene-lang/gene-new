@@ -1,0 +1,141 @@
+# project_audit, revision 2: the workspace plugin gpt-6-astra authored in the
+# recorded Gene Harness session. Only whitespace, line breaks, and the reader's
+# shorthand spellings differ from the stored module; check.gene verifies that
+# this file canonicalizes to the recorded module digest.
+(mod plugin
+  (import [Plugin DescriptorContext PluginContext PluginHost fail_tool]
+    ^from "../../../src/plugin_api")
+  (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
+
+  (fn check_path [path stage]
+    (if_yes (== path "")
+      (fail_tool ^data {^stage stage ^path path}
+        "invalid_path" "A relative filename is required."))
+    (if_yes ($str/starts_with? path "/")
+      (fail_tool ^data {^stage stage ^path path}
+        "invalid_path" "Absolute paths are not allowed."))
+    (if_yes ($str/contains? path "\\")
+      (fail_tool ^data {^stage stage ^path path}
+        "invalid_path" "Use relative paths with forward slashes."))
+    (if_yes ($str/contains? path ":")
+      (fail_tool ^data {^stage stage ^path path}
+        "invalid_path" "Drive and URI paths are not allowed."))
+    (for part in ($str/split path "/")
+      (if_yes (== part "..")
+        (fail_tool ^data {^stage stage ^path path}
+          "invalid_path" "Parent traversal is not allowed."))
+      (if_yes (== part "")
+        (fail_tool ^data {^stage stage ^path path}
+          "invalid_path" "Empty path components are not allowed."))))
+
+  (fn table_row [label counts]
+    ($str/join ["| " label " | " ($to_str counts/non_empty)
+                " | " ($to_str counts/todo)
+                " | " ($to_str counts/fixme) " |"] ""))
+
+  (fn write_report [host summary]
+    (var rows ["| File | Non-empty | TODO | FIXME |" "| --- | ---: | ---: | ---: |"])
+    (for file in summary/files
+      (var label ($str/join ($str/split file/path "|") "&#124;"))
+      (set label ($str/join ($str/split label "\n") " "))
+      (set label ($str/join ($str/split label "\r") " "))
+      (rows .push (table_row label file)))
+    (rows .push (table_row "**Total**" summary/totals))
+    (rows .push "")
+    (var path summary/report_path)
+    (host .PluginHost:request_tool "fs.write"
+      {^root "workspace" ^path path ^text ($str/join rows "\n")}
+      ^continuation
+        (fn [result]
+          (if result/ok
+            (then
+              (host .PluginHost:update_state summary)
+              summary)
+            (else
+              (fail_tool ^data {^stage "write" ^path path}
+                result/error/code result/error/message))))))
+
+  (fn read_next [host paths index summary]
+    (if (< index paths/.size)
+      (then
+        (var path paths/%index)
+        (host .PluginHost:request_tool "fs.read" {^root "workspace" ^path path}
+          ^continuation
+            (fn [result]
+              (if_not result/ok
+                (fail_tool ^data {^stage "read" ^path path}
+                  result/error/code result/error/message))
+              (if_yes result/value/truncated
+                (fail_tool ^data {^stage "read" ^path path}
+                  "truncated_read" "The file was truncated; audit was not saved."))
+              (var non_empty 0)
+              (var todo 0)
+              (var fixme 0)
+              (for line in ($str/split result/value/text "\n")
+                (if (!= ($str/trim line) "")
+                  (then (set non_empty (+ non_empty 1)))
+                  (else nil))
+                (var normalized ($str/lower line))
+                (if ($str/contains? normalized "todo")
+                  (then (set todo (+ todo 1)))
+                  (else nil))
+                (if ($str/contains? normalized "fixme")
+                  (then (set fixme (+ fixme 1)))
+                  (else nil)))
+              (var files summary/files)
+              (files .push {^path path ^non_empty non_empty ^todo todo ^fixme fixme})
+              (var totals summary/totals)
+              (read_next host paths (+ index 1)
+                {^report_path summary/report_path
+                 ^files files
+                 ^totals {^non_empty (+ totals/non_empty non_empty)
+                          ^todo (+ totals/todo todo)
+                          ^fixme (+ totals/fixme fixme)}}))))
+      (else (write_report host summary))))
+
+  (fn scan [host input]
+    (var paths input/paths)
+    (if_yes (< paths/.size 1)
+      (fail_tool "invalid_input" "Provide 1 to 8 paths."))
+    (if_yes (> paths/.size 8)
+      (fail_tool "invalid_input" "Provide 1 to 8 paths."))
+    (for path in paths (check_path path "read"))
+    (check_path input/report_path "write")
+    (if_not ($str/ends_with? ($str/lower input/report_path) ".md")
+      (fail_tool ^data {^stage "write" ^path input/report_path}
+        "invalid_path" "The report filename must end in .md."))
+    (read_next host paths 0
+      {^report_path input/report_path ^files [] ^totals {^non_empty 0 ^todo 0 ^fixme 0}}))
+
+  (fn last [host input]
+    (host .PluginHost:state))
+
+  (fn init [ctx : DescriptorContext] : Plugin
+    ^capabilities []
+    (Plugin
+      ^id "project_audit"
+      ^contextual true
+      ^provides [["tools" "project_audit.scan"] ["tools" "project_audit.last"]]
+      ^requires [["tools" "fs.read"] ["tools" "fs.write"]]
+      ^activate
+        (fn []
+          (fn [host]
+            (host .PluginHost:contribute "tools"
+              {^name "project_audit.scan"
+               ^doc "Audit 1 to 8 files sequentially, write a Markdown table, and persist the successful summary."
+               ^contextual true
+               ^run scan
+               ^input_schema
+                 {^type "object"
+                  ^required ["paths" "report_path"]
+                  ^properties
+                    {^paths {^type "array" ^minItems 1 ^maxItems 8 ^items {^type "string"}}
+                     ^report_path {^type "string"}}
+                  ^additionalProperties false}})
+            (host .PluginHost:contribute "tools"
+              {^name "project_audit.last"
+               ^doc "Return the last saved audit summary without filesystem I/O."
+               ^contextual true
+               ^run last
+               ^input_schema
+                 {^type "object" ^required [] ^properties {} ^additionalProperties false}}))))))

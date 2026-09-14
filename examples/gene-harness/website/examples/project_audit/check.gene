@@ -1,0 +1,87 @@
+# Re-verifies the Project audit example on the Gene Harness website without a
+# model. `plugin.gene` is the formatted copy of the model's revision 2; it is
+# registered through the Harness's own registration path, then exercised with
+# the fixture project using the commands the website shows.
+#
+#   bin/gene run examples/gene-harness/website/examples/project_audit/check.gene
+#
+# Run it from the repository root. Scratch state goes under the package's
+# git-ignored tmp directory, and its path is printed.
+(mod project_audit_check)
+
+(import [module_dir] ^from "../../../src/kernel")
+(import [register_module] ^from "../../../src/storage/workspace")
+(import [prepare_home open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [browser_profile] ^from "../../../src/profiles/browser")
+(import [ask] ^from "../../../src/runtime/cli_driver")
+(import $fs [read_text write_text make_dir exists?])
+(import $crypto [random_hex])
+
+(var example_dir (module_dir this_mod/.path))
+(var package_root (module_dir (module_dir (module_dir example_dir))))
+# The module digest the recorded composition selected for revision 2. Equal
+# digests mean the formatted file is the same canonical module.
+(var recorded_digest "sha256:bf8543b4ac6334b5a6e7c575dbf56da5cc7b9beb870043e091573fe71e2b6458")
+
+(fn fixture [relative : Str] : Str
+  (read_text $"${example_dir}/${relative}"))
+
+(fn fixture_data [relative : Str]
+  (($parse/read_all (fixture relative)) .next))
+
+(fn expect [label : Str, actual : Str, expected : Str]
+  ($assert (== actual expected)
+    $"project_audit ${label}\nexpected: ${expected}\nactual:   ${actual}"))
+
+# The tool result a command adds to the transcript.
+(fn tool_result [h, command : Str] : Str
+  (var before (h/log .get))
+  (var start before/.size)
+  (ask h command)
+  (var records (h/log .get))
+  (var result "")
+  (var i start)
+  (while (< i records/.size)
+    (var record records/%i)
+    (if_yes (&& (== record/kind "output") (== record/phase "tool_result"))
+      (set result record/text))
+    (set i (+ i 1)))
+  result)
+
+(fn main [argv]
+  (var scratch $"${package_root}/tmp/website-check-${(random_hex 8)}")
+  (make_dir $"${package_root}/tmp")
+  (make_dir scratch)
+  (var project $"${scratch}/project")
+  (make_dir project)
+  (make_dir $"${project}/src")
+  (for name in ["orders.gene" "report.gene"]
+    (write_text $"${project}/src/${name}" (fixture $"project/src/${name}")))
+  (var home (prepare_home ^root $"${scratch}/home"))
+  (var commands (fixture_data "commands.gene"))
+  (var summary ($str/trim (fixture "expected/summary.gene")))
+
+  (var build (open_runtime home "website_check_build" (browser_profile ^offline true)
+    ^project_root project))
+  (try
+    (var registered (register_module build/workspace build/h "project_audit"
+      (fixture_data "plugin.gene") ^scope "workspace" ^by "website/check"))
+    (expect "status" registered/status "ready")
+    (expect "digest" registered/digest recorded_digest)
+    (expect "scan" (tool_result build/h commands/scan) summary)
+    (expect "report" (read_text $"${project}/audit-report.md")
+      (fixture "expected/audit-report.md"))
+    (expect "missing file" (tool_result build/h commands/missing)
+      ($str/trim (fixture "expected/missing.gene")))
+    (var missing_report $"${project}/missing-report.md")
+    ($assert (! (exists? missing_report))
+      "project_audit missing file: the failed scan wrote a report")
+    (expect "last after the failure" (tool_result build/h commands/last) summary)
+  ensure (close_runtime build))
+
+  (var fresh (open_runtime home "website_check_fresh" (browser_profile ^offline true)
+    ^project_root project))
+  (try
+    (expect "last in a new conversation" (tool_result fresh/h commands/last) summary)
+  ensure (close_runtime fresh))
+  ($println $"project_audit example: ok (${scratch})"))

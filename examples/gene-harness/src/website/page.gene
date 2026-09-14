@@ -1,0 +1,426 @@
+(mod harness_website_page)
+
+# The Gene Harness website: one server-rendered page. Markup is quoted Gene
+# node data rendered by `$html/render`; styles come from `./style`, every word
+# and the example data from `./content`, and progressive enhancement from the
+# web-profile module `client/website.gene`.
+#
+# The local Harness serves this page at /about/ (`^mode "embedded"`), and
+# `./export` writes it for a static host (`^mode "standalone"`).
+
+(import $html [render])
+(import $web [script stylesheet])
+(import [website_css website_class] ^from "./style")
+(import [WebsiteError website_dir repository_url links hero capabilities steps faq
+         example site_excerpts run_commands] ^from "./content")
+
+(var website_ui ($web/load $"${website_dir}/../../client/website.gene"))
+
+# Code blocks that get a copy button (and Gene highlighting when their
+# data-lang is gene), and blocks that are only highlighted. The browser module
+# finds them through these ids on the mount root.
+(var copyable_ids
+  ["plugin_contract" "plugin_report" "plugin_source"
+   "result_command" "result_value" "result_report"
+   "failure_command" "failure_result"
+   "site_html" "site_css" "site_browser"
+   "run_build" "run_start" "run_openrouter" "run_anthropic" "run_offline"
+   "run_prompt" "run_dirs"])
+(var highlighted_ids ["hero_declaration"])
+
+(fn code_block [id : Str, label : Str, text : Str,
+                ^lang lang : Str = "text", ^wrap wrap : Bool = false] : Node
+  (var classes (if wrap "code_block code_wrap" "code_block"))
+  (var bar_id $"${id}_bar")
+  `(figure ^class %classes
+     (figcaption ^id %bar_id ^class "code_bar" (span %label))
+     (pre ^class "code_pre" ^tabindex "0"
+       (code ^id %id ^data-lang %lang %text))))
+
+(fn section_head [label : Str, title_id : Str, title : Str, intro : Str] : Node
+  `(div ^class "section_head"
+     (p ^class "section_label" %label)
+     (h2 ^id %title_id ^class "section_title" %title)
+     (p ^class "section_intro" %intro)))
+
+(fn plural [count : Int, singular : Str, many : Str] : Str
+  (if (== count 1) singular many))
+
+# --- Header and hero ---------------------------------------------------------------
+
+(fn site_header [app_url : Str] : Node
+  (var app_link
+    (if (== app_url "") "" `(a ^class "nav_app" ^href %app_url "Open Harness")))
+  `(header ^id "site_header" ^class "site_header"
+     (div ^class "shell header_inner"
+       (a ^class "wordmark" ^href "#overview"
+         (span ^class "wordmark_mark" ^aria-hidden "true" "G")
+         (span "Gene Harness"))
+       (button ^id "nav_toggle" ^class "nav_toggle" ^type "button"
+         ^aria-expanded "false" ^aria-controls "site_nav" ^^hidden "Menu")
+       (nav ^id "site_nav" ^class "site_nav" ^aria-label "Website"
+         (a ^href "#overview" "Overview")
+         (a ^href "#how" "How it works")
+         (a ^href "#example" "Example")
+         (a ^href "#run" "Run locally")
+         (a ^href %repository_url "Source")
+         %app_link))))
+
+(fn total_badge [count : Int, singular : Str, many : Str] : Node
+  (var shown ($to_str count))
+  (var label (plural count singular many))
+  `(span ^class "total" (strong %shown) %label))
+
+(fn workflow_panel [] : Node
+  (var totals example/totals)
+  (var opening example/request_opening)
+  (var declaration example/declaration)
+  (var command example/scan_command)
+  (var badges
+    [(total_badge totals/non_empty "non-empty line" "non-empty lines")
+     (total_badge totals/todo "TODO line" "TODO lines")
+     (total_badge totals/fixme "FIXME line" "FIXME lines")])
+  `(figure ^class "workflow" ^aria-labelledby "workflow_caption"
+     (figcaption ^id "workflow_caption" ^class "workflow_head"
+       (span "Recorded session")
+       (span "project_audit · revision 2"))
+     (ol ^class "workflow_steps"
+       (li ^class "workflow_step"
+         (span ^class "workflow_who" "You")
+         (div ^class "workflow_body" (p %opening)))
+       (li ^class "workflow_step"
+         (span ^class "workflow_who" "Harness")
+         (div ^class "workflow_body"
+           (p "Registered the Gene plugin the model wrote:")
+           (pre ^class "workflow_code"
+             (code ^id "hero_declaration" ^data-lang "gene" %declaration))))
+       (li ^class "workflow_step"
+         (span ^class "workflow_who" "Tool call")
+         (div ^class "workflow_body"
+           (pre ^class "workflow_code" (code %command))))
+       (li ^class "workflow_step"
+         (span ^class "workflow_who" "Result")
+         (div ^class "workflow_body"
+           (div ^class "totals" %badges...)
+           (p ^class "workflow_note"
+             "Wrote audit-report.md and saved the summary. A new conversation read the same totals back."))))))
+
+(fn hero_section [] : Node
+  (var eyebrow hero/eyebrow)
+  (var title hero/title)
+  (var lede hero/lede)
+  `(section ^id "overview" ^class "hero" ^aria-labelledby "overview_title"
+     (div ^class "shell hero_grid"
+       (div
+         (p ^class "eyebrow" %eyebrow)
+         (h1 ^id "overview_title" ^class "hero_title" %title)
+         (p ^class "hero_lede" %lede)
+         (div ^class "actions"
+           (a ^class "button button_primary" ^href "#run" "Run locally")
+           (a ^class "button button_secondary" ^href "#example" "See a plugin in action")))
+       %(workflow_panel))))
+
+# --- What it does and how ---------------------------------------------------------
+
+(fn capability_card [item] : Node
+  (var title item/title)
+  (var text item/text)
+  (var detail item/detail)
+  `(li ^class "card"
+     (h3 %title)
+     (p %text)
+     (p ^class "card_detail" %detail)))
+
+(fn capabilities_section [] : Node
+  (var cards [])
+  (for item in capabilities (cards .push (capability_card item)))
+  `(section ^id "capabilities" ^class "section" ^aria-labelledby "capabilities_title"
+     (div ^class "shell"
+       %(section_head "What it does" "capabilities_title"
+          "Tools that outlive the conversation"
+          "When the Harness lacks a tool, it can write one as a Gene plugin, use it right away, and keep it for next time.")
+       (ul ^class "card_grid" %cards...))))
+
+(fn how_section [] : Node
+  (var items [])
+  (for step in steps
+    (var title step/title)
+    (var text step/text)
+    (var note step/note)
+    (items .push `(li ^class "step" (h3 %title) (p %text) (p ^class "step_note" %note))))
+  `(section ^id "how" ^class "section" ^aria-labelledby "how_title"
+     (div ^class "shell"
+       %(section_head "How it works" "how_title"
+          "From a sentence to a tool you keep"
+          "The model writes Gene. The Harness decides what that Gene may touch, records what was installed, and restores it later.")
+       (ol ^class "steps" %items...))))
+
+# --- Worked example ----------------------------------------------------------------
+
+(fn result_row [file] : Node
+  (var path file/path)
+  (var non_empty ($to_str file/non_empty))
+  (var todo ($to_str file/todo))
+  (var fixme ($to_str file/fixme))
+  `(tr (th ^scope "row" (code %path))
+       (td ^class "num" %non_empty)
+       (td ^class "num" %todo)
+       (td ^class "num" %fixme)))
+
+(fn result_table [] : Node
+  (var rows [])
+  (for file in example/files (rows .push (result_row file)))
+  (var totals example/totals)
+  (var non_empty ($to_str totals/non_empty))
+  (var todo ($to_str totals/todo))
+  (var fixme ($to_str totals/fixme))
+  `(div ^class "table_scroll" ^role "region" ^aria-label "Audit counts" ^tabindex "0"
+     (table ^class "result_table"
+       (caption "Counts returned by project_audit.scan")
+       (thead
+         (tr (th ^scope "col" "File")
+             (th ^scope "col" ^class "num" "Non-empty lines")
+             (th ^scope "col" ^class "num" "Lines with TODO")
+             (th ^scope "col" ^class "num" "Lines with FIXME")))
+       (tbody %rows...)
+       (tfoot
+         (tr (th ^scope "row" "Total")
+             (td ^class "num" %non_empty)
+             (td ^class "num" %todo)
+             (td ^class "num" %fixme))))))
+
+(fn view_tab [name : Str, label : Str, selected : Bool] : Node
+  (var id $"tab_${name}")
+  (var panel $"view_${name}")
+  (var state (if selected "true" "false"))
+  (var index (if selected "0" "-1"))
+  `(button ^id %id ^class "view_tab" ^type "button" ^role "tab"
+     ^aria-controls %panel ^aria-selected %state ^tabindex %index %label))
+
+(fn example_section [] : Node
+  (var request example/request)
+  (var contract example/contract)
+  (var report_step example/report_step)
+  (var plugin example/plugin)
+  (var scan_command example/scan_command)
+  (var summary example/summary)
+  (var report example/report)
+  (var missing_command example/missing_command)
+  (var missing example/missing)
+  (var last_command example/last_command)
+  (var check_command example/check_command)
+  (var fixtures links/example)
+  `(section ^id "example" ^class "section section_alt" ^aria-labelledby "example_title"
+     (div ^class "shell"
+       %(section_head "Worked example" "example_title"
+          "Project audit: a plugin built in conversation"
+          "This is a recording, not a live run. The request, the plugin the model wrote, and every result below come from checked-in fixtures that the repository re-verifies without a model.")
+       (div ^id "view_tabs" ^class "view_tabs" ^role "tablist" ^aria-label "Example views" ^^hidden
+         %(view_tab "request" "Request" true)
+         %(view_tab "plugin" "Plugin" false)
+         %(view_tab "result" "Result" false))
+       (section ^id "view_request" ^class "view" ^aria-labelledby "view_request_title"
+         (h3 ^id "view_request_title" ^class "view_title" "1. Request")
+         (p ^class "view_text" "What the user asked for in a browser conversation, verbatim:")
+         (blockquote ^class "request_quote" (p %request))
+         (ul ^class "meta_list"
+           (li (strong "Model") " gpt-6-astra")
+           (li (strong "Scope") " workspace")
+           (li (strong "Composes") " fs.read, fs.write"))
+         (p ^class "view_text"
+           "It took more than one try: the first builds ran past the callback time limit, which led to the longer authoring budget the Harness uses now."))
+       (section ^id "view_plugin" ^class "view" ^aria-labelledby "view_plugin_title"
+         (h3 ^id "view_plugin_title" ^class "view_title" "2. Plugin")
+         (p ^class "view_text"
+           "Revision 2 as the model wrote it, formatted for reading. It canonicalizes to the recorded module digest, so no code has changed. The excerpts show the contract it installs and the step that delegates the write and saves the summary.")
+         (div ^class "two_up"
+           %(code_block "plugin_contract" "Excerpt · (fn init …)" contract ^lang "gene")
+           %(code_block "plugin_report" "Excerpt · (fn write_report …)" report_step ^lang "gene"))
+         (details ^class "disclosure"
+           (summary "Complete curated source · plugin.gene")
+           (div ^class "disclosure_body"
+             %(code_block "plugin_source" "plugin.gene" plugin ^lang "gene"))))
+       (section ^id "view_result" ^class "view" ^aria-labelledby "view_result_title"
+         (h3 ^id "view_result_title" ^class "view_title" "3. Result")
+         (p ^class "view_text"
+           "The tool call, the counts it returned, and the report it wrote through fs.write.")
+         %(code_block "result_command" "Tool call" scan_command ^wrap true)
+         %(result_table)
+         (div ^class "two_up"
+           %(code_block "result_value" "Tool result" summary ^lang "gene" ^wrap true)
+           %(code_block "result_report" "audit-report.md" report))
+         (ul ^class "evidence"
+           (li "The report was read back through the browser client and checked against the source files.")
+           (li "A new conversation loaded the workspace plugin without rebuilding it, and "
+               (code %last_command) " returned the same totals.")
+           (li (code %check_command) " repeats these checks on the fixtures, without a model."))
+         (details ^class "disclosure"
+           (summary "When a file is missing")
+           (div ^class "disclosure_body"
+             (p ^class "view_text"
+               "A scan that names a missing file returns a structured error with the stage and path that failed. No report is written, and project_audit.last still returns the previous summary.")
+             %(code_block "failure_command" "Tool call" missing_command ^wrap true)
+             %(code_block "failure_result" "Tool result" missing ^lang "gene" ^wrap true))))
+       (p ^class "view_text" (a ^href %fixtures "Browse the example fixtures")))))
+
+# --- Written in Gene ------------------------------------------------------------------
+
+(fn gene_item [title : Str, text, id : Str, label : Str, source : Str, href : Str] : Node
+  (var link_text $"View ${label}")
+  `(div ^class "gene_item"
+     (h3 %title)
+     (p %text...)
+     %(code_block id label source ^lang "gene")
+     (a ^href %href %link_text)))
+
+(fn gene_section [] : Node
+  `(section ^id "gene" ^class "section" ^aria-labelledby "gene_title"
+     (div ^class "shell"
+       %(section_head "Written in Gene" "gene_title" "This website is Gene, too"
+          "Its markup, styles, and browser behavior are Gene source in the Harness package, and the excerpts below are read from those files when the page is built. The HTML, CSS, and JavaScript a browser receives are generated.")
+       (div ^class "gene_grid"
+         %(gene_item "HTML as Gene data"
+            ["Markup is quoted Gene nodes. " `(code "$html/render")
+             " turns them into HTML once, escaping text and attributes."]
+            "site_html" "src/website/page.gene" site_excerpts/html links/page)
+         %(gene_item "CSS as Gene rules"
+            ["Styles are " `(code "$css") " rules and declarations scoped to this page, served as a generated, content-addressed stylesheet."]
+            "site_css" "src/website/style.gene" site_excerpts/css links/style)
+         %(gene_item "Browser behavior in Gene"
+            ["Tabs, copy buttons, highlighting, and the menu come from a web-profile module compiled by "
+             `(code "$web/load") ". Without JavaScript, every section still reads top to bottom."]
+            "site_browser" "client/website.gene" site_excerpts/browser links/client)))))
+
+# --- Run locally -----------------------------------------------------------------------
+
+(fn run_section [] : Node
+  (var build run_commands/build)
+  (var codex_login run_commands/codex_login)
+  (var start run_commands/start)
+  (var openrouter run_commands/openrouter)
+  (var anthropic run_commands/anthropic)
+  (var offline run_commands/offline)
+  (var prompt run_commands/prompt)
+  (var dirs run_commands/dirs)
+  (var claude links/claude)
+  `(section ^id "run" ^class "section section_alt" ^aria-labelledby "run_title"
+     (div ^class "shell"
+       %(section_head "Run locally" "run_title" "Start the Harness on your machine"
+          "The Harness serves its browser client on 127.0.0.1. Conversations and plugins stay in a local home directory; model requests go to the provider you configure.")
+       (div ^class "run_grid"
+         (div ^class "aside_panel"
+           (h3 "Before you start")
+           (ul
+             (li "A clone of the Gene repository and Nim 2 or later.")
+             (li "A model provider. The start command uses Codex; sign in once with file credential storage: "
+                 (code %codex_login))
+             (li "Or an OpenRouter key, an Anthropic API key, or the Claude Code CLI; see "
+                 (a ^href %claude "Claude setup") ".")
+             (li "No provider yet? " (code "--offline")
+                 " starts a command-only demo that never contacts a model.")))
+         (ol ^class "run_steps"
+           (li ^class "run_step"
+             (h3 "Build Gene")
+             %(code_block "run_build" "Shell" build))
+           (li ^class "run_step"
+             (h3 "Start the Harness")
+             (p "Run from the repository root. This command uses your Codex login.")
+             %(code_block "run_start" "Shell" start)
+             (details ^class "disclosure"
+               (summary "Other providers and the offline demo")
+               (div ^class "disclosure_body"
+                 %(code_block "run_openrouter" "OpenRouter" openrouter)
+                 %(code_block "run_anthropic" "Anthropic API" anthropic)
+                 %(code_block "run_offline" "Command-only demo" offline)
+                 (p "The offline demo runs commands such as /help, /status, /code, /tool, and template-based /build, but cannot answer ordinary prompts."))))
+           (li ^class "run_step"
+             (h3 "Open the connection link")
+             (p "The server prints a link like " (code "http://127.0.0.1:8095/#token=…")
+                ". It works once and expires after ten minutes; the browser then stays connected for eight hours."))
+           (li ^class "run_step"
+             (h3 "Ask for a tool")
+             (p "Ordinary text goes to the model; " (code "/help")
+                " lists the commands that run without it. A first prompt to try:")
+             %(code_block "run_prompt" "Prompt" prompt ^wrap true))
+           (li ^class "run_step"
+             (h3 "Point it at your project")
+             (p "Two directories matter. Choosing one does not grant access, so pass a matching grant for each.")
+             (dl ^class "dirs"
+               (div (dt "--project <dir>")
+                    (dd "What the built-in file tools read and write. Defaults to the Harness package."))
+               (div (dt "--home <dir>")
+                    (dd "Where conversations, plugins, module sources, and plugin state are kept. Defaults to examples/gene-harness/tmp/workspace.")))
+             %(code_block "run_dirs" "Shell" dirs)))))))
+
+# --- FAQ and footer ----------------------------------------------------------------------
+
+(fn faq_item [item] : Node
+  (var question item/question)
+  (var answer item/answer)
+  `(details ^class "faq_item" (summary %question) (p %answer)))
+
+(fn faq_section [] : Node
+  (var items [])
+  (for item in faq (items .push (faq_item item)))
+  `(section ^id "faq" ^class "section" ^aria-labelledby "faq_title"
+     (div ^class "shell"
+       %(section_head "FAQ" "faq_title" "Questions worth asking first"
+          "Short answers. The design document has the full contracts.")
+       (div ^class "faq_list" %items...))))
+
+(fn site_footer [] : Node
+  (var package links/package)
+  (var readme links/readme)
+  (var design links/design)
+  (var web_client links/web_client)
+  (var workflows links/workflows)
+  `(footer ^class "site_footer"
+     (div ^class "shell footer_inner"
+       (div
+         (p ^class "footer_title" "Gene Harness")
+         (p ^class "footer_note"
+           "A durable, capability-bounded plugin harness for a general-purpose agent, written in the Gene programming language."))
+       (nav ^aria-label "Documentation"
+         (ul ^class "footer_links"
+           (li (a ^href %repository_url "Repository"))
+           (li (a ^href %package "Harness source"))
+           (li (a ^href %readme "README"))
+           (li (a ^href %design "Design"))
+           (li (a ^href %web_client "Browser client design"))
+           (li (a ^href %workflows "Working with Gene")))))))
+
+# --- The page ------------------------------------------------------------------------------
+
+(fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = ""] : Str
+  (if_not (["embedded" "standalone"] .contains? mode)
+    (fail (WebsiteError ^message $"Unknown website mode ${mode}")))
+  # Embedded, the app is this server's root. Standalone, a visitor may have no
+  # local Harness at all, so the link appears only when one is configured.
+  (var open_app (if (== mode "embedded") "/" app_url))
+  (var code_ids ($str/join copyable_ids " "))
+  (var highlight_ids ($str/join highlighted_ids " "))
+  ($ "<!doctype html>\n"
+    (render
+      `(html ^lang "en"
+         (head
+           (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+           (title "Gene Harness · An agent that can build its own tools")
+           (meta ^name "description"
+             ^content "Gene Harness turns new capabilities into durable Gene plugins you can inspect, use on real files, and keep across conversations.")
+           %(stylesheet "gene-harness-website" website_css))
+         (body ^class %website_class
+           (div ^id "site_root" ^class "site"
+             ^data-code-ids %code_ids ^data-highlight-ids %highlight_ids
+             (a ^class "skip_link" ^href "#main" "Skip to content")
+             %(site_header open_app)
+             (main ^id "main"
+               %(hero_section)
+               %(capabilities_section)
+               %(how_section)
+               %(example_section)
+               %(gene_section)
+               %(run_section)
+               %(faq_section))
+             %(site_footer))
+           %(script website_ui ^mount "site_root"))))))

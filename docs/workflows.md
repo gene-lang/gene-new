@@ -178,6 +178,16 @@ maps are content-addressed together. The
 [Harness browser client](../examples/gene-harness/README.md#browser-client)
 uses this path without an authored JavaScript bootstrap or a separate bundler.
 
+A server-rendered page can also be exported to a static host. Choose its public
+asset location with `($web/set_asset_base "/docs/assets")`, render the page,
+then write each entry of `($web/published_routes)` under that location. Entries
+are `{^file ^content_type ^body ^source_map}` maps sorted by file name, and
+match what the application's HTTP server answers, including the
+`$web/set_source_maps` policy. Asset URLs are absolute, so build one export per
+base path. The
+[Harness website exporter](../examples/gene-harness/src/website/export.gene)
+is a complete example.
+
 Browser bindings include `$http/request method url body headers callback`,
 whose callback receives `(Int status, Str body)` including non-2xx responses;
 status `0` means a transport failure. `$session_storage/get|set|remove` handles

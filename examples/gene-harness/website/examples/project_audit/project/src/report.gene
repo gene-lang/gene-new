@@ -1,0 +1,6 @@
+(mod report)
+
+# TODO: support a date filter
+# TODO: include cancelled orders
+(fn summary [orders]
+  {^count orders/.size})

@@ -1,0 +1,9 @@
+(mod orders)
+
+# TODO: validate negative quantities
+(fn total [price quantity]
+  (* price quantity))
+
+# FIXME: currency rounding needs a policy
+(fn receipt [name amount]
+  {^customer name ^total amount})

@@ -131,6 +131,38 @@ executes only after the complete response and envelope have been validated.
 OpenRouter currently delivers complete response blocks. Remote access,
 multi-user hosting, and graphical plugin administration remain outside this release.
 
+## Website
+
+The Harness includes a product website written entirely in Gene: quoted node
+markup, structured `$css` rules, and a web-profile enhancement module. The
+browser host serves it at `/about/`, linked from the sidebar. The page needs no
+connection link, and it reads no workspace records and makes no model call.
+
+The same source can be exported for a static host:
+
+```sh
+bin/gene run examples/gene-harness/src/website/export.gene
+bin/gene run examples/gene-harness/src/website/export.gene \
+  --out examples/gene-harness/tmp/website-prefix/harness --base /harness/
+```
+
+The first command writes `index.html` and `assets/` under
+`examples/gene-harness/tmp/website`, for serving at `/`. `--base` names the URL
+path the directory will be served from; generated asset URLs are absolute, so
+export once per base. `--app_url` adds an **Open Harness** link, which the
+static page otherwise omits. The parent of `--out` must exist, and a directory
+outside the repository needs a matching `--allow_read_write_dir` grant.
+
+The worked example is a recording of a real session. Its request, the formatted
+model-authored plugin, the fixture project, and the expected outputs live in
+`website/examples/project_audit/`. The page reads them when it renders, and a
+model-free check re-verifies them against the Harness, including that the
+formatted plugin canonicalizes to the recorded module digest:
+
+```sh
+bin/gene run examples/gene-harness/website/examples/project_audit/check.gene
+```
+
 ## Quick start
 
 From the repository root:
@@ -613,7 +645,9 @@ or `web/server.gene` for the browser host, then follow imports into these groups
 | `src/views/` | typed view contract, terminal interaction and recording view |
 | `src/profiles/` | profile type/boot, named-profile registry and deployment compositions |
 | `src/web/` | HTTP entry point, page styling and the shared browser wire contract |
+| `src/website/` | product website: copy and example data, page markup, structured styles and static export |
 | `client/` | Gene modules compiled for the browser: interaction, transcript state and rendering |
+| `website/examples/` | recorded website example fixtures and their model-free check |
 
 `kernel.gene`, `plugin_api.gene`, and `seams.gene` stay at the source root.
 Persisted generated plugins import these exact paths, and sandbox loading
@@ -649,6 +683,9 @@ restore their plugins without rewriting stored source or changing its digest.
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
 | `client/view.gene`, `client/markdown.gene` | grouped steps, per-run outcomes, and restricted Markdown rendering |
 | `client/highlight.gene` | safe, bounded Gene syntax highlighting for code and raw replies |
+| `src/website/content.gene`, `src/website/page.gene`, `src/website/style.gene` | website copy, fixture-backed example data, Gene markup and scoped `$css` rules |
+| `src/website/export.gene`, `client/website.gene` | static export through `$web/published_routes`; tabs, copy, highlighting and mobile menu |
+| `website/examples/project_audit/` | recorded request, formatted plugin, fixture project, expected outputs and `check.gene` |
 
 The former Harness scenarios have moved to `tmp/gene-harness-tests` in the
 repository workspace. They are no longer a package test target.

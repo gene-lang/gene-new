@@ -394,6 +394,7 @@ names; WebSocket payloads use protocol version 3.
 
 | Method/path | Behavior |
 |---|---|
+| `GET /about/` | The Gene Harness website, rendered once at startup from `src/website`. It needs no browser session and reads no workspace records; `GET /about` redirects here. |
 | `POST /api/v1/auth/exchange` | Exchange a one-use launcher token for a local browser session. |
 | `GET /api/v1/status` | Safe workspace, connection, and runtime status. |
 | `GET /api/v1/sessions` | Paginated session summaries. |
