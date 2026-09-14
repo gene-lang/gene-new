@@ -43,6 +43,7 @@
 
 (fn open_runtime [home : Str, session : Str, profile,
                   ^events supplied_events = nil,
+                  ^project_root project_root : Str = "",
                   ^activate activate : Bool = true] : HarnessRuntime
   (var claim (claim_session home session))
   (var events supplied_events)
@@ -53,7 +54,8 @@
   (try
     (if_yes owned (set events (open_event_store $"${home}/events")))
     (set workspace (open_workspace $"${home}/composition"
-      ^blob_root $"${home}/modules" ^state_root home))
+      ^blob_root $"${home}/modules" ^state_root home
+      ^workspace_root (if (== project_root "") (get_env "GENE_HARNESS_PROJECT" "") project_root)))
     (set h (new_harness ^event_store events ^event_scope "session"
       ^event_stream session ^workspace workspace))
     (if_yes activate

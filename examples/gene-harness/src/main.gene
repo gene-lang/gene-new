@@ -19,8 +19,7 @@
 
 (import [profile_named] ^from "./profiles/registry")
 (import [plugin_names] ^from "./profiles/profile")
-(import [report_of] ^from "./profiles/common")
-(import [ask] ^from "./agents/agent")
+(import [ask] ^from "./runtime/cli_driver")
 (import [plugin_states bound_seams lifecycle_log status_of row]
   ^from "./kernel")
 (import [prepare_workspace doctor disable_entry enable_entry]
@@ -77,21 +76,13 @@
   ($println "plugins:   " (plugin_names p))
   ($println "states:    " (plugin_states h))
   ($println "seams:     " (bound_seams h))
-  ($println "report:    " (report_of h))
   ($println "")
   ($println "lifecycle:")
-  (for l in (lifecycle_log h) ($println "  " l))
-  (if_yes (!= (status_of h "reporter") "ready")
-    ($println "")
-    ($println "No report: a plugin did not reach `ready`, and the lifecycle")
-    ($println "above says which and why. For the `cli` profile that is usually")
-    ($println "the missing --allow_read_dir /tmp grant — the provider it binds")
-    ($println "declares `(fs/ReadDir \"/tmp\")`, so the consumer that calls")
-    ($println "through it cannot run without one. Nothing else was affected.")))
+  (for l in (lifecycle_log h) ($println "  " l)))
 
 (fn main [args]
   (var names (arg_list args))
-  (var name (if (> names/.size 0) names/0 "cli"))
+  (var name (if (> names/.size 0) names/0 "chat"))
   (var p (profile_named name))
   (var home (prepare_home))
   (var session (get_env "GENE_HARNESS_SESSION" "default"))
@@ -122,10 +113,14 @@
         # same seam as the interactive view.
         (if (!= prompt "")
           (then
-            (var current_log (h/log .get))
-            (var output_start current_log/.size)
-            (ask h prompt)
-            (print_output_since h output_start))
+            (var active_view (row h "views" "active"))
+            (if (!= active_view void)
+              (active_view/value .HarnessView:handle_line h prompt)
+              (do
+                (var current_log (h/log .get))
+                (var output_start current_log/.size)
+                (ask h prompt)
+                (print_output_since h output_start))))
           (else
             (var view (row h "views" "active"))
             (if (!= view void)

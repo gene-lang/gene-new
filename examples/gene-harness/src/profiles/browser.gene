@@ -2,23 +2,25 @@
 
 (import [Profile] ^from "./profile")
 (import [ExecutionLimits] ^from "../plugin_api")
-(import [web_fs_plugin] ^from "./web")
-(import [cli_fs_plugin cli_render_plugin] ^from "./cli")
+(import [cli_render_plugin] ^from "./cli")
 (import [command_plugin agent_plugin template_codegen_plugin] ^from "../agents/agent")
 (import [code_command_plugin] ^from "../agents/code_command")
 (import [llm_agent_plugin model_codegen_plugin] ^from "../agents/llm")
+(import [filesystem_plugin] ^from "../../plugins/builtin/filesystem")
+(import [interaction_plugin] ^from "../../plugins/builtin/interactions")
+(import [process_plugin] ^from "../../plugins/builtin/process")
+(import [http_plugin] ^from "../../plugins/builtin/http")
 
 (fn browser_profile [^offline offline : Bool = false] : Profile
-  (var plugins [(cli_render_plugin) (command_plugin) (code_command_plugin)])
+  (var plugins [(cli_render_plugin) (command_plugin) (code_command_plugin)
+    (filesystem_plugin) (interaction_plugin) (process_plugin) (http_plugin)])
   (if offline
     (then
-      (plugins .push (web_fs_plugin))
       (plugins .push (agent_plugin))
       (plugins .push (template_codegen_plugin)))
     (else
-      (plugins .push (cli_fs_plugin))
       (plugins .push (llm_agent_plugin))
       (plugins .push (model_codegen_plugin))))
   (Profile ^name "browser"
-    ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 120000)
+    ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64 ^timeout_ms 120000)
     ^plugins plugins))

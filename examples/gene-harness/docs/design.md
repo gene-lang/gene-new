@@ -1,14 +1,15 @@
 # Gene Harness — implemented design
 
-Status: stages 1–7 implemented. Human-reviewed promotion into checked-in
-profiles remains deferred. The local browser client is implemented as described
-in [web-client.md](web-client.md).
+Status: the durable plugin runtime and conversational tool workflow are
+implemented and verified through browser and CLI operation. See
+[plugin-workflow.md](plugin-workflow.md) for the verification record.
+Human-reviewed promotion into checked-in profiles remains deferred.
 
-The normative source is [`tmp/harness.md`](../../../tmp/harness.md). This file
-maps that design to the implementation in `examples/gene-harness` and records
-the behavior users and tests can rely on. The tracked browser-client design
-extends that baseline for the local browser transport; it does not
-change the existing runtime's recovery or authority guarantees.
+This tracked document is authoritative for Gene Harness. It supersedes the
+historical `tmp/harness.md`, including that document's retired reply protocol.
+The decision for model authority is explicit: read-only snapshots and named
+operations, with no mutable Harness records. [web-client.md](web-client.md)
+extends this design for the browser transport.
 
 ## 1. Purpose and resume boundary
 
@@ -45,6 +46,7 @@ registries are:
 - `seams`
 - `commands`
 - `tools`
+- `interactions`
 - `prompt`
 - `views`
 - `event_types`
@@ -120,12 +122,22 @@ The context remains valid for the plugin lifetime so contributed callbacks can
 use state later. Demotion or uninstall expires it. A fabricated or expired
 token is rejected.
 
-Generated command and view callback receiver slots are rewritten to that
-retained context; checked-in adapters may receive the Harness. Model programs
-get the complete live Harness as `harness` and `h`, current session and payload,
-and the structural operation set as functions already bound to the active
-transaction. Those helpers stage changes through the ledger; direct mutation
-of exposed Harness or session cells is not automatically staged or undone.
+Generated contextual command, tool and view callbacks receive their retained
+PluginContext; checked-in adapters may receive the Harness. Model programs see
+immutable session/registry summaries and inert payload data. Concrete providers,
+raw runtime cells and live plugin contexts do not cross into model code.
+
+Seam rows may be host-private. PluginHost resolution and public docs do not
+expose private provider values; the agent and author use this for internal
+state. Generated prompt providers receive PluginContext rather than raw Harness.
+
+PluginHost supports tool description and deferred `request_tool` composition.
+A plugin declares each external tool dependency in `requires`. Its callback
+returns a ToolRequest with an optional continuation. The host validates the
+owner context and dependency, executes the callee after the caller's restricted
+scope ends, and invokes the continuation under the caller's policy. No caller
+can manufacture a different plugin's context. Delegation is bounded.
+
 Deactivation and registry cleanup receive the still-valid owner context; it is
 expired only after reverse-order cleanup completes.
 
@@ -195,9 +207,9 @@ events refuse reconstruction. Ignorable records may be skipped. Cold recovery
 runs only after catalog validation and appends a synthetic
 `turn/end {^reason "interrupted" ^synthetic true}` for every unmatched start.
 Core event keys and the `core`/`descriptor:` owner ids are reserved.
-`event_types` replacement is owner-checked, and the model's `record_message`
-helper writes a fixed `message` event. Direct access to the live Harness log
-cell is also available and is not mediated by that helper.
+`event_types` replacement is owner-checked. Core records submitted messages
+and outcomes; plugins emit only validated plugin-owned events. Model programs
+cannot mutate the live core log.
 
 ## 6. Desired composition and CAS
 
@@ -276,107 +288,57 @@ the authoritative blob Store and verified.
 Activation failure does not roll desired state backward. The entry remains
 committed and appears in `doctor` as quarantined.
 
-### 7.1 Where the source comes from
+### 7.1 Authoring and using plugins
 
-`register_module` takes a quoted module; it does not care who wrote one.
-`build <name> <request>` resolves the `HarnessCodegen` seam and registers
-whatever it returns, so authorship is a deployment choice rather than a
-constant:
+The built-in commands plugin contributes `plugins.build`, `plugins.inspect`,
+`plugins.disable` and `plugins.enable` as ordinary tool rows. `/build` is a
+command adapter over the same builder. It resolves the `HarnessCodegen` provider,
+which returns an inert module or a plan with `module`, `scope`, `selectors`, and
+`dependencies`. Registration remains the same validated durable core operation.
 
-| Profile | Provider | `build` means |
-|---|---|---|
-| `web`, `cli` | `TemplateCodegen` | fill the checked-in template; no authority, no network |
-| `chat` | `ModelCodegen` | ask the bound model to write the module |
+The model-backed author receives current tool descriptions and the shared plugin
+module contract. Tools can accept structured data, use PluginHost state, compose
+other declared tools, or request supported filesystem selectors. It must report
+missing authority instead of replacing an operation with a simulation. The
+builder returns installed tool contracts and lifecycle status. It does not run
+guessed test inputs: callers verify behavior with explicit tool calls.
 
-A provider returns an inert quoted node, never a string and never a live
-function, and the consumer trusts none of it. Every check in the sequence above
-already applied to the template and applies unchanged to a model: a
-`(mod plugin ...)` root, an inert top level, a defined `init`, imports inside
-the declared closure, capability-empty `init` under the module ceiling. An
-author is therefore untrusted by construction, which is what makes a remote one
-admissible at all.
+### 7.2 Agent steps and host-owned execution
 
-`HarnessCodegen` has a second message for the same reason it has the first:
-authorship is provider knowledge. `build` asks the resolved provider who it is
-and records the answer on the durable entry as `^by`/`^model`, with `^at` from
-the clock. Validation still does not care who wrote a module — that is what
-makes a remote author admissible — but the record does, and until it asked,
-every model-authored entry read `^by "" ^model "" ^at ""` while the thing that
-wrote it stood right there.
+The validated model reply union is:
 
-`build` passes `^replace true`. It is the only verb that claims a durable name
-and there is no verb that releases one, so create-only made iterating on a
-generated tool mean inventing a name per attempt. Replacement is already a
-recorded outcome: the change is logged as `replaced` rather than `registered`,
-the superseded blob stays in the store, and each attempt is a revision.
+- `code`: evaluate one `(do ...)`, then return the observed result to the agent;
+- `code-with-response`: evaluate and return its result directly;
+- `tool`: `tool` name plus structured `input`, executed by the host;
+- `input`: persist a `request` and release the execution task while waiting;
+- `response`: finish with readable response text.
 
-The model provider sends the checked-in Gene skill (`SKILL.md`, the pitfalls
-and stdlib chapters) as its system prompt alongside the module contract, and
-reads the reply as data — `read_all`, never `eval` on text. The author returns
-the shared Gene envelope with `^type "response"`, a `^response` string, and
-`^payload {^module (mod plugin ...)}`. The module node is extracted as inert
-data. Invalid envelopes are rejected; a build is one model request.
+Code is capability-empty. `harness`/`h` are immutable summaries of session,
+plugins, tools and seams. `session` carries id, scope and a history list;
+`context` carries session, payload, prompt and round. Helpers expose live
+registry descriptions, docs and explicit lifecycle operations. They never return
+raw runtime records or concrete tool implementations.
 
-Registration proves shape and `init`, never the body of `run`. `build`
-therefore invokes the new tool with its own name and with the request text, and
-reports a raised error alongside the revision (`ready; first call raised: ...`).
-The calls are safe because a generated tool holds no capabilities and runs under
-the module ceiling, and advisory because the arguments are guesses. Two probes
-rather than one because a short one exercises a single branch: a length-
-conditional tool passed on its nine-byte name while its long path was broken.
+`register_module` queues inert source and the host drains that queue after the
+restricted evaluator returns. Operational tools instead use `runtime/tools.gene`:
+the host validates the current owned row and input schema, executes the callback
+under its plugin policy, and produces `{ok, value}` or `{ok, error}`. Tool calls
+and results are durable output blocks. Registered I/O tools therefore work from
+the agent without granting host authority to arbitrary model code.
 
-### 7.2 What the model's own program may reach
+The built-in filesystem, subprocess and HTTP adapters are plugins. Process
+execution uses the launcher's os/Exec authority and an explicit argument list;
+the selected working directory is not an OS sandbox. HTTP uses net/Http. Both
+operations are asynchronous, cancellable and bounded in wall time and output.
+ToolError preserves domain failure codes and details in the shared result shape.
 
-`src/agents/model_reply.gene` defines the shared reply format and validates exactly
-one map before code can execute:
-
-- `^type "code"` requires `^code (do ...)`, executes, and sends the result back
-  to the model for another round.
-- `^type "code-with-response"` requires `^code (do ...)`, executes, and returns
-  the execution result directly as the final answer, including errors/refusals.
-- `^type "response"` requires `^response` text and finishes without code.
-
-Both code types accept optional `^response` text as narration shown before
-execution. It never replaces a `code-with-response` execution result. All
-types accept an optional payload map. The old `^status` field, malformed
-fields, and extra top-level forms are rejected; the chat loop reports the
-validation problem to the model without executing the rejected reply.
-Final answers are retained in the session history, and continuing replies
-are bounded by the eight-round limit.
-
-The execution environment binds the whole Harness as `harness` and `h`.
-`session` contains its `id`/`scope`, the live history cell and agent
-`state_host` PluginContext. `payload` and `(get_payload)` expose the current
-reply's inert data map, defaulting to a fresh empty map each round. `context`
-groups the Harness, workspace, session, payload, user prompt and round number.
-
-A reply's `^code` is evaluated in an `Env` minted with the structural harness
-bindings and `^capabilities []`. The two authorities are deliberately opposite:
-structural authority over the harness is total, because every binding is an
-ordinary Gene call needing no grant and rebuilding the harness is the whole
-point; host authority is nil, so reading a file or the environment comes back
-as a `refused: ...` value returned directly or shown in the next round.
-
-`register_module` is the one operation that needs both, and a grant only ever
-attenuates (§8) — nothing called from inside an empty context can recover the
-authority that hashing source, writing a blob, loading the module and running
-`init` require. Calling straight through refused at `fs/exists?` and lost the
-turn, which made the durable path the prompt advertises unreachable.
-
-So the binding queues instead. It validates that the id is a non-empty `Str`
-and the source an inert `mod` node, appends the request to the turn's queue,
-and says so. After the program returns, still inside the same
-`run_workspace_turn` body but back under the harness's own capability context,
-the queue is drained through the ordinary `register_module` path and the result
-string reports each committed revision. A registration that fails to load
-raises like any other error in the body, so it never becomes a revision.
-
-The consequence is part of the contract and is stated in the prompt: a tool
-registered this way is callable from the *next* program, not the one that
-queued it. The turn body also carries an explicit budget rather than the 2 000
-ms callback default, because a body that may hash a module, write a blob, load
-it and run its `init` is not a local computation. Steps and memory are
-unchanged.
+The same tool runner is used by `/tool`, `/read`, the model's tool reply, and
+deferred plugin-to-plugin calls. Existing reflected callable rows retain their
+positional/named input envelopes. Generic object schemas and contextual tool
+callbacks are supported alongside older single-value rows. Long asynchronous
+operations return ToolTask; the host awaits it after the bounded callback has
+returned, cancels it with the run, and supervises any continuation under its
+owner. Spawned custom and trusted tasks retain their execution budgets.
 
 ## 8. Execution supervision and attenuation
 
@@ -401,8 +363,9 @@ Capability selectors stored in composition are inert maps:
 {^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
 ```
 
-Only the named roots `workspace` (package root) and `state` (harness state root)
-exist in version 1. Relative traversal and absolute paths are rejected. At
+The named roots are `workspace` (the selected project, defaulting to the Harness
+package) and `state` (harness state). The launcher selects the project with
+`GENE_HARNESS_PROJECT`; the web server also accepts `--project`. Relative traversal and absolute paths are rejected. At
 activation the harness expands the map to an ordinary absolute capability
 selector and evaluates the activation under `with_capabilities`. Resolution is
 against the application's immutable host ceiling and therefore fails rather
@@ -414,9 +377,13 @@ capability context left inherited. The default budget suits a callback doing
 local computation; a deployment whose author is a remote model has commands
 that legitimately block on a network round trip, and there the default is not a
 guard against runaway code but a guarantee that the deployment cannot work.
-Steps and memory are unchanged by that choice — only the deadline moves.
+Trusted browser/chat callbacks allow one million steps for model transport,
+author validation and module registration, with a 120-second deadline. Custom
+plugins retain their own default 100,000-step/2-second policy. Pure model code
+has a separate 100,000-step/2-second evaluator budget; the outer registration
+transaction has room to perform host work after that evaluator returns.
 
-Generic command/tool/seam callbacks, schemas, cleanup hooks, subscribers, and
+Generic command/tool/seam callbacks, interaction validators, cleanup hooks, subscribers, and
 views additionally pass through owner-aware wrappers. The core boundary flushes
 state only after the attenuated callback scope unwinds, so opaque retained Store
 authority is never lent to plugin code.
@@ -499,104 +466,44 @@ User-visible agent output is a typed durable core event; terminal and recording
 views consume the same feed. A recording view plus the command-agent stub
 provides deterministic tests with no terminal or network.
 
-## 11. Mid-turn interaction
+## 11. Durable mid-turn interaction
 
-Designed, not yet implemented; §14 lists it with the rest of the deferred work.
+A question ends the current step without keeping a task, fiber, bounded callback,
+or network request waiting on a human. The model's `input` reply carries a text,
+select, or confirm request. The `interactions` registry supplies plugin-owned
+request/reply validators; the built-in provider supplies these three kinds.
 
-An agent that can only answer cannot ask. A turn that needs a choice, a piece
-of text, or a decision about whether to proceed has nowhere to put the
-question: `ask` runs inside `handle_line`, under the calling plugin's budget,
-with the loop's `$os/read_line` already behind it.
+Core persists `input/request` and `input/reply` as versioned full-state events in
+the session's interaction projection. A pending record contains the validated
+public request, stable request ID, original run ID, and inert continuation data.
+The run receipt becomes `waiting_input`. Cold recovery preserves this state.
+An explicit reply is validated and persisted with renewed run admission before
+the agent resumes in a fresh task. It keeps its original run ID and continues
+its transcript block sequence. Repeated matching replies are idempotent;
+a conflicting answer is rejected. Cancel ends the waiting run without replay.
 
-The design that suggests itself — a `HarnessInteract` seam whose terminal
-provider blocks on a read — is the one to refuse. It reintroduces exactly the
-defect §10's view contract removed: a bounded call waiting on a person expires
-at the keyboard, and the reason `show_prompt`/`handle_line` are two calls is
-that no plugin message may block on a human. It also makes a turn
-unsuspendable, which puts an ordinary yes/no inside the interrupted-turn
-recovery path.
+The browser uses `POST /api/v1/sessions/{id}/input` with `input_id`, `value`, and
+`cancelled`; WebSocket snapshots and run pushes carry the question. The client
+renders text, single/multiple selection and confirm controls. Custom interaction
+kinds use text fallback in the standard clients and must validate text replies. Unconfirmed
+submitted answers are retained for idempotent reconnect recovery.
 
-The shape that fits is the same inversion one level down. A turn step returns
-either its result or a **pending request**. The loop renders the request
-through the active view, performs the read it already owns, and resumes the
-turn with the reply. Every plugin call stays bounded; the only unbounded read
-stays in `main.gene`, where it is today.
+The CLI uses the same run controller and receipts. It prints the pending
+question before the next unbounded stdin read; numeric choices and yes/no are
+parsed by the interaction plugin. `/cancel` cancels a pending question. No plugin
+callback blocks on terminal input.
 
-### 11.1 The request
+Custom tools return `PluginInputRequest` through `PluginHost:request_input`.
+The host validates context ownership and an owned resume tool, then persists
+only its request and inert continuation data, plus a fingerprint of the plugin entry (source, selectors, limits and metadata).
+On reply, that tool receives `{input, reply}`; a changed owner or entry fingerprint
+is rejected. Function continuations cannot cross a question boundary. The same
+mechanism works from `/tool`, the model agent, and CLI. Matching reply retries
+remain reads even while a resumed run or another session is active.
 
-One envelope, three kinds:
-
-```gene
-{^kind "select" ^id "..." ^prompt "Which provider?"
- ^options ["local" "memory"] ^default "local" ^multi false}
-{^kind "text"   ^id "..." ^prompt "Commit message" ^secret false}
-{^kind "confirm" ^id "..." ^prompt "Replace the bound provider?"}
-```
-
-The reply is `{^id ... ^value ...}` or `{^id ... ^cancelled true}`. Both are
-core persisted events, `input/request` and `input/reply`, carrying the
-`input_request` and `input_reply` schemas in `events.catalog`.
-
-The kinds are an `interactions` registry rather than a closed set in core, for
-the reason every other vocabulary here is a registry: rows have owners, the
-ledger removes them with their owner, and a plugin that needs a kind core did
-not anticipate contributes one instead of arguing for a core change.
-
-### 11.2 A deployment may be unable to answer
-
-The recording view has no human; an embedded deployment has no stdin. A
-`views` row therefore declares whether it is interactive and which kinds it
-renders. A kind the active view cannot render degrades to `text` when the
-request supplies a text form, and otherwise fails as a typed error — the same
-arrangement as every other capability question here: what the deployment can
-do is a property of the bound provider, and asking is refused rather than
-faked.
-
-A request may carry `^default`. A non-interactive deployment answers with it
-where one exists and refuses where one does not. Silence is never an answer.
-
-### 11.3 Permission is policy, not authority
-
-"Grant permission" is the kind that will be misread, so state it plainly: a
-runtime answer cannot widen the host ceiling. Composition stores inert
-selectors, grants are re-derived by attenuation at activation (§8), and the
-ceiling is fixed when the process starts. A permission interaction can
-therefore only:
-
-- choose among authority the process already holds;
-- record a policy decision that gates a plugin's own behavior; or
-- record intent that requires a restart under a wider launcher grant.
-
-Policy and authority must not end up looking like one mechanism. A prompt that
-appears to hand out capability is worse than no prompt, because it invites a
-deployment to rely on the user as the last line of defense in front of a
-boundary the capability system already decided.
-
-### 11.4 Where the turn suspends
-
-A question ends the current step; the answer is an input to the next one. That
-keeps the resume boundary of §1 intact — the harness still stops and restores
-at committed turn boundaries, and a pending question is durable state rather
-than a live continuation. The alternative, capturing the in-flight
-continuation, runs straight into the resource that is explicitly outside the
-resume boundary: live fibers are not serialized.
-
-The current model protocol uses `^type "code"`, `"code-with-response"`, or
-`"response"`. A future needs-input reply must extend that tagged union and its
-validator explicitly, together with request payload handling; it cannot reuse
-the retired `^status` field. The offline command agent would return the same
-interaction request from a command row.
-
-Request ids are derived from the turn and the asking site, not minted per
-attempt, so a replayed turn matches its recorded reply instead of asking the
-same question twice. Without that rule, cold repair re-prompts.
-
-### 11.5 What this buys the tests
-
-A scripted answer list becomes a view. Interactive flows stay deterministic and
-terminal-free in `tests/`, on the same footing as the recording view, and the
-`input/reply` stream in a restored session is the record of what a human chose
-and when.
+Defaults are suggestions, never implicit replies. Input cannot enlarge the
+launcher's capability ceiling. Secret input is refused; credentials belong in
+launcher configuration. Continuations contain data, not live resources.
 
 ## 12. Entry point and filesystem layout
 
@@ -639,6 +546,9 @@ embedded in persisted generated modules and shared by the sandbox loader.
 | `src/agents/agent.gene` | registry-backed commands, tools, offline prompt provider |
 | `src/agents/llm.gene` | model provider; prompt rendered from registries |
 | `src/agents/model_reply.gene` | shared reply envelope validation and format instructions |
+| `src/runtime/prompt.gene`, `src/runtime/cli_driver.gene` | channel-independent execution and CLI run admission |
+| `src/runtime/tools.gene`, `src/runtime/interactions.gene` | supervised tool requests and durable question/resume state |
+| `plugins/builtin/` | filesystem, subprocess, HTTP and interaction-kind plugins |
 | `src/views/repl.gene` | terminal view plugin |
 | `src/views/view_api.gene`, `src/views/recording_view.gene` | typed view contract and deterministic recording view |
 | `src/profiles/profile.gene`, `src/profiles/` | checked-in baseline composition |
@@ -665,8 +575,6 @@ Still deferred:
 - cross-workspace sharing/GC of module blobs;
 - restoration of live in-flight resources (explicitly outside the resume
   boundary);
-- mid-turn interaction (§11): the request/reply envelope, the `interactions`
-  registry, and view interactivity declarations;
 - a standardized richer output vocabulary. The mechanism is already here —
   `events.catalog` carries a schema per event and marks each one `required` or
   `ignorable`, so a view that does not understand a new output kind skips it —
@@ -687,8 +595,8 @@ updates directly, with snapshots restoring state on reconnect. Codex output
 text can appear as a provisional raw preview before the complete response is
 validated for execution.
 One active runtime and one run at a time preserve current session isolation.
-No model credentials, live Harness objects, or raw plugin state cross to the
-browser.
+Status and protocol metadata expose no model credentials, live Harness
+objects, or raw plugin state. Requested tool output is rendered as untrusted data.
 
 The new design distinguishes a submitted **run** from its internal composition
 **turns**. It requires durable submission deduplication, stable transcript IDs,

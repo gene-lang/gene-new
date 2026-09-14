@@ -18,6 +18,9 @@
 
 (mod seams)
 
+(type FilesystemPathError ^props {^message Str} ^impl [Error])
+(impl Error for FilesystemPathError)
+
 # --- Service Definition ----------------------------------------------------
 #
 # The `^capabilities` row is the authority envelope for every provider of this
@@ -40,10 +43,9 @@
 (impl HarnessFs for LocalFs
   (message read_text [path : Str] : Str
     ^capabilities [(fs/ReadDir "/tmp")]
-    # A real provider would read the file. What matters for the demo is the
-    # declared row: this message cannot be called without the grant, so a
-    # harness wired to this provider needs `--allow_read_dir /tmp` to run.
-    $"local:${self/root}/${path}"))
+    (if (|| ($str/starts_with? path "/") (($str/split path "/") .contains? ".."))
+      (fail (FilesystemPathError ^message "Use a path relative to the filesystem provider root.")))
+    ($fs/read_text $"${self/root}/${path}")))
 
 # --- Service Provider: the test double -------------------------------------
 #
@@ -125,6 +127,12 @@
 
 (fn prompt_provider [p : HarnessPrompt] : HarnessPrompt p)
 
+# A pending question is durable data; resuming starts a fresh bounded call.
+(protocol HarnessResume
+  (message resume [h, continuation, reply] : Str))
+
+(fn resume_provider [p : HarnessResume] : HarnessResume p)
+
 # --- A fourth seam: where a plugin's source comes from ----------------------
 #
 # `build <name> <text>` used to call one hard-coded function that filled in a
@@ -154,7 +162,7 @@
 # `model`, the model that wrote it, or "" when authorship needs no model.
 
 (protocol HarnessCodegen
-  (message generate [name : Str, request : Str] : Any)
+  (message generate [name : Str, request : Str, ^on_reply on_reply = nil] : Any)
   (message author [] : Any))
 
 (fn codegen_provider [c : HarnessCodegen] : HarnessCodegen c)

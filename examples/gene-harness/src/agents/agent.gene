@@ -12,15 +12,20 @@
 (mod agent)
 
 (import [Plugin PluginContext PluginHost Harness provide resolve seam_bound
-         row rows invoke_registry_row plugin_states bound_seams
+         row row_record rows invoke_registry_row plugin_states bound_seams ToolTask
          lifecycle_log log_append uninstall retry status_of
          installed transaction_diff flush_harness HarnessError current_run_id
-         run_needs_recovery? CommandError] ^from "../kernel")
+         run_needs_recovery? CommandError describe_tools describe_tool current_run_round] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
 (import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
          prompt_provider codegen_provider]
   ^from "../seams")
-(import [register_module] ^from "../storage/workspace")
+(import [register_module composition_entries ensure_module_blob disable_entry enable_entry]
+  ^from "../storage/workspace")
+(import [execute_tool await_owned_tasks] ^from "../runtime/tools")
+
+(import [ask_result] ^from "../runtime/prompt" ^export true)
+(import [ask] ^from "../runtime/cli_driver" ^export true)
 
 # --- word handling ---------------------------------------------------------
 
@@ -83,7 +88,7 @@
 (type TemplateCodegen)
 
 (impl HarnessCodegen for TemplateCodegen
-  (message generate [name : Str, request : Str] : Any
+  (message generate [name : Str, request : Str, ^on_reply on_reply = nil] : Any
     (plugin_source name request))
   (message author [] : Any
     # No model wrote this one, and the durable entry should say so rather than
@@ -97,7 +102,8 @@
       (host .PluginHost:provide "HarnessCodegen"
         (codegen_provider (TemplateCodegen)))))))
 
-(fn build_tool [h : Harness, name : Str, text : Str] : Str
+(fn build_plugin [h : Harness, name : Str, text : Str,
+                  ^scope scope = nil, ^selectors selectors = nil]
   (if_yes (== name "")
     (fail (HarnessError ^message "usage: build <name> <text...>")))
   (if_not (safe_name? name)
@@ -114,7 +120,13 @@
   # therefore untrusted by construction, which is the only way an authored-by-
   # model plugin can be safe to accept.
   (var codegen (resolve h "HarnessCodegen"))
-  (var source (codegen .HarnessCodegen:generate name text))
+  (var authored (codegen .HarnessCodegen:generate name
+    $"${text}\n\nInstalled tool contracts: ${(describe_tools h)}\nRequested scope: ${scope}; selectors: ${selectors}.\nFor real I/O prefer delegating to installed tools through PluginHost:request_tool. Declare those tool dependencies."
+    ^on_reply (fn [raw]
+      (log_append h "output" raw ^phase "raw_response" ^round ($math/max 1 (current_run_round h)))
+      (flush_harness h))))
+  (var plan (if (== ($head authored) Map) authored {^module authored}))
+  (var source plan/module)
   # Provenance is provider knowledge, so `build` asks for it rather than
   # guessing. Until it did, every entry this command committed carried
   # ^by "" ^model "" ^at "" — a durable record that could not say who wrote a
@@ -122,7 +134,9 @@
   (var author (codegen .HarnessCodegen:author))
   (var registered
     (register_module h/workspace h name source
-      ^scope "session" ^selectors []
+      ^scope (?? scope (?? plan/scope "session"))
+      ^selectors (?? selectors (?? plan/selectors []))
+      ^dependencies (?? plan/dependencies [])
       ^by author/by ^model author/model ^at ($to_str (gene/now))
       # `build` is the only verb that claims a durable name and there is no
       # verb that releases one — `disable` takes an entry out of desired state
@@ -132,39 +146,31 @@
       # `record_composition_change` writes "replaced", the previous blob stays
       # in the store, and each one is a new revision you can read back.
       ^replace true))
-  $"registered ${name} at revision ${registered/revision} ($(build_status h name text registered/status))")
+  (var tools [])
+  (for tool in (describe_tools h)
+    (if_yes (== tool/owner name) (tools .push tool)))
+  {^id name ^revision registered/revision ^status registered/status ^tools tools
+   ^message "Registered. Invoke the advertised tools with real inputs to verify their behavior."})
 
-(fn build_status [h : Harness, name : Str, request : Str, status : Str] : Str
-  # Registration proves the module is *shaped* like a plugin and that its
-  # `init` runs. It proves nothing about the body of `run`, which nothing
-  # touches until someone invokes the tool — so an author that guesses a
-  # stdlib name ships a plugin that installs cleanly and then fails in the
-  # user's hands, several commands later, with an error that names neither the
-  # tool nor the build that produced it.
-  #
-  # Two calls close most of that gap. They are safe to make because a generated
-  # tool holds `^capabilities []` and runs under the module ceiling: it cannot
-  # touch the world, and it cannot run away. They are *advisory* rather than
-  # fatal because the arguments are guesses — a tool that legitimately rejects
-  # one is not a broken tool — so the build stands either way and the caller is
-  # told what happened.
-  #
-  # Two rather than one because a single short probe proves less than it looks
-  # like it does. A `shorten` tool built here passed on its own name, nine
-  # bytes long, and failed on anything over twenty: the branch the request was
-  # actually about had never run. The request text is the second probe for that
-  # reason — it is the longest string the build has, and the one describing
-  # what the tool is supposed to handle.
-  (if_not (== status "ready")
-    (return status))
-  (var problem "")
-  (for probe in [name request]
-    (if_yes (== problem "")
-      (try
-        (invoke_registry_row h "tools" name [probe])
-      catch Any
-        (set problem ($to_str $err/message)))))
-  (if (== problem "") status $"${status}; first call raised: ${problem}"))
+(fn build_tool [h : Harness, name : Str, text : Str] : Str
+  ($to_str (build_plugin h name text)))
+
+(fn build_plugin_tool [h input]
+  (ToolTask ^task (spawn ^lane root
+    (build_plugin h input/name input/request ^scope input/scope ^selectors input/selectors))))
+
+(fn inspect_plugin_tool [h input]
+  (for entry in (composition_entries h/workspace)
+    (if_yes (== entry/id input/name)
+      (var path (ensure_module_blob h/workspace entry/module_digest))
+      (return {^entry entry ^source ($fs/read_text path)})))
+  (fail (HarnessError ^message $"No durable plugin ${input/name}")))
+
+(fn disable_plugin_tool [h input]
+  {^id input/name ^revision (disable_entry h/workspace input/name ^h h)})
+
+(fn enable_plugin_tool [h input]
+  {^id input/name ^revision (enable_entry h/workspace input/name ^h h)})
 
 (fn tool_names [h : Harness] : Any
   (var out ($thaw #[]))
@@ -186,16 +192,31 @@
 (fn command_seams [h, parts] ($to_str (bound_seams h)))
 (fn command_log [h, parts] ($str/join (lifecycle_log h) "\n"))
 (fn command_tools [h, parts] ($to_str (tool_names h)))
+(fn read_command_result [h, parts]
+  (var result (execute_tool h "fs.read" {^path (word parts 1)} ^round 1))
+  (if_not result/ok (fail (CommandError ^code "tool_failed" ^message result/error/message)))
+  (if (== result/waiting true) "" ($to_str result)))
 (fn command_read [h, parts]
-  (head_tool (resolve h "HarnessFs") (word parts 1)))
-(fn command_tool [h, parts]
-  (var name (word parts 1))
-  (var tool (row h "tools" name))
-  (if (== tool void)
-    (fail (HarnessError ^message $"no tool ${name}; `build` one or see `tools`")))
-  (invoke_registry_row h "tools" name [(words_from parts 2)]))
+  (ToolTask ^task (spawn ^lane root (read_command_result h parts))))
+(fn tool_command_result [h, source]
+  (var input (command_input source))
+  (var text ($str/trim input/source))
+  (var value text)
+  (if_yes (|| ($str/starts_with? text "{") ($str/starts_with? text "["))
+    (set value
+      (try ($json/parse text)
+        catch Any
+          (var forms ($parse/read_all text))
+          (var first (forms .next))
+          (if (forms .has_next) (fail (HarnessError ^message "tool input must be one data value")))
+          first)))
+  (var result (execute_tool h input/name value ^round 1))
+  (if_not result/ok (fail (CommandError ^code "tool_failed" ^message result/error/message)))
+  (if (== result/waiting true) "" ($to_str result)))
+(fn command_tool [h, source]
+  (ToolTask ^task (spawn ^lane root (tool_command_result h source))))
 (fn command_build [h, parts]
-  (build_tool h (word parts 1) (words_from parts 2)))
+  (ToolTask ^task (spawn ^lane root (build_tool h (word parts 1) (words_from parts 2)))))
 (fn command_unload [h, parts] (uninstall h (word parts 1)))
 (fn command_retry [h, parts] (retry h (word parts 1)))
 (fn command_diff [h, parts] ($to_str (transaction_diff h)))
@@ -216,15 +237,17 @@
 (fn dispatch [h : Harness, prompt : Str] : Str
   (var input (command_input prompt))
   (var cmd input/name)
-  (var command (row h "commands" cmd))
-  (if (== command void)
-    $"I don't know \"${cmd}\". Try `/help`."
+  (var record (row_record h "commands" cmd))
+  (if ($absent? record) (return $"I don't know \"${cmd}\". Try `/help`."))
+  (var command record/payload)
+  (var value
     (if (== command/raw_input true)
       (then (invoke_registry_row h "commands" cmd [h input/source]))
       (else
         (var parts [cmd])
         (for part in (words input/source) (parts .push part))
-        (invoke_registry_row h "commands" cmd [h parts])))))
+        (invoke_registry_row h "commands" cmd [h parts]))))
+  ($to_str (await_owned_tasks h record/owner value)))
 
 # --- the provider, and the plugin that binds it ----------------------------
 
@@ -248,9 +271,25 @@
                ["commands" "tool"] ["commands" "build"]
                ["commands" "unload"] ["commands" "retry"]
                ["commands" "diff"]
+               ["tools" "plugins.build"] ["tools" "plugins.inspect"]
+               ["tools" "plugins.disable"] ["tools" "plugins.enable"]
                ["prompt" "agent_commands"]]
     ^contextual true
     ^activate (fn [] (fn [host]
+      (host .PluginHost:contribute "tools"
+        {^name "plugins.build" ^doc "Build or revise a durable plugin from a description. Read its contracts and test it afterward; this does not execute guessed test inputs."
+         ^run build_plugin_tool ^contextual true
+         ^input_schema {^type "object" ^required ["name" "request"] ^additionalProperties false
+           ^properties {^name {^type "string"} ^request {^type "string"}
+             ^scope {^type "string" ^enum ["session" "workspace"]}
+             ^selectors {^type "array" ^items {^type "object"}}}}})
+      (for item in [["plugins.inspect" "Read a durable plugin's source and metadata." inspect_plugin_tool]
+                   ["plugins.disable" "Persistently disable a custom plugin." disable_plugin_tool]
+                   ["plugins.enable" "Re-enable a durable custom plugin." enable_plugin_tool]]
+        (host .PluginHost:contribute "tools"
+          {^name item/0 ^doc item/1 ^run item/2 ^contextual true
+           ^input_schema {^type "object" ^required ["name"] ^additionalProperties false
+             ^properties {^name {^type "string"}}}}))
       (host .PluginHost:contribute "commands"
         {^name "help" ^doc "show registry-derived help" ^run command_help})
       (host .PluginHost:contribute "commands"
@@ -264,7 +303,8 @@
       (host .PluginHost:contribute "commands"
         {^name "tools" ^doc "list registered tools" ^run command_tools})
       (host .PluginHost:contribute "commands"
-        {^name "tool" ^doc "invoke a registered tool" ^run command_tool})
+        {^name "tool" ^doc "invoke a registered tool: /tool fs.read {\"path\":\"README.md\"}"
+         ^raw_input true ^run command_tool})
       (host .PluginHost:contribute "commands"
         {^name "build" ^doc "register a durable generated plugin" ^run command_build})
       (host .PluginHost:contribute "commands"
@@ -283,36 +323,3 @@
     ^activate (fn [] (fn [host]
       (host .PluginHost:provide "HarnessPrompt"
         (prompt_provider (CommandAgent)))))))
-
-(fn ask_result [h : Harness, prompt : Str]
-  # The one call a driver makes. Errors are answers too: a CLI that dies
-  # because a command failed is not one you can explore a system with.
-  (var status "completed")
-  (var failure nil)
-  (var out
-    (try
-      ((resolve h "HarnessPrompt") .HarnessPrompt:handle h prompt)
-    catch CommandError
-      (set status "failed")
-      (set failure {^type "CommandError" ^code $err/code})
-      $err/message
-    catch Any
-      (set status "failed")
-      (set failure {^type ($to_str ($head $err))})
-      (if (== (current_run_id h) "")
-        $"error: ${$err/message}"
-        (do
-          ($println "Harness agent failed: " $err/message)
-          "The agent could not complete this run. Check the local Harness output."))))
-  (if_yes (run_needs_recovery? h)
-    (set status "recovery_required")
-    (set failure {^type "RecoveryRequired"}))
-  (if_yes (!= out "")
-    (log_append h "output" out
-      ^phase (if ($str/starts_with? ($str/trim prompt) "/") "command_result" "final")))
-  (flush_harness h)
-  {^status status ^text out ^error failure})
-
-(fn ask [h : Harness, prompt : Str] : Str
-  (var result (ask_result h prompt))
-  result/text)

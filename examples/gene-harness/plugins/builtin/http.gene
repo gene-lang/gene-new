@@ -1,0 +1,27 @@
+(mod http_tools)
+(import [Plugin PluginContext PluginHost ToolError ToolTask] ^from "../../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../../src/kernel")
+(import $net/http_client [request])
+
+(fn http_request [input]
+  (var timeout ($math/min 90000 ($math/max 1 (?? input/timeout_ms 30000))))
+  (var task (request ^method (?? input/method "GET") ^url input/url
+    ^headers (?? input/headers {}) ^body (?? input/body "")
+    ^timeout_ms timeout ^max_bytes 65536))
+  (ToolTask ^task task ^continuation response_result))
+
+(fn response_result [response]
+  (if_yes (>= response/status 400)
+    (fail (ToolError ^code "http_status" ^message $"HTTP ${response/status}" ^data response)))
+  response)
+
+(fn http_plugin [] : Plugin
+  (Plugin ^id "http" ^contextual true ^provides [["tools" "http.request"]]
+    ^activate (fn [] (fn [host]
+      (host .PluginHost:contribute "tools"
+        {^name "http.request" ^run http_request
+         ^doc "Make an HTTP(S) request using the launcher's net/Http authority. Returns status, headers and body, bounded to 64 KiB. Check the HTTP status before claiming success."
+         ^input_schema {^type "object" ^required ["url"] ^additionalProperties false
+           ^properties {^url {^type "string"}
+             ^method {^type "string" ^enum ["GET" "POST" "PUT" "PATCH" "DELETE" "HEAD" "OPTIONS"]}
+             ^headers {^type "object"} ^body {^type "string"} ^timeout_ms {^type "integer"}}}})))))

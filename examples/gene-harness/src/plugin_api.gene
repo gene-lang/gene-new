@@ -17,6 +17,15 @@
 # address another plugin's host context.
 (type PluginContext ^props {^token Any})
 
+# Returned to the host, never executed inside the requesting plugin's scope.
+# A continuation receives the callee's structured result after that call ends.
+(type ToolRequest ^props {^name Str ^input Any ^context PluginContext ^continuation Any?})
+(type ToolTask ^props {^task Any ^continuation Any?})
+(type PluginInputRequest
+  ^props {^request Any ^resume_tool Str ^input Any ^context PluginContext})
+(type ToolError ^props {^code Str ^message Str ^data Any?} ^impl [Error])
+(impl Error for ToolError)
+
 (type ExecutionLimits
   ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
 
@@ -26,6 +35,9 @@
 (protocol PluginHost
   (message registry_names [] : Any)
   (message row_keys [registry : Str] : Any)
+  (message describe_tool [name : Str] : Any)
+  (message request_tool [name : Str, input, ^continuation continuation = nil] : ToolRequest)
+  (message request_input [request, resume_tool : Str, input] : PluginInputRequest)
   (message create_registry [spec] : Any)
   (message resolve [seam : Str] : Any)
   (message provide [seam : Str, value] : Str)

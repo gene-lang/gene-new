@@ -24,6 +24,10 @@
 (import [command_plugin] ^from "../agents/agent")
 (import [code_command_plugin] ^from "../agents/code_command")
 (import [driver_plugin] ^from "../views/repl")
+(import [filesystem_plugin] ^from "../../plugins/builtin/filesystem")
+(import [interaction_plugin] ^from "../../plugins/builtin/interactions")
+(import [process_plugin] ^from "../../plugins/builtin/process")
+(import [http_plugin] ^from "../../plugins/builtin/http")
 
 (fn chat_profile [] : Profile
   # The one place this deployment differs from `cli` beyond its two providers.
@@ -34,8 +38,9 @@
   # runs away, and neither of them is loosened by admitting that a network
   # round trip takes time.
   (Profile ^name "chat"
-           ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
+           ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64
                                     ^timeout_ms 120000)
-           ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
+           ^plugins [(cli_render_plugin) (filesystem_plugin) (interaction_plugin)
+                     (process_plugin) (http_plugin)
                      (command_plugin) (code_command_plugin) (llm_agent_plugin) (driver_plugin)
                      (model_codegen_plugin)]))

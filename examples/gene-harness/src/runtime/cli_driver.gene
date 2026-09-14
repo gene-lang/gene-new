@@ -1,0 +1,34 @@
+# The CLI uses the same run receipts, input replies and execution tasks as web.
+(mod cli_driver)
+(import [Harness row_record invoke_owned_callable] ^from "../kernel")
+(import [ask_result] ^from "./prompt")
+(import [new_run_controller submit_run reply_to_input run_state] ^from "./run_controller")
+(import [pending_input] ^from "./interactions")
+
+(fn ask [h : Harness, text : Str] : Str
+  (if_yes ($absent? h/event_store)
+    (var result (ask_result h text))
+    (return result/text))
+  (var controller (new_run_controller {^h h ^events h/event_store}))
+  (var pending (pending_input h))
+  (var receipt nil)
+  (if ($absent? pending)
+    (then
+      (var state (run_state h/event_store h/event_stream))
+      (set receipt (submit_run controller $"cli-${state/next_seq}" state/next_seq text)))
+    (else
+      (var cancel (== ($str/trim text) "/cancel"))
+      (var value text)
+      (if_not cancel
+        (var record (row_record h "interactions" pending/request/kind))
+        (if_not ($absent? record/payload/parse_text)
+          (set value (invoke_owned_callable h record/owner record/payload/parse_text [pending/request text]))))
+      (set receipt (reply_to_input controller pending/request/id (if cancel nil value) ^cancelled cancel))))
+  (var watcher (controller/watcher .get))
+  (if_not ($absent? watcher) (watcher .join))
+  (var out "")
+  (for record in (h/log .get)
+    (if_yes (&& (== record/run_id receipt/id) (== record/kind "output")
+                (["final" "command_result"] .contains? record/phase))
+      (set out record/text)))
+  out)

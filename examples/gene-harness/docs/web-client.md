@@ -26,7 +26,7 @@ First-release scope:
 
 Deferred: remote access and multiple users; simultaneous runs in different
 sessions; graphical plugin installation or capability editing; uploads and a
-file editor; token-by-token model output; mid-turn questions from design §11;
+file editor; full token-by-token rendered answers;
 arbitrary plugin-supplied HTML or browser code.
 
 Existing commands such as `/build` still work through the normal prompt path.
@@ -139,7 +139,10 @@ stateDiagram-v2
     accepted --> running: start flushed before effects
     accepted --> cancelled: cancel before execution
     running --> stopping: stop requested
-    running --> completed
+    running --> waiting_input: question persisted
+  waiting_input --> running: explicit reply persisted
+  waiting_input --> cancelled: question cancelled
+  running --> completed
     running --> failed
     running --> recovery_required
     stopping --> cancelled: task unwound
@@ -159,7 +162,7 @@ needs attention. Preserve these distinctions in the structured outcome.
 Stop requests cancellation; it does not undo earlier committed turns or host
 effects. Keep “Stopping…” until the task has actually unwound. Cancellation of
 synchronous work may wait for a safe point or its existing execution limit.
-Cold recovery closes unfinished runs as interrupted and repairs inner turn
+Cold recovery preserves waiting-input runs and closes executing unfinished runs as interrupted, then repairs inner turn
 records. It never restarts a model or tool call automatically.
 
 ## 5. Durable records and safe submission
@@ -322,6 +325,12 @@ text. The renderer creates DOM nodes and never injects source HTML. Links accept
 HTTP(S), mailto, and fragment URLs; unsupported syntax remains text. This is not
 a full CommonMark implementation.
 
+Snapshots and live run messages include the public pending `input` request while
+a run is `waiting_input`. A dedicated form renders text, select (including
+multiple selection), or confirm. Ordinary prompt submission is disabled until
+the question is answered or cancelled. The waiting run holds no task or session
+execution slot. An unconfirmed submitted answer is saved and resolved on reconnect.
+
 Snapshots include `runs`, the public projection of the existing bounded receipt
 history (128 runs). Live run updates merge into that history. Outcome markers
 therefore survive subsequent runs and reloads while their receipts are retained.
@@ -338,7 +347,7 @@ bytes plus an ellipsis. Explicit renaming always ends automatic title selection.
 
 Use same-origin JSON HTTP for commands and snapshots, and a same-origin
 WebSocket for server-to-client delivery. HTTP paths retain their `/api/v1`
-names; WebSocket payloads use protocol version 2.
+names; WebSocket payloads use protocol version 3.
 
 | Method/path | Behavior |
 |---|---|
@@ -348,6 +357,7 @@ names; WebSocket payloads use protocol version 2.
 | `POST /api/v1/sessions` | Create an empty session with a server-owned ID. |
 | `PATCH /api/v1/sessions/{id}` | Rename a session using a metadata revision precondition. |
 | `GET /api/v1/sessions/{id}/snapshot` | History page/update, active run, next submission sequence, and provisional output. |
+| `POST /api/v1/sessions/{id}/input` | Reply with `{input_id, value, cancelled}`; validate and resume the same waiting run, with reply deduplication. |
 | `POST /api/v1/sessions/{id}/runs` | Submit `{request_id, submission_seq, text}`; return a durable receipt, normally HTTP 202. |
 | `GET /api/v1/sessions/{id}/runs/{run_id}` | Resolve an uncertain submission's current outcome when its receipt is retained. |
 | `POST /api/v1/sessions/{id}/runs/{run_id}/cancel` | Idempotently request stop. |

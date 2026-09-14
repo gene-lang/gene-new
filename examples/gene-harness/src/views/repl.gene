@@ -12,7 +12,8 @@
 
 (import [Plugin PluginContext PluginHost Harness HarnessLog] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
-(import [ask] ^from "../agents/agent")
+(import [ask] ^from "../runtime/cli_driver")
+(import [pending_input] ^from "../runtime/interactions")
 (import [HarnessView view_provider] ^from "./view_api")
 
 # A literal escape byte, because Gene has no string escape that produces one:
@@ -33,12 +34,22 @@
 (fn quitting? [line : Str] : Bool
   (if (== line "quit") true (== line "exit")))
 
-(type TerminalOutput)
+(type TerminalOutput ^props {^raw Bool ^last Any})
 
 (impl Callable for TerminalOutput
   (message apply [self call]
     (var event (/0 call))
-    (if_yes (== event/kind "output") ($println event/text))))
+    (if_yes (&& (! self/raw) (! ($absent? event/record))
+                (== event/record/phase "raw_response")) (return nil))
+    (if_yes (== event/kind "output")
+      (var previous (self/last .get))
+      (var duplicate false)
+      (if_yes (&& (! ($absent? previous)) (! ($absent? event/record)))
+        (set duplicate (&& (== event/record/phase "command_result")
+          (== previous/phase "tool_result") (== previous/run event/record/run_id)
+          (== previous/text event/text))))
+      (self/last .set {^phase event/record/phase ^run event/record/run_id ^text event/text})
+      (if_not duplicate ($println event/text)))))
 
 # The driver's half of a turn is two calls with main.gene's `$os/read_line`
 # between them, and neither of them waits for a person. That is what makes a
@@ -50,7 +61,7 @@
 # each turn, so a committed replacement takes effect at the next prompt without
 # a hand-rolled check or a tail call into the successor.
 
-(fn repl_prompt [greeted] : Any
+(fn repl_prompt [greeted h] : Any
   # The greeting is one-shot state on the view rather than something activation
   # prints, because activation runs in the middle of boot output and this line
   # has to be the last thing before the first prompt.
@@ -62,6 +73,15 @@
   # without a newline would sit in the buffer until after the answer it was
   # asking for — invisible exactly when it matters.
   ($println "")
+  (var pending (pending_input h))
+  (if_not ($absent? pending)
+    ($println pending/request/prompt)
+    (if_yes (== pending/request/kind "select")
+      (var i 1)
+      (for option in pending/request/options
+        ($println $"  ${i}. ${option}") (set i (+ i 1))))
+    (if_yes (== pending/request/kind "confirm") ($println "Enter yes or no."))
+    ($println "Enter your answer, or /cancel to cancel the question."))
   ($println (user_prompt))
   nil)
 
@@ -75,24 +95,28 @@
   (if_yes (quitting? text)
     ($println "bye")
     (return 0))
+  (if_not ($absent? (pending_input h))
+    (try (ask h line) catch Any ($println $"error: ${$err/message}"))
+    (return nil))
   (if_yes (!= text "")
     # One speaker label per exchange. The agent may take several turns
     # after this, and those are marked as rounds rather than repeating
     # the label — the harness is still the one talking.
     ($println "Gene>")
-    (ask h text))
+    (try (ask h text) catch Any ($println $"error: ${$err/message}")))
   nil)
 
 (type TerminalView ^props {^greeted Any})
 (impl HarnessView for TerminalView
-  (message show_prompt [h] : Any (repl_prompt self/greeted))
+  (message show_prompt [h] : Any (repl_prompt self/greeted h))
   (message handle_line [h, line] : Any (repl_line h line)))
 
 (fn driver_plugin [] : Plugin
   (Plugin ^id "driver" ^provides [["views" "active"]]
     ^requires ["HarnessPrompt"] ^contextual true
     ^activate (fn [] (fn [host]
-      (host .PluginHost:subscribe HarnessLog (TerminalOutput))
+      (host .PluginHost:subscribe HarnessLog
+        (TerminalOutput ^raw (== ($os/env? "GENE_HARNESS_RAW") "1") ^last ($cell nil)))
       (host .PluginHost:contribute "views"
         {^name "active" ^implementation "terminal"
          ^value (view_provider (TerminalView ^greeted ($cell false)))})))))

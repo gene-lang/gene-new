@@ -12,18 +12,22 @@
 
 (import [Plugin PluginContext PluginHost] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
-(import [MemFs HtmlRender fs_provider render_provider] ^from "../seams")
+(import [HarnessFs MemFs HtmlRender fs_provider render_provider] ^from "../seams")
 (import [Profile] ^from "./profile")
 (import [reporter_plugin] ^from "./common")
 (import [agent_plugin command_plugin template_codegen_plugin] ^from "../agents/agent")
 (import [code_command_plugin] ^from "../agents/code_command")
 
 (fn web_fs_plugin [] : Plugin
-  (Plugin ^id "fs" ^provides ["HarnessFs"]
+  (Plugin ^id "fs" ^provides ["HarnessFs" ["tools" "fs.read"]]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host .PluginHost:provide "HarnessFs"
-        (fs_provider (MemFs ^files {^notes "hello from memory"})))))))
+      (var fs (fs_provider (MemFs ^files {^notes "hello from memory"})))
+      (host .PluginHost:provide "HarnessFs" fs)
+      (host .PluginHost:contribute "tools"
+        {^name "fs.read" ^doc "Read a file from the explicit memory demonstration."
+         ^input_schema {^type "object" ^required ["path"] ^properties {^path {^type "string"}}}
+         ^run (fn [input] {^path input/path ^text (fs .HarnessFs:read_text input/path) ^truncated false})})))))
 
 (fn web_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]

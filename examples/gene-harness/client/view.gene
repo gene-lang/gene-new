@@ -14,9 +14,12 @@
   (var raw (== phase "raw_response"))
   (var step : Int block/round)
   (var summary (if raw $"Raw LLM response · Step ${step}"
-    (if (== phase "code") "Gene code" "Execution result")))
+    (if (== phase "code") "Gene code"
+      (if (== phase "tool_call") "Tool request"
+        (if (== phase "tool_result") "Tool result" "Execution result")))))
   (var content : EventTarget
-    (if (|| raw (== phase "code") (== phase "result"))
+    (if (|| raw (== phase "code") (== phase "result")
+            (== phase "tool_call") (== phase "tool_result"))
       ($dom/render
         `(details ^class_name %(if raw "execution raw_response" "execution")
            ^open %expanded
@@ -52,14 +55,17 @@
   (var key : Str $"${run_id}/step-${round}")
   (var progress "")
   (var has_code false)
+  (var has_tool false)
   (var has_result false)
   (for block in blocks
     (var phase : Str block/phase)
-    (if_yes (== phase "code") (set has_code true))
-    (if_yes (== phase "result") (set has_result true)))
+    (if_yes (|| (== phase "code") (== phase "tool_call")) (set has_code true))
+    (if_yes (== phase "tool_call") (set has_tool true))
+    (if_yes (|| (== phase "result") (== phase "tool_result")) (set has_result true)))
   (if_yes active
     (set progress (if has_result " · Result received"
-      (if has_code " · Running code…" " · Generating response…"))))
+      (if has_tool " · Running tool…"
+        (if has_code " · Running code…" " · Generating response…")))))
   (var title $"Step ${round}${progress}")
   (var details ($dom/render
     `(details ^class_name "step" ^open %opened

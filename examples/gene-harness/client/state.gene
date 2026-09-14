@@ -48,6 +48,7 @@
   (var phase : Str block/phase)
   (&& (> round 0)
       (|| (== phase "raw_response") (== phase "code")
+          (== phase "tool_call") (== phase "tool_result")
           (== phase "result") (== phase "narration"))))
 
 (fn marker_block [block : Any] : Bool
@@ -63,6 +64,7 @@
   (var status : Str run/status)
   (var value : Any (?? run/outcome ""))
   (var outcome : Str value)
+  (if (== status "waiting_input") (return "Waiting for your answer"))
   (if (== outcome "code_error") "Code error"
     (if (== status "completed") "Completed"
       (if (== status "cancelled") "Stopped"

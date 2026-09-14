@@ -1,0 +1,86 @@
+(mod filesystem_tools)
+
+(import [Plugin PluginContext PluginHost HarnessError] ^from "../../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../../src/kernel")
+(import $fs [read_text write_text_atomic list_dir make_dir])
+
+(fn path_for [h input]
+  (var relative (?? input/path "."))
+  (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
+    (fail (HarnessError ^message "Use a relative path inside the selected root.")))
+  (var root (?? input/root "workspace"))
+  (var base (if (== root "workspace") h/workspace/workspace_root
+    (if (== root "state") h/workspace/state_root
+      (fail (HarnessError ^message "root must be workspace or state")))))
+  (if (== relative ".") base $"${base}/${relative}"))
+
+(fn bounded_text [text : Str, maximum : Int = 65536] : Str
+  (if (<= ($str/byte_size text) maximum) (return text))
+  (var end maximum)
+  (while (> end 0)
+    (var candidate (try ($str/slice_bytes text 0 end) catch Any nil))
+    (if_not ($absent? candidate) (return candidate))
+    (set end (- end 1)))
+  "")
+
+(fn read_file [h input]
+  (var text (read_text (path_for h input)))
+  (var shown (bounded_text text))
+  {^path input/path ^text shown ^truncated (!= text shown)})
+
+(fn list_files [h input]
+  (var names (list_dir (path_for h input)))
+  {^path (?? input/path ".") ^entries names})
+
+(fn write_file [h input]
+  (write_text_atomic (path_for h input) input/text)
+  {^path input/path ^bytes ($str/byte_size input/text)})
+
+(fn edit_file [h input]
+  (var path (path_for h input))
+  (var text (read_text path))
+  (if (== input/old "") (fail (HarnessError ^message "old text must not be empty")))
+  (var parts ($str/split text input/old))
+  (var matches (- parts/.size 1))
+  (if (== matches 0) (fail (HarnessError ^message "The old text was not found; read the file again.")))
+  (if_yes (&& (> matches 1) (!= input/all true))
+    (fail (HarnessError ^message "The old text occurs more than once; provide more context or all: true.")))
+  (write_text_atomic path ($str/join parts input/new))
+  {^path input/path ^replacements matches})
+
+(fn search_file [h input]
+  (var lines ($str/split (read_text (path_for h input)) "\n"))
+  (var matches [])
+  (var line 0)
+  (var truncated false)
+  (for text in lines
+    (set line (+ line 1))
+    (if_yes ($str/contains? text input/query)
+      (if (>= matches/.size 100) (then (set truncated true) (break)))
+      (matches .push {^line line ^text (bounded_text text 1024)})))
+  {^path input/path ^matches matches ^truncated truncated})
+
+(fn make_directory [h input]
+  (make_dir (path_for h input))
+  {^path input/path})
+
+(fn file_schema [required fields]
+  (var properties {^path {^type "string"} ^root {^type "string" ^enum ["workspace" "state"]}})
+  (for [key schema] in fields (properties .put key schema))
+  {^type "object" ^properties properties ^required required ^additionalProperties false})
+
+(fn filesystem_plugin [] : Plugin
+  (Plugin ^id "filesystem" ^provides [["tools" "fs.read"] ["tools" "fs.list"]
+    ["tools" "fs.write"] ["tools" "fs.edit"] ["tools" "fs.search"] ["tools" "fs.mkdir"]]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (for item in [
+        ["fs.read" "Read a UTF-8 file, returning at most 64 KiB with a truncation flag." read_file ["path"] {}]
+        ["fs.list" "List the immediate entries of a directory." list_files [] {}]
+        ["fs.write" "Atomically write a UTF-8 file. Create parent directories first." write_file ["path" "text"] {^text {^type "string"}}]
+        ["fs.edit" "Replace exact text in a UTF-8 file; ambiguity is an error unless all is true." edit_file ["path" "old" "new"] {^old {^type "string"} ^new {^type "string"} ^all {^type "boolean"}}]
+        ["fs.search" "Find literal text in one file; return line numbers and at most 100 matches." search_file ["path" "query"] {^query {^type "string"}}]
+        ["fs.mkdir" "Create a directory beneath the selected root." make_directory ["path"] {}]]
+        (host .PluginHost:contribute "tools"
+          {^name item/0 ^doc item/1 ^run item/2 ^contextual true
+           ^input_schema (file_schema item/3 item/4)}))))))

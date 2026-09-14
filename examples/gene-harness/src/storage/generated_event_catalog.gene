@@ -39,4 +39,6 @@
     #{^name "composition/changed" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_composition_changed_event}
     #{^name "plugin/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_plugin_state_event}
     #{^name "session/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "run/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}])
+    #{^name "run/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "input/request" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "input/reply" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}])

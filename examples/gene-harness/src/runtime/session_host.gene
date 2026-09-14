@@ -4,7 +4,7 @@
 (import [open_event_store close_event_store refresh_event_store flush_event_store
          core_state core_states record_core_state events_for copy_data] ^from "../storage/state")
 (import [RunError new_run_controller controller_busy? close_controller
-         duplicate_receipt run_state receipt_for recover_runs submit_run cancel_run]
+         duplicate_receipt run_state receipt_for recover_runs submit_run cancel_run reply_to_input]
   ^from "./run_controller" ^export true)
 (import [SessionBusy claim_session] ^from "./session_claim")
 (import [repair_interrupted_turns validate_event_catalog] ^from "../storage/state")
@@ -16,8 +16,9 @@
 (import [refresh_workspace composition_revision workspace_status] ^from "../storage/workspace")
 (import $crypto [random_hex sha256])
 (import [prompt_limit history_page_limit protocol_version] ^from "../web/contract")
+(import [reply_digest] ^from "./interactions")
 
-(type SessionHost ^props {^home Str ^events Any ^profile Any ^offline Bool
+(type SessionHost ^props {^home Str ^project_root Str ^events Any ^profile Any ^offline Bool
                          ^epoch Str ^runtime Any ^controller Any ^session Any
                          ^closed Any ^revision Any ^status_snapshot Any ^model_info Any
                          ^publisher Any ^subscription Any ^previews Any})
@@ -175,7 +176,8 @@
         (indexed .put stream true))))
   (flush_event_store events))
 
-(fn open_session_host [^home home : Str = "", ^offline offline : Bool = false] : SessionHost
+(fn open_session_host [^home home : Str = "", ^offline offline : Bool = false,
+                      ^project_root project_root : Str = ""] : SessionHost
   (var root (prepare_home ^root home))
   (var events (open_event_store $"${root}/events"))
   (var catalog {})
@@ -192,7 +194,7 @@
           (recover_runs events metadata/stream)
           (repair_interrupted_turns events ^session metadata/stream)
         ensure (claim .close)))))
-  (SessionHost ^home root ^events events ^profile (browser_profile ^offline offline)
+  (SessionHost ^home root ^project_root project_root ^events events ^profile (browser_profile ^offline offline)
     ^offline offline ^epoch (random_hex 16) ^runtime ($cell nil)
     ^controller ($cell nil) ^session ($cell nil) ^closed ($cell false)
     ^revision ($cell 0) ^status_snapshot ($cell {^commands [] ^plugins [] ^composition nil})
@@ -235,7 +237,7 @@
   (var result {^id receipt/id ^request_id receipt/request_id
     ^submission_seq ($to_str receipt/submission_seq) ^status receipt/status
     ^accepted_at receipt/accepted_at})
-  (for key in ["started_at" "finished_at" "message" "outcome"]
+  (for key in ["started_at" "finished_at" "message" "outcome" "input"]
     (if_not (== (receipt .get key) void) (result .put key (receipt .get key))))
   result)
 
@@ -293,7 +295,8 @@
     (host/controller .set nil)
     (flush_event_store host/events))
   (try
-    (set runtime (open_runtime host/home metadata/stream host/profile ^events host/events))
+    (set runtime (open_runtime host/home metadata/stream host/profile ^events host/events
+      ^project_root host/project_root))
   catch SessionBusy
     (fail (RunError ^code "session_busy" ^message $err/message)))
   (recover_runs host/events metadata/stream)
@@ -353,6 +356,25 @@
       (fail (RunError ^code "not_found" ^message "This run is not available.")))
     (public_receipt receipt)
   ensure (close_event_store events)))
+
+(fn answer_input [host : SessionHost, id : Str, input_id : Str, value,
+                  ^cancelled cancelled : Bool = false]
+  # A matching retry is a read, even while this or another session is running.
+  (var events (open_event_store $"${host/home}/events"))
+  (try
+    (var saved (require_session events id))
+    (var state (core_state events "session" saved/stream "interaction"))
+    (if_not ($absent? state)
+      (for reply in state/replies
+        (if_yes (== reply/id input_id)
+          (if_not (== reply/digest (reply_digest value cancelled))
+            (fail (RunError ^code "invalid_reply" ^message "This question already has a different answer.")))
+          (return (public_receipt (receipt_for events saved/stream reply/run_id))))))
+  ensure (close_event_store events))
+  (refresh_idle host)
+  (var metadata (require_session host/events id))
+  (ensure_runtime host metadata)
+  (public_receipt (reply_to_input (host/controller .get) input_id value ^cancelled cancelled)))
 
 (fn cancel [host : SessionHost, id : Str, run_id : Str]
   (if_yes (|| ($absent? (host/controller .get)) (!= (host/session .get) id))

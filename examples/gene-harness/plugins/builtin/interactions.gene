@@ -1,0 +1,78 @@
+(mod standard_interactions)
+
+(import [Plugin PluginContext PluginHost HarnessError] ^from "../../src/kernel")
+(import_impl PluginHost for PluginContext ^from "../../src/kernel")
+
+(fn validate_request [request]
+  (var prompt request/prompt)
+  (if (|| (!= ($head prompt) Str) (== ($str/trim prompt) "") (> ($str/byte_size prompt) 2048))
+    (fail (HarnessError ^message "A question needs 1–2048 bytes of prompt text.")))
+  (if (== request/secret true)
+    (fail (HarnessError ^message "Secret inputs are not stored in conversations. Configure credentials in the launcher.")))
+  (var kind (?? request/kind "text"))
+  (var out {^kind kind ^prompt prompt})
+  (if_yes (== kind "select")
+    (var options request/options)
+    (if (|| (!= ($head options) List) (== options/.size 0) (> options/.size 20))
+      (fail (HarnessError ^message "A selection needs 1–20 options.")))
+    (for option in options
+      (if (|| (!= ($head option) Str) (== option "") (> ($str/byte_size option) 256))
+        (fail (HarnessError ^message "Selection options must be short, non-empty text."))))
+    (out .put "options" options)
+    (out .put "multi" (== request/multi true)))
+  (if_not ($absent? request/default)
+    (validate_reply out request/default)
+    (out .put "default" request/default))
+  out)
+
+(fn validate_reply [request value]
+  (if (== request/kind "confirm")
+    (then
+      (if_not (== ($head value) Bool) (fail (HarnessError ^message "Choose Yes or No."))))
+    (elif (&& (== request/kind "select") (== request/multi true))
+      (if_not (== ($head value) List) (fail (HarnessError ^message "Choose a list of options.")))
+      (for option in value
+        (if_not (request/options .contains? option)
+          (fail (HarnessError ^message "Choose only the listed options.")))))
+    (else
+      (if (|| (!= ($head value) Str) (> ($str/byte_size value) 16384))
+        (fail (HarnessError ^message "Enter at most 16 KiB of text.")))
+      (if_yes (&& (== request/kind "select") (! (request/options .contains? value)))
+        (fail (HarnessError ^message "Choose one of the listed options.")))))
+  value)
+
+(fn parse_text [request text : Str]
+  (var input ($str/trim text))
+  (if (== request/kind "confirm")
+    (then
+      (var lower ($str/lower input))
+      (if (["yes" "y" "true"] .contains? lower) (return true))
+      (if (["no" "n" "false"] .contains? lower) (return false))))
+  (if_yes (== request/kind "select")
+    (if (== request/multi true)
+      (then
+        (var values [])
+        (for part in ($str/split input ",")
+          (var item ($str/trim part))
+          (var index (try (- ($parse/parse_int item) 1) catch Any -1))
+          (values .push (if (&& (>= index 0) (< index request/options/.size)) request/options/%index item)))
+        (return values))
+      (else
+        (var index (try (- ($parse/parse_int input) 1) catch Any -1))
+        (if_yes (&& (>= index 0) (< index request/options/.size))
+          (return request/options/%index)))))
+  text)
+
+(fn format_reply [request value] : Str
+  (if (== request/kind "confirm") (return (if value "Yes" "No")))
+  (if (== ($head value) List) (return ($str/join value ", ")))
+  ($to_str value))
+
+(fn interaction_plugin [] : Plugin
+  (Plugin ^id "interactions" ^contextual true
+    ^provides [["interactions" "text"] ["interactions" "select"] ["interactions" "confirm"]]
+    ^activate (fn [] (fn [host]
+      (for kind in ["text" "select" "confirm"]
+        (host .PluginHost:contribute "interactions"
+          {^name kind ^validate_request validate_request ^validate_reply validate_reply
+           ^parse_text parse_text ^format_reply format_reply}))))))

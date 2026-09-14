@@ -127,7 +127,7 @@
   (if_yes (== ($to_str event/type) "plugin/state")
     (update_projection events key ($to_str event/plugin) event/state))
   (if_yes (&& (== origin "core")
-              (["session/state" "run/state"] .contains? event/type))
+              (["session/state" "run/state" "input/request" "input/reply"] .contains? event/type))
     (update_core_projection events key event/key event/state))
   envelope)
 
@@ -165,7 +165,7 @@
 # retain them even when the event that established them leaves the log window.
 (fn record_core_state
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
-  (if_not (["session/state" "run/state"] .contains? kind)
+  (if_not (["session/state" "run/state" "input/request" "input/reply"] .contains? kind)
     (fail (HarnessStateError ^message "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))

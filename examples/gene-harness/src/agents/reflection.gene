@@ -12,7 +12,7 @@
 (fn schema_type [typ]
   (if (== typ (quote Str)) (return {^type "string"}))
   (if (== typ (quote Int)) (return {^type "integer"}))
-  (if (== typ (quote Float)) (return {^type "number"}))
+  (if (|| (== typ (quote Float)) (== typ (quote F64))) (return {^type "number"}))
   (if (== typ (quote Bool)) (return {^type "boolean"}))
   (if (== typ (quote Nil)) (return {^type "null"}))
   (if (&& (== ($head typ) (quote ?)) (== typ/body/.size 1))

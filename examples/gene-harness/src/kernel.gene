@@ -11,7 +11,7 @@
 
 (mod kernel)
 
-(import [Plugin DescriptorContext PluginContext PluginHost
+(import [Plugin DescriptorContext PluginContext PluginHost ToolRequest ToolTask ToolError PluginInputRequest
          ExecutionLimits default_execution_limits]
   ^from "./plugin_api" ^export true)
 (import [append_core_event append_plugin_event
@@ -821,9 +821,15 @@
 
 (fn validate_tool_row [candidate]
   (if (|| (== candidate/name void) (== candidate/doc void)
-          (== candidate/run void))
-    (fail (HarnessError ^message "a tool row requires name doc run"))
+          (! ($runtime/callable? candidate/run)))
+    (fail (HarnessError ^message "a tool row requires name, doc and a callable run"))
     candidate))
+
+(fn validate_interaction_row [candidate]
+  (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request))
+          (! ($runtime/callable? candidate/validate_reply)))
+    (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
+  candidate)
 
 (fn validate_view_row [candidate]
   (if (|| (== candidate/name void) (== candidate/value void))
@@ -901,6 +907,7 @@
   (registry h "seams" ^unique true ^schema validate_seam_row)
   (registry h "commands" ^unique true ^schema validate_command_row)
   (registry h "tools" ^unique true ^schema validate_tool_row)
+  (registry h "interactions" ^unique true ^schema validate_interaction_row)
   (registry h "prompt" ^unique false ^ordered true ^schema validate_prompt_row)
   (registry h "views" ^unique true ^schema validate_view_row)
   (registry h "event_types" ^unique true ^schema validate_event_type_row)
@@ -1018,7 +1025,15 @@
 
 (fn begin_run_log [h : Harness, id : Str]
   (end_run_log h)
-  ((run_log_contexts .get) .push {^h h ^id id ^counter ($cell 0) ^recovery ($cell false)})
+  # A resumed input request keeps its run ID, so continue durable block IDs.
+  (var counter 0)
+  (for record in (h/log .get)
+    (if_yes (&& (== record/run_id id) (! ($absent? record/block_id)))
+      (var parts ($str/split record/block_id "/"))
+      (var last (- parts/.size 1))
+      (var n (try ($parse/parse_int parts/%last) catch Any 0))
+      (set counter ($math/max counter n))))
+  ((run_log_contexts .get) .push {^h h ^id id ^counter ($cell counter) ^recovery ($cell false)})
   nil)
 
 (fn mark_run_recovery [h : Harness]
@@ -1033,6 +1048,15 @@
 (fn current_run_id [h : Harness] : Str
   (var context (run_log_context h))
   (if ($absent? context) "" context/id))
+
+(fn current_run_round [h : Harness] : Int
+  (var context (run_log_context h))
+  (if ($absent? context) 0 (?? context/round 0)))
+
+(fn set_run_round [h : Harness, round : Int]
+  (var context (run_log_context h))
+  (if_not ($absent? context) (context .put "round" round))
+  nil)
 
 (fn log_record [h : Harness, kind : Str, text : Str, phase : Str, round : Int, role : Str,
                 ^block_id block_id : Str = ""]
@@ -1216,6 +1240,8 @@
   (for registry_name in ["prompt" "commands" "tools" "seams" "views"]
     (var candidate (row h registry_name name))
     (if_not (== candidate void)
+      (if_yes (&& (== registry_name "seams") (== candidate/private true))
+        (return $"${name}: host-private provider; use its registered operations."))
       (if_not (== candidate/text void) (return ($to_str candidate/text)))
       (if_not (== candidate/doc void) (return ($to_str candidate/doc)))
       (return ($to_str candidate))))
@@ -1358,6 +1384,42 @@
       ^message $"registry ${registry_name} has no row ${key}")))
   (invoke_owned_callable h record/owner record/payload/run args))
 
+(fn describe_tool [h : Harness, name : Str]
+  (var record (row_record h "tools" name))
+  (if ($absent? record) (fail (HarnessError ^message $"no tool ${name}")))
+  (var value {^name name ^owner record/owner ^doc record/payload/doc})
+  (for key in ["input_schema" "output_schema"]
+    (var field (record/payload .get key))
+    (if_not ($absent? field) (value .put key field)))
+  ($freeze ($thaw ($freeze value))))
+
+(fn describe_tools [h : Harness]
+  (var out (fresh_list))
+  (for name in (registry_row_keys h "tools") (out .push (describe_tool h name)))
+  ($freeze out))
+
+(fn validate_tool_delegation [h : Harness, owner : Str, request : ToolRequest]
+  (var context (plugin_context_record request/context))
+  (if (|| (!= context/h h) (!= context/owner owner) (!= (status_of h owner) "ready"))
+    (fail (HarnessError ^message "tool request has an expired or foreign owner")))
+  (var target (row_record h "tools" request/name))
+  (if ($absent? target) (fail (HarnessError ^message $"no tool ${request/name}")))
+  (if (== target/owner owner) (return nil))
+  (var plugin (((active_plugins_cell h) .get) .get owner))
+  (for requirement in (requirements_of plugin)
+    (if_yes (&& (== (requirement_registry requirement) "tools")
+                (== (requirement_key requirement) request/name)) (return nil)))
+  (fail (HarnessError ^message $"plugin ${owner} must require tool ${request/name} before delegating to it")))
+
+(fn validate_plugin_input [h : Harness, owner : Str, request : PluginInputRequest]
+  (var context (plugin_context_record request/context))
+  (if (|| (!= context/h h) (!= context/owner owner) (!= (status_of h owner) "ready"))
+    (fail (HarnessError ^message "input request has an expired or foreign owner")))
+  (var target (row_record h "tools" request/resume_tool))
+  (if (|| ($absent? target) (!= target/owner owner))
+    (fail (HarnessError ^message "A plugin must resume through one of its own tools.")))
+  nil)
+
 (fn describe_plugin_module
   [h : Harness, module, expected_id : Str,
    ^core_interface core_interface : Str = "",
@@ -1392,6 +1454,18 @@
     (var record (plugin_context_record self))
     (registry_row_keys record/h registry_name))
 
+  (message describe_tool [name : Str] : Any
+    (var record (plugin_context_record self))
+    (describe_tool record/h name))
+
+  (message request_tool [name : Str, input, ^continuation continuation = nil] : ToolRequest
+    (plugin_context_record self)
+    (ToolRequest ^name name ^input input ^context self ^continuation continuation))
+
+  (message request_input [request, resume_tool : Str, input] : PluginInputRequest
+    (plugin_context_record self)
+    (PluginInputRequest ^request request ^resume_tool resume_tool ^input input ^context self))
+
   (message create_registry [spec] : Any
     (var record (require_writable_context (plugin_context_record self)))
     (if (== spec/name void)
@@ -1405,6 +1479,9 @@
 
   (message resolve [seam : Str] : Any
     (var record (require_writable_context (plugin_context_record self)))
+    (var provider (row record/h "seams" seam))
+    (if_yes (&& (! ($absent? provider)) (== provider/private true))
+      (fail (HarnessError ^message $"seam ${seam} is private to the host; use its registered operations")))
     (resolve record/h seam))
 
   (message provide [seam : Str, value] : Str

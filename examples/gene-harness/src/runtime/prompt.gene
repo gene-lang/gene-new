@@ -1,0 +1,51 @@
+# Channel-independent prompt execution. No command or agent implementations.
+(mod prompt_execution)
+(import [Harness resolve row_record callback_receiver CommandError ToolError current_run_id run_needs_recovery? log_append flush_harness] ^from "../kernel")
+(import [HarnessPrompt HarnessResume resume_provider] ^from "../seams")
+(import [pending_input] ^from "./interactions")
+(import [resume_tool] ^from "./tools")
+
+(fn ask_result [h : Harness, prompt : Str, ^continuation continuation = nil, ^reply reply = nil]
+  # The one call a driver makes. Errors are answers too: a CLI that dies
+  # because a command failed is not one you can explore a system with.
+  (var status "completed")
+  (var failure nil)
+  (var out
+    (try
+      (var row (row_record h "seams" "HarnessPrompt"))
+      (var receiver (callback_receiver h row/owner))
+      (if ($absent? continuation)
+        (then ((resolve h "HarnessPrompt") .HarnessPrompt:handle receiver prompt))
+        (elif (== continuation/kind "tool_command")
+          (var resumed (resume_tool h continuation reply))
+          (if_not resumed/ok (fail (CommandError ^code resumed/error/code ^message resumed/error/message)))
+          (if (== resumed/waiting true) "" ($to_str resumed)))
+        (else ((resume_provider (resolve h "HarnessPrompt")) .HarnessResume:resume receiver continuation reply)))
+    catch CommandError
+      (set status "failed")
+      (set failure {^type "CommandError" ^code $err/code ^message $err/message})
+      $err/message
+    catch ToolError
+      (set status "failed")
+      (set failure {^type "ToolError" ^code $err/code ^message $err/message})
+      $err/message
+    catch Any
+      (set status "failed")
+      (set failure {^type ($to_str ($head $err))})
+      (if (== (current_run_id h) "")
+        $"error: ${$err/message}"
+        (do
+          ($println "Harness agent failed: " $err/message)
+          "The agent could not complete this run. Check the local Harness output."))))
+  (if_yes (run_needs_recovery? h)
+    (set status "recovery_required")
+    (set failure {^type "RecoveryRequired"}))
+  (var pending (pending_input h))
+  (if_yes (&& (== status "completed") (! ($absent? pending)))
+    (set status "waiting_input"))
+  (if_yes (!= out "")
+    (log_append h "output" out
+      ^phase (if ($str/starts_with? ($str/trim prompt) "/") "command_result" "final")))
+  (flush_harness h)
+  {^status status ^text out ^error failure
+   ^input (if ($absent? pending) nil pending/request)})

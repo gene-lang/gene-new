@@ -1,0 +1,113 @@
+(mod interactions)
+
+(import [Harness HarnessError current_run_id row_record invoke_owned_callable log_append]
+  ^from "../kernel")
+(import [core_state record_core_state copy_data] ^from "../storage/state")
+(import $crypto [sha256])
+
+(fn interaction_state [h : Harness]
+  (if ($absent? h/event_store) (return {^counter 0 ^pending nil ^replies []}))
+  (?? (core_state h/event_store "session" h/event_stream "interaction")
+    {^counter 0 ^pending nil ^replies []}))
+
+(fn pending_input [h : Harness]
+  (var state (interaction_state h))
+  state/pending)
+
+(fn validate_continuation_data [value, ^depth depth : Int = 0]
+  (if (> depth 128) (fail (HarnessError ^message "Continuation data is nested too deeply.")))
+  (if ($absent? value) (return nil))
+  (var head ($head value))
+  (if ([Str Int F64 Bool Sym] .contains? head) (return nil))
+  (if (== head Map)
+    (then (for [key child] in value (validate_continuation_data child ^depth (+ depth 1))))
+    (elif (== head List)
+      (for child in value (validate_continuation_data child ^depth (+ depth 1))))
+    (elif (&& (! ($leaf? value)) (== ($head head) Sym))
+      (for child in ($node/body value) (validate_continuation_data child ^depth (+ depth 1)))
+      (for [key child] in ($node/props value) (validate_continuation_data child ^depth (+ depth 1))))
+    (else (fail (HarnessError ^message "A durable continuation accepts only inert data, never callbacks, contexts or live resources."))))
+  nil)
+
+(fn request_input [h : Harness, request, continuation]
+  (var state (interaction_state h))
+  (if_not ($absent? state/pending)
+    (fail (HarnessError ^message "Answer or cancel the existing question first.")))
+  (if_not (== ($head request) Map)
+    (fail (HarnessError ^message "input request must be a map")))
+  (var record (row_record h "interactions" (?? request/kind "text")))
+  (if ($absent? record) (fail (HarnessError ^message "This interaction kind is not installed.")))
+  (var checked (invoke_owned_callable h record/owner record/payload/validate_request [request]))
+  (if (|| (!= ($head checked) Map) (!= ($head checked/prompt) Str)
+          (!= checked/kind record/key) (== ($str/trim checked/prompt) "")
+          (> ($str/byte_size checked/prompt) 2048)
+          (== checked/secret true) (== request/secret true))
+    (fail (HarnessError ^message "Interaction validators must return a non-secret question with a text prompt and the same kind.")))
+  (if_yes (== checked/kind "select")
+    (if (|| (!= ($head checked/options) List) (== checked/options/.size 0) (> checked/options/.size 20))
+      (fail (HarnessError ^message "A selection needs 1–20 text options.")))
+    (for option in checked/options
+      (if_not (== ($head option) Str) (fail (HarnessError ^message "Selection options must be text."))))
+    (checked .put "multi" (== checked/multi true)))
+  (if_not ($absent? checked/default)
+    (var expected (if (== checked/kind "confirm") Bool
+      (if (&& (== checked/kind "select") checked/multi) List Str)))
+    (if_not (== ($head checked/default) expected)
+      (fail (HarnessError ^message "The suggested answer does not match the question's input shape.")))
+    (if_yes (== expected List)
+      (for option in checked/default
+        (if_not (== ($head option) Str) (fail (HarnessError ^message "Suggested choices must be text."))))))
+  (validate_continuation_data checked)
+  (validate_continuation_data continuation)
+  (var counter (+ state/counter 1))
+  (var run (current_run_id h))
+  (var id $"${h/event_stream}/${run}/input-${counter}")
+  (checked .put "id" id)
+  (state .put "counter" counter)
+  (state .put "pending" {^request checked ^continuation continuation ^run_id run})
+  (record_core_state h/event_store "session" h/event_stream "input/request" "interaction" state)
+  (log_append h "output" checked/prompt ^phase "input_request")
+  checked)
+
+(fn reply_digest [value, cancelled : Bool]
+  (sha256 ($to_str {^value value ^cancelled cancelled})))
+
+(fn recorded_reply [h : Harness, id : Str]
+  (var state (interaction_state h))
+  (for reply in state/replies (if_yes (== reply/id id) (return reply)))
+  nil)
+
+# Does not flush: callers publish the reply and run admission together.
+(fn accept_input [h : Harness, id : Str, value, ^cancelled cancelled : Bool = false]
+  (var previous (recorded_reply h id))
+  (var digest (reply_digest value cancelled))
+  (if_not ($absent? previous)
+    (if_not (== previous/digest digest)
+      (fail (HarnessError ^message "This question already has a different answer.")))
+    (return {^duplicate true ^run_id previous/run_id}))
+  (var state (interaction_state h))
+  (var pending state/pending)
+  (if (|| ($absent? pending) (!= pending/request/id id))
+    (fail (HarnessError ^message "This question is no longer pending.")))
+  (var normalized value)
+  (var display (if cancelled "Question cancelled." ($to_str value)))
+  (if_not cancelled
+    (var record (row_record h "interactions" pending/request/kind))
+    (if ($absent? record) (fail (HarnessError ^message "The interaction provider is unavailable.")))
+    (set normalized (invoke_owned_callable h record/owner record/payload/validate_reply
+      [pending/request value]))
+    (if_not ($absent? record/payload/format_reply)
+      (set display (invoke_owned_callable h record/owner record/payload/format_reply
+        [pending/request normalized]))))
+  (var replies state/replies)
+  (replies .push {^id id ^digest digest ^run_id pending/run_id})
+  (var retained [])
+  (var i ($math/max 0 (- replies/.size 128)))
+  (while (< i replies/.size) (retained .push replies/%i) (set i (+ i 1)))
+  (state .put "pending" nil)
+  (state .put "replies" retained)
+  (record_core_state h/event_store "session" h/event_stream "input/reply" "interaction" state)
+  (log_append h "message" display
+    ^phase "input_reply" ^role "user")
+  {^duplicate false ^run_id pending/run_id ^continuation pending/continuation
+   ^reply {^id id ^value normalized ^cancelled cancelled}})

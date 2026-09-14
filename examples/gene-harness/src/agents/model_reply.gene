@@ -9,7 +9,7 @@
 quotes, no markdown fence, and no prose before or after the map.
 
 The fields are:
-  ^type      REQUIRED: "code", "code-with-response", or "response".
+  ^type      REQUIRED: "code", "code-with-response", "tool", "input", or "response".
   ^code      ONE (do ...) block, REQUIRED for either code type, absent for response.
   ^response  A string. REQUIRED for response; OPTIONAL for either code type.
              With code, this is an explanation shown to the user BEFORE execution.
@@ -20,9 +20,20 @@ The fields are:
 as the final response, without another model round. Its optional ^response is
 only a progress explanation; it does not replace the execution result.
 "response" finishes with the text in ^response and executes nothing.
+"tool" requests one registered tool: ^tool is its name and ^input is the
+structured input matching its advertised schema. The host runs it under the
+plugin's policy and sends you {^ok true ^value ...} or {^ok false ^error ...}.
+Optional ^response explains the intended call. Tool replies contain no ^code.
+"input" asks the user a question and pauses at a durable step boundary. Supply
+^request {^kind "text"|"select"|"confirm" ^prompt "..."}, with ^options ["..."]
+for select and optional ^multi true. The user's explicit reply resumes the run.
+Use this for missing configuration or a user decision; never invent the answer.
+Input cannot grant new host authority or collect secrets. Input replies contain no ^code.
 
 Examples:
 {^type "response" ^response "Hello."}
+{^type "tool" ^tool "fs.read" ^input {^path "README.md"}}
+{^type "input" ^request {^kind "confirm" ^prompt "Replace the existing contents?"}}
 {^type "code" ^response "I will inspect the installed plugins."
  ^code (do (plugin_states))}
 {^type "code-with-response" ^response "I will count the supplied items."
@@ -35,8 +46,8 @@ Do not use the old ^status field or "done"/"in-progress" reply values.""")
 
 (fn validate_envelope [value] : Any
   (if_not (== ($head value) Map) (fail (HarnessError ^message "model reply must be one Gene map")))
-  (if_not (["code" "code-with-response" "response"] .contains? value/type)
-    (fail (HarnessError ^message "model reply ^type must be code, code-with-response, or response")))
+  (if_not (["code" "code-with-response" "tool" "input" "response"] .contains? value/type)
+    (fail (HarnessError ^message "model reply ^type must be code, code-with-response, tool, input, or response")))
   (if_not (== value/status void)
     (fail (HarnessError ^message "model reply uses ^type, not ^status")))
   (if_not (== value/payload void)
@@ -51,6 +62,16 @@ Do not use the old ^status field or "done"/"in-progress" reply values.""")
         (fail (HarnessError ^message "response replies require ^response text")))
       (if_not (== value/code void)
         (fail (HarnessError ^message "response replies cannot contain ^code"))))
+    (elif (== value/type "tool")
+      (if (|| (!= ($head value/tool) Str) (== value/tool "") (== value/input void))
+        (fail (HarnessError ^message "tool replies require ^tool name and ^input")))
+      (if_not (== value/code void)
+        (fail (HarnessError ^message "tool replies cannot contain ^code"))))
+    (elif (== value/type "input")
+      (if_not (== ($head value/request) Map)
+        (fail (HarnessError ^message "input replies require a ^request map")))
+      (if_not (== value/code void)
+        (fail (HarnessError ^message "input replies cannot contain ^code"))))
     (else
       (if_not (== ($head value/code) (quote do))
         (fail (HarnessError ^message "code replies require ^code (do ...)")))))

@@ -12,7 +12,7 @@
 
 (import [Plugin PluginContext PluginHost] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
-(import [LocalFs TextRender fs_provider render_provider] ^from "../seams")
+(import [HarnessFs LocalFs TextRender fs_provider render_provider] ^from "../seams")
 (import [Profile] ^from "./profile")
 (import [reporter_plugin] ^from "./common")
 (import [agent_plugin command_plugin template_codegen_plugin] ^from "../agents/agent")
@@ -26,11 +26,15 @@
 (fn cli_fs_plugin [] : Plugin
   # Reads the real filesystem, and says so in the only place that counts: the
   # provider's `^capabilities` row.
-  (Plugin ^id "fs" ^provides ["HarnessFs"]
+  (Plugin ^id "fs" ^provides ["HarnessFs" ["tools" "fs.read"]]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host .PluginHost:provide "HarnessFs"
-        (fs_provider (LocalFs ^root "/tmp")))))))
+      (var fs (fs_provider (LocalFs ^root "/tmp")))
+      (host .PluginHost:provide "HarnessFs" fs)
+      (host .PluginHost:contribute "tools"
+        {^name "fs.read" ^doc "Read a file beneath /tmp in the explicit CLI demonstration."
+         ^input_schema {^type "object" ^required ["path"] ^properties {^path {^type "string"}}}
+         ^run (fn [input] {^path input/path ^text (fs .HarnessFs:read_text input/path) ^truncated false})})))))
 
 (fn cli_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]

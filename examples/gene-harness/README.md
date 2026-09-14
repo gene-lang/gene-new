@@ -29,7 +29,7 @@ discovery through `PluginHost.resolve` remains separate from declared
 activation dependencies.
 
 The implementation follows [docs/design.md](docs/design.md); the normative
-design is [`tmp/harness.md`](../../tmp/harness.md).
+design is [docs/design.md](docs/design.md); `tmp/harness.md` is historical.
 
 The local browser client follows [the browser-client design](docs/web-client.md).
 The existing `web` profile below is an offline memory/HTML deployment example;
@@ -110,7 +110,9 @@ the launch directory still needs a matching `--allow_read_write_dir` grant.
 Prompts and cancellation use HTTP POST. Transcript blocks and run-state changes
 are pushed over the authenticated WebSocket as they occur; the connected client
 does not poll. Reconnect restores a bounded snapshot and then resumes live
-delivery. Older messages remain available through history pagination.
+delivery. Older messages remain available through history pagination. WebSocket
+protocol version 3 includes pending questions; restart the server and reload
+older clients after upgrading.
 
 Codex output text is streamed into the provisional **Raw LLM response** panel.
 The completed reply replaces that preview using the same block ID. Gene code
@@ -233,7 +235,7 @@ The first returns `3`. Multiple forms and multiline code are supported:
 ```
 
 This returns `12`. All forms are parsed before execution and run together in
-one workspace turn. The source appears as a Gene code block and the last value
+one workspace turn. The source appears inside a Gene step and the last value
 is returned to the conversation. `/code` without source shows usage.
 
 The command is available in browser, chat, CLI, and offline profiles, and
@@ -254,103 +256,47 @@ bin/gene run examples/gene-harness/src/main.gene web /code '(+ 1 2)'
 
 ## Durable self-extension
 
-The offline command provider demonstrates the complete path:
+Ask for the capability you need in the browser or model-backed CLI, for example:
 
-```bash
-GENE_HARNESS_HOME=examples/gene-harness/tmp/demo \
-  bin/gene run examples/gene-harness/src/main.gene web \
-  build greet "hello from a generated plugin"
-```
+> Build a workspace-scoped `line_count` plugin that accepts a filename and
+> counts non-empty lines by composing `fs.read`. Inspect its contract and test it
+> against `colors.txt` before reporting success.
 
-This returns a committed revision and activates the plugin once:
-
-```text
-registered greet at revision 1 (ready)
-```
-
-`build` does not know how to write a plugin. It resolves the `HarnessCodegen`
-seam and registers whatever comes back, so what the command *means* is a
-property of the deployment: `web` and `cli` bind a template provider, and `chat`
-binds one that asks the model to write the module.
-
-```bash
-(
-  cd examples/gene-harness
-  GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
-    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
-    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
-    src/main.gene chat \
-    /build wordcount "count the words in the argument and report the total"
-)
-```
+The built-in `plugins.build` tool resolves `HarnessCodegen`, validates its inert
+module plan, registers the requested scope/selectors/dependencies, and returns
+its revision, lifecycle status and installed tool descriptions. `/build` is a
+command adapter over that same operation:
 
 ```text
-registered wordcount at revision 1 (ready)
+/build wordcount Count words in an input object with a text field.
+/tool plugins.inspect {"name":"wordcount"}
+/tool wordcount {"text":"the quick brown fox"}
 ```
 
-```text
-$ ... web tool wordcount "the quick brown fox jumps over the lazy dog"
-word count: 9
-```
+The author can create several tools, plugin state, and dependencies. It can use
+supported filesystem selectors or delegate I/O through existing tools. Missing
+authority is reported explicitly. Installation never runs guessed test inputs;
+the agent must make real tool calls to verify the requested behavior.
 
-The `/` prefix selects the command interpreter; every prompt without it goes
-to the model as a task. Registration proves the module's shape and that its `init` runs, but
-nothing exercises `run` until it is invoked — so `build` calls the new tool twice,
-with its own name and with the request text, and appends what it raised:
+Author responses are captured in expandable raw-response blocks. Malformed
+syntax and mixed conditional styles receive up to three bounded author repair
+attempts before the build fails. Validation is inert and does not run tools.
 
-```text
-registered shout at revision 7 (ready; first call raised: undefined symbol: and)
-```
+Building the same plugin name replaces its durable entry at the next revision.
+`plugins.inspect` returns the source and metadata for revision work.
+`plugins.disable` and `plugins.enable` change durable desired state; `/unload`
+removes a plugin only for the current runtime. Old module blobs remain available
+under the existing retention rules. Session-scoped plugins restore in their
+session; workspace-scoped plugins are available in other sessions too.
 
-Those calls are safe to make because a generated tool holds `^capabilities []`
-and runs under the module ceiling, and advisory because the arguments are
-guesses. Two rather than one because a short probe proves less than it looks
-like it does: a `shorten` tool passed on its own name and failed on anything
-over twenty bytes, so the branch the request was about had never run.
+Every entry records its author, model, timestamp, scope and module/dependency
+digests. Source is parsed as inert Gene data, validated, content-addressed, and
+committed before activation. A failed activation remains inspectable instead of
+silently removing the desired entry.
 
-Building the same name again replaces the entry at the next revision rather
-than refusing it. There is no verb that releases a durable name — `disable`
-takes an entry out of desired state and the name stays taken — so create-only
-made iterating on a generated tool mean inventing a new name per attempt. The
-old blob stays in the store and the change is recorded as `replaced`, so a
-revision is still the unit you read back.
-
-```text
-$ ... web build greet "hello again"
-registered greet at revision 2 (ready)
-```
-
-Each committed entry names its author. `build` asks the `HarnessCodegen`
-provider who it is — provenance is provider knowledge, not something the
-command can guess — and records it beside the module digest:
-
-```gene
-^by "codegen/model" ^model "anthropic/claude-sonnet-4.6" ^at "2026-08-26T11:05:45+04:00"
-```
-
-The template provider answers `^by "template" ^model ""`, which is the honest
-answer for a module no model wrote.
-
-Run a separate process with the same home:
-
-```bash
-GENE_HARNESS_HOME=examples/gene-harness/tmp/demo \
-  bin/gene run examples/gene-harness/src/main.gene web tool greet world
-```
-
-```text
-greet(world) -> hello from a generated plugin
-```
-
-The source was never assembled by string concatenation. A provider returns a
-quoted AST — the template builds one with quasiquote, the model provider parses
-its reply with `read_all` and never evaluates text — and `register_module`
-validates and canonicalizes it, writes a SHA-256 module blob with atomic
-replacement, commits a composition generation by an exclusive revision claim,
-and only then activates it. Every check that made the template safe applies
-unchanged to a model: a `(mod plugin ...)` root, an inert top level, a defined
-`init`, imports inside the declared closure, and capability-empty `init` run
-under the module ceiling. An author is untrusted by construction.
+The explicit offline `web` and `cli` profiles retain a template code generator
+for demonstrations. Normal browser sessions and the default `chat` CLI profile
+use the model-backed author.
 
 ## What is durable
 
@@ -456,9 +402,10 @@ raw harness. It supports discovery, owned registries/contributions, seam
 operations, subscriptions, schema-validated event emission, and core-owned
 durable state. The context expires on demotion or uninstall.
 
-Generated command and view callbacks receive that retained context, not the
-Harness. Model code receives the complete live Harness as `harness` (also `h`),
-plus helpers already bound to the current transaction.
+Generated contextual command, tool, prompt and view callbacks receive that
+retained context. Model code receives immutable inspection snapshots and named
+operations. Private control providers are not exposed by PluginHost:resolve or
+by docs; their internal state stays in the host.
 Deactivation and registry cleanup receive the still-valid owner context.
 Repeated module replacements in one turn coalesce, so only the final committed
 descriptor activates.
@@ -480,6 +427,8 @@ and no surrounding prose or Markdown fence:
 | `"code"` | `^code (do ...)` | Executes and sends the result back to the model for another round. |
 | `"code-with-response"` | `^code (do ...)` | Executes and returns the execution result directly as the final response. |
 | `"response"` | `^response "..."` | Returns the text and finishes without executing code. |
+| `"tool"` | `^tool "name"`, `^input value` | Host executes the registered plugin and returns the result for another step. |
+| `"input"` | `^request {^kind ... ^prompt ...}` | Persists a question and resumes when the user explicitly answers. |
 
 **Both code types may include an optional `^response` string.** It is shown
 before execution to explain what is happening. For `code-with-response`, that
@@ -490,65 +439,78 @@ answer. Omitting `^response` is valid for either code type, including:
 {^type "code-with-response" ^code (do (+ 1 2))}
 ```
 
-`^payload` is optional for all three types and must be a map when supplied.
+`^payload` is optional for all reply types and must be a map when supplied.
 An omitted payload becomes a fresh `{}` each execution. Payload values are
 read as inert data, including embedded Gene nodes. Only a validated `^code`
 block is evaluated. Invalid types, malformed fields, extra top-level forms,
 and the old `^status` format are rejected and explained to the model for
 correction. A `code` reply always continues, even for `(do nil)`; the loop stops
-after eight rounds if it never receives a final reply. Execution errors and
+after sixteen rounds if it never receives a final reply. Execution errors and
 capability refusals are execution results, so `code-with-response` returns
 those directly too. Session memory retains the final answer rather than the
 progress explanation.
 
 The plugin author uses this same envelope with `^type "response"` and an
-inert module node in `^payload {^module (mod plugin ...)}`. The `build` consumer
+inert module plan in `^payload {^module (mod plugin ...) ^scope "session"
+^selectors [] ^dependencies []}`. The `build` consumer
 extracts and validates that module through the existing registration path.
 
 ## What a model program may reach
 
-| Binding | Value |
-|---|---|
-| `harness`, `h` | The complete live Harness instance, including its registry, plugin, log, transaction, event-store, and workspace fields. |
-| `session` | Current session metadata: `id`, `scope`, the live `history` cell, and the agent's `state_host` PluginContext. |
-| `payload` | This reply's payload map. |
-| `(get_payload)` | Returns the same payload map. |
-| `context` | `harness`, `workspace`, `session`, `payload`, the current user `prompt`, and one-based model `round`. |
+Model code sees read-only data and named operations. `harness`/`h` summarize
+session, plugins, tools and seams. `session` has id, scope and a history list;
+`context` has session, payload, prompt and round. Runtime cells and concrete
+provider implementations are private.
 
-For example, code can read `harness/event_stream`, inspect
-`(harness/transaction .get)`, read `(session/history .get)`, or bind
-`(var data (get_payload))` and use `data/name`. `Harness`, `PluginContext`, and
-`PluginHost` are available for typed/protocol operations. The helpers such as
-`plugin_states`, `resolve`, and `register_module` remain bound to this Harness
-and take no `h` argument. Use those helpers for changes that should be staged
-and rolled back by the effect ledger; direct mutation of Harness/session cells
-is available but is not automatically transactional.
+Use `(tools)`, `(describe_tool name)`, `(row_keys registry)`, `(plugin_states)`,
+and `(doc name)` to inspect the current system. Pure code has no host authority.
+For real work, request an installed tool:
 
-A reply's `^code` runs in an `Env` minted with the structural harness bindings
-and `^capabilities []`. Structural authority is total — every binding is an
-ordinary Gene call needing no grant, and the model may rebuild the harness with
-them — while host authority is nil: reading a file or the environment comes back
-as `refused: ...`, returned directly or sent to the next round according to type.
-
-`register_module` is the one operation that needs both. A grant only ever
-attenuates, so a program can never recover the authority a registration wants
-(hashing source, writing a blob, loading the module, running `init`); calling
-straight through refused at `fs/exists?` and the whole turn was lost. The
-binding therefore *queues* the module. The harness drains the queue after the
-program returns, still inside the same turn but back under its own authority,
-and commits and activates from there:
-
-```text
-(do (register_module "probe" (plugin_source "probe" "probe text")))
--- Result  --
-queued probe; the harness registers it when this turn ends
-registered probe at revision 1
+```gene
+{^type "tool" ^tool "fs.read" ^input {^path "README.md"}}
 ```
 
-The consequence is the one thing worth knowing before writing a program: a tool
-registered this way is callable from the *next* program, not the one that
-queued it. A registration that fails to load raises like any other error in the
-turn body, so it never becomes a revision.
+The host runs the plugin under its permitted policy and returns a structured
+result to the next model step. A custom plugin can compose another tool using
+`PluginHost:request_tool` and an optional continuation, with that tool declared
+in its `requires` list. Every callback remains bounded.
+
+`register_module` remains a transaction-aware core operation for inert quoted
+modules. The host validates and registers queued modules after evaluation ends;
+their tools become available in the next step. For conversational authoring,
+`plugins.build` and `/build` expose the same durable builder.
+
+## Real tools and pending questions
+
+Built-in plugins provide `fs.read`, `fs.list`, `fs.write`, `fs.edit`, `fs.search`
+(single-file literal search), `fs.mkdir`, `process.run`, and `http.request`, plus
+plugin build/inspect/enable/disable tools. `/tool` accepts JSON or Gene data, preserving argument whitespace:
+
+```text
+/tool fs.read {"path":"README.md"}
+/tool fs.write {"root":"state","path":"note.txt","text":"hello"}
+```
+
+Set `GENE_HARNESS_PROJECT` for the target project, independently of
+`GENE_HARNESS_HOME`. The web server also accepts `--project <directory>`. Grant
+that directory with the launcher's existing read/write flags; selecting a path
+does not grant access. The default project is the Harness package. `process.run` uses an executable
+plus an argument list, with bounded output and timeout; its working directory
+is not a subprocess filesystem sandbox. It uses the launcher's `os/Exec`
+authority. HTTP uses `net/Http`; nonzero process exits and HTTP errors retain
+structured details. Custom plugins can delegate to these installed tools.
+
+The agent can ask a text, select, or confirm question. The web client displays
+answer controls; the CLI prints options and accepts an answer or `/cancel`.
+Pending questions survive restart and resume the same run. Custom plugins can
+request input through `PluginHost:request_input`, naming an owned resume tool
+and inert continuation data. A changed plugin entry cannot resume an old
+question. CLI raw model responses are retained but printed only when
+`GENE_HARNESS_RAW=1`. An answer cannot
+grant new host authority. Configure credentials outside the conversation.
+
+The default CLI profile is now the model-backed `chat` profile. The explicitly
+named `cli` and `web` profiles remain command-only demonstrations.
 
 ## Capability selectors
 
@@ -656,6 +618,9 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/web/server.gene`, `src/web/style.gene` | local HTTP host, authentication, page layout and styling |
 | `src/web/push.gene` | ordered WebSocket messages, initial/recovery snapshots and connection lifetime |
 | `src/runtime/session_host.gene`, `src/runtime/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
+| `src/runtime/prompt.gene`, `src/runtime/cli_driver.gene` | shared prompt outcomes and CLI run admission |
+| `src/runtime/tools.gene`, `src/runtime/interactions.gene` | host-owned tool execution, composition and durable input |
+| `plugins/builtin/` | real filesystem, process, HTTP and interaction plugins |
 | `src/runtime/bootstrap.gene`, `src/runtime/session_claim.gene` | runtime lifecycle and exclusive session ownership |
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
 | `client/view.gene`, `client/markdown.gene` | grouped steps, per-run outcomes, and restricted Markdown rendering |

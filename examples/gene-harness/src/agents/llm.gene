@@ -1,54 +1,29 @@
-# A model whose only way to act is to emit a Gene program that runs against the
-# harness itself.
-#
-#   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
-#     gene run --allow_read_dir /tmp src/main.gene chat
-#
-# The shape is the archived `safe_ai_agent` example's, pointed at a different
-# subject. There
-# the evaluated program's world is a workspace directory; here it is the running
-# harness — the model gets the live Harness, session, reply payload, and
-# transaction-aware operations bound to that Harness, so
-# "install a plugin", "swap that provider", "subscribe to activations" are
-# things it *writes*, not things it selects from a menu.
-#
-#   prompt -> LLM -> {^type ^response? ^code? ^payload?} -> eval -> result
-#          -> repeat for "code", finish for "response"/"code-with-response"
-#
-# There is no tool list. The previous version had one — the model replied
-# `RUN: <command>` and the harness matched it against ten verbs — and the
-# ceiling was obvious the moment the model wanted to do something the verbs did
-# not name. A harness whose whole thesis is that it can be recomposed at runtime
-# should not hand a model a fixed menu of ten recompositions.
-#
-# The Env's capability row still bounds host authority. The bound operations
-# use the effect ledger; direct mutation of the live Harness is available too
-# and is not automatically staged or undone by that ledger.
+# Model-backed agent and plugin author. Replies are validated Gene data:
+# pure programs, host-owned tool requests, durable questions, or final text.
+# The model receives read-only inspection data and explicit operations.
+# Operational functionality comes from plugin-owned tool rows.
 
 (mod llm)
 
 (import $fs [read_text])
 (import [model_name chat_completion] ^from "./model_client")
 (import [parse_envelope reply_format_prompt] ^from "./model_reply")
-(import [Plugin PluginContext PluginHost Harness HarnessError CommandError HarnessEvent HarnessPreview ToolInvoked
-         PluginActivated PluginDeactivated PluginFailed PluginInstalled
-         PluginUninstalled
-         new_harness install_with_policy uninstall retry resolve
-         seam_bound bound_seams registry_row_keys invoke_registry_row
-         plugin_states plugin_ids status_of installed
-         lifecycle_log log_append log_events assemble_request current_run_id
-         publish render_prompt doc transaction_diff
-         module_dir]
+(import [execute_tool resume_tool] ^from "../runtime/tools")
+(import [request_input pending_input] ^from "../runtime/interactions")
+(import [HarnessResume] ^from "../seams")
+(import [Plugin PluginContext PluginHost Harness HarnessError CommandError HarnessPreview
+         uninstall retry resolve bound_seams registry_row_keys
+         plugin_states plugin_ids status_of installed lifecycle_log log_append
+         log_events current_run_id publish render_prompt doc transaction_diff
+         describe_tools describe_tool module_dir]
   ^from "../kernel")
 (import [ExecutionLimits] ^from "../plugin_api")
 (import_impl PluginHost for PluginContext ^from "../kernel")
-(import [HarnessFs HarnessRender HarnessPrompt HarnessCodegen LocalFs MemFs
-         TextRender HtmlRender fs_provider render_provider prompt_provider
-         codegen_provider head_tool report_tool] ^from "../seams")
-(import [dispatch words words_from word plugin_source] ^from "./agent")
+(import [HarnessPrompt HarnessCodegen prompt_provider codegen_provider] ^from "../seams")
+(import [dispatch] ^from "./agent")
 (import [register_module run_workspace_turn] ^from "../storage/workspace")
 
-(var turn_limit 8)
+(var turn_limit 16)
 
 # ---------------------------------------------------------------------------
 # What the generated program may reach
@@ -84,26 +59,17 @@
                       ^session session = nil, ^state_host state_host = nil,
                       ^payload payload = nil, ^prompt prompt : Str = "",
                       ^round round : Int = 1] : Any
-  # The complete Harness is deliberately exposed. The helpers below remain
-  # the transaction-aware way to change registries, lifecycle, and composition.
-  #
-  # `queued` is the current turn's registration queue: `^register_module`
-  # appends to it and `run_program` owns it, drains it at the turn boundary and
-  # never reuses it. It is a parameter rather than a private cell because the
-  # vocabulary outlives no turn — a caller that only wants to read the bindings
-  # (a test asking what a program may reach) passes a list it then ignores.
-  (var data (if ($absent? payload) {} payload))
-  (var current_session
+  # Only inert snapshots and named operations cross into model code. Runtime
+  # cells, provider values, plugin contexts and concrete tools remain private.
+  (var data ($freeze (if ($absent? payload) {} payload)))
+  (var current_session ($freeze
     {^id h/event_stream ^scope h/event_scope
-     ^history (if ($absent? session) ($cell []) session)
-     ^state_host state_host})
-  (var context
-    {^harness h ^workspace h/workspace ^session current_session
-     ^payload data ^prompt prompt ^round round})
-  {^h h ^harness h ^session current_session ^context context
+     ^history (if ($absent? session) [] (session .get))}))
+  (var inspection ($freeze {^session current_session ^plugins (plugin_states h)
+    ^tools (describe_tools h) ^seams (bound_seams h)}))
+  (var context ($freeze {^session current_session ^payload data ^prompt prompt ^round round}))
+  {^h inspection ^harness inspection ^session current_session ^context context
    ^payload data ^get_payload (fn [] data)
-   # lifecycle
-   ^install (fn [plugin] (install_with_policy h plugin []))
    ^uninstall (fn [id] (uninstall h id))
    ^retry (fn [id] (retry h id))
    ^register_module
@@ -136,49 +102,19 @@
           ^limits limits ^dependencies dependencies ^by by ^model model
           ^at at_value ^replace replace_value})
        $"queued ${id}; the harness registers it when this turn ends")
-   # Transaction-aware seams and registries. These helpers use PluginContext
-   # ownership and return registry keys; the live h binding also exposes cells.
-   ^resolve (fn [seam] (resolve h seam))
-   ^seam_bound (fn [seam] (seam_bound h seam))
-   ^row_keys (fn [registry_name] (registry_row_keys h registry_name))
-   ^invoke_registry
-     (fn [registry_name, key, args]
-       (invoke_registry_row h registry_name key args))
-   # inspection
-   ^bound_seams (fn [] (bound_seams h))
-   ^plugin_states (fn [] (plugin_states h))
-   ^plugin_ids (fn [] (plugin_ids h))
+   ^row_keys (fn [registry_name] ($freeze (registry_row_keys h registry_name)))
+   ^tools (fn [] (describe_tools h))
+   ^describe_tool (fn [name] (describe_tool h name))
+   ^bound_seams (fn [] ($freeze (bound_seams h)))
+   ^plugin_states (fn [] ($freeze (plugin_states h)))
+   ^plugin_ids (fn [] ($freeze (plugin_ids h)))
    ^status_of (fn [id] (status_of h id))
-   ^installed (fn [] (installed h))
-   ^transaction_diff (fn [] (transaction_diff h))
-   ^lifecycle_log (fn [] (lifecycle_log h))
+   ^installed (fn [] ($freeze (installed h)))
+   ^transaction_diff (fn [] ($freeze (transaction_diff h)))
+   ^lifecycle_log (fn [] ($freeze (lifecycle_log h)))
    ^doc (fn [name] (doc h name))
-   # the session log, and the §3.6 invariant
-   ^record_message (fn [text] (log_append h "message" text))
-   ^assemble_request assemble_request
-   # observation
-   ^publish (fn [event] (publish h event))
-   # types a program needs to construct things
-   ^Harness Harness ^Plugin Plugin ^PluginContext PluginContext ^PluginHost PluginHost
    ^HarnessError HarnessError
-   ^HarnessEvent HarnessEvent ^ToolInvoked ToolInvoked
-   ^PluginActivated PluginActivated ^PluginDeactivated PluginDeactivated
-   ^PluginFailed PluginFailed ^PluginInstalled PluginInstalled
-   ^PluginUninstalled PluginUninstalled
-   # the seams, their providers, and their consumers
-   ^HarnessFs HarnessFs ^HarnessRender HarnessRender ^HarnessPrompt HarnessPrompt
-   ^LocalFs LocalFs ^MemFs MemFs ^TextRender TextRender ^HtmlRender HtmlRender
-   ^fs_provider fs_provider ^render_provider render_provider
-   ^prompt_provider prompt_provider
-   ^head_tool head_tool ^report_tool report_tool
-   # growing code that did not exist at boot. `plugin_source` returns an inert
-   # quoted module node; `register_module` validates, content-addresses and
-   # commits it before activation.
-   ^plugin_source plugin_source
-   # list shapes the path syntax cannot express on an expression
-   ^size size ^at at ^drop_first drop_first ^without without
-   # the offline interpreter, still available as one call
-   ^dispatch (fn [prompt] (dispatch h prompt))})
+   ^size size ^at at ^drop_first drop_first ^without without})
 
 (fn run_program [h : Harness, program,
                  ^session session = nil, ^state_host state_host = nil,
@@ -189,25 +125,19 @@
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
   # shape that runs, so a program may define something and then use it.
   #
-  # `^capabilities` is the *host* authority row and it is resolved against this
-  # module's context when the Env is minted, so it can never name more than the
-  # harness already holds. Here that row is empty, so the program has no host
-  # authority whatsoever. Structural authority over the harness is total —
-  # every binding above is an ordinary Gene call needing no grant — while host
-  # authority stays with the harness. That split is the point: the model may
-  # rebuild the harness and still not read your home directory. The one
-  # operation that needs both is `register_module`, and the queue below is how
-  # it gets them without the sandbox ever holding a grant.
+  # Model code has no host authority. It sees immutable inspection data and
+  # explicit transaction-aware operations; operational work uses tool requests.
+  # Registration is queued until the restricted evaluator has returned.
   (var queued ($thaw #[]))
   (var bindings (harness_bindings h queued ^session session ^state_host state_host
                   ^payload payload ^prompt prompt ^round round))
+  (var limits (if ($absent? evaluation_limits)
+    (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000)
+    evaluation_limits))
   (var sandbox
-    (if ($absent? evaluation_limits)
-      (env ^bindings bindings ^capabilities [])
-      (env ^bindings bindings ^capabilities []
-        ^policy {^max_steps evaluation_limits/max_steps
-                 ^max_memory_mb evaluation_limits/max_memory_mb
-                 ^timeout_ms evaluation_limits/timeout_ms})))
+    (env ^bindings bindings ^capabilities []
+      ^policy {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
+               ^timeout_ms limits/timeout_ms}))
   (var existing_events (log_events h))
   (var turn_id $"model-${(+ existing_events/.size 1)}")
   (var run_id (current_run_id h))
@@ -261,7 +191,7 @@
       # code that runs away, and neither is loosened by admitting that writing
       # to disk takes time. Same trade `profiles/chat.gene` makes for a
       # command that waits on a model.
-      ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
+      ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64
                                ^timeout_ms 30000)))
   (if (== outcome/status "aborted")
     (do
@@ -290,45 +220,36 @@
 (fn system_prompt [h : Harness] : Str
   $"""${(reply_format_prompt)}
 
-You are the agent inside a Gene plugin harness. Code runs against it live.
+You are the agent inside a durable Gene plugin harness. Help the user complete
+real work, and build missing capabilities as plugins when needed.
 
-Execution bindings:
-  harness, h       The same complete, live Harness instance.
-  session          The current session: session/id, session/scope,
-                   session/history (the live history cell), session/state_host
-                   (the current agent's PluginContext).
-  payload          This reply's payload map; defaults to {} each round.
-  (get_payload)    Returns that same map without evaluating its contents.
-  context          context/harness, context/workspace, context/session,
-                   context/payload, context/prompt, and context/round.
+Use type "tool" to call a registered tool. The host runs it under its plugin's
+policy. Tool inputs follow the schema below. Tool requests execute after your
+restricted model context ends, so they can perform permitted real I/O.
 
-For example:
-{^type "code-with-response"
- ^response "I will report this session's identifier."
- ^payload {^label "Session"}
- ^code (do ($str/join [payload/label ": " session/id] ""))}
+Registered tools (the live registry is authoritative):
+${(describe_tools h)}
 
-Harness fields include harness/plugins, harness/registries, harness/log,
-harness/transaction, harness/event_store, harness/event_scope,
-harness/event_stream, and harness/workspace. Many are cells; use .get/.set.
-The bound helpers below take no h argument. Use them for lifecycle, registry,
-and composition changes so those changes go through the transaction ledger.
-Direct field/cell mutation is available but is not automatically transactional.
+Pure Gene code can calculate and inspect data. Its session, harness/h, context
+and payload bindings are read-only snapshots. session contains id, scope and a
+history list. harness contains session, plugins, tools and seams; it has no live
+runtime cells. context contains session, payload, prompt and round.
+(tools), (describe_tool name), (row_keys registry), (plugin_states), (doc name),
+(status_of id), and (bound_seams) inspect the current system.
 
 ${(harness_primer h)}
 
-Your program has no host capabilities: reading files or the environment is
-refused. register_module queues a module, then the harness commits and
-activates it after the program returns. A queued tool is callable from your
-NEXT program. Use type "code" if you need another round to call it or inspect
-its result; use "code-with-response" when the execution result itself is the
-answer. Code errors and refusals are returned as execution results too.
+Code holds no host authority. Do not call fs, network, process operations,
+concrete provider constructors, or invoke_registry from it. Request a tool
+instead. register_module is a transaction-aware core operation: it queues an
+inert quoted plugin module for validation and durable registration when the
+program ends. The installed tools become callable in the next step.
 
-If code failed, use the reported error to correct it. Do not repeat the same
-failed call or report success. Payload is inert Gene data, including any nodes
-stored inside it. It is not evaluated merely by reading payload or get_payload.
-
-Remember: return exactly one map with ^type, and nothing outside it.""")
+If a capability is missing, say what is missing and build the real capability
+or ask for the required configuration. Do not substitute a simulated answer
+for an operation the user requested. Tool errors are observations to resolve,
+not successful results. Never claim a file changed unless the tool result
+confirms it. Return exactly one map with ^type and no surrounding prose.""")
 
 (fn call_model [h : Harness, prompt : Str, history : Str, ^on_delta on_delta = nil] : Str
   (chat_completion (system_prompt h)
@@ -366,11 +287,12 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   (log_append h "output" text ^phase phase ^round round ^block_id block_id))
 
 (fn run_task [h : Harness, prompt : Str, session, state_host,
-              ^complete complete = nil] : Str
+              ^complete complete = nil, ^history history_override = nil,
+              ^start_round start_round : Int = 0] : Str
   # Intermediate narration/results are emitted as they happen. The final
   # response is returned to ask, which emits it once and flushes the session.
-  (var history (remembered session))
-  (var turn 0)
+  (var history (?? history_override (remembered session)))
+  (var turn start_round)
   (var running true)
   (var last "")
   (while running
@@ -404,6 +326,21 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
       (elif (== envelope/type "response")
         (set last envelope/response)
         (set running false))
+      (elif (== envelope/type "tool")
+        (if_not ($absent? envelope/response)
+          (emit_output h envelope/response ^round turn))
+        (var result (execute_tool h envelope/tool envelope/input ^round turn
+          ^continuation {^kind "tool" ^prompt prompt ^history history ^round turn}))
+        (if (== result/waiting true)
+          (then (set last "") (set running false))
+          (else
+            (set last ($to_str result))
+            (set history $"${history}\nTool ${envelope/tool} input: ${envelope/input}\nResult: ${result}\nContinue from this observed result. Do not claim success when ok is false."))))
+      (elif (== envelope/type "input")
+        (request_input h envelope/request
+          {^kind "agent" ^prompt prompt ^history history ^round turn})
+        (set last "")
+        (set running false))
       (else
         # Both code types may narrate intent before execution. That text is
         # optional, and for code-with-response the result is the final answer.
@@ -423,10 +360,10 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
             (if_yes (failed? result)
               (set history $"${history}\nThat program failed. Correct the reported error; do not repeat the failed call or report success."))))))
     (if_yes (&& running (>= turn turn_limit))
-      (set last $"stopped after ${turn_limit} rounds without a final response; last result: ${last}")
-      (set running false)))
+      (fail (CommandError ^code "step_limit"
+        ^message $"The agent reached its ${turn_limit}-step limit. Last result: ${(preview last)}"))))
   # Retain the actual answer, not a progress sentence or a '(no action)' marker.
-  (remember session state_host prompt last)
+  (if ($absent? (pending_input h)) (remember session state_host prompt last))
   last)
 
 (fn strip_slash [prompt : Str] : Str
@@ -515,61 +452,84 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
     "\n\n"))
 
 (fn plugin_module_contract [] : Str
-  # The skeleton and the loader's rules, shared by the two paths that produce a
-  # module: `build`'s codegen provider writes one from scratch, and a model
-  # program queues one through `register_module`. Only the first had a copy, so
-  # the program path produced modules with the imports missing and `init`
-  # mis-typed — the harness advertised a durable path and withheld the one page
-  # needed to use it. Held as data rather than duplicated prose so the two
-  # cannot drift.
-  #
-  # A plain triple-quoted string, not a `$"""` one: it is full of `${...}`,
-  # `$(...)` and `$str/...` sequences that an interpolated literal would try to
-  # evaluate. Nothing here is computed, so nothing here should be.
-  """It looks exactly like this. Copy the shape; change the name, the doc and
-the body of `run`:
+  """A plugin is an inert module node with a descriptor and plugin-owned tools:
 
 (mod plugin
-  (import [Plugin DescriptorContext PluginContext PluginHost]
+  (import [Plugin DescriptorContext PluginContext PluginHost ToolError]
     ^from "../../../src/plugin_api")
   (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
-
-  (fn run [arg : Str] : Str
-    ($str/join ["you said: " arg] ""))
-
+  (fn measured [result]
+    (if_not result/ok
+      (fail (ToolError ^code result/error/code ^message result/error/message
+        ^data (?? result/error/details nil))))
+    ($str/byte_size result/value/text))
+  (fn run [host input]
+    (host .PluginHost:request_tool "fs.read" input ^continuation measured))
   (fn init [ctx : DescriptorContext] : Plugin
     ^capabilities []
-    (Plugin
-      ^id "echo"
-      ^provides [["tools" "echo"]]
-      ^requires []
-      ^contextual true
-      ^activate
-        (fn []
-          (fn [host]
-            (host .PluginHost:contribute "tools"
-              {^name "echo" ^doc "repeat the argument" ^run run}))))))
+    (Plugin ^id "file_length" ^contextual true
+      ^provides [["tools" "file_length"]] ^requires [["tools" "fs.read"]]
+      ^activate (fn [] (fn [host]
+        (host .PluginHost:contribute "tools"
+          {^name "file_length" ^doc "Count UTF-8 bytes in a file"
+           ^contextual true ^run run
+           ^input_schema {^type "object" ^required ["path"]
+             ^properties {^path {^type "string"}
+               ^root {^type "string" ^enum ["workspace" "state"]}}
+             ^additionalProperties false}}))))))
 
-The loader rejects a module that breaks any of these:
-  - the root form is `(mod plugin ...)` — never another module name
-  - the top level holds only `import`, `import_impl`, `fn`, `type`, `impl`,
-    `protocol`, `alias`, `enum`; no top-level expressions of any kind
-  - `init` is defined, takes one `DescriptorContext`, and carries
-    `^capabilities []`
-  - the two import lines are copied *exactly*, character for character:
-        (import [Plugin DescriptorContext PluginContext PluginHost]
-          ^from "../../../src/plugin_api")
-        (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
-    "../../../plugin_api" without `src/` is the mistake to avoid, and no other
-    import of any kind is permitted. Omitting them is what makes `Plugin` and
-    `DescriptorContext` unknown type annotations.
-  - `^contextual true`, and `^activate` is a thunk returning `(fn [host] ...)`
+The root must be (mod plugin ...). Its top level contains only declarations
+(import/import_impl/fn/type/impl/protocol/alias/enum). init takes one
+DescriptorContext, declares ^capabilities [], and only constructs a descriptor.
+activate is a thunk returning a host callback. The descriptor id must equal
+the requested plugin name. Tools may have different names; advertise them all.
 
-`run` takes one Str and returns a Str. It holds no capabilities at all — no
-filesystem, no network, no clock, no environment, no randomness. Computation on
-its argument and on literals is the whole of what it can do. If the request
-cannot be met that way, write the closest pure-text version of it rather than
-reaching for authority you do not have.
+A tool accepts a structured data value and returns data. Set ^contextual true
+on a tool row to receive (host input); otherwise its run receives only input.
+Supply an input_schema with type, properties, required and additionalProperties
+for object inputs. Primitive inputs and reflected positional/named envelopes
+are supported too. Tool results delivered by the host are {^ok true ^value ...}
+or {^ok false ^error {^code ... ^message ...}}.
+
+For composition, declare ^requires [["tools" "callee"]]. Return
+(host .PluginHost:request_tool "callee" input ^continuation (fn [result] ...)).
+The host performs the callee after your callback returns and then invokes your
+continuation under your plugin policy. Without a continuation the callee's
+result is forwarded. Do not expect request_tool to return the callee's value
+inside your callback. A continuation can return another request; chains are
+bounded. Tool removal makes dependent plugins pending automatically. Throw
+ToolError with code, message and optional data for a failed operation; returning
+an ordinary map containing ok:false is just a successful data value.
+
+For durable configuration, return
+(host .PluginHost:request_input {^kind "text" ^prompt "Your name?"}
+  "my_plugin.finish" {^saved "data"}). The resume tool must belong to your own
+plugin. It receives {^input <saved data> ^reply {^id ... ^value ... ^cancelled false}}.
+Persist configuration with PluginHost:update_state there. For asynchronous computation, a tool may return ToolTask with a task and
+optional result continuation; import ToolTask from plugin_api. Return the wrapper
+instead of waiting inside a bounded callback. Its task retains its execution
+budget and is cancelled with the run.
+
+The host saves only
+inert data, never a function continuation or live resources, and rejects a
+changed plugin version on resume. An input request cannot cross a pending
+function continuation: use a named resume tool as the step boundary instead.
+
+Use (host .PluginHost:state) and (host .PluginHost:update_state data) for durable
+plugin state. There are no private snapshot files. State scope follows the
+plugin's session/workspace scope. Never retain live resources in persisted data.
+
+Normally delegate I/O to installed tools and keep selectors empty. A plugin
+that performs file I/O itself can import $fs and request an attenuated selector:
+{^type "fs/ReadDir" ^root "workspace" ^path "."}. Supported selector types are
+fs/ReadDir, fs/WriteDir and fs/ReadWriteDir; roots are workspace and state.
+Selectors cannot grant authority absent from the launcher. Do not imitate an
+unavailable operation. Explain the missing requirement instead.
+
+Additional imports must be capability-enabled namespaces, versioned shared
+contracts, or declared content-addressed dependencies. The kernel import above
+is allowed only for import_impl PluginHost for PluginContext, never utilities.
+Shared seam protocols may be imported from ../../../src/seams.
 """)
 
 (fn codegen_system_prompt [skill : Str] : Str
@@ -578,9 +538,9 @@ reaching for authority you do not have.
   """
 
 For this plugin-authoring request, use type "response", a short ^response
-string, and ^payload {^module (mod plugin ...)}. The module is an inert Gene
+string, and ^payload {^module (mod plugin ...) ^scope "session" ^selectors [] ^dependencies []}. The module is an inert Gene
 node in payload, not a string and not a quoted expression. Do not return ^code.
-The consumer validates and registers payload/module; it never evaluates it.
+The consumer validates and registers payload/module with the declared scope, selectors and dependency modules; it never evaluates source text. Prefer delegating to existing tools over adding I/O authority.
 Example envelope (replace the module with the complete implementation):
 {^type "response" ^response "Here is the plugin."
  ^payload {^module (mod plugin ...)}}
@@ -618,8 +578,8 @@ actually cost a build here:
     `upper`, no `replace`, no `pad`, no `index_of`. Never call a function that
     is not there: nothing checks the body of `run` until someone invokes the
     tool, so a guessed name is a plugin that installs cleanly and then fails in
-    the user's hands. Build what you need from the list, or make the tool do
-    the part you can and say so in its output.
+    the user's hands. Build what you need from the list, delegate to an installed tool, or report
+    the missing capability explicitly. Do not return a simulated operation.
 
 Return exactly one response envelope with the complete module in ^payload
 under ^module. The two import paths in that module are
@@ -645,23 +605,63 @@ Reply with one Gene map: ^type "response", a short ^response, and
   (var form payload/module)
   (if_not (== ($head form) (quote mod))
     (fail (HarnessError ^message "plugin author must return a module node in ^payload/^module")))
-  form)
+  {^module form ^scope (?? payload/scope "session")
+   ^selectors (?? payload/selectors []) ^dependencies (?? payload/dependencies [])})
 
-(fn model_plugin_source [name : Str, request : Str, skill : Str] : Any
+(fn validate_author_code [value, ^depth depth : Int = 0]
+  (if ($leaf? value) (return nil))
+  (if (> depth 128) (fail (HarnessError ^message "Generated code is nested too deeply.")))
+  (var head ($head value))
+  (if (== head List)
+    (then (for child in value (validate_author_code child ^depth (+ depth 1))))
+    (elif (== head Map)
+      (for [key child] in value (validate_author_code child ^depth (+ depth 1))))
+    (elif (== ($head head) Sym)
+      (var body ($node/body value))
+      (if_yes (&& (== head (quote if)) (> body/.size 2))
+        (var tagged false)
+        (var i 1)
+        (while (< i body/.size)
+          (if_yes (["then" "else" "elif"] .contains? ($to_str ($head body/%i)))
+            (set tagged true))
+          (set i (+ i 1)))
+        (if_yes tagged
+          (if_not (== ($head body/1) (quote then))
+            (fail (HarnessError ^message "Do not mix if branch styles. Use (if condition (then ...) (else ...)).")))
+          (set i 2)
+          (while (< i body/.size)
+            (if_not (["else" "elif"] .contains? ($to_str ($head body/%i)))
+              (fail (HarnessError ^message "A tagged if needs an explicit else/elif for every following branch.")))
+            (set i (+ i 1)))))
+      (for child in body (validate_author_code child ^depth (+ depth 1)))
+      (for [key child] in ($node/props value) (validate_author_code child ^depth (+ depth 1)))))
+  nil)
+
+(fn model_plugin_source [name : Str, request : Str, skill : Str, ^on_reply on_reply = nil] : Any
   # The envelope and module are read as inert data. The author never runs code;
   # the existing registration path still validates and canonicalizes the module.
-  (var reply
-    (chat_completion (codegen_system_prompt skill) (codegen_request name request)))
-  (try (module_from_reply reply)
-    catch HarnessError
-    (fail (HarnessError
-      ^message $"invalid plugin reply for ${name}: ${$err/message}; reply ended: $(tail_preview reply)"))))
+  (var prompt (codegen_request name request))
+  (var attempt 0)
+  (var problem "")
+  (while (< attempt 3)
+    (set attempt (+ attempt 1))
+    (var reply (chat_completion (codegen_system_prompt skill) prompt))
+    (if_not ($absent? on_reply) (on_reply reply))
+    (var plan
+      (try
+        (var candidate (module_from_reply reply))
+        (validate_author_code candidate/module)
+        candidate
+      catch HarnessError (set problem $err/message) nil))
+    (if_not ($absent? plan) (return plan))
+    (set prompt $"${(codegen_request name request)}\nYour previous reply failed validation: ${problem}\nReturn a corrected complete envelope. Use explicit (then ...) and (else ...) branches consistently.\nPrevious reply:\n${reply}"))
+  (fail (HarnessError ^message $"Plugin author could not produce a valid module for ${name}: ${problem}")))
 
 (type ModelCodegen ^props {^model Str ^skill Str})
 
 (impl HarnessCodegen for ModelCodegen
-  (message generate [name : Str, request : Str] : Any
-    (model_plugin_source name request self/skill))
+  (message generate [name : Str, request : Str, ^on_reply on_reply = nil] : Any
+    (model_plugin_source name request self/skill ^on_reply on_reply))
   (message author [] : Any
     # `self/model` is the model that was configured when this provider was
     # bound, which is the one that answered — not whatever the environment
@@ -676,26 +676,30 @@ Reply with one Gene map: ^type "response", a short ^response, and
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host .PluginHost:provide "HarnessCodegen"
-        (codegen_provider
-          (ModelCodegen ^model (model_name) ^skill (codegen_skill_text))))))))
+      (host .PluginHost:contribute "seams"
+        {^name "HarnessCodegen" ^private true ^value (codegen_provider
+          (ModelCodegen ^model (model_name) ^skill (codegen_skill_text)))})))))
 
-(type LlmAgent ^props {^model Str ^session Any ^state_host PluginContext})
+(type LlmAgent ^private true ^props {^model Str ^session Any ^state_host PluginContext})
 
 (impl HarnessPrompt for LlmAgent
   (message handle [h, prompt : Str] : Str
     (answer h prompt self/session self/state_host)))
 
+(impl HarnessResume for LlmAgent
+  (message resume [h, continuation, reply] : Str
+    (if_yes (== continuation/kind "tool")
+      (var result (resume_tool h continuation reply))
+      (if (== result/waiting true) (return ""))
+      (return (run_task h continuation/prompt self/session self/state_host
+        ^history $"${continuation/history}\nTool ${continuation/tool} resumed after input. Result: ${result}"
+        ^start_round (+ continuation/round 1))))
+    (run_task h continuation/prompt self/session self/state_host
+      ^history $"${continuation/history}\nThe user answered question ${reply/id}: ${reply/value}"
+      ^start_round continuation/round)))
+
 (fn llm_prompt_text [] : Str
-  # Two call shapes are spelled out because guessing them is the failure that
-  # keeps happening. For `register_module`: two recorded sessions passed
-  # `^name`/`^source` named arguments and one passed the module as a *string*.
-  # For reaching a tool: a session that had just registered one spent five
-  # rounds on `(shout ...)`, `(tool ...)`, `(tools)` and `(active)` and never
-  # found `invoke_registry`. A row is not a binding, and nothing in the primer
-  # said so. The arity error a wrong shape produces names an anonymous
-  # binding, so it does not point at the mistake either.
-  "register_module takes two positional arguments and queues a durable authored plugin: (register_module \"<id>\" (quote (mod plugin ...)) ^replace true). The source is a quoted module node, never a string, and `id` is a plain word. Pull the module the loader will accept with (doc \"plugin/module\") and copy its shape — a queued module that omits the two imports fails on `Plugin` as an unknown type annotation. The harness commits and activates once your program returns, so the tool is callable from your next program and not the one that queued it. Registry rows are not bindings: list one with (row_keys \"tools\") and call a row with (invoke_registry \"tools\" \"<name>\" [argument]). A program holds no host authority at all. The live Harness is available as harness (also h); session carries id, scope, the live history cell, and state_host. payload and (get_payload) expose this reply's payload map; context also carries the workspace, user prompt, and round. Harness helpers are already bound and take no h argument. Entries are content-addressed and capability selectors only attenuate named roots. Use type code to inspect the execution result in another round, code-with-response to return that result directly, or response for a text answer. Both code types may include an optional response explanation shown before execution. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
+  "Tools are plugin-owned registry entries. Use type tool with a tool name and structured input; the host executes it and returns a result for your next step. Use (tools) and (describe_tool name) for current contracts. For creating a durable plugin, read (doc \"plugin/module\") and use register_module with a quoted module. Model code sees read-only snapshots and transaction-aware operations, never live Harness cells. Gene language references are available through doc: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow and gene/stdlib.")
 
 (fn llm_agent_plugin [] : Plugin
   (Plugin ^id "agent"
@@ -708,10 +712,10 @@ Reply with one Gene map: ^type "response", a short ^response, and
     ^activate (fn [] (fn [host]
       (var restored (host .PluginHost:state))
       (var history ($thaw (if (== restored nil) #[] (?? restored/history #[]))))
-      (host .PluginHost:provide "HarnessPrompt"
-        (prompt_provider
+      (host .PluginHost:contribute "seams"
+        {^name "HarnessPrompt" ^private true ^value (prompt_provider
           (LlmAgent ^model (model_name) ^session ($cell history)
-                    ^state_host host)))
+                    ^state_host host))})
       (host .PluginHost:contribute "prompt"
         {^name "llm_agent" ^text (llm_prompt_text)})
       # Pull-only: the contract is a page, and only a turn that actually

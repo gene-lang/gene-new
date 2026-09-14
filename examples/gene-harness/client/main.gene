@@ -11,6 +11,7 @@
   ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool
   ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any)
   ^expanded (List Str) ^runs (List Any)
+  ^input_id Str ^answering Bool
   ^run Any ^pending Any ^status Any ^socket Any ^session_revision Str
   ^root EventTarget ^list EventTarget ^transcript EventTarget
   ^prompt EventTarget ^notice EventTarget ^title EventTarget})
@@ -54,7 +55,7 @@
   (var stop ($dom/element "stop"))
   ($dom/set_class client/root "working" client/busy)
   ($dom/set_class client/root "sending" client/sending)
-  (set send/disabled (|| (! client/ready) (! client/connected) client/sending client/busy))
+  (set send/disabled (|| (! client/ready) (! client/connected) client/sending client/busy (!= client/input_id "")))
   (var rename ($dom/element "rename_session"))
   (set rename/disabled (|| (! client/ready) (! client/connected) (== client/selected "") client/busy))
   (var create_button ($dom/element "create_session"))
@@ -62,6 +63,9 @@
   (set client/prompt/disabled (! client/ready))
   (set stop/hidden (! client/server_busy))
   (set stop/disabled (! client/ready))
+  (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
+    (var button ($dom/element id))
+    (set button/disabled (|| client/answering (! client/ready) (! client/connected) client/server_busy)))
   (set send/text_content
     (if client/sending "Sending…" (if ($absent? client/pending) "Send" "Resolve")))
   (var mode "Local workspace")
@@ -71,6 +75,102 @@
     (set mode (if client/status/offline "Command demo · no model" $"${model} · ${provider}")))
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
   ($dom/set_text ($dom/element "mode") mode))
+
+(fn render_input [client : Client] : Void
+  (var request : Any nil)
+  (if_not ($absent? client/run)
+    (var status : Str client/run/status)
+    (if_yes (== status "waiting_input") (set request client/run/input)))
+  (var id (if ($absent? request) "" (string_or request/id "")))
+  (set_hidden "input_panel" (== id ""))
+  (if_yes (== id client/input_id) (return))
+  (set client/input_id id)
+  (if_yes (== id "") (return))
+  (var prompt : Str request/prompt)
+  (var kind : Str request/kind)
+  ($dom/set_text ($dom/element "input_question") prompt)
+  (var fields ($dom/element "input_fields"))
+  ($dom/clear fields)
+  (set_hidden "input_submit" (== kind "confirm"))
+  (set_hidden "input_yes" (!= kind "confirm"))
+  (set_hidden "input_no" (!= kind "confirm"))
+  (if (== kind "select")
+    (then
+      (var options : (List Str) request/options)
+      (var multi : Bool request/multi)
+      (if multi
+        (then
+          (var defaults : (List Str) [])
+          (if_not ($absent? request/default) (set defaults request/default))
+          (var i 0)
+          (for option in options
+            (var option_id $"input_option_${i}")
+            (var selected false)
+            (for value in defaults (if_yes (== value option) (set selected true)))
+            ($dom/append fields ($dom/render `(label ^class_name "input_option"
+              (input ^id %option_id ^type "checkbox" ^checked %selected) %option)))
+            (set i (+ i 1))))
+        (else
+          (var select ($dom/render `(select ^id "input_answer" ^aria-label %prompt)))
+          (for option in options ($dom/append select ($dom/render `(option ^value %option %option))))
+          ($dom/append fields select)
+          (if_not ($absent? request/default)
+            (var choice : Str request/default) ($dom/set_input_value select choice)))))
+      (elif (!= kind "confirm")
+        (var answer ($dom/render `(textarea ^id "input_answer" ^rows "2" ^aria-label %prompt)))
+        ($dom/append fields answer)
+        (if_not ($absent? request/default)
+          (var initial : Str request/default) ($dom/set_input_value answer initial)))
+      (elif (! ($absent? request/default))
+        (var suggested : Bool request/default)
+        ($dom/append fields ($dom/render `(p ^class_name "muted"
+          %(if suggested "Suggested answer: Yes" "Suggested answer: No"))))))
+  (controls client))
+
+(fn send_input_reply [client : Client, payload : Any] : Void
+  (if_yes (|| client/answering (! client/connected)) (return))
+  (set client/answering true)
+  (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
+    (var button ($dom/element id)) (set button/disabled true))
+  ($session_storage/set "gene-harness/input-reply" ($json/stringify payload))
+  (var session : Str payload/session)
+  (api client "POST" $"/api/v1/sessions/${session}/input" payload
+    (fn [code : Int, data : Any] : Void
+      (set client/answering false)
+      (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
+        (var button ($dom/element id)) (set button/disabled false))
+      (controls client)
+      (if (&& (>= code 200) (< code 300))
+        (then ($session_storage/remove "gene-harness/input-reply") (notice client ""))
+        (elif (&& (>= code 400) (< code 500))
+          ($session_storage/remove "gene-harness/input-reply") (show_error client data))
+        (else
+          (notice client "Your answer is saved. Reconnecting to confirm it…")
+          (connect_socket client))))))
+
+(fn answer_question [client : Client, value : Any, cancelled : Bool] : Void
+  (if_yes (== client/input_id "") (return))
+  (send_input_reply client {^session client/selected ^input_id client/input_id
+    ^value value ^cancelled cancelled}))
+
+(fn read_answer [client : Client] : Void
+  (if_yes (== client/input_id "") (return))
+  (var request : Any client/run/input)
+  (var kind : Str request/kind)
+  (var multi false)
+  (if_yes (== kind "select") (set multi request/multi))
+  (if (&& (== kind "select") multi)
+    (then
+      (var values : (List Str) [])
+      (var options : (List Str) request/options)
+      (var i 0)
+      (for option in options
+        (var box ($dom/element $"input_option_${i}"))
+        (var checked : Bool box/checked)
+        (if_yes checked (values .push option))
+        (set i (+ i 1)))
+      (answer_question client values false))
+    (else (answer_question client ($dom/input_value ($dom/element "input_answer")) false))))
 
 (fn render_sessions [client : Client] : Void
   ($dom/clear client/list)
@@ -242,6 +342,7 @@
       (set_hidden "new_output" false))))
 
 (fn update_controls [client : Client] : Void
+  (render_input client)
   (set client/busy (|| client/server_busy (!= client/awaiting "")))
   (controls client))
 
@@ -522,6 +623,8 @@
   (send_pending client))
 
 (fn send [client : Client] : Void
+  (if_yes (!= client/input_id "")
+    (notice client "Answer or cancel the pending question first.") (return))
   (if_yes (|| (! client/ready) (! client/connected) client/sending client/busy) (return))
   (if_yes (! ($absent? client/pending)) (send_pending client) (return))
   (var text ($dom/input_value client/prompt))
@@ -614,6 +717,15 @@
                     (== current_notice "Refreshing the live connection…"))
           (notice client ""))
         (update_controls client)
+        (var saved (?? ($session_storage/get "gene-harness/input-reply") ""))
+        (if_yes (!= saved "")
+          (var payload : Any ($json/parse saved))
+          (var reply_session : Str payload/session)
+          (var input_id : Str payload/input_id)
+          (if_yes (== reply_session client/selected)
+            (if (== input_id client/input_id)
+              (send_input_reply client payload)
+              ($session_storage/remove "gene-harness/input-reply"))))
         (if_not ($absent? client/pending) (send_pending client))
         (if_yes (!= client/queued_prompt "")
           (var queued client/queued_prompt)
@@ -706,12 +818,20 @@
     ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0
     ^busy false ^autoscroll true ^generation 0
     ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false
-    ^records [] ^preview [] ^sessions [] ^expanded [] ^runs [] ^run nil ^pending nil ^status nil
+    ^records [] ^preview [] ^sessions [] ^expanded [] ^runs [] ^input_id "" ^answering false ^run nil ^pending nil ^status nil
     ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions")
     ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt")
     ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
   ($dom/add_event_listener ($dom/element "composer") "submit"
     (fn [event : Any] : Void ($dom/prevent_default event) (send client)))
+  ($dom/add_event_listener ($dom/element "input_form") "submit"
+    (fn [event : Any] : Void ($dom/prevent_default event) (read_answer client)))
+  ($dom/add_event_listener ($dom/element "input_yes") "click"
+    (fn [event : Any] : Void (answer_question client true false)))
+  ($dom/add_event_listener ($dom/element "input_no") "click"
+    (fn [event : Any] : Void (answer_question client false false)))
+  ($dom/add_event_listener ($dom/element "input_cancel") "click"
+    (fn [event : Any] : Void (answer_question client nil true)))
   ($dom/add_event_listener client/prompt "keydown"
     (fn [event : Any] : Void
       (if_yes (== ($event/key event) "Escape") (set_hidden "commands" true))

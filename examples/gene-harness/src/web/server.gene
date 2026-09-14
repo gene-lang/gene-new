@@ -1,7 +1,7 @@
 (mod harness_web_server)
 
 (import [open_session_host close_session_host list_sessions create_session rename_session
-         snapshot submit run_receipt cancel host_status RunError]
+         snapshot submit run_receipt cancel answer_input host_status RunError]
   ^from "../runtime/session_host")
 (import [styles] ^from "./style")
 (import [module_dir] ^from "../kernel")
@@ -54,6 +54,15 @@
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
+                 (section ^id "input_panel" ^class "input_panel" ^^hidden
+                   (strong ^id "input_question")
+                   (form ^id "input_form"
+                     (div ^id "input_fields")
+                     (div ^class "input_actions"
+                       (button ^id "input_submit" ^type "submit" "Answer")
+                       (button ^id "input_yes" ^type "button" "Yes")
+                       (button ^id "input_no" ^type "button" "No")
+                       (button ^id "input_cancel" ^type "button" "Cancel question"))))
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
                    (textarea ^id "prompt" ^rows "3" ^placeholder "Ask anything, or /help for commands…"
@@ -120,6 +129,7 @@
   (var offline (== (get_env "GENE_HARNESS_OFFLINE" "") "1"))
   (var port ($parse/parse_int (get_env "GENE_HARNESS_PORT" "8095")))
   (var home "")
+  (var project "")
   (var i 0)
   (while (< i args/.size)
     (var arg args/%i)
@@ -131,11 +141,14 @@
       (elif (&& (== arg "--home") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set home args/%i))
+      (elif (&& (== arg "--project") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set project args/%i))
       (else (fail_request "invalid_request" $"Unknown server option ${arg}.")))
     (set i (+ i 1)))
   (if (|| (< port 1024) (> port 65535))
     (fail_request "invalid_request" "Choose a port between 1024 and 65535."))
-  (var host (open_session_host ^home home ^offline offline))
+  (var host (open_session_host ^home home ^offline offline ^project_root project))
   (var origin $"http://127.0.0.1:${port}")
   (var authority $"127.0.0.1:${port}")
   # Distinct names prevent local servers from overwriting each other's cookies.
@@ -215,6 +228,10 @@
         (var data (request_data request))
         (return (response 202 (submit host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "input") (== request/method "POST"))
+        (var data (request_data request))
+        (return (response 202 (answer_input host id (field data "input_id")
+          data/value ^cancelled (== data/cancelled true)))))
       (if_yes (&& (== parts/.size 7) (== parts/5 "runs") (== request/method "GET"))
         (return (response 200 (run_receipt host id parts/6))))
       (if_yes (&& (== parts/.size 8) (== parts/5 "runs") (== parts/7 "cancel")
