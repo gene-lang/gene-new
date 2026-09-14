@@ -1,5 +1,7 @@
 (mod harness_markdown ^profile web)
 
+(import [code_view] ^from "./highlight.gene")
+
 # A small, text-only Markdown renderer. Every node is built through $dom;
 # source HTML is text and links accept only explicit safe URL forms.
 (fn text_at [parts : (List Str), index : Int] : Str parts/%index)
@@ -124,11 +126,18 @@
     (if (== line "") (then (set i (+ i 1)))
       (elif (|| (str/starts_with? line "```") (str/starts_with? line "~~~"))
         (var fence (if (str/starts_with? line "```") "```" "~~~"))
+        (var info (str/trim (slice_text (str/split line "") 3 ($size line))))
+        (var language : Str "")
+        (for char in (str/split info "")
+          (if_yes (|| (== char " ") (== char "\t")) (break))
+          (set language ($ language char)))
         (var code : (List Str) [])
         (set i (+ i 1))
         (while (&& (< i count) (! (str/starts_with? (str/trim lines/%i) fence)))
           (code .push lines/%i) (set i (+ i 1)))
-        ($dom/append root ($dom/render `(pre (code %(str/join code "\n")))))
+        (var pre ($dom/render `(pre)))
+        ($dom/append pre (code_view (str/join code "\n") (== (str/lower language) "gene")))
+        ($dom/append root pre)
         (if_yes (< i count) (set i (+ i 1))))
       (elif (&& (< (+ i 1) count) (str/contains? line "|") (table_separator (text_at lines (+ i 1))))
         (var headers (table_cells line))

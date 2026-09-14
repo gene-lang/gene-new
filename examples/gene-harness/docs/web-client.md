@@ -325,6 +325,49 @@ text. The renderer creates DOM nodes and never injects source HTML. Links accept
 HTTP(S), mailto, and fragment URLs; unsupported syntax remains text. This is not
 a full CommonMark implementation.
 
+### Gene syntax highlighting design
+
+Highlight execution blocks whose phase is `code`, raw Gene reply envelopes
+(`raw_response`, including streaming previews), and Markdown fences explicitly
+labelled `gene` (case-insensitive). Keep prose, inline code, unlabelled/other
+language fences, and arbitrary execution/tool output as literal plain text.
+
+`client/highlight.gene` owns a forgiving lexical scanner and a shared `code_view`
+DOM renderer. Use the current reader in `src/gene/reader.nim` as the syntax
+reference; the editor grammar is a useful palette reference but can lag reader
+changes. Distinguish comments, strings/characters/regexes, numeric literals,
+properties/annotations, keywords/operators, callable heads/built-ins, types,
+and punctuation. String bodies, including interpolation, share one color.
+Recognize nested `#< ... >#` comments and the `#_` datum marker; this is lexical
+coloring, not semantic analysis of the discarded form. Unknown syntax keeps
+its literal spelling; unfinished strings/comments extend to the available end.
+
+Build text-bearing spans through `$dom/render`; never parse/evaluate source or
+insert HTML. Token concatenation must reproduce the input exactly, including
+Unicode, escapes, spaces and newlines. Copy continues to use the original
+transcript string. Highlighting adds no persisted data or transport fields.
+
+Use a restrained light palette on the existing code surfaces: purple keywords,
+green strings, blue callables, warm numeric literals, teal properties/types,
+and muted comments/punctuation. Text colors must reach 4.5:1 contrast on both
+code backgrounds. Preserve selection, monospace layout, keyboard disclosure
+controls and narrow-screen overflow. Forced-color mode uses system text colors.
+
+Scan iteratively with bounded lookahead and no recursive parsing or regex
+dependency. Highlight disclosure contents only when opened; subsequent renders
+honor the existing expansion state. Limit coloring to blocks of at most 64 Ki
+UTF-16 code units and at most 4,096 tokens. Larger blocks, or the remainder after
+the token limit, remain fully visible as plain text. This bounds highlighting
+work without truncating source or changing the existing display limits.
+
+Verify by compiling the actual web import graph and operating an isolated local
+client: execution source, raw/partial replies and Gene Markdown fences receive
+colors; plain output stays plain; malicious HTML remains inert; copy and
+disclosure state survive live updates; reloaded history highlights when opened
+and retains the existing collapsed-by-default behavior; multiline and Unicode
+text are unchanged; large/incomplete inputs render without errors. Use compiler
+builds and direct browser checks in keeping with this package's development workflow.
+
 Snapshots and live run messages include the public pending `input` request while
 a run is `waiting_input`. A dedicated form renders text, select (including
 multiple selection), or confirm. Ordinary prompt submission is disabled until
@@ -409,6 +452,7 @@ File ownership:
 | `src/web/contract.gene` | Small portable wire data definitions/validation shared by native and web code where supported. |
 | `src/profiles/browser.gene` | Headless model-backed profile composition. |
 | `client/main.gene`, `client/state.gene`, `client/view.gene`, `src/web/style.gene` | Browser startup/transport, client state, accessible rendering, responsive layout. |
+| `client/highlight.gene`, `client/markdown.gene` | Bounded Gene lexical coloring, safe code DOM, and restricted Markdown. |
 
 `bootstrap.gene` shares boot/shutdown behavior with the terminal entry;
 recovery commands open a runtime without descriptor or profile activation. The browser profile initially uses the same

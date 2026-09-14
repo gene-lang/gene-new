@@ -1,7 +1,30 @@
 (mod harness_client_view ^profile web)
 
 (import [markdown_view] ^from "./markdown.gene")
+(import [code_view] ^from "./highlight.gene")
 (import [run_label terminal] ^from "./state.gene")
+
+(fn execution_view [text : Str, summary : Str, raw : Bool, gene : Bool,
+                    expanded : Bool, on_copy : (Fn [Str] Void),
+                    on_toggle : (Fn [Bool] Void)] : EventTarget
+  (var pre ($dom/render `(pre)))
+  (var colored (&& gene expanded))
+  ($dom/append pre (code_view text colored))
+  (var details ($dom/render
+    `(details ^class_name %(if raw "execution raw_response" "execution")
+       ^open %expanded
+       ^on_toggle %(fn [event : Any] : Void
+         (var opened : Bool event/current_target/open)
+         (if_yes (&& opened gene (! colored))
+           ($dom/clear pre)
+           ($dom/append pre (code_view text true))
+           (set colored true))
+         (on_toggle opened))
+       (summary %summary)
+       (button ^type "button" ^class_name "copy"
+         ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy"))))
+  ($dom/append details pre)
+  details)
 
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void)] : EventTarget
@@ -20,16 +43,7 @@
   (var content : EventTarget
     (if (|| raw (== phase "code") (== phase "result")
             (== phase "tool_call") (== phase "tool_result"))
-      ($dom/render
-        `(details ^class_name %(if raw "execution raw_response" "execution")
-           ^open %expanded
-           ^on_toggle %(fn [event : Any] : Void
-             (var opened : Bool event/current_target/open)
-             (on_toggle opened))
-           (summary %summary)
-           (button ^type "button" ^class_name "copy"
-             ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy")
-           (pre (code %text))))
+      (execution_view text summary raw (|| raw (== phase "code")) expanded on_copy on_toggle)
       (if (&& (== role "assistant") (|| (== phase "final") (== phase "narration")))
         (markdown_view text)
         ($dom/render `(div ^class_name "message_text" %text)))))

@@ -55,6 +55,11 @@ by default inside a compact **Step N** group with its code and result. Expand
 the step and raw response to inspect or copy the returned reply before Gene parsing,
 including invalid replies that triggered another attempt. Its expansion state
 survives transcript updates; switching conversations resets disclosures.
+Gene source and raw replies receive syntax colors when opened. Assistant
+Markdown fences labelled `gene` use the same highlighting. Copy preserves the
+original source, including whitespace and Unicode; incomplete replies remain
+readable while streaming. Large blocks fall back to plain text without losing
+content.
 The raw reply uses the same durable transcript and display limits as other
 output, and is kept separate from the assistant's readable answer.
 
@@ -624,6 +629,7 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/runtime/bootstrap.gene`, `src/runtime/session_claim.gene` | runtime lifecycle and exclusive session ownership |
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
 | `client/view.gene`, `client/markdown.gene` | grouped steps, per-run outcomes, and restricted Markdown rendering |
+| `client/highlight.gene` | safe, bounded Gene syntax highlighting for code and raw replies |
 
 The former Harness scenarios have moved to `tmp/gene-harness-tests` in the
 repository workspace. They are no longer a package test target.
