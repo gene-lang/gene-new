@@ -1,8 +1,8 @@
 (mod harness_client ^profile web)
 
-(import [terminal merge_blocks query_value draft_key bounded_blocks] ^from "./state.gene")
+(import [terminal merge_blocks query_value draft_key bounded_blocks step_key step_block marker_block run_label] ^from "./state.gene")
 (import [protocol_version] ^from "../src/web/contract.gene")
-(import [block_view] ^from "./view.gene")
+(import [block_view step_view run_status_view not_durable] ^from "./view.gene")
 
 (type Client ^props {
   ^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str
@@ -10,7 +10,7 @@
   ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool
   ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool
   ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any)
-  ^expanded (List Str)
+  ^expanded (List Str) ^runs (List Any)
   ^run Any ^pending Any ^status Any ^socket Any ^session_revision Str
   ^root EventTarget ^list EventTarget ^transcript EventTarget
   ^prompt EventTarget ^notice EventTarget ^title EventTarget})
@@ -82,7 +82,7 @@
       (var cls (if (== id client/selected) "session selected" "session"))
       (var subtitle : Str "Conversation")
       (if_not ($absent? session/last_run)
-        (set subtitle session/last_run/status))
+        (set subtitle (run_label session/last_run)))
       (var button : EventTarget
         ($dom/render
           `(button ^type "button" ^class_name %cls
@@ -95,25 +95,72 @@
     ($dom/append client/list
       ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here.")))))
 
-(fn render_block [client : Client, block : Any, provisional : Bool] : Void
+(fn expanded_block [client : Client, id : Str] : Bool
+  (for previous in client/expanded (if_yes (== previous id) (return true)))
+  false)
+
+(fn toggle_block [client : Client, id : Str, opened : Bool] : Void
+  (var kept : (List Str) [])
+  (for previous in client/expanded (if_yes (!= previous id) (kept .push previous)))
+  (if_yes opened (kept .push id))
+  (set client/expanded kept))
+
+(fn copy_text [client : Client, text : Str] : Void
+  ($browser/copy text (fn [copied : Bool] : Void
+    (notice client (if copied "Copied." "Select the text to copy it.")))))
+
+(fn edit_prompt [client : Client, text : Str] : Void
+  (if_yes (! ($absent? client/pending))
+    (notice client "Resolve the pending submission before editing another prompt.") (return))
+  ($dom/set_input_value client/prompt text)
+  (remember_draft client)
+  (render_commands client)
+  ($dom/focus client/prompt))
+
+(fn render_block [client : Client, target : EventTarget, block : Any] : Void
   (var id : Str block/id)
   (var generation client/generation)
-  (var expanded false)
-  (for previous in client/expanded
-    (if_yes (== previous id) (set expanded true)))
-  ($dom/append client/transcript
-    (block_view block provisional
-      (fn [text : Str] : Void
-        ($browser/copy text (fn [copied : Bool] : Void
-          (notice client (if copied "Copied." "Select the text to copy it.")))))
-      expanded
+  ($dom/append target
+    (block_view block (not_durable block)
+      (fn [text : Str] : Void (copy_text client text))
+      (expanded_block client id)
       (fn [opened : Bool] : Void
-        (if_yes (!= generation client/generation) (return))
-        (var kept : (List Str) [])
-        (for previous in client/expanded
-          (if_yes (!= previous id) (kept .push previous)))
-        (if_yes opened (kept .push id))
-        (set client/expanded kept)))))
+        (if_yes (== generation client/generation) (toggle_block client id opened))))))
+
+(fn render_run [client : Client, blocks : (List Any), run : Any] : Void
+  (var target ($dom/render `(section ^class_name "run")))
+  (var prompt "")
+  (var i 0)
+  (var generation client/generation)
+  (while (< i ($size blocks))
+    (var block : Any blocks/%i)
+    (var role : Str block/role)
+    (if_yes (== role "user") (set prompt block/text))
+    (if (marker_block block) (then (set i (+ i 1)))
+      (elif (step_block block)
+        (var key (step_key block))
+        (var step : (List Any) [])
+        (while (< i ($size blocks))
+          (var next : Any blocks/%i)
+          (if (marker_block next) (then (set i (+ i 1)))
+            (elif (&& (step_block next) (== (step_key next) key))
+              (step .push next) (set i (+ i 1)))
+            (else (break))))
+        (var active false)
+        (if_not ($absent? run)
+          (var status : Str run/status)
+          (set active (&& (! (terminal status)) (== i ($size blocks)))))
+        ($dom/append target
+          (step_view step (expanded_block client key) active
+            (fn [text : Str] : Void (copy_text client text))
+            (fn [id : Str] : Bool (expanded_block client id))
+            (fn [id : Str, opened : Bool] : Void
+              (if_yes (== generation client/generation) (toggle_block client id opened))))))
+      (else (render_block client target block) (set i (+ i 1)))))
+  (if_not ($absent? run)
+    ($dom/append target
+      (run_status_view run prompt (fn [text : Str] : Void (edit_prompt client text)))))
+  ($dom/append client/transcript target))
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
   (var old_top ($dom/scroll_top client/transcript))
@@ -127,10 +174,10 @@
     (var retained false)
     (for block in client/records
       (var block_id : Str block/id)
-      (if_yes (== block_id id) (set retained true)))
+      (if_yes (|| (== block_id id) (== (step_key block) id)) (set retained true)))
     (for block in client/preview
       (var block_id : Str block/id)
-      (if_yes (== block_id id) (set retained true)))
+      (if_yes (|| (== block_id id) (== (step_key block) id)) (set retained true)))
     (if_yes retained (expanded .push id)))
   (set client/expanded expanded)
   ($dom/clear client/transcript)
@@ -156,19 +203,34 @@
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Slash commands"))))))
-  (for block in client/records (render_block client block false))
+  (var visible : (List Any) client/records)
+  # Durable records lead; append previews only when no durable version exists.
   (for block in client/preview
     (var found false)
-    (for record in client/records
-      (if_yes (== record/id block/id) (set found true)))
-    (if_not found (render_block client block true)))
-  (if_not ($absent? client/run)
+    (for record in client/records (if_yes (== record/id block/id) (set found true)))
+    (if_not found (set visible (merge_blocks visible [block]))))
+  (var i 0)
+  (var current_shown false)
+  (while (< i ($size visible))
+    (var first : Any visible/%i)
+    (var id : Str first/run_id)
+    (var blocks : (List Any) [])
+    (while (< i ($size visible))
+      (var block : Any visible/%i)
+      (var block_run : Str block/run_id)
+      (if_yes (!= block_run id) (break))
+      (blocks .push block) (set i (+ i 1)))
+    (var run : Any nil)
+    (for receipt in client/runs
+      (var receipt_id : Str receipt/id)
+      (if_yes (== receipt_id id) (set run receipt)))
+    (if_not ($absent? client/run)
+      (var current_id : Str client/run/id)
+      (if_yes (== current_id id) (set run client/run) (set current_shown true)))
+    (render_run client blocks run))
+  (if_yes (&& (! ($absent? client/run)) (! current_shown))
     (var status : Str client/run/status)
-    (var text (if (== status "running") "Working…"
-      (if (== status "stopping") "Stopping…" status)))
-    (if_yes (! ($absent? client/run/message)) (set text client/run/message))
-    ($dom/append client/transcript
-      ($dom/render `(p ^class_name "run_status" %text))))
+    (if_not (terminal status) (render_run client [] client/run)))
   (if follow
     (then ($dom/scroll_end client/transcript)
       (set_hidden "new_output" true))
@@ -209,20 +271,36 @@
     (var state : Str plugin/state)
     ($dom/append drawer
       ($dom/render `(div ^class_name "plugin_status" (span %id) (span %state)))))
-  (var commands : (List Any) data/commands)
+  (render_commands client))
+
+(fn render_commands [client : Client] : Void
   (var picker ($dom/element "commands"))
   ($dom/clear picker)
+  (var text ($dom/input_value client/prompt))
+  (var parts : (List Str) (str/split text " "))
+  (var show (&& (str/starts_with? text "/") (== ($size parts) 1)
+                (! (str/contains? text "\n")) (! (str/contains? text "\t"))))
+  (set picker/hidden (! show))
+  (if_yes (|| (! show) ($absent? client/status)) (return))
+  (var commands : (List Any) client/status/commands)
+  (var matched false)
   (for command in commands
     (var name : Str command/name)
     (var doc : Str command/doc)
-    ($dom/append picker
-      ($dom/render
-        `(button ^type "button" ^class_name "command"
-           ^on_click %(fn [event : Any] : Void
-             ($dom/set_input_value client/prompt $"/${name} ")
-             ($dom/focus client/prompt)
-             (set picker/hidden true))
-           (strong %($ "/" name)) (span %doc))))))
+    (if_yes (str/starts_with? ($ "/" name) (str/lower text))
+      (set matched true)
+      ($dom/append picker
+        ($dom/render
+          `(button ^type "button" ^class_name "command"
+             ^on_click %(fn [event : Any] : Void
+               ($dom/set_input_value client/prompt $"/${name} ")
+               (remember_draft client)
+               ($dom/focus client/prompt)
+               (set picker/hidden true))
+             (strong %($ "/" name)) (span %doc))))))
+  (if_not matched
+    ($dom/append picker ($dom/render `(p ^class_name "muted"
+      %(if (== ($size commands) 0) "Use /help to load available commands." "No matching commands. Use /help for the full list."))))))
 
 (fn upsert_session [client : Client, session : Any] : Void
   (set client/sessions (merge_blocks client/sessions [session]))
@@ -262,6 +340,10 @@
       (if (== code 200)
         (then
           (var older : (List Any) data/records)
+          (var empty_runs : (List Any) [])
+          (var raw_runs : Any (?? data/runs empty_runs))
+          (var runs : (List Any) raw_runs)
+          (set client/runs (merge_blocks client/runs runs))
           (set client/records (bounded_blocks (merge_blocks older client/records) false))
           (set client/has_older data/has_older)
           (set client/autoscroll false)
@@ -277,6 +359,10 @@
     (set client/preview data/preview)
     (set client/has_older data/has_older))
   (set client/run data/run)
+  (var empty_runs : (List Any) [])
+  (var raw_runs : Any (?? data/runs empty_runs))
+  (var runs : (List Any) raw_runs)
+  (set client/runs (merge_blocks client/runs runs))
   (acknowledge_run client data/run client/selected)
   (set client/cursor data/cursor)
   (set client/next_seq data/next_submission_seq)
@@ -312,6 +398,8 @@
   (acknowledge_run client data/session/last_run session)
   (if_yes (== session client/selected)
     (set client/run data/session/last_run)
+    (if_not ($absent? client/run)
+      (set client/runs (bounded_blocks (merge_blocks client/runs [client/run]) true)))
     (set client/next_seq data/next_submission_seq)
     (set client/session_revision data/session/revision)
     (var title : Str data/session/title)
@@ -333,6 +421,7 @@
   (set client/preview [])
   (set client/expanded [])
   (set client/run nil)
+  (set client/runs [])
   (set client/has_older false)
   (set client/loading_older false)
   (set client/viewing_history false)
@@ -589,6 +678,11 @@
   (if_not ($absent? client/pending)
     (var id : Str client/pending/session)
     (set client/selected id))
+  # A direct conversation URL needs the same draft initialization as navigation.
+  (if_yes (== client/generation 0)
+    (set client/generation 1)
+    (var key (draft_key (if (== client/selected "") "new" client/selected)))
+    ($dom/set_input_value client/prompt (?? ($session_storage/get key) "")))
   (connect_socket client))
 
 (fn authenticate [client : Client] : Void
@@ -612,7 +706,7 @@
     ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0
     ^busy false ^autoscroll true ^generation 0
     ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false
-    ^records [] ^preview [] ^sessions [] ^expanded [] ^run nil ^pending nil ^status nil
+    ^records [] ^preview [] ^sessions [] ^expanded [] ^runs [] ^run nil ^pending nil ^status nil
     ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions")
     ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt")
     ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
@@ -620,6 +714,7 @@
     (fn [event : Any] : Void ($dom/prevent_default event) (send client)))
   ($dom/add_event_listener client/prompt "keydown"
     (fn [event : Any] : Void
+      (if_yes (== ($event/key event) "Escape") (set_hidden "commands" true))
       (if_yes (&& (== ($event/key event) "Enter") (! ($event/shift_key event))
                   (! ($event/is_composing event)))
         ($dom/prevent_default event)
@@ -627,8 +722,7 @@
   ($dom/add_event_listener client/prompt "input"
     (fn [event : Any] : Void
       (remember_draft client)
-      (set_hidden "commands"
-        (! (str/starts_with? ($dom/input_value client/prompt) "/")))))
+      (render_commands client)))
   ($dom/add_event_listener ($dom/element "create_session") "click"
     (fn [event : Any] : Void (create client)))
   ($dom/add_event_listener ($dom/element "session_filter") "input"

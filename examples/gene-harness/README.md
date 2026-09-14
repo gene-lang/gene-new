@@ -51,11 +51,20 @@ whitespace before a slash is allowed. Unknown slash commands show command help
 guidance without contacting the model.
 
 Each model step includes a **Raw LLM response · Step N** disclosure, collapsed
-by default. Expand it to inspect or copy the returned reply before Gene parsing,
+by default inside a compact **Step N** group with its code and result. Expand
+the step and raw response to inspect or copy the returned reply before Gene parsing,
 including invalid replies that triggered another attempt. Its expansion state
 survives transcript updates; switching conversations resets disclosures.
 The raw reply uses the same durable transcript and display limits as other
 output, and is kept separate from the assistant's readable answer.
+
+Assistant answers render headings, lists, tables, links, and fenced code.
+Each retained run keeps its completed, stopped, or failed outcome in the
+conversation. Code errors offer **Edit and retry**, which restores the original
+input without submitting it. Typing `/co` filters the picker to `/code`;
+entering arguments or pressing Escape dismisses it. Utility commands such as
+`/help` leave the title provisional until the first ordinary prompt supplies a
+short title. Manual titles are preserved.
 
 Open the connection link printed by the server. It binds `127.0.0.1:8095` and
 uses a one-use connection token, then an HttpOnly browser cookie. Use
@@ -649,6 +658,7 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/runtime/session_host.gene`, `src/runtime/run_controller.gene` | session navigation, snapshots, durable admission and run lifecycle |
 | `src/runtime/bootstrap.gene`, `src/runtime/session_claim.gene` | runtime lifecycle and exclusive session ownership |
 | `client/main.gene`, `client/state.gene` | Gene browser UI, connection handling, drafts and bounded transcript state |
+| `client/view.gene`, `client/markdown.gene` | grouped steps, per-run outcomes, and restricted Markdown rendering |
 
 The former Harness scenarios have moved to `tmp/gene-harness-tests` in the
 repository workspace. They are no longer a package test target.

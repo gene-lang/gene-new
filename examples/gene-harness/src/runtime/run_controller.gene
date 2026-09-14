@@ -98,7 +98,12 @@
     (when (TaskOutcome/ok value)
       (result .put "status" value/status)
       (if_not ($absent? value/error)
-        (result .put "message" "The agent could not complete this run. See the local Harness output.")))
+        (if (== value/error/type "CommandError")
+          (then
+            (result .put "outcome" value/error/code)
+            (result .put "message" "Code error. Edit the input and try again."))
+          (else
+            (result .put "message" "The agent could not complete this run. See the local Harness output.")))))
     (when (TaskOutcome/error error)
       ($println "Harness run failed: " error)
       (result .put "status" "failed")

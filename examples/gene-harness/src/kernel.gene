@@ -23,6 +23,8 @@
 (import [LoaderOptions] ^from "." ^pkg "cordis")
 
 (type HarnessError ^props {^message Str} ^impl [Error])
+(type CommandError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for CommandError)
 
 (impl Error for HarnessError)
 

@@ -292,17 +292,22 @@ composer or Stop action.
 - **Session sidebar:** New session, filter by title, title/last activity, and a
   running or interrupted indicator. Session selection is reflected in the URL.
 - **Conversation:** user messages and agent answers; collapsible narration,
-  Gene code, and results; a clear final/failed/cancelled/interrupted state.
+  Gene code, raw responses, and results grouped by run and step; a clear
+  final/failed/cancelled/interrupted state for each retained run.
   Code can be copied but is not executed by the browser.
 - **Composer:** multiline input; Enter sends, Shift+Enter inserts a newline;
   preserve input-method composition; show an unsent/sending state until the
   receipt arrives. `/` offers commands from safe registry metadata and preserves
   existing command semantics. Stop targets the active run by ID.
+  Command suggestions filter by the typed slash prefix and close when arguments
+  begin or Escape is pressed. “Edit and retry” restores a failed or stopped
+  run's input for editing and does not submit automatically.
 - **Status drawer:** workspace label, profile/model, connection state, run
   state, and plugin readiness/errors. Show desired/active revisions only when
   the selected runtime supplies them. Link to the existing recovery workflow
   when execution is unavailable.
 
+Initialize selected-session drafts on direct URL loads as well as navigation.
 Keep per-session drafts in browser session storage and erase a draft only after
 admission is confirmed. Reconnect never submits a draft. The server remains the
 source of conversation history. Do not force-scroll a reader who has moved up;
@@ -310,10 +315,24 @@ offer a “New output” jump instead. Use semantic controls, visible focus,
 keyboard access, and restrained live announcements rather than announcing each
 progress block.
 
-Treat user, model, tool, and plugin text as untrusted display text. First release
-uses text/code rendering with preserved whitespace; Markdown can follow behind
-a restricted renderer. Do not inject `HtmlRender` output or plugin HTML into the
-page. Links, if recognized, are limited to safe web schemes.
+Assistant narration and answers support a restricted Markdown subset: headings,
+flat ordered/unordered lists, pipe tables, fenced code, inline code/emphasis,
+and links. User input, command output, raw replies, and Gene source retain literal
+text. The renderer creates DOM nodes and never injects source HTML. Links accept
+HTTP(S), mailto, and fragment URLs; unsupported syntax remains text. This is not
+a full CommonMark implementation.
+
+Snapshots include `runs`, the public projection of the existing bounded receipt
+history (128 runs). Live run updates merge into that history. Outcome markers
+therefore survive subsequent runs and reloads while their receipts are retained.
+Direct code parse/evaluation failures use a typed `CommandError`, produce a
+failed receipt with `outcome: "code_error"`, and remain ordinary recoverable
+command failures. A successful program returning an error-looking string is
+still successful. The UI displays “Code error” without inspecting output text.
+
+New sessions carry provisional automatic titles. Slash commands leave them
+provisional; the first ordinary prompt supplies at most eight words/64 UTF-8
+bytes plus an ellipsis. Explicit renaming always ends automatic title selection.
 
 ## 8. HTTP interface and local access
 

@@ -207,6 +207,7 @@
     (fail (RunError ^code "invalid_request" ^message "Use a session title of 1–256 bytes.")))
   (var id $"s_${(random_hex 12)}")
   (var metadata {^id id ^stream id ^title name ^revision 1
+    ^auto_title (== name "New conversation")
     ^created_at ($to_str ($now)) ^last_activity ($to_str ($now))})
   (save_session host/events metadata)
   (flush_event_store host/events)
@@ -222,6 +223,7 @@
   (if (|| (== name "") (> ($str/byte_size name) 256))
     (fail (RunError ^code "invalid_request" ^message "Use a session title of 1–256 bytes.")))
   (metadata .put "title" name)
+  (metadata .put "auto_title" false)
   (metadata .put "revision" (+ revision 1))
   (save_session host/events metadata)
   (flush_event_store host/events)
@@ -233,7 +235,7 @@
   (var result {^id receipt/id ^request_id receipt/request_id
     ^submission_seq ($to_str receipt/submission_seq) ^status receipt/status
     ^accepted_at receipt/accepted_at})
-  (for key in ["started_at" "finished_at" "message"]
+  (for key in ["started_at" "finished_at" "message" "outcome"]
     (if_not (== (receipt .get key) void) (result .put key (receipt .get key))))
   result)
 
@@ -306,6 +308,20 @@
   (capture_status host)
   runtime)
 
+(fn prompt_title [text : Str] : Str
+  (var lines ($str/split ($str/trim text) "\n"))
+  (var line ($str/trim lines/0))
+  (var title "")
+  (var count 0)
+  (for word in ($str/split line " ")
+    (if_yes (!= word "")
+      (var next (if (== title "") word $"${title} ${word}"))
+      (if_yes (|| (>= count 8) (> ($str/byte_size next) 64))
+        (return (if (== title "") (clipped word 64) $"${title}…")))
+      (set title next)
+      (set count (+ count 1))))
+  title)
+
 (fn submit [host : SessionHost, id : Str, request_id : Str,
             sequence : Int, text : Str]
   (if (|| (== ($str/trim text) "") (== request_id "")
@@ -319,9 +335,10 @@
   (if_not ($absent? previous) (return (public_receipt previous)))
   (require_idle host)
   (ensure_runtime host metadata)
-  (if_yes (== metadata/title "New conversation")
-    (var lines ($str/split ($str/trim text) "\n"))
-    (metadata .put "title" (clipped lines/0 160))
+  (if_yes (&& (?? metadata/auto_title (== metadata/title "New conversation"))
+              (! ($str/starts_with? ($str/trim text) "/")))
+    (metadata .put "title" (prompt_title text))
+    (metadata .put "auto_title" false)
     (metadata .put "revision" (+ metadata/revision 1)))
   (metadata .put "last_activity" ($to_str ($now)))
   (save_session host/events metadata)
@@ -409,7 +426,10 @@
       (set cursor ($parse/parse_int page/%last_index/seq)))
     (var state (run_state events metadata/stream))
     (var last nil)
-    (for receipt in state/receipts (set last receipt))
+    (var runs [])
+    (for receipt in state/receipts
+      (set last receipt)
+      (runs .push (public_receipt receipt)))
     (var preview [])
     (var preview_bytes bytes)
     (var preview_truncated false)
@@ -436,7 +456,7 @@
      ^cursor ($to_str cursor) ^through ($to_str through)
      ^earliest ($to_str earliest) ^reset reset ^has_more (< cursor through)
      ^has_older (> start 0) ^next_submission_seq ($to_str state/next_seq)
-     ^run (public_receipt last) ^preview preview ^preview_truncated preview_truncated
+     ^run (public_receipt last) ^runs runs ^preview preview ^preview_truncated preview_truncated
      ^epoch host/epoch}
   ensure (close_event_store events)))
 

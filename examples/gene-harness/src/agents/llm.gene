@@ -30,7 +30,7 @@
 (import $fs [read_text])
 (import [model_name chat_completion] ^from "./model_client")
 (import [parse_envelope reply_format_prompt] ^from "./model_reply")
-(import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent HarnessPreview ToolInvoked
+(import [Plugin PluginContext PluginHost Harness HarnessError CommandError HarnessEvent HarnessPreview ToolInvoked
          PluginActivated PluginDeactivated PluginFailed PluginInstalled
          PluginUninstalled
          new_harness install_with_policy uninstall retry resolve
@@ -184,7 +184,8 @@
                  ^session session = nil, ^state_host state_host = nil,
                  ^payload payload = nil, ^prompt prompt : Str = "",
                  ^round round : Int = 1, ^author author = nil,
-                 ^evaluation_limits evaluation_limits = nil] : Str
+                 ^evaluation_limits evaluation_limits = nil,
+                 ^raise_errors raise_errors : Bool = false] : Str
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
   # shape that runs, so a program may define something and then use it.
   #
@@ -219,10 +220,16 @@
             $"${(eval program ^in sandbox)}"
           catch MissingCapability
             # A denial is a value shown to the next model round.
+            (if_yes raise_errors
+              (fail (CommandError ^code "code_error"
+                ^message $"refused: ${$err/operation} needs ${$err/capability}")))
             $"refused: ${$err/operation} needs ${$err/capability}"
           catch Any
             (if ($str/contains? $err/message " requires ")
-              $"refused: ${$err/message}"
+              (do
+                (var message $"refused: ${$err/message}")
+                (if_yes raise_errors (fail (CommandError ^code "code_error" ^message message)))
+                message)
               (fail $err))))
         # Drained here and not in the sandbox: this callback runs under the
         # caller's capability context (`invoke_bounded ^inherit true`), which
@@ -257,7 +264,12 @@
       ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
                                ^timeout_ms 30000)))
   (if (== outcome/status "aborted")
-    $"error: ${outcome/error/message}"
+    (do
+      (if_yes (&& raise_errors (== ($head outcome/error) CommandError))
+        (fail outcome/error))
+      (var message $"error: ${outcome/error/message}")
+      (if_yes raise_errors (fail (CommandError ^code "code_error" ^message message)))
+      message)
     ($to_str outcome/result)))
 
 # ---------------------------------------------------------------------------
@@ -363,7 +375,7 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
   (var last "")
   (while running
     (set turn (+ turn 1))
-    (if_yes (> turn 1) (emit_output h $"== Round ${turn} ==" ^round turn))
+    (if_yes (> turn 1) (emit_output h $"== Round ${turn} ==" ^phase "round_marker" ^round turn))
     (var run_id (current_run_id h))
     (var raw_id $"${run_id}/raw-${turn}")
     (var raw
@@ -405,7 +417,7 @@ Remember: return exactly one map with ^type, and nothing outside it.""")
         (if (== envelope/type "code-with-response")
           (then (set running false))
           (else
-            (emit_output h "-- Result  --")
+            (emit_output h "-- Result  --" ^phase "result_marker" ^round turn)
             (emit_output h result ^phase "result" ^round turn)
             (set history $"${history}\nreply: ${envelope}\noutput: ${result}\nThe code has executed. Decide from the result: finish with type response, or send more code.")
             (if_yes (failed? result)

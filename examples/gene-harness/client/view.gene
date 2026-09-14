@@ -1,5 +1,8 @@
 (mod harness_client_view ^profile web)
 
+(import [markdown_view] ^from "./markdown.gene")
+(import [run_label terminal] ^from "./state.gene")
+
 (fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
                 expanded : Bool, on_toggle : (Fn [Bool] Void)] : EventTarget
   (var role : Str block/role)
@@ -24,7 +27,9 @@
            (button ^type "button" ^class_name "copy"
              ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy")
            (pre (code %text))))
-      ($dom/render `(div ^class_name "message_text" %text))))
+      (if (&& (== role "assistant") (|| (== phase "final") (== phase "narration")))
+        (markdown_view text)
+        ($dom/render `(div ^class_name "message_text" %text)))))
   (var article : EventTarget
     ($dom/render
       `(article ^class_name %cls
@@ -34,3 +39,57 @@
   (if_yes block/truncated
     ($dom/append article ($dom/render `(p ^class_name "muted" "Output shortened for display."))))
   article)
+
+(fn not_durable [block : Any] : Bool
+  (var durable : Bool block/durable) (! durable))
+
+(fn step_view [blocks : (List Any), opened : Bool, active : Bool,
+               on_copy : (Fn [Str] Void), is_open : (Fn [Str] Bool),
+               on_toggle : (Fn [Str Bool] Void)] : EventTarget
+  (var first : Any blocks/0)
+  (var run_id : Str first/run_id)
+  (var round : Int first/round)
+  (var key : Str $"${run_id}/step-${round}")
+  (var progress "")
+  (var has_code false)
+  (var has_result false)
+  (for block in blocks
+    (var phase : Str block/phase)
+    (if_yes (== phase "code") (set has_code true))
+    (if_yes (== phase "result") (set has_result true)))
+  (if_yes active
+    (set progress (if has_result " · Result received"
+      (if has_code " · Running code…" " · Generating response…"))))
+  (var title $"Step ${round}${progress}")
+  (var details ($dom/render
+    `(details ^class_name "step" ^open %opened
+       ^on_toggle %(fn [event : Any] : Void
+         (var open : Bool event/current_target/open) (on_toggle key open))
+       (summary %title))))
+  (var content ($dom/render `(div ^class_name "step_content")))
+  (for block in blocks
+    (var id : Str block/id)
+    ($dom/append content
+      (block_view block (not_durable block) on_copy (is_open id)
+        (fn [open : Bool] : Void (on_toggle id open)))))
+  ($dom/append details content)
+  details)
+
+(fn run_status_view [run : Any, prompt : Str, on_retry : (Fn [Str] Void)] : EventTarget
+  (var label (run_label run))
+  (var status : Str run/status)
+  (var failed (|| (== status "failed") (== status "recovery_required")))
+  (var detail "")
+  (if_not ($absent? run/message)
+    (var message : Str run/message)
+    (if (str/starts_with? message ($ label "."))
+      (set label message) (set detail message)))
+  (var root ($dom/render `(div ^class_name %(if failed "run_status run_error" "run_status")
+    (span %label))))
+  (if_yes (!= detail "")
+    ($dom/append root ($dom/render `(span ^class_name "outcome_message" %detail))))
+  (if_yes (&& (!= prompt "") (terminal status) (!= status "completed"))
+    ($dom/append root ($dom/render
+      `(button ^type "button" ^class_name "edit_retry"
+         ^on_click %(fn [event : Any] : Void (on_retry prompt)) "Edit and retry"))))
+  root)

@@ -15,7 +15,7 @@
          row rows invoke_registry_row plugin_states bound_seams
          lifecycle_log log_append uninstall retry status_of
          installed transaction_diff flush_harness HarnessError current_run_id
-         run_needs_recovery?] ^from "../kernel")
+         run_needs_recovery? CommandError] ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
 (import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
          prompt_provider codegen_provider]
@@ -292,6 +292,10 @@
   (var out
     (try
       ((resolve h "HarnessPrompt") .HarnessPrompt:handle h prompt)
+    catch CommandError
+      (set status "failed")
+      (set failure {^type "CommandError" ^code $err/code})
+      $err/message
     catch Any
       (set status "failed")
       (set failure {^type ($to_str ($head $err))})
@@ -303,7 +307,9 @@
   (if_yes (run_needs_recovery? h)
     (set status "recovery_required")
     (set failure {^type "RecoveryRequired"}))
-  (if_yes (!= out "") (log_append h "output" out ^phase "final"))
+  (if_yes (!= out "")
+    (log_append h "output" out
+      ^phase (if ($str/starts_with? ($str/trim prompt) "/") "command_result" "final")))
   (flush_harness h)
   {^status status ^text out ^error failure})
 

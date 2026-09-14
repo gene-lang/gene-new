@@ -37,3 +37,37 @@
     (if_yes (&& (>= i start) (< ($size out) 600)) (out .push block))
     (set i (+ i 1)))
   out)
+
+(fn step_key [block : Any] : Str
+  (var run : Str block/run_id)
+  (var round : Int block/round)
+  $"${run}/step-${round}")
+
+(fn step_block [block : Any] : Bool
+  (var round : Int block/round)
+  (var phase : Str block/phase)
+  (&& (> round 0)
+      (|| (== phase "raw_response") (== phase "code")
+          (== phase "result") (== phase "narration"))))
+
+(fn marker_block [block : Any] : Bool
+  (var phase : Str block/phase)
+  (var text : Str block/text)
+  (|| (== phase "round_marker") (== phase "result_marker")
+      # Recognize old display markers without hiding user text or final answers.
+      (&& (== phase "narration")
+          (|| (== text "-- Result  --")
+              (&& (str/starts_with? text "== Round ") (str/ends_with? text " =="))))))
+
+(fn run_label [run : Any] : Str
+  (var status : Str run/status)
+  (var value : Any (?? run/outcome ""))
+  (var outcome : Str value)
+  (if (== outcome "code_error") "Code error"
+    (if (== status "completed") "Completed"
+      (if (== status "cancelled") "Stopped"
+        (if (== status "failed") "Failed"
+          (if (== status "interrupted") "Interrupted"
+            (if (== status "running") "Generating response…"
+              (if (== status "accepted") "Starting…"
+                (if (== status "stopping") "Stopping…" "Recovery required")))))))))

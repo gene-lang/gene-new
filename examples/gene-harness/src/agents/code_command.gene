@@ -2,7 +2,7 @@
 (mod code_command)
 
 (import $parse [read_all])
-(import [Plugin PluginContext PluginHost Harness ExecutionLimits log_append resolve]
+(import [Plugin PluginContext PluginHost Harness ExecutionLimits log_append resolve CommandError]
   ^from "../kernel")
 (import_impl PluginHost for PluginContext ^from "../kernel")
 (import [LlmAgent run_program] ^from "./llm")
@@ -14,7 +14,7 @@
   (try
     (for form in (read_all text) (forms .push form))
   catch Any
-    (return $"code parse error: ${$err/message}"))
+    (fail (CommandError ^code "code_error" ^message $"code parse error: ${$err/message}")))
   (if (== forms/.size 0) (return "usage: /code <Gene code>, for example /code (+ 1 2)"))
   (if ($absent? h/workspace) (return "code execution requires a harness workspace"))
   (var history nil)
@@ -23,10 +23,11 @@
   (if_yes (== ($head provider) LlmAgent)
     (set history provider/session)
     (set state_host provider/state_host))
-  (log_append h "output" text ^phase "code")
+  (log_append h "output" text ^phase "code" ^round 1)
   # The command callback has an outer budget. Bound evaluation separately so
   # exhausting user code still leaves time and steps to abort the transaction.
   (run_program h `(do %forms...) ^session history ^state_host state_host
+    ^raise_errors true
     ^prompt $"/code ${text}" ^author {^by "program/user" ^model ""}
     ^evaluation_limits (ExecutionLimits ^max_steps 25000 ^max_memory_mb 32 ^timeout_ms 1000)))
 
