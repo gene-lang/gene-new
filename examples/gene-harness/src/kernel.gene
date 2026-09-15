@@ -459,61 +459,29 @@
     (out .put row_id record))
   out)
 
-(fn clone_policy_map [h : Harness]
-  (var out (fresh_map))
-  (for [owner policy] in (h/plugin_policies .get)
-    (var cloned (fresh_map))
-    (for [name value] in policy (cloned .put name value))
-    (out .put owner cloned))
-  out)
-
-# This host participates in Cordis publication; it owns registry collections,
-# not another plugin lifecycle. Each candidate gets an independent view. A
-# published context subsequently follows the shared committed cells, so old
-# cleanup observes the new registry and can remove only its immutable row IDs.
+# Cordis owns plugin lifecycle; this host owns the registry collections plugins
+# activate into. Activations contribute to the live tables and each revision's
+# single deferred cleanup removes exactly its rows and callbacks, so reconciles
+# need no registry draft and an unchanged plugin stays live across them.
 (type CordisRegistryHost ^private true
   ^props {^h Harness}
   (impl RegistryHost
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
-    (message prepare [retiring_ids] : Any
+    (message describe [module, id : Str, limits, selectors] : Plugin
       (var h self/h)
-      # Plugin callbacks keep the Harness they were contributed with, so the
-      # draft shares lifecycle state, the transaction cell and the composition
-      # with the live Harness; only the registry tables are staged copies.
-      (var draft
-        (Harness ^plugins h/plugins
-          ^plugin_errors h/plugin_errors ^log h/log ^log_hydrated h/log_hydrated
-          ^bus h/bus ^registries ($cell (clone_registries h))
-          ^ledger ($cell (clone_ledger h)) ^row_index ($cell (clone_row_index h))
-          ^next_row_id h/next_row_id ^transaction h/transaction
-          ^event_store h/event_store ^event_scope h/event_scope ^event_stream h/event_stream
-          ^plugin_policies ($cell (clone_policy_map h)) ^plugin_depth h/plugin_depth
-          ^workspace h/workspace))
-      (set draft/composition h/composition)
-      (set draft/composition_entries h/composition_entries)
-      (for id in retiring_ids
-        ((draft/plugin_policies .get) .delete id)
-        (var owned (copy_list (?? ((draft/ledger .get) .get id) (fresh_list))))
-        (for row_id in owned (remove_registry_row draft row_id ^cleanup false))
-        (var registries (draft/registries .get))
-        (var remove_names (fresh_list))
-        (for [name r] in registries
-          (if (== r/owner id) (remove_names .push name)))
-        (for name in remove_names (registries .delete name)))
-      draft)
-    (message describe [draft, module, id : Str, limits, selectors] : Plugin
       (var bounded (ExecutionLimits ^max_steps limits/max_steps
         ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
       (configure_plugin_module module selectors bounded)
-      (describe_plugin_module draft module id
-        ^core_interface (if ($absent? draft/workspace) "" draft/workspace/core_interface)
+      (describe_plugin_module h module id
+        ^core_interface (if ($absent? h/workspace) "" h/workspace/core_interface)
         ^limits bounded))
-    (message context [draft, plugin, effects, observer, policy] : PluginContext
-      (set draft/registry_observer observer)
-      (var context (make_plugin_context draft plugin/id true))
+    (message context [plugin, effects, observer, policy] : PluginContext
+      (var h self/h)
+      (set h/registry_observer observer)
+      (var context (make_plugin_context h plugin/id true))
       (var owned_rows ($cell (fresh_list)))
-      ((draft/plugin_policies .get) .put plugin/id
+      ((h/plugin_policies .get) .put plugin/id
         {^selectors policy/selectors ^scope policy/scope
          ^limits (ExecutionLimits ^max_steps policy/limits/max_steps
            ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
@@ -522,26 +490,15 @@
       # cleanup as a bounded plugin invocation, so a cleanup per contributed row
       # and per callback made retiring a generation cost one invocation per row.
       (effects .defer (fn []
-        (try (release_activation_rows draft effects owned_rows)
-        ensure (release_owned_plugin_context draft plugin/id context))))
+        (try (release_activation_rows h effects owned_rows)
+        ensure (release_owned_plugin_context h plugin/id context))))
       context)
-    (message selected [draft, registry_name : Str, key : Str] : Any
-      (if_not (registry_exists? draft registry_name) (return nil))
-      (var selected (row_record draft registry_name key))
-      (if (== selected void) (return nil))
-      {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})
-    (message publish [draft] : Nil
+    (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
-      (h/registries .set (draft/registries .get))
-      (h/ledger .set (draft/ledger .get))
-      (h/row_index .set (draft/row_index .get))
-      (h/plugin_policies .set (draft/plugin_policies .get))
-      (set draft/registries h/registries)
-      (set draft/ledger h/ledger)
-      (set draft/row_index h/row_index)
-      (set draft/plugin_policies h/plugin_policies)
-      nil)
-    (message abort [draft] : Nil nil)))
+      (if_not (registry_exists? h registry_name) (return nil))
+      (var selected (row_record h registry_name key))
+      (if (== selected void) (return nil))
+      {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})))
 
 (fn make_cordis_registry_host [h : Harness] : RegistryHost
   (CordisRegistryHost ^h h))
@@ -828,8 +785,15 @@
   (var plugins (fresh_list))
   (var failed (fresh_list))
   (for [id plugin] in (h/plugins .get) (plugins .push plugin))
-  (for [id message] in (h/plugin_errors .get) (failed .push id))
-  (h/composition .reconcile_available plugins (h/composition_entries .get) failed))
+  (for [id message] in (h/plugin_errors .get) (failed .push ($to_str id)))
+  # Entries reconcile individually. A plugin whose activation failed is recorded
+  # here and returns to its last active revision, if any; its siblings are
+  # unaffected.
+  (var result
+    (h/composition .reconcile_available plugins (h/composition_entries .get) failed))
+  (for failure in result/failures
+    ((h/plugin_errors .get) .put failure/id failure/message))
+  result/snapshot)
 
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
   (if ($absent? h/composition)
@@ -849,9 +813,9 @@
   (status_of h plugin/id))
 
 (fn put_cordis_plugins [h : Harness, admissions]
-  # Boot stages every profile plugin and reconciles once. Cordis activates a
-  # complete staged candidate on each reconcile, so reconciling per plugin made
-  # boot quadratic in the number of profile plugins.
+  # Boot stages every profile plugin and reconciles once. A plugin whose
+  # activation fails is recorded by the reconcile itself; only a failure of the
+  # reconcile as a whole marks every admission.
   (if ($absent? h/composition)
     (fail (HarnessError ^message "Harness has no Cordis composition")))
   (if_not ($absent? (active_transaction h))
@@ -917,13 +881,13 @@
 
 (fn run_log_context [h : Harness] ^private true
   (for entry in (run_log_contexts .get)
-    (if_yes (same_harness? entry/h h) (return entry)))
+    (if_yes (same? entry/h h) (return entry)))
   nil)
 
 (fn end_run_log [h : Harness]
   (var kept (fresh_list))
   (for entry in (run_log_contexts .get)
-    (if_not (same_harness? entry/h h) (kept .push entry)))
+    (if_not (same? entry/h h) (kept .push entry)))
   (run_log_contexts .set kept)
   nil)
 
@@ -1307,14 +1271,9 @@
   (for name in (registry_row_keys h "tools") (out .push (describe_tool h name)))
   ($freeze out))
 
-# A Cordis reconcile activates plugins against a draft Harness that shares the
-# live one's log, lifecycle and transaction cells, so identity is the shared log.
-(fn same_harness? [a : Harness, b : Harness] : Bool
-  (same? a/log b/log))
-
 (fn validate_tool_delegation [h : Harness, owner : Str, request : ToolRequest]
   (var context (plugin_context_record request/context))
-  (if (|| (! (same_harness? context/h h)) (!= context/owner owner) (!= (status_of h owner) "ready"))
+  (if (|| (! (same? context/h h)) (!= context/owner owner) (!= (status_of h owner) "ready"))
     (fail (HarnessError ^message "tool request has an expired or foreign owner")))
   (var target (row_record h "tools" request/name))
   (if ($absent? target) (fail (HarnessError ^message $"no tool ${request/name}")))
@@ -1327,7 +1286,7 @@
 
 (fn validate_plugin_input [h : Harness, owner : Str, request : PluginInputRequest]
   (var context (plugin_context_record request/context))
-  (if (|| (! (same_harness? context/h h)) (!= context/owner owner) (!= (status_of h owner) "ready"))
+  (if (|| (! (same? context/h h)) (!= context/owner owner) (!= (status_of h owner) "ready"))
     (fail (HarnessError ^message "input request has an expired or foreign owner")))
   (var target (row_record h "tools" request/resume_tool))
   (if (|| ($absent? target) (!= target/owner owner))
@@ -1506,7 +1465,9 @@
   (var snapshot (h/composition .inspect))
   (for entry in snapshot/entries
     (if (== entry/id id)
-      (return (if (== entry/state "active") "ready" entry/state))))
+      (return
+        (if (== entry/state "active") "ready"
+          (if (== entry/state "failed") "error" entry/state)))))
   "pending")
 
 (fn plugin_error [h : Harness, id : Str]

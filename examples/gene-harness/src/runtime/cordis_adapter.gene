@@ -3,21 +3,21 @@
 (mod cordis_adapter)
 
 (import [PluginCallKind EffectDisposed invoke_effect_owner
-         RuntimeOptions LoaderOptions PluginSpec PublicationParticipant
+         RuntimeOptions LoaderOptions PluginSpec
          Requirement service_key InstanceState CompositionError PluginInvoker
          invocation_limits default_plugin_invoker new_runtime]
   ^from "." ^pkg "cordis")
 (import [Plugin PluginContext default_execution_limits] ^from "../plugin_api")
 
+# Activations contribute directly to the live registries. Each activation
+# revision owns its rows and callbacks and releases them in its own cleanup, so
+# a reconcile needs no registry draft and no whole-set publication.
 (protocol RegistryHost
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
-  (message prepare [retiring_ids] : Any)
-  (message describe [draft, module, id : Str, limits, selectors] : Plugin)
-  (message context [draft, plugin, effects, observer, policy] : PluginContext)
-  (message selected [draft, registry : Str, key : Str] : Any)
-  (message publish [draft] : Nil)
-  (message abort [draft] : Nil))
+  (message describe [module, id : Str, limits, selectors] : Plugin)
+  (message context [plugin, effects, observer, policy] : PluginContext)
+  (message selected [registry : Str, key : Str] : Any))
 
 (type HarnessInvoker ^private true
   ^props {^host RegistryHost ^delegate PluginInvoker}
@@ -33,40 +33,29 @@
   (message reconcile [plugins, ^entries entries = #{}]
     (reconcile_composition self plugins entries))
   (message reconcile_available [plugins, entries, failed_ids]
-    (let record (composition_record self))
-    (let selected ($thaw #[]))
-    (let policies ($thaw #{}))
-    (for plugin in plugins
-      (if (failed_ids .contains? plugin/id)
-        (then
-          (for previous in (record/current .get)
-            (if_yes (== previous/id plugin/id)
-              (selected .push previous)
-              (let ticket (record/live_ticket .get))
-              (policies .put plugin/id (ticket/entries .get plugin/id)))))
-        (else
-          (selected .push plugin)
-          (policies .put plugin/id (?? (entries .get plugin/id) #{})))))
-    (reconcile_composition self selected policies))
+    (reconcile_available_plugins self plugins entries failed_ids))
   (message inspect []
     (let record (composition_record self))
     (let snapshot ($thaw #{}))
     (for [name value] in (record/loader .inspect) (snapshot .put name value))
     (let selected ($thaw #[]))
-    (let ticket (record/live_ticket .get))
-    (if_not ($absent? ticket)
-      (for [id projection] in ticket/bindings
-        (let binding (ticket/keys .get id))
-        (selected .push {^registry binding/registry ^key binding/name
-                         ^row_id projection/row_id})))
+    (for [id projection] in record/projections
+      (let binding ((record/keys .get) .get id))
+      (selected .push {^registry binding/registry ^key binding/name
+                       ^row_id projection/row_id}))
     (snapshot .put "bindings" selected)
     ($freeze snapshot))
   (message close [] (close_composition self)))
 
+# `current` maps each plugin ID to its last active value and entry options.
+# `policies` holds the entry policies of the latest reconcile, read by
+# descriptor preflight and by every (re)activation. `specs` caches the Cordis
+# spec of each host plugin so an unchanged plugin keeps its live instance.
 (type CompositionRecord ^private true
   ^props {^token Any ^host RegistryHost ^runtime Any ^loader Any
-          ^current Any ^pending Any ^pending_entries Any
-          ^draft Any ^busy Any ^keys Any ^live_ticket Any})
+          ^current Any ^pending Any ^busy Any ^policies Any ^specs Any
+          ^bindings_spec Any ^keys Any ^projections Any ^base_owner Any
+          ^updating Any ^dirty Any})
 
 (type EntrySelection ^private true
   ^props {^row_id Str ^payload Any})
@@ -84,48 +73,54 @@
   (let pair (requirement_pair requirement))
   (if_not (== pair/.size 2)
     (fail (EffectDisposed ^message "a registry requirement needs registry and key")))
-  (let id (binding_id ($to_str pair/0) ($to_str pair/1)))
+  (let registry ($to_str pair/0))
+  (let name ($to_str pair/1))
+  (let id (binding_id registry name))
   (let keys (record/keys .get))
   (if_yes (== (keys .get id) void)
     (let key (service_key $"harness/entry/${id}" EntrySelection ^check check_selection))
     (record/runtime .admit_service_key key)
-    (keys .put id {^registry ($to_str pair/0) ^name ($to_str pair/1) ^key key}))
+    (keys .put id {^registry registry ^name name ^key key})
+    # The bindings entry projected the keys known when it activated. A key
+    # admitted later is projected now, before any plugin requiring it installs.
+    (if_not ($absent? (record/base_owner .get))
+      (selection_changed record registry name)))
   (let binding (keys .get id))
   (Requirement ^key binding/key ^config nil))
 
-(fn selection_changed ^^private [record, ticket, registry : Str, key : Str]
+(fn selection_changed ^^private [record, registry : Str, key : Str]
   (let id (binding_id registry key))
-  (if (== (ticket/keys .get id) void) (return nil))
-  (if_yes (== (ticket/updating .get id) true)
-    (ticket/dirty .put id true)
+  (if (== ((record/keys .get) .get id) void) (return nil))
+  (if_yes (== (record/updating .get id) true)
+    (record/dirty .put id true)
     (return nil))
-  (ticket/updating .put id true)
+  (record/updating .put id true)
   (try
     (var again true)
     (while again
-      (ticket/dirty .delete id)
-      (reconcile_selection record ticket registry key)
-      (set again (== (ticket/dirty .get id) true)))
+      (record/dirty .delete id)
+      (reconcile_selection record registry key)
+      (set again (== (record/dirty .get id) true)))
   ensure
-    (ticket/updating .delete id)
-    (ticket/dirty .delete id))
+    (record/updating .delete id)
+    (record/dirty .delete id))
   nil)
 
-(fn reconcile_selection ^^private [record, ticket, registry : Str, key : Str]
+(fn reconcile_selection ^^private [record, registry : Str, key : Str]
   (let id (binding_id registry key))
-  (let binding (ticket/keys .get id))
+  (let binding ((record/keys .get) .get id))
   (if (== binding void) (return nil))
-  (let selected (record/host .RegistryHost:selected ticket/view registry key))
-  (let previous (ticket/bindings .get id))
+  (let selected (record/host .RegistryHost:selected registry key))
+  (let previous (record/projections .get id))
   (if_yes (!= previous void)
     (if (&& (! ($absent? selected)) (== previous/row_id selected/row_id)) (return nil))
     (previous/instance .dispose)
     # dispose queues retirement while a provider validation is admitted. Wait
     # for Cordis to release that reservation before installing its successor.
     (while (!= (previous/instance .state) InstanceState/disposed) ($sleep 1))
-    (ticket/bindings .delete id))
+    (record/projections .delete id))
   (if ($absent? selected) (return nil))
-  (let owner (if ($absent? selected/effects) (ticket/base_owner .get) selected/effects))
+  (let owner (if ($absent? selected/effects) (record/base_owner .get) selected/effects))
   (if ($absent? owner) (return nil))
   (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
   (let projection
@@ -133,40 +128,8 @@
       ^requires [] ^provides [binding/key] ^reload nil
       ^activate (fn [ctx, config] (ctx .provide binding/key value))))
   (let instance (owner .install projection))
-  (ticket/bindings .put id {^row_id selected/row_id ^instance instance})
+  (record/projections .put id {^row_id selected/row_id ^instance instance})
   nil)
-
-(type RegistryPublication ^private true
-  ^props {^token Any}
-  (impl PublicationParticipant
-    (message prepare [] : Any
-      (let record (composition_record self))
-      (let ids ($thaw #[]))
-      (for plugin in (record/current .get) (ids .push plugin/id))
-      (let keys ($thaw #{}))
-      (for plugin in (record/pending .get)
-        (for requirement in (?? plugin/requires #[])
-          (let pair (requirement_pair requirement))
-          (let id (binding_id ($to_str pair/0) ($to_str pair/1)))
-          (keys .put id ((record/keys .get) .get id))))
-      (let ticket {^view (record/host .RegistryHost:prepare ids)
-                   ^entries (record/pending_entries .get)
-                   ^keys keys ^bindings ($thaw #{}) ^base_owner ($cell nil)
-                   ^updating ($thaw #{}) ^dirty ($thaw #{})})
-      ((record/draft .get) .set ticket)
-      ticket)
-    (message publish [ticket] : Nil
-      (let record (composition_record self))
-      (record/host .RegistryHost:publish ticket/view)
-      (record/current .set (record/pending .get))
-      (record/live_ticket .set ticket)
-      (record/draft .set nil)
-      nil)
-    (message abort [ticket] : Nil
-      (let record (composition_record self))
-      (record/host .RegistryHost:abort ticket/view)
-      (record/draft .set nil)
-      nil)))
 
 (var compositions ^private true ($cell ($thaw #[])))
 
@@ -192,10 +155,22 @@
   (let token ($cell nil))
   (let record
     (CompositionRecord ^token token ^host host ^runtime runtime ^loader nil
-      ^current ($cell ($thaw #[])) ^pending ($cell nil) ^draft ($cell nil)
-      ^pending_entries ($cell nil)
-      ^busy ($cell false) ^keys ($cell ($thaw #{})) ^live_ticket ($cell nil)))
+      ^current ($cell ($thaw #{})) ^pending ($cell nil) ^busy ($cell false)
+      ^policies ($cell #{}) ^specs ($thaw #{}) ^bindings_spec nil
+      ^keys ($cell ($thaw #{})) ^projections ($thaw #{}) ^base_owner ($cell nil)
+      ^updating ($thaw #{}) ^dirty ($thaw #{})))
+  (set record/bindings_spec
+    (PluginSpec ^id "harness/bindings" ^config_schema nil ^requires [] ^provides []
+      ^reload nil ^activate (fn [ctx, config]
+        (ctx .effect "registry bindings" (fn [fx]
+          (record/base_owner .set fx)
+          (fx .defer (fn [] (record/base_owner .set nil)))
+          (for [id binding] in (record/keys .get)
+            (selection_changed record binding/registry binding/name)))))))
   ((compositions .get) .push record)
+  # Without a publication participant, Cordis reconciles entry by entry like
+  # upstream `Entry.update`: unchanged entries keep their instances, changed
+  # ones restart, and a failed activation stays local to its entry.
   (set record/loader
     (runtime .loader
       (LoaderOptions ^plugin_root configured/plugin_root ^shared configured/shared
@@ -204,14 +179,11 @@
         ^capability_ceiling configured/capability_ceiling
         ^default_limits configured/default_limits ^reload_policy configured/reload_policy
         ^allow_pending true
-        ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph))
-        ^publication (RegistryPublication ^token token))))
+        ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))
   (Composition ^token token))
 
 (fn describe_source ^^private [record, module, row, graph]
-  (let ticket_ref (record/draft .get))
-  (let ticket (ticket_ref .get))
-  (let policy (ticket/entries .get row/id))
+  (let policy ((record/policies .get) .get row/id))
   (if (|| ($absent? policy/digest) ($absent? policy/closure))
     (fail (CompositionError ^message $"source ${row/id} requires a verified digest and closure")))
   (for node in graph/nodes
@@ -220,7 +192,7 @@
         (fail (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
         (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
-  (let plugin (record/host .RegistryHost:describe ticket/view module row/id row/limits policy/selectors))
+  (let plugin (record/host .RegistryHost:describe module row/id row/limits policy/selectors))
   (var expected nil)
   (for descriptor in (record/pending .get)
     (if (== descriptor/id row/id) (set expected descriptor)))
@@ -228,9 +200,9 @@
           (!= (?? expected/requires #[]) (?? plugin/requires #[]))
           (!= expected/provides plugin/provides))
     (fail (CompositionError ^message $"source ${row/id} descriptor changed after preflight")))
-  (adapt_plugin record plugin ticket_ref))
+  (adapt_plugin record plugin))
 
-(fn adapt_plugin ^^private [record, plugin, ticket_ref]
+(fn adapt_plugin ^^private [record, plugin]
   (let requirements ($thaw #[]))
   (for requirement in (?? plugin/requires #[])
     (let pair (requirement_pair requirement))
@@ -239,21 +211,33 @@
       (fail (CompositionError ^message "descriptor introduced an unadmitted entry dependency")))
     (requirements .push (Requirement ^key binding/key ^config nil)))
   (PluginSpec ^id plugin/id ^config_schema nil ^requires requirements ^provides []
-    ^reload nil ^activate (fn [ctx, config] (activate_descriptor record plugin ctx ticket_ref))))
+    ^reload nil ^activate (fn [ctx, config] (activate_descriptor record plugin ctx))))
 
-(fn activate_descriptor ^^private [record, plugin, ctx, ticket_ref]
+(fn host_plugin_spec ^^private [record, plugin, policy]
+  # Cordis keeps an entry live while its admitted spec is the same value, so
+  # the spec is reused until the plugin value or its entry policy changes.
+  (let key {^scope policy/scope ^selectors policy/selectors ^inherit policy/inherit
+            ^limits [policy/limits/max_steps policy/limits/max_memory_mb
+                     policy/limits/timeout_ms]})
+  (let cached (record/specs .get plugin/id))
+  (if (&& (!= cached void) (same? cached/plugin plugin) (== cached/key key))
+    (return cached/spec))
+  (let spec (adapt_plugin record plugin))
+  (record/specs .put plugin/id {^plugin plugin ^key key ^spec spec})
+  spec)
+
+(fn activate_descriptor ^^private [record, plugin, ctx]
   (ctx .effect $"harness/${plugin/id}"
     (fn [fx]
-      (let ticket (ticket_ref .get))
       (let ready ($cell false))
       (let changed ($thaw #{}))
       (let receiver
-        (record/host .RegistryHost:context ticket/view plugin fx
+        (record/host .RegistryHost:context plugin fx
           (fn [registry, key]
             (if (ready .get)
-              (selection_changed record ticket registry key)
+              (selection_changed record registry key)
               (changed .put (binding_id registry key) [registry key])))
-          (ticket/entries .get plugin/id)))
+          ((record/policies .get) .get plugin/id)))
       (let activation (plugin/activate))
       (activation receiver)
       (if_not ($absent? plugin/deactivate)
@@ -264,7 +248,53 @@
       # selected-entry bindings only after all of this activation's rows exist.
       (ready .set true)
       (for [id pair] in changed
-        (selection_changed record ticket pair/0 pair/1)))))
+        (selection_changed record pair/0 pair/1)))))
+
+(fn failed_entries ^^private [snapshot]
+  (let failures ($thaw #[]))
+  (for entry in snapshot/entries
+    (if (&& (== entry/state "failed") (!= entry/id "_harness_bindings"))
+      (failures .push {^id entry/id ^message (?? entry/error "plugin activation failed")})))
+  failures)
+
+(fn failure_ids ^^private [failures]
+  (let ids ($thaw #[]))
+  (for failure in failures (ids .push failure/id))
+  ids)
+
+(fn select_revisions ^^private [record, plugins, entries, failed_ids]
+  (let selected ($thaw #[]))
+  (let options ($thaw #{}))
+  (for plugin in plugins
+    (if (failed_ids .contains? plugin/id)
+      (then
+        (let previous ((record/current .get) .get plugin/id))
+        (if_yes (!= previous void)
+          (selected .push previous/plugin)
+          (options .put plugin/id previous/options)))
+      (else
+        (selected .push plugin)
+        (options .put plugin/id (?? (entries .get plugin/id) #{})))))
+  {^plugins selected ^options options})
+
+(fn reconcile_available_plugins ^^private [handle, plugins, entries, failed_ids]
+  (let record (composition_record handle))
+  (let first (select_revisions record plugins entries failed_ids))
+  (var snapshot (reconcile_composition handle first/plugins first/options))
+  (let failures (failed_entries snapshot))
+  (let rollback ($thaw #[]))
+  (for id in failed_ids (rollback .push id))
+  (for failure in failures
+    (if_not (rollback .contains? failure/id) (rollback .push failure/id)))
+  # A newly failed plugin returns to its last active revision, or leaves the
+  # composition when it has none. Its siblings activated regardless.
+  (if_yes (> rollback/.size failed_ids/.size)
+    (let second (select_revisions record plugins entries rollback))
+    (set snapshot (reconcile_composition handle second/plugins second/options))
+    (let reported (failure_ids failures))
+    (for failure in (failed_entries snapshot)
+      (if_not (reported .contains? failure/id) (failures .push failure))))
+  {^snapshot snapshot ^failures failures})
 
 (fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options]
   (let record (composition_record handle))
@@ -274,16 +304,8 @@
   (let admitted ($thaw #{}))
   (let policies ($thaw #{}))
   (let metadata ($thaw #{}))
-  (let ticket_ref ($cell nil))
   (entries .push {^id "_harness_bindings" ^module "host/bindings"})
-  (admitted .put "_harness_bindings"
-    (PluginSpec ^id "harness/bindings" ^config_schema nil ^requires [] ^provides []
-      ^reload nil ^activate (fn [ctx, config]
-        (ctx .effect "registry bindings" (fn [fx]
-          (let ticket (ticket_ref .get))
-          (ticket/base_owner .set fx)
-          (for [id binding] in ticket/keys
-            (selection_changed record ticket binding/registry binding/name)))))))
+  (admitted .put "_harness_bindings" record/bindings_spec)
   (for plugin in plugins
     (if (|| (== plugin/id "core") (== plugin/id "_harness_bindings")
             ($str/starts_with? plugin/id "descriptor:"))
@@ -314,20 +336,34 @@
     (for requirement in (?? plugin/requires #[])
       (admit_requirement record requirement))
     (if ($absent? source)
-      (admitted .put plugin/id (adapt_plugin record plugin ticket_ref))))
+      (admitted .put plugin/id (host_plugin_spec record plugin policy))))
+  (let departed ($thaw #[]))
+  (for [id cached] in record/specs
+    (if (== (admitted .get id) void) (departed .push id)))
+  (for id in departed (record/specs .delete id))
   (let desired ($thaw #[]))
   (for plugin in plugins (desired .push plugin))
   (record/pending .set desired)
-  (record/pending_entries .set ($freeze metadata))
-  (record/draft .set ticket_ref)
+  (record/policies .set ($freeze metadata))
   (record/busy .set true)
+  (var snapshot nil)
   (try
-    (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted ^policies policies)
+    (set snapshot
+      (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted ^policies policies))
   ensure
     (record/pending .set nil)
-    (record/pending_entries .set nil)
-    (record/draft .set nil)
-    (record/busy .set false)))
+    (record/busy .set false))
+  # A failed plugin keeps whatever last active revision it had.
+  (let failed (failure_ids (failed_entries snapshot)))
+  (let previous (record/current .get))
+  (let live ($thaw #{}))
+  (for plugin in plugins
+    (let prior (previous .get plugin/id))
+    (if (failed .contains? plugin/id)
+      (if (!= prior void) (live .put plugin/id prior))
+      (live .put plugin/id {^plugin plugin ^options (?? (entry_options .get plugin/id) #{})})))
+  (record/current .set live)
+  snapshot)
 
 (fn close_composition ^^private [handle]
   (var record nil)

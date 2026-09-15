@@ -101,12 +101,14 @@ registry/key pair:
 
 Lifecycle states remain `pending`, `ready`, and `error`, and are reported by a
 Cordis composition. Installing a plugin records it with its entry policy and
-reconciles: Cordis activates the complete desired set in a staged candidate
-against a registry draft, then publishes rows, policies and callbacks together.
-Dependencies may arrive in any profile order; missing ones leave a plugin
-`pending`. A failed activation rejects that candidate, leaves the published
-composition in place, and is recorded as `error`; it is retried only by an
-explicit operator action. Every contribution and callback belongs to the exact
+reconciles. As with upstream Cordis `Entry.update`, reconciles are per entry: a
+plugin whose value and policy are unchanged keeps its live instance, a changed
+one is disposed and reinstalled, and a removed one is disposed. The activation
+revision is the unit of publication; it contributes directly to the live
+registries. Dependencies may arrive in any profile order; missing ones leave a
+plugin `pending`. A failed activation affects only its own plugin: it is
+recorded as `error`, the plugin's last active revision, if any, is reactivated,
+and it is retried only by an explicit operator action. Every contribution and callback belongs to the exact
 activation revision that made it, and one deferred cleanup per revision removes
 its rows and expires its callbacks.
 

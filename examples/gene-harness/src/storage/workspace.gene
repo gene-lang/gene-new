@@ -9,7 +9,7 @@
 (import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
 (import [Harness ExecutionLimits default_execution_limits
          describe_plugin_module
-         put_cordis_plugin
+         put_cordis_plugin put_cordis_plugins status_of
          configure_plugin_module invoke_bounded
          plugin_error
          active_transaction begin_turn commit_turn abort_turn log_append
@@ -448,13 +448,15 @@
           ^message $"unsupported harness selector type ${kind}")))))
   out)
 
+(fn descriptor_entry_options [workspace : Workspace, entry]
+  {^module $"${(digest_hex entry/module_digest)}.gene"
+   ^digest entry/module_digest ^closure entry/closure
+   ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
+   ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
+   ^inherit false})
+
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
-  (put_cordis_plugin h descriptor
-    {^module $"${(digest_hex entry/module_digest)}.gene"
-     ^digest entry/module_digest ^closure entry/closure
-     ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
-     ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
-     ^inherit false} ^replace true))
+  (put_cordis_plugin h descriptor (descriptor_entry_options workspace entry) ^replace true))
 
 (fn update_active_revision [workspace : Workspace, h : Harness]
   (if_not (== (workspace/errors .get) #{}) (return nil))
@@ -726,22 +728,28 @@
   (var workspace plan/workspace)
   (var ready (fresh_list))
   (var pending (fresh_list))
-  # Phase 3: settle and activate only descriptors whose load/state projection
-  # survived the earlier phases.
+  # Phase 3: activate only descriptors whose load/state projection survived the
+  # earlier phases. They are staged together so the composition reconciles
+  # once; a failing descriptor is quarantined without holding back siblings.
+  (var admissions (fresh_list))
   (for entry in plan/entries
     (var descriptor (plan/descriptors .get entry/id))
-    (var errors (workspace/errors .get))
-    (if_yes (&& (!= descriptor void) (== (errors .get entry/id) void))
+    (if_yes (&& (!= descriptor void) (== ((workspace/errors .get) .get entry/id) void))
       (try
-        (var status (activate_descriptor workspace h descriptor entry))
-        (if (== status "ready")
-          (then (ready .push entry/id))
-          (elif (== status "error")
-            (record_quarantine workspace ($to_str entry/id)
-              (plugin_error h ($to_str entry/id))))
-          (else (pending .push entry/id)))
+        (admissions .push
+          {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
       catch Any
         (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))
+  (if (> admissions/.size 0)
+    (try (put_cordis_plugins h admissions) catch Any nil))
+  (for item in admissions
+    (var id ($to_str item/plugin/id))
+    (var status (status_of h id))
+    (if (== status "ready")
+      (then (ready .push id))
+      (elif (== status "error")
+        (record_quarantine workspace id (plugin_error h id)))
+      (else (pending .push id))))
   (update_active_revision workspace h)
   {^ready ready ^pending pending ^errors (data_copy (workspace/errors .get))
    ^session plan/session})

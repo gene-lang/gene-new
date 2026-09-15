@@ -8,11 +8,12 @@ The browser client and terminal share the same agent, commands, plugins, and
 durable stores. The browser's state, rendering, and interactions are written in
 Gene and compiled to browser modules automatically when the server starts.
 
-Plugin lifecycle is a Cordis composition (`examples/cordis`). Each reconcile
-activates plugins in an isolated registry draft that publishes as a whole, with
-selected-entry dependencies, revision-owned callbacks, and generated modules
-loaded through Cordis sandbox generations. Profiles stage all of their plugins
-and reconcile once. The profile's `^limits` is the Cordis ceiling that every
+Plugin lifecycle is a Cordis composition (`examples/cordis`). Reconciles work
+per plugin: an unchanged plugin stays live, a changed one restarts, and a failed
+activation returns only that plugin to its last active revision. Activations
+contribute directly to the live registries, with selected-entry dependencies,
+revision-owned callbacks, and generated modules loaded through Cordis sandbox
+generations. Profiles stage all of their plugins and reconcile once. The profile's `^limits` is the Cordis ceiling that every
 plugin's limits narrow from.
 
 `workspace_status` reports desired and active revisions.
