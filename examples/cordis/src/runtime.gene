@@ -271,7 +271,8 @@
   ^private true
   ^props {^id Str ^parent_id Any ^data Any ^group Bool ^disabled Bool
           ^context Context ^context_signature Str ^module_path Any
-          ^plugin Any ^module Any ^instance Any ^generation Any ^graph Any})
+          ^plugin Any ^module Any ^instance Any ^generation Any ^graph Any
+          ^error Any?})
 
 (type EpochRecord
   ^private true
@@ -2506,15 +2507,25 @@
     ^plugin source/plugin ^module source/module ^instance installed
     ^generation source/generation ^graph source/graph))
 
+(fn failure_text ^^private [error]
+  # A wrapped failure names its cause, which carries the plugin's own error.
+  (if (absent? error) (return nil))
+  (var text (try ($to_str error/message) catch Any ($to_str error)))
+  (var cause (try error/cause catch Any nil))
+  (if_not (absent? cause) (set text $"${text}: $(failure_text cause)"))
+  text)
+
 (fn loader_entry_snapshot ^^private [entry]
-  (var state "group")
+  (var state (if (absent? entry/error) "group" "failed"))
+  (var error entry/error)
   (if_not (absent? entry/instance)
     (var instance (instance_record entry/instance))
-    (set state (state_name (instance/state .get))))
+    (set state (state_name (instance/state .get)))
+    (set error (instance/error .get)))
   {^id entry/id ^group entry/group ^disabled entry/disabled
    ^module entry/module_path
    ^plugin (if (absent? entry/plugin) nil entry/plugin/id)
-   ^state state ^graph entry/graph})
+   ^state state ^error (failure_text error) ^graph entry/graph})
 
 (fn loader_snapshot ^^private [loader, mode, changed]
   (var entries (fresh_list))
@@ -2533,7 +2544,23 @@
       $"manifest parent ${parent_id} was not reconciled"))
   parent/context)
 
-(fn loader_reconcile_incremental ^^private [loader, manifest, rows]
+(fn install_host_loader_entry ^^private [loader, row, context, host_plugin]
+  (validate_plugin_spec loader/runtime host_plugin)
+  (var instance
+    (try
+      (runtime_install (Runtime ^token loader/runtime/token) context
+                       host_plugin row/config row/id)
+    catch Any
+      (cordis_failure CompositionError
+        $"entry ${row/id} installation failed" $err)))
+  (loader_entry_from_source loader row context
+    {^generation nil ^module nil ^plugin host_plugin ^graph nil} instance))
+
+(fn loader_reconcile_incremental ^^private [loader, manifest, rows, host_plugins = nil, host_policies = nil]
+  (var admitted (if (absent? host_plugins) (fresh_map) host_plugins))
+  (var policies (if (absent? host_policies) (fresh_map) host_policies))
+  (var old_admitted (loader/host_plugins .get))
+  (var old_policies (loader/host_policies .get))
   (var old_entries (loader/entries .get))
   (var desired_ids (fresh_map))
   (for row in rows (desired_ids .put row/id row))
@@ -2549,7 +2576,10 @@
     (var remove
       (|| (== desired void) desired/disabled
           (!= desired/group entry/group)
-          (!= desired/module entry/module_path)))
+          (!= desired/module entry/module_path)
+          # A host plugin is replaced when its admitted value or policy changes.
+          (! (same? (admitted .get id) (old_admitted .get id)))
+          (!= (policies .get id) (old_policies .get id))))
     (if remove
       (then
         (dispose_loader_entry loader entry)
@@ -2588,7 +2618,8 @@
       (else
         (if (== existing void)
           (then
-            (var context (derive_loader_context loader parent_context row))
+            (var context (derive_loader_context loader parent_context row (policies .get row/id)))
+            (var host_plugin (admitted .get row/id))
             (var created
               (if row/group
                 (LoaderEntryRecord
@@ -2596,7 +2627,19 @@
                   ^disabled false ^context context
                   ^context_signature signature ^module_path nil ^plugin nil
                   ^module nil ^instance nil ^generation nil ^graph nil)
-                (install_loader_entry loader row context)))
+                # Entries fail individually, as in upstream Cordis: the failure
+                # is recorded on this entry and its siblings still install.
+                (try
+                  (if (== host_plugin void)
+                    (install_loader_entry loader row context)
+                    (install_host_loader_entry loader row context host_plugin))
+                catch Any
+                  (LoaderEntryRecord
+                    ^id row/id ^parent_id row/parent_id ^data row ^group false
+                    ^disabled false ^context context
+                    ^context_signature signature ^module_path row/module
+                    ^plugin nil ^module nil ^instance nil ^generation nil
+                    ^graph nil ^error $err))))
             (set created/context_signature signature)
             (next_entries .put row/id created)
             (next_order .push row/id)
@@ -2614,6 +2657,8 @@
   (loader/order .set next_order)
   (loader/manifest .set ($freeze manifest))
   (runtime_await_settled (Runtime ^token loader/runtime/token))
+  (loader/host_plugins .set admitted)
+  (loader/host_policies .set policies)
   (loader_snapshot loader "incremental" ($freeze changed)))
 
 (fn runtime_instance_is_loader_owned? ^^private [instance] : Bool
@@ -3200,7 +3245,18 @@
         (if_not (allowed .contains? selector)
           (cordis_failure CompositionError "host selector exceeds loader capability ceiling"))))
     (checked .put id {^inherit inherit ^selectors ($freeze_shallow (copy_list selectors))}))
-  (loader_reconcile_staged loader manifest rows #[] (copy_map plugins) checked))
+  # Admissions are read by row ID so each keeps the caller's value identity,
+  # which incremental reconciliation compares to decide whether an entry changed.
+  (var admitted (fresh_map))
+  (for row in rows
+    (var plugin (plugins .get row/id))
+    (if_not (== plugin void) (admitted .put row/id plugin)))
+  # A publication participant swaps host state for a whole candidate, so it
+  # needs staged reconciliation. Without one, entries reconcile individually:
+  # unchanged plugins stay live and a failed activation affects only its entry.
+  (if (absent? loader/options/publication)
+    (loader_reconcile_incremental loader manifest rows admitted checked)
+    (loader_reconcile_staged loader manifest rows #[] admitted checked)))
 
 (fn loader_reconcile ^^private [handle : Loader, manifest, mode]
   (var loader (loader_record handle))

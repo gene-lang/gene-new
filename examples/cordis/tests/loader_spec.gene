@@ -9,6 +9,10 @@
 
 (import [LoadedValue loaded_key] ^from "../fixtures/contract")
 
+(type LoaderBoom ^props {^message Str} ^impl [Error])
+
+(impl Error for LoaderBoom)
+
 (describe "Cordis loader"
   (after_each [t]
     (if_not ($absent? t/runtime) (t/runtime .close)))
@@ -154,4 +158,71 @@
       "a disabled group remains visible in composition inspection")
 
     (loader .dispose)
+    (loader .dispose))
+
+  (it "reconciles host plugins per entry and keeps activation failures local" [t]
+    (fn entry_for [snapshot, id : Str]
+      (for entry in snapshot/entries
+        (if (== entry/id id) (return entry)))
+      nil)
+
+    (var activations ($cell 0))
+    (fn activate_counted [ctx, config]
+      (activations .set (+ (activations .get) 1)))
+    (fn activate_failing [ctx, config]
+      (fail (LoaderBoom ^message "unlucky")))
+    (var counted
+      (PluginSpec ^id "host/counted" ^config_schema nil ^requires []
+                  ^provides [] ^reload nil ^activate activate_counted))
+    (var failing
+      (PluginSpec ^id "host/failing" ^config_schema nil ^requires []
+                  ^provides [] ^reload nil ^activate activate_failing))
+    (var repaired
+      (PluginSpec ^id "host/failing" ^config_schema nil ^requires []
+                  ^provides [] ^reload nil ^activate activate_counted))
+
+    (var runtime
+      (new_runtime
+        (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                        ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (var loader
+      (runtime .loader
+        (LoaderOptions
+          ^plugin_root "fixtures/plugins" ^shared []
+          ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+          ^default_limits nil ^reload_policy nil)))
+    (var manifest
+      {^format 1
+       ^entries [{^id "counted" ^module "host/counted"}
+                 {^id "failing" ^module "host/failing"}]})
+
+    (var first (loader .reconcile_plugins manifest {^counted counted ^failing failing}))
+    (var counted_entry (entry_for first "counted"))
+    (var failing_entry (entry_for first "failing"))
+    (assert_equal counted_entry/state "active"
+      "a host plugin must activate beside a failing sibling")
+    (assert_equal failing_entry/state "failed"
+      "an activation failure must stay on its own entry")
+    ($assert (! ($absent? failing_entry/error))
+      "a failed entry must report its activation error")
+
+    (var second (loader .reconcile_plugins manifest {^counted counted ^failing failing}))
+    ($assert (&& (== second/changed/.size 0) (== (activations .get) 1))
+      "an unchanged reconcile must keep live host plugins without reactivation")
+
+    (var third (loader .reconcile_plugins manifest {^counted counted ^failing repaired}))
+    (var repaired_entry (entry_for third "failing"))
+    ($assert (&& (== repaired_entry/state "active") (== (activations .get) 2))
+      "replacing one host plugin must restart only that entry")
+
+    (var fourth
+      (loader .reconcile_plugins
+        {^format 1 ^entries [{^id "counted" ^module "host/counted"}]}
+        {^counted counted}))
+    (var remaining (entry_for fourth "counted"))
+    ($assert (&& (== fourth/entries/.size 1)
+                 (== remaining/state "active")
+                 (== (activations .get) 2))
+      "removing an entry must leave its sibling live")
     (loader .dispose)))
