@@ -1629,6 +1629,28 @@ suite "vm — functions and closures":
     # needs make's scope alive rather than a dangling back-reference.
     ck "(fn make [c] (var x 41) (fn local [] (+ x 1)) (c .set local) nil) " &
        "(var c ($cell nil)) (make c) (var f (c .get)) (f)", "42"
+  test "storing a cyclic container terminates":
+    # Stores walk the stored value for weak functions; a cycle must end the
+    # walk, with or without a function to strengthen inside it.
+    ck "(var a ($thaw #[])) (var b ($thaw #[])) (a .push b) (b .push a) " &
+       "(var c ($thaw #[])) (c .push a) (var m ($thaw #{})) (m .put \"a\" a) " &
+       "(var cell ($cell nil)) (cell .set a) " &
+       "[(same? c/0 a) (same? a/0/0 a) (same? (m .get \"a\") a) (same? (cell .get) a)]",
+       "[true true true true]"
+    ck "(fn run [] (fn local [] 7) (var a ($thaw #[])) (var b ($thaw #[])) " &
+       "  (a .push local) (a .push b) (b .push a) (var c ($cell nil)) (c .set a) c) " &
+       "(var stored ((run) .get)) (var f stored/0) [(f) (same? stored/1/0 stored)]",
+       "[7 true]"
+  test "returning a cyclic container terminates":
+    ck "(fn make [] (var a ($thaw #[])) (var b ($thaw #[])) (a .push b) (b .push a) a) " &
+       "(var r (make)) (same? r/0/0 r)", "true"
+    ck "(fn make [] (fn local [] 7) (var a ($thaw #[])) (var b ($thaw #[])) " &
+       "  (a .push local) (a .push b) (b .push a) a) " &
+       "(var r (make)) (var f r/0) [(f) (same? r/1/0 r)]", "[7 true]"
+  test "storing a value that shares substructure visits it once":
+    # 64 levels of [x x] reach 2^64 paths; the walk must not follow each one.
+    ck "(var x []) (repeat 64 (set x [x x])) (var c ($cell nil)) (c .set x) " &
+       "(fn pass [v] v) (same? (pass (c .get)) x)", "true"
   test "default expressions see earlier slot-backed parameters":
     ck "((fn [x y = x] y) 7)", "7"
   test "recursion via a var-bound self reference":

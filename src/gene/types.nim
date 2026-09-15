@@ -6327,16 +6327,126 @@ proc escapeStreamReturn*(value: Value, caller: Scope): Value =
 proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
   escapeWeakFunctions(v, WeakScopeGuard(scope: protectedScope))
 
-proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
-  ## Values that leave their defining run/eval boundary must keep weakly-stored
-  ## lexical scopes alive. A function whose owning scope the guard reports live
-  ## stays as it is. Mutable containers are updated in place so their identity
-  ## and aliases survive; only immutable containers holding a weak function are
-  ## rebuilt.
-  if not v.isManaged:
-    return v
+type
+  EscapeVisited = object
+    ## Containers one escape has already reached. A stored or returned value
+    ## usually holds only a few, so they live inline and allocate nothing.
+    inline: array[16, uint64]
+    count: int
+    overflow: HashSet[uint64]
+    overflowUsed: bool
+
+  EscapeWalk = object
+    visited: EscapeVisited
+    rebuilt: seq[tuple[source, escaped: Value]]
+
+proc firstVisit(visited: var EscapeVisited, bits: uint64): bool =
+  ## True the first time `bits` is reached.
+  for i in 0 ..< visited.count:
+    if visited.inline[i] == bits:
+      return false
+  if visited.count < visited.inline.len:
+    visited.inline[visited.count] = bits
+    inc visited.count
+    return true
+  if not visited.overflowUsed:
+    visited.overflow = initHashSet[uint64]()
+    visited.overflowUsed = true
+  not visited.overflow.containsOrIncl(bits)
+
+proc clearVisited(visited: var EscapeVisited) =
+  visited.count = 0
+  if visited.overflowUsed:
+    visited.overflow.clear()
+
+proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
+                   markHolder: bool): bool =
+  ## Whether escaping `v` can change anything: a weak function or type scope the
+  ## guard does not protect, a promoted binding whose holder is not marked yet,
+  ## or a kind this scan does not look inside. `markHolder` says `v` sits
+  ## directly in a list, map or node the walk would still have to mark. The scan
+  ## reads values in place without copying them, and reaches each container
+  ## once, so cycles and shared structure end it.
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    if not visited.firstVisit(v.bits):
+      return false
+    let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    let mark = not p.holdsEscapedFn
+    for i in 0 ..< p.items.len:
+      if mayNeedEscape(p.items[i], guard, visited, mark):
+        return true
+    false
+  of MAP_TAG:
+    if not visited.firstVisit(v.bits):
+      return false
+    let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    let mark = not p.holdsEscapedFn
+    for i in 0 ..< p.entries.data.len:
+      if mayNeedEscape(p.entries.data[i].val, guard, visited, mark):
+        return true
+    false
+  of NODE_TAG:
+    if not visited.firstVisit(v.bits):
+      return false
+    let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    let mark = not p.holdsEscapedFn
+    if mayNeedEscape(p.head, guard, visited, mark):
+      return true
+    for i in 0 ..< p.props.data.len:
+      if mayNeedEscape(p.props.data[i].val, guard, visited, mark):
+        return true
+    for i in 0 ..< p.body.len:
+      if mayNeedEscape(p.body[i], guard, visited, mark):
+        return true
+    for i in 0 ..< p.meta.data.len:
+      if mayNeedEscape(p.meta.data[i].val, guard, visited, mark):
+        return true
+    false
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    if p.scope != nil:
+      markHolder and p.weakable
+    else:
+      p.weakScope != nil and not weakScopeProtected(guard, p.weakScope)
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    case v.kind
+    of vkType:
+      if objData(v).objKind != okType:
+        return false
+      let data = TypeData(objData(v))
+      data.scope == nil and data.weakScope != nil and
+        not weakScopeProtected(guard, data.weakScope)
+    of vkCallableView:
+      mayNeedEscape(v.callableViewTarget, guard, visited, false)
+    of vkSet:
+      if not visited.firstVisit(v.bits):
+        return false
+      for item in v.setItems:
+        if mayNeedEscape(item, guard, visited, false):
+          return true
+      false
+    of vkHashMap:
+      if not visited.firstVisit(v.bits):
+        return false
+      for entry in v.hashMapEntries:
+        if mayNeedEscape(entry.key, guard, visited, false) or
+            mayNeedEscape(entry.val, guard, visited, false):
+          return true
+      false
+    of vkPipeline, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
+       vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
+      true
+    else:
+      false
+  else:
+    false
+
+proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value
+
+proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
   template escapeNested(value: Value): Value =
-    escapeWeakFunctions(value, guard)
+    escapeWalk(value, guard, walk)
   case v.kind
   of vkType:
     if objData(v).objKind == okType:
@@ -6395,11 +6505,13 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
   of vkMap:
     var changed = false
     var holdsPromoted = false
-    for key, val in v.mapEntries:
-      let escaped = escapeNested(val)
+    # Index the entries: `pairs` copies every key's name.
+    let mp = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    for i in 0 ..< mp.entries.data.len:
+      let escaped = escapeNested(mp.entries.data[i].val)
       if escaped.isPromotedBindingFunction:
         holdsPromoted = true
-      if escaped.bits != val.bits:
+      if escaped.bits != mp.entries.data[i].val.bits:
         changed = true
         break
     if not changed:
@@ -6496,12 +6608,14 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
     if escapedHead.isPromotedBindingFunction:
       holdsPromoted = true
     var changed = escapedHead.bits != v.head.bits
+    # Index props and meta: `pairs` copies every key's name.
+    let np = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
     if not changed:
-      for _, val in v.props:
-        let escaped = escapeNested(val)
+      for i in 0 ..< np.props.data.len:
+        let escaped = escapeNested(np.props.data[i].val)
         if escaped.isPromotedBindingFunction:
           holdsPromoted = true
-        if escaped.bits != val.bits:
+        if escaped.bits != np.props.data[i].val.bits:
           changed = true
           break
     if not changed:
@@ -6513,11 +6627,11 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
           changed = true
           break
     if not changed:
-      for _, val in v.meta:
-        let escaped = escapeNested(val)
+      for i in 0 ..< np.meta.data.len:
+        let escaped = escapeNested(np.meta.data[i].val)
         if escaped.isPromotedBindingFunction:
           holdsPromoted = true
-        if escaped.bits != val.bits:
+        if escaped.bits != np.meta.data[i].val.bits:
           changed = true
           break
     if not changed:
@@ -6829,6 +6943,45 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
     v
   else:
     v
+
+proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
+  ## Escapes each container once. A container met again gets what its first
+  ## escape produced, or itself while that escape is still running: it is then
+  ## part of a cycle, and a mutable container changes in place, so the reference
+  ## stays right. An immutable container rebuilt inside a cycle is the one case
+  ## left: the back-reference keeps pointing at the original.
+  if not v.isManaged:
+    return v
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG, MAP_TAG, NODE_TAG, CYCLE_OBJECT_TAG, OBJECT_TAG:
+    discard
+  else:
+    return escapeKind(v, guard, walk)
+  if not walk.visited.firstVisit(v.bits):
+    for entry in walk.rebuilt:
+      if entry.source.bits == v.bits:
+        return entry.escaped
+    return v
+  result = escapeKind(v, guard, walk)
+  if result.bits != v.bits:
+    # Holding the source also keeps its address from being reused, and matched
+    # as visited, by an allocation later in this walk.
+    walk.rebuilt.add (source: v, escaped: result)
+
+proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
+  ## Values that leave their defining run/eval boundary must keep weakly-stored
+  ## lexical scopes alive. A function whose owning scope the guard reports live
+  ## stays as it is. Mutable containers are updated in place so their identity
+  ## and aliases survive; only immutable containers holding a weak function are
+  ## rebuilt. Most stored and returned values hold nothing to escape, so a scan
+  ## that copies nothing decides first whether the walk runs at all.
+  if not v.isManaged:
+    return v
+  var walk: EscapeWalk
+  if not mayNeedEscape(v, guard, walk.visited, markHolder = false):
+    return v
+  walk.visited.clearVisited()
+  escapeWalk(v, guard, walk)
 
 proc newCompletedTask*(value: Value): Value =
   boxObject(TaskData(objKind: okTask,
