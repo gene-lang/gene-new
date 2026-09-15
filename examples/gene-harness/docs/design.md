@@ -191,16 +191,22 @@ chooses its instance and state ownership:
 | `session` | one instance per Harness/session | that session's stream |
 
 `PluginHost:update_state` updates the in-memory projection and appends the
-versioned full-state record in one core operation. Plugins do not coordinate a
-private file with memory themselves. Disjoint streams from stale processes merge
-and retry; a stale write to the same ordered stream restores the winner and
-raises `HarnessStateConflict` at the outer callback boundary.
+versioned full-state record in one core operation. Every stored event is a
+frozen deep copy and `PluginHost:state` returns a detached copy, so changing an
+update's argument or a returned state changes neither the projection nor the
+history. Plugins do not coordinate a private file with memory themselves.
+Disjoint streams from stale processes merge and retry; a stale write to the
+same ordered stream restores the winner and raises `HarnessStateConflict` at
+the outer callback boundary.
 
 Flush partitions each stream into bounded content-addressed segments, retains a
 configured segment window, persists projection checkpoints, and publishes the
 manifest with `Store/checkpoint`. The current manifest retains references needed
 by the newest fallback generations before garbage-collecting older segment
-records. Event and state byte caps reject oversized records.
+records. Processes can share an event store, so a flush holds `publish.lock` in
+the store directory from its first segment write through publication and the
+sweep; no sweep deletes segments another writer has written or published. Event
+and state byte caps reject oversized records.
 
 Core event vocabulary comes from `events.catalog` and the generated
 `src/storage/generated_event_catalog.gene`. CI checks it with:

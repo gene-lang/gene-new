@@ -373,6 +373,11 @@ above it is unpublished crash debris and is never selected by restore.
 The retained core log and the LLM provider's bounded conversation window are
 both restored before activation; a completed `ask` flushes them together.
 
+Stored events are frozen deep copies and `PluginHost:state` returns a detached
+copy, so plugin state changes only through `update_state`. Several processes can
+share one home: a flush holds `events/publish.lock` while it writes segments,
+publishes a generation, and sweeps unreferenced segments.
+
 ## Extension model
 
 Everything dynamic is a registry row:
@@ -686,7 +691,6 @@ restore their plugins without rewriting stored source or changing its digest.
 | `src/website/content.gene`, `src/website/page.gene`, `src/website/style.gene` | website copy, fixture-backed example data, Gene markup and scoped `$css` rules |
 | `src/website/export.gene`, `client/website.gene` | static export through `$web/published_routes`; tabs, copy, highlighting and mobile menu |
 | `website/examples/project_audit/` | recorded request, formatted plugin, fixture project, expected outputs and `check.gene` |
-
 The former Harness scenarios have moved to `tmp/gene-harness-tests` in the
 repository workspace. They are no longer a package test target.
 

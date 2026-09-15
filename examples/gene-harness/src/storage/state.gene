@@ -6,7 +6,7 @@
 (import $serde [write_data])
 (import $crypto [sha256])
 (import $str [byte_size starts_with? slice_bytes])
-(import $fs [real_path])
+(import $fs [real_path try_lock])
 
 (type HarnessStateError ^props {^message Str} ^impl [Error])
 (impl Error for HarnessStateError)
@@ -17,7 +17,7 @@
 (impl Error for HarnessStateConflict)
 
 (type EventStore
-  ^props {^backend Any ^streams Any ^next_sequences Any ^projections Any
+  ^props {^root Str ^backend Any ^streams Any ^next_sequences Any ^projections Any
           ^core_projections Any
           ^generation Any ^last_manifest Any ^dirty Any
           ^dirty_streams Any ^dirty_bases Any ^closed Any
@@ -111,11 +111,14 @@
   (var key (stream_key scope stream))
   (mark_stream_dirty events key)
   (var seq (next_sequence events key))
+  # A frozen deep copy: the caller keeps no reference into history or into a
+  # projection, and an envelope handed back to a plugin cannot rewrite either.
   (var envelope
-    {^format 2 ^origin origin ^owner owner ^projection projection
-     ^scope scope ^stream stream ^seq seq
-     ^type event/type ^version (event_version event)
-     ^ignorable (event_ignorable event) ^payload event})
+    ($freeze
+      {^format 2 ^origin origin ^owner owner ^projection projection
+       ^scope scope ^stream stream ^seq seq
+       ^type event/type ^version (event_version event)
+       ^ignorable (event_ignorable event) ^payload event}))
   (var encoded (write_data envelope))
   (if (> (byte_size encoded) events/max_event_bytes)
     (fail (HarnessStateError
@@ -125,7 +128,7 @@
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
   (if_yes (== ($to_str event/type) "plugin/state")
-    (update_projection events key ($to_str event/plugin) event/state))
+    (update_projection events key ($to_str event/plugin) envelope/payload/state))
   (if_yes (&& (== origin "core")
               (["session/state" "run/state" "input/request" "input/reply"] .contains? event/type))
     (update_core_projection events key event/key event/state))
@@ -198,7 +201,8 @@
   (var stream_states (all .get (stream_key scope stream)))
   (if_not (== stream_states void)
     (var found (stream_states .get plugin))
-    (if_not (== found void) found)))
+    # A detached copy, as `core_state` returns: changing it stores nothing.
+    (if_not (== found void) (copy_data found))))
 
 (fn quarantine_projection [quarantined, seen, envelope]
   (var plugin ($to_str envelope/projection))
@@ -336,6 +340,9 @@
   (unique_strings out))
 
 (fn garbage_collect_segments [events : EventStore, manifest]
+  # Only under the publication lock, with the manifest just published. No other
+  # writer can then hold written but unpublished segments, and that manifest is
+  # the current generation.
   (var backend events/backend)
   (if ($absent? backend) (return))
   (var retained (fresh_map))
@@ -463,12 +470,30 @@
   (install_manifest_data events remote remote_data)
   (validate_envelope_formats events))
 
-(fn flush_event_store [events : EventStore]
-  (require_open events)
-  (if_not (events/dirty .get)
-    (return
-      {^generation (events/generation .get)
-       ^manifest (events/last_manifest .get)}))
+# Processes can share an event store, so a flush holds this claim from its first
+# segment write, through checkpoint publication, to the segment sweep. Without
+# it, a sweep that follows an older generation deletes segments another writer
+# has just written or published.
+(var publication_lock_wait_ms 10000)
+
+(fn acquire_publication_lock [events : EventStore]
+  (var path $"${events/root}/publish.lock")
+  (var claim (try_lock path))
+  (var waited 0)
+  (var delay 1)
+  (while ($absent? claim)
+    (if (>= waited publication_lock_wait_ms)
+      (fail (HarnessStateError
+        ^message $"event store publication stayed locked for ${publication_lock_wait_ms} ms")))
+    ($sleep delay)
+    (set waited (+ waited delay))
+    (set delay ($math/min 50 (* delay 2)))
+    (set claim (try_lock path)))
+  claim)
+
+(fn publish_event_generation [events : EventStore]
+  # The caller holds the publication lock. A conflict means another writer
+  # published before this one took the lock; merge from its generation and retry.
   (var attempts 0)
   (while (< attempts 16)
     (var generation (+ (events/generation .get) 1))
@@ -480,12 +505,6 @@
       (events/generation .set generation)
       (events/last_manifest .set manifest)
       (clear_dirty events)
-      (var countdown (- (events/gc_countdown .get) 1))
-      (if (<= countdown 0)
-        (then
-          (garbage_collect_segments events manifest)
-          (events/gc_countdown .set events/gc_interval))
-        (else (events/gc_countdown .set countdown)))
       (return {^generation generation ^manifest manifest})
     catch StoreError
       (if (== ($to_str $err/kind) "conflict")
@@ -495,6 +514,24 @@
         (else (fail (HarnessStateError ^message $err/message))))))
   (fail (HarnessStateError
     ^message "event checkpoint remained contended after 16 retries")))
+
+(fn flush_event_store [events : EventStore]
+  (require_open events)
+  (if_not (events/dirty .get)
+    (return
+      {^generation (events/generation .get)
+       ^manifest (events/last_manifest .get)}))
+  (var claim (acquire_publication_lock events))
+  (try
+    (var published (publish_event_generation events))
+    (var countdown (- (events/gc_countdown .get) 1))
+    (if (<= countdown 0)
+      (then
+        (garbage_collect_segments events published/manifest)
+        (events/gc_countdown .set events/gc_interval))
+      (else (events/gc_countdown .set countdown)))
+    published
+  ensure (claim .close)))
 
 (fn restore_manifest [events : EventStore, manifest]
   (install_manifest_data events manifest (manifest_data events manifest)))
@@ -550,7 +587,7 @@
   (var canonical_root (real_path root))
   (var backend (store_open ^root canonical_root))
   (var events
-    (EventStore ^backend backend ^streams ($cell (fresh_map))
+    (EventStore ^root canonical_root ^backend backend ^streams ($cell (fresh_map))
                 ^next_sequences ($cell (fresh_map))
                 ^projections ($cell (fresh_map)) ^generation ($cell 0)
                 ^core_projections ($cell (fresh_map))
