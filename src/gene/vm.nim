@@ -1546,7 +1546,7 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
       scope.assignmentValue(name, v, scope.slotTypes[index])
     else:
       v
-  let stored = functionForScopeStorage(value, scope)
+  let stored = functionForScopeStorage(value, scope, binding = true)
   checkStrictBindingUpdate(scope, name, stored)
   scope.slots[index] = stored
   if scope.slotMirror:
@@ -1621,7 +1621,7 @@ proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
   scope.storeSlot(index, name, v, requireExisting = false)
 
 proc defineFreshCallSlot(scope: Scope, index: int, v: Value) {.inline.} =
-  scope.slots[index] = functionForScopeStorage(v, scope)
+  scope.slots[index] = functionForScopeStorage(v, scope, binding = true)
   scope.markSlotDefined(index)
 
 proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
@@ -1727,7 +1727,7 @@ proc define*(scope: Scope, name: string, v: Value) =
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
   checkStrictBindingUpdate(scope, name, v)
-  scope.vars[name] = functionForScopeStorage(v, scope)
+  scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
 
 proc redefine*(scope: Scope, name: string, v: Value) =
   ## `define` for a loop body's `var` and for the compiler's own pipeline
@@ -1740,7 +1740,7 @@ proc redefine*(scope: Scope, name: string, v: Value) =
                           permitRedefine = true):
     return
   checkStrictBindingUpdate(scope, name, v)
-  scope.vars[name] = functionForScopeStorage(v, scope)
+  scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
   ## Internal overlay write for Env materialization: child Env bindings should
@@ -1757,7 +1757,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
       let value =
         if s.varTypes.hasKey(name): s.assignmentValue(name, v, s.varTypes[name])
         else: v
-      let stored = functionForScopeStorage(value, s)
+      let stored = functionForScopeStorage(value, s, binding = true)
       checkStrictBindingUpdate(s, name, stored)
       s.vars[name] = stored
       s.syncSlot(name, stored)
@@ -2427,13 +2427,19 @@ proc checkedCellValue(cell, value: Value, where: string): Value =
   else:
     adaptBoundary(where, valueType, value, cell.cellValueScope)
 
+proc strengthenStoredValue(value: Value): Value {.inline.} =
+  ## A value stored into a container can outlive the scope its functions are
+  ## weakly bound to. Strengthen them first; mutable containers change in place.
+  escapeWeakFunctions(value)
+
 proc biCellSet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/set expects 2 arguments, got " & $args.len)
   requireCell("Cell/set", args[0])
   rejectCallerEnvEscape("Cell/set", args[1])
-  let checked = checkedCellValue(args[0], args[1], "Cell/set value")
+  let checked = checkedCellValue(args[0], strengthenStoredValue(args[1]), "Cell/set value")
   args[0].setCellValue(checked)
+  noteFunctionStore(args[0], checked)
   checked
 
 proc biCellSwap(args: openArray[Value]): Value {.nimcall.} =
@@ -2441,9 +2447,10 @@ proc biCellSwap(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Cell/swap expects 2 arguments, got " & $args.len)
   requireCell("Cell/swap", args[0])
   rejectCallerEnvEscape("Cell/swap", args[1])
-  let checked = checkedCellValue(args[0], args[1], "Cell/swap value")
+  let checked = checkedCellValue(args[0], strengthenStoredValue(args[1]), "Cell/swap value")
   let old = args[0].cellValue
   args[0].setCellValue(checked)
+  noteFunctionStore(args[0], checked)
   old
 
 proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
@@ -2453,8 +2460,9 @@ proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
   var callArgs = [args[0].cellValue]
   let next = applyCall(args[1], callArgs, NamedArgs())
   rejectCallerEnvEscape("Cell/update", next)
-  let checked = checkedCellValue(args[0], next, "Cell/update result")
+  let checked = checkedCellValue(args[0], strengthenStoredValue(next), "Cell/update result")
   args[0].setCellValue(checked)
+  noteFunctionStore(args[0], checked)
   checked
 
 proc requireAtomicCell(name: string, value: Value) =
@@ -2476,8 +2484,9 @@ proc biAtomicCellStore(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "AtomicCell/store expects 2 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/store", args[0])
   rejectCallerEnvEscape("AtomicCell/store", args[1])
-  args[0].setAtomicCellValue(args[1])
-  args[1]
+  let stored = strengthenStoredValue(args[1])
+  args[0].setAtomicCellValue(stored)
+  stored
 
 proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -2487,7 +2496,7 @@ proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
   # Single locked critical section (not load-then-store), so a concurrent
   # writer can't interleave between reading the old value and writing the new
   # one (design Section 12.3: AtomicCell operations are linearizable).
-  atomicCellSwap(args[0], args[1])
+  atomicCellSwap(args[0], strengthenStoredValue(args[1]))
 
 proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -2497,7 +2506,7 @@ proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   rejectCallerEnvEscape("AtomicCell/compare_exchange", args[2])
   # Compare and swap happen under one lock acquisition, avoiding the
   # check-then-set race a separate load+same?+store would have.
-  if atomicCellCompareExchange(args[0], args[1], args[2], same):
+  if atomicCellCompareExchange(args[0], args[1], strengthenStoredValue(args[2]), same):
     TRUE
   else:
     FALSE
@@ -5554,8 +5563,9 @@ proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   rejectCallerEnvEscape("List/set", args[2])
   let index = updateIndex("List/set", args[0].listItems.len,
                           requireInt64("List/set", args[1]))
-  let stored = if args[2].kind == vkVoid: NIL else: args[2]
+  let stored = if args[2].kind == vkVoid: NIL else: strengthenStoredValue(args[2])
   args[0].setListItem(index, stored)
+  noteFunctionStore(args[0], stored)
   stored
 
 proc biListPushBang(args: openArray[Value]): Value {.nimcall.} =
@@ -5563,8 +5573,9 @@ proc biListPushBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "List/push expects 2 arguments, got " & $args.len)
   requireList("List/push", args[0])
   rejectCallerEnvEscape("List/push", args[1])
-  let stored = if args[1].kind == vkVoid: NIL else: args[1]
+  let stored = if args[1].kind == vkVoid: NIL else: strengthenStoredValue(args[1])
   args[0].pushListItem(stored)
+  noteFunctionStore(args[0], stored)
   stored
 
 proc biSet(args: openArray[Value]): Value {.nimcall.} =
@@ -5589,8 +5600,10 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Map/put expects 3 arguments, got " & $args.len)
   requirePropMap("Map/put", args[0])
   rejectCallerEnvEscape("Map/put", args[2])
-  args[0].putMapEntry(keySegment("Map/put", args[1]), args[2])
-  args[2]
+  let stored = strengthenStoredValue(args[2])
+  args[0].putMapEntry(keySegment("Map/put", args[1]), stored)
+  noteFunctionStore(args[0], stored)
+  stored
 
 proc biToSym(args: openArray[Value]): Value {.nimcall.} =
   ## The inverse of `to_str` for names, so `Str` and `Sym` convert both ways.
@@ -5954,7 +5967,10 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
       "Node/set_prop expects 3 arguments, got " & $args.len)
   requireNode("Node/set_prop", args[0])
   rejectCallerEnvEscape("Node/set_prop", args[2])
-  setCheckedNodeProp(args[0], keySegment("Node/set_prop", args[1]), args[2])
+  let stored = setCheckedNodeProp(args[0], keySegment("Node/set_prop", args[1]),
+                                  strengthenStoredValue(args[2]))
+  noteFunctionStore(args[0], stored)
+  stored
 
 proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -5965,6 +5981,9 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Node/set_body expects a List")
   rejectCallerEnvEscape("Node/set_body", args[1])
   var body = copyItems(args[1].listItems)
+  for i in 0 ..< body.len:
+    body[i] = strengthenStoredValue(body[i])
+    noteFunctionStore(args[0], body[i])
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
     if args[0].head.isNativeWrapperType:
       rejectNativeWrapperWrite("Node/set_body cannot modify " &
@@ -6069,8 +6088,9 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
   var target = stack[baseIndex]
   for i in 0 ..< segCount - 1:
     target = readSetPathChild(target, stack[baseIndex + 1 + i])
-  setMutableChild(target, stack[baseIndex + segCount],
-                  stack[baseIndex + segCount + 1])
+  result = setMutableChild(target, stack[baseIndex + segCount],
+                           strengthenStoredValue(stack[baseIndex + segCount + 1]))
+  noteFunctionStore(target, result)
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -6078,19 +6098,21 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
       "Node/push_body expects 2 arguments, got " & $args.len)
   requireNode("Node/push_body", args[0])
   rejectCallerEnvEscape("Node/push_body", args[1])
+  let item = strengthenStoredValue(args[1])
+  noteFunctionStore(args[0], item)
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
     if args[0].head.isNativeWrapperType:
       rejectNativeWrapperWrite("Node/push_body cannot modify " &
                                args[0].head.typeName)
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)
-    body.add args[1]
+    body.add item
     validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
     args[0].setNodeBody(body)
     args[0].body[^1]
   else:
-    args[0].pushNodeBody(args[1])
-    args[1]
+    args[0].pushNodeBody(item)
+    item
 
 proc requireBuffer(name: string, value: Value) =
   if value.kind != vkBuffer:
@@ -10291,7 +10313,7 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
       if scope.storeNamedSlot(k, v, requireExisting = true):
         continue
       if scope.vars.hasKey(k):
-        let stored = functionForScopeStorage(v, scope)
+        let stored = functionForScopeStorage(v, scope, binding = true)
         scope.vars[k] = stored
         scope.syncSlot(k, stored)
         continue
@@ -14905,6 +14927,29 @@ proc consumeEvalStep(budget: EvalBudget) =
     dec current.remaining
     current = current.parent
 
+type WeakLiveFrames = object
+  frames: ptr seq[Frame]
+  limit: int             # frames below this index outlive the escaping value
+  outer: ptr Scope       # the current scope of the VM this run returns into
+
+proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
+  ## A scope stays alive while a surviving frame, or one of its lexical
+  ## ancestors, holds it.
+  let live = cast[ptr WeakLiveFrames](ctx)
+  for i in 0 ..< min(live.limit, live.frames[].len):
+    var current = live.frames[][i].scope
+    while current != nil:
+      if cast[pointer](current) == target:
+        return true
+      current = current.parent
+  if live.outer != nil:
+    var current = live.outer[]
+    while current != nil:
+      if cast[pointer](current) == target:
+        return true
+      current = current.parent
+  false
+
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
@@ -15638,11 +15683,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # body left behind. No trailing `nil`, and `(return)` needs no argument.
       retValue = if returnType.isBareNilType: NIL else: VOID
     else:
-      let protectedCaller =
-        if frames.len > 0: frames[^1].scope
-        elif previousVmScope != nil: previousVmScope[]
-        else: nil
-      retValue = escapeStreamReturn(rawValue, protectedCaller)
+      # Every frame still on the stack, and the VM this run returns into,
+      # outlives the value, so functions owned by their scopes need no copy.
+      var liveFrames = WeakLiveFrames(frames: addr frames, limit: frames.len,
+                                      outer: previousVmScope)
+      retValue = escapeStreamReturn(rawValue, WeakScopeGuard(
+        live: weakScopeLiveOnStack, ctx: addr liveFrames))
       if returnType.kind != vkNil:
         if not (bareScalarSatisfied(returnType, retValue)):
           let label =
@@ -18718,7 +18764,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             var signal: ref GeneReturn
             new(signal)
-            signal.value = escapeWeakFunctions(returnValue)
+            # The returning function's frame and those below it survive the
+            # unwind; the nested body frames above it do not.
+            var liveFrames = WeakLiveFrames(frames: addr frames,
+              limit: returnDepth + 1, outer: previousVmScope)
+            signal.value = escapeWeakFunctions(returnValue, WeakScopeGuard(
+              live: weakScopeLiveOnStack, ctx: addr liveFrames))
             signal.targetDepth = returnDepth
             raise signal
         of opJumpIfFalse:

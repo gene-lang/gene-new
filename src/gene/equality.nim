@@ -119,7 +119,10 @@ proc equal*(a, b: Value): bool =
         if not equal(sa.body[j], sb.body[j]): return false
       if not tablesEqual(sa.props, sb.props): return false
     true
-  of vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
+  of vkFunction:
+    # Weak and strong capture clones of one closure are the same function.
+    a.fnIdentity == b.fnIdentity
+  of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
@@ -140,8 +143,10 @@ proc same*(a, b: Value): bool =
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol:
     equal(a, b)
+  of vkFunction:
+    a.fnIdentity == b.fnIdentity
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkPipeline,
-     vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule,
+     vkCallableView, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable, vkLogger,
@@ -238,7 +243,9 @@ proc hash*(v: Value): Hash =
       for id, val in stage.props.idPairs:
         acc = acc xor (hash(id) !& hash(val))
       h = h !& acc
-  of vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
+  of vkFunction:
+    h = h !& hash(v.fnIdentity)
+  of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,

@@ -311,6 +311,7 @@ type
     shared: int
     immutable: bool
     deepFrozen: bool
+    holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     items: seq[Value]
 
   GeneMap = object
@@ -318,6 +319,7 @@ type
     shared: int
     immutable: bool
     deepFrozen: bool
+    holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     entries: PropTable
 
   HashMapEntry* = object
@@ -351,6 +353,7 @@ type
     ## already-frozen check would accept a node still holding a mutable child.
     deepFrozen: bool
     constructing: bool
+    holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     resourceAuthorityId: uint64
     errorEvidence: ErrorEvidence
     head: Value
@@ -684,6 +687,8 @@ type
     capturesCallerEnv: bool  # closure was created under a borrowed caller view
     errorTypes: seq[Value]
     errorLease: RootRef
+    identity: int            # shared by weak/strong capture clones of one closure
+    weakable: bool           # a scope binding; may drop its scope edge again
 
   GeneNativeFn = object
     refCount: int
@@ -868,6 +873,7 @@ type
     value: Value
     valueType: Value
     valueScope: Scope
+    holdsEscapedFn: bool      # holds a promoted binding function; recheck on release
 
   AtomicCellData = ref object of CellData
     ## Inherits CellData's layout (cycleRefs/value) so the shared cycle-
@@ -2529,21 +2535,21 @@ proc weakenOwnedErrorEnvironment(node: ptr GeneNode, bits: uint64) =
     evidence.environment = nil
   # Releasing `owner` may free `node`; callers must not touch it afterwards.
 
-proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
-  # The type keeps its nominal identity when it escapes. Once only its own
-  # declaration's bindings retain it, release the scope back-edge; a later
-  # read promotes it again in rcRetain. Do not inspect another lane's scope.
-  if isSharedFlag(typ.shared) or typ.scope == nil:
-    return
-  let owner = typ.scope
+proc isLoadedModuleRoot(owner: Scope): bool =
   # A loaded module already owns its root namespace through this_mod. Its
   # lifetime is managed by module activation/release; repeatedly walking that
-  # entire declaration graph cannot reclaim the type's environment here.
-  if owner.moduleRoot and owner.vars.hasKey("this_mod"):
-    let moduleBits = owner.vars.getOrDefault("this_mod").bits
-    if moduleBits shr TAG_SHIFT == OBJECT_TAG and
-        cast[GeneObjectData](cast[pointer](moduleBits and PAYLOAD_MASK)).objKind == okModule:
-      return
+  # entire declaration graph cannot reclaim anything it owns.
+  if not owner.moduleRoot or not owner.vars.hasKey("this_mod"):
+    return false
+  let moduleBits = owner.vars.getOrDefault("this_mod").bits
+  moduleBits shr TAG_SHIFT == OBJECT_TAG and
+    cast[GeneObjectData](cast[pointer](moduleBits and PAYLOAD_MASK)).objKind == okModule
+
+proc scopeOwnedReferences(owner: Scope, target: uint64): int =
+  ## References to `target` that belong to `owner`: its bindings, plus those
+  ## held by containers whose *entire* reference count the scope already
+  ## accounts for. An externally retained or shared container keeps its
+  ## references external, even if it is also stored here.
   var references = initTable[uint64, int]()
   template count(value: Value) =
     block:
@@ -2563,15 +2569,11 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
       count(binding.selfType)
     for source in impl.bodySources:
       count(source.receiver)
-  # A scope can own the type indirectly through an instance or a subtype.
-  # Follow only containers whose *entire* reference count is already accounted
-  # for by this scope. An externally retained/shared container must keep the
-  # type's declaration environment alive, even if it is also stored here.
   var visited = initHashSet[uint64]()
   while true:
     var ready: seq[uint64]
     for key, owned in references:
-      if key == bits or key in visited:
+      if key == target or key in visited:
         continue
       var total = -1
       case key shr TAG_SHIFT
@@ -2584,6 +2586,10 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
       of NODE_TAG:
         let value = cast[ptr GeneNode](key and PAYLOAD_MASK)
         if not isSharedFlag(value.shared): total = value.refCount
+      of CYCLE_OBJECT_TAG:
+        let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
+        if value.objKind == okCell and not isSharedFlag(value.shared):
+          total = CellData(value).cycleRefs
       of OBJECT_TAG:
         let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
         if value.objKind == okType and not isSharedFlag(value.shared):
@@ -2608,18 +2614,119 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
         for value in node.props.values: count(value)
         for value in node.body: count(value)
         for value in node.meta.values: count(value)
+      of CYCLE_OBJECT_TAG:
+        let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
+        if value.objKind == okCell:
+          count(CellData(value).value)
       of OBJECT_TAG:
         let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
         forObjectEdges(value, child):
           if child shr TAG_SHIFT >= MANAGED_MIN:
             references[child] = references.getOrDefault(child) + 1
       else: discard
-  let owned = references.getOrDefault(bits)
+  references.getOrDefault(target)
+
+proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
+  # The type keeps its nominal identity when it escapes. Once only its own
+  # declaration's bindings retain it, release the scope back-edge; a later
+  # read promotes it again in rcRetain. Do not inspect another lane's scope.
+  if isSharedFlag(typ.shared) or typ.scope == nil:
+    return
+  let owner = typ.scope
+  if owner.isLoadedModuleRoot:
+    return
+  let owned = scopeOwnedReferences(owner, bits)
   if owned > 0 and owned == typ.valueRefs:
     # Scope destruction can release this same type again. Detach first so a
     # nested release cannot revisit the scope field being destroyed.
     var retired = move typ.scope
     retired = nil
+
+proc isPromotedBindingFunction(v: Value): bool {.inline.} =
+  if v.bits shr TAG_SHIFT != FUNCTION_TAG:
+    return false
+  let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+  p.weakable and p.scope != nil
+
+template collectPromotedBindingFunction(candidates: var seq[uint64], value: Value) =
+  block:
+    let itemBits = value.bits
+    if itemBits shr TAG_SHIFT == FUNCTION_TAG:
+      let fnp = cast[ptr GeneFunction](itemBits and PAYLOAD_MASK)
+      if fnp.weakable and fnp.scope != nil:
+        candidates.add itemBits
+
+var weakeningOwnedFunctions {.threadvar.}: bool
+
+proc weakenOwnedFunctions(candidates: openArray[uint64]) =
+  ## A scope binding promoted when it escaped drops its strong back-edge again
+  ## once every remaining reference belongs to its defining scope. Scopes retire
+  ## only after every candidate is checked: retiring one can release the others
+  ## and the container whose release triggered the check.
+  # The ownership walk copies and releases values of its own; those releases
+  # must not start a nested check of the same graph.
+  if weakeningOwnedFunctions:
+    return
+  weakeningOwnedFunctions = true
+  var retired: seq[Scope]
+  for bits in candidates:
+    let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+    if not p.weakable or p.scope == nil or isSharedFlag(p.shared) or
+        cast[pointer](p.scope) != p.weakScope:
+      continue
+    let owner {.cursor.} = p.scope
+    if owner.isLoadedModuleRoot:
+      continue
+    var direct = 0
+    for i in 0 ..< owner.slots.len:
+      if owner.slots[i].bits == bits:
+        inc direct
+    for value in owner.vars.values:
+      if value.bits == bits:
+        inc direct
+    if direct == p.refCount or scopeOwnedReferences(owner, bits) == p.refCount:
+      retired.add move p.scope
+  weakeningOwnedFunctions = false
+  retired.setLen(0)
+
+proc markEscapedFunctionHolder(container: Value) =
+  ## Releasing a container that holds a promoted scope binding rechecks whether
+  ## the binding's defining scope is again its only owner.
+  case container.bits shr TAG_SHIFT
+  of LIST_TAG:
+    cast[ptr GeneList](container.bits and PAYLOAD_MASK).holdsEscapedFn = true
+  of MAP_TAG:
+    cast[ptr GeneMap](container.bits and PAYLOAD_MASK).holdsEscapedFn = true
+  of NODE_TAG:
+    cast[ptr GeneNode](container.bits and PAYLOAD_MASK).holdsEscapedFn = true
+  of CYCLE_OBJECT_TAG:
+    let data = cast[GeneObjectData](cast[pointer](container.bits and PAYLOAD_MASK))
+    if data.objKind == okCell:
+      CellData(data).holdsEscapedFn = true
+  else: discard
+
+proc noteFunctionStore*(container, stored: Value) =
+  ## Record that `container` now holds `stored`, a possibly promoted binding.
+  if stored.isPromotedBindingFunction:
+    markEscapedFunctionHolder(container)
+
+proc weakenEscapedListItems(p: ptr GeneList) =
+  var candidates: seq[uint64]
+  for i in 0 ..< p.items.len:
+    collectPromotedBindingFunction(candidates, p.items[i])
+  if candidates.len == 0:
+    p.holdsEscapedFn = false
+  else:
+    weakenOwnedFunctions(candidates)
+
+proc weakenEscapedMapItems(p: ptr GeneMap) =
+  var candidates: seq[uint64]
+  for i in 0 ..< p.entries.data.len:
+    collectPromotedBindingFunction(candidates, p.entries.data[i].val)
+  if candidates.len == 0:
+    p.holdsEscapedFn = false
+  else:
+    weakenOwnedFunctions(candidates)
 
 proc rcRelease(bits: uint64) =
   let payload = bits and PAYLOAD_MASK
@@ -2637,10 +2744,16 @@ proc rcRelease(bits: uint64) =
     let p = cast[ptr GeneList](payload)
     releaseManual(p):
       reset(p[]); dealloc(p); trackFree()
+      return
+    if p.holdsEscapedFn and not isSharedFlag(p.shared):
+      weakenEscapedListItems(p)
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
     releaseManual(p):
       reset(p[]); dealloc(p); trackFree()
+      return
+    if p.holdsEscapedFn and not isSharedFlag(p.shared):
+      weakenEscapedMapItems(p)
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
     releaseManual(p):
@@ -2648,11 +2761,29 @@ proc rcRelease(bits: uint64) =
         resourceAuthorityReleaseHook(p.resourceAuthorityId)
       reset(p[]); dealloc(p); trackFree()
       return
+    if p.holdsEscapedFn and not isSharedFlag(p.shared):
+      var candidates: seq[uint64]
+      collectPromotedBindingFunction(candidates, p.head)
+      for i in 0 ..< p.props.data.len:
+        collectPromotedBindingFunction(candidates, p.props.data[i].val)
+      for i in 0 ..< p.body.len:
+        collectPromotedBindingFunction(candidates, p.body[i])
+      for i in 0 ..< p.meta.data.len:
+        collectPromotedBindingFunction(candidates, p.meta.data[i].val)
+      if candidates.len > 0:
+        # Weakening can release this node; leave its error environment for a
+        # later release.
+        weakenOwnedFunctions(candidates)
+        return
+      p.holdsEscapedFn = false
     weakenOwnedErrorEnvironment(p, bits)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     releaseManual(p):
       reset(p[]); dealloc(p); trackFree()
+      return
+    if p.weakable and p.scope != nil:
+      weakenOwnedFunctions([bits])
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
     releaseManual(p):
@@ -2691,6 +2822,14 @@ proc rcRelease(bits: uint64) =
             dec d.cycleRefs
           d.cycleRefs
       shouldTryCycle = newRefs > 0
+      if newRefs > 0 and d.holdsEscapedFn and not isSharedFlag(data.shared):
+        # The pending GC_unref below still pins this cell while scopes retire.
+        var candidates: seq[uint64]
+        collectPromotedBindingFunction(candidates, d.value)
+        if candidates.len == 0:
+          d.holdsEscapedFn = false
+        else:
+          weakenOwnedFunctions(candidates)
     else:
       discard
     GC_unref(data)
@@ -3301,6 +3440,12 @@ proc fnScope*(v: Value): Scope =
   else:
     cast[Scope](fn.weakScope)
 
+proc fnIdentity*(v: Value): int =
+  ## Weak and strong capture clones of one closure are the same function.
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).identity
+
 proc fnHasWeakScope*(v: Value): bool =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
@@ -3403,7 +3548,18 @@ proc newCallerEnv*(scope: Scope): Value
 proc callerEnvScope*(v: Value): Scope
 proc deactivateCallerEnv*(v: Value)
 
+type
+  WeakScopeLiveProc* = proc(ctx: pointer, target: pointer): bool {.nimcall.}
+  WeakScopeGuard* = object
+    ## Scopes known to outlive an escaping value. `scope` and its lexical
+    ## ancestors are protected; `live`, when set, answers for further scopes
+    ## such as every frame still on the VM stack.
+    scope*: Scope
+    live*: WeakScopeLiveProc
+    ctx*: pointer
+
 proc escapeWeakFunctions*(v: Value, protectedScope: Scope = nil): Value
+proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value
 
 proc nsName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
@@ -5785,6 +5941,15 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
     discard
   v
 
+var functionIdentitySeq: int
+
+proc nextFunctionIdentity(): int {.inline.} =
+  when compileOption("threads"):
+    atomicFetchAdd(addr functionIdentitySeq, 1, ATOMIC_RELAXED) + 1
+  else:
+    inc functionIdentitySeq
+    functionIdentitySeq
+
 proc newFunction*(name: string, params: sink seq[string],
                   code: FunctionCode, scope: Scope,
                   checksErrors = false,
@@ -5792,6 +5957,7 @@ proc newFunction*(name: string, params: sink seq[string],
                   syntaxFn = false): Value =
   let p = createObj(GeneFunction)
   p.refCount = 1
+  p.identity = nextFunctionIdentity()
   p.name = name
   p.params = params
   p.code = code
@@ -5804,10 +5970,13 @@ proc newFunction*(name: string, params: sink seq[string],
   if scope != nil and scope.application != nil and scope.application.errorFunctionCreated != nil:
     scope.application.errorFunctionCreated(result, scope)
 
-proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
+proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool,
+                          weakable = false): Value =
   let src = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
   let p = createObj(GeneFunction)
   p.refCount = 1
+  p.identity = src.identity
+  p.weakable = weakable
   p.name = src.name
   p.params = src.params
   p.code = src.code
@@ -5815,6 +5984,9 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
     p.weakScope = cast[pointer](scope)
   else:
     p.scope = scope
+    if weakable:
+      # Remember the owner, so the binding can drop back to weak.
+      p.weakScope = cast[pointer](scope)
   p.checksErrors = src.checksErrors
   p.syntaxFn = src.syntaxFn
   p.capturesCallerEnv = src.capturesCallerEnv
@@ -5822,19 +5994,21 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
   p.errorLease = src.errorLease
   boxPtr(FUNCTION_TAG, p)
 
-proc functionForScopeStorage*(v: Value, owner: Scope): Value =
+proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
   ## Store scope-owned functions with a weak back-edge so the owner can be
-  ## reclaimed after its ordinary references are dropped.
+  ## reclaimed after its ordinary references are dropped. A `binding` stored in
+  ## a scope's slots or vars escapes in place and re-weakens on release.
   if v.kind == vkFunction:
     let capture = v.fnScope
     if not v.fnHasWeakScope and capture == owner:
-      return cloneFunctionCapture(v, owner, weak = true)
+      return cloneFunctionCapture(v, owner, weak = true, weakable = binding)
     if v.fnHasWeakScope and capture != owner:
       # A weak binding is borrowed from its exact owner. Passing/storing that
       # function in a different scope must keep the original capture alive.
-      return cloneFunctionCapture(v, capture, weak = false)
+      return cloneFunctionCapture(v, capture, weak = false,
+        weakable = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).weakable)
   if v.kind == vkCallableView:
-    let target = functionForScopeStorage(v.callableViewTarget, owner)
+    let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
       return newCallableView(target, v.callableViewSignature,
         v.callableViewScope, v.callableViewCeiling)
@@ -6005,49 +6179,59 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
   else:
     v
 
-proc escapeStreamReturn*(value: Value, caller: Scope): Value =
+proc weakScopeProtected(guard: WeakScopeGuard, target: pointer): bool =
+  var current = guard.scope
+  while current != nil:
+    if cast[pointer](current) == target:
+      return true
+    current = current.parent
+  guard.live != nil and guard.live(guard.ctx, target)
+
+proc escapeStreamReturn*(value: Value, guard: WeakScopeGuard): Value =
   ## Returning to a caller that still owns every weak callback scope does not
   ## require an escaping copy. Preserve the actual cursor (and its lookahead)
   ## rather than forking it merely to retain already-live lexical scopes.
-  if value.kind == vkStream and caller != nil:
+  if value.kind == vkStream and (guard.scope != nil or guard.live != nil):
     var current = value
     var safe = true
     var seen = initHashSet[uint64]()
     while current.kind == vkStream and not seen.containsOrIncl(current.bits):
       let data = streamData(current)
       if data.callable.kind == vkFunction and data.callable.fnHasWeakScope:
-        var owner = caller
-        while owner != nil and owner != data.callable.fnScope:
-          owner = owner.parent
-        if owner == nil:
+        if not weakScopeProtected(guard, cast[pointer](data.callable.fnScope)):
           safe = false
           break
-      if escapeWeakFunctions(data.buffer, caller).bits != data.buffer.bits:
+      if escapeWeakFunctions(data.buffer, guard).bits != data.buffer.bits:
         safe = false
         break
       current = data.source
     if safe:
       return value
-  escapeWeakFunctions(value, caller)
+  escapeWeakFunctions(value, guard)
+
+proc escapeStreamReturn*(value: Value, caller: Scope): Value =
+  escapeStreamReturn(value, WeakScopeGuard(scope: caller))
 
 proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
+  escapeWeakFunctions(v, WeakScopeGuard(scope: protectedScope))
+
+proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
   ## Values that leave their defining run/eval boundary must keep weakly-stored
-  ## lexical scopes alive. Rebuild only the containers that actually contain a
-  ## weak function.
+  ## lexical scopes alive. A function whose owning scope the guard reports live
+  ## stays as it is. Mutable containers are updated in place so their identity
+  ## and aliases survive; only immutable containers holding a weak function are
+  ## rebuilt.
   if not v.isManaged:
     return v
   template escapeNested(value: Value): Value =
-    escapeWeakFunctions(value, protectedScope)
+    escapeWeakFunctions(value, guard)
   case v.kind
   of vkType:
     if objData(v).objKind == okType:
       let data = TypeData(objData(v))
       if data.scope == nil and data.weakScope != nil:
-        var current = protectedScope
-        while current != nil:
-          if cast[pointer](current) == data.weakScope:
-            return v
-          current = current.parent
+        if weakScopeProtected(guard, data.weakScope):
+          return v
         data.scope = cast[Scope](data.weakScope)
         data.scopeEscaped = true
     v
@@ -6059,11 +6243,22 @@ proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
       v.callableViewScope, v.callableViewCeiling)
   of vkFunction:
     if v.fnHasWeakScope:
+      let fnp = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+      if weakScopeProtected(guard, fnp.weakScope):
+        return v
+      if fnp.weakable and not isSharedFlag(fnp.shared):
+        # A scope binding escapes in place, keeping its identity; releases
+        # re-weaken it once only its defining scope holds it again.
+        fnp.scope = cast[Scope](fnp.weakScope)
+        return v
       return cloneFunctionCapture(v, v.fnScope, weak = false)
     v
   of vkList:
+    var holdsPromoted = false
     for i, item in v.listItems:
       let escaped = escapeNested(item)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
       if escaped.bits != item.bits:
         var items = newSeq[Value](v.listItems.len)
         for j in 0 ..< i:
@@ -6071,21 +6266,49 @@ proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
         items[i] = escaped
         for j in i + 1 ..< v.listItems.len:
           items[j] = escapeNested(v.listItems[j])
-        return newList(items, v.listImmutable)
+          if items[j].isPromotedBindingFunction:
+            holdsPromoted = true
+        if not v.listImmutable:
+          cast[ptr GeneList](v.bits and PAYLOAD_MASK).items = move items
+          if holdsPromoted:
+            markEscapedFunctionHolder(v)
+          return v
+        let rebuilt = newList(items, v.listImmutable)
+        if holdsPromoted:
+          markEscapedFunctionHolder(rebuilt)
+        return rebuilt
+    if holdsPromoted:
+      markEscapedFunctionHolder(v)
     v
   of vkMap:
     var changed = false
+    var holdsPromoted = false
     for key, val in v.mapEntries:
       let escaped = escapeNested(val)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
       if escaped.bits != val.bits:
         changed = true
         break
     if not changed:
+      if holdsPromoted:
+        markEscapedFunctionHolder(v)
       return v
     var entries = initPropTable()
     for key, val in v.mapEntries:
-      entries[key] = escapeNested(val)
-    newMap(entries, v.mapImmutable)
+      let escaped = escapeNested(val)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
+      entries[key] = escaped
+    if not v.mapImmutable:
+      cast[ptr GeneMap](v.bits and PAYLOAD_MASK).entries = move entries
+      if holdsPromoted:
+        markEscapedFunctionHolder(v)
+      return v
+    let rebuilt = newMap(entries, v.mapImmutable)
+    if holdsPromoted:
+      markEscapedFunctionHolder(rebuilt)
+    rebuilt
   of vkSet:
     for i, item in v.setItems:
       let escaped = escapeNested(item)
@@ -6156,40 +6379,72 @@ proc escapeWeakFunctions*(v: Value, protectedScope: Scope): Value =
         sourceLoc: stage.sourceLoc, slot: stage.slot)
     newPipeline(escapedInitial, stages, v.pipelineImmutable)
   of vkNode:
+    var holdsPromoted = false
     let escapedHead = escapeNested(v.head)
+    if escapedHead.isPromotedBindingFunction:
+      holdsPromoted = true
     var changed = escapedHead.bits != v.head.bits
     if not changed:
       for _, val in v.props:
         let escaped = escapeNested(val)
+        if escaped.isPromotedBindingFunction:
+          holdsPromoted = true
         if escaped.bits != val.bits:
           changed = true
           break
     if not changed:
       for item in v.body:
         let escaped = escapeNested(item)
+        if escaped.isPromotedBindingFunction:
+          holdsPromoted = true
         if escaped.bits != item.bits:
           changed = true
           break
     if not changed:
       for _, val in v.meta:
         let escaped = escapeNested(val)
+        if escaped.isPromotedBindingFunction:
+          holdsPromoted = true
         if escaped.bits != val.bits:
           changed = true
           break
     if not changed:
+      if holdsPromoted:
+        markEscapedFunctionHolder(v)
       return v
     var props = initPropTable()
     for key, val in v.props:
-      props[key] = escapeNested(val)
+      let escaped = escapeNested(val)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
+      props[key] = escaped
     var body: seq[Value]
     for item in v.body:
-      body.add escapeNested(item)
+      let escaped = escapeNested(item)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
+      body.add escaped
     var meta = initPropTable()
     for key, val in v.meta:
-      meta[key] = escapeNested(val)
-    newNode(escapedHead, props = props, body = body, meta = meta,
+      let escaped = escapeNested(val)
+      if escaped.isPromotedBindingFunction:
+        holdsPromoted = true
+      meta[key] = escaped
+    if not v.nodeImmutable:
+      let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+      node.head = escapedHead
+      node.props = move props
+      node.body = move body
+      node.meta = move meta
+      if holdsPromoted:
+        markEscapedFunctionHolder(v)
+      return v
+    let rebuilt = newNode(escapedHead, props = props, body = body, meta = meta,
             immutable = v.nodeImmutable, constructing = v.nodeConstructing).
       inheritErrorEvidence(v)
+    if holdsPromoted:
+      markEscapedFunctionHolder(rebuilt)
+    rebuilt
   of vkStream:
     let data = streamData(v)
     let escapedSource = escapeNested(data.source)

@@ -1600,6 +1600,35 @@ suite "vm — functions and closures":
     ck "(var x 1) (var get (fn [] x)) (set x 2) (get)", "2"
   test "closures see updates to slot-backed locals":
     ck "(fn outer [x] (var get (fn [] x)) (set x 2) (get)) (outer 1)", "2"
+  test "values returned to the owner of their functions keep identity":
+    # Heap values compare by reference. A caller that still owns a function's
+    # captured scope must receive the same function and containers, not copies.
+    ck "(type Box ^props {^f Any ^n Int}) (fn pass [x] x) " &
+       "(fn run [] (fn local [] nil) (var box (Box ^f local ^n 1)) " &
+       "  (var passed (pass box)) (set passed/n 42) " &
+       "  [(same? passed box) box/n (same? (pass local) local)]) " &
+       "(run)", "[true 42 true]"
+    ck "(type Box ^props {^f Any}) " &
+       "(fn copy_map [source] (var out ($thaw #{})) " &
+       "  (for [k v] in source (out .put k v)) out) " &
+       "(fn run [] (fn local [] nil) (var box (Box ^f local)) " &
+       "  (same? ((copy_map {^p box}) .get \"p\") box)) " &
+       "(run)", "true"
+    ck "(fn top [] nil) (fn pass [x] x) " &
+       "(fn run [] (var held top) [(same? held top) (same? (pass top) top)]) " &
+       "(run)", "[true true]"
+  test "a mutable container escaping its function's scope keeps identity":
+    ck "(type Box ^props {^f Any ^n Int}) " &
+       "(fn make [cell] (fn local [] 7) (var box (Box ^f local ^n 1)) " &
+       "  (cell .set box) box) " &
+       "(var cell ($cell nil)) (var made (make cell)) (set made/n 42) " &
+       "(var stored (cell .get)) (var f stored/f) " &
+       "[(same? made stored) stored/n (f)]", "[true 42 7]"
+  test "a function stored into a cell outlives its defining call":
+    # The stored function captures `x`, so calling it after `make` returns
+    # needs make's scope alive rather than a dangling back-reference.
+    ck "(fn make [c] (var x 41) (fn local [] (+ x 1)) (c .set local) nil) " &
+       "(var c ($cell nil)) (make c) (var f (c .get)) (f)", "42"
   test "default expressions see earlier slot-backed parameters":
     ck "((fn [x y = x] y) 7)", "7"
   test "recursion via a var-bound self reference":

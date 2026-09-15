@@ -204,6 +204,17 @@ when defined(geneRcStats):
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
       check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
+    test "escaped named functions release their scope once only it holds them":
+      # A returned container also kept in a local, and a named function stored
+      # into a local cell, must not keep their defining call scope in a cycle.
+      check leakedManaged("(fn make [] (fn local [] 1) (var box {^f local}) box) " &
+                          "(repeat 50 (make))") == 0
+      check leakedManaged("(fn run [] (fn local [] 1) (var c ($cell nil)) " &
+                          "(c .set local) nil) (repeat 50 (run))") == 0
+      check leakedManaged("(type Box ^props {^f Any}) " &
+                          "(fn make [] (fn local [] 1) (var box (Box ^f local)) box) " &
+                          "(repeat 50 (make))") == 0
+
     test "released bound calls reclaim captures arguments and policy metadata":
       check leakedManaged("(fn target [x] (+ x 1)) " &
         "(var bound ($runtime/bind_call target [2] ^policy {^max_steps 100})) " &
