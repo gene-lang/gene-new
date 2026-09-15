@@ -2648,7 +2648,22 @@ proc isPromotedBindingFunction(v: Value): bool {.inline.} =
   let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
   p.weakable and p.scope != nil
 
-template collectPromotedBindingFunction(candidates: var seq[uint64], value: Value) =
+type
+  FunctionCandidates = object
+    ## Promoted bindings collected from one released value. There are usually
+    ## one or two, so they live inline and a release allocates nothing.
+    inline: array[4, uint64]
+    count: int
+    overflow: seq[uint64]
+
+proc add(candidates: var FunctionCandidates, bits: uint64) {.inline.} =
+  if candidates.count < candidates.inline.len:
+    candidates.inline[candidates.count] = bits
+  else:
+    candidates.overflow.add bits
+  inc candidates.count
+
+template collectPromotedBindingFunction(candidates: var FunctionCandidates, value: Value) =
   block:
     let itemBits = value.bits
     if itemBits shr TAG_SHIFT == FUNCTION_TAG:
@@ -2656,9 +2671,96 @@ template collectPromotedBindingFunction(candidates: var seq[uint64], value: Valu
       if fnp.weakable and fnp.scope != nil:
         candidates.add itemBits
 
+proc bindingReferences(owner: Scope, key: uint64): int =
+  for i in 0 ..< owner.slots.len:
+    if owner.slots[i].bits == key:
+      inc result
+  for value in owner.vars.values:
+    if value.bits == key:
+      inc result
+
+proc shallowOwnedReferences(owner: Scope, target: uint64, exact: var bool): int =
+  ## Allocation-free count of references to `target` held by the scope's
+  ## bindings, directly or as items of containers those bindings wholly own.
+  ## It never over-counts. `exact` turns false when such a container holds a
+  ## further container this count does not follow.
+  exact = true
+  var total = 0
+  template item(value: Value) =
+    block:
+      let itemBits = value.bits
+      let tag = itemBits shr TAG_SHIFT
+      if itemBits == target:
+        inc total
+      elif tag == LIST_TAG or tag == MAP_TAG or tag == NODE_TAG or
+          tag == CYCLE_OBJECT_TAG:
+        exact = false
+  template root(key: uint64) =
+    if key == target:
+      inc total
+    else:
+      case key shr TAG_SHIFT
+      of LIST_TAG:
+        let c = cast[ptr GeneList](key and PAYLOAD_MASK)
+        if not isSharedFlag(c.shared) and c.refCount == bindingReferences(owner, key):
+          for i in 0 ..< c.items.len:
+            item(c.items[i])
+      of MAP_TAG:
+        let c = cast[ptr GeneMap](key and PAYLOAD_MASK)
+        if not isSharedFlag(c.shared) and c.refCount == bindingReferences(owner, key):
+          for i in 0 ..< c.entries.data.len:
+            item(c.entries.data[i].val)
+      of NODE_TAG:
+        let c = cast[ptr GeneNode](key and PAYLOAD_MASK)
+        if not isSharedFlag(c.shared) and c.refCount == bindingReferences(owner, key):
+          item(c.head)
+          for i in 0 ..< c.props.data.len:
+            item(c.props.data[i].val)
+          for i in 0 ..< c.body.len:
+            item(c.body[i])
+          for i in 0 ..< c.meta.data.len:
+            item(c.meta.data[i].val)
+      of CYCLE_OBJECT_TAG:
+        let data = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
+        if data.objKind == okCell and not isSharedFlag(data.shared) and
+            CellData(data).cycleRefs == bindingReferences(owner, key):
+          item(CellData(data).value)
+      else: discard
+  # A container bound more than once is counted at its first binding only.
+  for i in 0 ..< owner.slots.len:
+    let key = owner.slots[i].bits
+    var seen = false
+    for j in 0 ..< i:
+      if owner.slots[j].bits == key:
+        seen = true
+        break
+    if not seen:
+      root(key)
+  var varIndex = 0
+  for value in owner.vars.values:
+    let key = value.bits
+    var seen = false
+    for i in 0 ..< owner.slots.len:
+      if owner.slots[i].bits == key:
+        seen = true
+        break
+    if not seen:
+      var earlier = 0
+      for other in owner.vars.values:
+        if earlier == varIndex:
+          break
+        if other.bits == key:
+          seen = true
+          break
+        inc earlier
+    if not seen:
+      root(key)
+    inc varIndex
+  total
+
 var weakeningOwnedFunctions {.threadvar.}: bool
 
-proc weakenOwnedFunctions(candidates: openArray[uint64]) =
+proc weakenOwnedFunctions(candidates: FunctionCandidates) =
   ## A scope binding promoted when it escaped drops its strong back-edge again
   ## once every remaining reference belongs to its defining scope. Scopes retire
   ## only after every candidate is checked: retiring one can release the others
@@ -2668,8 +2770,13 @@ proc weakenOwnedFunctions(candidates: openArray[uint64]) =
   if weakeningOwnedFunctions:
     return
   weakeningOwnedFunctions = true
-  var retired: seq[Scope]
-  for bits in candidates:
+  var retired: array[4, Scope]
+  var retiredCount = 0
+  var retiredMore: seq[Scope]
+  for index in 0 ..< candidates.count:
+    let bits =
+      if index < candidates.inline.len: candidates.inline[index]
+      else: candidates.overflow[index - candidates.inline.len]
     let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
     if not p.weakable or p.scope == nil or isSharedFlag(p.shared) or
         cast[pointer](p.scope) != p.weakScope:
@@ -2677,17 +2784,20 @@ proc weakenOwnedFunctions(candidates: openArray[uint64]) =
     let owner {.cursor.} = p.scope
     if owner.isLoadedModuleRoot:
       continue
-    var direct = 0
-    for i in 0 ..< owner.slots.len:
-      if owner.slots[i].bits == bits:
-        inc direct
-    for value in owner.vars.values:
-      if value.bits == bits:
-        inc direct
-    if direct == p.refCount or scopeOwnedReferences(owner, bits) == p.refCount:
-      retired.add move p.scope
+    # The shallow count settles the usual shapes without allocating; the full
+    # walk runs only when an owned container nests further containers.
+    var exact = true
+    if shallowOwnedReferences(owner, bits, exact) == p.refCount or
+        (not exact and scopeOwnedReferences(owner, bits) == p.refCount):
+      if retiredCount < retired.len:
+        retired[retiredCount] = move p.scope
+        inc retiredCount
+      else:
+        retiredMore.add move p.scope
   weakeningOwnedFunctions = false
-  retired.setLen(0)
+  for i in 0 ..< retiredCount:
+    retired[i] = nil
+  retiredMore.setLen(0)
 
 proc markEscapedFunctionHolder(container: Value) =
   ## Releasing a container that holds a promoted scope binding rechecks whether
@@ -2711,19 +2821,19 @@ proc noteFunctionStore*(container, stored: Value) =
     markEscapedFunctionHolder(container)
 
 proc weakenEscapedListItems(p: ptr GeneList) =
-  var candidates: seq[uint64]
+  var candidates: FunctionCandidates
   for i in 0 ..< p.items.len:
     collectPromotedBindingFunction(candidates, p.items[i])
-  if candidates.len == 0:
+  if candidates.count == 0:
     p.holdsEscapedFn = false
   else:
     weakenOwnedFunctions(candidates)
 
 proc weakenEscapedMapItems(p: ptr GeneMap) =
-  var candidates: seq[uint64]
+  var candidates: FunctionCandidates
   for i in 0 ..< p.entries.data.len:
     collectPromotedBindingFunction(candidates, p.entries.data[i].val)
-  if candidates.len == 0:
+  if candidates.count == 0:
     p.holdsEscapedFn = false
   else:
     weakenOwnedFunctions(candidates)
@@ -2762,7 +2872,7 @@ proc rcRelease(bits: uint64) =
       reset(p[]); dealloc(p); trackFree()
       return
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
-      var candidates: seq[uint64]
+      var candidates: FunctionCandidates
       collectPromotedBindingFunction(candidates, p.head)
       for i in 0 ..< p.props.data.len:
         collectPromotedBindingFunction(candidates, p.props.data[i].val)
@@ -2770,7 +2880,7 @@ proc rcRelease(bits: uint64) =
         collectPromotedBindingFunction(candidates, p.body[i])
       for i in 0 ..< p.meta.data.len:
         collectPromotedBindingFunction(candidates, p.meta.data[i].val)
-      if candidates.len > 0:
+      if candidates.count > 0:
         # Weakening can release this node; leave its error environment for a
         # later release.
         weakenOwnedFunctions(candidates)
@@ -2783,7 +2893,9 @@ proc rcRelease(bits: uint64) =
       reset(p[]); dealloc(p); trackFree()
       return
     if p.weakable and p.scope != nil:
-      weakenOwnedFunctions([bits])
+      var candidates: FunctionCandidates
+      candidates.add bits
+      weakenOwnedFunctions(candidates)
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
     releaseManual(p):
@@ -2824,9 +2936,9 @@ proc rcRelease(bits: uint64) =
       shouldTryCycle = newRefs > 0
       if newRefs > 0 and d.holdsEscapedFn and not isSharedFlag(data.shared):
         # The pending GC_unref below still pins this cell while scopes retire.
-        var candidates: seq[uint64]
+        var candidates: FunctionCandidates
         collectPromotedBindingFunction(candidates, d.value)
-        if candidates.len == 0:
+        if candidates.count == 0:
           d.holdsEscapedFn = false
         else:
           weakenOwnedFunctions(candidates)
