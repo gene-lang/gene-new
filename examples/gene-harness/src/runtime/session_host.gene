@@ -389,7 +389,7 @@
   {^id (?? record/block_id $"legacy-${sequence}") ^seq ($to_str sequence)
    ^run_id (?? record/run_id "") ^role (?? record/role "log")
    ^phase (?? record/phase "text") ^round (?? record/round 0)
-   ^text text ^truncated (!= text record/text) ^durable durable})
+   ^text text ^truncated (|| (== record/truncated true) (!= text record/text)) ^durable durable})
 
 (fn snapshot [host : SessionHost, id : Str, ^after after : Int = -1,
               ^before before : Int = -1, ^limit limit : Int = 200]

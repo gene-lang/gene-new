@@ -374,9 +374,18 @@ The retained core log and the LLM provider's bounded conversation window are
 both restored before activation; a completed `ask` flushes them together.
 
 Stored events are frozen deep copies and `PluginHost:state` returns a detached
-copy, so plugin state changes only through `update_state`. Several processes can
-share one home: a flush holds `events/publish.lock` while it writes segments,
-publishes a generation, and sweeps unreferenced segments.
+copy, so plugin state changes only through `update_state`. Inside a turn, updates
+are staged: reads see the latest staged value, commit publishes it, and abort
+discards it. A flush during the turn cannot publish these pending state changes.
+Outside a turn, updates immediately append to the event store.
+
+Transcript blocks retain at most 64 KiB of UTF-8 text, reduced further when
+serialization would exceed the event limit. Truncated blocks include a visible
+marker and the original byte count. Tool execution and model-reply parsing
+receive the full input; tool results also remain complete for their callers.
+
+Several processes can share one home: a flush holds `events/publish.lock` while
+it writes segments, publishes a generation, and sweeps unreferenced segments.
 
 ## Extension model
 
@@ -426,6 +435,13 @@ types, and typed Lists. Other parameter contracts require an explicit
 Void entries, so the named input envelope distinguishes omission from nil
 but cannot transport a named Void. Use ordinary direct invocation for that
 case. See [the reflection contract](../../docs/spec/calls.md#callable-reflection).
+
+Tool registration validates and snapshots `input_schema`, including nested
+schemas. Unsupported keywords and malformed constraints are rejected before the
+row is published. The [supported input-schema subset](docs/design.md#tool-input-schemas)
+includes types, alternatives, enums, object properties, arrays, string lengths
+and numeric bounds. It does not implement all of JSON Schema. `output_schema`
+is descriptive metadata; the tool runner does not validate returned values against it.
 
 ## Generated plugin contract
 

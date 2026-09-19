@@ -281,6 +281,10 @@ with the latest bounded snapshot and then resumes direct updates. A cursor older
 returns an explicit reset with the earliest available cursor; the UI shows that
 older history is unavailable. Recovery does not reconstruct discarded history.
 
+Stored transcript blocks also carry `truncated` and `original_bytes` when their
+text preview was shortened to fit the log. The visible truncation notice survives
+snapshot/reconnect; full tool inputs and results remain available to execution.
+
 Transport bounds: 64 KiB prompt text, at most 200 committed records and
 1 MiB per history response, and a 1 MiB provisional-output window. Pagination
 must make progress even for a large permitted event; oversized display blocks

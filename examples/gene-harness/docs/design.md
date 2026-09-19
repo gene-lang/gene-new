@@ -156,6 +156,9 @@ that arbitrary I/O can be rolled back.
 
 - registry and composition changes are made in cloned staging state;
 - lifecycle logs and bus notifications are held until commit;
+- plugin state updates are snapshotted and size-checked, then held until commit;
+  reads within the turn see the latest staged value, while flushes and other
+  store readers see only committed state;
 - abort cleans newly acquired rows and leaves committed rows untouched;
 - plugin/status/policy tables stage too, committed-plugin deactivation is
   deferred, and repeated composition writes to one id coalesce to the final
@@ -190,9 +193,12 @@ chooses its instance and state ownership:
 | `workspace` | one live replica per Harness, one shared durable projection | workspace stream |
 | `session` | one instance per Harness/session | that session's stream |
 
-`PluginHost:update_state` updates the in-memory projection and appends the
-versioned full-state record in one core operation. Every stored event is a
-frozen deep copy and `PluginHost:state` returns a detached copy, so changing an
+`PluginHost:update_state` snapshots and validates the versioned full-state record.
+During a turn it queues that record, and `PluginHost:state` reads the latest
+queued value for the same owner and scope. Commit appends the queued records and
+updates projections before cleanup hooks or observers run; abort discards them.
+Outside a turn the append and projection update happen immediately. Every stored
+event is a frozen deep copy and `PluginHost:state` returns a detached copy, so changing an
 update's argument or a returned state changes neither the projection nor the
 history. Plugins do not coordinate a private file with memory themselves.
 Disjoint streams from stale processes merge and retry; a stale write to the
@@ -337,7 +343,13 @@ raw runtime records or concrete tool implementations.
 restricted evaluator returns. Operational tools instead use `runtime/tools.gene`:
 the host validates the current owned row and input schema, executes the callback
 under its plugin policy, and produces `{ok, value}` or `{ok, error}`. Tool calls
-and results are durable output blocks. Registered I/O tools therefore work from
+and results are durable output blocks. Transcript text, including raw model
+replies, is bounded to 64 KiB on UTF-8 boundaries and shortened further if its
+serialized event envelope would exceed the configured event limit. Truncation
+adds a visible marker plus `truncated` and `original_bytes` metadata, preserved
+across restart. Only the logged preview is shortened: the operation receives its
+full input, replies are parsed in full, and callers receive the full tool result.
+Registered I/O tools therefore work from
 the agent without granting host authority to arbitrary model code.
 
 The built-in filesystem, subprocess and HTTP adapters are plugins. Process
@@ -353,6 +365,30 @@ callbacks are supported alongside older single-value rows. Long asynchronous
 operations return ToolTask; the host awaits it after the bounded callback has
 returned, cancels it with the run, and supervises any continuation under its
 owner. Spawned custom and trusted tasks retain their execution budgets.
+
+### Tool input schemas
+
+Tool contribution validates `input_schema` recursively before publishing the
+row and retains an immutable snapshot. A missing/nil schema leaves the input
+unconstrained; a supplied schema must be an object. The supported subset is:
+
+| Keywords | Contract |
+|---|---|
+| `type` | `string`, `integer`, `number`, `boolean`, `object`, `array`, `null`, or a nonempty list of these types |
+| `anyOf`, `enum` | Nonempty lists of supported schemas or permitted values, respectively |
+| `properties`, `required` | Property-to-schema map and a list of required property names |
+| `additionalProperties` | Boolean only; `false` rejects undeclared properties |
+| `items`, `prefixItems` | A supported item schema and a list of positional item schemas |
+| `minItems`, `maxItems`, `minLength`, `maxLength` | Nonnegative integers; string lengths count Unicode code points |
+| `minimum`, `maximum` | Inclusive numeric bounds |
+| `title`, `description`, `$comment`, `default`, `examples` | Annotations only; defaults are not applied |
+
+Constraints apply to values of the corresponding kind even when `type` is
+omitted. All other keywords are rejected, including `pattern`, `format`, `const`,
+`oneOf`, `uniqueItems`, and references. Boolean schemas (including `items: false`)
+and schema-valued `additionalProperties` are unsupported and rejected. Schema
+and input nesting are bounded to 32 levels. `output_schema` is descriptive
+metadata and does not validate returned values.
 
 ## 8. Execution supervision and attenuation
 

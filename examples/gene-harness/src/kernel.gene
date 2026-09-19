@@ -15,12 +15,13 @@
          ExecutionLimits default_execution_limits]
   ^from "./plugin_api" ^export true)
 (import [append_core_event append_plugin_event
-         record_plugin_state plugin_state events_for flush_event_store]
+         prepare_plugin_state plugin_state copy_data core_event_size events_for flush_event_store]
   ^from "./storage/state")
 (import [core_event_types] ^from "./storage/generated_event_catalog")
 (import [HarnessView view_provider] ^from "./views/view_api")
 (import [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition]
   ^from "./runtime/cordis_adapter")
+(import [ToolSchemaError validate_input_schema] ^from "./runtime/tool_schema")
 (import [LoaderOptions] ^from "." ^pkg "cordis")
 
 (type HarnessError ^props {^message Str} ^impl [Error])
@@ -50,7 +51,7 @@
 (type TurnTransaction
   ^props {^id Str ^phase Any ^registries Any ^ledger Any ^row_index Any
           ^baseline Any ^new_rows Any ^new_order Any ^deferred Any
-          ^events Any ^notifications Any
+          ^events Any ^state_updates Any ^notifications Any
           ^workspace_entries Any ^workspace_baseline Any
           ^workspace_revision Any ^pending_plugins Any})
 
@@ -525,6 +526,7 @@
                      ^new_order ($cell (fresh_list))
                      ^deferred ($cell (fresh_list))
                      ^events ($cell (fresh_list))
+                     ^state_updates ($cell (fresh_list))
                      ^notifications ($cell (fresh_list))
                      ^workspace_entries ($cell nil)
                      ^workspace_baseline ($cell nil)
@@ -622,6 +624,11 @@
   # overlay that just superseded them.
   (tx/phase .set "published")
   (h/transaction .set nil)
+  # State joins the published rows before cleanup/observers run. Each queued
+  # event was snapshotted and size-checked by update_state during staging.
+  (for update in (tx/state_updates .get)
+    (append_core_event h/event_store update/scope update/stream update/event
+      ^projection update/owner))
   (for deferred in (tx/deferred .get)
     (if_not ($absent? deferred/on_remove)
       (try
@@ -668,8 +675,16 @@
 (fn validate_tool_row [candidate]
   (if (|| (== candidate/name void) (== candidate/doc void)
           (! ($runtime/callable? candidate/run)))
-    (fail (HarnessError ^message "a tool row requires name, doc and a callable run"))
-    candidate))
+    (fail (HarnessError ^message "a tool row requires name, doc and a callable run")))
+  (if ($absent? candidate/input_schema) (return candidate))
+  (var schema ($freeze candidate/input_schema))
+  (try (validate_input_schema schema)
+    catch ToolSchemaError (fail (HarnessError ^message $err/message)))
+  # Retain the validated snapshot, not an alias the contributor can mutate.
+  (var checked (fresh_map))
+  (for [key value] in candidate (checked .put key value))
+  (checked .put "input_schema" schema)
+  checked)
 
 (fn validate_interaction_row [candidate]
   (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request))
@@ -849,7 +864,7 @@
                 .contains? ($to_str envelope/type))
         (if_not (== envelope/payload/text void)
           (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
-          (for name in ["run_id" "block_id" "role" "phase" "round"]
+          (for name in ["run_id" "block_id" "role" "phase" "round" "truncated" "original_bytes"]
             (if_not (== (envelope/payload .get name) void)
               (record .put name (envelope/payload .get name))))
           ((h/log .get) .push record)))))
@@ -867,10 +882,9 @@
 
 # --- the session log (design §3.6) -----------------------------------------
 #
-# **Model-visible <=> logged.** Anything that reaches a model request must be
-# reconstructible from the log. The log belongs to core, not to a plugin: a
-# plugin appends to it and reads nothing else, so replay fidelity is structural
-# rather than something someone remembered to maintain.
+# The log belongs to core. Large transcript blocks retain an explicitly marked
+# preview; the original tool inputs/results and model replies still reach their
+# consumers unchanged. Logging must not set the size limit for an operation.
 #
 # The kernel writes its own lifecycle record here under `^kind "lifecycle"`.
 # That is the same log and deliberately not a second one: `assemble_request`
@@ -926,6 +940,47 @@
   (if_not ($absent? context) (context .put "round" round))
   nil)
 
+(fn log_event_payload [record]
+  (var payload {^type record/kind ^text record/text})
+  (if_not (== record/run_id void)
+    (payload .put "version" 2)
+    (for name in ["run_id" "block_id" "role" "phase" "round"]
+      (payload .put name (record .get name))))
+  (if_yes (== record/truncated true)
+    (payload .put "truncated" true)
+    (payload .put "original_bytes" record/original_bytes))
+  payload)
+
+(fn text_prefix [text : Str, maximum : Int] : Str
+  (if (<= ($str/byte_size text) maximum) (return text))
+  (var end maximum)
+  (while (> end 0)
+    (var prefix (try ($str/slice_bytes text 0 end) catch Any nil))
+    (if_not ($absent? prefix) (return prefix))
+    (set end (- end 1)))
+  "")
+
+(fn bounded_log_record [h : Harness, record]
+  (var original record/text)
+  (var size ($str/byte_size original))
+  (var limit 65536)
+  (while true
+    (if_yes (> size limit)
+      (var marker $"\n[truncated; original ${size} bytes]")
+      (record .put "text"
+        $"${(text_prefix original ($math/max 0 (- limit ($str/byte_size marker))))}${marker}")
+      (record .put "truncated" true)
+      (record .put "original_bytes" size))
+    # Check the serialized envelope too: escaping can make a small string
+    # exceed the byte cap. Reserve sequence growth for records staged in a turn.
+    (if (|| ($absent? h/event_store)
+            (<= (core_event_size h/event_scope h/event_stream (log_event_payload record))
+                h/event_store/max_event_bytes))
+      (return record))
+    (if (== limit 0)
+      (fail (HarnessError ^message "log metadata exceeds the event byte limit")))
+    (set limit (/ ($math/min limit size) 2))))
+
 (fn log_record [h : Harness, kind : Str, text : Str, phase : Str, round : Int, role : Str,
                 ^block_id block_id : Str = ""]
   (var record {^kind kind ^text text})
@@ -938,7 +993,7 @@
     (record .put "role" role)
     (record .put "phase" phase)
     (record .put "round" round))
-  record)
+  (bounded_log_record h record))
 
 (fn append_log_record [h : Harness, record] : Any
   (var events (h/log .get))
@@ -954,11 +1009,7 @@
 
 (fn append_committed_record [h : Harness, record] : Any
   (if_not ($absent? h/event_store)
-    (var payload {^type record/kind ^text record/text})
-    (if_not (== record/run_id void)
-      (payload .put "version" 2)
-      (for name in ["run_id" "block_id" "role" "phase" "round"]
-        (payload .put name (record .get name))))
+    (var payload (log_event_payload record))
     (var envelope (append_core_event h/event_store h/event_scope h/event_stream payload))
     (record .put "seq" envelope/seq))
   (append_log_record h record))
@@ -1408,6 +1459,16 @@
     (var scope (if (== policy/scope "workspace") "workspace" "session"))
     (var stream
       (if (== scope "workspace") "workspace" record/h/event_stream))
+    (var tx (active_transaction record/h))
+    (if_not ($absent? tx)
+      (var updates (tx/state_updates .get))
+      (var i (- updates/.size 1))
+      (while (>= i 0)
+        (var update updates/%i)
+        (if_yes (&& (== update/scope scope) (== update/stream stream)
+                    (== update/owner record/owner))
+          (return (copy_data update/event/state)))
+        (set i (- i 1))))
     (plugin_state record/h/event_store scope stream record/owner))
 
   (message update_state [value] : Any
@@ -1418,7 +1479,12 @@
     (var scope (if (== policy/scope "workspace") "workspace" "session"))
     (var stream
       (if (== scope "workspace") "workspace" record/h/event_stream))
-    (record_plugin_state record/h/event_store scope stream record/owner value)
+    (var event (prepare_plugin_state record/h/event_store scope stream record/owner value))
+    (var tx (active_transaction record/h))
+    (if ($absent? tx)
+      (append_core_event record/h/event_store scope stream event ^projection record/owner)
+      ((tx/state_updates .get) .push
+        {^scope scope ^stream stream ^owner record/owner ^event event}))
     value))
 
 (fn publish [h : Harness, event] : Any

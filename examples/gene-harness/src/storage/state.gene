@@ -97,6 +97,21 @@
   (all .put key states)
   (events/core_projections .set all))
 
+(fn stamped_envelope [scope : Str, stream : Str, event,
+                      origin : Str, owner : Str, projection : Str, seq : Int]
+  ($freeze
+    {^format 2 ^origin origin ^owner owner ^projection projection
+     ^scope scope ^stream stream ^seq seq
+     ^type event/type ^version (event_version event)
+     ^ignorable (event_ignorable event) ^payload event}))
+
+# Reserve the widest sequence number when preparing data before commit. A
+# queued event must still fit after other records advance the stream.
+(fn core_event_size [scope : Str, stream : Str, event,
+                     ^projection projection : Str = ""] : Int
+  (byte_size (write_data
+    (stamped_envelope scope stream event "core" "core" projection 9223372036854775807))))
+
 (fn append_stamped_event
   [events : EventStore, scope : Str, stream : Str, event,
    origin : Str, owner : Str, projection : Str]
@@ -109,20 +124,15 @@
   (if (== owner "")
     (fail (HarnessStateError ^message "event owner is empty")))
   (var key (stream_key scope stream))
-  (mark_stream_dirty events key)
   (var seq (next_sequence events key))
   # A frozen deep copy: the caller keeps no reference into history or into a
   # projection, and an envelope handed back to a plugin cannot rewrite either.
-  (var envelope
-    ($freeze
-      {^format 2 ^origin origin ^owner owner ^projection projection
-       ^scope scope ^stream stream ^seq seq
-       ^type event/type ^version (event_version event)
-       ^ignorable (event_ignorable event) ^payload event}))
+  (var envelope (stamped_envelope scope stream event origin owner projection seq))
   (var encoded (write_data envelope))
   (if (> (byte_size encoded) events/max_event_bytes)
     (fail (HarnessStateError
       ^message $"event exceeds ${events/max_event_bytes} bytes")))
+  (mark_stream_dirty events key)
   (var values (current_events events key))
   (values .push envelope)
   (set_current_events events key values)
@@ -153,16 +163,28 @@
     (append_core_event events scope stream event)
     (append_plugin_event events scope stream ($to_str event/plugin) event)))
 
-(fn record_plugin_state
+(fn prepare_plugin_state
   [events : EventStore, scope : Str, stream : Str, plugin : Str, state,
    ^version version : Int = 1]
-  (var encoded (write_data state))
+  (require_open events)
+  (validate_scope scope)
+  (var event ($freeze
+    {^type "plugin/state" ^plugin plugin ^state_version version ^state state}))
+  (var encoded (write_data event/state))
   (if (> (byte_size encoded) events/max_state_bytes)
     (fail (HarnessStateError
       ^message $"plugin state exceeds ${events/max_state_bytes} bytes")))
+  (if (> (core_event_size scope stream event ^projection plugin) events/max_event_bytes)
+    (fail (HarnessStateError
+      ^message $"event exceeds ${events/max_event_bytes} bytes")))
+  event)
+
+(fn record_plugin_state
+  [events : EventStore, scope : Str, stream : Str, plugin : Str, state,
+   ^version version : Int = 1]
+  (var event (prepare_plugin_state events scope stream plugin state ^version version))
   (append_core_event events scope stream
-    {^type "plugin/state" ^plugin plugin ^state_version version ^state state}
-    ^projection plugin))
+    event ^projection plugin))
 
 # Core projections are deliberately separate from plugin state. Checkpoints
 # retain them even when the event that established them leaves the log window.

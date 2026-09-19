@@ -1,0 +1,64 @@
+# The input-schema contract accepted by tool registration. Keep this module
+# independent of the kernel so admission and execution cannot form an import cycle.
+(mod tool_schema)
+
+(type ToolSchemaError ^props {^message Str} ^impl [Error])
+(impl Error for ToolSchemaError)
+
+(var schema_types #["string" "integer" "number" "boolean" "object" "array" "null"])
+
+(fn require_shape [condition : Bool, path : Str, expected : Str]
+  (if_not condition
+    (fail (ToolSchemaError ^message $"${path} must be ${expected}"))))
+
+(fn validate_input_schema [schema, ^path path : Str = "input_schema", ^depth depth : Int = 0]
+  (if (> depth 32)
+    (fail (ToolSchemaError ^message $"${path}: tool schema nesting exceeds 32 levels")))
+  (require_shape (== ($head schema) Map) path "a schema object")
+  (for [key value] in schema
+    (var name ($to_str key))
+    (var field $"${path}.${name}")
+    (if_not (["type" "anyOf" "enum" "properties" "required" "additionalProperties"
+              "items" "prefixItems" "minItems" "maxItems" "minLength" "maxLength"
+              "minimum" "maximum" "title" "description" "default" "examples" "$comment"] .contains? name)
+      (fail (ToolSchemaError ^message $"Unsupported tool input schema keyword ${field}")))
+    (if (== name "type")
+      (then
+        (var types (if (== ($head value) List) value [value]))
+        (require_shape (> types/.size 0) field "a type or a nonempty list of types")
+        (for typ in types
+          (require_shape (&& (== ($head typ) Str) (schema_types .contains? typ))
+            field $"one of ${schema_types}")))
+      (elif (== name "properties")
+        (require_shape (== ($head value) Map) field "an object of property schemas")
+        (for [property child] in value
+          (validate_input_schema child ^path $"${field}.${property}" ^depth (+ depth 1))))
+      (elif (== name "items")
+        (validate_input_schema value ^path field ^depth (+ depth 1)))
+      (elif (["anyOf" "prefixItems"] .contains? name)
+        (require_shape (== ($head value) List) field "a list of schemas")
+        (if_yes (== name "anyOf")
+          (require_shape (> value/.size 0) field "a nonempty list of schemas"))
+        (var index 0)
+        (for child in value
+          (validate_input_schema child ^path $"${field}[${index}]" ^depth (+ depth 1))
+          (set index (+ index 1))))
+      (elif (== name "required")
+        (require_shape (== ($head value) List) field "a list of property names")
+        (for property in value
+          (require_shape (== ($head property) Str) field "a list of string property names")))
+      (elif (== name "additionalProperties")
+        (require_shape (== ($head value) Bool) field "a boolean; schema-valued additionalProperties is unsupported"))
+      (elif (["minItems" "maxItems" "minLength" "maxLength"] .contains? name)
+        (require_shape (== ($head value) Int) field "a nonnegative integer")
+        (require_shape (>= value 0) field "a nonnegative integer"))
+      (elif (["minimum" "maximum"] .contains? name)
+        (require_shape (|| (== ($head value) Int) (== ($head value) F64)) field "a number"))
+      (elif (== name "enum")
+        (require_shape (== ($head value) List) field "a nonempty list")
+        (require_shape (> value/.size 0) field "a nonempty list"))
+      (elif (["title" "description" "$comment"] .contains? name)
+        (require_shape (== ($head value) Str) field "a string"))
+      (elif (== name "examples")
+        (require_shape (== ($head value) List) field "a list"))))
+  schema)
