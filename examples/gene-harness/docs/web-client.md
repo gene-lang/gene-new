@@ -296,6 +296,15 @@ Desktop uses a session sidebar, a conversation column, and an optional status
 drawer. Small screens collapse the sidebar and drawer without hiding the
 composer or Stop action.
 
+The visual design uses warm white surfaces, a pale neutral sidebar, charcoal
+text and a charcoal Send button. System typography, generous spacing and a
+760-pixel reading column establish hierarchy. The empty state and composer
+align with that column. User messages have a subtle neutral background;
+execution steps use a thin left rule and lightweight disclosures. Borders and
+shadows are reserved for inputs and floating controls. Secondary labels remain
+readable, keyboard focus stays visible, and the status drawer has an explicit
+close control. Narrow screens retain the same hierarchy with a menu overlay.
+
 - **Session sidebar:** New session, filter by title, title/last activity, and a
   running or interrupted indicator. Session selection is reflected in the URL.
 - **Conversation:** user messages and agent answers; collapsible narration,
@@ -328,6 +337,17 @@ and links. User input, command output, raw replies, and Gene source retain liter
 text. The renderer creates DOM nodes and never injects source HTML. Links accept
 HTTP(S), mailto, and fragment URLs; unsupported syntax remains text. This is not
 a full CommonMark implementation.
+
+File results containing `path` and `text`, and `fs.write` requests, also expose
+the decoded file content in a source preview. Gene files are colorized; other
+text files retain plain text. Source line breaks, indentation, Unicode and
+literal backslashes are preserved, and Copy code/Copy text copies that source.
+The original serialized response remains available as Raw tool data in the
+step. Only recognized quoted file fields are decoded; incomplete or unsupported
+records fall back to their original text. Gene tool data and `/code` messages
+also receive lexical coloring without rewriting their text.
+Model code blocks use the matching raw reply's code field when available, so
+authored comments and newlines survive the native log's canonical serialization.
 
 ### Gene syntax highlighting design
 

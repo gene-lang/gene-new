@@ -291,18 +291,19 @@
     ($dom/append client/transcript
       ($dom/render
         `(div ^class_name "empty_state"
-           (div ^class_name "gene_mark" "G")
            (h2 "What would you like to work on?")
-           (p "Ask anything. Use /help for commands, or describe what you want to do.")
+           (p "Start with an idea, a question, or a task.")
            (div ^class_name "suggestions"
              (button ^type "button"
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "What can you help me with?")
-                 ($dom/focus client/prompt)) "Explore ideas")
+                 ($dom/focus client/prompt)) "Explore ideas"
+               (span ^class_name "suggestion_symbol" ^aria-hidden "true" "→"))
              (button ^type "button"
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "/help")
-                 ($dom/focus client/prompt)) "Slash commands"))))))
+                 ($dom/focus client/prompt)) "Browse commands"
+               (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/")))))))
   (var visible : (List Any) client/records)
   # Durable records lead; append previews only when no durable version exists.
   (for block in client/preview
@@ -868,6 +869,10 @@
       (var drawer ($dom/element "status_drawer"))
       (var hidden : Bool drawer/hidden)
       (set drawer/hidden (! hidden))))
+  ($dom/add_event_listener ($dom/element "close_status") "click"
+    (fn [event : Any] : Void
+      (set_hidden "status_drawer" true)
+      ($dom/focus ($dom/element "status_button"))))
   ($dom/add_event_listener ($dom/element "rename_session") "click"
     (fn [event : Any] : Void
       (set_hidden "rename_form" false)

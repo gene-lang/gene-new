@@ -63,6 +63,11 @@ content.
 The raw reply uses the same durable transcript and display limits as other
 output, and is kept separate from the assistant's readable answer.
 
+File tool results show a source preview with the filename, real line breaks,
+and a Copy code/Copy text button. `.gene` files and `/code` messages receive
+syntax colors. The step still exposes the original serialized tool response
+under Raw tool data; copying the source preserves its exact text and escapes.
+
 Assistant answers render headings, lists, tables, links, and fenced code.
 Each retained run keeps its completed, stopped, or failed outcome in the
 conversation. Code errors offer **Edit and retry**, which restores the original

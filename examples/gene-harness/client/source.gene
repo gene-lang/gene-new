@@ -1,0 +1,90 @@
+(mod harness_source ^profile web)
+
+(import [gene_tokens source_slice member] ^from "./highlight.gene")
+
+# A display-only reader for the file tool's {ok, value: {path, text}} shape.
+# Decode only quoted string tokens, once. Never evaluate Gene or replace escape
+# sequences across the transcript: literal backslashes inside source must survive.
+(fn quoted_text [text : Str] : Any
+  (if_not (str/starts_with? text "\"") (return nil))
+  (try ($json/parse text) catch Any nil))
+
+(fn file_source [text : Str] : Any
+  (var input text)
+  (var prefix "fs.write\n")
+  (var request (str/starts_with? text prefix))
+  (if_yes request
+    (var chars : (List Str) (str/split text ""))
+    (set input (source_slice chars ($size prefix) ($size chars))))
+  (var trimmed (str/trim input))
+  (if_not (|| (str/starts_with? trimmed "{") (str/starts_with? trimmed "#{")) (return nil))
+  (var depth 0)
+  (var started false)
+  (var in_value false)
+  (var pending "")
+  (var ok request)
+  (var path : Any nil)
+  (var source : Any nil)
+  (var truncated false)
+  (for token in (gene_tokens input)
+    (var part : Str token/text)
+    (var kind : Str token/kind)
+    (if_yes (== (str/trim part) "") (continue))
+    (if (== depth 0)
+      (then
+        (if (|| started (! (|| (== part "{") (== part "#{")))) (return nil))
+        (set started true) (set depth 1))
+      (elif (&& (== kind "punctuation") (member " { #{ [ #[ ( #( #@ " part))
+        (if_yes (&& (! request) (== depth 1) (== pending "^value")
+                    (|| (== part "{") (== part "#{")))
+          (set in_value true))
+        (set depth (+ depth 1)) (set pending ""))
+      (elif (&& (== kind "punctuation") (member " } ] ) " part))
+        (if_yes (&& in_value (== depth 2)) (set in_value false))
+        (set depth (- depth 1)) (set pending ""))
+      (else
+        (var fields (|| (&& request (== depth 1)) (&& in_value (== depth 2))))
+        (if (== kind "property")
+          (then
+            (set pending part)
+            (if_yes (&& (== depth 1) (== part "^^ok")) (set ok true))
+            (if_yes (&& fields (== part "^^truncated")) (set truncated true)))
+          (else
+            (if_yes (&& (== depth 1) (== pending "^ok")) (set ok (== part "true")))
+            (if_yes fields
+              (if (&& (== kind "string") (== pending "^path"))
+                (then (set path (quoted_text part)))
+                (elif (&& (== kind "string") (== pending "^text")) (set source (quoted_text part)))
+                (elif (== pending "^truncated") (set truncated (== part "true")))))
+            (set pending ""))))))
+  (if (|| (! ok) (!= depth 0) ($absent? path) ($absent? source)) (return nil))
+  (var filename : Str path)
+  {^path filename ^text source ^gene (str/ends_with? (str/lower filename) ".gene")
+   ^truncated truncated})
+
+# The native code log contains the parsed form's canonical spelling. Prefer
+# the matching raw reply's code field for display, retaining authored newlines
+# and comments. Incomplete replies simply keep the canonical fallback.
+(fn model_code_source [text : Str] : Any
+  (var trimmed (str/trim text))
+  (if_not (str/starts_with? trimmed "{") (return nil))
+  (var depth 0)
+  (var pending false)
+  (var capturing false)
+  (var parts : (List Str) [])
+  (for token in (gene_tokens text)
+    (var part : Str token/text)
+    (var kind : Str token/kind)
+    (if_yes capturing (parts .push part))
+    (if (&& (== kind "punctuation") (member " { #{ [ #[ ( #( #@ " part))
+      (then
+        (if_yes (&& pending (== depth 1) (== part "("))
+          (set capturing true) (parts .push part))
+        (set depth (+ depth 1)) (set pending false))
+      (elif (&& (== kind "punctuation") (member " } ] ) " part))
+        (set depth (- depth 1))
+        (if_yes (&& capturing (== depth 1)) (return (str/join parts "")))
+        (set pending false))
+      (elif (!= (str/trim part) "")
+        (set pending (&& (== depth 1) (== kind "property") (== part "^code"))))))
+  nil)

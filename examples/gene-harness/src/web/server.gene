@@ -29,12 +29,15 @@
          (body
            (div ^id "harness_root" ^class "app"
              (aside ^class "sidebar"
-               (div ^class "brand" (span ^class "brand_mark" "G") "Gene Harness"
-                 (span ^class "local" "LOCAL"))
+               (div ^class "brand" (span ^class "brand_name" "Gene")
+                 (span ^class "brand_detail" "Harness")
+                 (span ^class "local" "Local"))
                (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
-               (button ^id "create_session" ^class "new_session" ^type "button" "+ New conversation")
+               (button ^id "create_session" ^class "new_session" ^type "button"
+                 (span ^class "plus" ^aria-hidden "true" "+") "New conversation")
                (input ^id "session_filter" ^class "filter" ^type "search"
-                 ^placeholder "Find a conversation" ^aria-label "Find a conversation")
+                 ^placeholder "Search conversations…" ^aria-label "Find a conversation")
+               (div ^class "section_label" "Conversations")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
                (div ^class "sidebar_footer"
                  (button ^id "status_button" ^type "button" "Workspace status")
@@ -69,19 +72,19 @@
                        (button ^id "input_cancel" ^type "button" "Cancel question"))))
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
-                   (textarea ^id "prompt" ^rows "3" ^placeholder "Ask anything, or /help for commands…"
+                   (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…"
                      ^aria-label "Message Gene")
                    (div ^class "composer_actions"
                      (span ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "stop" ^class "stop" ^type "button" ^^hidden "Stop")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
                  (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
-                 (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")
-                 (div ^class "composer_footer"
-                   (span "Runs locally. Model requests use your configured provider.")
-                   (span "Built with Gene"))))
+                 (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
              (aside ^id "status_drawer" ^class "drawer" ^^hidden
-               (h2 "Workspace status")
+               (div ^class "drawer_header"
+                 (h2 "Workspace status")
+                 (button ^id "close_status" ^class "drawer_close" ^type "button"
+                   ^aria-label "Close workspace status" "×"))
                (div ^id "status_content")))
            %(script harness_ui ^mount "harness_root"))))))
 
