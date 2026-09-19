@@ -1,11 +1,10 @@
 # Gene Capabilities: Grants, Requests, Block Boundaries, Checks, and Guards
 
 **Status:** Consolidated proposed target design; not a claim about implemented behavior.  
-**Date:** 2026-09-15.  
-**Basis:** The user-updated `capabilities(1).md`, the subsequent review, and the discussions of grant/request/check/guard separation, block-level upper bounds, and optional capabilities.  
+**Date:** 2026-09-19.
 **Scope:** Inert capability specifications; trusted grant configuration; module, function, and block requests; optional requirements; attenuation; provider-specific authorization; concrete-operation checks and mandatory guards; invocation and deferred-execution boundaries.
 
-This is a complete replacement proposal, not an addendum. It preserves the updated document's independent entries, whole-body and per-property matching, namespace naming, and command-line precedence. It incorporates the review corrections and makes additional recommended decisions explicit in section 19. Once adopted, implementation and examples should move to this contract rather than accumulate parallel legacy authorization paths.
+This is a complete replacement proposal, not an addendum. It preserves independent grant entries, whole-body and per-property matching of complete alternatives, namespace naming, and command-line precedence. Mandatory admission supports collective coverage of provider-defined alternatives as specified in section 3.4. It incorporates the review corrections and makes additional recommended decisions explicit in section 19. Once adopted, implementation and examples should move to this contract rather than accumulate parallel legacy authorization paths.
 
 Names follow the updated document's `namespace/Name` convention: a lowercase namespace and CamelCase capability name. Thus the HTTP example is `(net/Http ^^optional)`. Identifiers are case-sensitive; `net/http` is not silently case-folded to `net/Http`. An alternate spelling requires an explicitly admitted alias. `cap/x` remains a schematic name only in the inherited comparison examples; it is not an exception to the production naming rule.
 
@@ -67,7 +66,8 @@ Reading a specification does not initialize a provider, execute a constructor, c
 Entries in one row:                  alternatives (OR)
 Constraints within one entry:         whole body AND each named restriction
 Independent authority boundaries:    intersection (AND)
-Mandatory request admission:          one complete matching entry per request,
+Mandatory request admission:          every requested alternative covered by
+                                     a complete matching grant entry,
                                      in each applicable authority row
 Concrete operation authorization:    one complete permitting entry per row,
                                      with every applicable ceiling satisfied
@@ -75,7 +75,7 @@ Concrete operation authorization:    one complete permitting entry per row,
 
 Separate entries must not contribute different fields to authorize one operation. GET on one host and POST on another must not become GET-or-POST on either host.
 
-**Semantic coverage** means inclusion of operation sets. **Admission matching** is the deliberately conservative, single-entry, per-field procedure used to admit mandatory requests. Failure of admission matching need not mean that the union of grants forbids some requested concrete operation. Section 3 defines the distinction precisely.
+**Semantic coverage** means inclusion of operation sets. **Admission matching** uses complete-entry comparisons and exact provider-defined decomposition of requests into alternatives. Different alternatives may match different grants in the same row. The procedure remains conservative for unsupported decompositions and bounded proofs; a failed match need not mean that the union of grants forbids some requested concrete operation. Section 3 defines the distinction precisely.
 
 ### 1.4 Non-negotiable invariants
 
@@ -245,12 +245,18 @@ match_entry(grant, request):
     and every property comparison for that request entry
 
 match_row(grants, request):
-    some single valid grant entry matches that complete request
+    succeed if one valid grant entry matches the complete request;
+    otherwise obtain the provider's exact finite request alternatives,
+    and require a complete valid grant match for every alternative
+
+The covering grant may differ between alternatives, but each alternative
+retains all of its constraints. Repeat the proof within every applicable
+authority row; grants from different ceilings cannot be pooled.
 ```
 
-A successful match must imply semantic coverage. A failed match does not necessarily prove semantic noncoverage: grouping, cross-field implications, or bounded proof limitations can prevent a match even when the operation sets are included.
+A successful match must imply semantic coverage. A failed match does not necessarily prove semantic noncoverage: unsupported decompositions, cross-field implications, or bounded proof limitations can prevent a match even when the operation sets are included. Grouping finite alternatives supported by the provider is not itself a reason to reject the request.
 
-The core exposes admission results as `matched`, `no_single_entry_match`, or `cannot_prove`. It must not label every unsuccessful admission as a demonstrated denial of a concrete operation. Generic field comparators may internally use `covered`, `not_covered`, and `cannot_prove` for their own field domains.
+The core exposes admission results as `matched`, `unmatched`, or `cannot_prove`. `unmatched` means the supported matching procedure found no complete grant match for a necessary alternative; it is not automatically a proof of semantic noncoverage. Unsupported decomposition or an exhausted proof budget produces `cannot_prove`. The report identifies the authored request, relevant alternative, and authority row. Generic field comparators may internally use `covered`, `not_covered`, and `cannot_prove` for their own field domains.
 
 ### 3.2 Required comparison examples
 
@@ -290,7 +296,7 @@ property:  for every provider field, grant's constraint covers request's constra
 
 Core admission metadata such as `optional` does not enter these comparisons.
 
-The body is compared as one unit. The core must not compare body arguments position by position, split one requested body to find several covering grants, or assemble properties from different grant entries.
+Each `match_entry` compares the body as one unit. Row admission may first decompose provider-defined alternatives under section 3.4. The core must not guess that arbitrary body arguments are alternatives, compare structured bodies position by position, or assemble one alternative's properties from different grant entries.
 
 For alternative bodies:
 
@@ -304,7 +310,9 @@ After normalization, an unrestricted request field does not match a grant that r
 
 Composition of comparison results must be precise: any definite failed field makes that candidate a nonmatch, even if another field is unproved. A candidate is `cannot_prove` only when no field is definitely failed and at least one necessary comparison is unproved. A later complete matching entry succeeds regardless of an earlier inconclusive candidate.
 
-### 3.4 Why collective grant coverage remains deliberately unsupported
+For collective admission, apply that candidate search to each complete alternative. The row matches only when every alternative matches. An unmatched alternative prevents admission even if another alternative is inconclusive; otherwise any unresolved alternative makes the row `cannot_prove`.
+
+### 3.4 Collective coverage of requested alternatives
 
 ```gene
 # Grants:
@@ -314,24 +322,33 @@ Composition of comparison results must be precise: any definite failed field mak
 [(fs/Read "/home/user" "/tmp")]
 ```
 
-Semantically, the requested reads are included in the grant row. Mandatory admission nevertheless fails because no single grant entry matches the complete requested body.
+This mandatory request succeeds. The filesystem provider defines the roots as alternatives, so every requested read is covered by one of the two grants. Admission must not depend on whether those roots were authored in one request entry or in two entries with the same remaining constraints and admission flag.
 
-Writing two requests works:
+The provider can prove the request by decomposing it into:
 
 ```gene
 [(fs/Read "/home/user") (fs/Read "/tmp")]
 ```
 
-The correct diagnostic is:
+More generally, a provider may supply a finite decomposition into complete entries:
 
 ```text
-No single grant entry covers this requested entry.
-The roots may be requested separately.
+alternatives(R) = [R1, ..., Rn]
+with Ops(R) = Ops(R1) ∪ ... ∪ Ops(Rn)
+
+For each applicable grant row G:
+    for every Ri, some valid g in G must satisfy match_entry(g, Ri)
 ```
 
-It is not correct to claim that a concrete read under either root is forbidden merely because this grouped request failed admission.
+This is a coverage proof over the existing grant row. It does not merge grants or create a new live grant. Their provenance, revocation, and origin restrictions remain independent, and concrete-operation guards still check complete entries at the point of use.
 
-An explicit upper-bound block can still intersect with the grouped row; attenuation does not require this admission proof. A concrete operation within either root can pass the ordinary guard if every applicable ceiling permits it.
+The provider defines which body and property forms are alternatives. Filesystem roots and HTTP allowed-method lists support this decomposition. When several independent fields contain alternatives, the proof must cover every permitted combination. Each derived entry retains all other constraints, including the original body restrictions needed to preserve correlations. The proof representation may remain symbolic rather than materialize every combination.
+
+For example, grants for GET on A and POST on B do not admit a request for both GET and POST on either host: POST on A and GET on B remain uncovered. Splitting alternatives never lets one grant supply the host while another supplies the method for the same operation.
+
+Structured bodies and indivisible compound operations are not split merely because they have several arguments. Numeric limits are not added, and no new capability implication is inferred. A provider keeps an indivisible entry as its only alternative. More general union-containment proofs, such as partitioning an arbitrary wildcard language across grants, are not required in version 1. When a needed alternative decomposition is unsupported or exceeds its budget, the result is `cannot_prove`, never permission.
+
+If `/tmp` is missing from the example's grants, the mandatory request fails with a diagnostic identifying the `/tmp` alternative. An upper-bound block or optional request still selects the exact available intersection, as in section 7; neither requires full mandatory admission.
 
 ### 3.5 Properties constrain the whole body
 
@@ -360,7 +377,7 @@ Omitted methods are unrestricted within the provider's supported operation domai
 ]
 ```
 
-must never become one entry containing both hosts and both methods. That would additionally permit POST to A and GET from B. The runtime checks one entire entry at a time and preserves that grouping.
+must never become one entry containing both hosts and both methods. That would additionally permit POST to A and GET from B. The runtime checks one entire entry at a time and preserves that grouping. Collective request admission proves coverage of alternatives against these intact entries; it does not combine their independent fields.
 
 A provider may define a concrete compound operation with several facts or resources. Its guard must check that declared operation shape; it must not split an indivisible operation merely to evade the single-entry rule. Exact compound-operation vocabularies belong to the provider contract.
 
@@ -380,7 +397,7 @@ The parser identifies a value as an integer, boolean, or string. The provider sc
 | Minimum integer | A smaller minimum covers a greater minimum. |
 | Boolean choice | Exact matching by default; `*` admits both valid choices. |
 
-These are reusable normalization and comparison components, not mandatory public Gene types or extra literal operators. A capability definition chooses the appropriate components or supplies specialized whole-body and field implementations. Those hooks must preserve the core's entry-at-a-time admission and concrete guard rules; they do not replace the authority engine.
+These are reusable normalization and comparison components, not mandatory public Gene types or extra literal operators. A capability definition chooses the appropriate components or supplies specialized whole-body and field implementations. Those hooks and any admission decomposition must preserve complete-entry constraints and concrete guard rules; they do not replace the authority engine.
 
 The schema also defines units, valid integer range, and meaningful combinations. An integer literal is accepted by the reader without implying that every provider accepts negative numbers or an arbitrarily large value.
 
@@ -529,7 +546,7 @@ Safe local transformations include shorthand expansion and provider-defined cano
 
 In particular, adding a host projection derived from a concrete URL is safe only while the original URL constraint remains. With several URLs, retaining both the body and its component projections prevents creating new host/path combinations.
 
-Do not merge entries. Do not sort structured bodies, reinterpret arbitrary strings as numbers, discard unknown fields, or approximate an inconvenient intersection with a broader policy.
+Do not merge grant entries. Exact request decomposition for admission is permitted under section 3.4 while retaining the authored request and its metadata. Do not sort structured bodies, reinterpret arbitrary strings as numbers, discard unknown fields, or approximate an inconvenient intersection with a broader policy.
 
 Do not prune a mandatory request because an optional entry semantically contains it: the mandatory admission obligation must remain. Request identity and failure-reporting information must survive normalization.
 
@@ -553,7 +570,7 @@ RequestedRow   = RequestedEntry[]
 
 The empty row has empty coverage. An omitted boundary declaration is represented separately; it means no additional selector at that boundary, not `Row()`.
 
-Exact intersection may remain `Intersection(A, B)`. There is no requirement that every intersection can be printed as a single entry or simple literal. Authorization checks each operand. Mandatory admission checks each requested entry against each authority operand, using a complete match within each row.
+Exact intersection may remain `Intersection(A, B)`. There is no requirement that every intersection can be printed as a single entry or simple literal. Authorization checks each operand. Mandatory admission proves each requested entry's coverage independently within each authority operand. Different grants in one row may cover different complete request alternatives; grants from separate operands cannot be pooled.
 
 ### 6.4 Preserve independent grant provenance
 
@@ -679,7 +696,7 @@ The actual send guards again.
 A requirement report distinguishes whether each optional entry fully matched from whether it was simply admitted as an upper bound. Do not label a partially matched optional family as either universally granted or universally unavailable. The implementation may report:
 
 ```text
-required: matched | no_single_entry_match | cannot_prove
+required: matched | unmatched | cannot_prove
 optional: full_match | no_full_match | proof_incomplete
 ```
 
@@ -967,6 +984,7 @@ A trusted capability provider owns the interpretation of its configuration and t
 schema and supported operation vocabulary
 normalization of complete specs
 whole-body and property containment comparisons
+exact finite request decomposition for declared alternative forms
 exact intersection or executable intersection predicates
 trusted resource initialization, where required
 operation-fact validation and family-specific authorization
@@ -982,7 +1000,7 @@ Keep domain logic in its own functions and tests. The capability engine should n
 | --- | --- | --- |
 | Restricted reader | Literal shape, core flags, duplicate detection, source information | Evaluate capability heads, interpolate data, or acquire authority. |
 | Capability engine | Catalog identity, rows/intersections, entry admission, current-context lookup, boundary restoration, provenance handling | Combine different entries' fields or substitute a saved root for a narrower caller. |
-| Family-specific provider | Body/property meaning, comparisons, real-operation matching, provider state validity | Treat unknown fields as unrestricted or use a different meaning for static matching and runtime guards. |
+| Family-specific provider | Body/property meaning, comparisons, exact request alternatives, real-operation matching, provider state validity | Treat unknown fields as unrestricted, split indivisible operations, or use a different meaning for static matching and runtime guards. |
 | Trusted effect adapter | Prepare the actual request/resource, invoke mandatory guard, bind it to the effect, clean up | Trust a caller-supplied hostname in place of the URL it will send to, or expose an unguarded effect path. |
 | Application/plugin | Request and narrow authority; check and choose fallback | Forge operation admission tickets, provider identity, host grants, or another plugin's execution context. |
 
@@ -997,6 +1015,11 @@ covers_body(granted_body, requested_body) -> FieldCoverage
 covers_property(name, granted_constraint, requested_constraint) -> FieldCoverage
     FieldCoverage = covered | not_covered | cannot_prove
 
+admission_alternatives(normalized_request, proof_budget)
+    -> exact finite alternatives (possibly symbolic) | cannot_prove
+    their union must equal the original request's operation set;
+    each alternative is a complete entry, not a partial set of fields
+
 intersect_constraints(left, right) -> exact constraint | empty
     retaining both predicates is a valid exact representation
 
@@ -1008,7 +1031,7 @@ authorize_entry(runtime_grant_state, normalized_entry, concrete_operation)
     -> allow | deny(reason) | provider_failure(cause)
 ```
 
-The engine composes field-comparison results using section 3 and evaluates independent authority boundaries. `authorize_entry` checks an entire operation against an entire entry, including every supported restriction and relevant live provider state.
+The engine composes field-comparison results using section 3 and evaluates independent authority boundaries. It first tries whole-entry matching, then uses provider-defined alternatives for collective admission. `authorize_entry` checks an entire operation against an entire entry, including every supported restriction and relevant live provider state. Admission decomposition does not alter this operation guard.
 
 For providers needing resolution-time enforcement, a guard/prepare operation may produce an internal, short-lived resource resolution that the adapter immediately uses. That value is not a public transferable permission ticket and must not be usable with a different operation. Pure comparisons alone are not enough to guard a filesystem open safely.
 
@@ -1324,7 +1347,7 @@ The following are semantic outcomes; implementations may reuse existing typed er
 | Invalid literal or metadata | Source, location, invalid form; reject even when optional or redundant. |
 | Unknown capability/property | Catalog/schema identity and rejected name; no fallback provider. |
 | Invalid provider configuration | Entry and expected whole-body/property shape. |
-| Mandatory request has no single-entry match | Requested entry and failed fields; do not automatically claim a concrete operation is denied. |
+| Mandatory request remains unmatched | Authored request, uncovered alternative, authority row, and failed fields; do not automatically claim a concrete operation is denied. |
 | Coverage proof incomplete | Limit/unsupported comparison; no fabricated counterexample. |
 | Optional entry lacks a full match | Nonfatal admission information; no claim that its entire family is granted or unavailable. |
 | Concrete operation denied | Actual operation summary and denying authority boundary; no effect started. |
@@ -1350,7 +1373,7 @@ Redaction must apply to URL user information, query values, sensitive paths, and
 
 ### 13.4 Bound normalization and checks
 
-Publish implementation limits for literal bytes, row length, body/property/list size, namespace expansion, source nesting, and glob/containment work. Parsing the flag does not increase those bounds.
+Publish implementation limits for literal bytes, row length, body/property/list size, namespace expansion, source nesting, admission-alternative expansion, and glob/containment work. Parsing the flag does not increase those bounds. A multi-field decomposition must stay within its proof budget, including when represented symbolically.
 
 Exceeding a validation limit is an error. A bounded symbolic containment calculation may return `cannot_prove`. Runtime matching must either decide safely within its limits or reject before the effect; it never treats exhaustion as allow.
 
@@ -1497,7 +1520,7 @@ Implement the restricted reader with duplicate detection and preserved locations
 
 Implement trusted catalog identities, frozen namespace expansion, constraint-preserving implications, and provider-local validators. Preserve the source naming convention and reject malformed optional entries.
 
-Supply reusable exact, alternatives, maximum/minimum integer, boolean, and glob constraints. Keep alternative bodies whole. Distinguish semantic coverage from conservative entry admission in types, diagnostics, and test names.
+Supply reusable exact, alternatives, maximum/minimum integer, boolean, and glob constraints. Keep structured bodies whole and define exact admission decomposition for provider-declared alternatives. Distinguish semantic coverage from conservative admission in types, diagnostics, and test names.
 
 ### Phase 2 — Provider matchers and actual effect guards
 
@@ -1515,7 +1538,7 @@ Keep startup source/loader authority separate from application authority. Neithe
 
 ### Phase 4 — Requests, optionality, and block boundaries
 
-Implement mandatory admission and exact intersection with the full requested row. Implement `^^optional` as partial-availability selection without a full-match entry precondition.
+Implement mandatory admission, including collective coverage of complete request alternatives within each authority row, and exact intersection with the full requested row. Implement `^^optional` as partial-availability selection without a full-match entry precondition.
 
 Add `with_capabilities` as pure attenuation and the separate required-block operation. Install callable selection before callee-owned defaults. Define module initialization and retained ceiling behavior explicitly.
 
@@ -1569,7 +1592,7 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | ID | Case | Required result |
 | --- | --- | --- |
 | A01 | One read entry with two roots; request either or both | Complete body matching succeeds. |
-| A02 | Two grants each with one root; one request naming both | No single-entry admission match; do not assert either concrete root is denied. |
+| A02 | Two grants each with one root; one request naming both | Admission succeeds by covering each complete root alternative; grants retain separate provenance. |
 | A03 | Same two grants; two corresponding request entries | Admission succeeds independently. |
 | A04 | GET-on-A and POST-on-B | Deny POST-on-A and GET-on-B. |
 | A05 | Same provider, multiple ceilings | Operation must pass one complete entry in every ceiling. |
@@ -1581,12 +1604,19 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | A11 | Composite ReadWrite under a root | Implies only equally constrained component operations. |
 | A12 | One candidate field fails and another is unproved | Candidate is a nonmatch; report actual failed field. |
 | A13 | Earlier candidate unproved, later candidate fully matches | Admission succeeds. |
-| A14 | No matching candidate, at least one otherwise viable proof is incomplete | Report cannot prove, not a fabricated concrete counterexample. |
+| A14 | A necessary alternative has no matching candidate and at least one otherwise viable proof is incomplete | Report cannot prove, not a fabricated concrete counterexample. |
 | A15 | Optional broad request plus mandatory narrow request | Preserve mandatory obligation during normalization. |
 | A16 | Independent broad grant revoked while narrower grant remains | Narrower authority still works; no unsafe redundancy elimination. |
 | A17 | Reorder overlapping grants | Same authorization outcomes and equivalent retained validity behavior. |
 | A18 | Exact URL's implied host restriction | Normalization supports admission beneath exact host grant, retaining original URL constraint. |
 | A19 | Several exact URLs projected to host/path lists | No extra cross-product URLs become permitted. |
+| A20 | Grouped root request with one root absent from the grant row | Admission fails; identify the unmatched root alternative. |
+| A21 | Separate GET and POST grants for the same URL; one request allowing both methods | Admission succeeds through exact method alternatives. |
+| A22 | GET-on-A and POST-on-B grants; one request for GET or POST on A or B | Admission fails; POST-on-A and GET-on-B are not covered. |
+| A23 | One ceiling grants only root A, another only root B; request names both | Admission fails; alternatives must be covered within every row, not pooled across ceilings. |
+| A24 | Grouped roots admitted through separate grants; one grant is later revoked | Its operations fail the real guard; the other grant retains its own authority. |
+| A25 | Provider-defined indivisible multi-resource operation | No decomposition into separately granted resource facts; match the complete operation shape. |
+| A26 | Whole-entry match fails and alternative expansion exceeds its proof budget | Report `cannot_prove`; mandatory boundary does not execute. |
 
 ### 16.3 Optional requests and upper-bound blocks
 
@@ -1663,6 +1693,10 @@ Use finite synthetic providers to enumerate permitted operations and compare the
 ```text
 match_entry(G, R) = matched  implies  Ops(R) ⊆ Ops(G)
 
+Ops(R) = union of Ops(Ri) for every provider-produced decomposition [Ri]
+
+match_row(Row(G...), R) = matched  implies  Ops(R) ⊆ union of Ops(G)
+
 allows(A ∩ B, op) = allows(A, op) AND allows(B, op)
 
 allows(Row(entries), op) = OR of complete valid-entry decisions
@@ -1673,7 +1707,7 @@ request admission with optional flags changes preconditions,
 not the denoted constraints or the operation matcher's meaning
 ```
 
-Do not assert that semantic inclusion always implies conservative admission. Include explicit negative fixtures for that distinction. Assert representation/idempotent normalization properties only while retaining admission flags, source grouping, and grant provenance as required.
+Do not assert that semantic inclusion always implies conservative admission. Include explicit negative fixtures for unsupported union proofs and bounded containment. Within supported decomposition limits, regrouping finite alternatives with identical other constraints and admission flags must preserve admission outcomes. Assert representation/idempotent normalization properties only while retaining admission flags, authored source grouping, and grant provenance as required.
 
 For pattern comparators, check exact/literal escaping, whole-string matching, empty matches, and requested-pattern containment separately. A bounded comparator may be inconclusive; a false positive authorization is never acceptable.
 
@@ -1700,7 +1734,7 @@ No general static effect inference, negative permissions, user-defined authority
 
 > A capability literal is inert data identifying a trusted capability provider and its constraints. A host can establish root grants from admitted configuration; ordinary code can only request or narrow existing authority. Providers interpret the complete body and their named properties. Entries remain independent alternatives, while separate authority boundaries intersect.
 >
-> Semantic coverage is inclusion of permitted operation sets. Mandatory request admission uses a sound but potentially conservative single-entry, whole-body, per-property matching procedure. Optional requested entries do not prevent boundary entry when unmatched; they select whatever exact overlap is already available. The full request row bounds the entered code, and its optional metadata does not affect operation authorization.
+> Semantic coverage is inclusion of permitted operation sets. Mandatory request admission uses sound whole-body and per-property matching of complete entries, with exact provider-defined decomposition allowing different request alternatives to match different grants in the same row. Every applicable authority row must cover the request independently. The procedure remains conservative for unsupported or bounded proofs. Optional requested entries do not prevent boundary entry when unmatched; they select whatever exact overlap is already available. The full request row bounds the entered code, and its optional metadata does not affect operation authorization.
 >
 > `with_capabilities` delegates an upper bound by intersecting the current context with its row. It cannot mint grants or restore broader saved authority. Required blocks and callable/module declarations perform their specified mandatory admission checks before their body or callee-owned defaults run. The runtime preserves and restores authority across ordinary control flow, failure, suspension, and supported optimized execution.
 >
@@ -1716,13 +1750,13 @@ No general static effect inference, negative permissions, user-defined authority
 
 The baseline is the user-supplied `capabilities(1).md`, titled *Gene Capabilities: Normalized Literals, Coverage, and Reconciliation*, dated 2026-09-15.
 
-Preserved decisions include the inert grammar; complete-body and per-property comparison; independent entries with no collective request matching; `namespace/Name` identifiers and terminal namespace selectors; provider-selected numeric/boolean/list meaning; exact intersections; CLI aliases and one-source rule; CLI/environment/config/default precedence; explicit empty-policy replacement; trusted providers; resource origins; and the distinction between namespace exposure and authority.
+Preserved decisions include the inert grammar; complete-body and per-property comparison; independent grant entries; `namespace/Name` identifiers and terminal namespace selectors; provider-selected numeric/boolean/list meaning; exact intersections; CLI aliases and one-source rule; CLI/environment/config/default precedence; explicit empty-policy replacement; trusted providers; resource origins; and the distinction between namespace exposure and authority. The earlier prohibition on collective request matching is superseded by section 3.4's exact alternative decomposition.
 
 ### 19.2 Review corrections incorporated
 
 | Earlier concern | Resolution in this document |
 | --- | --- |
-| Exact semantic coverage was conflated with conservative single-entry matching. | Separate operation-set coverage from mandatory admission and distinguish their diagnostics. |
+| Exact semantic coverage was conflated with conservative admission matching. | Separate operation-set coverage from mandatory admission and distinguish their diagnostics; support exact finite alternatives without requiring arbitrary union-containment proofs. |
 | A concrete URL implied its hostname, but independent policy fields could reject the precise request. | Provider normalization derives proved component projections while retaining the original body/correlations. Runtime operation checks independently extract actual facts. |
 | Redundancy elimination could erase a separately revocable grant. | Preserve independent live provenance and validity; share symbolic matchers without collapsing grants. |
 
@@ -1731,6 +1765,7 @@ Preserved decisions include the inert grammar; complete-body and per-property co
 | Topic | Recommended target decision |
 | --- | --- |
 | Grant/request/check/guard separation | Distinct receiving operations using one format and shared trusted provider semantics. |
+| Collective request coverage | Provider-defined alternatives may be covered by different complete grants in the same row; preserve every constraint, independent ceilings, and live grant provenance. |
 | Granting to a block | `with_capabilities` means upper-bound attenuation of the actual caller, never elevation. |
 | Required blocks | A separate `require_capabilities` operation performs admission plus restriction. |
 | Optional spelling | `^^optional` / `^optional true`, rendered as `(net/Http ^^optional)` under the baseline naming convention. |
