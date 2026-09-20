@@ -2,9 +2,13 @@
 
 (import [Plugin PluginContext PluginHost HarnessError] ^from "../../src/kernel")
 (import_impl PluginHost for PluginContext ^from "../../src/kernel")
-(import $fs [read_text write_text_atomic list_dir make_dir])
+(import $fs [read_text write_text_atomic list_dir make_dir real_path exists?])
 
-(fn path_for [h input]
+(fn unavailable [operation : Str]
+  (fail (HarnessError
+    ^message $"fs/${operation}: filesystem target is unavailable or is a symlink")))
+
+(fn path_for [h, input, operation : Str]
   (var relative (?? input/path "."))
   (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
     (fail (HarnessError ^message "Use a relative path inside the selected root.")))
@@ -12,6 +16,19 @@
   (var base (if (== root "workspace") h/workspace/workspace_root
     (if (== root "state") h/workspace/state_root
       (fail (HarnessError ^message "root must be workspace or state")))))
+  # The checks above are lexical. A symlink inside a root can still lead out of
+  # it, so resolve every existing prefix of the target and require it to stay
+  # beneath the real root. A prefix that does not exist yet cannot be a symlink.
+  (var real_base (real_path base))
+  (var prefix base)
+  (for part in ($str/split relative "/")
+    (if_yes (&& (!= part "") (!= part "."))
+      (set prefix $"${prefix}/${part}")
+      (if_yes (exists? prefix)
+        (var resolved (real_path prefix))
+        (if_not (|| (== resolved real_base)
+                    ($str/starts_with? resolved $"${real_base}/"))
+          (unavailable operation)))))
   (if (== relative ".") base $"${base}/${relative}"))
 
 (fn bounded_text [text : Str, maximum : Int = 65536] : Str
@@ -24,20 +41,22 @@
   "")
 
 (fn read_file [h input]
-  (var text (read_text (path_for h input)))
+  (var path (path_for h input "read_text"))
+  (if_not (exists? path) (unavailable "read_text"))
+  (var text (read_text path))
   (var shown (bounded_text text))
   {^path input/path ^text shown ^truncated (!= text shown)})
 
 (fn list_files [h input]
-  (var names (list_dir (path_for h input)))
+  (var names (list_dir (path_for h input "list_dir")))
   {^path (?? input/path ".") ^entries names})
 
 (fn write_file [h input]
-  (write_text_atomic (path_for h input) input/text)
+  (write_text_atomic (path_for h input "write_text_atomic") input/text)
   {^path input/path ^bytes ($str/byte_size input/text)})
 
 (fn edit_file [h input]
-  (var path (path_for h input))
+  (var path (path_for h input "read_text"))
   (var text (read_text path))
   (if (== input/old "") (fail (HarnessError ^message "old text must not be empty")))
   (var parts ($str/split text input/old))
@@ -49,7 +68,7 @@
   {^path input/path ^replacements matches})
 
 (fn search_file [h input]
-  (var lines ($str/split (read_text (path_for h input)) "\n"))
+  (var lines ($str/split (read_text (path_for h input "read_text")) "\n"))
   (var matches [])
   (var line 0)
   (var truncated false)
@@ -61,7 +80,7 @@
   {^path input/path ^matches matches ^truncated truncated})
 
 (fn make_directory [h input]
-  (make_dir (path_for h input))
+  (make_dir (path_for h input "make_dir"))
   {^path input/path})
 
 (fn file_schema [required fields]

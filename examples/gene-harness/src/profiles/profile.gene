@@ -33,16 +33,16 @@
   #
   # `^limits` is the one deployment-wide knob a profile carries. A callback
   # budget states what callbacks do in this deployment, and it is also the
-  # ceiling every plugin's limits narrow from. `^inherit true` leaves the
-  # launcher's capability context where the baseline puts it.
+  # ceiling every plugin's limits narrow from. Every plugin a profile lists is a
+  # host plugin (`^host true`) and receives the Harness itself.
   (var h (if (== supplied nil) (new_harness ^limits p/limits) supplied))
   (var admissions [])
   (for plugin in p/plugins
     (admissions .push
       {^plugin plugin
        ^options (if ($absent? p/limits)
-         {^inherit true}
-         {^scope "session" ^selectors [] ^inherit true ^limits p/limits})}))
+         {^host true}
+         {^scope "session" ^host true ^limits p/limits})}))
   (put_cordis_plugins h admissions)
   h)
 

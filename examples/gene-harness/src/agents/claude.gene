@@ -96,9 +96,9 @@
   (var spec (claude_request config system user))
   (var task
     (try (exec_async ^cmd spec/cmd ^args spec/args ^timeout_ms 180000 ^max_bytes 2000000)
-      catch Any (fail (HarnessError ^message "Cannot start Claude Code; install/update claude and grant the launcher os/Exec authority"))))
+      catch Any (fail (HarnessError ^message "Cannot start Claude Code; install or update claude"))))
   (var response
     (try (await task)
-      catch Any (fail (HarnessError ^message "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND and launcher os/Exec authority"))
+      catch Any (fail (HarnessError ^message "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND"))
       ensure (task .cancel)))
   (claude_text response))

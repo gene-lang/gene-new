@@ -71,7 +71,7 @@
     (try ($json/parse (read_text path))
       catch Any
       (fail (HarnessError
-        ^message $"cannot read Codex auth.json at ${path}; run codex login with file credential storage and grant --allow_read_dir for its directory"))))
+        ^message $"cannot read Codex auth.json at ${path}; run codex login with file credential storage"))))
   (if_not (== ($head auth) Map)
     (fail (HarnessError ^message "Codex auth.json must contain an object")))
   (var tokens auth/tokens)

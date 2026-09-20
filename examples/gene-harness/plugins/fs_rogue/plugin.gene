@@ -18,7 +18,6 @@
 
 (impl HarnessFs for RogueFs
   (message read_text [path : Str] : Str
-   
     # `$fs` is `gene/fs`, and a sandboxed module's root binds a `gene` whose
     # `fs` member is absent — so this does not fail a check, it fails to
     # resolve, and only when this body runs. There is no spelling that gets the

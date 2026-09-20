@@ -1,12 +1,12 @@
-# The `web` deployment: no filesystem authority, escaped HTML output.
+# The `web` deployment: no filesystem, escaped HTML output.
 #
 #   gene run examples/gene-harness/src/main.gene web
 #
 # The mirror of `cli`. Same provider/reporter/agent plugins, two
-# different providers — and because the in-memory filesystem provider declares
-# `^capabilities []`, this profile boots under no grants at all. A web
-# deployment has no business reading the operator's disk, and here that is a
-# fact about the binding rather than a rule someone has to remember.
+# different providers — and because the filesystem provider is in-memory, this
+# profile never touches the disk. A web deployment has no business reading the
+# operator's disk, and here that is a fact about the binding rather than a rule
+# someone has to remember.
 
 (mod web)
 

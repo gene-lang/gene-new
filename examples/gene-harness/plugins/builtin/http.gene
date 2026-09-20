@@ -20,7 +20,7 @@
     ^activate (fn [] (fn [host]
       (host .PluginHost:contribute "tools"
         {^name "http.request" ^run http_request
-         ^doc "Make an HTTP(S) request using the launcher's net/Http authority. Returns status, headers and body, bounded to 64 KiB. Check the HTTP status before claiming success."
+         ^doc "Make an HTTP(S) request. Returns status, headers and body, bounded to 64 KiB. Check the HTTP status before claiming success."
          ^input_schema {^type "object" ^required ["url"] ^additionalProperties false
            ^properties {^url {^type "string"}
              ^method {^type "string" ^enum ["GET" "POST" "PUT" "PATCH" "DELETE" "HEAD" "OPTIONS"]}

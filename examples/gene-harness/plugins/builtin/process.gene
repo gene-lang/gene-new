@@ -24,7 +24,7 @@
     ^activate (fn [] (fn [host]
       (host .PluginHost:contribute "tools"
         {^name "process.run" ^contextual true ^run run_process
-         ^doc "Run an executable with an argument list in the project directory. No shell parsing. Returns status, stdout, stderr and timeout/truncation flags; nonzero status means the command failed. Uses the launcher's os/Exec authority, not a subprocess filesystem sandbox."
+         ^doc "Run an executable with an argument list in the project directory. No shell parsing. Returns status, stdout, stderr and timeout/truncation flags; nonzero status means the command failed. The subprocess is not sandboxed."
          ^input_schema {^type "object" ^required ["command"] ^additionalProperties false
            ^properties {^command {^type "string"}
              ^args {^type "array" ^items {^type "string"}}

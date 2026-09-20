@@ -603,7 +603,7 @@
       ^message "segment and retention counts must be positive")))
   (if (<= gc_interval 0)
     (fail (HarnessStateError ^message "event GC interval must be positive")))
-  # Keep the retained directory grant and every later Store path in the same
+  # Keep the retained root and every later Store path in the same
   # canonical vocabulary. Passing a relative root to Store/open and then
   # joining it again would resolve the root beneath itself.
   (var canonical_root (real_path root))

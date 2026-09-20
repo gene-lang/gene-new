@@ -15,7 +15,7 @@
 (protocol RegistryHost
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
-  (message describe [module, id : Str, limits, selectors] : Plugin)
+  (message describe [module, id : Str, limits] : Plugin)
   (message context [plugin, effects, observer, policy] : PluginContext)
   (message selected [registry : Str, key : Str] : Any))
 
@@ -142,7 +142,6 @@
   (let configured
     (if ($absent? options)
       (LoaderOptions ^plugin_root "." ^shared [] ^max_namespaces []
-        ^capability_catalog #{} ^capability_ceiling nil
         ^default_limits nil ^reload_policy nil)
       options))
   (let runtime
@@ -175,8 +174,6 @@
     (runtime .loader
       (LoaderOptions ^plugin_root configured/plugin_root ^shared configured/shared
         ^max_namespaces configured/max_namespaces
-        ^capability_catalog configured/capability_catalog
-        ^capability_ceiling configured/capability_ceiling
         ^default_limits configured/default_limits ^reload_policy configured/reload_policy
         ^allow_pending true
         ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))
@@ -192,7 +189,7 @@
         (fail (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
         (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
-  (let plugin (record/host .RegistryHost:describe module row/id row/limits policy/selectors))
+  (let plugin (record/host .RegistryHost:describe module row/id row/limits))
   (var expected nil)
   (for descriptor in (record/pending .get)
     (if (== descriptor/id row/id) (set expected descriptor)))
@@ -216,7 +213,7 @@
 (fn host_plugin_spec ^^private [record, plugin, policy]
   # Cordis keeps an entry live while its admitted spec is the same value, so
   # the spec is reused until the plugin value or its entry policy changes.
-  (let key {^scope policy/scope ^selectors policy/selectors ^inherit policy/inherit
+  (let key {^scope policy/scope ^host policy/host
             ^limits [policy/limits/max_steps policy/limits/max_memory_mb
                      policy/limits/timeout_ms]})
   (let cached (record/specs .get plugin/id))
@@ -302,7 +299,6 @@
     (fail (EffectDisposed ^message "Harness reconciliation is already active")))
   (let entries ($thaw #[]))
   (let admitted ($thaw #{}))
-  (let policies ($thaw #{}))
   (let metadata ($thaw #{}))
   (entries .push {^id "_harness_bindings" ^module "host/bindings"})
   (admitted .put "_harness_bindings" record/bindings_spec)
@@ -314,17 +310,16 @@
       (fail (EffectDisposed ^message "Harness plugins require PluginContext activation")))
     (let supplied (?? (entry_options .get plugin/id) #{}))
     (for [name value] in supplied
-      (if_not (["module" "scope" "selectors" "namespaces" "limits" "inherit" "digest" "closure"] .contains? ($to_str name))
+      (if_not (["module" "scope" "namespaces" "limits" "host" "digest" "closure"] .contains? ($to_str name))
         (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
     (let limits (?? (supplied .get "limits") (default_execution_limits)))
-    (let selectors (?? (supplied .get "selectors") #[]))
-    (let inherit (?? (supplied .get "inherit") ($absent? source)))
+    (let is_host (?? (supplied .get "host") ($absent? source)))
     (let state_scope (?? (supplied .get "scope") "session"))
     (if_not (["session" "workspace"] .contains? state_scope)
       (fail (CompositionError ^message "entry scope must be session or workspace")))
     (let policy
-      {^scope state_scope ^selectors selectors ^inherit inherit ^limits limits
+      {^scope state_scope ^host is_host ^limits limits
        ^module source ^namespaces (?? (supplied .get "namespaces") #[])
        ^digest (supplied .get "digest") ^closure (supplied .get "closure")})
     (metadata .put plugin/id policy)
@@ -332,7 +327,6 @@
       ^module (if ($absent? source) $"host/${plugin/id}" source)
       ^namespaces (?? (supplied .get "namespaces") #[])
       ^limits {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms}})
-    (policies .put plugin/id {^inherit inherit ^selectors selectors})
     (for requirement in (?? plugin/requires #[])
       (admit_requirement record requirement))
     (if ($absent? source)
@@ -349,7 +343,7 @@
   (var snapshot nil)
   (try
     (set snapshot
-      (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted ^policies policies))
+      (record/loader .reconcile_plugins {^format 1 ^entries entries} admitted))
   ensure
     (record/pending .set nil)
     (record/busy .set false))

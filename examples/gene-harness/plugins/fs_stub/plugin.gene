@@ -21,9 +21,7 @@
 (impl HarnessFs for StubFs
   (message read_text [path : Str] : Str
     # Narrower than the seam contract, and honest about it: a stub needs no
-    # filesystem authority. Declaring `[]` is what lets it run in a harness
-    # that was started with no grants at all.
-   
+    # filesystem access, so it loads with an empty grant list.
     $"stub:${path}"))
 
 # The three names the kernel's `install_sandboxed` reads. Deliberately plain

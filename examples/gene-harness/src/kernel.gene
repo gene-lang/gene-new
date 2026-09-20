@@ -389,10 +389,10 @@
   # Rows contributed outside a Cordis activation are still bounded when
   # invoked; there is no activation revision to own them.
   (if ($absent? policy/effects) (return callable))
-  # Same receiver rule as `callback_receiver`: trusted host plugins that
-  # inherit authority receive the Harness, generated plugins their context.
+  # Same receiver rule as `callback_receiver`: host plugins receive the
+  # Harness, generated plugins their context.
   (retain_callback policy/effects $"${owner}/callback" callable
-    ^host_context (if policy/inherit h policy/context)
+    ^host_context (if policy/host h policy/context)
     ^inject_context inject_context))
 
 (fn remove_owner [h : Harness, owner : Str]
@@ -469,11 +469,11 @@
   (impl RegistryHost
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
-    (message describe [module, id : Str, limits, selectors] : Plugin
+    (message describe [module, id : Str, limits] : Plugin
       (var h self/h)
       (var bounded (ExecutionLimits ^max_steps limits/max_steps
         ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
-      (configure_plugin_module module selectors bounded)
+      (configure_plugin_module module bounded)
       (describe_plugin_module h module id
         ^core_interface (if ($absent? h/workspace) "" h/workspace/core_interface)
         ^limits bounded))
@@ -483,10 +483,10 @@
       (var context (make_plugin_context h plugin/id true))
       (var owned_rows ($cell (fresh_list)))
       ((h/plugin_policies .get) .put plugin/id
-        {^selectors policy/selectors ^scope policy/scope
+        {^scope policy/scope
          ^limits (ExecutionLimits ^max_steps policy/limits/max_steps
            ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
-         ^inherit policy/inherit ^context context ^effects effects ^owned_rows owned_rows})
+         ^host policy/host ^context context ^effects effects ^owned_rows owned_rows})
       # One deferred cleanup per activation revision. Cordis runs every deferred
       # cleanup as a bounded plugin invocation, so a cleanup per contributed row
       # and per callback made retiring a generation cost one invocation per row.
@@ -792,7 +792,7 @@
       ^options (LoaderOptions
         ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" workspace/generated_dir)
         ^shared ["src/plugin_api.gene" "src/kernel.gene" "src/seams.gene"]
-        ^max_namespaces ["fs"] ^capability_catalog #{} ^capability_ceiling nil
+        ^max_namespaces ["fs"]
         ^default_limits nil ^reload_policy nil)))
   h)
 
@@ -1076,18 +1076,15 @@
   out)
 
 (fn assemble_request [events] : (List Str)
-  # The whole invariant is this signature plus the empty capability row.
+  # The whole invariant is this signature.
   #
   # It takes the log and nothing else — not the harness, not the seam table,
-  # not the filesystem. `^capabilities []` makes "reads only the log"
-  # enforceable rather than a convention: an assembler that tried to read a
-  # file or the environment would be refused at the declaration, so a plugin
-  # cannot smuggle model-visible content in around the log.
+  # not the filesystem — so the request is a function of the log alone and a
+  # plugin cannot smuggle model-visible content in around it.
   #
   # Replay is then an ordinary fold over the log rather than a bespoke
   # deserializer, which is the part Gene gets more cheaply than TypeScript:
   # the log is Gene data.
- 
   (var out (fresh_list))
   (for e in events
     (if_yes (== ($to_str e/kind) "message")
@@ -1223,14 +1220,8 @@
       (else (registry_named h "seams"))))
   p)
 
-(fn invoke_bounded
-  [callable, argument, selector_forms, limits : ExecutionLimits,
-   ^inherit inherit : Bool = false]
-  (var program
-    (if inherit
-      (quote ($runtime/guard_call callable argument))
-      `(do
-         ($runtime/guard_call callable argument))))
+(fn invoke_bounded [callable, argument, limits : ExecutionLimits]
+  (var program (quote ($runtime/guard_call callable argument)))
   (var guarded
     (eval program
       ^in (env ^bindings {^callable callable ^argument argument}
@@ -1248,13 +1239,11 @@
 (fn apply_zero_arguments [callable]
   (callable))
 
-(fn configure_plugin_module [module, selector_forms, limits : ExecutionLimits]
+(fn configure_plugin_module [module, limits : ExecutionLimits]
   (var policy
     {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
      ^timeout_ms limits/timeout_ms})
-  (var program
-    `(do
-       ($runtime/configure_module module policy)))
+  (var program (quote ($runtime/configure_module module policy)))
   (eval program
     ^in (env ^bindings {^module module ^policy policy}
              ^imports [$runtime])))
@@ -1262,13 +1251,13 @@
 (fn policy_for_owner [h : Harness, owner : Str]
   (var policy ((h/plugin_policies .get) .get owner))
   (if (== policy void)
-    {^selectors (fresh_list) ^scope "session"
-     ^limits (default_execution_limits) ^inherit true ^context nil}
+    {^scope "session"
+     ^limits (default_execution_limits) ^host true ^context nil}
     policy))
 
 (fn callback_receiver [h : Harness, owner : Str]
   (var policy (policy_for_owner h owner))
-  (if policy/inherit
+  (if policy/host
     h
     (if ($absent? policy/context)
       (fail (HarnessError
@@ -1289,16 +1278,16 @@
   (enter_plugin_execution h)
   (try
     (if (retained_callback? callable)
-      # Cordis already applies the contributing revision's capabilities and
-      # limits, by joining a supervised task. Wrapping that in a second bounded
-      # evaluator would make the join suspend outside a fiber.
+      # Cordis already applies the contributing revision's limits, by joining a
+      # supervised task. Wrapping that in a second bounded evaluator would make
+      # the join suspend outside a fiber.
       (apply_argument_list {^callable callable ^args args})
       (invoke_bounded apply_argument_list {^callable callable ^args args}
-        policy/selectors policy/limits ^inherit policy/inherit))
+        policy/limits))
   ensure
-    # PluginHost state mutations are queued while the attenuated callback is
-    # active. Flush only after its capability scope has unwound, at the core
-    # boundary that owns the retained Store authority.
+    # PluginHost state mutations are queued while the bounded callback is
+    # active. Flush only after it has unwound, at the core boundary that owns
+    # the retained Store.
     (leave_plugin_execution h)))
 
 (fn invoke_registry_row [h : Harness, registry_name : Str, key : Str, args]
@@ -1354,7 +1343,7 @@
   (var bounded
     (if ($absent? limits) (default_execution_limits) limits))
   (var p
-    (invoke_bounded module/init context (fresh_list) bounded))
+    (invoke_bounded module/init context bounded))
   (validate_plugin_descriptor h expected_id p))
 
 (fn require_writable_context [record : ContextRecord]
@@ -1568,17 +1557,17 @@
 (fn install [h : Harness, p : Plugin] : Str
   # Installing registers the plugin and reconciles the composition. A failed
   # activation is a state (`error`) the caller reads, not an exception.
-  (var state (put_cordis_plugin h p {^inherit true}))
+  (var state (put_cordis_plugin h p {^host true}))
   (log_append h "lifecycle" $"installed ${p/id} (${state})")
   $"installed ${p/id} (${state})")
 
 (fn install_with_policy
-  [h : Harness, p : Plugin, selectors,
+  [h : Harness, p : Plugin,
    ^scope scope : Str = "session",
    ^limits limits = nil,
-   ^inherit inherit : Bool = false] : Str
+   ^host host : Bool = false] : Str
   (var state (put_cordis_plugin h p
-    {^scope scope ^selectors selectors ^inherit inherit
+    {^scope scope ^host host
      ^limits (if ($absent? limits) (default_execution_limits) limits)}))
   (log_append h "lifecycle" $"installed ${p/id} (${state})")
   $"installed ${p/id} (${state})")

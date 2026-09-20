@@ -19,9 +19,10 @@
 
 (var example_dir (module_dir this_mod/.path))
 (var package_root (module_dir (module_dir (module_dir example_dir))))
-# The module digest the recorded composition selected for revision 2. Equal
-# digests mean the formatted file is the same canonical module.
-(var recorded_digest "sha256:bf8543b4ac6334b5a6e7c575dbf56da5cc7b9beb870043e091573fe71e2b6458")
+# The canonical module digest of `plugin.gene`. Equal digests mean the
+# formatted file is the same canonical module the example was verified with; a
+# change to the module's forms changes the digest, formatting alone does not.
+(var recorded_digest "sha256:b49fa28b8db12ff352f9c602f6b654a520accc6018bf04d8bda17d704b4d75da")
 
 (fn fixture [relative : Str] : Str
   (read_text $"${example_dir}/${relative}"))

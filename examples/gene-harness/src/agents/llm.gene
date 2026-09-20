@@ -75,20 +75,17 @@
    ^register_module
      (fn [id, source,
           ^scope scope : Str = "session",
-          ^selectors selectors = nil,
           ^limits limits = nil,
           ^dependencies dependencies = nil,
           ^by by : Str = "",
           ^model model : Str = "",
           ^at at_value : Str = "",
           ^replace replace_value : Bool = false]
-       # Registration writes a blob, loads the module and runs its `init`, all
-       # of which need host authority the program does not have — and grants
-       # only attenuate, so calling through from in here could never do
-       # anything but refuse. It did, four times in one recorded session, with
-       # "fs/exists? needs fs/ReadDir" and a burnt turn each time. So this
-       # validates what it can cheaply and queues the rest for `run_program`,
-       # which is outside the sandbox and still inside the turn.
+       # Registration writes a blob, loads the module and runs its `init`,
+       # which belongs to the turn's transaction rather than to the evaluator
+       # that is still running. So this validates what it can cheaply and
+       # queues the rest for `run_program`, which registers it once the
+       # evaluator has returned and is still inside the turn.
        (if_not (== ($head id) Str)
          (fail (HarnessError
            ^message "register_module id must be a string")))
@@ -98,7 +95,7 @@
          (fail (HarnessError
            ^message $"register_module source for ${id} must be a quoted mod node")))
        (queued .push
-         {^id ($to_str id) ^source source ^scope scope ^selectors selectors
+         {^id ($to_str id) ^source source ^scope scope
           ^limits limits ^dependencies dependencies ^by by ^model model
           ^at at_value ^replace replace_value})
        $"queued ${id}; the harness registers it when this turn ends")
@@ -125,9 +122,10 @@
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
   # shape that runs, so a program may define something and then use it.
   #
-  # Model code has no host authority. It sees immutable inspection data and
-  # explicit transaction-aware operations; operational work uses tool requests.
-  # Registration is queued until the restricted evaluator has returned.
+  # Model code is handed immutable inspection data and explicit
+  # transaction-aware operations; operational work uses tool requests. It runs
+  # under the step, memory and time limits below. Registration is queued until
+  # the evaluator has returned.
   (var queued ($thaw #[]))
   (var bindings (harness_bindings h queued ^session session ^state_host state_host
                   ^payload payload ^prompt prompt ^round round))
@@ -145,21 +143,10 @@
   (var outcome
     (run_workspace_turn h/workspace h turn_id
       (fn [ignored]
-        (var rendered
-          (try
-            $"${(eval program ^in sandbox)}"
-          catch Any
-            (if ($str/contains? $err/message " requires ")
-              (do
-                (var message $"refused: ${$err/message}")
-                (if_yes raise_errors (fail (CommandError ^code "code_error" ^message message)))
-                message)
-              (fail $err))))
-        # Drained here and not in the sandbox: this callback runs under the
-        # caller's capability context (`invoke_bounded ^inherit true`), which
-        # is the only point in the round that still holds the authority a
-        # registration needs. A failure raises like any other error in the
-        # body, so a module that will not load never becomes a revision.
+        (var rendered $"${(eval program ^in sandbox)}")
+        # Drained here, after the evaluator has returned and inside the turn's
+        # callback. A failure raises like any other error in the body, so a
+        # module that will not load never becomes a revision.
         (for request in queued
           # A direct user command supplies its own provenance; model callers
           # retain the existing default. Explicit registration authors win.
@@ -170,7 +157,7 @@
           (var at (if (== request/at "") ($to_str (gene/now)) request/at))
           (var registered
             (register_module h/workspace h request/id request/source
-              ^scope request/scope ^selectors request/selectors
+              ^scope request/scope
               ^limits request/limits ^dependencies request/dependencies
               ^by by ^model model ^at at
               ^replace request/replace))
@@ -233,9 +220,8 @@ runtime cells. context contains session, payload, prompt and round.
 
 ${(harness_primer h)}
 
-Code holds no host authority. Do not call fs, network, process operations,
-concrete provider constructors, or invoke_registry from it. Request a tool
-instead. register_module is a transaction-aware core operation: it queues an
+Do not call fs, network, process operations, concrete provider constructors,
+or invoke_registry from code. Request a tool instead. register_module is a transaction-aware core operation: it queues an
 inert quoted plugin module for validation and durable registration when the
 program ends. The installed tools become callable in the next step.
 
@@ -268,11 +254,9 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
     text))
 
 (fn failed? [result : Str] : Bool
-  # `run_program` renders an ordinary mistake as "error: ..." and a capability
-  # denial as "refused: ...". Only the first is the model's to fix: an error is
-  # a bug in the code it just wrote, while a refusal is a fact about authority
-  # that writing different code will not change. A continuing code reply gets
-  # correction guidance for errors; code-with-response returns either directly.
+  # `run_program` renders a failed program as "error: ...": a bug in the code
+  # the model just wrote, so a continuing code reply gets correction guidance
+  # for it; code-with-response returns either directly.
   ($str/starts_with? result "error:"))
 
 (fn emit_output [h : Harness, text : Str,
@@ -431,8 +415,8 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
 # already existed for the template: `canonical_module_source` requires a
 # `(mod plugin ...)` root, an inert top level, a defined `init`, and imports
 # inside the declared closure; `describe_plugin_module` runs that `init` under
-# `^capabilities []` and the step/time/memory ceiling; the loader pins an
-# immutable policy to the sandbox module. A model that writes something hostile
+# the step/time/memory ceiling; the loader pins an immutable policy to the
+# sandbox module. A model that writes something hostile
 # is refused by the same code that refuses a typo.
 
 (fn codegen_skill_text [] : Str
@@ -460,7 +444,6 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
   (fn run [host input]
     (host .PluginHost:request_tool "fs.read" input ^continuation measured))
   (fn init [ctx : DescriptorContext] : Plugin
-   
     (Plugin ^id "file_length" ^contextual true
       ^provides [["tools" "file_length"]] ^requires [["tools" "fs.read"]]
       ^activate (fn [] (fn [host]
@@ -474,7 +457,7 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
 
 The root must be (mod plugin ...). Its top level contains only declarations
 (import/import_impl/fn/type/impl/protocol/alias/enum). init takes one
-DescriptorContext, declares, and only constructs a descriptor.
+DescriptorContext and only constructs a descriptor.
 activate is a thunk returning a host callback. The descriptor id must equal
 the requested plugin name. Tools may have different names; advertise them all.
 
@@ -513,15 +496,12 @@ Use (host .PluginHost:state) and (host .PluginHost:update_state data) for durabl
 plugin state. There are no private snapshot files. State scope follows the
 plugin's session/workspace scope. Never retain live resources in persisted data.
 
-Normally delegate I/O to installed tools and keep selectors empty. A plugin
-that performs file I/O itself can import $fs and request an attenuated selector:
-{^type "fs/ReadDir" ^root "workspace" ^path "."}. Supported selector types are
-fs/ReadDir, fs/WriteDir and fs/ReadWriteDir; roots are workspace and state.
-Selectors cannot grant authority absent from the launcher. Do not imitate an
-unavailable operation. Explain the missing requirement instead.
+Delegate all I/O to installed tools: a plugin has no filesystem, network or
+process access of its own, so $fs, $net and $os are unavailable to it. Do not
+imitate an unavailable operation. Explain the missing requirement instead.
 
-Additional imports must be capability-enabled namespaces, versioned shared
-contracts, or declared content-addressed dependencies. The kernel import above
+Additional imports must be versioned shared contracts or declared
+content-addressed dependencies. The kernel import above
 is allowed only for import_impl PluginHost for PluginContext, never utilities.
 Shared seam protocols may be imported from ../../../src/seams.
 For structured failures import fail_tool from ../../../src/plugin_api and call
@@ -536,9 +516,9 @@ inside a sandbox does not carry its canonical Error implementation.
   """
 
 For this plugin-authoring request, use type "response", a short ^response
-string, and ^payload {^module (mod plugin ...) ^scope "session" ^selectors [] ^dependencies []}. The module is an inert Gene
+string, and ^payload {^module (mod plugin ...) ^scope "session" ^dependencies []}. The module is an inert Gene
 node in payload, not a string and not a quoted expression. Do not return ^code.
-The consumer validates and registers payload/module with the declared scope, selectors and dependency modules; it never evaluates source text. Prefer delegating to existing tools over adding I/O authority.
+The consumer validates and registers payload/module with the declared scope and dependency modules; it never evaluates source text. Prefer delegating to existing tools over adding I/O.
 Example envelope (replace the module with the complete implementation):
 {^type "response" ^response "Here is the plugin."
  ^payload {^module (mod plugin ...)}}
@@ -604,7 +584,7 @@ Reply with one Gene map: ^type "response", a short ^response, and
   (if_not (== ($head form) (quote mod))
     (fail (HarnessError ^message "plugin author must return a module node in ^payload/^module")))
   {^module form ^scope (?? payload/scope "session")
-   ^selectors (?? payload/selectors []) ^dependencies (?? payload/dependencies [])})
+   ^dependencies (?? payload/dependencies [])})
 
 (fn validate_author_code [value, ^depth depth : Int = 0]
   (if ($leaf? value) (return nil))

@@ -344,7 +344,7 @@
              %(code_block "run_prompt" "Prompt" prompt ^wrap true))
            (li ^class "run_step"
              (h3 "Point it at your project")
-             (p "Two directories matter. Choosing one does not grant access, so pass a matching grant for each.")
+             (p "Two directories matter. Choose each with a flag.")
              (dl ^class "dirs"
                (div (dt "--project <dir>")
                     (dd "What the built-in file tools read and write. Defaults to the Harness package."))
@@ -379,7 +379,7 @@
        (div
          (p ^class "footer_title" "Gene Harness")
          (p ^class "footer_note"
-           "A durable, capability-bounded plugin harness for a general-purpose agent, written in the Gene programming language."))
+           "A durable plugin harness for a general-purpose agent, written in the Gene programming language."))
        (nav ^aria-label "Documentation"
          (ul ^class "footer_links"
            (li (a ^href %repository_url "Repository"))

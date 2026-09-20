@@ -129,7 +129,7 @@
     ^text "The author returns an inert (mod plugin …) module. The Harness reads it as data, validates it, content-addresses it, and commits it before any of it runs."
     ^note "plugins.inspect returns the source and its provenance."}
    {^title "Activate and use tools"
-    ^text "Activation contributes tools the agent calls with real inputs. A plugin reaches the host only through the tools it declares and the filesystem selectors it records, narrowed from the grants you gave the launcher."
+    ^text "Activation contributes tools the agent calls with real inputs. A plugin reaches the host only through the tools it declares."
     ^note "Generated callbacks are bounded by steps, memory, and time — two seconds by default."}
    {^title "Restore in another conversation"
     ^text "Workspace plugins and their committed state load in new conversations and after a restart. A plugin that fails to activate stays inspectable instead of silently disappearing."
@@ -141,7 +141,7 @@
    {^question "Where does the model run?"
     ^answer "The Harness runs on your machine and listens on 127.0.0.1. Model requests go to the provider you configure: Codex, OpenRouter, the Claude Code CLI, or the Anthropic API. Credentials stay in the native process and are never written to conversation history."}
    {^question "What can plugins access?"
-    ^answer "Only what the launcher was granted, narrowed for each plugin. A plugin declares the installed tools it calls, and requests for undeclared tools are refused. Filesystem tools stay inside the project and state roots. process.run uses the launcher's exec authority and its working directory is not a sandbox, so grant it deliberately."}
+    ^answer "A plugin declares the installed tools it calls, and requests for undeclared tools are refused; it has no filesystem, network, or process access of its own. Filesystem tools stay inside the project and state roots. process.run starts programs with your own permissions and its working directory is not a sandbox, so enable it deliberately."}
    {^question "What happens when a run fails?"
     ^answer "Errors come back as results in the conversation. Tools return structured errors, like the missing-file case above. A plugin that fails to activate is quarantined with its reason while healthy plugins keep working. Effects that already happened, such as a file that was written, are not rolled back."}
    {^question "How is Gene different from Gene Harness?"
@@ -187,8 +187,9 @@
 (var run_commands
   {^build "git clone https://github.com/gene-lang/gene-new.git\ncd gene-new\nnimble build"
    ^codex_login "codex -c cli_auth_credentials_store='\"file\"' login"
-   ^start "bin/gene run ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
+   ^start "bin/gene run examples/gene-harness/src/web/server.gene"
+   ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^anthropic "GENE_HARNESS_PROVIDER=anthropic ANTHROPIC_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^offline "bin/gene run examples/gene-harness/src/web/server.gene --offline"
    ^prompt "Build a workspace-scoped line_count plugin that accepts a filename and counts non-empty lines by composing fs.read. Inspect its contract and test it against README.md before reporting success."
-   ^dirs "mkdir -p /tmp/harness-home\nbin/gene run \\\n  \\\n  })
+   ^dirs "mkdir -p /tmp/harness-home\nbin/gene run \\\n  examples/gene-harness/src/web/server.gene \\\n  --home /tmp/harness-home --project \"$HOME/code/my-app\""})

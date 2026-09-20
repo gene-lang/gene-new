@@ -54,9 +54,9 @@
 (fn validate_entry [entry, ids]
   (if (|| (== entry/id void) (== entry/scope void)
           (== entry/module_digest void) (== entry/closure void)
-          (== entry/interfaces void) (== entry/selectors void))
+          (== entry/interfaces void))
     (fail (CompositionError
-      ^message "composition entry requires id scope module_digest closure interfaces selectors")))
+      ^message "composition entry requires id scope module_digest closure interfaces")))
   (var id ($to_str entry/id))
   (if (== id "")
     (fail (CompositionError ^message "composition entry id is empty")))
@@ -354,13 +354,11 @@
   (var root_file $"${(digest_hex entry/module_digest)}.gene")
   (var isolation_key
     $"${entry/id}:${(sha256 (write_data
-      {^digest entry/module_digest ^selectors entry/selectors
-       ^limits (entry_limits entry)}))}")
+      {^digest entry/module_digest ^limits (entry_limits entry)}))}")
   (var loaded
     ($runtime/load_sandboxed workspace/generated_dir root_file
-      (sandbox_namespaces entry/selectors) workspace/shared isolation_key))
-  (configure_plugin_module loaded (selector_forms workspace entry/selectors)
-    (runtime_limits entry))
+      [] workspace/shared isolation_key))
+  (configure_plugin_module loaded (runtime_limits entry))
   (var descriptor
     (describe_plugin_module h loaded ($to_str entry/id)
     ^core_interface workspace/core_interface
@@ -407,53 +405,11 @@
                    ^max_memory_mb limits/max_memory_mb
                    ^timeout_ms limits/timeout_ms))
 
-(fn sandbox_namespaces [selectors]
-  (var out (fresh_list))
-  (for selector in selectors
-    (var kind ($to_str selector/type))
-    (if (&& (starts_with? kind "fs/") (! (out .contains? "fs")))
-      (out .push "fs")))
-  out)
-
-(fn safe_relative_selector_path? [path : Str] : Bool
-  (if (starts_with? path "/") (return false))
-  (! ((split path "/") .contains? "..")))
-
-(fn selector_forms [workspace : Workspace, selectors]
-  (var out (fresh_list))
-  (for selector in selectors
-    (if (|| (== selector/type void) (== selector/root void)
-            (== selector/path void))
-      (fail (CompositionError
-        ^message "selector requires type root and path")))
-    (var relative ($to_str selector/path))
-    (if_not (safe_relative_selector_path? relative)
-      (fail (CompositionError
-        ^message $"selector path escapes its named root: ${relative}")))
-    (var base
-      (if (== ($to_str selector/root) "state") workspace/state_root
-        (if (== ($to_str selector/root) "workspace") workspace/workspace_root
-          (fail (CompositionError
-            ^message $"unknown selector root ${selector/root}")))))
-    (var path (if (== relative ".") base $"${base}/${relative}"))
-    (var kind ($to_str selector/type))
-    (if (== kind "fs/ReadDir")
-      (out .push `(fs/ReadDir %path))
-      (elif (== kind "fs/WriteDir")
-        (out .push `(fs/WriteDir %path)))
-      (elif (== kind "fs/ReadWriteDir")
-        (out .push `(fs/ReadWriteDir %path)))
-      (else
-        (fail (CompositionError
-          ^message $"unsupported harness selector type ${kind}")))))
-  out)
-
 (fn descriptor_entry_options [workspace : Workspace, entry]
   {^module $"${(digest_hex entry/module_digest)}.gene"
    ^digest entry/module_digest ^closure entry/closure
-   ^scope ($to_str entry/scope) ^selectors (selector_forms workspace entry/selectors)
-   ^namespaces (sandbox_namespaces entry/selectors) ^limits (runtime_limits entry)
-   ^inherit false})
+   ^scope ($to_str entry/scope) ^limits (runtime_limits entry)
+   ^host false})
 
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
   (put_cordis_plugin h descriptor (descriptor_entry_options workspace entry) ^replace true))
@@ -483,7 +439,6 @@
 (fn register_module
   [workspace : Workspace, h : Harness, id : Str, source,
    ^scope scope : Str = "session",
-   ^selectors selectors = nil,
    ^limits limits = nil,
    ^dependencies dependencies = nil,
    ^by by : Str = "",
@@ -511,7 +466,6 @@
     (if_not (== (find_entry_index claimed id) -1)
       (fail (CompositionError
         ^message $"composition entry ${id} already exists"))))
-  (var selected (if ($absent? selectors) (fresh_list) (data_copy selectors)))
   (var bounded
     (if ($absent? limits)
       (default_limits_data)
@@ -540,7 +494,7 @@
     (if ($absent? tx) "direct" ($to_str tx/id)))
   (var entry
     {^id id ^scope scope ^module_digest digest ^closure closure
-     ^interfaces (data_copy workspace/interfaces) ^selectors selected
+     ^interfaces (data_copy workspace/interfaces)
      ^limits bounded ^disabled false
      ^by by ^model model ^at at
      ^session h/event_stream ^turn authenticated_turn})
@@ -609,7 +563,7 @@
   (try
     (var bounded
       (if ($absent? limits) (default_execution_limits) limits))
-    (var result (invoke_bounded program nil (fresh_list) bounded ^inherit true))
+    (var result (invoke_bounded program nil bounded))
     (var staged_entries (tx/workspace_entries .get))
     (var expected (tx/workspace_revision .get))
     (var pending_plugins (tx/pending_plugins .get))

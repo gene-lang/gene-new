@@ -33,10 +33,10 @@
       (host .PluginHost:provide "Report" (report_tool fs r "notes"))))))
 
 (fn report_of [h : Harness] : Str
-  # The product of the composition, or why there isn't one. A profile whose
-  # authority is not granted does not crash the boot — the plugin that needed
-  # the authority lands in `error` and the rest of the system is fine, which is
-  # the more useful failure mode and one the lifecycle gives for free.
+  # The product of the composition, or why there isn't one. A plugin that
+  # fails to activate does not crash the boot — it lands in `error` and the rest
+  # of the system is fine, which is the more useful failure mode and one the
+  # lifecycle gives for free.
   (if (== (status_of h "reporter") "ready")
     ($to_str (resolve h "Report"))
     $"<no report: reporter is $(status_of h \"reporter\")>"))

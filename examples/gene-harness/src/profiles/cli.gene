@@ -3,10 +3,9 @@
 #   gene run examples/gene-harness/src/main.gene cli
 #
 # What distinguishes this profile from `web` is not code shape — both are three
-# plugins with the same ids — but *authority*. The filesystem provider here
-# declares `(fs/ReadDir "/tmp")`, so a deployment that boots this set needs a
-# grant the web one does not. Run it without the grant and the reporter is the
-# only casualty; see design §3.8.
+# plugins with the same ids — but what they reach. The filesystem provider here
+# reads the real disk beneath /tmp where the web one serves an in-memory map;
+# see design §3.8.
 
 (mod cli)
 
@@ -24,8 +23,7 @@
 # thunk convention in kernel.gene.
 
 (fn cli_fs_plugin [] : Plugin
-  # Reads the real filesystem, and says so in the only place that counts: the
-  # provider's `^capabilities` row.
+  # Reads the real filesystem, beneath /tmp.
   (Plugin ^id "fs" ^provides ["HarnessFs" ["tools" "fs.read"]]
     ^contextual true
     ^activate (fn [] (fn [host]

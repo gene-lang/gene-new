@@ -69,7 +69,6 @@
      (fn run [arg] : Str
        ($str/join [(unquote name) "(" arg ") -> " (unquote text)] ""))
      (fn init [ctx : DescriptorContext] : Plugin
-      
        (Plugin ^id %name
          ^provides [["tools" (unquote name)]] ^requires []
          ^contextual true
@@ -102,8 +101,7 @@
       (host .PluginHost:provide "HarnessCodegen"
         (codegen_provider (TemplateCodegen)))))))
 
-(fn build_plugin [h : Harness, name : Str, text : Str,
-                  ^scope scope = nil, ^selectors selectors = nil]
+(fn build_plugin [h : Harness, name : Str, text : Str, ^scope scope = nil]
   (if_yes (== name "")
     (fail (HarnessError ^message "usage: build <name> <text...>")))
   (if_not (safe_name? name)
@@ -121,7 +119,7 @@
   # model plugin can be safe to accept.
   (var codegen (resolve h "HarnessCodegen"))
   (var authored (codegen .HarnessCodegen:generate name
-    $"${text}\n\nInstalled tool contracts: ${(describe_tools h)}\nRequested scope: ${scope}; selectors: ${selectors}.\nFor real I/O prefer delegating to installed tools through PluginHost:request_tool. Declare those tool dependencies."
+    $"${text}\n\nInstalled tool contracts: ${(describe_tools h)}\nRequested scope: ${scope}.\nFor real I/O prefer delegating to installed tools through PluginHost:request_tool. Declare those tool dependencies."
     ^on_reply (fn [raw]
       (log_append h "output" raw ^phase "raw_response" ^round ($math/max 1 (current_run_round h)))
       (flush_harness h))))
@@ -135,7 +133,6 @@
   (var registered
     (register_module h/workspace h name source
       ^scope (?? scope (?? plan/scope "session"))
-      ^selectors (?? selectors (?? plan/selectors []))
       ^dependencies (?? plan/dependencies [])
       ^by author/by ^model author/model ^at ($to_str (gene/now))
       # `build` is the only verb that claims a durable name and there is no
@@ -157,7 +154,7 @@
 
 (fn build_plugin_tool [h input]
   (ToolTask ^task (spawn ^lane root
-    (build_plugin h input/name input/request ^scope input/scope ^selectors input/selectors))))
+    (build_plugin h input/name input/request ^scope input/scope))))
 
 (fn inspect_plugin_tool [h input]
   (for entry in (composition_entries h/workspace)
@@ -281,8 +278,7 @@
          ^run build_plugin_tool ^contextual true
          ^input_schema {^type "object" ^required ["name" "request"] ^additionalProperties false
            ^properties {^name {^type "string"} ^request {^type "string"}
-             ^scope {^type "string" ^enum ["session" "workspace"]}
-             ^selectors {^type "array" ^items {^type "object"}}}}})
+             ^scope {^type "string" ^enum ["session" "workspace"]}}}})
       (for item in [["plugins.inspect" "Read a durable plugin's source and metadata." inspect_plugin_tool]
                    ["plugins.disable" "Persistently disable a custom plugin." disable_plugin_tool]
                    ["plugins.enable" "Re-enable a durable custom plugin." enable_plugin_tool]]

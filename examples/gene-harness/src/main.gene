@@ -5,7 +5,7 @@
 #   gene run examples/gene-harness/src/main.gene web status   # one-shot prompt
 #
 # For the interactive shell and for `build`, run it from the package directory
-# so that a capability row naming `plugins/generated` means this one:
+# so that the relative `plugins/generated` path means this one:
 #
 #   cd examples/gene-harness && gene run src/main.gene cli
 #
