@@ -56,6 +56,15 @@ off the stale artifact.
 
 ### Client and server as separate processes
 
+```sh
+gene build --target web client/net_main.gene --out-dir dist
+mkdir -p /tmp/miclone_server_world
+gene run server
+                                 # opens or generates the world, listens on 8790
+                                 # GENE_MICLONE_WORLD picks another world directory
+python3 -m http.server 8000      # then open http://localhost:8000/net.html
+```
+
 The browser client renders a world it was **handed** rather than one it
 generated, and a click goes to the server, is applied there, and comes back as a
 node delta with the drop in the hotbar. Same physics, mesher, raycast and hotbar
@@ -198,6 +207,21 @@ gene run divergence     | diff - <(node tools/web_spec.mjs web_divergence)      
 
 ### Headless harnesses
 
+```sh
+node tools/mesh_bench.mjs        # generation + meshing budget (§D6.1)
+node tools/world_build.mjs       # what opening a world costs, and a 2-minute walk
+node tools/client_smoke.mjs      # the in-tab client's wiring, DOM stubbed
+node tools/net_client_smoke.mjs  # boots its own server and plays it, ~40 s
+MICLONE_SMOKE_RECOVERY=1 node tools/net_client_smoke.mjs # resets its fixture, then recovers missing blocks
+
+gene run worldgen                # §D6.3's three budget readings
+gene run wire_bench              # what a block message costs to encode
+gene run loader                  # the mod, read off disk and sandboxed (§9.3)
+mkdir -p /tmp/miclone_world
+gene run persistence create
+gene run persistence verify  # §11
+```
+
 ### Network probes
 
 Each speaks §10 itself, as a **peer** rather than a client, which is what makes
@@ -218,6 +242,13 @@ failing checks in the probe rather than as a dirty fixture. Waiting for
 `nc -z 127.0.0.1 8790` does not establish this: it succeeds *instantly* against a
 server that outlived its runner, and a genuinely fresh one takes about 75 s to
 generate.
+
+```sh
+lsof -tnP -iTCP:8790 -sTCP:LISTEN | xargs -r kill   # and wait for it to go
+rm -rf /tmp/miclone_play_world
+mkdir -p /tmp/miclone_play_world
+( cd examples/miclone && GENE_MICLONE_WORLD=/tmp/miclone_play_world gene run server & )
+```
 
 **Wait on the port, not the log.** The server's stdout is block-buffered when it
 is a pipe, so "listening on 8790" can sit unflushed for the whole run.
@@ -281,4 +312,3 @@ never been the problem. design.md §D6.3, §10.1 and §D7.11 are the thread.
   immediately rather than at a predicted rate (§2.2).
 - **Deflate.** Run-length encoding ships; deflate is worth another 5.8× on top
   and the format's flags byte is where it lands (§D7.4).
-

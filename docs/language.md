@@ -515,6 +515,15 @@ it caller return/loop targets or direct rebinding of caller variables. The
 
 `eval` compiles a syntax value with an Env:
 
+```gene runnable
+(let e (env ^bindings {^value 20}))
+(eval (quote (+ value 2)) ^in e) # 22
+```
+
+An ordinary Env overlays the evaluation-site lexical scope; it does not hide
+those names, and it is not a sandbox: evaluated code can use any namespace the
+surrounding code can. Bound a run with `^policy` limits on steps, memory, and
+time.
+
 For exact edge cases, use [the specification](spec/README.md). Keep the
 [design overview](design.md) nearby for the reasoning behind these rules.
-

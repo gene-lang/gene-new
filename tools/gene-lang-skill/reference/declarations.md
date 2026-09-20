@@ -184,5 +184,15 @@ is a boundary error.
 ## Eval
 
 `eval` runs a form under the scope it is written in. An `Env`
-narrows from there:
+adds to it:
 
+```gene
+(eval form ^in (env))                                   # the scope it is written in
+(eval form ^in (env ^bindings {^x 1}))                  # plus extra names
+(eval form ^in (env ^bindings {^x 1}
+                    ^policy {^max_steps 10000}))        # bounded by a step budget
+```
+
+An `Env` is not a sandbox: evaluated code can still use every namespace the
+surrounding code can. A `(caller_env .snapshot ["x"])` stays closed: it sees
+exactly the names it captured, never the evaluating scope.

@@ -150,11 +150,14 @@ An fexpr can evaluate selected syntax through a borrowed caller environment,
 but that evaluation cannot target the caller's `return`, `break`, or `continue`.
 Use a macro when the expansion needs ordinary lexical control flow.
 
-## Visibility and permission are separate
+## Trusted scripts and sandboxes
 
-Saved environments and bounded calls retain ceilings that intersect with the
-current context. An ordinary CLI run is intended for trusted scripts; an Env
-or a namespace filter alone is not a complete sandbox. See
+Gene has no ambient permission system. An ordinary CLI run is intended for
+trusted scripts: evaluated code, an Env, or a namespace filter alone is not a
+sandbox, and code that can name `$fs` or `$os` can use it. What bounds untrusted
+code is the sandbox loader, which loads a module with only the namespaces it is
+granted, together with execution budgets on steps, memory, and time. See
+[the miclone design](../examples/miclone/docs/design.md) (§D5) for the loader.
 
 ## One language, explicit backend limits
 
@@ -162,4 +165,3 @@ The VM is the general execution path. The browser backend checks a supported
 subset and rejects other forms. Experimental native compilation uses explicit
 representations and ownership adapters. Shared tests check the behavior each
 backend accepts; [workflows](workflows.md) explains how to use them.
-

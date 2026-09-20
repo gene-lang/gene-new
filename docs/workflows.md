@@ -17,6 +17,9 @@ gene run hello.gene Ada
 gene eval '(+ 1 2)'
 ```
 
+`main` may return nil for success or an integer exit code. Program arguments
+are strings.
+
 ## Packages
 
 From a project directory, initialize an application package:
@@ -153,11 +156,26 @@ console.log(double(21n)); // 42n
 | PropMap | Object |
 | Nominal type | Generated class instance |
 
+The web profile supports annotated functions, macros, types/protocols, matching,
+paths, collections, streams, a structured async subset, and checked DOM/JS
+interop. Fexprs, runtime eval, actors/channels, and native FFI remain outside
+it. It rejects unsupported forms rather than silently running different
+semantics.
+
 For a server and browser in one file, use `web_module`. It sees its own
 compiled web unit, not surrounding server bindings such as a database handle.
 The [Todo app](../examples/todo_app/src/main.gene) demonstrates the complete
 route/HTML/CSS/browser flow; [web_component.gene](../examples/web_component.gene)
 is a smaller browser example.
+
+For a browser client split across Gene files, load its entry with
+`($web/load "path/to/client.gene")` and pass that asset to
+`($web/script asset ^mount "root")`. The entry has the same
+`main [root : EventTarget] : Void` contract. `web/load` reads the import graph
+and serves only compiled Gene; it does not admit `js/fn` imports. Generated
+mounts, dependencies, and source maps are content-addressed together. The
+[Harness browser client](../examples/gene-harness/README.md#browser-client)
+uses this path without an authored JavaScript bootstrap or a separate bundler.
 
 A server-rendered page can also be exported to a static host. Choose its public
 asset location with `($web/set_asset_base "/docs/assets")`, render the page,
@@ -185,6 +203,12 @@ the exported ABI through Node.
 
 ## Native interop
 
+Call-scoped synchronous callbacks use typed native shims on the owning root
+lane. SQLite `visit_text_rows` is the first library adapter. The Nim-facing
+native API is version 4 and transports cancellation explicitly. See the
+[callback contract](spec/modules.md#synchronous-native-callbacks) for entry,
+lifetime, and failure rules.
+
 Native extensions use opaque Gene values and explicit root handles. Managed
 wrapper types own native resources; typed-native code uses explicit unboxed
 representations and generated ownership adapters.
@@ -194,10 +218,16 @@ gene compile --target c examples/native/sqlite_rows.gene
 nimble native_example
 ```
 
+The C backend is experimental. Use the [native example](../examples/native/README.md)
+for the actual compile/link/load workflow and platform prerequisites.
+Admitting arbitrary native code does not create an in-process sandbox.
+
 ## Permissions and deployment
 
-Namespace exposure, retained resource restrictions, and execution policy are
-separate controls. If embedding untrusted code or plugins, read the
-[known limits](development.md#status)
-before treating an Env or a restricted namespace as a sandbox.
-
+`gene run` and `gene eval` run with the permissions of the invoking user; Gene
+has no ambient permission system. Namespace exposure and execution policy are
+separate controls: the sandbox loader (`$runtime/load_sandboxed`) exposes only
+the namespaces a module is granted, and `^policy` limits bound steps, memory,
+and time. If embedding untrusted code or plugins, read the
+[known limits](development.md#status) before treating an Env or a restricted
+namespace as a sandbox.

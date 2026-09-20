@@ -219,6 +219,10 @@ one another.
   remains reachable. Reload or removal cannot silently replace its formatter
   or invalidate its conformance.
 
+Existing Send/publication rules still govern worker transfers; a backend must
+preserve the required evidence or explicitly reject an unsupported transfer
+before publishing it. It must not silently drop it.
+
 On a worker or foreign native lane, admission and retained formatter access
 require a formatter whose captures satisfy the worker's Send rules. Reject an
 unsafe formatter with a generated admission TypeError before installing it.
@@ -915,4 +919,3 @@ Nim's [exception tracking and inference](https://nim-lang.org/docs/manual.html#e
 provide a precedent for propagating callee errors and inferring helper rows.
 Gene's dynamic calls and deferred values use `Error` for unknown possibilities
 and the runtime-contract rules above for optional narrowing.
-

@@ -84,4 +84,3 @@ Lifecycle transitions run on the runtime's host executor. A notification from
 restricted plugin code therefore cannot impose its execution limits or
 deadline on host transition bookkeeping; `PluginInvoker` still applies each
 plugin's own context and limits to its callbacks.
-

@@ -76,6 +76,11 @@ stay omitted, so target defaults run per invocation. Supplied runtime Void
 remains supplied; literal void props follow the reader's normal removal rule.
 The target's own arity and parameter checks still apply after view checks.
 
+Inputs and results cross ordinary typed boundaries using the signature's
+authored type/implementation scope. Adaptation may create a distinct view
+without changing the target. Reapplying an equivalent contract may reuse a
+view; adaptation does not promise identity preservation or function variance.
+
 `^errors [E]` bounds ordinary invocation errors, including target-owned default
 evaluation; `^errors []` admits none. `Error` opens the row, so `[E Error]`
 permits every ordinary error while retaining E as diagnostic information.
@@ -384,7 +389,7 @@ The last expression of a function or message body is a tail position. The
 position propagates to selected `if` branches, `if_yes`/`if_not` bodies,
 `match` arms, `do`, the last `&&`/`||`/`??` operand, and an explicit `return`
 value. It does not propagate into arguments, conditions, initializers, loops,
-structured cleanup/authority bodies, constructors, namespaces/modules, `new`,
+structured cleanup bodies, constructors, namespaces/modules, `new`,
 or fexpr calls.
 
 A bytecode call in tail position replaces its current activation when that
@@ -409,4 +414,3 @@ declaration/import/type contexts resolve qualified names statically. Static
 scalar/key selector segments are pure. Callable, call-stage, and send segments
 are executable: they are non-serializable and invalid for `assoc_in` and
 `update_in`. Strict missing lookup raises `SelectorMissing` with `^segment`.
-

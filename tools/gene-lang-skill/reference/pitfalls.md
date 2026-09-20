@@ -6,6 +6,31 @@ what Gene actually wants.
 
 ## Error message → fix
 
+| Message | Cause | Fix |
+|---|---|---|
+| `undefined symbol: println` | Bare stdlib name | `($println …)` — `$x` is sugar for `gene/x` |
+| `undefined symbol: foo` on a node | `(foo ^k 1)` in code position is a call | `(quote (foo ^k 1))` or `` `(foo ^k 1) `` |
+| `undefined symbol: ~` | Chained sends without continuation | Start each continuation line with `; ~` |
+| `undefined symbol: 0..3` | No range literal | `($range 0 3)` |
+| `undefined symbol: Any` | `Any`/`Never` resolve in annotations only | Use them in `: Any` position, never as values |
+| `undefined symbol: this_pkg` | Module bindings absent in `gene eval` | Probe in a file with `gene run` |
+| `undefined symbol: S/a` in a parameter list | Qualified path as a default value | Bind it above the function first |
+| `Read error: unterminated interpolation '{...'` | String literal inside `${…}` | Bind it out, or use `$"""…"""` |
+| `map expects a Stream` | `map`/`filter`/`take`/`into` are stream ops | `(xs .to_stream)` first, `.into []` last |
+| `size expects a collection` | `$size` rejects strings | `($str/byte_size s)` or `($size ($chars s))` |
+| `no message 'size' on Str` | `Str` carries no messages | `$str/*` functions |
+| `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
+| `value is not callable: vkVoid` | Missing key read as `void`, then called | Check the path; supply `(?? m/k default)` |
+| `import source must be a namespace path or '^from "path"'` | Wrong import order | `(import [names] ^from "./path")` or `(import $str [names])` |
+| `break expects no arguments` | Carrying a value out of a loop | Assign to a binding before `(break)` |
+| `channel expects no positional arguments` | Capacity is named | `($channel ^capacity 2)` |
+| `actor/spawn expects no positional arguments` | Actor config is named | `($actor/spawn ^init … ^handle …)` |
+| `type field 'a?' may not end in '?'` | Optionality spelled on the key | `^a T?` — it lives on the type |
+| `missing required field 'a' for T` | Non-nil-admitting field omitted | Supply it, or widen the type to `Int?` |
+| `Env/snapshot expects a CallerEnv and a binding-name list` | Bare `snapshot` | `(caller_env .snapshot ["x"])` |
+| `message send expected Protocol, got vkType` | Qualified a type-direct message as `T:msg` | Send it bare; only protocols qualify |
+| `List/push expects 2 arguments, got 1` | Wrote `(xs/.push v)` | `(xs .push v)` — the path shortcut takes no arguments |
+
 ## Only `nil`, `false`, and `void` are falsy
 
 `""`, `0`, and `[]` are all **truthy**. A guard carried over from Python, JS, or
@@ -174,4 +199,3 @@ so review its output before adopting it wholesale:
 - A **nested map inside a list** gets its entries aligned far to the right,
   which conflicts with the convention against vertical argument alignment
   using arbitrary spaces.
-

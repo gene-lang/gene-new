@@ -254,16 +254,30 @@ understanding why the obvious mechanism does not provide it.
 
 ### D5.1 Why namespace filtering alone is not a sandbox
 
-
+Any module may name `$fs` and use it. There is no `import` line to audit,
+because `$fs` resolves straight from the builtins root:
 
 ```gene
 ($fs/write_text "/tmp/anything" "written")
 ```
 
-That call is denied in an empty context even though `$fs` resolves from the
-builtins root.
+That call runs in an ordinary module, and it writes the file.
 
 That rules out the two cheap fixes:
+
+- **Withholding arguments does nothing**, because the mod can name the
+  namespace itself. `gene run` arguments are ordinary program data; they say
+  nothing about what the application imports.
+- **Auditing a mod's `import` lines does nothing**, because the mod need not
+  write one.
+
+**So the sandbox has to be at the import boundary.** Every module root is
+`newGlobalScope(app)`, whose parent is `app.builtinsScope()` — the one shared
+root holding the language builtins and every standard-library namespace. A mod
+loaded into that scope has the filesystem whatever it is handed. The only shape
+that works is a module root parented to a **restricted builtins scope**, and
+nothing else in the VM confines a mod, so what that root leaves out is the whole
+boundary.
 
 ### D5.2 The restricted root (surface filtering)
 
@@ -1849,7 +1863,7 @@ The point of the project (§D8).
 A mod is **a Gene package** — `package.gene`, a `mods/<name>/` directory, real
 imports, real modules. Not a directory of scripts sharing a global table.
 
-Four things this gets that Luanti's Lua API does not:
+Three things this gets that Luanti's Lua API does not:
 
 1. **Real modules and real imports.** Namespaced, with a dependency graph the
    package manager already resolves, instead of `dofile` and a shared global.
@@ -2600,4 +2614,3 @@ examples/miclone/
   tools/                  harnesses that cannot be Gene — a DOM stub, the
                           process-booting smokes, and web_spec.mjs
 ```
-

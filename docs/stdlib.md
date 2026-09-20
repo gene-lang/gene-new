@@ -23,7 +23,7 @@ JSON supports objects, arrays, scalars, and escapes. Invalid input raises
 JsonError. Unsupported values, cycles, and non-finite floats are rejected.
 Use explicit conversion when crossing the web backend's Int/bigint boundary.
 
-## Files and permissions
+## Files
 
 This recipe writes a file under the launch directory:
 
@@ -33,16 +33,36 @@ This recipe writes a file under the launch directory:
 (read_text "greeting.txt")
 ```
 
-The native CLI grants no external authority by default. Supply a policy before
-the entry file, or use `gene eval` to have the runner display a returned value:
+Run a file with `gene run`, or use `gene eval` to have the runner display a
+returned value:
 
-For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching,
-locking and asynchronous filesystem adapters remain unsupported in the initial
-normalized profile until their operation/ownership contracts are adopted.
+```sh
+gene run report.gene
+gene eval '($fs/write_text "greeting.txt" "Hello from Gene")'
+```
+
+`write_text_atomic` stages and synchronizes a regular file, then publishes it in
+the same directory. For byte-oriented I/O use `read_bytes` / `write_bytes`.
+Filesystem watching, locking, and asynchronous filesystem adapters are also
+available.
 
 ## HTTP server
 
 Save this as `server.gene` and run it with `gene run server.gene`:
+
+```gene
+(import $net/http [listen serve text])
+
+(fn handle [request]
+  (match request/path
+    (when "/" (text 200 "Hello from Gene"))
+    (else (text 404 "Not found"))))
+
+(fn main [args]
+  (let server (listen ^host "127.0.0.1" ^port 8080))
+  (serve server ^handler handle)
+  0)
+```
 
 The server supports request tasks, routing, admission limits, timeouts,
 access/error hooks, actor-pool dispatch, and WebSockets. A sleeping request
@@ -55,16 +75,24 @@ adds forms, SQLite, and browser behavior.
 
 ## HTTP client
 
-`request` returns a Task. Use the streaming client operation for bounded chunk
-consumption and cancellation. Network operations require active permissions;
-host/setup errors are distinct from HTTP response status.
+```gene
+(import $net/http_client [request])
+(let response (await (request ^url "https://example.com")))
+($println response/status)
+```
 
-`send` accepts one immutable prepared request plus transport limits or `^ca_file`;
-it rejects replacement method, URL, headers, or body arguments. An explicit CA
-file requires separate filesystem read authority. Exact query bytes, including
-an empty query delimiter, survive preparation and transmission. Application
+`request` returns a Task. Use the streaming client operation for bounded chunk
+consumption and cancellation. Host/setup errors are distinct from HTTP response
+status.
+
+An explicit CA file can be supplied with `^ca_file`. Exact query bytes,
+including an empty query delimiter, survive transmission. Application
 Authorization/Cookie headers are ordinary request data; the client has no
-automatic credential or cookie store in this profile.
+automatic credential or cookie store.
+
+Redirects are returned without following them. The native transport uses fresh
+HTTP/1.1 connections, disables environment proxies, verifies TLS, and rejects
+protocol upgrades. Transport failures use `HttpClientError`.
 
 ## SQLite
 
@@ -81,9 +109,8 @@ Database backends expose the shared Db protocol. Bind SQL values as parameters:
 # [{^name "Ada"}]
 ```
 
-File-backed SQLite needs filesystem permission for its database location.
-It keeps a connection-local database image and publishes committed changes
-atomically through the filesystem provider. A separate `COMMIT` or outer
+File-backed SQLite keeps a connection-local database image and publishes
+committed changes atomically to its database file. A separate `COMMIT` or outer
 `RELEASE` publishes the batch before returning; `Db:exec` also preserves a
 committed prefix if a later statement fails or starts another transaction.
 Closing a connection discards unfinished transactions and does not rewrite
@@ -218,4 +245,3 @@ names. Embedded `web_module` code can enhance server-rendered markup; see
 
 Use the [language guide](language.md) for call, message, and import syntax.
 Exact lifecycle and boundary rules remain in [the specification](spec/README.md).
-

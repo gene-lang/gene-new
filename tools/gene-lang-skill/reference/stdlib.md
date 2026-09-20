@@ -16,6 +16,18 @@ $ /tmp/dump_globals
 
 Reached bare-with-`$`: `($println x)`, `($size xs)`.
 
+```text
+$ != * + - / // < <= == > >= not panic same?
+absent? nil? present? void? empty? leaf? contains? size first last
+head props body meta declarations construct_type
+map filter take into to_stream to_pairs_stream
+freeze freeze_shallow thaw assoc_in update_in key range
+to_str to_sym to_int to_float hash chars graphemes
+cell atomic_cell channel buffer bytes Set set_has? set_size Regex
+date datetime time duration timezone now today sleep
+read_all read_one lex_all print println
+```
+
 Arithmetic is prefix, and **`//` is remainder, not floor division**: `(/ 7 2)`
 is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 
@@ -53,7 +65,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 
 | Namespace | Functions | Types / sub-namespaces |
 |---|---|---|
-| `$fs` | `exists?` `list_dir` `make_dir` `read_bytes` `read_text` `read_text_async` `real_path` `remove` `watch` `write_bytes` `write_text` `write_text_async` `write_text_atomic` | `FsChange` `FsWatcher` `WatcherClosed`; |
+| `$fs` | `exists?` `list_dir` `make_dir` `read_bytes` `read_text` `read_text_async` `real_path` `remove` `watch` `write_bytes` `write_text` `write_text_async` `write_text_atomic` | `FsChange` `FsWatcher` `WatcherClosed` |
 | `$str` | `byte_size` `contains?` `ends_with?` `from_utf8` `join` `lower` `slice_bytes` `split` `starts_with?` `to_utf8` `trim` | — |
 | `$stream` | `each` `filter` `into` `map` `take` `to_pairs_stream` `to_stream` | — |
 | `$math` | `abs` `acos` `asin` `atan` `atan2` `ceil` `clamp` `cos` `exp` `floor` `hypot` `log` `log10` `log2` `max` `min` `pow` `round` `sign` `sin` `sqrt` `tan` `trunc` | `e` `pi` `tau` |
@@ -125,4 +137,3 @@ code points.
 Where a name appears both as a root function and a message (`size`, `empty?`,
 `first`, `last`, `contains?`, `to_stream`), they are the *same* function value,
 so `($size xs)` and `xs/.size` are interchangeable.
-
