@@ -53,7 +53,7 @@
         (LoaderOptions
           ^plugin_root "fixtures/plugins"
           ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
-          ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+          ^max_namespaces []
           ^default_limits nil ^reload_policy nil)))
 
     (var first_manifest
@@ -190,7 +190,7 @@
       (runtime .loader
         (LoaderOptions
           ^plugin_root "fixtures/plugins" ^shared []
-          ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+          ^max_namespaces []
           ^default_limits nil ^reload_policy nil)))
     (var manifest
       {^format 1

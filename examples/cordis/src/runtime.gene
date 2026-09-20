@@ -140,8 +140,8 @@
   ^props {^token Any}
   (message reconcile [manifest, mode = nil]
     (loader_reconcile self manifest mode))
-  (message reconcile_plugins [manifest, plugins, ^policies policies = #{}]
-    (loader_reconcile_plugins self manifest plugins policies))
+  (message reconcile_plugins [manifest, plugins]
+    (loader_reconcile_plugins self manifest plugins))
   (message reload [changed_paths] (loader_reload self changed_paths))
   (message inspect [] (loader_inspect self))
   (message await_settled [] : Nil (loader_await_settled self))
@@ -214,7 +214,6 @@
   ^private true
   ^props {^token Any ^id Int ^runtime RuntimeRecord ^parent Any ^owner Any
           ^operator Bool ^alive Any ^realms Any ^overlays Any ^allowed Any
-          ^capabilities_restricted Bool
           ^limits InvocationLimits ^generation Any})
 
 (type InstanceRecord
@@ -265,7 +264,7 @@
   ^private true
   ^props {^token Any ^runtime RuntimeRecord ^options LoaderOptions
           ^entries Any ^order Any ^manifest Any ^state Any
-          ^generations Any ^watchers Any ^host_plugins Any ^host_policies Any})
+          ^generations Any ^watchers Any ^host_plugins Any})
 
 (type LoaderEntryRecord
   ^private true
@@ -497,11 +496,7 @@
   (var policy {^max_steps call/limits/max_steps
                ^max_memory_mb call/limits/max_memory_mb
                ^timeout_ms call/limits/timeout_ms})
-  (var wrapper
-    (if call/capabilities_restricted
-      ($runtime/bind_call call/callable call/args
-        ^policy policy)
-      ($runtime/bind_call call/callable call/args ^policy policy)))
+  (var wrapper ($runtime/bind_call call/callable call/args ^policy policy))
   (var task nil)
   (var outcome nil)
   (try
@@ -571,18 +566,12 @@
       (context_record_even_if_closed call_context)
       (if (absent? instance/context) nil
         (context_record_even_if_closed (instance/context .get)))))
-  (var selectors
-    (if (absent? context) (fresh_list) context/capabilities))
-  (var restricted
-    (if (absent? context) false context/capabilities_restricted))
   (var limits
     (if (absent? context) runtime/default_limits context/limits))
   (var call
     ($freeze_shallow
       (PluginCall ^kind kind ^callable callable ^args ($freeze_shallow args)
                   ^instance_uid instance/uid ^entry_id instance/entry_id
-                  ^capability_selectors ($freeze_shallow selectors)
-                  ^capabilities_restricted restricted
                   ^logger (logger_for_instance runtime instance)
                   ^limits limits)))
   (if owned
@@ -604,16 +593,13 @@
 # --- runtime and contexts --------------------------------------------------
 
 (fn new_context_record ^^private
-  [runtime, parent, owner, operator : Bool, realms, overlays, allowed,
-   capabilities, capabilities_restricted : Bool, limits]
+  [runtime, parent, owner, operator : Bool, realms, overlays, allowed, limits]
   (var id (runtime/next_context .get))
   (runtime/next_context .set (+ id 1))
   (var record
     (ContextRecord ^token ($cell nil) ^id id ^runtime runtime ^parent parent
                    ^owner owner ^operator operator ^alive ($cell true)
                    ^realms realms ^overlays overlays ^allowed allowed
-                  
-                   ^capabilities_restricted capabilities_restricted
                    ^limits limits
                    ^generation ($cell 1)))
   ((runtime/contexts .get) .push record)
@@ -711,7 +697,7 @@
   ((runtime_records .get) .push record)
   (var root_record
     (new_context_record record nil nil true
-      (fresh_map) (fresh_map) (fresh_map) (fresh_list) false limits))
+      (fresh_map) (fresh_map) (fresh_map) limits))
   (var root (Context ^token root_record/token))
   (record/root .set root)
   ((record/hook_keys .get) .put hmr_reloaded/id hmr_reloaded)
@@ -840,22 +826,13 @@
                      ($freeze config)]))))
   rows)
 
-(fn list_subset? ^^private [child, parent, parent_restricted : Bool] : Bool
-  (if_not parent_restricted (return true))
-  (for candidate in child
-    (var found false)
-    (for allowed in parent
-      (if (== candidate allowed) (set found true)))
-    (if_not found (return false)))
-  true)
-
 (fn context_derive ^^private [handle : Context, options]
   (var parent (context_record handle))
   (if_not (== ($head options) Map)
     (cordis_failure ConfigValidationError "Context/derive expects a map"))
   (for [name value] in options
     (var option_name ($to_str name))
-    (if_not (["isolate" "intercept" "capabilities" "limits"] .contains? option_name)
+    (if_not (["isolate" "intercept" "limits"] .contains? option_name)
       (cordis_failure ConfigValidationError
         $"unknown Context/derive option ^${option_name}")))
   (var realms (copy_map parent/realms))
@@ -868,24 +845,10 @@
     (var configs (?? (overlays .get row/0/id) (fresh_list)))
     (configs .push row/1)
     (overlays .put row/0/id configs))
-  (var capabilities parent/capabilities)
-  (var capabilities_restricted parent/capabilities_restricted)
-  (var requested (options .get "capabilities"))
-  (if_not (== requested void)
-    (if_not (== ($head requested) List)
-      (cordis_failure ConfigValidationError
-        "Context/derive be a list"))
-    (if_not (list_subset? requested parent/capabilities
-                          parent/capabilities_restricted)
-      (cordis_failure ConfigValidationError
-        "derived capabilities may only narrow their parent"))
-    (set capabilities (copy_list requested))
-    (set capabilities_restricted true))
   (var limits (narrow_limits (options .get "limits") parent/limits))
   (var child
     (new_context_record parent/runtime parent parent/owner parent/operator
-      realms overlays (copy_map parent/allowed) capabilities
-      capabilities_restricted limits))
+      realms overlays (copy_map parent/allowed) limits))
   (context_handle child))
 
 # --- descriptors and instances -------------------------------------------
@@ -1024,8 +987,7 @@
   (var context
     (new_context_record runtime parent record false
       (copy_map parent/realms) (copy_map parent/overlays)
-      (make_allowed_keys plugin) (copy_list parent/capabilities)
-      parent/capabilities_restricted parent/limits))
+      (make_allowed_keys plugin) parent/limits))
   (record/context .set (ActivationContext ^token context/token))
   (reserve_instance_providers record)
   ((runtime/instances .get) .push record)
@@ -1669,9 +1631,6 @@
     ($freeze_shallow
       (PluginCall ^kind kind ^callable callable ^args ($freeze_shallow args)
                   ^instance_uid 0 ^entry_id nil
-                  ^capability_selectors
-                    ($freeze_shallow context/capabilities)
-                  ^capabilities_restricted context/capabilities_restricted
                   ^logger (logger_for_instance context/runtime nil)
                   ^limits context/limits)))
   (context/runtime/invoker .PluginInvoker:invoke call))
@@ -2203,14 +2162,6 @@
     (if_not (== ($head name) Str)
       (cordis_failure CompositionError
         "loader max_namespaces entries must be Str")))
-  (if_not (== ($head options/capability_catalog) Map)
-    (cordis_failure CompositionError
-      "loader capability_catalog must be a map"))
-  (if (&& (! (absent? options/capability_ceiling))
-          (!= ($head options/capability_ceiling) List)
-          (!= ($head options/capability_ceiling) Map))
-    (cordis_failure CompositionError
-      "loader capability_ceiling must be a list, map, or nil"))
   (var limits
     (if (absent? options/default_limits)
       runtime/default_limits
@@ -2222,8 +2173,6 @@
     ^plugin_root options/plugin_root
     ^shared ($freeze (copy_list options/shared))
     ^max_namespaces ($freeze (copy_list options/max_namespaces))
-    ^capability_catalog ($freeze_shallow options/capability_catalog)
-    ^capability_ceiling options/capability_ceiling
     ^default_limits limits ^reload_policy options/reload_policy
     ^publication options/publication ^allow_pending options/allow_pending
     ^descriptor_factory options/descriptor_factory))
@@ -2245,7 +2194,6 @@
                   ^manifest ($cell nil) ^state ($cell "open")
                   ^generations ($cell (fresh_list))
                   ^host_plugins ($cell (fresh_map))
-                  ^host_policies ($cell (fresh_map))
                   ^watchers ($cell (fresh_list))))
   (current .push record)
   (runtime/loaders .set current)
@@ -2291,33 +2239,6 @@
     (out .push name))
   out)
 
-(fn resolve_manifest_capabilities ^^private [loader, value]
-  (var requested (if (absent? value) (fresh_list) value))
-  (if_not (== ($head requested) List)
-    (cordis_failure CompositionError "entry capabilities must be a list"))
-  (var out (fresh_list))
-  (for id in requested
-    (if_not (== ($head id) Str)
-      (cordis_failure CompositionError
-        "entry capability ids must be Str"))
-    (var selector (loader/options/capability_catalog .get id))
-    (if (== selector void)
-      (cordis_failure CompositionError
-        $"entry requests unknown capability selector ${id}"))
-    (var ceiling loader/options/capability_ceiling)
-    (if_not (absent? ceiling)
-      (var allowed
-        (if (== ($head ceiling) List)
-          (ceiling .contains? id)
-          (if (== ($head ceiling) Map)
-            (!= (ceiling .get id) void)
-            false)))
-      (if_not allowed
-        (cordis_failure CompositionError
-          $"entry capability ${id} exceeds the loader ceiling")))
-    (out .push selector))
-  out)
-
 (fn validate_service_id_map ^^private [loader, value, field : Str]
   (if (absent? value) (return #{}))
   (if_not (== ($head value) Map)
@@ -2332,7 +2253,7 @@
     (cordis_failure CompositionError "manifest entries must be maps"))
   (var allowed
     ["id" "plugin_id" "module" "config" "disabled" "group" "children"
-     "isolate" "intercept" "namespaces" "capabilities" "limits"])
+     "isolate" "intercept" "namespaces" "limits"])
   (for [name value] in entry
     (var key ($to_str name))
     (if_not (allowed .contains? key)
@@ -2394,8 +2315,6 @@
       (validate_service_id_map loader (entry .get "intercept") "intercept"))
     (var namespaces
       (resolve_manifest_namespaces loader (entry .get "namespaces")))
-    (var capabilities
-      (resolve_manifest_capabilities loader (entry .get "capabilities")))
     (var limits (validate_manifest_limit_map loader (entry .get "limits")))
     (var normalized
       ($freeze
@@ -2405,7 +2324,6 @@
          ^config ($freeze (manifest_value entry "config" nil))
          ^isolate isolate ^intercept intercept
          ^namespaces ($freeze namespaces)
-        
          ^limits limits}))
     (out .push normalized)
     (if group
@@ -2427,15 +2345,11 @@
   out)
 
 (fn entry_context_signature ^^private [row, parent_signature : Str] : Str
-  $"${parent_signature}|${row/isolate}|${row/intercept}|${row/capabilities}|${row/limits/max_steps}:${row/limits/max_memory_mb}:${row/limits/timeout_ms}")
+  $"${parent_signature}|${row/isolate}|${row/intercept}|${row/limits/max_steps}:${row/limits/max_memory_mb}:${row/limits/timeout_ms}")
 
-(fn derive_loader_context ^^private [loader, parent, row, host_policy = nil]
-  (var options {^isolate row/isolate ^intercept row/intercept ^limits row/limits})
-  (if (absent? host_policy)
-    (options .put "capabilities" row/capabilities)
-    (if_not (== host_policy/inherit true)
-      (options .put "capabilities" host_policy/selectors)))
-  (parent .derive options))
+(fn derive_loader_context ^^private [loader, parent, row]
+  (parent .derive
+    {^isolate row/isolate ^intercept row/intercept ^limits row/limits}))
 
 (fn prepare_loader_entry ^^private [loader, row, transaction, host_plugin = nil]
   (if_not (absent? host_plugin)
@@ -2556,11 +2470,9 @@
   (loader_entry_from_source loader row context
     {^generation nil ^module nil ^plugin host_plugin ^graph nil} instance))
 
-(fn loader_reconcile_incremental ^^private [loader, manifest, rows, host_plugins = nil, host_policies = nil]
+(fn loader_reconcile_incremental ^^private [loader, manifest, rows, host_plugins = nil]
   (var admitted (if (absent? host_plugins) (fresh_map) host_plugins))
-  (var policies (if (absent? host_policies) (fresh_map) host_policies))
   (var old_admitted (loader/host_plugins .get))
-  (var old_policies (loader/host_policies .get))
   (var old_entries (loader/entries .get))
   (var desired_ids (fresh_map))
   (for row in rows (desired_ids .put row/id row))
@@ -2577,9 +2489,8 @@
       (|| (== desired void) desired/disabled
           (!= desired/group entry/group)
           (!= desired/module entry/module_path)
-          # A host plugin is replaced when its admitted value or policy changes.
-          (! (same? (admitted .get id) (old_admitted .get id)))
-          (!= (policies .get id) (old_policies .get id))))
+          # A host plugin is replaced when its admitted value changes.
+          (! (same? (admitted .get id) (old_admitted .get id)))))
     (if remove
       (then
         (dispose_loader_entry loader entry)
@@ -2618,7 +2529,7 @@
       (else
         (if (== existing void)
           (then
-            (var context (derive_loader_context loader parent_context row (policies .get row/id)))
+            (var context (derive_loader_context loader parent_context row))
             (var host_plugin (admitted .get row/id))
             (var created
               (if row/group
@@ -2658,7 +2569,6 @@
   (loader/manifest .set ($freeze manifest))
   (runtime_await_settled (Runtime ^token loader/runtime/token))
   (loader/host_plugins .set admitted)
-  (loader/host_policies .set policies)
   (loader_snapshot loader "incremental" ($freeze changed)))
 
 (fn runtime_instance_is_loader_owned? ^^private [instance] : Bool
@@ -2734,7 +2644,7 @@
   {^generation prepared/generation ^module prepared/module
    ^plugin prepared/plugin ^graph prepared/graph ^prepared true})
 
-(fn build_staged_entries ^^private [loader, candidate, transaction, rows, force_ids, host_plugins, host_policies]
+(fn build_staged_entries ^^private [loader, candidate, transaction, rows, force_ids, host_plugins]
   (var old_entries (loader/entries .get))
   (var entries (fresh_map))
   (var order (fresh_list))
@@ -2750,7 +2660,7 @@
         (signatures .get row/parent_id)))
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
-    (var context (derive_loader_context loader parent_context row (host_policies .get row/id)))
+    (var context (derive_loader_context loader parent_context row))
     # `derive_loader_context` receives only the parent handle and row values;
     # use the candidate record for service/catalog lookups through that handle.
     (var context_record_value (context_record context))
@@ -2977,8 +2887,7 @@
   (var cloned
     (new_context_record candidate candidate_root nil source/operator
       (copy_map source/realms) (copy_map source/overlays)
-      (copy_map source/allowed) (copy_list source/capabilities)
-      source/capabilities_restricted source/limits))
+      (copy_map source/allowed) source/limits))
   (Context ^token cloned/token))
 
 (fn build_direct_candidate_revisions ^^private [candidate, replaced_direct]
@@ -3092,7 +3001,6 @@
   (loader/order .set staged/order)
   (loader/manifest .set ($freeze manifest))
   (loader/host_plugins .set staged/host_plugins)
-  (loader/host_policies .set staged/host_policies)
   (rebuild_runtime_indexes live)
   (for instance in (candidate/instances .get)
     (if_yes (== (instance/state .get) InstanceState/active)
@@ -3153,9 +3061,8 @@
     (if (== (staged_entries .get id) void) (changed .push id)))
   changed)
 
-(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil, host_policies = nil]
+(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil]
   (var admitted (if (absent? host_plugins) (loader/host_plugins .get) host_plugins))
-  (var policies (if (absent? host_policies) (loader/host_policies .get) host_policies))
   (var old_entries (copy_map (loader/entries .get)))
   (var old_order (copy_list (loader/order .get)))
   (var retiring (fresh_map))
@@ -3176,10 +3083,9 @@
       (set prepared true))
     (set candidate (new_candidate_runtime loader replaced_direct))
     (set staged
-      (build_staged_entries loader candidate transaction rows force_ids admitted policies))
+      (build_staged_entries loader candidate transaction rows force_ids admitted))
     (staged .put "publication_ticket" ticket)
     (staged .put "host_plugins" admitted)
-    (staged .put "host_policies" policies)
     (staged .put "direct_revisions"
       (build_direct_candidate_revisions candidate direct_roots))
     (staged .put "direct_replaced" replaced_direct)
@@ -3198,7 +3104,7 @@
   (publish_staged_runtime loader candidate staged old_entries old_order manifest)
   (loader_snapshot loader "staged" ($freeze changed)))
 
-(fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins, policies]
+(fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins]
   ($runtime/require_root_lane)
   (var loader (loader_record handle))
   (if_not (== (loader/state .get) "open")
@@ -3215,36 +3121,6 @@
     (validate_plugin_spec loader/runtime plugin)
     (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
       (cordis_failure CompositionError $"host plugin ${id} does not match plugin_id")))
-  (if_not (== ($head policies) Map)
-    (cordis_failure CompositionError "host entry policies must be a map"))
-  (var checked (fresh_map))
-  (for [id policy] in policies
-    (var row (ids .get id))
-    (if (|| (absent? row) row/group (!= ($head policy) Map))
-      (cordis_failure CompositionError $"invalid host policy for entry ${id}"))
-    (for [name value] in policy
-      (if_not (["inherit" "selectors"] .contains? ($to_str name))
-        (cordis_failure CompositionError $"unknown host policy field ${name}")))
-    (var inherit (manifest_value policy "inherit" false))
-    (var selectors (manifest_value policy "selectors" #[]))
-    (if (|| (!= ($head inherit) Bool) (!= ($head selectors) List))
-      (cordis_failure CompositionError "host policy needs Bool inherit and List selectors"))
-    (if (&& inherit (absent? (plugins .get id)))
-      (cordis_failure CompositionError "only an admitted host plugin may inherit host authority"))
-    (if_not (absent? loader/options/capability_ceiling)
-      (var allowed (fresh_list))
-      (for [capability selector] in loader/options/capability_catalog
-        (var permitted
-          (if (== ($head loader/options/capability_ceiling) List)
-            (loader/options/capability_ceiling .contains? capability)
-            (!= (loader/options/capability_ceiling .get capability) void)))
-        (if permitted (allowed .push selector)))
-      (if inherit
-        (cordis_failure CompositionError "host inheritance cannot bypass a loader capability ceiling"))
-      (for selector in selectors
-        (if_not (allowed .contains? selector)
-          (cordis_failure CompositionError "host selector exceeds loader capability ceiling"))))
-    (checked .put id {^inherit inherit ^selectors ($freeze_shallow (copy_list selectors))}))
   # Admissions are read by row ID so each keeps the caller's value identity,
   # which incremental reconciliation compares to decide whether an entry changed.
   (var admitted (fresh_map))
@@ -3255,8 +3131,8 @@
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
   (if (absent? loader/options/publication)
-    (loader_reconcile_incremental loader manifest rows admitted checked)
-    (loader_reconcile_staged loader manifest rows #[] admitted checked)))
+    (loader_reconcile_incremental loader manifest rows admitted)
+    (loader_reconcile_staged loader manifest rows #[] admitted)))
 
 (fn loader_reconcile ^^private [handle : Loader, manifest, mode]
   (var loader (loader_record handle))
@@ -3274,7 +3150,7 @@
     (when ReconcileMode/incremental
       (loader_reconcile_incremental loader manifest rows))
     (when ReconcileMode/staged
-      (loader_reconcile_staged loader manifest rows #[] (fresh_map) (fresh_map)))))
+      (loader_reconcile_staged loader manifest rows #[] (fresh_map)))))
 
 (fn affected_uses_stop_start? ^^private [loader, affected] : Bool
   (for id in affected

@@ -54,8 +54,6 @@
           ^args (List Any)
           ^instance_uid Int
           ^entry_id Str?
-          ^capability_selectors List
-          ^capabilities_restricted Bool
           ^logger Logger?
           ^limits InvocationLimits})
 
@@ -63,8 +61,6 @@
   ^props {^plugin_root Str
           ^shared (List Str)
           ^max_namespaces (List Str)
-          ^capability_catalog Map
-          ^capability_ceiling Any
           ^default_limits InvocationLimits?
           ^reload_policy Any?
           ^publication PublicationParticipant?

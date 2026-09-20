@@ -19,7 +19,7 @@ The supported library entry is `src/cordis.gene`. Sandboxed plugins import only
 (var loader
   (runtime .loader
     (LoaderOptions ^plugin_root "plugins" ^shared ["src/plugin_api.gene"]
-      ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+      ^max_namespaces []
       ^default_limits nil ^reload_policy nil)))
 ```
 
@@ -66,12 +66,6 @@ without a host admission still use sandbox module loading. These admissions
 stay outside the data-only manifest and are retained for reload; a subsequent
 host reconciliation supplies the complete admission map.
 
-Its optional `^policies` map admits per-entry host policy: `selectors` holds
-capability specifications, and `inherit` defaults to false. Inheritance is
-allowed only for explicitly admitted host plugins and cannot bypass a configured
-loader ceiling. Source-loaded plugins always receive an explicit restricted
-context. These policy values are host inputs, separate from the data manifest.
-
 `LoaderOptions.publication` optionally accepts a `PublicationParticipant`.
 Cordis calls `prepare` before candidate activation, `publish(ticket)` while
 replacing live indexes and before notifications or old cleanup, and
@@ -87,7 +81,7 @@ Owned children deliberately disposed during staging are no longer desired
 effects and do not prevent publication. Loader ownership includes descendants,
 so their providers cannot leak from a retired generation into its candidate.
 Lifecycle transitions run on the runtime's host executor. A notification from
-restricted plugin code therefore cannot impose its ambient permissions or
+restricted plugin code therefore cannot impose its execution limits or
 deadline on host transition bookkeeping; `PluginInvoker` still applies each
 plugin's own context and limits to its callbacks.
 

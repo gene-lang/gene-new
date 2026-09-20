@@ -17,7 +17,7 @@
     (runtime .loader
       (LoaderOptions ^plugin_root "plugins"
         ^shared ["src/plugin_api.gene" "src/demo_contract.gene"]
-        ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+        ^max_namespaces []
         ^default_limits nil ^reload_policy nil)))
   (loader .reconcile
     {^format 1

@@ -9,8 +9,8 @@ The supported import surface is `src/cordis.gene`. The core state machines live
 in `src/runtime.gene`; `effects.gene`, `hooks.gene`, `invocation.gene`, and
 `loader.gene` are focused import façades, while `include.gene`, `hmr.gene`, and
 `timer.gene` are optional adapters. `gene test` from this directory exercises
-the public lifecycle, service, effect, hook, loader, capability, recovery, and
-timer contracts. `gene run probes/hmr.gene` additionally performs a real
+the public lifecycle, service, effect, hook, loader, recovery, and timer
+contracts. `gene run probes/hmr.gene` additionally performs a real
 source rewrite, rollback, candidate swap, and filesystem-watcher reload before
 restoring the fixture.
 
@@ -204,8 +204,8 @@ The implementation is correct only if all of these remain true:
    alone does not retry it; explicit `update` or `restart` does.
 8. Config validation completes before committed config changes. Invalid config
    neither unloads the old activation nor mutates the instance.
-9. A child context may narrow service visibility, namespace access, and Gene
-   capabilities. It may not amplify any of them.
+9. A child context may narrow service visibility, namespace access, and
+   execution limits. It may not amplify any of them.
 10. Plugin code cannot mutate the runtime's provider index, dependency graph,
     realm table, or effect ledger except through the public interface.
 11. Runtime shutdown stops accepting work, disposes instances in dependency
@@ -352,8 +352,8 @@ anywhere else. `RuntimeOptions/logger` is the base logger described in section
 narrows them. Limits may be narrowed but never raised above the runtime value.
 
 `LoaderOptions` contain the trusted plugin root, admitted shared modules,
-maximum namespace set, capability catalog and ceiling, default invocation
-limits, and reload policy. They are host values, never manifest data.
+maximum namespace set, default invocation limits, and reload policy. They are
+host values, never manifest data.
 `Runtime/loader` returns an owned façade over the runtime's private engine;
 context movement and prospective provider indexes are deliberately absent from
 the ordinary `Runtime` interface.
@@ -432,16 +432,15 @@ protocol.
     ($os/monotonic_ms)))
 ```
 
-`$os/monotonic_ms` requires the `clock/Monotonic` capability, which makes this
-the smallest complete illustration of the loader rule below: a provider's
-authority comes from the ceiling its module was loaded under, never from its
-manifest entry and never from the fact that it claims a service named `clock`.
-The two failure points are both intended. An entry that *requests*
-`clock/Monotonic` beyond the host ceiling is rejected at load, before any effect
-runs. An entry that requests nothing and calls anyway activates cleanly and
-fails at its first `now_ms`, because a capability is checked where it is
-exercised. What never happens is the third possibility: the runtime reading a
-service id and inferring a grant from it.
+`$os/monotonic_ms` reaches the `os` namespace, which makes this the smallest
+complete illustration of the loader rule below: a provider's reach into the
+standard library is the namespace set its module was loaded with, never the fact
+that it claims a service named `clock`. The two failure points are both
+intended. An entry that *requests* a namespace beyond the loader's maximum set is
+rejected at load, before any effect runs. An entry that requests nothing and
+calls anyway activates cleanly and fails at its first `now_ms`, because the
+namespace is resolved where it is used. What never happens is the third
+possibility: the runtime reading a service id and inferring a grant from it.
 
 The explicit key matters. The same protocol may occupy two independently
 isolated slots, and unrelated keys may intentionally use the same contract.
@@ -549,7 +548,7 @@ A `Context` is an immutable view containing:
 - a persistent service-key-to-realm map;
 - persistent config-overlay rows;
 - the allowed service-key set derived from requirements and provisions; and
-- the entry/call-site capability attenuation policy.
+- the execution limits that apply to calls made through the view.
 
 Derivation returns a new view and does not mutate the parent:
 
@@ -1021,13 +1020,12 @@ children        ordered nested entries
 isolate         service id -> true or named realm label
 intercept       service id -> config overlay
 namespaces      requested external stdlib namespaces
-capabilities    requested capability selectors
 limits          requested narrowing of step, memory, and timeout limits
 ```
 
 Unknown fields, duplicate sibling ids, invalid groups, unknown service ids,
-malformed selectors, and limits above the loader ceiling are rejected before
-reconciliation. Generated ids are allowed only for interactive creation and
+namespaces beyond the loader's maximum set, and limits above the loader ceiling
+are rejected before reconciliation. Generated ids are allowed only for interactive creation and
 are persisted immediately; authored manifests should always specify ids.
 
 `disabled` is inherited. A group itself remains present while its descendants
@@ -1035,7 +1033,7 @@ are disabled or enabled. Moving an entry changes its parent context; the loader
 recomputes realms, overlays, and dependency epochs before deciding whether the
 plugin must restart.
 
-### 12.3 Module loading and capabilities
+### 12.3 Module loading
 
 The loader resolves every entry beneath the host-supplied plugin root and
 prepares it inside a Gene sandbox transaction:
@@ -1060,8 +1058,8 @@ not have to know dependency digests before loading the graph that discovers
 them. Every plugin graph, including a first load, therefore has one explicit,
 reclaimable owner.
 
-The root, admitted shared modules, maximum namespace set, and capability
-ceiling come from trusted host configuration. A manifest may request a subset;
+The root, admitted shared modules, and maximum namespace set come from trusted
+host configuration. A manifest may request a subset;
 it cannot mint a grant. `prepare` bounds compilation, macro expansion, module
 initialization, and later escaped calls with `execution_policy`; untrusted
 top-level code never runs before its limits exist. The plugin format still
@@ -1079,11 +1077,6 @@ match `PluginSpec/id`; the entry's own `id` remains the instance address, so one
 plugin spec can be installed more than once. Config schema, requirements,
 provisions, and every referenced key are validated without activating the
 plugin.
-
-Manifest capability selectors are inert data resolved through a host-admitted
-capability catalog. Trusted loader code expands only those known rows into
-selector forms for the sandbox policy and later `PluginCall` rows; it never
-evaluates an arbitrary manifest expression.
 
 The loader retains `generation/graph` for change analysis. A failed staged
 composition calls `SandboxTransaction/discard`. A successful commit publishes
@@ -1133,8 +1126,7 @@ patches, and gives the result to the loader. Patches may override a known entry
 or insert children into a known group. A patch that names the expected module
 must match it; otherwise it is skipped with a warning.
 
-Writes use Gene's atomic `Store`/filesystem operations under explicit
-filesystem capabilities:
+Writes use Gene's atomic `Store`/filesystem operations:
 
 ```text
 serialize complete candidate
@@ -1153,8 +1145,7 @@ or explicit host preprocessing.
 
 Reload is a composition transaction:
 
-1. Debounce and coalesce changed paths. The file adapter uses capability-gated
-   `$fs/watch`; tests and embedding hosts may call `Loader/reload` directly.
+1. Debounce and coalesce changed paths. The file adapter uses `$fs/watch`; tests and embedding hosts may call `Loader/reload` directly.
 2. Compute affected plugin entry roots from the immutable graph snapshot
    retained with every live sandbox generation.
 3. If a changed module belongs to the runtime, loader, or admitted shared
@@ -1419,7 +1410,6 @@ examples/cordis/
     hooks.gene
     quiescence.gene
     loader.gene
-    loader_capabilities.gene
     include.gene
     recovery.gene
     stop_start.gene
@@ -1435,8 +1425,8 @@ independently supported interfaces. `cordis.gene` exports the host-facing
 `Runtime`, `Loader`, values, protocols, constructors, and default invoker. Only
 `plugin_api.gene` and specifically admitted service or hook contract modules
 are shared with sandboxed plugins. Key constructors, admission operations,
-loader, include, HMR, filesystem, runtime sandbox controls, generation handles,
-and host capability objects are never shared.
+loader, include, HMR, filesystem, runtime sandbox controls, and generation
+handles are never shared.
 
 ## 19. Verification
 
@@ -1458,7 +1448,7 @@ private state transitions.
 - update/restart recovers a failed instance;
 - dropped update results do not become unobserved task failures;
 - every plugin-supplied call kind passes through the configured `PluginInvoker`
-  exactly once with narrowed limits and capabilities;
+  exactly once with narrowed limits;
 - unload rejects new external invocations, waits for in-flight calls, runs
   cleanup through the invoker, and self-disposal from a hook does not deadlock;
 - construction away from the root lane is rejected; and
@@ -1541,8 +1531,8 @@ cheaper than discovering the same gap from a second example written to fit.
 The result is recognizably Cordis: contexts control where services resolve,
 instances control when plugins exist, and effects make teardown a property of
 the runtime rather than plugin discipline. It is also recognizably Gene:
-protocols remain the service contracts, modules and capabilities remain real
-security seams, structured concurrency owns work, nominal values replace
+protocols remain the service contracts, modules remain real security
+seams, structured concurrency owns work, nominal values replace
 stringly typed identity where possible, and lifecycle behavior is explicit at
 the call site.
 
