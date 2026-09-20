@@ -35,11 +35,11 @@ proc runLoggingSource(source: string): Value =
 
 proc runLoggingSourceAt(source, root: string): Value =
   let app = newApplication(root)
-  # `newApplication`'s argument anchors *module resolution*, not authority:
-  # the launch directory deliberately anchors relative file paths so that
+  # `newApplication`'s argument anchors *module resolution* only: the launch
+  # directory deliberately anchors relative file paths so that
   # `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
   # file (vm.nim, newApplicationState). A test writing under `root` therefore
-  # has to grant `root` the way an embedding host or `--allow_*` would.
+  # uses absolute paths beneath it.
   run(compileSource(source), newGlobalScope(app))
 
 proc loggingGeneQuote(text: string): string =

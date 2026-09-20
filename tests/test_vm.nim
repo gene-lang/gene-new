@@ -2080,6 +2080,14 @@ suite "vm — env and eval":
   test "eval compiles and executes a quoted node inside env bindings":
     ck "(var e (env ^bindings {^x 10})) (eval (quote (+ x 5)) ^in e)", "15"
 
+  test "eval inherits the scope it is written in, and Env bindings add to it":
+    # Evaluated code runs under the target environment's lexical bindings
+    # *and* the evaluator's: an Env adds names to the surrounding scope rather
+    # than hiding it.
+    ck "(var visible \"seen\") (var e (env ^bindings {^x 1})) " &
+       "[(eval (quote visible) ^in e) (eval (quote x) ^in e)]",
+       "[\"seen\" 1]"
+
   test "a caller_env snapshot stays closed over the evaluating scope":
     # The one Env that does *not* inherit: a snapshot promises exactly the names
     # it captured, so a window onto the live scope would defeat naming them.

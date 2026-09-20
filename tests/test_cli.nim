@@ -155,6 +155,56 @@ suite "cli — gene run":
         if stripped.startsWith("(import"):
           check "plugins/" notin stripped
 
+  test "filesystem checkpoint generation claims are cross-process exclusive":
+    let root = cliDir / "harness_store_process_cas"
+    if dirExists(root): removeDir(root)
+    createDir(root)
+    let contender = writeCliProgram("harness_store_contender.gene", """
+(import $store/fs [open : store_open Store StoreError])
+(import $fs [write_text exists?])
+(fn main [args]
+  (var root args/0)
+  (var id args/1)
+  (write_text $"${root}/ready-${id}" "ready")
+  (while (! (&& (exists? $"${root}/ready-a")
+                (exists? $"${root}/ready-b"))) nil)
+  (var store (store_open ^root root))
+  (try
+    (store .Store:checkpoint 1 {^state {^winner id}})
+    ($println $"committed ${id}")
+  catch StoreError
+    ($println $"${$err/kind} ${id}")))
+""")
+    let first = startProcess(geneExe,
+      args = ["run", contender, root, "a"],
+      options = {poStdErrToStdOut})
+    let second = startProcess(geneExe,
+      args = ["run", contender, root, "b"],
+      options = {poStdErrToStdOut})
+    let firstCode = first.waitForExit(10000)
+    let secondCode = second.waitForExit(10000)
+    let firstOutput = first.outputStream.readAll()
+    let secondOutput = second.outputStream.readAll()
+    first.close()
+    second.close()
+    check firstCode == 0
+    check secondCode == 0
+    let combined = firstOutput & secondOutput
+    check combined.count("committed ") == 1
+    check combined.count("conflict ") == 1
+
+    let reader = writeCliProgram("harness_store_reader.gene", """
+(import $store/fs [open : store_open Store])
+(fn main [args]
+  (var store (store_open ^root args/0))
+  (var loaded (store .Store:load_checkpoint))
+  ($println loaded/generation loaded/records/state/winner))
+""")
+    let loaded = runGene(["run", reader, root])
+    if loaded.exitCode != 0: checkpoint loaded.output
+    check loaded.exitCode == 0
+    check loaded.output.strip in ["1 a", "1 b"]
+
   test "inference-depth qualification stage is exact and public-only":
     let checked = execCmdEx(
       "python3 tools/qualify_inference_depth.py --self-test")

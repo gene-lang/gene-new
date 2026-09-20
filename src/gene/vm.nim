@@ -11848,7 +11848,7 @@ proc isSendableValue(value: Value, scope: Scope,
      vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
   of vkCallableView:
-    # A checked view retains an authored contract scope and authority ceiling.
+    # A checked view retains an authored contract scope.
     # Do not infer transferability merely from the wrapped target's category.
     false
   of vkFunction:
@@ -28121,7 +28121,7 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
                           grants: seq[string], shared: seq[string],
                           isolationKey = ""): Value =
   ## Load `dir/entry` with only the standard-library namespaces in `grants` — the
-  ## capability boundary design §D5 promised and §D5.1 found missing.
+  ## boundary design §D5 promised and §D5.1 found missing.
   ##
   ## The restriction covers the module *and everything it imports*, which is the
   ## half that makes it a boundary rather than a speed bump: `app.sandboxRoot` is

@@ -133,4 +133,3 @@ suite "runtime bound calls":
       " false catch Any true) " &
       " (try ($runtime/bind_call target [] ^policy {^allow_ffi false}) " &
       " false catch Any true)]").print() == "[true true]"
-

@@ -19,16 +19,19 @@ proc fsWriteBytes(path, content: string) = writeFile(path, content)
 
 var fsAtomicWriteCounter {.threadvar.}: int
 
-proc fsWriteAtomic(path, content: string) =
+proc fsWriteAtomic(path, content: string, ownerOnly = false) =
   ## Write a sibling temporary file, flush it to disk, then rename it over the
   ## destination, so a reader sees the old or the new contents and never a
-  ## partial write. A failure leaves the destination untouched.
+  ## partial write. A failure leaves the destination untouched. `ownerOnly`
+  ## restricts the file to its owner before any content is written.
   inc fsAtomicWriteCounter
   let temporary = path & ".gene-tmp-" & $getCurrentProcessId() & "-" &
     $fsAtomicWriteCounter
   try:
     var file = open(temporary, fmWrite)
     try:
+      if ownerOnly:
+        setFilePermissions(temporary, {fpUserRead, fpUserWrite})
       file.write(content)
       file.flushFile()
       when defined(posix) and not defined(emscripten) and not defined(geneWasm):
@@ -2910,10 +2913,6 @@ when compileOption("threads"):
       resultTimedOut: bool
       cancelRequested: bool
       workerDone: bool
-      startLock: Lock
-      startCond: Cond
-      startRequested: bool
-      startDecision: int # 0 = pending, 1 = start, -1 = denied/cancelled
       protocolUpgrade: bool
       unsupportedTransport: bool
     HttpClientPending {.acyclic.} = ref object
@@ -3042,8 +3041,6 @@ when compileOption("threads"):
       deallocShared(header)
       header = next
     deinitLock(ctx.chunkLock)
-    deinitCond(ctx.startCond)
-    deinitLock(ctx.startLock)
     deallocShared(ctx)
 
   proc parseCurlHeaders(raw: string): PropTable =
@@ -3218,8 +3215,8 @@ when compileOption("threads"):
                "method")
         setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoSignal, 1),
                "no-signal")
-        # The selector authorizes exactly `url`; transparently following a
-        # redirect would connect to a second URL outside that grant.
+        # Transparently following a redirect would connect to a second URL the
+        # caller did not name; return the redirect response instead.
         setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptFollowLocation, 0),
                "redirect policy")
         setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptTimeoutMs,
@@ -3259,8 +3256,7 @@ when compileOption("threads"):
           setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoBody, 1),
                  "HEAD response")
         # libcurl can retry a 417 response after an Expect: 100-continue
-        # handshake. Suppress that automatic mode; a later request must pass
-        # through a new prepared/guarded operation.
+        # handshake. Suppress that automatic mode so one call sends one request.
         headerList = gCurlApi.slistAppend(nil, "Expect:")
         if headerList == nil:
           fail("could not disable the Expect handshake")
@@ -3278,15 +3274,6 @@ when compileOption("threads"):
           setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptHttpHeader,
                                 headerList),
                  "request headers")
-        # No managed runtime graph crosses into this worker. The owner guards
-        # the actual immutable request only once the configured handle is ready.
-        withLock ctx.startLock:
-          ctx.startRequested = true
-          while ctx.startDecision == 0:
-            wait(ctx.startCond, ctx.startLock)
-          if ctx.startDecision < 0:
-            ctx.resultCancelled = true
-            return
         if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
           ctx.resultCancelled = true
           return
@@ -3313,7 +3300,7 @@ when compileOption("threads"):
           fail("could not read response status")
           return
         ctx.responseStatus = int(status)
-        # No redirects are followed. Report the exact guarded URL, including
+        # No redirects are followed. Report the exact requested URL, including
         # a present empty query, rather than reserializing curl's URL parser.
         ctx.effectiveUrl = sharedExecText(url)
       except CatchableError as e:
@@ -3371,6 +3358,14 @@ when compileOption("threads"):
 else:
   proc pollHttpClientCompletions() =
     discard
+
+proc validHttpMethod(httpMethod: string): bool =
+  if httpMethod.len == 0:
+    return false
+  for ch in httpMethod:
+    if not (ch in {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}):
+      return false
+  true
 
 proc httpRequestTarget(url: string): string =
   ## Origin-form request target (path plus query) of an absolute URL.
@@ -3446,6 +3441,10 @@ proc biHttpClientStart(name: string, streaming: bool,
       else:
         raiseHttpClientError(name & " got unexpected named argument: " & argName,
                              scope)
+  if not validHttpMethod(httpMethod):
+    raiseHttpClientError(name & " ^method contains invalid characters", scope)
+  if not (url.startsWith("http://") or url.startsWith("https://")):
+    raiseHttpClientError(name & " ^url must use http:// or https://", scope)
   if timeoutMs <= 0 or maxBytes <= 0 or pendingBytes <= 0 or channelCapacity <= 0:
     raiseHttpClientError(name & " limits must be positive", scope)
   if timeoutMs > 86_400_000 or maxBytes > HttpHardMaxBytes or
@@ -3492,9 +3491,6 @@ proc biHttpClientStart(name: string, streaming: bool,
     ctx.responseBody.cap = maxBytes
     ctx.responseHeaders.cap = HttpHeaderMaxBytes
     initLock(ctx.chunkLock)
-    initLock(ctx.startLock)
-    initCond(ctx.startCond)
-    ctx.startDecision = 1
     var headerTail: ptr SharedExecArg
     for header in headers:
       let node = cast[ptr SharedExecArg](allocShared0(sizeof(SharedExecArg)))
@@ -6465,7 +6461,7 @@ proc sqlitePersist(conn: Value, db: pointer, call: ptr NativeCall,
     copyMem(addr content[0], data, int(size))
   let app = scope.application()
   try:
-    fsWriteAtomic(path.strVal, content)
+    fsWriteAtomic(path.strVal, content, ownerOnly = true)
   except CatchableError as error:
     raiseDbError("sqlite persist: " & error.msg, scope)
 
@@ -7248,7 +7244,7 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     let root = args[0].props["root"].strVal
     let path = root / (urlEncodeComponent(key) & ".gene")
     try:
-      fsWriteAtomic(path, data)
+      fsWriteAtomic(path, data, ownerOnly = true)
     except IOError as e:
       raiseStoreError(scope, "io", "Store/put: " & e.msg, key)
     except OSError as e:
@@ -7502,11 +7498,10 @@ proc storeFilesystemCheckpoint(scope: Scope, store: Value, generation: int64,
     # a path-level directory rename.
     fsMakeDir(finalDir)
     for (name, data) in encoded:
-      fsWriteAtomic(finalDir / (urlEncodeComponent(name) & ".gene"), data)
-    fsWriteAtomic(finalDir / "MANIFEST.gene",
-                                manifestText)
-    fsWriteAtomic(root / "CURRENT",
-                                generationName & "\n")
+      fsWriteAtomic(finalDir / (urlEncodeComponent(name) & ".gene"), data,
+                    ownerOnly = true)
+    fsWriteAtomic(finalDir / "MANIFEST.gene", manifestText, ownerOnly = true)
+    fsWriteAtomic(root / "CURRENT", generationName & "\n", ownerOnly = true)
   except CatchableError as e:
     raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
 

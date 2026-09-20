@@ -268,4 +268,3 @@ suite "unified callable — checked signatures":
           entries: initTable[string, CompileInterfaceEntry]()))])
     let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
     check run(decoded.modules[0].chunk, newGlobalScope()).print() == "[7 7]"
-

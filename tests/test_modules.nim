@@ -26,12 +26,11 @@ proc runProgramInOwnApp(src: string): Value =
 proc runSandboxProgram(src: string): Value =
   ## Sandbox cases use a fresh application rooted at the fixture directory.
   ##
-  ## `newApplication`'s argument anchors *module resolution* only. Filesystem
-  ## authority deliberately follows the launch directory instead, so that
+  ## `newApplication`'s argument anchors *module resolution* only. Relative file
+  ## paths deliberately follow the launch directory instead, so that
   ## `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
   ## file (vm.nim, newApplicationState) — the CLI passes the entry's package
-  ## root here. So the fixture root is granted explicitly, the way an embedding
-  ## host or `--allow_read_write_dir` would.
+  ## root here. So fixtures use absolute paths beneath the fixture root.
   let app = newApplication(modDir)
   run(compileSource(src), newGlobalScope(app))
 

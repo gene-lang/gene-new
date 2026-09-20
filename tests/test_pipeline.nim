@@ -432,4 +432,3 @@ suite "pipeline — prepared lazy invocation":
                     ^policy {^max_steps 100}))
       [(try (consume) false catch Any true) (pending .has_next)]
     """, "[true false]"
-
