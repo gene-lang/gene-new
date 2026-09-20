@@ -146,7 +146,7 @@ into an ordered backlog, and §D6 puts a gate in front of everything.
 
 `core/` is written in the **intersection** of what the VM runs and what the
 `web` profile compiles — no fexprs, no runtime `eval`, no actors or channels, no
-FFI, no capabilities, no threads. Both sides get the same world model, the same
+FFI, no threads. Both sides get the same world model, the same
 meshing, and the same physics, which removes the usual source of the worst bugs
 in this genre: two implementations of one rule, drifting apart.
 
@@ -1851,16 +1851,13 @@ imports, real modules. Not a directory of scripts sharing a global table.
 
 Four things this gets that Luanti's Lua API does not:
 
-1. **Capabilities instead of trust** (§D5). A mod declares the authorities it
-   needs; the engine grants exactly those. A mod without `$fs/WriteDir` cannot
-   write a file. Enforced by the runtime, not by review.
-2. **Real modules and real imports.** Namespaced, with a dependency graph the
+1. **Real modules and real imports.** Namespaced, with a dependency graph the
    package manager already resolves, instead of `dofile` and a shared global.
-3. **Definitions as data.** A definition is a Gene node — inspectable, diffable,
+2. **Definitions as data.** A definition is a Gene node — inspectable, diffable,
    serializable, printable. `doc/lua_api.md` spends much of its 12,777 lines
    describing table shapes; here the shape is a declared type and a wrong
    definition fails at registration with a position, not at the first dig.
-4. **Formspec as data** (§13).
+3. **Formspec as data** (§13).
 
 **Mod load order** follows `depends`/`optional_depends`, as upstream.
 Registration happens at load; the registries freeze before the world starts, so

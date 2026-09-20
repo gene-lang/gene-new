@@ -563,8 +563,7 @@ embedded in persisted generated modules and shared by the sandbox loader.
 
 Runtime support used by the harness lives in `src/gene/vm.nim` (transitive and
 module-entry budgets, immutable module ceilings, panic guard),
-`src/gene/stdlib.nim` (exclusive Store generations and atomic text writes), and
-`src/gene/fs_capabilities.nim`
+`src/gene/stdlib.nim` (exclusive Store generations and atomic text writes).
 (missing intermediate path is a false existence result, while symlinks still
 fail closed).
 
