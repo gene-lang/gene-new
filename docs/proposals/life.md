@@ -156,6 +156,8 @@ Ordinary functions remain ordinary functions. Introducing a new body method or i
 
 Keep the note short enough to carry forward usefully; a simple decision may need only one sentence. The body retains the note with its cycle, context reference, program, and execution status. Writing an intention in the note does not schedule work or update an operational commitment. Those changes still require code.
 
+The note remains free text, with no compulsory emotion, confidence, or plan fields. Its pairing with source is a transport convention; it does not define a vocabulary of permitted actions.
+
 ### 4.2 Results are not automatically messages
 
 The program's return value is an execution result recorded by the body. It is not automatically sent to the person or channel that supplied the latest observation.
@@ -227,7 +229,7 @@ The context builder also supplies compact documentation of the available Gene AP
 
 Observation selection, retrieval, and compression shape what the brain can consider. Treat the context builder as an evolving part of the cognitive organization. Record the selected event and memory references, policy revisions, and resulting context snapshot for each cycle. Select policy changes at a cycle boundary; keep the policies used for an in-flight context identifiable.
 
-`context_id` identifies this immutable snapshot, not a global validity counter. Record relevant intention and code revision references with the cycle for later checks. Unrelated arrivals or state changes do not invalidate the entire snapshot. `recent_decisions` contains selected notes together with their execution statuses and outcome references, not unqualified assertions that their plans succeeded.
+`context_id` identifies this immutable snapshot, not a global validity counter. Record relevant ownership IDs/generations and code revision references with the cycle for later checks; the cognitive libraries map those ownership tokens to their own concepts. Unrelated arrivals or state changes do not invalidate the entire snapshot. `recent_decisions` contains selected notes together with their execution statuses and outcome references, not unqualified assertions that their plans succeeded.
 
 At execution, the program receives the same context snapshot and ordinary application objects:
 
@@ -273,7 +275,9 @@ Incoming events remain queued while the brain is working. Each cycle records whi
 
 Distinguish an observation included in a context, a completed consideration of it, and an outstanding intention. A successful `nil` program counts as consideration and does not leave the same event continuously eligible just because no message was sent. Reading a request does not complete a commitment. Future reconsideration comes from retained intentions, new information, or an explicit wake request. A rejected, stale, or failed cycle retains its selected event references for bounded recovery; it neither drops those events nor triggers unlimited immediate retries.
 
-Do not reject every response merely because a newer message arrived. Before execution, check operator stop/pause, relevant cancelled or revised intentions, and availability of the selected code revisions. Pin code dependencies used by a decision; selecting a newer version does not silently substitute it into an already accepted program. Explicitly withdrawing an old revision can instead defer that decision.
+Do not reject every response merely because a newer message arrived. Before execution, check operator stop/pause, the validity of relevant ownership IDs/generations, and availability of the selected code revisions. Pin code dependencies used by a decision; selecting a newer version does not silently substitute it into an already accepted program. Explicitly withdrawing an old revision can instead defer that decision.
+
+A cognitive-organization replacement follows the quiescent selection rule in section 9. Ordinary state updates may proceed during inference; changing the meaning or layout of that state waits for the affected cycle to settle or be explicitly invalidated. Record the organization revision with each model request, and reject a late response from an invalidated cycle before any effects.
 
 The body cannot infer every semantic dependency of arbitrary Gene code. Adapters check current action preconditions when performing the operation: for example, whether a plant still exists and needs water, or whether a conversation destination is still valid. Programs can supply explicit expected versions where the application needs them. A cycle-level check does not reserve world state while inference or execution continues.
 
@@ -314,26 +318,31 @@ The runtime records that the program returned. It does not automatically wake th
 
 ### Long-running activity
 
-A proposed `start_job` operation accepts quoted Gene code and explicit input:
+Use an ordinary activity-library call for behavior with a defined recovery contract. The first world library provides `start_walk`, which prepares a durable job and its recovery information. Related cognitive state can be committed with the job through the grouped-update API specified in section 10:
 
 ```gene
-(do
-  (let job
-    (life .start_job "walk-to-garden"
-      (quote
-        (body/world .walk_to input/destination))
-      {^destination "garden"}))
-  (state .put "activity" {^kind "walking" ^job_id job/id})
-  nil)
+(store .commit
+  (fn [tx]
+    (let job (body/world .start_walk "garden" ^tx tx))
+    (state .put "activity" {^kind "walking" ^job_id job/id} ^tx tx)
+    job/id))
 ```
 
-`start_job` returns promptly with an ID. Completion, cancellation, or failure creates an observation tied to that ID. The job's own program may use supported asynchronous Gene APIs; it need not request another model call for each movement step.
+Inside this callback, `start_walk` returns a prepared job descriptor containing its ID; the job cannot execute yet. `store.commit` returns the callback's `job/id` result only after both records commit. Without an explicit transaction, `start_walk` commits its job before returning, and each subsequent state update is a separate durable operation.
 
-The job is tracked and can be cancelled. Its ID, intention reference when present, code revision, inputs, status, and application-level progress are durable. Returning a task or lazy stream from arbitrary foreground code does not silently make it a durable job. The selected API must define who drives it, how completion is observed, and how saved progress is restored.
+The generic `life.start_job` primitive remains available for quoted Gene code and explicit serializable inputs. It accepts the same optional `tx` argument, and activity libraries use it underneath their public calls. Completion, cancellation, or failure creates an observation tied to the job ID. A job may use supported asynchronous Gene APIs without a model call for every step.
 
-A resumable activity saves a phase and the data needed for its next step at documented checkpoints. Walking, for example, retains the destination together with the world's committed current position; after restart it can recompute the remaining path and continue from there. Initial world activities must support this form of continuation. The job ID remains stable even though its runtime task handle is new.
+The job's ID, optional ownership ID/generation, code revision, inputs, status, and recorded progress are durable. A durable description is not a durable execution stack. The job's recovery behavior must be explicit:
 
-A serializable job description alone does not make effects replay-safe. A job's recovery handler reconciles saved progress with actual outcomes before continuing. Unsupported or uncertain operations remain visibly interrupted for reconsideration, with their intention and completed progress retained. Never rerun the entire job merely because its process ended.
+| Job state or implementation | Recovery |
+| --- | --- |
+| Started through an activity implementation with a registered checkpoint/recovery contract | Reconcile outcomes and continue from its committed progress under the same job ID. |
+| Committed but never started | Dispatch if its saved inputs, code/data compatibility, organization revision, ownership generation, and admission conditions remain valid. |
+| Started arbitrary code without sufficient continuation information | Preserve partial outcomes and mark interrupted for reconsideration; do not replay the program. |
+
+For walking, the library prepares the destination, job identity, and recovery-handler revision before publication. Its implementation advances logical movement steps and commits position, activity progress, and outcomes together. On restart it reads that checkpoint, recomputes the remaining path if needed, and continues. This machinery lives in the world/activity library; the brain does not generate a state machine each time it wants to walk.
+
+Calling a checkpointed function inside an arbitrary program does not make the surrounding program resumable. Recovery handlers cover their declared activity and completion boundary; additional computation after that call needs its own continuation contract. Returning a task or lazy stream likewise does not silently create a durable job. Stronger recovery guarantees come from the activity implementation and the checkpoints it actually uses.
 
 ### More information without a special tool round
 
@@ -386,11 +395,11 @@ Here the illustrative `missed` option permits dispatch up to one minute late; af
 
 Scheduled code runs in a fresh execution scope with the saved bindings available as `input`. It does not implicitly capture the current stack or local variables. Store its source/revision and explicit data bindings; load ordinary dependencies through the normal code-loading path.
 
-Due programs enter the same foreground queue as brain-produced programs. Due time means eligible to run, not a guarantee of simultaneous or exact-time execution. Keep queued dependencies pinned, and recheck cancellation and action preconditions when dispatched. A scheduled program has its own execution record linked to the originating cycle and note; running it does not require the brain to author a new note.
+Due programs enter the same foreground queue as brain-produced programs. Due time means eligible to run, not a guarantee of simultaneous or exact-time execution. Keep queued dependencies pinned, and recheck organization compatibility, cancellation, and action preconditions when dispatched. Section 9 defines how organization changes account for queued work. A scheduled program has its own execution record linked to the originating cycle and note; running it does not require the brain to author a new note.
 
 Both scheduling operations return IDs so code can inspect, update, or cancel them. Rescheduling the same conceptual activity should replace a known schedule rather than accidentally create unbounded duplicates.
 
-When work belongs to an intention, retain that intention's ID and revision with its schedules and jobs. Cancelling or replacing the intention invalidates queued work tied to its old revision and requests cancellation of active owned work. Independent schedules need no intention owner. A delayed message about a cancelled workshop must not survive merely because its destination and text were saved correctly.
+Work ownership uses generic IDs and generations, such as `{^owner_id "owner-17" ^generation 3}`. The brain's libraries decide whether an owner represents an intention, a routine, or another concept. Cancelling or replacing it advances or retires that generation, invalidates related queued work, and requests cancellation of active owned work. The host checks these tokens without requiring a goal schema. Independent schedules need no owner. A delayed message about a cancelled workshop must not survive merely because its destination and text were saved correctly.
 
 ### Recurring work
 
@@ -447,7 +456,15 @@ Memory is selective rather than an obligation to retain everything forever. Dele
 
 ### Evolving organization
 
-A practical sequence is to build a candidate representation from a retained snapshot, exercise its retrieval and update code, and prepare a migration. Before selecting it, catch up any writes since that snapshot or briefly quiesce its writers and rebuild from the current revision. Atomically select the compatible code revision and data roots at an execution boundary. A crash must expose either the old selection or the complete new selection.
+A practical sequence is to build a candidate representation from a retained snapshot, exercise its retrieval and update code, and prepare a migration. The initial selection strategy is **quiescent selection**: stop admitting new affected cycles, let the current affected decision and foreground execution settle, checkpoint affected activities, and pause affected handlers. Then migrate from their latest committed state and atomically select compatible code, data roots, and registrations. A crash must expose either the old selection or the complete new selection.
+
+A replacement request does not itself change active bindings. A response that arrives while selection is pending may finish under the old organization before the switch. If that cycle is explicitly invalidated to proceed with selection, retain a late response as superseded without executing it, and request fresh deliberation under the new organization. Selection requested by the current program is queued until that program settles. Keep event receipt durable throughout; unrelated work can continue. If affected work cannot settle within its limits, defer the change or explicitly interrupt it and retain its recovery state.
+
+Selection also accounts for affected queued programs, schedules, routine registrations, and jobs that have not started. Initially, conservatively associate cognitive work with the organization revision under which it was created; do not infer its data dependencies from arbitrary Gene code. Each item must remain explicitly compatible with the selected organization, be migrated with its code/input bindings, or be invalidated for reconsideration; otherwise defer selection. Commit these dispositions with the new organization and recheck compatibility before dispatch. Pinning an old code revision alone does not make it compatible with migrated data.
+
+Invalidating queued execution preserves its owner, original revision, reason, and pending commitment for reconsideration. It does not silently delete work or mark an intention completed. Keep the original provenance when replacing or migrating a queued item.
+
+Start with one active cognitive organization. Running old and new organizations concurrently, catching up migrations while both accept writes, or preserving incompatible readers through a switch is later work that needs a demonstrated benefit.
 
 Keep a short description of the selected organization, its access functions, and its roots with the code revision. The context builder can teach a later model how to use the current organization instead of assuming the starter `memory` and `state` libraries still exist. The host can restore the selected code and raw data before any model call.
 
@@ -475,11 +492,11 @@ The areas below describe continuity obligations, not required tables or record l
 | Mind and decisions | Retained decision notes, context snapshots or their reconstructible contents, generated programs, and execution statuses and outcomes. |
 | Embodiment and local world | Stable world/entity IDs, location and orientation, inventory and held objects, relevant body state, object states and relationships, and simulation time. |
 | Conversations | Retained message histories, participant identities, conversation and thread IDs, visibility, reply destinations, pending replies, external event IDs, and connector receipt cursors. |
-| Events and schedules | Durable inbox, consideration references, wake reasons, due times, recurrence and missed-run policies, cancellation state, and intention ownership. |
+| Events and schedules | Durable inbox, consideration references, wake reasons, due times, recurrence and missed-run policies, cancellation state, and generic ownership IDs/generations. |
 | Code and activities | Saved source and dependency revisions, selected helpers, job IDs and inputs, completed phases, continuation checkpoints, and recorded outcomes. |
 | Delivery | Outgoing operation IDs, destinations, payloads, attempt status, external receipts when available, and unresolved delivery uncertainty. |
 
-Persistent application state is the default for these interfaces. The brain should not have to remember to issue a separate save command for each state, memory, conversation, or schedule update. A successful persistent write means it has committed. Temporary locals, caches, connections, and rendering interpolation are explicitly transient; any information needed to continue an activity belongs in durable state.
+Persistent application state is the default for these interfaces. The brain should not have to remember to issue a separate save command for each state, memory, conversation, or schedule update. A successful standalone write or outer grouped commit means it has committed; individual calls inside an explicit group only stage changes. Temporary locals, caches, connections, and rendering interpolation are explicitly transient; any information needed to continue an activity belongs in durable state.
 
 Store snapshots by value, not mutable references that can silently change an already-recorded experience. Live runtime objects are not database records merely because ordinary data can represent some of their properties.
 
@@ -492,6 +509,24 @@ Persistence runs throughout Life's operation, not only at shutdown. Commit an in
 For the local world, commit an authoritative logical update together with the corresponding activity progress and outcome. Position, inventory, object changes, and job progress must restore from a consistent committed point. The renderer can interpolate between committed positions; animation frames are not recovery state. Rebuilding state from a journal applies recorded changes, never re-executes the Gene programs that caused them.
 
 Use atomic commits for related local records and publish complete checkpoints with an explicit committed revision. Preserve the preceding valid checkpoint until its replacement is durable. A periodic snapshot can bound journal replay, but does not replace committing acknowledged operations. Schema or memory migrations preserve a recoverable previous representation until the new version is validated and selected.
+
+### One explicit grouped-update API
+
+The proposed `store.commit(callback)` operation runs an ordinary Gene callback with a short-lived transaction handle, `tx`. Participating local APIs accept `^tx tx`: state and memory writes, job preparation, schedule or routine registration, and local activity updates can therefore use the same durable commit. Section 7's walking example groups job preparation with the brain-defined `activity` record.
+
+Atomicity covers changes staged through participating transaction APIs. Aborting a group does not reverse arbitrary mutations to captured or other transient Gene objects. Stored records and staged values must not expose mutable aliases that bypass those APIs; reads and writes use value snapshots.
+
+The initial contract is small:
+
+- Outside an explicit group, an ordinary persistent operation commits before returning success. Separate calls can leave a recoverable partial result if the process stops between them.
+- With `tx`, an operation validates and stages its changes. Reads through that handle use one consistent view plus staged writes. Prepared job and schedule IDs can be referenced by other records in the same group, but are not yet published.
+- The callback performs bounded synchronous computation and participating local operations. It cannot await, invoke the model, perform external I/O, or start work immediately. Application APIs reject nonparticipating writes and external effects inside the callback before performing them, including calls through helpers that fail to forward `tx`; such calls cannot create independent commits. Initially, nested groups and reuse of the handle after the callback are errors.
+- After the callback returns normally, the host validates affected revisions and commits all staged changes together. An error, revision conflict, or cancellation before commit aborts the group and publishes none of its work. The callback's result is returned to the caller only after a successful commit; the host does not automatically rerun the callback on conflict.
+- Job, schedule, and callback dispatch follows durable publication. An aborted group never runs its staged work. If the process exits after commit but before dispatch, recovery finds the committed eligible records and continues from them. If commit completed before its response was observed, retained execution/commit references reveal that outcome without replaying the callback.
+
+For example, a stop between staging the walking job and staging `activity` leaves neither change committed. A stop after commit leaves both, even if the job has not begun. Choosing two standalone calls instead can leave a durable job without that cognitive link; recovery exposes the actual job and repairs the missing link rather than starting another walk.
+
+Entering sleep uses this same group to publish its mode, clock checkpoint, activity reference, and routine registration. A world movement step groups its authoritative position with the job checkpoint and outcome. Recording an outgoing delivery request may also be local, but actual delivery happens after commit and retains the reconciliation rules below. No group rolls back an earlier external effect, and the surrounding generated program is still not automatically a transaction.
 
 ### Clean stop and restart
 
@@ -573,7 +608,7 @@ The brain can propose and select such changes through normal code. A small selec
 
 ### Example: inventing energy and sleep
 
-Suppose Life notices that it keeps starting activities without pausing to consolidate experience. It can choose to introduce a rest model. The model is optional, and its usefulness is an experimental question. One candidate might store this ordinary record:
+Suppose Life notices that it keeps starting activities without pausing to consolidate experience. It can choose to introduce a rest model. This is the first demonstration of an evolving body controller after the basic continuity slice works; it is not a prerequisite for Life to operate. The model is optional, and its usefulness is an experimental question. One candidate might store this ordinary record:
 
 ```gene
 {^energy 24
@@ -614,7 +649,7 @@ Use the same progression for a memory redesign or a body controller:
 
 1. Save a candidate revision with its input contracts, data interpretation, and migration code if needed.
 2. Exercise it on copied data with a fake clock and recording adapters. Compare representative retrieval queries or behavior, including restart, duplicate events, and invalid inputs.
-3. At a boundary where affected handlers are idle, migrate from the current committed revision and atomically select the compatible code, data roots, and registrations. Check that the migration's source revision is still current. Each in-flight decision or job either retains its compatible revision or is explicitly checkpointed for migration; never feed new-layout data to old code silently.
+3. Use section 9's quiescent selection: settle or explicitly invalidate the affected decision, checkpoint affected activities, and stop affected handlers before migrating from the current committed revision. Atomically select compatible code, data roots, and registrations, then resume their dispatch. Defer selection if safe settlement or migration is unavailable; the initial implementation does not keep incompatible organizations running concurrently.
 4. Observe outcomes and retain the preceding revision and selection evidence. New code must demonstrate useful behavior beyond its selection examples.
 
 If a selected routine fails, suspend its dispatch and retain its current data and diagnostics. Other healthy body operations and durable event receipt continue. The host's small recovery context exposes the failed revision, raw records, and actual outcomes for a bounded repair decision even if ordinary attention or context construction is broken. It remains possible to inspect and repair the Life without depending on the failed routine.
@@ -694,6 +729,8 @@ One Life starts with its seed disposition in a small environment, receives a fir
 
 Use a fake brain returning known notes and programs before connecting a model. This makes the loop and failure handling testable independently of response quality.
 
+Keep this implementation to one local chat, a tiny logical world, one resumable activity (`start_walk`), one durable store, and the fake brain. Make grouped publication and the activity's checkpoint/recovery contract concrete along this path. A 3D presentation and the evolving sleep controller follow the working stop/restart demonstration.
+
 Make the first local world and chat adapter small but persistent. Their test fixtures should include a changed location, a remembered preference, a saved state value, an unfinished activity, a conversation with a pending reply, and a future wakeup. A fresh process must recover these without invoking the brain to reconstruct them. Add forced-exit recovery alongside the clean-stop test; persistence is a completion requirement for this slice.
 
 First verify the selected Gene execution path with functions, loops, saved code loading, repeated scope creation/disposal, and cancellation. Exercise a runaway foreground loop and a waiting adapter while event receipt and operator controls remain active; merely configuring a budget does not demonstrate responsiveness. The current [development status](../development.md#status) identifies eval-defined type/method and closure-retention limitations. Establish which constructs this prototype supports before relying on repeated generated execution in a long-lived process.
@@ -734,6 +771,10 @@ The first implementation should demonstrate these behaviors:
 | An intention is cancelled before its delayed action runs | Invalidate owned queued work and request cancellation of active owned jobs. |
 | A world precondition changes after the context was built | Check at the adapter operation and report the actual result or precondition failure. |
 | Long world action is started | Return a job ID and later report the actual outcome. |
+| Process exits while grouping a walking job and its related state update | Publish neither before the grouped commit; recover both after commit, with dispatch beginning only after durable publication. |
+| Two standalone calls leave a job committed without its cognitive state link | Expose the partial result and repair the link without creating a duplicate job. |
+| A helper inside `store.commit` writes without forwarding `tx`, then the outer group fails | Reject the helper's write before any independent commit; durable records remain unchanged. |
+| A started arbitrary job has no continuation contract | Preserve partial outcomes and mark interrupted; do not infer resumability from its durable source. |
 | A program fails after a completed action | Preserve partial progress; do not replay the whole program automatically. |
 | Process stops cleanly and restarts | Restore the same identity, memory, working state, location, inventory, local world, conversations, commitments, and schedules before new deliberation. |
 | Process exits without a shutdown hook | Recover all committed records and a consistent world/activity checkpoint; identify and reconcile interrupted effects. |
@@ -752,12 +793,16 @@ The first implementation should demonstrate these behaviors:
 | The process restarts during sleep | Restore the chosen code revision, energy, mode, clock checkpoint, and one registration; follow the selected downtime policy. |
 | A sleep timer is delivered twice | Account for the elapsed interval once and retain one wake request on the transition out of sleep. |
 | A code/data migration is interrupted | Restore either the complete old selection or the complete new selection, with compatible callbacks and data. |
+| An old-layout memory operation is scheduled, then the organization changes before it is due | Migrate it, explicitly retain compatibility, invalidate it with its owner and reason, or defer selection; never dispatch it against incompatible data. |
+| A model response arrives after organization replacement was requested | Finish the still-valid cycle under the old organization before selection, or retain an invalidated response without effects and request fresh deliberation; never execute against incompatible data. |
 | A selected body routine fails after new conversations arrive | Suspend that routine, preserve current data and conversations, and repair through the host recovery path. |
 | Nothing relevant has happened | Heartbeats continue without needless model calls. |
 | Operator pauses or stops Life | Halt new inference and dispatch, checkpoint activities, settle execution, and durably retain progress and observations before reporting completion. |
 | Operator resumes after scheduled work became due | Build fresh context; apply cancellation, lateness, and missed-run rules without replaying cancelled execution. |
 
 For behavioral evaluation, look for continuity of interests, accurate use of experience, useful initiative, appropriate silence, response to changed circumstances, and understandable recovery. Also record model cost, latency, repeated failures, and retained work.
+
+Two focused failure tests should establish the operation boundaries early. First, inject process exit after staging the walking job but before its related state write, immediately before commit, and immediately after commit but before dispatch. Second, use a controllable fake brain to return an old response after a cognitive replacement request, including after explicit invalidation and selection. Observe durable records and actual dispatches, not only returned status values. The replacement case belongs with the first organization-change implementation and does not require the energy model.
 
 ### Test the behavioral hypothesis
 
