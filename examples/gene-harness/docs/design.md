@@ -81,7 +81,7 @@ The compatibility functions `provide`, `replace`, `resolve`, and
 ordinary owned rows whose cleanup cancels the subscription. There is no second
 effect-kind table.
 
-## 3. Plugins and the capability-safe host context
+## 3. Plugins and the host context
 
 The stable generated-plugin contract is in `src/plugin_api.gene`:
 
@@ -114,7 +114,7 @@ its rows and expires its callbacks.
 
 Generated `init` receives an inert `DescriptorContext` containing stable module
 and core-interface identity only. It cannot discover registries, contribute
-rows, or carry authority, so descriptor preflight is deterministic.
+rows, or reach the host, so descriptor preflight is deterministic.
 
 Only activation and later callbacks receive `PluginContext`, containing an
 unforgeable Cell-identity token. The token maps to
@@ -254,6 +254,19 @@ envelope formats. Corruption remains a separate error.
 
 `register_module` accepts a quoted module AST:
 
+```gene
+(register_module workspace h "echo"
+  (quote
+    (mod plugin
+      (import [Plugin DescriptorContext PluginContext PluginHost]
+        ^from "../../../src/plugin_api")
+      (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
+      (fn init [ctx : DescriptorContext] : Plugin
+        ...)))
+  ^scope "session"
+  ^dependencies [])
+```
+
 The registration sequence is:
 
 1. validate a filename-safe ID and an inert quoted `mod` node;
@@ -264,11 +277,10 @@ The registration sequence is:
 4. canonicalize source and compute SHA-256;
 5. validate every relative import against a supplied dependency blob;
 6. atomically materialize unreferenced validation cache files;
-7. sandbox-load with only namespaces implied by selectors and an entry-policy
+7. sandbox-load with no standard-library namespaces and an entry-policy
    isolation key;
-8. attach the immutable module capability/budget policy, then execute
-   capability-empty `init` under step/time/memory budgets and panic
-   containment;
+8. attach the immutable module budget policy, then execute `init` under
+   step/time/memory budgets and panic containment;
 9. validate the returned descriptor without installing it;
 10. atomically persist the validated root/dependency blobs;
 11. commit the new composition generation by CAS;
@@ -298,13 +310,14 @@ committed and appears in `doctor` as quarantined.
 The built-in commands plugin contributes `plugins.build`, `plugins.inspect`,
 `plugins.disable` and `plugins.enable` as ordinary tool rows. `/build` is a
 command adapter over the same builder. It resolves the `HarnessCodegen` provider,
-which returns an inert module or a plan with `module`, `scope`, `selectors`, and
+which returns an inert module or a plan with `module`, `scope`, and
 `dependencies`. Registration remains the same validated durable core operation.
 
 The model-backed author receives current tool descriptions and the shared plugin
-module contract. Tools can accept structured data, use PluginHost state, compose
-other declared tools, or request supported filesystem selectors. It must report
-missing authority instead of replacing an operation with a simulation. The
+module contract. Tools can accept structured data, use PluginHost state, or
+compose other declared tools; a plugin has no filesystem, network or process
+access of its own and delegates I/O to installed tools. It must report a
+missing tool instead of replacing an operation with a simulation. The
 builder returns installed tool contracts and lifecycle status. It does not run
 guessed test inputs: callers verify behavior with explicit tool calls.
 
@@ -318,7 +331,8 @@ The validated model reply union is:
 - `input`: persist a `request` and release the execution task while waiting;
 - `response`: finish with readable response text.
 
-Code is capability-empty. `harness`/`h` are immutable summaries of session,
+Code is handed only read-only data and named operations. `harness`/`h` are
+immutable summaries of session,
 plugins, tools and seams. `session` carries id, scope and a history list;
 `context` carries session, payload, prompt and round. Helpers expose live
 registry descriptions, docs and explicit lifecycle operations. They never return
@@ -335,12 +349,11 @@ adds a visible marker plus `truncated` and `original_bytes` metadata, preserved
 across restart. Only the logged preview is shortened: the operation receives its
 full input, replies are parsed in full, and callers receive the full tool result.
 Registered I/O tools therefore work from
-the agent without granting host authority to arbitrary model code.
+the agent without model code performing I/O itself.
 
 The built-in filesystem, subprocess and HTTP adapters are plugins. Process
-execution uses the launcher's os/Exec authority and an explicit argument list;
-the selected working directory is not an OS sandbox. HTTP uses net/Http. Both
-operations are asynchronous, cancellable and bounded in wall time and output.
+execution uses an explicit argument list; the selected working directory is not
+an OS sandbox. Both process and HTTP operations are asynchronous, cancellable and bounded in wall time and output.
 ToolError preserves domain failure codes and details in the shared result shape.
 
 The same tool runner is used by `/tool`, `/read`, the model's tool reply, and
@@ -375,7 +388,7 @@ and schema-valued `additionalProperties` are unsupported and rejected. Schema
 and input nesting are bounded to 32 levels. `output_schema` is descriptive
 metadata and does not validate returned values.
 
-## 8. Execution supervision and attenuation
+## 8. Execution supervision
 
 Gene `Env ^policy` now enforces:
 
@@ -387,21 +400,41 @@ Gene `Env ^policy` now enforces:
 `runtime/guard_call` is the explicit supervision boundary that turns a Gene
 panic into a data failure for the recovery kernel. Cancellation remains a
 control signal. The loader also installs an immutable execution policy on the
-sandbox module root. Every later external entry creates a fresh budget and
-intersects the caller with that module ceiling, including escaped functions and
-direct typed protocol methods that never pass through a registry wrapper.
+sandbox module root. Every later external entry creates a fresh budget under
+that module policy, including escaped functions and direct typed protocol
+methods that never pass through a registry wrapper.
 
-Capability selectors stored in composition are inert maps:
+The built-in filesystem tools address two named roots: `workspace` (the selected
+project, defaulting to the Harness package) and `state` (harness state). The
+launcher selects the project with `GENE_HARNESS_PROJECT`; the web server also
+accepts `--project`. Relative traversal, absolute paths, and symlinks that lead
+out of a root are rejected.
 
-```gene
-{^type "fs/ReadDir" ^root "workspace" ^path "docs"}
-{^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
-```
+Generated modules are sandbox-loaded with no standard-library namespaces, so a
+plugin cannot reach `$fs`, `$net` or `$os` and delegates I/O to installed tools.
+A `selectors` field in a composition entry written before this change is
+ignored.
+
+Model code is different: `/code` and code replies evaluate under the step,
+memory and time budgets below but are otherwise ordinary Gene evaluated in the
+host process. Gene does not withhold standard-library namespaces such as `$fs`
+or `$os` from evaluated code, so keeping real work in installed tools rests on
+the system prompt and on tool requests rather than on the evaluator.
+
+A profile may carry `^limits`, applied to every plugin it installs. The default budget suits a callback doing
+local computation; a deployment whose author is a remote model has commands
+that legitimately block on a network round trip, and there the default is not a
+guard against runaway code but a guarantee that the deployment cannot work.
+Trusted browser/chat callbacks allow one million steps for model transport,
+author validation and module registration, with a 120-second deadline. Custom
+plugins retain their own default 100,000-step/2-second policy. Pure model code
+has a separate 100,000-step/2-second evaluator budget; the outer registration
+transaction has room to perform host work after that evaluator returns.
 
 Generic command/tool/seam callbacks, interaction validators, cleanup hooks, subscribers, and
 views additionally pass through owner-aware wrappers. The core boundary flushes
-state only after the attenuated callback scope unwinds, so opaque retained Store
-authority is never lent to plugin code.
+state only after the bounded callback has unwound, so the retained Store is never
+lent to plugin code.
 
 A budget bounds a unit of work, so the unit has to be chosen where the work is,
 and it must not contain a wait. `HarnessView` therefore has two messages —
@@ -444,8 +477,8 @@ The irreducible core recovery surface is independent of plugins:
 `disable` and `enable` run before descriptor or profile activation. `doctor`
 bounded-loads descriptors and validates their event vocabulary without
 activating them. Normal boot performs the same read-only preparation before any
-effectful baseline profile plugin. A recovery shell is not implicitly granted,
-and shutdown reverses plugins before closing stores.
+effectful baseline profile plugin. Shutdown reverses plugins before closing
+stores.
 
 ## 10. Commands, tools, prompt, and views
 
@@ -510,11 +543,15 @@ callback blocks on terminal input.
 
 Custom tools return `PluginInputRequest` through `PluginHost:request_input`.
 The host validates context ownership and an owned resume tool, then persists
-only its request and inert continuation data, plus a fingerprint of the plugin entry (source, selectors, limits and metadata).
+only its request and inert continuation data, plus a fingerprint of the plugin entry (source, limits and metadata).
 On reply, that tool receives `{input, reply}`; a changed owner or entry fingerprint
 is rejected. Function continuations cannot cross a question boundary. The same
 mechanism works from `/tool`, the model agent, and CLI. Matching reply retries
 remain reads even while a resumed run or another session is active.
+
+Defaults are suggestions, never implicit replies. Secret input is refused;
+credentials belong in launcher configuration. Continuations contain data, not
+live resources.
 
 ## 12. Entry point and filesystem layout
 
@@ -562,10 +599,8 @@ embedded in persisted generated modules and shared by the sandbox loader.
 | `src/main.gene` | durable boot, recovery nucleus, view/one-shot dispatch |
 
 Runtime support used by the harness lives in `src/gene/vm.nim` (transitive and
-module-entry budgets, immutable module ceilings, panic guard),
-`src/gene/stdlib.nim` (exclusive Store generations and atomic text writes).
-(missing intermediate path is a false existence result, while symlinks still
-fail closed).
+module-entry budgets, panic guard) and `src/gene/stdlib.nim` (exclusive Store
+generations and atomic text writes).
 
 ## 14. Archived scenarios and deferred work
 
@@ -614,4 +649,3 @@ The detailed scope, module ownership, interface, UI behavior, compatibility
 changes, and acceptance cases live in the linked design. Launch instructions
 are in the package README. The browser state and rendering modules, page markup,
 and styling are all authored in Gene.
-

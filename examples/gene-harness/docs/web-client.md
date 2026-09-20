@@ -2,7 +2,7 @@
 
 Status: implemented for the local, single-operator release. This document extends the
 [implemented design](design.md). It specifies the first browser client without
-changing the Harness composition, capability, or recovery contracts.
+changing the Harness composition or recovery contracts.
 
 ## 1. First release
 
@@ -25,8 +25,7 @@ First-release scope:
 - read-only workspace, provider/model, and plugin status.
 
 Deferred: remote access and multiple users; simultaneous runs in different
-sessions; graphical plugin installation or capability editing; uploads and a
-file editor; full token-by-token rendered answers;
+sessions; graphical plugin installation; uploads and a file editor; full token-by-token rendered answers;
 arbitrary plugin-supplied HTML or browser code.
 
 Existing commands such as `/build` still work through the normal prompt path.
@@ -44,7 +43,7 @@ Leaving graphical administration out does not remove commands from the agent.
 | `events.catalog` has text events and composition turn events | Add explicit session/run projections; do not infer run status from printed text. |
 | The model client validates completed provider responses | Codex output-text deltas are provisional raw previews; only complete validated Gene envelopes execute. |
 | `net/http` supports request tasks and WebSockets; `ws_send` can drop queued frames | Push ordered output/state messages; a dropped frame closes that peer so reconnect restores a snapshot. |
-| Gene's web profile supports DOM/HTTP interop but excludes runtime eval and VM capabilities | Author the client in Gene's web subset; keep execution in the native process. |
+| Gene's web profile supports DOM/HTTP interop but excludes runtime eval and other VM features | Author the client in Gene's web subset; keep execution in the native process. |
 
 ## 3. Module ownership
 
@@ -445,6 +444,12 @@ require a session-bound CSRF token on mutations. Authenticate snapshots and
 WebSocket upgrades as well as writes. Never place credentials in query strings,
 access logs, transcript records, or browser storage.
 
+Credentials, provider configuration, and workspace roots remain
+launcher-owned. First release has no credential-entry form, arbitrary
+filesystem-path parameter, generic eval endpoint, or proxy to model endpoints.
+Static serving uses a fixed asset allowlist. Remote binding requires a later
+authenticated/TLS deployment design and is outside this launch mode.
+
 ## 9. Implementation direction
 
 Author browser logic in Gene, compiled through the existing web profile. Use
@@ -512,7 +517,7 @@ The release is complete when these observations hold:
   hints, retention resets, and old history remain understandable.
 - Malicious text/HTML is inert; unauthorized/cross-origin requests cannot read
   history or admit work; raw plugin state and provider credentials stay private.
-- Existing CLI, recording view, module registration, capability, and Cordis
+- Existing CLI, recording view, module registration, and Cordis
   integration tests continue to pass. New lifecycle logic is tested through
   the session/run interface, not duplicated per transport.
 
@@ -528,4 +533,3 @@ The client retains at most 600 rendered transcript records and fetches earlier
 pages on demand. Reading older pages preserves the scroll position and offers a
 return to the latest output. Session/run core projections upgrade the event
 manifest to format 2; text-event readers accept both versions 1 and 2.
-

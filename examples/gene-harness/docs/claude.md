@@ -19,6 +19,13 @@ claude auth status
 
 From `examples/gene-harness`, start the browser host:
 
+```sh
+mkdir -p /tmp/harness-claude
+env GENE_HARNESS_PROVIDER=claude \
+  ../../bin/gene run \
+  src/web/server.gene --home /tmp/harness-claude
+```
+
 Open the connection URL printed by the server. To use the terminal instead,
 replace the entry and arguments with `src/main.gene chat` and set
 `GENE_HARNESS_HOME=/tmp/harness-claude` in the environment.
@@ -28,9 +35,7 @@ The default CLI model is `sonnet`, resolved by Claude Code. Set
 `GENE_HARNESS_CLAUDE_COMMAND` to an executable path if `claude` is not on PATH.
 This value is an executable, not a shell command or an argument string.
 
-The CLI needs the launcher's `os/Exec` authority. The Harness does not need a
-read grant for `~/.claude` and does not read, copy, or refresh Claude OAuth
-tokens. Claude Code performs its own authentication. If you have API/provider
+The Harness does not read, copy, or refresh Claude OAuth tokens. Claude Code performs its own authentication. If you have API/provider
 environment variables configured for Claude Code, its own credential selection
 can choose those instead of the subscription; inspect `claude auth status`.
 
@@ -127,4 +132,3 @@ Claude CLI accepted the invocation flags but reported no authenticated account
 on this machine at implementation time; no API key was configured. A real
 subscription/API success requires the user's login/key. No package test suite
 was run, following the Harness development workflow.
-

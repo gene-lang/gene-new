@@ -1,6 +1,6 @@
 # Gene Harness
 
-A durable, capability-bounded plugin harness for a general-purpose Gene agent.
+A durable plugin harness for a general-purpose Gene agent.
 It can add code while running, stop, and restore the same composition and
 plugin state at the last committed turn boundary.
 
@@ -38,6 +38,10 @@ it does not start a web server or provide a browser interface.
 ## Browser client
 
 Start the agent from the repository root using your existing Codex login:
+
+```sh
+bin/gene run examples/gene-harness/src/web/server.gene
+```
 
 Write any prompt in the composer. Ordinary text, including a single word such
 as `help`, goes to the model. A leading slash selects special functionality:
@@ -77,13 +81,22 @@ uses a one-use connection token, then an HttpOnly browser cookie. Use
 connected browser session lasts eight hours. Reloading preserves conversations
 and per-session drafts. Closing a tab does not stop a run; use **Stop**.
 
-The browser uses the same provider variables and grants as the `chat` profile.
+The browser uses the same provider variables as the `chat` profile.
 To use a state home outside the repository with Codex:
 
+```sh
+mkdir -p /tmp/harness-web
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-web GENE_HARNESS_PROVIDER=codex \
+    ../../bin/gene run src/web/server.gene
+)
+```
+
 For OpenRouter, set `GENE_HARNESS_PROVIDER=openrouter` and
-`OPENROUTER_API_KEY`; the Codex-directory grant is then unnecessary. Credentials
-remain in the native process. `GENE_HARNESS_MODEL` and
-`GENE_HARNESS_THINKING_EFFORT` keep their existing meanings.
+`OPENROUTER_API_KEY`. Credentials remain in the native process.
+`GENE_HARNESS_MODEL` and `GENE_HARNESS_THINKING_EFFORT` keep their existing
+meanings.
 
 For Claude, use `GENE_HARNESS_PROVIDER=claude` with an authenticated local
 Claude Code CLI, or `GENE_HARNESS_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`.
@@ -103,6 +116,14 @@ Session claims are kernel-released on process exit; leave files under
 `<home>/claims` in place. New session/run projections use event-manifest format
 2; older homes are readable, but an older Harness binary cannot open a home
 after this upgrade.
+
+Use `--home <path>` or `GENE_HARNESS_HOME` to select a workspace.
+Prompts and cancellation use HTTP POST. Transcript blocks and run-state changes
+are pushed over the authenticated WebSocket as they occur; the connected client
+does not poll. Reconnect restores a bounded snapshot and then resumes live
+delivery. Older messages remain available through history pagination. WebSocket
+protocol version 3 includes pending questions; restart the server and reload
+older clients after upgrading.
 
 Codex output text is streamed into the provisional **Raw LLM response** panel.
 The completed reply replaces that preview using the same block ID. Gene code
@@ -125,6 +146,12 @@ bin/gene run examples/gene-harness/src/website/export.gene \
   --out examples/gene-harness/tmp/website-prefix/harness --base /harness/
 ```
 
+The first command writes `index.html` and `assets/` under
+`examples/gene-harness/tmp/website`, for serving at `/`. `--base` names the URL
+path the directory will be served from; generated asset URLs are absolute, so
+export once per base. `--app_url` adds an **Open Harness** link, which the
+static page otherwise omits. The parent of `--out` must exist.
+
 The worked example is a recording of a real session. Its request, the formatted
 model-authored plugin, the fixture project, and the expected outputs live in
 `website/examples/project_audit/`. The page reads them when it renders, and a
@@ -144,8 +171,13 @@ bin/gene run examples/gene-harness/src/main.gene web status
 ```
 
 The default state home is `examples/gene-harness/tmp/workspace` and is ignored
-by git. Choose another existing directory with `GENE_HARNESS_HOME`; an external
-home needs an explicit host grant:
+by git. Choose another existing directory with `GENE_HARNESS_HOME`:
+
+```bash
+mkdir -p /tmp/my-gene-harness
+GENE_HARNESS_HOME=/tmp/my-gene-harness \
+  bin/gene run examples/gene-harness/src/main.gene web status
+```
 
 The `cli` profile installs the terminal view:
 
@@ -160,22 +192,37 @@ choose explicitly when both credentials are available.
 
 For Codex, first sign in with ChatGPT and file credential storage:
 
+```bash
+codex -c cli_auth_credentials_store='"file"' login
+mkdir -p /tmp/harness-chat
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-chat GENE_HARNESS_PROVIDER=codex \
+    ../../bin/gene run src/main.gene chat
+)
+```
+
 The client reads `CODEX_AUTH_FILE`, or `auth.json` under `CODEX_HOME` (default
 `~/.codex`). The file must contain `tokens.access_token` and `tokens.account_id`;
-API-key-only files and OS keychain credentials are not used. For a custom
-`CODEX_AUTH_FILE`, grant its containing directory instead. Credentials are
+API-key-only files and OS keychain credentials are not used. Credentials are
 reloaded for each request; Codex owns token refresh, and a 401 asks you to run
 `codex login` again. The harness never writes the auth file or stores tokens in
 conversation history. See [Codex credential storage](https://developers.openai.com/codex/auth/).
 
 OpenRouter remains available with either existing key spelling:
 
+```bash
+mkdir -p /tmp/harness-chat
+(
+  cd examples/gene-harness
+  GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
+    ../../bin/gene run src/main.gene chat
+)
+```
+
 All model-backed profiles load the checked-in Gene skill for the agent and plugin author.
-Run from the package directory: running from the repository root makes the
-automatic launch-directory grant overlap the explicit skill grant, and file
-reads are refused as ambiguous. The subshells above keep your shell at the
-repository root afterward. Use an external state home to avoid overlapping
-grants there too; these commands share `/tmp/harness-chat`.
+Run from the package directory. The subshells above keep your shell at the
+repository root afterward; these commands share `/tmp/harness-chat`.
 
 | Environment variable | Behavior |
 |---|---|
@@ -229,7 +276,7 @@ is returned to the conversation. `/code` without source shows usage.
 
 The command is available in browser, chat, CLI, and offline profiles, and
 appears in `/help` and the browser's slash-command picker. It shares the
-model executor's harness bindings, capabilities, and transaction handling.
+model executor's harness bindings and transaction handling.
 Evaluation is bounded to 25,000 steps, 32 MB, and one second, leaving room in
 the command's outer budget for cleanup. Each invocation has a fresh local
 scope; use the harness helpers for lasting changes. Syntax and execution
@@ -252,7 +299,7 @@ Ask for the capability you need in the browser or model-backed CLI, for example:
 > against `colors.txt` before reporting success.
 
 The built-in `plugins.build` tool resolves `HarnessCodegen`, validates its inert
-module plan, registers the requested scope/selectors/dependencies, and returns
+module plan, registers the requested scope and dependencies, and returns
 its revision, lifecycle status and installed tool descriptions. `/build` is a
 command adapter over that same operation:
 
@@ -262,9 +309,9 @@ command adapter over that same operation:
 /tool wordcount {"text":"the quick brown fox"}
 ```
 
-The author can create several tools, plugin state, and dependencies. It can use
-supported filesystem selectors or delegate I/O through existing tools. Missing
-authority is reported explicitly. Installation never runs guessed test inputs;
+The author can create several tools, plugin state, and dependencies. A plugin
+has no filesystem, network or process access of its own, so it delegates I/O
+through existing tools, and a missing tool is reported explicitly. Installation never runs guessed test inputs;
 the agent must make real tool calls to verify the requested behavior.
 
 Author responses are captured in expandable raw-response blocks. Malformed
@@ -366,8 +413,8 @@ schema without evaluating defaults:
 
 The input is an envelope containing `positional` and `named`. Omitted
 arguments reach the target unchanged, so its defaults run at invocation.
-The existing registry owner, capability, and execution-budget boundaries
-still govern the call. A signature or an external schema does not authorize
+The existing registry owner and execution-budget boundaries still govern the
+call. A signature or an external schema does not authorize
 execution or replace the target's type checks.
 
 Automatic input schemas cover `Str`, `Int`, `Float`, `Bool`, `Nil`, optional
@@ -387,8 +434,27 @@ is descriptive metadata; the tool runner does not validate returned values again
 ## Generated plugin contract
 
 Generated code imports the data-only stable API and returns a descriptor from
-capability-empty `init`. Kernel sharing is allowed only for the `PluginHost`
-impl identity:
+an `init` that only constructs it. Kernel sharing is allowed only for the
+`PluginHost` impl identity:
+
+```gene
+(mod plugin
+  (import [Plugin DescriptorContext PluginContext PluginHost]
+    ^from "../../../src/plugin_api")
+  (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
+
+  (fn init [ctx : DescriptorContext] : Plugin
+    (Plugin
+      ^id "echo"
+      ^provides [["tools" "echo"]]
+      ^requires []
+      ^contextual true
+      ^activate
+        (fn []
+          (fn [host]
+            (host .PluginHost:contribute "tools"
+              {^name "echo" ^doc "echo text" ^run (fn [text] text)}))))))
+```
 
 `DescriptorContext` is inert: no discovery, contribution API, or authority.
 `PluginContext` is the later unforgeable token-backed host interface, not the
@@ -439,14 +505,13 @@ read as inert data, including embedded Gene nodes. Only a validated `^code`
 block is evaluated. Invalid types, malformed fields, extra top-level forms,
 and the old `^status` format are rejected and explained to the model for
 correction. A `code` reply always continues, even for `(do nil)`; the loop stops
-after sixteen rounds if it never receives a final reply. Execution errors and
-capability refusals are execution results, so `code-with-response` returns
-those directly too. Session memory retains the final answer rather than the
+after sixteen rounds if it never receives a final reply. Execution errors are
+execution results, so `code-with-response` returns them directly too. Session memory retains the final answer rather than the
 progress explanation.
 
 The plugin author uses this same envelope with `^type "response"` and an
 inert module plan in `^payload {^module (mod plugin ...) ^scope "session"
-^selectors [] ^dependencies []}`. The `build` consumer
+^dependencies []}`. The `build` consumer
 extracts and validates that module through the existing registration path.
 
 ## What a model program may reach
@@ -457,8 +522,12 @@ session, plugins, tools and seams. `session` has id, scope and a history list;
 provider implementations are private.
 
 Use `(tools)`, `(describe_tool name)`, `(row_keys registry)`, `(plugin_states)`,
-and `(doc name)` to inspect the current system. Pure code has no host authority.
-For real work, request an installed tool:
+and `(doc name)` to inspect the current system. Model code runs under step,
+memory and time limits, but it is not otherwise confined: Gene does not withhold
+standard-library namespaces such as `$fs` or `$os` from evaluated code, so the
+harness relies on the system prompt and on tool requests rather than on the
+evaluator to keep real work in installed tools. For real work, request an
+installed tool:
 
 ```gene
 {^type "tool" ^tool "fs.read" ^input {^path "README.md"}}
@@ -486,13 +555,11 @@ plugin build/inspect/enable/disable tools. `/tool` accepts JSON or Gene data, pr
 ```
 
 Set `GENE_HARNESS_PROJECT` for the target project, independently of
-`GENE_HARNESS_HOME`. The web server also accepts `--project <directory>`. Grant
-that directory with the launcher's existing read/write flags; selecting a path
-does not grant access. The default project is the Harness package. `process.run` uses an executable
+`GENE_HARNESS_HOME`. The web server also accepts `--project <directory>`. The
+default project is the Harness package. `process.run` uses an executable
 plus an argument list, with bounded output and timeout; its working directory
-is not a subprocess filesystem sandbox. It uses the launcher's `os/Exec`
-authority. HTTP uses `net/Http`; nonzero process exits and HTTP errors retain
-structured details. Custom plugins can delegate to these installed tools.
+is not a subprocess filesystem sandbox. Nonzero process exits and HTTP errors
+retain structured details. Custom plugins can delegate to these installed tools.
 Generated callbacks can import `fail_tool` from `../../../src/plugin_api` to
 raise structured tool errors with code, message, and optional `^data` details.
 The helper admits the error in its defining module before it crosses the
@@ -510,25 +577,24 @@ grant new host authority. Configure credentials outside the conversation.
 The default CLI profile is now the model-backed `chat` profile. The explicitly
 named `cli` and `web` profiles remain command-only demonstrations.
 
-## Capability selectors
+## Interface versions and limits
 
 Generated composition entries record explicit supported interface versions,
 defined in `src/runtime/interface_policy.gene`. Changes to implementation files alone
 do not change those contracts. Incompatible public API changes require a new
 version. Entries with unsupported interface versions are refused.
 
-Composition stores inert selector data. It never stores or restores grants:
-
-```gene
-{^type "fs/ReadDir" ^root "workspace" ^path "docs"}
-{^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
-```
+Generated modules are loaded with no standard-library namespaces, so a plugin
+cannot reach `$fs`, `$net` or `$os`; it delegates I/O to installed tools.
+Composition entries written before this change may still carry a `selectors`
+field; it is ignored.
 
 Plugin `init`, activation, schemas, and cleanup run under transitive step,
 timeout, and memory limits. The recovery boundary converts plugin panic into a
 quarantine error. The policy is attached immutably to the sandbox module, so
-escaped functions and direct typed protocol methods retain the same capability
-ceiling and fresh execution budget. FFI and native compilation remain disabled.
+escaped functions and direct typed protocol methods run under the same limits
+with a fresh execution budget per call. FFI and native compilation remain
+disabled.
 
 A view row is called twice per *turn*, never once per session. `HarnessView`
 has two messages — render the prompt, then handle the line — and `nil` from
