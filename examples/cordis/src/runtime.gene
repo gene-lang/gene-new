@@ -214,7 +214,7 @@
   ^private true
   ^props {^token Any ^id Int ^runtime RuntimeRecord ^parent Any ^owner Any
           ^operator Bool ^alive Any ^realms Any ^overlays Any ^allowed Any
-          ^capabilities Any ^capabilities_restricted Bool
+          ^capabilities_restricted Bool
           ^limits InvocationLimits ^generation Any})
 
 (type InstanceRecord
@@ -500,7 +500,7 @@
   (var wrapper
     (if call/capabilities_restricted
       ($runtime/bind_call call/callable call/args
-        ^policy policy ^capabilities call/capability_selectors)
+        ^policy policy)
       ($runtime/bind_call call/callable call/args ^policy policy)))
   (var task nil)
   (var outcome nil)
@@ -612,7 +612,7 @@
     (ContextRecord ^token ($cell nil) ^id id ^runtime runtime ^parent parent
                    ^owner owner ^operator operator ^alive ($cell true)
                    ^realms realms ^overlays overlays ^allowed allowed
-                   ^capabilities capabilities
+                  
                    ^capabilities_restricted capabilities_restricted
                    ^limits limits
                    ^generation ($cell 1)))
@@ -874,7 +874,7 @@
   (if_not (== requested void)
     (if_not (== ($head requested) List)
       (cordis_failure ConfigValidationError
-        "Context/derive ^capabilities must be a list"))
+        "Context/derive be a list"))
     (if_not (list_subset? requested parent/capabilities
                           parent/capabilities_restricted)
       (cordis_failure ConfigValidationError
@@ -2405,7 +2405,7 @@
          ^config ($freeze (manifest_value entry "config" nil))
          ^isolate isolate ^intercept intercept
          ^namespaces ($freeze namespaces)
-         ^capabilities ($freeze_shallow capabilities)
+        
          ^limits limits}))
     (out .push normalized)
     (if group

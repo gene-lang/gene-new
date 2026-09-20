@@ -23,7 +23,7 @@
     # Narrower than the seam contract, and honest about it: a stub needs no
     # filesystem authority. Declaring `[]` is what lets it run in a harness
     # that was started with no grants at all.
-    ^capabilities []
+   
     $"stub:${path}"))
 
 # The three names the kernel's `install_sandboxed` reads. Deliberately plain

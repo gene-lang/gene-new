@@ -1,6 +1,5 @@
-import ./capability_test_support
 import std/[os, strutils, tables, tempfiles, unittest]
-import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer, types, vm]
+import gene/[compiler, gir, gir_codec, printer, types, vm]
 
 template pipelineCheck(source, expected: string) =
   check run(compileSource(source), newGlobalScope()).print() == expected
@@ -434,29 +433,3 @@ suite "pipeline — prepared lazy invocation":
       [(try (consume) false catch Any true) (pending .has_next)]
     """, "[true false]"
 
-when defined(posix):
-  suite "pipeline — retained authority":
-    test "both creating and consuming capability ceilings apply":
-      let root = expandFilename(createTempDir("gene-pipeline-caps-", ""))
-      defer: removeDir(root)
-      writeFile(root / "data", "pipeline")
-      let app = newFilesystemPolicyApp(root)
-      let scope = newGlobalScope(app)
-      scope.define("file", newStr(root / "data"))
-      check run(compileSource("""
-        (fn read [x] ($fs/read_text file))
-        (let full ([1] => read))
-        (let narrow (with_capabilities [] ([1] => read)))
-        (let later ([1] => read))
-        (fn ^^generator rows [] (yield ($fs/read_text file)))
-        (let producer (rows))
-        (let high_source (rows))
-        (let narrow_source (with_capabilities [] (high_source => (fn [x] x))))
-        [(full .next)
-         (try (narrow .next) false catch MissingCapability true)
-         (try (with_capabilities [] (later .next)) false
-          catch MissingCapability true)
-         (try (with_capabilities [] (producer .next)) false
-          catch MissingCapability true)
-         (try (narrow_source .next) false catch MissingCapability true)]
-      """), scope).print() == "[\"pipeline\" true true true true]"

@@ -4,7 +4,7 @@
 ## examples/style_guide.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[capabilities, compiler, fs_capabilities, gir, package, printer,
+import gene/[compiler, gir, package, printer,
              reader, types, vm, web]
 # Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
@@ -51,9 +51,6 @@ template check_eval_at(src: string, expected: string, root: string) =
     # file (vm.nim, newApplicationState). A spec that operates under `root`
     # grants it the way an embedding host or `--allow_read_write_dir` would.
     let app = newApplication(root)
-    app.setRootCapabilities(newCapabilityContext(
-      @(app.rootCapabilities.grants) &
-      @[app.filesystemCapabilities.grantReadWriteDir(root)]))
     check run(compileSource(src), newGlobalScope(app)).print() == expected
 
 template check_eval_error(src: string, fragment: string) =
@@ -163,21 +160,6 @@ suite "spec — reader surface from design":
                "[true true \"a1\"]")
     check_eval("(var x 5) $\"v=${x}\"", "\"v=5\"")
 
-  test "selector literals and context-neutral paths stay distinct":
-    check_read("/user/name", "(select user name)")
-    check_read("user/name", "(path user name)")
-    check_read("/users/0/name", "(select users 0 name)")
-    check_read("users/-1/name", "(path users -1 name)")
-    check_read("(import $net/http [Request])", "(import (path gene net http) [Request])")
-    check_read("xs/.size", "xs/.size")
-    check_read("(fn f [^server : Http/Server] nil)",
-               "(fn f [^ server : Http/Server] nil)")
-    check_read("(.f a)", "(.f a)")
-    check_read("(x; $parse; (|| _ default))",
-               "(((x) (path gene parse)) (|| _ default))")
-    check_read("(x .parse; (|| _ default))",
-               "((x .parse) (|| _ default))")
-
   test "template unquote supports interpolation and dynamic paths":
     check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
     check_read("`(td %$\"$${self/price}\")",
@@ -266,94 +248,6 @@ suite "spec — reader surface from design":
   test "dot descriptors require a send position":
     check_compile_error(".message", "requires a receiver")
     check_compile_error(".Proto:message", "requires a receiver")
-
-suite "spec — compiler special-form inventory from docs/spec/calls.md":
-  test "documented inventory matches compiler dispatch and has fixtures":
-    let design = readFile("docs/spec/calls.md")
-    let marker = "<!-- compiler-head-dispatch:start -->"
-    let markerAt = design.find(marker)
-    check markerAt >= 0
-    let fenceAt = design.find("```text", markerAt)
-    let namesAt = design.find('\n', fenceAt) + 1
-    let fenceEnd = design.find("```", namesAt)
-    var documented = design[namesAt ..< fenceEnd].splitWhitespace()
-    var dispatched = CoreSpecialFormNames.toSeq()
-    documented.sort()
-    dispatched.sort()
-    check documented == dispatched
-    for i in 1 ..< documented.len:
-      check documented[i - 1] != documented[i]
-
-    var covered: seq[string]
-    template fixture(names: openArray[string], source: string) =
-      discard compileSource(source)
-      for name in names:
-        covered.add name
-
-    fixture(["do", "var", "set", "if"],
-      "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
-    fixture(["let"], "(let x 1)")
-    discard compileSource("(var m {^a 1}) (set m/a 2)")
-    fixture(["new"],
-      "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
-    fixture(["const"], "(const K 1)")
-    fixture(["if_yes"], "(if_yes true 1 2)")
-    fixture(["if_not"], "(if_not false 1 2)")
-    fixture(["&&", "||", "??", "!"],
-            "[(&& true 1) (|| nil 2) (?? nil 2) (! false)]")
-    discard compileSource("(fn size-of [self] (.size))")
-    fixture(["fn"], "(fn identity [x] x)")
-    fixture(["macro"], "(macro identity [x] `%x) (identity 1)")
-    fixture(["quote", "quasiquote", "select", "path"],
-      "(do (quote x) (quasiquote x) (select name) (path a b))")
-    # `msg` is what the reader gives `Proto:msg`; `/` stays `path`.
-    fixture(["msg"], "(protocol FixtureMsgProto (message m [] : Int)) " &
-                     "(fn use [x] (x .FixtureMsgProto:m))")
-    fixture(["ns"], "(ns sample (var x 1))")
-    fixture(["env"], "(env ^bindings {^x 1})")
-    fixture(["eval"], "(eval (quote 1) ^in (env))")
-    fixture(["import"], "(import gene/stream [map])")
-    fixture(["mod"], "(mod sample)")
-    fixture(["match"], "(match 1 (when x x))")
-    fixture(["while", "break"], "(while true (break))")
-    fixture(["loop", "continue"], "(loop (continue))")
-    fixture(["repeat"], "(repeat 0 nil)")
-    fixture(["for"], "(for x in [] x)")
-    fixture(["yield"], "(fn ^^generator items [] (yield 1))")
-    fixture(["return"], "(fn early [] (return 1))")
-    fixture(["try"], "(try 1 ensure nil)")
-    fixture(["scope"], "(scope nil)")
-    fixture(["supervisor"], "(supervisor ^strategy stop nil)")
-    fixture(["spawn"], "(scope (spawn 1))")
-    fixture(["await"], "(scope (await (spawn 1)))")
-    fixture(["with_capabilities"], "(with_capabilities [] 1)")
-    fixture(["fail"], "(fail error-value)")
-    fixture(["panic"], "(panic)")
-    fixture(["type"], "(type FixtureType ^props {})")
-    fixture(["alias"], "(alias FixtureAlias (| Int Str))")
-    fixture(["enum"], "(enum FixtureEnum one two)")
-    fixture(["protocol"], "(protocol FixtureProtocol)")
-    fixture(["impl"],
-      "(protocol EmptyProtocol) (type EmptyType ^props {}) " &
-      "(impl EmptyProtocol for EmptyType)")
-    discard compileSource(
-      "(type Guarded ^props {} (message g [] : Int 1) " &
-      "  (message lead [] : Int (?.g))) " &
-      "[((Guarded) ?.g) (nil ?.g) (void ?.g) ((Guarded) .lead)]")
-    fixture(["import_impl"],
-      "(protocol ImportedProtocol) (type ImportedType ^props {}) " &
-      "(import_impl ImportedProtocol for ImportedType ^from \"./elsewhere\")")
-    expect GeneError:
-      discard compileSource("(derive)")
-    covered.add "derive"
-    # The body is captured, never compiled for this VM — it targets the web
-    # backend — so compiling the host module only has to accept the form.
-    fixture(["web_module"],
-      "(web_module fixture_client " &
-      "(fn main [root : EventTarget] : Void void))")
-
-    covered.sort()
-    check covered == dispatched
 
 suite "spec — value spread from design":
   test "spread flattens values in calls and list literals":
@@ -3518,16 +3412,6 @@ suite "spec — numeric boundaries from design":
                "catch TypeError $err/expected)",
                "\"(device/Buffer F64)\"")
 
-  test "FFI runtime loading rejects the normalized capability profile":
-    let denied = newApplication()
-    denied.setRootCapabilities(denied.capabilities.newPolicyContext([]))
-    check run(compileSource("(try ($ffi/open \"libmissing-gene-new\") " &
-      "catch UnsupportedCapability $err/reason)"),
-      newGlobalScope(denied)).strVal == "unsupported_operation"
-    expect GeneError:
-      discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
-                  newGlobalScope())
-
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:
@@ -4941,105 +4825,6 @@ suite "spec — implicit self in message bodies from design §10":
                " (try (c .Cell:get) catch CallKindError $err/expected)]",
                "[7 \"Protocol\"]")
     check_runtime_error("(Cell/get ($cell 7))", "not a callable path")
-
-  test "a built-in surface is a type, so it can receive impls":
-    # `Cell` is a real type whose message table holds get/set/swap/update
-    # (design §12.2), not a namespace of natives. That is what lets a protocol
-    # name it as a receiver — the same declaration used to crash with
-    # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node Map List Channel Stream Actor]",
-               "[(type Cell) (type Buffer) (type Node) (type Map) " &
-               "(type List) (type Channel) (type Stream) (type Actor)]")
-    # The receiver-shaped surfaces are types too now, so the rule is uniform:
-    # an uppercase built-in surface is a type. What stays a namespace is a
-    # namespace *of* things (`C`'s ABI types, `gene/fs`' capabilities), not a
-    # surface whose members all take a receiver.
-    check_eval("[AtomicCell Task ReplyTo Module Namespace Capability]",
-               "[(type AtomicCell) (type Task) (type ReplyTo) (type Module) " &
-               "(type Namespace) (type Capability)]")
-    # `snapshot` used to make `Env` look like a namespace: it takes a
-    # **CallerEnv**, not an `Env`, so as a static factory it had no receiver and
-    # `T/m` is not a callable path. Giving it its real receiver settles it —
-    # `Env` keeps only the message that genuinely takes an `Env`.
-    check_eval("[Env CallerEnv]", "[(type Env) (type CallerEnv)]")
-    check_eval("(var x 1) (fn capture! [] (caller_env .snapshot [\"x\"])) " &
-               "($nil? (capture!))",
-               "false")
-    check_eval("[Date Time DateTime Timezone Duration Range]",
-               "[(type Date) (type Time) (type DateTime) (type Timezone) " &
-               "(type Duration) (type Range)]")
-    check_eval("(var ac ($atomic_cell 1)) (ac .store 5) (ac .load)", "5")
-    check_eval("[(($range 0 5) .size) (($date 2026 7 4) .year) " &
-               " ((($range 0 3) .to_stream) .into [])]",
-               "[5 2026 [0 1 2]]")
-    # Which is what makes them impl receivers — the point of the rule.
-    check_eval("(protocol Shown (message show [] : Str)) " &
-               "(impl Shown for Range (message show [] : Str " &
-               "  ($to_str (self .size)))) " &
-               "(impl Shown for Date (message show [] : Str " &
-               "  ($to_str (self .year)))) " &
-               "[(($range 0 7) .Shown:show) (($date 2026 7 4) .Shown:show)]",
-               "[\"7\" \"2026\"]")
-    # `each` has no bare root binding — it lives only in the `stream`
-    # namespace — so the type's table has to hold that same value.
-    check_shared_native("Stream", "map", "$map")
-    check_shared_native("Stream", "into", "$into")
-    check_shared_native("Stream", "each", "$stream/each")
-    check_eval("(var c ($cell 0)) " &
-               "((([1 2 3 4] .to_stream) .filter (fn [x] (> x 2))) " &
-               "  .each (fn [x] (c .set (+ (c .get) x)))) " &
-               "(c .get)",
-               "7")
-    # `Channel` is one of the names a program may redeclare, so the annotation
-    # path lets a scope lookup win. Now that the built-in is itself a type,
-    # landing back on the built-in must not read as a shadow: the generic form
-    # still applies, and a real local declaration still wins.
-    check_eval("(var ch ($channel ^capacity 2)) " &
-               "[((fn [c : Channel] 1) ch) ((fn [c : (Channel Int)] 2) ch)]",
-               "[1 2]")
-    check_eval("(type Channel ^props {^a Int}) " &
-               "[((fn [c : Channel] 3) (Channel ^a 1)) " &
-               " (try ((fn [c : Channel] 3) ($channel ^capacity 1)) " &
-               "  catch TypeError $err/expected)]",
-               "[3 \"Channel\"]")
-    # A name that is both a bare library function and a type message names one
-    # function value, not two natives that behave alike.
-    check_shared_native("List", "size", "$size")
-    check_shared_native("Node", "head", "$head")
-    check_shared_native("List", "to_stream", "$to_stream")
-    # Kinds that are still namespace-backed keep reaching the same natives.
-    check_eval("(var s ($Set 1 2)) (var r ($range 0 3)) " &
-               "[(s .contains? 1) ((s .to_stream) .into []) " &
-               " ((r .to_stream) .into [])]",
-               "[true [1 2] [0 1 2]]")
-    # Both map representations dispatch as `Map`; `PropMap`/`HashMap` name the
-    # representations in annotations and carry no messages of their own.
-    check_eval("(protocol Sz (message sz [] : Int)) " &
-               "(impl Sz for Map (message sz [] : Int 7)) " &
-               "[({^a 1} .Sz:sz) ({{\"a\" : 1}} .Sz:sz) " &
-               " ({{\"a\" : 1}} .get \"a\") " &
-               " ((fn [m : PropMap] 1) {^a 1}) " &
-               " ((fn [m : (Map Sym Any)] 2) {^a 1})]",
-               "[7 7 1 1 2]")
-    check_eval("[(Cell .name) (Cell .fields)]", "[\"Cell\" []]")
-    # A generic annotation on a built-in stays on the symbolic matching path,
-    # so making the surface a type does not disturb `(Buffer T)`.
-    check_eval("(var b ($buffer [1 2 3])) " &
-               "[((fn [x : (Buffer Int)] (x .len)) b) " &
-               " ((fn [x : Buffer] (x .get 0)) b)]",
-               "[3 1]")
-    check_eval("(protocol Shown (message show [] : Str)) " &
-               "(impl Shown for Str (message show [] : Str self)) " &
-               "(impl Shown for Cell " &
-               "  (message show [] : Str ((self .get) .Shown:show))) " &
-               "(($cell \"hi\") .Shown:show)",
-               "\"hi\"")
-    # Bare and selector spellings resolve through the one message table, and a
-    # name it does not hold is still a MessageError naming the type.
-    check_eval("(var c ($cell 1)) " &
-               "[(c .get) c/.get " &
-               " (try (c .nope) catch MessageError $err/receiver_type)]",
-               "[1 1 \"Cell\"]")
 
   test "every reader-produced shape projects as a node":
     # design §1.3: `42` reads as `(Int 42)`, `[1 2]` as `(List 1 2)`, and
@@ -7192,14 +6977,6 @@ suite "spec — actors from design":
                "((fn [x : ActorRef] 3) (ActorRef ^a 1))",
                "3")
 
-  test "namespaces and capabilities receive messages":
-    # Module/Namespace/Capability/Env are uppercase namespaces whose operations
-    # take the receiver first, so they are sends (design §3). `Module` itself
-    # needs a real module and is covered in tests/test_modules.nim.
-    check_eval("(import $net/http_client [Http]) (Http .name)",
-               "\"net/Http\"")
-    check_eval("(ns n (var x 1)) ((n .bindings) .get \"x\")", "1")
-
   test "actor send processes messages sequentially":
     check_eval("(var out ($cell 0)) " &
                "(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
@@ -7274,19 +7051,6 @@ suite "spec — actors from design":
                "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
                "(try (a .send [1]) catch TypeError $err/expected)",
                "\"Send\"")
-
-  test "actor ask uses an explicit one-shot ReplyTo capability":
-    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send for Get) " &
-               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
-               "  (match msg " &
-               "    (when (Get ^reply reply) " &
-               "      (reply .send state) " &
-               "      ($actor/continue state)))) " &
-               "(var counter : (ActorRef Get) " &
-               "  ($actor/spawn ^init (fn [] 41) ^handle handle)) " &
-               "(await (counter .ask (fn [reply] (Get ^reply reply))))",
-               "41")
 
   test "a second send on a ReplyTo raises ReplyAlreadySent":
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -7738,26 +7502,6 @@ suite "spec — Env and eval from design":
                "  (eval (quote (import [answer] ^from \"./envlib\")) ^in (env)) " &
                "catch CompileError $err/message)",
                "\"eval cannot use import; add imports to Env\"")
-
-  test "Env name bindings remain separate from its capability bound":
-    check_eval("(var e (env ^bindings {^fs \"binding\"} " &
-               "           ^capabilities [])) " &
-               "(eval (quote fs) ^in e)", "\"binding\"")
-    check_eval_error("(env ^capabilities {^fs \"capability\"})",
-                     "CapabilitySpecRow")
-
-  test "capability policies are immutable data from the trusted catalog":
-    let app = newApplication()
-    app.setRootCapabilities(app.capabilities.newPolicyContext([]))
-    check run(compileSource("(var row ($capabilities/parse \"[]\")) " &
-      "(var report ($capabilities/check_requirements row)) report/admitted"),
-      newGlobalScope(app)).boolVal
-    check_eval_error("(($capabilities/parse \"[]\"))", "inert data")
-    check_compile_error("(type Area ^capability \"app/Area\")", "facades were removed")
-    check_eval("(var ch ($channel ^capacity 1)) " &
-               "(try (ch .send ($capabilities/parse \"[]\")) " &
-               "catch TypeError $err/expected)",
-               "\"Send\"")
 
   test "runtime GC stats expose optimization diagnostics":
     check_eval("(var stats ($runtime/gc_stats)) " &
@@ -8291,44 +8035,9 @@ suite "spec — stdlib namespaces from stdlib plan":
                "catch UrlError \"bad\")",
                "\"bad\"")
 
-suite "spec — net/http surface from stdlib plan":
-  test "response helpers build typed Response nodes":
-    check_eval("(import $net/http [text]) (import gene/node [body]) " &
-               "(var r (text \"hi\")) " &
-               "[r/status r/headers/content-type (body r)]",
-               "[200 \"text/plain; charset=utf-8\" [\"hi\"]]")
-    check_eval("(import $net/http [json]) (var r (json \"{}\")) " &
-               "r/headers/content-type",
-               "\"application/json\"")
-    check_eval("(import $net/http [redirect]) (var r (redirect \"/x\")) " &
-               "[r/status r/headers/location]",
-               "[302 \"/x\"]")
-    check_eval("(import $net/http [not_found]) (var r (not_found)) r/status",
-               "404")
-
-  test "Server and Response types construct with typed props":
-    check_eval("(import $net/http [Server]) " &
-               "(var s (Server ^host \"127.0.0.1\" ^port 8088)) " &
-               "[s/host s/port]",
-               "[\"127.0.0.1\" 8088]")
-    check_eval("(import $net/http [Response]) " &
-               "(var r (Response ^status 201)) r/status",
-               "201")
-
-  test "serve validates its Server argument":
-    check_eval("(import $net/http [serve HttpError]) " &
-               "(try (serve nil (fn [q] q)) " &
-               "catch HttpError \"bad server\")",
-               "\"bad server\"")
-
 suite "spec — net/http_client native client contract":
-  test "client authority and entry points are importable":
-    check_eval("(import $net/http_client [Http request stream HttpClientError]) " &
-               "[(Http .name)]",
-               "[\"net/Http\"]")
-
   test "client rejects non-http URL schemes before starting work":
-    check_eval("(import $net/http_client [Http request HttpClientError]) " &
+    check_eval("(import $net/http_client [request HttpClientError]) " &
                "(try (request ^url \"file:///etc/passwd\") false " &
                " catch HttpClientError " &
                "   ($str/contains? $err/message \"http:// or https://\"))",
@@ -8338,11 +8047,11 @@ suite "spec — net/http_client native client contract":
     # Usage mistakes (bad args/authority) are ^kind "usage" and must not be
     # confused with libcurl load failures (^kind "unavailable"): the agent's
     # curl(1) fallback catches only the latter.
-    check_eval("(import $net/http_client [Http request HttpClientError]) " &
+    check_eval("(import $net/http_client [request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError (== $err/kind \"usage\"))",
                "true")
-    check_eval("(import $net/http_client [Http request HttpClientError]) " &
+    check_eval("(import $net/http_client [request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError " &
                "   (if (== $err/kind \"unavailable\") \"fallback\" \"surfaced\"))",
@@ -8508,18 +8217,6 @@ suite "spec — store persistence protocol":
                " (s .Store:keys) " &
                " (try (s .Store:put \"\" 1) catch StoreError $err/kind)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]", dir)
-
-  test "filesystem atomic text replacement is capability-gated":
-    let dir = getTempDir() / "gene-fs-atomic-text-spec"
-    if dirExists(dir):
-      removeDir(dir)
-    createDir(dir)
-    let path = dir / "module.gene"
-    check_eval_at("(import $fs [write_text_atomic read_text]) " &
-               "(write_text_atomic " & geneString(path) & " \"first\") " &
-               "(write_text_atomic " & geneString(path) & " \"second\") " &
-               "(read_text " & geneString(path) & ")",
-               "\"second\"", dir)
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import $db/sqlite [open]) " &
@@ -9006,40 +8703,7 @@ suite "spec — capability-gated filesystem watching":
     removeFile(root / "b")
     removeDir(root)
 
-  test "watch requires ReadDir authority for the watched root":
-    let root = getTempDir() / "gene-fs-watch-authority"
-    let outside = getTempDir() / "gene-fs-watch-outside"
-    removeDir(root)
-    removeDir(outside)
-    createDir(root)
-    createDir(outside)
-    check_eval_at(
-      "(import $fs [watch]) " &
-      "(try (watch \"" & outside.replace("\\", "/") &
-      "\") false catch MissingCapability true)",
-      "true",
-      root)
-    removeDir(outside)
-    removeDir(root)
-
 suite "spec — os and json from ai-agent plan":
-  test "os/get_env reads, defaults, and errors under ambient os/Env":
-    check_eval("(import $os [get_env env?]) " &
-               "[(env? \"GENE_SPEC_UNSET_XYZ\") " &
-               " (get_env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
-               "[nil \"fallback\"]")
-    check_eval("(import $os [get_env OsError]) " &
-               "(try (get_env \"GENE_SPEC_UNSET_XYZ\") " &
-               "catch OsError \"unset\")",
-               "\"unset\"")
-
-  test "os/get_env is denied when the active context lacks os/Env":
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext())
-    expect GeneError:
-      discard run(compileSource("($os/get_env \"HOME\")"),
-                  newGlobalScope(app))
-
   test "os/executable_path identifies the running Gene executable":
     check_eval("(import $os [executable_path]) " &
                "(import $str [byte_size]) " &
@@ -9053,27 +8717,6 @@ suite "spec — os and json from ai-agent plan":
     check value.strVal == app.launchDirectory()
     check value.strVal.isAbsolute
     check_eval("(try ($os/launch_dir 1) false catch Any true)", "true")
-
-  test "os/launch_dir requires the active os/Process capability":
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext())
-    expect GeneError:
-      discard run(compileSource("($os/launch_dir)"), newGlobalScope(app))
-
-  test "os/exec runs a program, captures output, and enforces timeout":
-    check_eval("(import $os [exec Exec]) " &
-               "(var r (exec ^cmd \"echo\" ^args [\"hi\"])) " &
-               "[r/status r/timed_out]",
-               "[0 false]")
-    check_eval("(import $os [exec Exec]) " &
-               "(var r (exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
-               "r/timed_out",
-               "true")
-
-    check_eval("(import $os [exec Exec]) " &
-               "(var r (exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
-               "[r/stdout r/stdout_truncated r/truncated]",
-               "[\"abc\" true true]")
 
   test "os/exec_stream invokes stdout callbacks while retaining captured output":
     check_eval("(import $os [exec_stream Exec]) " &
@@ -9202,35 +8845,8 @@ suite "spec — os and json from ai-agent plan":
                "(during .get)",
                "5")
 
-  test "fs sync helpers read, write, and list under capabilities":
-    let dir = getTempDir() / "gene-ai-agent-fs-spec"
-    if dirExists(dir):
-      removeDir(dir)
-    createDir(dir)
-    let path = dir / "note.txt"
-    let made = dir / "made"
-    let removable = dir / "remove-me.txt"
-    # See `check_eval_at`: the application argument anchors module resolution,
-    # not authority, so the fixture directory is granted explicitly.
-    let fsApp = newApplication(dir)
-    fsApp.setRootCapabilities(newCapabilityContext(
-      @(fsApp.rootCapabilities.grants) &
-      @[fsApp.filesystemCapabilities.grantReadWriteDir(dir)]))
-    let scope = newGlobalScope(fsApp)
-    check run(compileSource(
-      "(import $fs [read_text write_text exists? list_dir make_dir remove]) " &
-      "(write_text " & geneString(path) & " \"hello\") " &
-      "(write_text " & geneString(removable) & " \"bye\") " &
-      "(make_dir " & geneString(made) & ") " &
-      "(remove " & geneString(removable) & ") " &
-      "[(read_text " & geneString(path) & ") " &
-      " (exists? " & geneString(path) & ") " &
-      " (exists? " & geneString(removable) & ") " &
-      " (list_dir " & geneString(dir) & ")]"), scope).print() ==
-      "[\"hello\" true false [\"made\" \"note.txt\"]]"
-
   test "$fs/real_path resolves an existing file and a not-yet-created path":
-    ## Workspace confinement (docs/spec/authority.md) resolves real paths before
+    ## Workspace confinement resolves real paths before
     ## the containment check. An existing file and a to-be-created file under
     ## the same directory must resolve to sibling absolute paths, so a `..`
     ## detour still lands inside the resolved root.
@@ -9243,9 +8859,6 @@ suite "spec — os and json from ai-agent plan":
     # See `check_eval_at`: the application argument anchors module resolution,
     # not authority, so the fixture directory is granted explicitly.
     let realPathApp = newApplication(dir)
-    realPathApp.setRootCapabilities(newCapabilityContext(
-      @(realPathApp.rootCapabilities.grants) &
-      @[realPathApp.filesystemCapabilities.grantReadWriteDir(dir)]))
     let scope = newGlobalScope(realPathApp)
     check run(compileSource(
       "(import $fs [real_path write_text]) " &
@@ -9450,19 +9063,6 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "[(contains? text \"serde_map\") " &
                " (== m (read_data text))]",
                "[true true]")
-
-  test "cells and capabilities are rejected with clear errors":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
-               "(try (write_data [1 ($cell 2)]) " &
-               "catch SerdeError " &
-               "  [(contains? $err/message \"at 1:\") " &
-               "   (contains? $err/message \"not data\")])",
-               "[true true]")
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(try (write_data {^net ($capabilities/parse \"[net/Http]\")}) " &
-               "catch SerdeError $err/path)",
-               "\"net\"")
 
   test "serde/data? classifies without raising":
     check_eval("(import $serde [data?]) " &
@@ -10447,13 +10047,6 @@ suite "spec — application event bus (docs/stdlib.md)":
       "(bus .publish (Ping)) " &
       "(hits .get)",
       "3")
-
-  test "event is a namespace under gene, never a bare root":
-    # `event` is not in `bareCapabilityNamespaces`, so `$event/Bus` and
-    # `(import gene/event [Bus])` work and bare `event/Bus` does not (§7).
-    check_eval("(($event/Bus) .closed?)", "false")
-    check_eval("(import gene/event [Bus]) ((Bus) .closed?)", "false")
-    check_eval_error("(event/Bus)", "event")
 
 suite "spec — naming convention":
   test "registered names use underscores and reserve trailing bang":

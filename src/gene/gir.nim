@@ -5,7 +5,7 @@
 ## execution.
 
 import std/[sets, strutils, tables]
-import ./[capabilities, printer, types]
+import ./[printer, types]
 
 const
   MaxInferredReturnDepth* = 8
@@ -122,7 +122,6 @@ type
     opLoopBreak       # exit the nearest active loop
     opLoopContinue    # skip to the next iteration of the nearest active loop
     opTry             # run a body with catch clauses and an ensure block
-    opWithCapabilities # run a body under a resolved, attenuated context
     opTaskScope       # run a structured task scope body
     opSupervisor      # run a supervised actor-owner body
     opSpawn           # run a child task body and push a Task handle
@@ -382,14 +381,7 @@ type
     errorSummary*: CallableErrorSummary
     publicErrorInterface*: bool
     errorTypeCount*: int
-    capabilityRow*: CapabilityRow
     boundExecutionPolicy*: ModuleExecutionPolicy
-    boundCapabilityCeiling*: CapabilityContext
-    capabilityCacheRegistryId*: uint64
-    capabilityCacheEpoch*: uint64
-    capabilityCacheParent*: CapabilityContext
-    capabilityCacheCeiling*: CapabilityContext
-    capabilityCacheTransition*: CapabilityTransition
     declMetaKeys*: seq[string]   # @key value meta on the (fn ...) node,
     declMetaValues*: seq[Value]  #   surfaced on Module/declarations records
     chunk*: Chunk
@@ -481,10 +473,6 @@ type
     sourceLabel*: string              # stable diagnostic label for fallback entries
     reexport*: bool                   # selected/alias binding is intentionally public
     selections*: seq[ImportSelection]
-    hasCapabilityRow*: bool           # `^capabilities` on the import itself
-    capabilityRowSource*: Value       # its raw form, until `compileImport`
-    capabilityRow*: CapabilityRow     # the importer's ceiling for this
-                                      # dependency (capabilities.md §5.3.1)
 
   ImportImplSpec* = object
     modulePath*: string
@@ -651,12 +639,6 @@ type
     catches*: seq[CatchClause]
     ensureBody*: Chunk           # nil when there is no `ensure`
 
-  CapabilityBlockProto* = ref object
-    row*: CapabilityRow
-    body*: Chunk
-    required*: bool
-    dynamicPolicy*: bool
-
   NodeBuildProto* = object
     metaNames*: seq[string]
     propNames*: seq[string]
@@ -692,8 +674,6 @@ type
   TypeProto* = ref object
     name*: string
     staticTopLevel*: bool
-    capabilityName*: string
-    capabilitySchemaHash*: string
     repr*: TypeRepr              # `^repr native_wrapper`, or ordinary
     nativeType*: NativeTypeProto # `^native {...}`, compile metadata only
     fields*: seq[TypeField]      # own (non-inherited) field schema
@@ -798,10 +778,6 @@ type
     instructionLocs*: seq[SourceLoc]
     topLevelForms*: seq[TopLevelFormInfo]
     owner* {.cursor.}: FunctionProto
-    moduleCapabilityRow*: CapabilityRow
-    capabilitiesStrict*: bool         # this module was compiled in strict mode
-    requireStrictDependencies*: bool  # entry policy: every dependency must be
-                                      # strict (capabilities.md §5.0.2)
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
@@ -817,7 +793,6 @@ type
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]
     tries*: seq[TryProto]
-    capabilityBlocks*: seq[CapabilityBlockProto]
     listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
     pipelineBuilds*: seq[PipelineBuildProto]
@@ -881,7 +856,7 @@ proc newChunk*(sourceName = ""): Chunk =
         moduleRefNames: @[],
         imports: @[], importImpls: @[],
         diagnostics: @[], forLoops: @[], matches: @[], tries: @[],
-        capabilityBlocks: @[], listBuilds: @[],
+        listBuilds: @[],
         nodeBuilds: @[], pipelineBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
         ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
@@ -933,10 +908,6 @@ proc addMatch*(chunk: Chunk, mp: MatchProto): int =
 proc addTry*(chunk: Chunk, tp: TryProto): int =
   result = chunk.tries.len
   chunk.tries.add tp
-
-proc addCapabilityBlock*(chunk: Chunk, capBlock: CapabilityBlockProto): int =
-  result = chunk.capabilityBlocks.len
-  chunk.capabilityBlocks.add capBlock
 
 proc addSubchunk*(chunk: Chunk, body: Chunk): int =
   result = chunk.subchunks.len
@@ -1224,8 +1195,6 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
-  of opWithCapabilities:
-    result.add " capability_block=" & $inst.intArg
   of opTaskScope:
     result.add " body=" & $inst.intArg
   of opSpawn:
@@ -1272,7 +1241,6 @@ proc compilerDiagnostics*(root: Chunk): seq[CompileDiagnostic] =
       visit(attempt.body)
       for clause in attempt.catches: visit(clause.body)
       visit(attempt.ensureBody)
-    for capabilityBlock in chunk.capabilityBlocks: visit(capabilityBlock.body)
   visit(root)
   found
 
@@ -1389,16 +1357,6 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
       if tp.ensureBody != nil:
         lines.add indent & "  ensure:"
         addDisassembly(lines, tp.ensureBody, indent & "    ")
-
-  if chunk.capabilityBlocks.len > 0:
-    lines.add indent & "capability-blocks:"
-    for i, capBlock in chunk.capabilityBlocks:
-      lines.add indent & "  [" & $i & "] selectors=" &
-        $capBlock.row.selectors.len
-      # `env ^capabilities [...]` stores a row with no body — it grants
-      # authority to a later `eval` rather than wrapping a block here.
-      if capBlock.body != nil:
-        addDisassembly(lines, capBlock.body, indent & "    ")
 
   if chunk.imports.len > 0:
     lines.add indent & "imports:"

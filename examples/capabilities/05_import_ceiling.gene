@@ -1,8 +1,0 @@
-# The import chooses a separately initialized, bounded module instance.
-(import [write_where] ^from "./plugin.gene"
-  ^capabilities [(fs/Write "out/plugin")])
-(fn main []
-  (write_where "out/plugin/allowed.txt")
-  ($assert (try (write_where "out/escaped.txt")
-    false catch MissingCapability true))
-  0)

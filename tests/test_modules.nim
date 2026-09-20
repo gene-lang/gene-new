@@ -1,6 +1,5 @@
-import gene/[capabilities, compiler, fs_capabilities, gir, types, vm, printer]
+import gene/[compiler, gir, types, vm, printer]
 import std/[os, osproc, strutils, unittest]
-import ./capability_test_support
 
 let modDir = getTempDir() / "gene_module_tests"
 
@@ -36,9 +35,6 @@ proc runSandboxProgram(src: string): Value =
   ## root here. So the fixture root is granted explicitly, the way an embedding
   ## host or `--allow_read_write_dir` would.
   let app = newApplication(modDir)
-  app.setRootCapabilities(newCapabilityContext(
-    @(app.rootCapabilities.grants) &
-    @[app.filesystemCapabilities.grantReadWriteDir(modDir)]))
   run(compileSource(src), newGlobalScope(app))
 
 proc loadSandboxed(dir, entry, grants: string, shared = "[]"): string =
@@ -1037,15 +1033,6 @@ suite "modules — the capability sandbox (design §D5)":
       discard runSandboxProgram(loadSandboxed(modDir, "evil.gene", "[]"))
     check not fileExists(modDir / "gene_sandbox_escape")
 
-  test "module initialization stays empty even when a namespace is granted":
-    writeModule("good.gene",
-      "($fs/write_text \"" &
-      (modDir / "gene_sandbox_escape").replace("\\", "/") &
-      "\" \"allowed\") (fn ok [] : Int 1)")
-    expect GeneError:
-      discard runSandboxProgram(loadSandboxed(modDir, "good.gene", "[\"fs\"]"))
-    check not fileExists(modDir / "gene_sandbox_escape")
-
   test "a granted namespace works after initialization":
     writeModule("good.gene",
       "(fn write_it [p : Str] : Int ($fs/write_text p \"allowed\") 1)")
@@ -1285,9 +1272,6 @@ suite "modules — the capability sandbox (design §D5)":
     createDir(root)
     writeFile(root / "plugin.gene", "(var answer 42)")
     let app = newApplication(modDir)
-    app.setRootCapabilities(newCapabilityContext(
-      @(app.rootCapabilities.grants) &
-      @[app.filesystemCapabilities.grantReadWriteDir(modDir)]))
     let scope = newGlobalScope(app)
     let beforeModules = app.moduleCacheEntryCount()
     let beforeHeaders = app.moduleCompileHeaderCount()
@@ -1420,40 +1404,6 @@ suite "modules — the capability sandbox (design §D5)":
       "(call_tx .discard) call_error",
       useLocalSlots = false), scope).strVal
     check "max steps" in callMessage
-
-  test "prepared generation capability sealing covers escaped dependency calls":
-    let root = expandFilename(modDir) / "generation_sealed_capabilities"
-    let allowed = root / "allowed"
-    let denied = root / "denied"
-    createDir(allowed)
-    createDir(denied)
-    writeFile(allowed / "data", "allowed")
-    writeFile(denied / "data", "denied")
-    writeFile(root / "dependency.gene",
-      "(import $fs [read_text]) (fn read [path] (read_text path))")
-    writeFile(root / "entry.gene",
-      "(import [read] ^from \"./dependency\") (fn escape [] read)")
-    let source =
-      "(var policy {^max_steps 10000 ^max_memory_mb 16 ^timeout_ms 1000}) " &
-      "(var tx ($runtime/sandbox_transaction)) " &
-      "(var generation (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
-      " ^entry \"entry.gene\" ^grants [\"fs\"] ^shared [] ^policy policy})) " &
-      "(var module (generation .module)) " &
-      "(with_capabilities [(fs/Read \"" & allowed.replace("\\", "/") & "\")] " &
-      " ($runtime/configure_module module policy)) " &
-      "(var escaped (module/escape)) (tx .commit) " &
-      "(var allowed_result (escaped \"" & (allowed / "data").replace("\\", "/") & "\")) " &
-      "(var denied_result (try (escaped \"" & (denied / "data").replace("\\", "/") & "\") " &
-      " false catch MissingCapability true)) " &
-      "(var immutable (try ($runtime/configure_module module policy) false " &
-      " catch Any ($str/contains? $err/message \"immutable\"))) " &
-      "(generation .release) [allowed_result denied_result immutable]"
-    let app = newFilesystemPolicyApp(expandFilename(modDir))
-    let result = run(compileSource(source, useLocalSlots = false), newGlobalScope(app))
-    check result.listItems.len == 3
-    check result.listItems[0].strVal == "allowed"
-    check result.listItems[1].boolVal
-    check result.listItems[2].boolVal
 
   test "sandbox generation policy bounds macro expansion and compilation":
     let root = modDir / "generation_compile_policy"

@@ -1087,7 +1087,7 @@
   # Replay is then an ordinary fold over the log rather than a bespoke
   # deserializer, which is the part Gene gets more cheaply than TypeScript:
   # the log is Gene data.
-  ^capabilities []
+ 
   (var out (fresh_list))
   (for e in events
     (if_yes (== ($to_str e/kind) "message")
@@ -1229,7 +1229,7 @@
   (var program
     (if inherit
       (quote ($runtime/guard_call callable argument))
-      `(with_capabilities [(unquote (... selector_forms))]
+      `(do
          ($runtime/guard_call callable argument))))
   (var guarded
     (eval program
@@ -1253,7 +1253,7 @@
     {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
      ^timeout_ms limits/timeout_ms})
   (var program
-    `(with_capabilities [(unquote (... selector_forms))]
+    `(do
        ($runtime/configure_module module policy)))
   (eval program
     ^in (env ^bindings {^module module ^policy policy}

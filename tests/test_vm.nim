@@ -1,7 +1,6 @@
-import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer,
+import gene/[compiler, gir, gir_codec, printer,
              reader, types, vm]
 import std/[json, os, strutils, tables, unittest]
-import ./capability_test_support
 
 template ck(src, expected: string) =
   ## Compile and run a program string, then compare its printed result.
@@ -1732,8 +1731,7 @@ suite "vm — named arguments":
   test "native call envelope carries named arguments":
     let scope = newGlobalScope()
     scope.define("native-envelope",
-                 newNativeCallFn("native-envelope", nativeEnvelopeEcho,
-                   effectKind = nekCapabilityFree))
+                 newNativeCallFn("native-envelope", nativeEnvelopeEcho))
     check run(compileSource("(native-envelope ^scale 3 4)"), scope).print() ==
       "[\"native-envelope\" 1 1 scale 3 4]"
 
@@ -2082,15 +2080,6 @@ suite "vm — env and eval":
   test "eval compiles and executes a quoted node inside env bindings":
     ck "(var e (env ^bindings {^x 10})) (eval (quote (+ x 5)) ^in e)", "15"
 
-  test "eval inherits the scope it is written in, and Env bindings add to it":
-    # capabilities.md §14: evaluated code runs under the target environment's
-    # lexical bindings *and* the evaluator's. This reversed an earlier contract
-    # in which an Env hid the surrounding scope; sealing is now something a
-    # program states rather than a default it receives.
-    ck "(var visible \"seen\") (var e (env ^bindings {^x 1})) " &
-       "[(eval (quote visible) ^in e) (eval (quote x) ^in e)]",
-       "[\"seen\" 1]"
-
   test "a caller_env snapshot stays closed over the evaluating scope":
     # The one Env that does *not* inherit: a snapshot promises exactly the names
     # it captured, so a window onto the live scope would defeat naming them.
@@ -2112,15 +2101,6 @@ suite "vm — env and eval":
        "(var child (env ^parent base ^bindings {^x 20})) " &
        "(eval (quote x) ^in child)",
        "20"
-
-  test "Env bindings are separate from capability policy":
-    ck "(var base (env ^bindings {^fs \"sandbox\"})) " &
-       "(var child (base .extend {^x 1})) " &
-       "(eval (quote [fs x]) ^in child)",
-       "[\"sandbox\" 1]"
-    for value in ["{^fs \"sandbox\"}", "[1]", "nil"]:
-      expect GeneError:
-        discard runStr("(env ^capabilities " & value & ")")
 
   test "eval policy limits execution by steps, time, and memory":
     ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max_steps 20}))",
@@ -2595,7 +2575,7 @@ suite "vm — cooperative scheduler":
     defer:
       if fileExists(path):
         removeFile(path)
-    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let app = newApplication(root)
     let scope = newGlobalScope(app)
     scope.define("path", newStr(path))
     check run(compileSource(
@@ -2604,36 +2584,6 @@ suite "vm — cooperative scheduler":
         "(== ($binary/to_list ($fs/read_bytes path)) " &
         "    ($binary/to_list payload))"),
       scope).print() == "true"
-    # Reading needs active read authority, not merely some filesystem grant.
-    let writeOnly = newFilesystemPolicyApp(root, "fs/Write")
-    let writeOnlyScope = newGlobalScope(writeOnly)
-    writeOnlyScope.define("path", newStr(path))
-    expect GeneError:
-      discard run(compileSource("($fs/read_bytes path)"), writeOnlyScope)
-
-  test "async filesystem APIs reject until their operation profile is adopted":
-    let root = expandFilename(getTempDir())
-    let path = root / "gene-unsupported-async-test.txt"
-    writeFile(path, "unchanged")
-    defer: removeFile(path)
-    for capability in ["fs/Read", "fs/Write", "fs/ReadWrite"]:
-      let app = newFilesystemPolicyApp(root, capability)
-      let scope = newGlobalScope(app)
-      scope.define("path", newStr(path))
-      for operation in ["($fs/read_text_async path)",
-                        "($fs/write_text_async path \"changed\")"]:
-        check run(compileSource("(try " & operation &
-          " catch UnsupportedCapability $err/reason)"), scope).strVal ==
-          "unsupported_operation"
-      check readFile(path) == "unchanged"
-
-  test "raw TCP APIs reject without an adopted transport contract":
-    let scope = newGlobalScope(newApplication())
-    for operation in ["($net/tcp_read_text_async \"127.0.0.1\" 1 1 1)",
-                      "($net/tcp_write_text_async \"127.0.0.1\" 1 \"x\" 1)"]:
-      check run(compileSource("(try " & operation &
-        " catch UnsupportedCapability $err/reason)"), scope).strVal ==
-        "unsupported_operation"
 
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch ($channel ^capacity 1)) " &

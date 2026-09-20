@@ -69,7 +69,7 @@
      (fn run [arg] : Str
        ($str/join [(unquote name) "(" arg ") -> " (unquote text)] ""))
      (fn init [ctx : DescriptorContext] : Plugin
-       ^capabilities []
+      
        (Plugin ^id %name
          ^provides [["tools" (unquote name)]] ^requires []
          ^contextual true

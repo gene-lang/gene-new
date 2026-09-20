@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[algorithm, monotimes, os, sets, strutils, tables, times]
-import ./[capabilities, equality, gir, printer, reader, types]
+import ./[equality, gir, printer, reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
@@ -14,12 +14,6 @@ type
     memoryBaseline*: int64
     memoryLimitBytes*: int64
     sampleCountdown*: int
-
-  CapabilityCompileDescriptor* = object
-    facadeIdentity*: string
-    schemaHash*: string
-
-  CapabilityCompileCatalog* = Table[string, CapabilityCompileDescriptor]
 
   KnownFunctionSig = object
     arity: int
@@ -58,9 +52,6 @@ type
     currentLoc: SourceLoc
     selfAvailable: bool
     seenModDecl: bool
-    capabilitiesStrict: bool
-    capabilityCatalog: CapabilityCompileCatalog
-    enforceCapabilityCatalog: bool
     allowYield: bool
     generatorFnNames: Table[string, bool]
     sawNonVoidReturn: bool
@@ -234,7 +225,7 @@ const CoreSpecialFormNames* = [
   "fn", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
-  "with_capabilities", "require_capabilities", "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
+  "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
   "protocol", "impl", "derive", "import_impl", "web_module"
 ]
 
@@ -316,8 +307,6 @@ const bareCoreNames* = [
   "panic", "not", "same?",
 ]
 
-const bareCapabilityNamespaces* = ["fs"]
-
 proc staysBare*(name: string): bool =
   ## Which names the lexical root keeps when the standard library moves under
   ## the `gene` root (design §2.1). Case is the rule: an uppercase name is a
@@ -331,7 +320,7 @@ proc staysBare*(name: string): bool =
   if name.len == 0: return false
   if name[0] in {'A'..'Z'}: return true
   name in bareOperatorNames or name in bareCoreNames or
-    name in reservedStdlibRoots or name in bareCapabilityNamespaces
+    name in reservedStdlibRoots
 
 proc validateDeclarationCase(kind, name: string) =
   ## Case marks the kind (design §2.1): a type, protocol, or enum is uppercase;
@@ -895,9 +884,6 @@ proc childCompiler(c: Compiler): Compiler =
            sourceLocs: c.sourceLocs, currentLoc: c.currentLoc,
            unitSource: c.unitSource,
            selfAvailable: c.selfAvailable,
-           capabilitiesStrict: c.capabilitiesStrict,
-           capabilityCatalog: c.capabilityCatalog,
-           enforceCapabilityCatalog: c.enforceCapabilityCatalog,
            allowYield: c.allowYield, inFunction: c.inFunction,
            generatorFnNames: c.generatorFnNames,
            inGenerator: c.inGenerator,
@@ -1314,9 +1300,6 @@ proc chunkHasDeferredImplValidation(chunk: Chunk): bool =
       if clause.body.chunkHasDeferredImplValidation:
         return true
     if attempt.ensureBody.chunkHasDeferredImplValidation:
-      return true
-  for capabilityBlock in chunk.capabilityBlocks:
-    if capabilityBlock.body.chunkHasDeferredImplValidation:
       return true
   false
 
@@ -2695,28 +2678,18 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       meta[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
     var props = initPropTable()
     for key, item in value.props:
-      if key == "capabilities":
-        props[key] = item
-      else:
-        props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+      props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
     let head = c.expandMacroTree(unit, value.head, loc, locs, provenance)
     var body: seq[Value]
-    for i, item in value.body:
-      if i == 0 and item.kind == vkList and
-          (value.head.isSymbol("with_capabilities") or
-           value.head.isSymbol("require_capabilities")):
-        body.add item
-      else:
-        body.add c.expandMacroTree(unit, item, loc, locs, provenance)
+    for item in value.body:
+      body.add c.expandMacroTree(unit, item, loc, locs, provenance)
     result = newNode(head, props = props, body = body, meta = meta,
                      immutable = value.nodeImmutable)
-    result.copyCapabilityReadProvenance(value)
   of vkList:
     var items: seq[Value]
     for item in value.listItems:
       items.add c.expandMacroTree(unit, item, loc, locs, provenance)
     result = newList(items, immutable = value.listImmutable)
-    result.copyCapabilityReadProvenance(value)
   of vkMap:
     var entries = initPropTable()
     for key, item in value.mapEntries:
@@ -4176,23 +4149,6 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   result.chunk.owner = result
   deriveScopelessChunk(result)
 
-include ./capability_source
-
-proc disableCapabilityBypasses(proto: FunctionProto) =
-  ## Declaring functions must pass through the context boundary. Existing
-  ## scopeless/native shortcuts do not yet carry that register, so retaining
-  ## one would silently skip attenuation.
-  proto.simpleCall = false
-  proto.needsCallScope = true
-  proto.poolCallScope = false
-  proto.fastBindUnaryInt = false
-  proto.fastBindPositionalInt = false
-  proto.fastBindRequiredNamed = false
-  proto.nativeOp = ncoNone
-  proto.aotExpr = NIL
-  proto.aotFrameKind = afkNone
-  proto.scopelessChunk = nil
-
 proc nativeOwnership(value: Value, context: string): NativeOwnership =
   if value.kind != vkSymbol:
     raise newException(GeneError, context & " must be borrow, transfer, or copy")
@@ -4767,9 +4723,6 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   proto.publicErrorInterface = isPublic
   if node.props.hasKey("errors"):
     proto.signatureErrorExprs = node.props["errors"].listItems
-  proto.capabilityRow = c.normalizedFunctionCapabilityRow(node, proto, isPublic)
-  if proto.capabilityRow.declaresCapabilities:
-    proto.disableCapabilityBypasses()
   proto.nativeEntry = nativeEntryMarker(node, proto)
   # Declaration meta (@route ..., @doc ...) rides the proto as raw data so
   # Module/declarations records can expose it (proposal §8 route discovery).
@@ -4905,13 +4858,6 @@ proc parseImportSpec*(node: Value): ImportSpec =
         raise newException(GeneError,
           "import ^pkg must be a non-empty package name string")
       result.pkgName = value.strVal
-    of "capabilities":
-      # The importer's own ceiling for this dependency (§5.3.1). Kept raw
-      # here: `parseImportSpec` also runs during dependency-graph analysis,
-      # where no Compiler exists to lower a selector row. `compileImport`
-      # lowers it before the spec reaches a chunk.
-      result.hasCapabilityRow = true
-      result.capabilityRowSource = value
     of "as":
       raise newException(GeneError,
         "import ^as was removed; use `source : alias`")
@@ -6379,12 +6325,6 @@ proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError, "eval cannot use import; add imports to Env")
   var spec = parseImportSpec(node)
-  if spec.hasCapabilityRow:
-    if not spec.fromModule:
-      raise newException(GeneError,
-        "import ^capabilities bounds a module dependency and requires " &
-        "`^from \"path\"`")
-    spec.capabilityRow = c.compileCapabilityRow(spec.capabilityRowSource)
   if spec.alias.len > 0:
     validateBindingName(spec.alias)
   for selection in spec.selections:
@@ -6547,11 +6487,6 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
       of "warn": ecmWarn
       of "strict": ecmStrict
       else: ecmDynamic
-  for key in ["capabilities", "capabilities_mode", "require_strict_dependencies"]:
-    if node.props.hasKey(key):
-      raise newException(GeneError,
-        "module capability declarations/modes were removed; use callable requests and host loader policy")
-  c.chunk.moduleCapabilityRow = CapabilityRow(kind: crkInherit)
   var meta = initPropTable()
   for key, val in node.meta:
     meta[key] = val
@@ -6602,10 +6537,8 @@ proc compileNs(c: var Compiler, node: Value) =
 proc compileEnv(c: var Compiler, node: Value) =
   if node.body.len != 0:
     raise newException(GeneError, "env does not take positional arguments")
-  if node.nodeDuplicateCapabilities:
-    raise newException(GeneError, "duplicate env capability declaration")
   for key, _ in node.props:
-    if key notin ["bindings", "parent", "imports", "module", "capabilities", "policy"]:
+    if key notin ["bindings", "parent", "imports", "module", "policy"]:
       raise newException(GeneError, "env unknown option: ^" & key)
   if node.props.hasKey("bindings"):
     compileExpr(c, node.props["bindings"])
@@ -6623,26 +6556,11 @@ proc compileEnv(c: var Compiler, node: Value) =
     compileExpr(c, node.props["module"])
   else:
     c.emitConst NIL
-  # Like with_capabilities, an Env ceiling is an inert literal or one evaluated
-  # immutable policy value. Name bindings belong exclusively to ^bindings.
-  var capabilityRowIndex = -1
-  if node.props.hasKey("capabilities") and
-      node.props["capabilities"].kind == vkList:
-    let row = c.compileCapabilityRow(node.props["capabilities"], use = cuBound)
-    capabilityRowIndex = c.chunk.addCapabilityBlock(
-      CapabilityBlockProto(row: row, body: nil))
-    c.emitConst NIL
-  elif node.props.hasKey("capabilities"):
-    compileExpr(c, node.props["capabilities"])
-    capabilityRowIndex = c.chunk.addCapabilityBlock(
-      CapabilityBlockProto(dynamicPolicy: true))
-  else:
-    c.emitConst NIL
   if node.props.hasKey("policy"):
     compileExpr(c, node.props["policy"])
   else:
     c.emitConst NIL
-  discard c.emit(opMakeEnv, capabilityRowIndex)
+  discard c.emit(opMakeEnv)
 
 proc compileEval(c: var Compiler, node: Value) =
   if node.body.len != 1:
@@ -7569,60 +7487,10 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
-proc hasStructuredLoopBody(value: Value): bool =
-  case value.kind
-  of vkNode:
-    if value.head.kind == vkSymbol:
-      if value.head.symVal in ["fn", "macro", "quote", "quasiquote"]:
-        return false
-      if value.head.symVal in ["with_capabilities", "require_capabilities",
-                              "try", "match", "scope", "supervisor"]:
-        return true
-    for item in value.body:
-      if hasStructuredLoopBody(item): return true
-    for _, item in value.props:
-      if hasStructuredLoopBody(item): return true
-  of vkList:
-    for item in value.listItems:
-      if hasStructuredLoopBody(item): return true
-  else: discard
-  false
-
-proc compileStructuredLoop(c: var Compiler, condition: Value,
-    forms: openArray[Value], step: Value = NIL) =
-  var first = ""
-  if step.kind != vkNil:
-    first = c.nextTemp("loop_first")
-    c.emitConst TRUE
-    c.emitDefineBinding(first)
-  var child = c.childCompiler()
-  child.loopDepth = c.loopDepth + 1
-  child.repeatBindings = true
-  child.chunk.repeatControlLoop = true
-  if first.len > 0:
-    compileExpr(child, newNode(newSym("if"), body = @[
-      newSym(first),
-      newNode(newSym("set"), body = @[newSym(first), FALSE]),
-      step]))
-    discard child.emit(opPop)
-  compileExpr(child, condition)
-  let stop = child.emitJump(opJumpIfFalse)
-  child.prepareStaticImports(forms)
-  child.reserveProtocolBindingsFor(forms)
-  compileBody(child, forms)
-  discard child.emit(opReturn)
-  child.patchJump(stop)
-  discard child.emit(opLoopBreak)
-  c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
-  discard c.emit(opForEach, c.chunk.addForLoop(ForProto(pattern: NIL, body: child.chunk)))
-
 proc compileWhile(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "while requires a condition")
-  if hasStructuredLoopBody(node):
-    c.compileStructuredLoop(body[0], body[1 .. ^1])
-    return
   let start = c.chunk.instructions.len
   c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
   inc c.loopDepth
@@ -7644,9 +7512,6 @@ proc compileLoop(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "loop requires a body")
-  if hasStructuredLoopBody(node):
-    c.compileStructuredLoop(TRUE, body)
-    return
   let start = c.chunk.instructions.len
   c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
   inc c.loopDepth
@@ -7678,13 +7543,6 @@ proc compileRepeat(c: var Compiler, node: Value) =
     c.emitConst newInt(0)
     c.emitDefineBinding(indexName)
 
-    if hasStructuredLoopBody(node):
-      let condition = newNode(newSym("<"), body = @[newSym(indexName), newSym(limitName)])
-      let step = newNode(newSym("set"), body = @[newSym(indexName),
-        newNode(newSym("+"), body = @[newSym(indexName), newInt(1)])])
-      c.compileStructuredLoop(condition, body[3 .. ^1], step)
-      return
-
     let start = c.chunk.instructions.len
     c.emitLoadBinding(indexName)
     c.emitLoadBinding(limitName)
@@ -7715,13 +7573,6 @@ proc compileRepeat(c: var Compiler, node: Value) =
   let remainingName = c.nextTemp("repeat_remaining")
   compileExpr(c, body[0])
   c.emitDefineBinding(remainingName)
-
-  if hasStructuredLoopBody(node):
-    let condition = newNode(newSym(">"), body = @[newSym(remainingName), newInt(0)])
-    let step = newNode(newSym("set"), body = @[newSym(remainingName),
-      newNode(newSym("-"), body = @[newSym(remainingName), newInt(1)])])
-    c.compileStructuredLoop(condition, body[1 .. ^1], step)
-    return
 
   let start = c.chunk.instructions.len
   c.emitLoadBinding(remainingName)
@@ -7755,7 +7606,7 @@ proc compileFor(c: var Compiler, node: Value) =
     raise newException(GeneError, "for requires a pattern, in, and an iterable")
   if body[1].kind != vkSymbol or body[1].symVal != "in":
     raise newException(GeneError, "for requires 'in' after the pattern")
-  if c.allowYield and body.bodyContainsYield(3) and not hasStructuredLoopBody(node):
+  if c.allowYield and body.bodyContainsYield(3):
     let iterName = c.nextTemp("iter")
     compileExpr(c, body[2])                   # iterable on the stack
     discard c.emit(opMakeIterator)
@@ -7882,22 +7733,6 @@ proc compileTry(c: var Compiler, node: Value) =
       repeatBindings = c.loopDepth > 0 or c.repeatBindings)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
-proc compileWithCapabilities(c: var Compiler, node: Value, required = false) =
-  if node.props.len != 0 or node.body.len < 2:
-    raise newException(GeneError,
-      "capability block expects a policy row/value and a body")
-  let dynamicPolicy = node.body[0].kind != vkList
-  var row = CapabilityRow(kind: crkSelect)
-  if dynamicPolicy:
-    compileExpr(c, node.body[0])
-  else:
-    row = c.compileCapabilityRow(node.body[0],
-      use = if required: cuRequest else: cuBound)
-  let body = c.compileSubBody(node.body[1 .. ^1])
-  discard c.emit(opWithCapabilities,
-    c.chunk.addCapabilityBlock(CapabilityBlockProto(row: row, body: body,
-      required: required, dynamicPolicy: dynamicPolicy)))
-
 proc compileTaskScope(c: var Compiler, node: Value) =
   if node.props.len != 0:
     raise newException(GeneError, "scope does not accept named arguments")
@@ -7998,9 +7833,6 @@ proc rejectUnknownTypeProps(node: Value) =
     if key in ["props", "body", "impl", "derive", "private", "repr",
                "native"]:
       continue
-    if key == "capability":
-      raise newException(GeneError,
-        "Gene capability facades were removed; capability identities and normalization belong to the trusted provider catalog")
     if key == "sealed":
       raise newException(GeneError,
         "type ^sealed is reserved for future native layout optimization")
@@ -8159,10 +7991,6 @@ proc implMessageProto(c: var Compiler, node: Value,
                               immutableSelf = true,
                               aotSelfRepr = aotSelfRepr,
                               generator = node.generatorMarker)
-  fn.capabilityRow = c.normalizedFunctionCapabilityRow(
-    node, fn, not node.declarationIsPrivate)
-  if fn.capabilityRow.declaresCapabilities:
-    fn.disableCapabilityBypasses()
   if node.props.hasKey("errors") and node.props["errors"].kind == vkList:
     fn.signatureErrorExprs = node.props["errors"].listItems
   ImplMessageProto(name: parts.name,
@@ -8990,12 +8818,6 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
     of "try":
       compileTry(c, node)
       return
-    of "with_capabilities":
-      compileWithCapabilities(c, node)
-      return
-    of "require_capabilities":
-      compileWithCapabilities(c, node, required = true)
-      return
     of "scope":
       compileTaskScope(c, node)
       return
@@ -9272,8 +9094,7 @@ proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
     requiredPositional: 1, simpleCall: true, needsCallScope: true,
     preparedPipelineItem: true,
     poolCallScope: true, paramTypes: @[NIL], restSlot: -1,
-    restType: NIL, returnType: NIL, aotExpr: NIL,
-    capabilityRow: CapabilityRow(kind: crkInherit), chunk: callback.chunk)
+    restType: NIL, returnType: NIL, aotExpr: NIL, chunk: callback.chunk)
   proto.chunk.owner = proto
   plan.functionIndex = c.chunk.addFunction(proto)
   let planIndex = c.chunk.pipelineCalls.len
@@ -9607,8 +9428,6 @@ proc compileFormsWithMacros*(unit: SourceUnit,
     importedMacros: Table[string, Table[string, MacroDef]],
     importedSyntaxFns = initTable[string, seq[string]](),
     importedInterfaces = initTable[string, CompileNamespaceInterface](),
-    capabilityCatalog = initTable[string, CapabilityCompileDescriptor](),
-    enforceCapabilityCatalog = false,
     budget: CompileBudget = nil, deferErrorChecks = false, errorsMode = ""):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
@@ -9624,8 +9443,6 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    formLocs: unit.formLocs,
                    unitSource: unit.source,
                    allowAmbientImports: true,
-                   capabilityCatalog: capabilityCatalog,
-                   enforceCapabilityCatalog: enforceCapabilityCatalog,
                    ffiLibraryNames: initTable[string, bool](),
                    importedMacroSets: importedMacros,
                    importedSyntaxFnSets: importedSyntaxFns,

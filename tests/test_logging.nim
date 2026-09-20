@@ -1,6 +1,6 @@
 import std/[json, os, strutils, tables, unittest]
 import gene/ext/[logging, logging_config]
-import gene/[capabilities, compiler, fs_capabilities, printer, reader, types, vm]
+import gene/[compiler, printer, reader, types, vm]
 
 var loggingCaptured {.threadvar.}: seq[string]
 var reentrantLogger {.threadvar.}: RuntimeLogger
@@ -40,9 +40,6 @@ proc runLoggingSourceAt(source, root: string): Value =
   # `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
   # file (vm.nim, newApplicationState). A test writing under `root` therefore
   # has to grant `root` the way an embedding host or `--allow_*` would.
-  app.setRootCapabilities(newCapabilityContext(
-    @(app.rootCapabilities.grants) &
-    @[app.filesystemCapabilities.grantReadWriteDir(root)]))
   run(compileSource(source), newGlobalScope(app))
 
 proc loggingGeneQuote(text: string): string =
@@ -438,19 +435,6 @@ suite "structured logging":
     check event["logger"].getStr == "app/direct_json"
     check event["payload"]["x"].getInt == 1
     removeFile(path)
-    removeDir(dir)
-
-  test "programmatic file logger rejects read-only authority":
-    let dir = getTempDir() / "gene_direct_read_only_logger"
-    createDir(dir)
-    let app = newApplication(dir)
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantReadDir(dir)]))
-    let result = run(compileSource(
-      "(import $log [new_file_logger]) " &
-      "(try (new_file_logger \"app/direct\" \"ignored.jsonl\") " &
-      "  false catch Any true)"), newGlobalScope(app))
-    check result == TRUE
     removeDir(dir)
 
   test "reserved envelope keys cannot be smuggled through payload":

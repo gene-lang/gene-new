@@ -1,5 +1,0 @@
-(mod capability_ceiling_dep)
-
-(fn attempt []
-  ^capabilities []
-  (require_capabilities [(fs/Write ".")] 1))

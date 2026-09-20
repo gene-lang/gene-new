@@ -11,8 +11,7 @@
 ##   gene compile --target c <file> print experimental typed_native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
-import std/[algorithm, options, os, osproc, sets, streams, strutils, tables]
-import gene/[capabilities, capability_startup, fs_capabilities, module_sources]
+import std/[algorithm, os, osproc, sets, streams, strutils, tables]
 import gene/[build, compiler, diagnostics, gir, package, printer, reader,
              repl, system_dependency, types, vm, web]
 import gene/ext/[logging, logging_config]
@@ -65,10 +64,7 @@ proc usage() =
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
   echo "           [--report_tail_fallbacks]"
   echo "           [--errors-mode dynamic|warn|strict]"
-  echo "           [--capabilities row | --capabilities-file path]"
-  echo "           [--source-root dir] <file.gene>"
-  echo "           [--] [args...]     execute a file under the host capability policy"
-  echo "  Policy aliases: --cap, --cap-file. Default: [] (no external authority)."
+  echo "           <file.gene> [--] [args...]     execute a file and call main"
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
   echo "                              relative imports resolve against the module's URL"
   echo "  gene parse <file.gene>  print canonical parsed forms"
@@ -104,10 +100,7 @@ proc replFallbackScope(scope: Scope, app: Application = nil): Scope =
     return scope
   if app != nil:
     return newGlobalScope(app)
-  let fallback = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
-  discard fallback.configureCapabilityStartup(CapabilityStartupOptions())
-  fallback.admitApplicationSources("")
-  newGlobalScope(fallback)
+  newGlobalScope(newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir()))))
 
 proc maybeReplOnError(scope: Scope, app: Application = nil) =
   if replOnErrorEnabled():
@@ -123,43 +116,9 @@ proc reportPipelineWarnings(chunk: Chunk) =
       stderr.writeLine formatDiagnostic("Warning", diagnostic.message,
                                          diagnostic.loc)
 
-proc capabilityEnvironment(): Option[string] =
-  if existsEnv("GENE_CAPABILITIES"): some(getEnv("GENE_CAPABILITIES"))
-  else: none(string)
-
-proc applyCliCapabilityPolicy(app: Application, policy: CapabilityStartupOptions,
-                              errorsMode = "") =
-  if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
-  discard app.configureCapabilityStartup(policy, capabilityEnvironment())
-
-proc admitCliSources(app: Application, entry: string, roots: openArray[string],
-                     artifacts: openArray[AdmittedModuleArtifact] = []) =
-  var snapshots: seq[ModuleSourceSnapshot]
-  var compiledPaths = initHashSet[string]()
-  for artifact in artifacts: compiledPaths.incl artifact.path
-  if entry.len > 0 and entry notin compiledPaths:
-    snapshots.add app.filesystemCapabilities.captureModuleSourceFile(entry)
-  var captured = initHashSet[string]()
-  for configured in roots:
-    let root = normalizedPath(absolutePath(configured, app.launchDirectory))
-    if captured.containsOrIncl(root): continue
-    let snapshot = app.filesystemCapabilities.captureModuleSources(root)
-    var paths: seq[string]
-    for path in snapshot.sourcePaths:
-      if path notin compiledPaths: paths.add path
-    snapshots.add snapshot.selectModuleSources(paths)
-  app.admitApplicationSources(entry, snapshots, artifacts)
-
-proc cliSourceApplication(start: string): Application =
-  ## File/inline execution does not acquire undeclared dependencies merely by
-  ## discovering a manifest. Project commands use the host build resolver.
-  newApplication(singlePackageGraph(discoverApplicationPackage(start)), start)
-
-proc cmdEval(src: string, errorsMode = "", policy = CapabilityStartupOptions(),
-             sourceRoots: seq[string] = @[]) =
+proc cmdEval(src: string, errorsMode = "") =
   let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
-  app.applyCliCapabilityPolicy(policy, errorsMode)
-  app.admitCliSources("", sourceRoots)
+  if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
   let scope = newGlobalScope(app)
   try:
     let chunk = compileEvalSource(src, sourceName = "<eval>", errorsMode = errorsMode)
@@ -177,11 +136,9 @@ proc cmdEval(src: string, errorsMode = "", policy = CapabilityStartupOptions(),
     maybeReplOnError(scope, app)
     quit(1)
 
-proc cmdRepl(policy = CapabilityStartupOptions(), sourceRoots: seq[string] = @[],
-             errorsMode = "") =
+proc cmdRepl(errorsMode = "") =
   let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
-  app.applyCliCapabilityPolicy(policy, errorsMode)
-  app.admitCliSources("", sourceRoots)
+  if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
   let scope = newGlobalScope(app)
   let code = runRepl(scope)
   if code != 0:
@@ -222,9 +179,6 @@ type RunCli = object
   rebuild: bool
   explain: bool
   jobs: int
-  capabilities: CapabilityStartupOptions
-  capturedCapabilities: Option[CapabilityStartupSelection]
-  sourceRoots: seq[string]
   errorsMode: string
 
 proc parseRunCli(label = "run", pathNoun = "a file path",
@@ -238,8 +192,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
     let arg = paramStr(i)
     case arg
     of "--log-config", "--package-root", "--target", "--profile", "--mode",
-       "--debug_info", "--jobs", "--capabilities", "--cap", "--capabilities-file",
-       "--cap-file", "--source-root", "--errors-mode":
+       "--debug_info", "--jobs", "--errors-mode":
       inc i
       if i > paramCount():
         raise newException(ValueError, arg & " expects a value")
@@ -262,9 +215,6 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         else: raise newException(ValueError, "--mode expects vm or mixed")
       of "--debug_info": result.debugInfo = value
       of "--jobs": result.jobs = parseInt(value)
-      of "--capabilities", "--cap", "--capabilities-file", "--cap-file":
-        result.capabilities.setCapabilityOption(arg, value)
-      of "--source-root": result.sourceRoots.add value
       else: discard
     of "--debug":
       result.debugging = true
@@ -302,13 +252,6 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         result.debugInfo = arg[13 .. ^1]
       elif arg.startsWith("--jobs="):
         result.jobs = parseInt(arg[7 .. ^1])
-      elif arg.contains('=') and arg[0 ..< arg.find('=')].capabilityOption:
-        let at = arg.find('=')
-        result.capabilities.setCapabilityOption(arg[0 ..< at], arg[at + 1 .. ^1])
-      elif arg.startsWith("--source-root="):
-        result.sourceRoots.add arg[14 .. ^1]
-      elif arg.startsWith("--allow_"):
-        raise newException(ValueError, "obsolete capability flag; use --cap or --cap-file")
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown run option: " & arg)
       else:
@@ -344,22 +287,19 @@ proc parseInteractiveCli(label: string, needsSource: bool): RunCli =
   let args = commandArgs(2)
   var index = 0
   while index < args.len:
-    if result.capabilities.consumeCapabilityOption(args, index): continue
     let argument = args[index]
     let at = argument.find('=')
     let name = if at < 0: argument else: argument[0 ..< at]
-    if name in ["--source-root", "--errors-mode"]:
+    if name == "--errors-mode":
       var value: string
       if at >= 0: value = argument[at + 1 .. ^1]
       else:
         inc index
         if index >= args.len: raise newException(ValueError, name & " requires a value")
         value = args[index]
-      if name == "--source-root": result.sourceRoots.add value
-      else:
-        if value notin ["dynamic", "warn", "strict"]:
-          raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
-        result.errorsMode = value
+      if value notin ["dynamic", "warn", "strict"]:
+        raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
+      result.errorsMode = value
     elif needsSource and argument == "--":
       inc index
       if index >= args.len or index + 1 != args.len:
@@ -376,26 +316,6 @@ proc parseInteractiveCli(label: string, needsSource: bool): RunCli =
     inc index
   if needsSource and result.path.len == 0:
     raise newException(ValueError, "eval requires a source string")
-
-proc applyRunCapabilityPolicy(app: Application, options: RunCli) =
-  ## Host policy is parsed before the entry path and mints sealed grants
-  ## directly. It is never evaluated as Gene source and never becomes a call
-  ## argument or Value.
-  if app == nil:
-    raise newException(ValueError, "run capability policy needs an application")
-  if options.capturedCapabilities.isSome:
-    if options.errorsMode.len > 0: app.setErrorCheckingMode(options.errorsMode)
-    discard app.configureCapabilityStartup(options.capturedCapabilities.get)
-  else:
-    app.applyCliCapabilityPolicy(options.capabilities, options.errorsMode)
-
-proc prepareRunCapabilityPolicy(options: var RunCli) =
-  if options.capturedCapabilities.isSome: return
-  let bootstrap = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
-  let selected = selectCapabilityStartup(options.capabilities, bootstrap.launchDirectory,
-    capabilityEnvironment())
-  options.capturedCapabilities = some(bootstrap.capabilities.captureCapabilityStartup(
-    selected, bootstrap.filesystemCapabilities))
 
 proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   let message = "main return expected Nil or Int, got " & $value.kind
@@ -482,14 +402,9 @@ proc cmdRun(path: string, args: openArray[string] = [],
   var app: Application = nil
   var replScope: Scope = nil
   try:
-    var prepared = options
-    prepared.prepareRunCapabilityPolicy()
     let absPath = normalizedPath(absolutePath(path))
-    app = cliSourceApplication(if packageRootOverride.len > 0:
-      normalizedPath(absolutePath(packageRootOverride)) else: parentDir(absPath))
-    app.requireEntryWithinPackage(absPath)
-    app.applyRunCapabilityPolicy(prepared)
-    app.admitCliSources(absPath, options.sourceRoots)
+    app = applicationForEntry(absPath, packageRootOverride)
+    if options.errorsMode.len > 0: app.setErrorCheckingMode(options.errorsMode)
     reportPipelineWarnings(app.compileFileModule(absPath))
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
@@ -521,8 +436,9 @@ proc cmdRunUrl(url: string, args: openArray[string] = [],
   var app: Application = nil
   var replScope: Scope = nil
   try:
-    app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
-    app.applyRunCapabilityPolicy(options)
+    app = newApplication(if packageRootOverride.len > 0: packageRootOverride
+                         else: getCurrentDir())
+    if options.errorsMode.len > 0: app.setErrorCheckingMode(options.errorsMode)
     app.allowUrlModules = true
     let entryModule = app.loadUrlModule(url)
     let scope = entryModule.moduleRootNamespace.nsScope
@@ -630,7 +546,6 @@ proc cmdBuildWeb(options: BuildWebCli) =
     quit(1)
 
 type ProjectBuildCli = object
-  testHost: RunCli
   product: string
   packageRoot: string
   targetTriple: string
@@ -669,14 +584,6 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
   while i <= paramCount():
     let arg = paramStr(i)
     case arg
-    of "--capabilities", "--cap", "--capabilities-file", "--cap-file", "--source-root":
-      if label != "test":
-        raise newException(ValueError, "unknown " & label & " option: " & arg)
-      inc i
-      if i > paramCount():
-        raise newException(ValueError, arg & " expects a value")
-      if arg == "--source-root": result.testHost.sourceRoots.add paramStr(i)
-      else: result.testHost.capabilities.setCapabilityOption(arg, paramStr(i))
     of "--target", "--profile", "--mode", "--debug_info", "--jobs",
        "--package-root":
       inc i
@@ -728,12 +635,6 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
         result.jobs = parseInt(arg[7 .. ^1])
       elif arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
-      elif label == "test" and arg.contains('=') and
-          arg[0 ..< arg.find('=')].capabilityOption:
-        let at = arg.find('=')
-        result.testHost.capabilities.setCapabilityOption(arg[0 ..< at], arg[at + 1 .. ^1])
-      elif label == "test" and arg.startsWith("--source-root="):
-        result.testHost.sourceRoots.add arg[14 .. ^1]
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown " & label & " option: " & arg)
       elif result.product.len == 0:
@@ -901,8 +802,6 @@ proc cmdProjectRun(options: RunCli) =
     if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
   var reportingScope: Scope
   try:
-    var prepared = options
-    prepared.prepareRunCapabilityPolicy()
     if options.errorsMode.len > 0:
       raise newException(ValueError,
         "--errors-mode currently requires a source entry path; pass the application's .gene entry file")
@@ -922,18 +821,15 @@ proc cmdProjectRun(options: RunCli) =
     let executionGraph = built.executionGraph
     let executionPackage = executionGraph.packagesById[pkg.id]
     let app = newApplication(executionGraph, executionPackage.root)
-    app.applyRunCapabilityPolicy(prepared)
-    var admitted: seq[AdmittedModuleArtifact]
+    reportingScope = newGlobalScope(app)
     for artifact in built.artifacts:
-      admitted.add app.admittedPackageArtifacts(artifact.compiledModules)
+      app.installCompiledModules(artifact.compiledModules)
     let chunk = built.rootArtifact.compiledChunk
     if chunk == nil:
       raise newException(ValueError,
         "build produced no executable GIR artifact")
-    let entryPath = normalizedPath(executionPackage.root / application.entry)
-    app.admitCliSources(entryPath, options.sourceRoots, admitted)
-    reportingScope = newGlobalScope(app)
-    let entry = app.loadFileModule(entryPath)
+    let entry = app.loadCompiledFileModule(
+      executionPackage.root / application.entry, chunk)
     reportingScope = entry.moduleRootNamespace.nsScope
     invokeEntryMain(entry.moduleRootNamespace.nsScope, options.args)
   except ReadError as error:
@@ -954,8 +850,6 @@ proc cmdProjectRun(options: RunCli) =
 proc cmdProjectTest(options: ProjectBuildCli) =
   var reportingScope: Scope
   try:
-    var prepared = options.testHost
-    prepared.prepareRunCapabilityPolicy()
     if options.all:
       raise newException(ValueError, "gene test does not accept --all")
     let start =
@@ -989,18 +883,15 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       let executionGraph = built.executionGraph
       let executionPackage = executionGraph.packagesById[pkg.id]
       let app = newApplication(executionGraph, executionPackage.root)
-      app.applyRunCapabilityPolicy(prepared)
-      var admitted: seq[AdmittedModuleArtifact]
+      reportingScope = newGlobalScope(app)
       for artifact in built.artifacts:
-        admitted.add app.admittedPackageArtifacts(artifact.compiledModules)
+        app.installCompiledModules(artifact.compiledModules)
       let chunk = built.rootArtifact.compiledChunk
       if chunk == nil:
         raise newException(ValueError,
           "build produced no executable GIR artifact")
-      let entryPath = normalizedPath(executionPackage.root / relative)
-      app.admitCliSources(entryPath, options.testHost.sourceRoots, admitted)
-      reportingScope = newGlobalScope(app)
-      let entry = app.loadFileModule(entryPath)
+      let entry = app.loadCompiledFileModule(
+        executionPackage.root / relative, chunk)
       reportingScope = entry.moduleRootNamespace.nsScope
       invokeEntryMain(entry.moduleRootNamespace.nsScope, @[])
       echo "[OK] " & relative
@@ -1036,8 +927,7 @@ proc parseSpecTestCli(): SpecTestCli =
     elif arg.startsWith("--"):
       let at = arg.find('=')
       let option = if at < 0: arg else: arg[0..<at]
-      if option notin ["--name", "--package-root", "--capabilities", "--cap",
-                        "--capabilities-file", "--cap-file", "--source-root", "--errors-mode"]:
+      if option notin ["--name", "--package-root", "--errors-mode"]:
         raise newException(ValueError, "unknown test option: " & option)
       var value: string
       if at >= 0:
@@ -1054,9 +944,6 @@ proc parseSpecTestCli(): SpecTestCli =
         if value notin ["dynamic", "warn", "strict"]:
           raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
         result.host.errorsMode = value
-      of "--source-root": result.host.sourceRoots.add value
-      of "--capabilities", "--cap", "--capabilities-file", "--cap-file":
-        result.host.capabilities.setCapabilityOption(option, value)
       else: discard
     elif arg.startsWith("-"):
       raise newException(ValueError, "unknown test option: " & arg)
@@ -1065,20 +952,29 @@ proc parseSpecTestCli(): SpecTestCli =
     inc i
 
 proc discoverSpecFiles(app: Application, inputs: seq[string]): seq[string] =
-  var files = initHashSet[string]()
-  let selected = if inputs.len == 0: @["tests"] else: inputs
-  for input in selected:
-    let path = normalizedPath(absolutePath(input))
-    app.requireEntryWithinPackage(path)
-    if dirExists(path):
-      let snapshot = app.filesystemCapabilities.captureModuleSources(path)
-      for source in snapshot.sourcePaths:
-        if source.endsWith("_spec.gene"): files.incl source
-    elif fileExists(path):
-      discard app.filesystemCapabilities.captureModuleSourceFile(path)
-      files.incl path
-    elif inputs.len > 0:
+  var files, directories = initHashSet[string]()
+  proc visit(path: string, explicitFile = false) =
+    if not explicitFile and not dirExists(path) and
+        not path.endsWith("_spec.gene"):
+      return
+    let canonical = canonicalPath(path)
+    app.requireEntryWithinPackage(canonical)
+    if dirExists(canonical):
+      if canonical in directories: return
+      directories.incl canonical
+      for _, entry in walkDir(canonical, relative = true):
+        visit(canonical / entry)
+    elif fileExists(canonical):
+      if explicitFile or path.endsWith("_spec.gene"):
+        if not canonical.endsWith(".gene"):
+          raise newException(ValueError, "test files must end in .gene: " & path)
+        files.incl canonical
+    elif explicitFile:
       raise newException(ValueError, "test path does not exist: " & path)
+  if inputs.len == 0:
+    if dirExists("tests"): visit("tests")
+  else:
+    for path in inputs: visit(path, true)
   for path in files: result.add path
   result.sort()
 
@@ -1090,14 +986,10 @@ proc cmdSpecTest(options: SpecTestCli) =
                 else: getCurrentDir()
     if not dirExists(start):
       raise newException(ValueError, "--package-root is not a directory: " & start)
-    let app = cliSourceApplication(normalizedPath(absolutePath(start)))
-    app.applyRunCapabilityPolicy(options.host)
+    let app = newApplication(start)
+    if options.host.errorsMode.len > 0:
+      app.setErrorCheckingMode(options.host.errorsMode)
     let files = discoverSpecFiles(app, options.paths)
-    var snapshots: seq[ModuleSourceSnapshot]
-    for path in files: snapshots.add app.filesystemCapabilities.captureModuleSourceFile(path)
-    for path in options.host.sourceRoots:
-      snapshots.add app.filesystemCapabilities.captureModuleSources(normalizedPath(absolutePath(path)))
-    app.admitApplicationSources("", snapshots)
     let scope = newGlobalScope(app)
     reportingScope = scope
     scope.beginTestCollection()
@@ -1228,10 +1120,8 @@ proc cmdDoc(path: string) =
     quit(1)
   try:
     let absPath = normalizedPath(absolutePath(path))
-    let app = cliSourceApplication(parentDir(absPath))
-    app.applyCliCapabilityPolicy(CapabilityStartupOptions())
-    app.admitCliSources(absPath, [])
-    let chunk = app.compileFileModule(absPath)
+    let app = newApplicationForEntryFile(absPath)
+    let chunk = compileSource(readSourceFile(absPath), absPath)
     let module = app.loadFileModule(absPath)
     echo "Module: " & module.moduleName
     echo "Path: " & module.modulePath
@@ -1623,10 +1513,10 @@ proc main() =
   case cmd
   of "eval":
     let options = parseInteractiveCli("eval", true)
-    cmdEval(options.path, options.errorsMode, options.capabilities, options.sourceRoots)
+    cmdEval(options.path, options.errorsMode)
   of "repl":
     let options = parseInteractiveCli("repl", false)
-    cmdRepl(options.capabilities, options.sourceRoots, options.errorsMode)
+    cmdRepl(options.errorsMode)
   of "run":
     var options: RunCli
     try:

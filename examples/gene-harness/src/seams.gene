@@ -34,7 +34,7 @@
 
 (protocol HarnessFs
   (message read_text [path : Str] : Str
-    ^capabilities [(fs/ReadDir "/tmp")]))
+   ))
 
 # --- Service Provider: the real one ----------------------------------------
 
@@ -42,7 +42,7 @@
 
 (impl HarnessFs for LocalFs
   (message read_text [path : Str] : Str
-    ^capabilities [(fs/ReadDir "/tmp")]
+   
     (if (|| ($str/starts_with? path "/") (($str/split path "/") .contains? ".."))
       (fail (FilesystemPathError ^message "Use a path relative to the filesystem provider root.")))
     ($fs/read_text $"${self/root}/${path}")))
@@ -57,7 +57,7 @@
 
 (impl HarnessFs for MemFs
   (message read_text [path : Str] : Str
-    ^capabilities []
+   
     (?? (self/files .get path) $"mem:<no ${path}>")))
 
 # --- The seam's own conformance gate ---------------------------------------
@@ -84,20 +84,20 @@
 
 (protocol HarnessRender
   (message render [text : Str] : Str
-    ^capabilities []))
+   ))
 
 (type TextRender)
 
 (impl HarnessRender for TextRender
   (message render [text : Str] : Str
-    ^capabilities []
+   
     text))
 
 (type HtmlRender)
 
 (impl HarnessRender for HtmlRender
   (message render [text : Str] : Str
-    ^capabilities []
+   
     $"<p>$($html/escape text)</p>"))
 
 (fn render_provider [r : HarnessRender] : HarnessRender r)

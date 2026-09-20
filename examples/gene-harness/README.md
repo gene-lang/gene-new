@@ -39,11 +39,6 @@ it does not start a web server or provide a browser interface.
 
 Start the agent from the repository root using your existing Codex login:
 
-```sh
-bin/gene run --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
-  examples/gene-harness/src/web/server.gene
-```
-
 Write any prompt in the composer. Ordinary text, including a single word such
 as `help`, goes to the model. A leading slash selects special functionality:
 `/help`, `/status`, `/code`, `/build`, and the other registered commands. Leading
@@ -85,18 +80,6 @@ and per-session drafts. Closing a tab does not stop a run; use **Stop**.
 The browser uses the same provider variables and grants as the `chat` profile.
 To use a state home outside the repository with Codex:
 
-```sh
-mkdir -p /tmp/harness-web
-(
-  cd examples/gene-harness
-  GENE_HARNESS_HOME=/tmp/harness-web GENE_HARNESS_PROVIDER=codex \
-    ../../bin/gene run --allow_read_write_dir /tmp/harness-web \
-    --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
-    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
-    src/web/server.gene
-)
-```
-
 For OpenRouter, set `GENE_HARNESS_PROVIDER=openrouter` and
 `OPENROUTER_API_KEY`; the Codex-directory grant is then unnecessary. Credentials
 remain in the native process. `GENE_HARNESS_MODEL` and
@@ -121,15 +104,6 @@ Session claims are kernel-released on process exit; leave files under
 2; older homes are readable, but an older Harness binary cannot open a home
 after this upgrade.
 
-Use `--home <path>` or `GENE_HARNESS_HOME` to select a workspace. A path outside
-the launch directory still needs a matching `--allow_read_write_dir` grant.
-Prompts and cancellation use HTTP POST. Transcript blocks and run-state changes
-are pushed over the authenticated WebSocket as they occur; the connected client
-does not poll. Reconnect restores a bounded snapshot and then resumes live
-delivery. Older messages remain available through history pagination. WebSocket
-protocol version 3 includes pending questions; restart the server and reload
-older clients after upgrading.
-
 Codex output text is streamed into the provisional **Raw LLM response** panel.
 The completed reply replaces that preview using the same block ID. Gene code
 executes only after the complete response and envelope have been validated.
@@ -150,13 +124,6 @@ bin/gene run examples/gene-harness/src/website/export.gene
 bin/gene run examples/gene-harness/src/website/export.gene \
   --out examples/gene-harness/tmp/website-prefix/harness --base /harness/
 ```
-
-The first command writes `index.html` and `assets/` under
-`examples/gene-harness/tmp/website`, for serving at `/`. `--base` names the URL
-path the directory will be served from; generated asset URLs are absolute, so
-export once per base. `--app_url` adds an **Open Harness** link, which the
-static page otherwise omits. The parent of `--out` must exist, and a directory
-outside the repository needs a matching `--allow_read_write_dir` grant.
 
 The worked example is a recording of a real session. Its request, the formatted
 model-authored plugin, the fixture project, and the expected outputs live in
@@ -180,13 +147,6 @@ The default state home is `examples/gene-harness/tmp/workspace` and is ignored
 by git. Choose another existing directory with `GENE_HARNESS_HOME`; an external
 home needs an explicit host grant:
 
-```bash
-mkdir -p /tmp/my-gene-harness
-GENE_HARNESS_HOME=/tmp/my-gene-harness \
-  bin/gene run --allow_read_write_dir /tmp/my-gene-harness \
-  examples/gene-harness/src/main.gene web status
-```
-
 The `cli` profile installs the terminal view:
 
 ```bash
@@ -200,19 +160,6 @@ choose explicitly when both credentials are available.
 
 For Codex, first sign in with ChatGPT and file credential storage:
 
-```bash
-codex -c cli_auth_credentials_store='"file"' login
-mkdir -p /tmp/harness-chat
-(
-  cd examples/gene-harness
-  GENE_HARNESS_HOME=/tmp/harness-chat GENE_HARNESS_PROVIDER=codex \
-    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
-    --allow_read_dir "${CODEX_HOME:-$HOME/.codex}" \
-    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
-    src/main.gene chat
-)
-```
-
 The client reads `CODEX_AUTH_FILE`, or `auth.json` under `CODEX_HOME` (default
 `~/.codex`). The file must contain `tokens.access_token` and `tokens.account_id`;
 API-key-only files and OS keychain credentials are not used. For a custom
@@ -222,17 +169,6 @@ reloaded for each request; Codex owns token refresh, and a 401 asks you to run
 conversation history. See [Codex credential storage](https://developers.openai.com/codex/auth/).
 
 OpenRouter remains available with either existing key spelling:
-
-```bash
-mkdir -p /tmp/harness-chat
-(
-  cd examples/gene-harness
-  GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
-    ../../bin/gene run --allow_read_write_dir /tmp/harness-chat \
-    --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
-    src/main.gene chat
-)
-```
 
 All model-backed profiles load the checked-in Gene skill for the agent and plugin author.
 Run from the package directory: running from the repository root makes the
@@ -454,26 +390,6 @@ Generated code imports the data-only stable API and returns a descriptor from
 capability-empty `init`. Kernel sharing is allowed only for the `PluginHost`
 impl identity:
 
-```gene
-(mod plugin
-  (import [Plugin DescriptorContext PluginContext PluginHost]
-    ^from "../../../src/plugin_api")
-  (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
-
-  (fn init [ctx : DescriptorContext] : Plugin
-    ^capabilities []
-    (Plugin
-      ^id "echo"
-      ^provides [["tools" "echo"]]
-      ^requires []
-      ^contextual true
-      ^activate
-        (fn []
-          (fn [host]
-            (host .PluginHost:contribute "tools"
-              {^name "echo" ^doc "echo text" ^run (fn [text] text)}))))))
-```
-
 `DescriptorContext` is inert: no discovery, contribution API, or authority.
 `PluginContext` is the later unforgeable token-backed host interface, not the
 raw harness. It supports discovery, owned registries/contributions, seam
@@ -608,12 +524,6 @@ Composition stores inert selector data. It never stores or restores grants:
 {^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
 ```
 
-`workspace` and `state` are fixed host-provided roots. Absolute paths and `..`
-are rejected. Activation expands selectors and runs under `with_capabilities`,
-resolved only by attenuation from the host ceiling. A namespace exposed in the
-module sandbox is still not authority; native adapters check the active exact
-grant.
-
 Plugin `init`, activation, schemas, and cleanup run under transitive step,
 timeout, and memory limits. The recovery boundary converts plugin panic into a
 quarantine error. The policy is attached immutably to the sandbox module, so
@@ -717,3 +627,4 @@ repository workspace. They are no longer a package test target.
 
 Human-reviewed promotion into checked-in profiles and cross-workspace blob
 sharing remain deferred.
+

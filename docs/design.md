@@ -152,19 +152,9 @@ Use a macro when the expansion needs ordinary lexical control flow.
 
 ## Visibility and permission are separate
 
-Having a function or resource handle does not grant permission for an external
-operation. The active capability context decides what an adapter may do:
-
-```gene runnable
-(with_capabilities []
-  (check_capabilities (fs/ReadFile "data.txt")))
-# false
-```
-
 Saved environments and bounded calls retain ceilings that intersect with the
 current context. An ordinary CLI run is intended for trusted scripts; an Env
 or a namespace filter alone is not a complete sandbox. See
-[the authority contract](spec/authority.md).
 
 ## One language, explicit backend limits
 
@@ -172,3 +162,4 @@ The VM is the general execution path. The browser backend checks a supported
 subset and rejects other forms. Experimental native compilation uses explicit
 representations and ownership adapters. Shared tests check the behavior each
 backend accepts; [workflows](workflows.md) explains how to use them.
+

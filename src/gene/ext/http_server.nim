@@ -313,15 +313,11 @@ proc dropHttpRuntime(rt: HttpServerRuntime) =
     rt.listening = false
   gHttpServerRegistry.del(rt.id)
 
-proc httpRetainedCapabilities(name: string, server: Value,
-                              call: ptr NativeCall): CapabilityContext =
-  retainedResourceCapabilities(name, server, call)
-
 proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (listen ^host "0.0.0.0" ^port 8080) or (listen server) — bind a listener
   ## now and return a Server value carrying the runtime handle. The returned
   ## value works with serve/stop/status; binding eagerly makes the listener a
-  ## value the application explicitly owns (the capability-shaped surface).
+  ## value the application explicitly owns.
   if args.len > 1:
     raise newException(GeneError,
       "http/listen expects at most one Server argument")
@@ -332,9 +328,6 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
         raise newException(GeneError,
           "http/listen got unexpected named argument: " & name)
   let (host, port) = httpServerHostPort(args, call, "http/listen", scope)
-  let grant = requireActiveCapability("http/listen", "net/Listen", call,
-    named = [capNamed("host", capString(host)),
-             capNamed("port", capInt(port))])
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let listener = httpBindListener(host, port, scope)
     let rt = registerHttpRuntime(host, port, listener, listening = true)
@@ -345,7 +338,6 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     let head = httpNamespaceBinding(scope, "Server")
     let server = newNode(if head.kind == vkType: head else: newSym("Server"),
                          props = props)
-    retainResourceCapabilities(scope, server, newCapabilityContext([grant]))
     server
   else:
     raiseHttpError("http/listen requires a native posix build", scope)
@@ -360,11 +352,9 @@ proc biHttpStop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let rt = httpRuntimeFor(args[0])
   if rt == nil:
     raiseHttpError("http/stop expects a Server value from http/listen", scope)
-  discard httpRetainedCapabilities("http/stop", args[0], call)
   rt.stopRequested = true
   if not rt.serving:
     dropHttpRuntime(rt)
-    releaseResourceCapabilities(scope, args[0])
   NIL
 
 proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -375,7 +365,6 @@ proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   if rt == nil:
     raiseHttpError("http/status expects a Server value from http/listen",
                    scope)
-  discard httpRetainedCapabilities("http/status", args[0], call)
   var props = initPropTable()
   props["host"] = newStr(rt.host)
   props["port"] = newInt(rt.port)
@@ -1167,25 +1156,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     # can reach stop/status through the Server value.
     var rt = httpRuntimeFor(args[0])
     var ownRegistration = false
-    var serverCapabilities: CapabilityContext
     if rt == nil:
-      let grant = requireActiveCapability("http/serve", "net/Listen", call,
-        named = [capNamed("host", capString(host)),
-                 capNamed("port", capInt(port))])
-      serverCapabilities = newCapabilityContext([grant])
       let listener = httpBindListener(host, port, scope)
       rt = registerHttpRuntime(host, port, listener, listening = true)
       ownRegistration = true
       # Stamp the handle onto the caller's Server node so handlers holding
       # this same value can call stop/status on it.
       args[0].setNodeProp("listener", newInt(rt.id))
-      retainResourceCapabilities(scope, args[0], serverCapabilities)
     elif rt.serving:
       raiseHttpError("this Server is already serving", scope)
     elif not rt.listening:
       raiseHttpError("this Server has been stopped", scope)
-    else:
-      serverCapabilities = httpRetainedCapabilities("http/serve", args[0], call)
     rt.serving = true
     var pool: HttpActorPool = nil
     if poolConfig.kind != vkNil:
@@ -1850,10 +1831,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     try:
       withScopedScheduler(scope):
         while maxRequests < 0 or served < maxRequests:
-          for grant in serverCapabilities.grants:
-            if not grant.isValid:
-              raiseHttpError("http/serve: retained capability was revoked",
-                             scope)
           if rt.stopRequested and not draining:
             beginDrain()
           if draining and (conns.len == 0 or getMonoTime() > drainDeadline):
@@ -1914,7 +1891,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       closeHttpPool(pool)
       rt.serving = false
       dropHttpRuntime(rt)
-      releaseResourceCapabilities(scope, args[0])
       if ownRegistration:
         args[0].setNodeProp("listener", VOID)   # void deletes the prop
     NIL

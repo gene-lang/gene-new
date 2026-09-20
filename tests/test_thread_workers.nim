@@ -1,4 +1,4 @@
-import gene/[capabilities, compiler, fs_capabilities, printer, types, vm]
+import gene/[compiler, printer, types, vm]
 import std/[locks, net, os, sets, strutils, unittest]
 
 var probeLock: Lock
@@ -129,9 +129,6 @@ template withGeneWorkers(body: untyped) =
 
 proc newTempScope(): Scope =
   let app = newApplication(getTempDir())
-  app.setRootCapabilities(newCapabilityContext(
-    @(app.rootCapabilities.grants) &
-    @[app.filesystemCapabilities.grantReadWriteDir(getTempDir())]))
   newGlobalScope(app)
 
 suite "threaded scheduler workers":

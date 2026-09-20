@@ -17,34 +17,11 @@ checked subset, including embedded web modules.
 
 Known limits worth carrying into design decisions:
 
-- Native C compilation and worker-thread execution remain experimental.
-  AOT protocol overlay guards are module-local; cross-module overlays are a
-  known limitation. Loaded AOT libraries remain pinned for process lifetime.
-- Some mixed scope/closure cycles are not reclaimed. AtomicArc has no ORC cycle
-  collection. Do not infer complete lifetime safety from passing one suite.
-- An existing hang can occur with eval-defined nominal types and methods;
-  authority-retention coverage currently uses functions and generators.
-- Arbitrary native code is trusted after admission. VM capability contexts
-  do not confine its direct host effects in-process.
-- Web backend exclusions are explicit. It does not provide a VM capability
-  sandbox or the full native runtime.
-
 Application-scale examples include [Cordis](../examples/cordis/README.md),
 [Miclone](../examples/miclone/README.md), and the
 [Todo app](../examples/todo_app/src/main.gene).
 
 ## Codebase
-
-| Location | Responsibility |
-| --- | --- |
-| `src/gene/reader.nim`, `printer.nim`, `types.nim` | Syntax and runtime values |
-| `src/gene/compiler.nim`, `gir.nim`, `vm.nim` | Compilation and execution |
-| `src/gene/package.nim`, `build.nim` | Source graphs and artifact builds |
-| `src/gene/web.nim` | Web-profile analysis and emission |
-| `src/gene/capabilities.nim` and providers | Authority resolution and enforcement |
-| `src/gene/stdlib.nim`, `src/gene/ext/` | Libraries and native adapters |
-| `src/gene/native_api.nim`, `aot_runtime.nim` | Native boundaries |
-| `tests/`, `examples/`, `benchmarks/` | Contracts, usage, and measurements |
 
 The core is shared across execution paths. A new backend or fast path must
 preserve the contract it accepts, including cleanup and authority restoration.
@@ -108,10 +85,6 @@ benchmark ledgers remain in Git history. They were removed from the current
 manual to keep one usable reading path. The expanded documentation tree is
 available at commit `a1387aa`:
 
-```sh
-git ls-tree -r --name-only a1387aa docs
-git show a1387aa:docs/capabilities.md
-```
-
 Historical proposals and measurements do not override today's implemented
 specification or establish current sandbox/performance guarantees.
+

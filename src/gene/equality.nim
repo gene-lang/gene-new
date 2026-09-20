@@ -125,7 +125,7 @@ proc equal*(a, b: Value): bool =
   of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
+     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
      vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
      vkType, vkProtocol, vkProtocolMessage,
@@ -149,7 +149,7 @@ proc same*(a, b: Value): bool =
      vkCallableView, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
-     vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable, vkLogger,
+     vkDeviceBuffer, vkFfiLibrary, vkFfiCallable, vkLogger,
      vkEventBus, vkEventSubscription, vkEventMatcher, vkRecordingSink,
      vkNullSink, vkCompositeSink,
      vkType, vkProtocol,
@@ -248,7 +248,7 @@ proc hash*(v: Value): Hash =
   of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
+     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
      vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
      vkType, vkProtocol, vkProtocolMessage,
@@ -275,7 +275,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkEventSubscription, vkEventMatcher:
     true
   of vkCallerEnv, vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer,
-     vkDeviceBuffer, vkCapability,
+     vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable,
      vkPipeline,
      # A bus and the mutable sinks change under an unchanged identity, exactly

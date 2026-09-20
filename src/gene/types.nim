@@ -35,7 +35,6 @@
 
 import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
             unicode]
-import ./capabilities
 
 when not defined(geneWasm):
   import std/re as nre
@@ -119,7 +118,6 @@ type
     vkCSlice    ## opaque non-owning C pointer + element count
     vkBuffer    ## Gene-owned typed contiguous storage
     vkDeviceBuffer ## opaque accelerator/device buffer handle
-    vkCapability ## inert named capability specification
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
     vkLogger    ## immutable structured diagnostic logger handle
@@ -194,15 +192,15 @@ const
 # heap objects below pick up these hooks, not an implicitly-generated one).
 # ---------------------------------------------------------------------------
 
-type ResourceAuthorityReleaseHook* = proc(id: uint64) {.nimcall, raises: [].}
+type ResourceReleaseHook* = proc(id: uint64) {.nimcall, raises: [].}
 
-var resourceAuthorityReleaseHook: ResourceAuthorityReleaseHook
+var resourceReleaseHook: ResourceReleaseHook
 
-proc installResourceAuthorityReleaseHook*(hook: ResourceAuthorityReleaseHook) =
+proc installResourceReleaseHook*(hook: ResourceReleaseHook) =
   ## Installed once by the VM. Keeping the hook in the value layer lets a
-  ## resource node release opaque authority metadata on its final refcount
-  ## transition without importing the VM or exposing that metadata to Gene.
-  resourceAuthorityReleaseHook = hook
+  ## native resource node release its runtime record on its final refcount
+  ## transition without importing the VM or exposing the id to Gene.
+  resourceReleaseHook = hook
 
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
@@ -310,7 +308,6 @@ type
     refCount: int
     shared: int
     immutable: bool
-    invalidCapabilitySyntax: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     items: seq[Value]
@@ -347,9 +344,6 @@ type
     refCount: int
     shared: int
     immutable: bool
-    duplicateReadProps: bool
-    duplicateReadCapabilities: bool
-    invalidCapabilitySyntax: bool
     ## Deep immutability, distinct from `immutable` (events.md §6.5).
     ## `immutable` says "this container's own head/props/body cannot change";
     ## `deepFrozen` says "nothing reachable from here can change". Only deep
@@ -358,7 +352,7 @@ type
     deepFrozen: bool
     constructing: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
-    resourceAuthorityId: uint64
+    resourceId: uint64
     errorEvidence: ErrorEvidence
     head: Value
     props: PropTable
@@ -431,9 +425,6 @@ type
     maxSteps*: int64
     maxMemoryMb*: int64
     timeoutMs*: int64
-    ## Optional host ceiling, sealed once before generation publication. A
-    ## prepared generation shares this policy across its owned module closure.
-    capabilityCeiling*: CapabilityContext
 
   TypeBoundaryToken* = ref object
     ## Stable identity shared by a transient scope and detached conformance
@@ -501,13 +492,7 @@ type
     implValidationEpoch*: uint64
     implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
-    ## Effective context retained by an eval overlay and its lexical children,
-    ## independently of module identity. Escaped callables intersect this with
-    ## the invoker's active context. Nil means no additional lexical ceiling.
-    evalCapabilityCeiling*: CapabilityContext
     loaderState*: RootRef # immutable VM-owned source policy and defining base
-    preparedCapabilityCode*: FunctionCode
-    preparedCapabilityTransition*: CapabilityTransition
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
@@ -543,7 +528,6 @@ type
     dispatchScope*: Scope
     site*: Value             # the source call-site node, or NIL (design §3)
     loc*: SourceLoc          # bytecode call location when available
-    capabilityContext*: CapabilityContext # host-captured invocation context, never a root grant
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -682,11 +666,6 @@ type
     identity*: string
     version*: string
 
-  NativeEffectKind* = enum
-    ## Trusted, immutable implementation metadata; a callable name is not an
-    ## authorization contract. Unclassified host extensions reject in v1.
-    nekUnclassified, nekCapabilityFree, nekGuarded, nekHostControl, nekUnsupported
-
   GeneFunction = object
     refCount: int
     shared: int
@@ -712,7 +691,6 @@ type
     acceptsNamed: bool
     fastKind: NativeFastKind
     errorMetadata: NativeErrorMetadata
-    effectKind: NativeEffectKind
 
   # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
@@ -746,7 +724,6 @@ type
     okCSlice
     okBuffer
     okDeviceBuffer
-    okCapability
     okFfiLibrary
     okFfiCallable
     okLogger
@@ -780,21 +757,6 @@ type
     path: string
     root: Value
     meta: PropTable
-    capabilityRow: CapabilityRow
-    capabilityCeiling: CapabilityContext
-    capabilitiesStrict: bool
-    ## This module's `^capabilities` rows on its own imports, and the ceilings
-    ## they materialize to, keyed by the dependency's absolute module path
-    ## (capabilities.md §5.3.1). Empty for almost every module, so the call
-    ## boundary checks `len` before it looks anything up.
-    importCapabilityRows: Table[string, CapabilityRow]
-    importCapabilityCeilings: Table[string, CapabilityContext]
-    ## `module_ceiling(M) ∩ import_ceiling(I, M)`, memoized per dependency.
-    ## Both operands are fixed once ceilings materialize, so the fold is
-    ## computed once per (importer, dependency) instead of per call — §6.1
-    ## specifies it as precomputed and §13.2 requires that a bound add no
-    ## second lookup at the boundary.
-    importCapabilityFolded: Table[string, CapabilityContext]
     dependencies: seq[string]
 
   BigIntData = ref object of GeneObjectData
@@ -868,13 +830,6 @@ type
     bindings: Table[string, Value]
     imports: seq[Value]
     module: Value
-    capabilities: Value
-    ## The ambient authority evaluated code runs under (capabilities.md §14).
-    ## Distinct from `capabilities` above, which is the *binding* overlay: one
-    ## decides which names exist, this one decides what they are allowed to do.
-    ## Nil adds no ceiling: eval inherits its active context, intersecting any
-    ## retained parent Env ceilings. An explicit empty context denies effects.
-    capabilityContext: CapabilityContext
     ## A closed capture: evaluating in it must NOT see the scope the `eval` is
     ## written in. `caller_env .snapshot [...]` sets it, because a snapshot
     ## promises exactly the names it lists and nothing else — a window onto the
@@ -902,7 +857,6 @@ type
     target: Value
     signature: Value
     typeScope: Scope
-    ceiling: CapabilityContext
 
   StreamPullResult* = object
     has*: bool
@@ -918,7 +872,6 @@ type
     closed: bool
     source: Value
     callable: Value
-    capabilityCeiling: CapabilityContext
     loaderState: RootRef
     remaining: int64
     pull: StreamPullProc
@@ -1064,24 +1017,11 @@ type
     elemType: Value
     length: int
 
-  CapabilityValueForm* = enum
-    cvfEntry, cvfRow, cvfPattern, cvfAny, cvfPrepared, cvfBuilderEntry
-
-  CapabilityData = ref object of GeneObjectData
-    name: string
-    spec: CapabilitySpec
-    form: CapabilityValueForm
-    row: CapabilitySpecRow
-    pattern: string
-    prepared: RootRef
-    builderEntry: CapabilityLiteralRow
-
   FfiLibraryData = ref object of GeneObjectData
     handle: pointer
     path: string
     closed: bool
     close: FfiLibraryCloseProc
-    capabilityContext: CapabilityContext
 
   FfiCallableData = ref object of GeneObjectData
     name: string
@@ -1097,7 +1037,6 @@ type
     name: string
     routeId: int
     payload: Value
-    capabilityContext: CapabilityContext
 
   EventErrorPolicy* = enum
     ## docs/stdlib.md `eepRaiseAfter` is the default: every
@@ -1934,7 +1873,6 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
     for val in d.imports:
       emit(val)
     emit(d.module)
-    emit(d.capabilities)
     emit(d.policy)
   of okCell, okAtomicCell:
     let d = CellData(data)
@@ -1990,7 +1928,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
       emit(val)
   of okDeviceBuffer:
     emit(DeviceBufferData(data).elemType)
-  of okCapability, okFfiLibrary:
+  of okFfiLibrary:
     discard
   of okFfiCallable:
     let d = FfiCallableData(data)
@@ -2115,14 +2053,12 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.target)
     clearValueSlot(d.signature)
     d.typeScope = nil
-    d.ceiling = nil
   of okEnv:
     let d = EnvData(data)
     clearValueSlot(d.parent)
     d.bindings = initTable[string, Value]()
     d.imports.setLen(0)
     clearValueSlot(d.module)
-    clearValueSlot(d.capabilities)
     clearValueSlot(d.policy)
     d.borrowedActive = false
     d.borrowedScope = nil
@@ -2187,7 +2123,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.packed.setLen(0)
   of okDeviceBuffer:
     clearValueSlot(DeviceBufferData(data).elemType)
-  of okCapability, okFfiLibrary:
+  of okFfiLibrary:
     discard
   of okFfiCallable:
     let d = FfiCallableData(data)
@@ -2893,8 +2829,8 @@ proc rcRelease(bits: uint64) =
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
     releaseManual(p):
-      if p.resourceAuthorityId != 0 and resourceAuthorityReleaseHook != nil:
-        resourceAuthorityReleaseHook(p.resourceAuthorityId)
+      if p.resourceId != 0 and resourceReleaseHook != nil:
+        resourceReleaseHook(p.resourceId)
       reset(p[]); dealloc(p); trackFree()
       return
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
@@ -3051,7 +2987,6 @@ const objKindValueKinds: array[ObjKind, ValueKind] = [
   okCSlice: vkCSlice,
   okBuffer: vkBuffer,
   okDeviceBuffer: vkDeviceBuffer,
-  okCapability: vkCapability,
   okFfiLibrary: vkFfiLibrary,
   okFfiCallable: vkFfiCallable,
   okLogger: vkLogger,
@@ -3375,36 +3310,6 @@ proc nodeImmutable*(v: Value): bool =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
 
-proc nodeDuplicateProps*(v: Value): bool =
-  v.kind == vkNode and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).duplicateReadProps
-
-proc nodeDuplicateCapabilities*(v: Value): bool =
-  v.kind == vkNode and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).duplicateReadCapabilities
-
-proc setNodeReadDuplicates*(v: Value, properties, capabilities: bool) =
-  if v.kind != vkNode:
-    raise newException(FieldDefect, "duplicate provenance requires a node")
-  let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
-  node.duplicateReadProps = properties
-  node.duplicateReadCapabilities = capabilities
-
-proc invalidCapabilitySyntax*(v: Value): bool =
-  case v.kind
-  of vkNode: cast[ptr GeneNode](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax
-  of vkList: cast[ptr GeneList](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax
-  else: false
-
-proc setInvalidCapabilitySyntax*(v: Value, invalid: bool) =
-  case v.kind
-  of vkNode: cast[ptr GeneNode](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax = invalid
-  of vkList: cast[ptr GeneList](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax = invalid
-  else: discard
-
-proc copyCapabilityReadProvenance*(target, source: Value) =
-  target.setInvalidCapabilitySyntax(source.invalidCapabilitySyntax)
-  if target.kind == vkNode and source.kind == vkNode:
-    target.setNodeReadDuplicates(source.nodeDuplicateProps, source.nodeDuplicateCapabilities)
-
 proc nodeConstructing*(v: Value): bool {.inline.} =
   v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing
 
@@ -3668,13 +3573,7 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
 proc nativeFastKind*(v: Value): NativeFastKind {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
-  let native = cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK)
-  if native.effectKind == nekCapabilityFree: native.fastKind else: nfkNone
-
-proc nativeEffectKind*(v: Value): NativeEffectKind {.inline.} =
-  if v.kind != vkNativeFn:
-    raise newException(FieldDefect, "value is not a native function")
-  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).effectKind
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).fastKind
 
 proc nativeErrorMetadata*(v: Value): lent NativeErrorMetadata {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
@@ -3714,7 +3613,6 @@ proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL,
              imports: sink seq[Value] = @[],
              module: Value = NIL,
-             capabilities: Value = NIL,
              policy: Value = NIL,
              bindingScope: Scope = nil): Value
 
@@ -3820,87 +3718,6 @@ proc setModuleMeta*(v: Value, meta: sink PropTable) =
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).meta = meta
 
-proc moduleCapabilityRow*(v: Value): CapabilityRow =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).capabilityRow
-
-proc moduleCapabilityCeiling*(v: Value): CapabilityContext =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).capabilityCeiling
-
-proc setModuleCapabilities*(v: Value, row: CapabilityRow,
-                            ceiling: CapabilityContext = nil) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  let data = ModuleData(objData(v))
-  data.capabilityRow = row
-  data.capabilityCeiling = ceiling
-
-proc setModuleCapabilityCeiling*(v: Value, ceiling: CapabilityContext) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).capabilityCeiling = ceiling
-
-proc moduleCapabilitiesStrict*(v: Value): bool =
-  ## Link metadata, not resolution input: `^require_strict_dependencies`
-  ## checks it and nothing else consults it (capabilities.md §5.0.2).
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).capabilitiesStrict
-
-proc setModuleCapabilitiesStrict*(v: Value, strict: bool) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).capabilitiesStrict = strict
-
-proc recordImportCapabilityRow*(v: Value, dependencyPath: string,
-                                row: CapabilityRow) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityRows[dependencyPath] = row
-
-proc importCapabilityRows*(v: Value): lent Table[string, CapabilityRow] =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityRows
-
-proc setImportCapabilityCeiling*(v: Value, dependencyPath: string,
-                                 ceiling: CapabilityContext) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityCeilings[dependencyPath] = ceiling
-
-proc hasImportCapabilityCeilings*(v: Value): bool {.inline.} =
-  ## The guard the cross-module call boundary reads before looking anything
-  ## up; almost every module answers false.
-  v.tagOf == OBJECT_TAG and objData(v).objKind == okModule and
-    ModuleData(objData(v)).importCapabilityCeilings.len > 0
-
-proc importCapabilityCeiling*(v: Value,
-                              dependencyPath: string): CapabilityContext =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityCeilings.getOrDefault(dependencyPath)
-
-proc foldedImportCeiling*(v: Value,
-                          dependencyPath: string): CapabilityContext {.inline.} =
-  ## nil means "not folded yet": a real fold is never nil, because
-  ## `intersectContexts` yields the interned empty context rather than nil.
-  ModuleData(objData(v)).importCapabilityFolded.getOrDefault(dependencyPath)
-
-proc setFoldedImportCeiling*(v: Value, dependencyPath: string,
-                             ceiling: CapabilityContext) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityFolded[dependencyPath] = ceiling
-
-proc clearFoldedImportCeilings*(v: Value) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
-    raise newException(FieldDefect, "value is not a Module")
-  ModuleData(objData(v)).importCapabilityFolded.clear()
-
 proc envParent*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
@@ -3921,11 +3738,6 @@ proc envModule*(v: Value): Value =
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).module
 
-proc envCapabilities*(v: Value): Value =
-  if not v.isObjectTagged or objData(v).objKind != okEnv:
-    raise newException(FieldDefect, "value is not an Env")
-  EnvData(objData(v)).capabilities
-
 proc envClosedScope*(v: Value): bool =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
@@ -3935,16 +3747,6 @@ proc setEnvClosedScope*(v: Value, closed: bool) =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).closedScope = closed
-
-proc envCapabilityContext*(v: Value): CapabilityContext =
-  if not v.isObjectTagged or objData(v).objKind != okEnv:
-    raise newException(FieldDefect, "value is not an Env")
-  EnvData(objData(v)).capabilityContext
-
-proc setEnvCapabilityContext*(v: Value, context: CapabilityContext) =
-  if not v.isObjectTagged or objData(v).objKind != okEnv:
-    raise newException(FieldDefect, "value is not an Env")
-  EnvData(objData(v)).capabilityContext = context
 
 proc envLoaderState*(v: Value): RootRef =
   if v.kind != vkEnv:
@@ -4041,12 +3843,10 @@ proc callableViewData(v: Value): CallableViewData =
 proc callableViewTarget*(v: Value): Value = v.callableViewData.target
 proc callableViewSignature*(v: Value): Value = v.callableViewData.signature
 proc callableViewScope*(v: Value): Scope = v.callableViewData.typeScope
-proc callableViewCeiling*(v: Value): CapabilityContext = v.callableViewData.ceiling
 
-proc newCallableView*(target, signature: Value, typeScope: Scope,
-                       ceiling: CapabilityContext): Value =
+proc newCallableView*(target, signature: Value, typeScope: Scope): Value =
   boxObject(CallableViewData(objKind: okCallableView, target: target,
-    signature: signature, typeScope: typeScope, ceiling: ceiling))
+    signature: signature, typeScope: typeScope))
 
 proc streamData(v: Value): StreamData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okStream:
@@ -4260,7 +4060,6 @@ proc closeStream*(v: Value) =
         firstError = cleanupError
   data.source = NIL
   data.callable = NIL
-  data.capabilityCeiling = nil
   data.loaderState = nil
   data.generatorCode = nil
   data.generatorScope = nil
@@ -4283,9 +4082,6 @@ proc streamSource*(v: Value): Value =
 
 proc streamCallable*(v: Value): Value =
   streamData(v).callable
-
-proc streamCapabilityCeiling*(v: Value): CapabilityContext =
-  streamData(v).capabilityCeiling
 
 proc streamLoaderState*(v: Value): RootRef =
   streamData(v).loaderState
@@ -5176,50 +4972,6 @@ proc deviceBufferElemType*(v: Value): Value =
 proc deviceBufferLen*(v: Value): int =
   deviceBufferData(v).length
 
-proc capabilityData(v: Value): CapabilityData =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCapability:
-    raise newException(FieldDefect, "value is not a capability")
-  CapabilityData(objData(v))
-
-proc capabilityName*(v: Value): string =
-  capabilityData(v).name
-
-proc capabilityIsAdmitted*(v: Value): bool =
-  capabilityData(v).form == cvfEntry and capabilityData(v).spec.capabilityType.isValid
-
-proc capabilityForm*(v: Value): CapabilityValueForm = capabilityData(v).form
-
-proc capabilityRowValue*(v: Value): CapabilitySpecRow =
-  let data = capabilityData(v)
-  if data.form != cvfRow or data.row == nil:
-    raise newException(GeneError, "expected an immutable CapabilitySpecRow")
-  data.row
-
-proc capabilityPatternValue*(v: Value): string =
-  let data = capabilityData(v)
-  if data.form != cvfPattern:
-    raise newException(GeneError, "expected a capability pattern value")
-  data.pattern
-
-proc capabilityPreparedValue*(v: Value): RootRef =
-  let data = capabilityData(v)
-  if data.form != cvfPrepared:
-    raise newException(GeneError, "expected a prepared capability operation")
-  data.prepared
-
-proc capabilityEntryValue*(v: Value): CapabilityEntryLiteral =
-  let data = capabilityData(v)
-  if data.form != cvfBuilderEntry:
-    raise newException(GeneError, "expected a checked capability entry")
-  data.builderEntry.entries[0]
-
-proc capabilitySpec*(v: Value): CapabilitySpec =
-  let data = capabilityData(v)
-  if data.form != cvfEntry or not data.spec.capabilityType.isValid:
-    raise newException(GeneError,
-      "capability type is not admitted: " & data.name)
-  data.spec
-
 proc ffiLibraryData(v: Value): FfiLibraryData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiLibrary:
     raise newException(FieldDefect, "value is not an FFI library")
@@ -5233,9 +4985,6 @@ proc ffiLibraryPath*(v: Value): string =
 
 proc ffiLibraryClosed*(v: Value): bool =
   ffiLibraryData(v).closed
-
-proc ffiLibraryCapabilityContext*(v: Value): CapabilityContext =
-  ffiLibraryData(v).capabilityContext
 
 proc closeFfiLibrary*(v: Value) =
   let data = ffiLibraryData(v)
@@ -6016,24 +5765,24 @@ proc newNode*(head: Value,
   p.meta = withoutVoidEntries(meta)
   boxPtr(NODE_TAG, p)
 
-proc resourceAuthorityId*(v: Value): uint64 =
+proc nodeResourceId*(v: Value): uint64 =
   if v.kind != vkNode:
     raise newException(FieldDefect,
-      "resource authority metadata requires a node")
-  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceAuthorityId
+      "resource id metadata requires a node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceId
 
-proc setResourceAuthorityId*(v: Value, id: uint64) =
+proc setNodeResourceId*(v: Value, id: uint64) =
   if v.kind != vkNode:
     raise newException(FieldDefect,
-      "resource authority metadata requires a node")
-  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceAuthorityId = id
+      "resource id metadata requires a node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceId = id
 
-proc takeResourceAuthorityId*(v: Value): uint64 =
+proc takeNodeResourceId*(v: Value): uint64 =
   if v.kind != vkNode:
     return 0
   let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
-  result = node.resourceAuthorityId
-  node.resourceAuthorityId = 0
+  result = node.resourceId
+  node.resourceId = 0
 
 const pendingModuleRefHead = "\x00gene_module_ref_pending"
 
@@ -6240,7 +5989,7 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
       return newCallableView(target, v.callableViewSignature,
-        v.callableViewScope, v.callableViewCeiling)
+        v.callableViewScope)
   if v.kind == vkStream:
     # Same cycle, one hop removed: a lazy stream stored into the scope its
     # callables capture (scope -> stream -> callable -> scope). Weaken the
@@ -6579,7 +6328,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     if target.bits == v.callableViewTarget.bits:
       return v
     newCallableView(target, v.callableViewSignature,
-      v.callableViewScope, v.callableViewCeiling)
+      v.callableViewScope)
   of vkFunction:
     if v.fnHasWeakScope:
       let fnp = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
@@ -6800,7 +6549,6 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     boxObject(StreamData(objKind: okStream, source: escapedSource,
                          items: data.items, index: data.index,
                          callable: escapedCallable, remaining: data.remaining,
-                         capabilityCeiling: data.capabilityCeiling,
                          pull: data.pull, closed: data.closed,
                          close: data.close,
                          checkFailure: data.checkFailure,
@@ -7012,16 +6760,13 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       if escaped.bits != item.bits:
         changed = true
     let escapedModule = escapeNested(data.module)
-    let escapedCapabilities = escapeNested(data.capabilities)
     let escapedPolicy = escapeNested(data.policy)
     if escapedModule.bits != data.module.bits or
-        escapedCapabilities.bits != data.capabilities.bits or
         escapedPolicy.bits != data.policy.bits:
       changed = true
     if not changed:
       return v
-    newEnv(bindings, escapedParent, imports, escapedModule,
-           escapedCapabilities, escapedPolicy)
+    newEnv(bindings, escapedParent, imports, escapedModule, escapedPolicy)
   of vkCallerEnv:
     v
   of vkCPtr:
@@ -7056,7 +6801,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
                               returnType: data.returnType,
                               releaseName: data.releaseName,
                               releaseAddress: data.releaseAddress))
-  of vkDeviceBuffer, vkCapability, vkFfiLibrary:
+  of vkDeviceBuffer, vkFfiLibrary:
     v
   else:
     v
@@ -7449,63 +7194,18 @@ proc newDeviceBuffer*(backend: string, elemType: Value, length: int): Value =
                              elemType: elemType,
                              length: length))
 
-proc newCapability*(name: string): Value =
-  if name.len == 0:
-    raise newException(GeneError, "capability name must not be empty")
-  boxObject(CapabilityData(objKind: okCapability, name: name))
-
-proc newCapabilityRowValue*(row: CapabilitySpecRow): Value =
-  if row == nil:
-    raise newException(GeneError, "nil capability specification row")
-  boxObject(CapabilityData(objKind: okCapability, form: cvfRow,
-    name: "CapabilitySpecRow", row: row))
-
-proc newCapabilityPatternValue*(pattern: string): Value =
-  boxObject(CapabilityData(objKind: okCapability, form: cvfPattern,
-    name: "CapabilityPattern", pattern: pattern))
-
-proc newCapabilityAnyValue*(): Value =
-  boxObject(CapabilityData(objKind: okCapability, form: cvfAny,
-    name: "CapabilityAny"))
-
-proc newPreparedCapabilityValue*(name: string, prepared: RootRef): Value =
-  if prepared == nil:
-    raise newException(GeneError, "nil prepared operation")
-  boxObject(CapabilityData(objKind: okCapability, form: cvfPrepared,
-    name: name, prepared: prepared))
-
-proc newCapabilityEntryValue*(entry: CapabilityEntryLiteral): Value =
-  let checked = buildCapabilityLiteral([entry], cuRequest,
-    CapabilitySourceContext(kind: csoBuilder, name: "<capability entry>"))
-  boxObject(CapabilityData(objKind: okCapability, form: cvfBuilderEntry,
-    name: entry.name, builderEntry: checked))
-
-proc newCapability*(capabilityType: CapabilityType,
-                    positional: openArray[CapabilityArg] = [],
-                    named: openArray[CapabilityNamedArg] = []): Value =
-  if not capabilityType.isValid:
-    raise newException(GeneError, "capability type must be admitted")
-  boxObject(CapabilityData(
-    objKind: okCapability,
-    name: capabilityType.name,
-    spec: newCapabilitySpec(capabilityType, positional, named)))
-
 proc newFfiLibrary*(handle: pointer, path: string,
-                    close: FfiLibraryCloseProc,
-                    capabilityContext: CapabilityContext = nil): Value =
+                    close: FfiLibraryCloseProc): Value =
   if handle == nil:
     raise newException(GeneError, "FFI library handle must not be nil")
   boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
-                           path: path, close: close,
-                           capabilityContext: capabilityContext))
+                           path: path, close: close))
 
-proc newLogger*(name: string, routeId: int, payload: Value,
-                capabilityContext: CapabilityContext = nil): Value =
+proc newLogger*(name: string, routeId: int, payload: Value): Value =
   if name.len == 0:
     raise newException(GeneError, "Logger name must not be empty")
   boxObject(LoggerData(objKind: okLogger, name: name, routeId: routeId,
-                       payload: payload,
-                       capabilityContext: capabilityContext))
+                       payload: payload))
 
 proc loggerName*(v: Value): string =
   if v.kind != vkLogger:
@@ -7521,11 +7221,6 @@ proc loggerPayload*(v: Value): Value =
   if v.kind != vkLogger:
     raise newException(FieldDefect, "value is not a Logger")
   LoggerData(objData(v)).payload
-
-proc loggerCapabilityContext*(v: Value): CapabilityContext =
-  if v.kind != vkLogger:
-    raise newException(FieldDefect, "value is not a Logger")
-  LoggerData(objData(v)).capabilityContext
 
 # ---------------------------------------------------------------------------
 # Application event bus storage (docs/stdlib.md)
@@ -7694,7 +7389,6 @@ proc classifyNativeFastKind*(name: string): NativeFastKind =
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false,
                   errorMetadata = NativeErrorMetadata(),
-                  effectKind = nekUnclassified,
                   fastKind = nfkNone): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
@@ -7703,13 +7397,11 @@ proc newNativeFn*(name: string, impl: NativeProc,
   p.acceptsNamed = acceptsNamed
   p.fastKind = fastKind
   p.errorMetadata = errorMetadata
-  p.effectKind = effectKind
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNativeCallFn*(name: string, impl: NativeCallProc,
                       acceptsNamed = true,
-                      errorMetadata = NativeErrorMetadata(),
-                      effectKind = nekUnclassified): Value =
+                      errorMetadata = NativeErrorMetadata()): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
@@ -7717,7 +7409,6 @@ proc newNativeCallFn*(name: string, impl: NativeCallProc,
   p.acceptsNamed = acceptsNamed
   p.fastKind = nfkNone
   p.errorMetadata = errorMetadata
-  p.effectKind = effectKind
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",
@@ -7745,15 +7436,13 @@ proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL,
              imports: sink seq[Value] = @[],
              module: Value = NIL,
-             capabilities: Value = NIL,
              policy: Value = NIL,
              bindingScope: Scope = nil): Value =
   var storedBindings = initTable[string, Value]()
   for key, value in bindings:
     storedBindings[key] = weakenScopeFunctions(value, bindingScope)
   boxObject(EnvData(objKind: okEnv, parent: parent, bindings: storedBindings,
-                    imports: imports, module: module,
-                    capabilities: capabilities, policy: policy))
+                    imports: imports, module: module, policy: policy))
 
 proc newCallerEnv*(scope: Scope): Value =
   if scope == nil:
@@ -7809,7 +7498,6 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
                     itemType: Value = NIL, errType: Value = NIL,
                     itemScope: Scope = nil,
                     close: StreamCloseProc = nil,
-                    capabilityCeiling: CapabilityContext = nil,
                     loaderState: RootRef = nil): Value =
   # The stream owns its callable strongly, like every other heap container
   # (channels, cells, actor state). Weakening the captured-scope edge here
@@ -7818,7 +7506,7 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
   # back is a leak, not a crash, matching the container-wide tradeoff.
   let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
-                       capabilityCeiling: capabilityCeiling, loaderState: loaderState,
+                       loaderState: loaderState,
                        remaining: remaining, pull: pull, close: close, itemType: itemType,
                        errType: errType, itemScope: itemScope, closed: false))
 

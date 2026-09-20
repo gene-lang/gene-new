@@ -19,15 +19,6 @@ claude auth status
 
 From `examples/gene-harness`, start the browser host:
 
-```sh
-mkdir -p /tmp/harness-claude
-env GENE_HARNESS_PROVIDER=claude \
-  ../../bin/gene run \
-  --allow_read_write_dir /tmp/harness-claude \
-  --allow_read_dir ../../tools/gene-lang-skill \
-  src/web/server.gene --home /tmp/harness-claude
-```
-
 Open the connection URL printed by the server. To use the terminal instead,
 replace the entry and arguments with `src/main.gene chat` and set
 `GENE_HARNESS_HOME=/tmp/harness-claude` in the environment.
@@ -136,3 +127,4 @@ Claude CLI accepted the invocation flags but reported no authenticated account
 on this machine at implementation time; no API key was configured. A real
 subscription/API success requires the user's login/key. No package test suite
 was run, following the Harness development workflow.
+

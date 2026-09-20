@@ -1368,9 +1368,9 @@
       }
     },
     {
-      "id": "rejected.capability",
+      "id": "rejected.host_io",
       "source": "1",
-      "web_source": "(mod rejected_capability ^profile web) (fn run [] : Int ($fs/read \"x\"))",
+      "web_source": "(mod rejected_host_io ^profile web) (fn run [] : Int ($fs/read \"x\"))",
       "expected_value": {
         "kind": "int",
         "value": "1"
@@ -1380,7 +1380,7 @@
       "profile": {
         "status": "rejected",
         "reason": "browser authority crosses explicit JS boundaries",
-        "diagnostic": "capabilities are outside the web profile"
+        "diagnostic": "host I/O is outside the web profile"
       }
     },
     {

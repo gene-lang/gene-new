@@ -1,5 +1,0 @@
-# No declaration adds authority. Run with --cap [] to verify the empty default.
-(fn main []
-  ($assert (try ($fs/write_text "cap_demo_denied.txt" "forbidden")
-    false catch MissingCapability true))
-  0)

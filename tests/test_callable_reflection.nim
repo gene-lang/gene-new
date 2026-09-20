@@ -55,7 +55,7 @@ suite "callable reflection":
   test "a supplied raw positional Void remains supplied through binding and invocation":
     let scope = newGlobalScope()
     scope.define("raw_args", newNativeFn("raw_args", proc(args: openArray[Value]): Value =
-      newList(@[VOID]), effectKind = nekCapabilityFree))
+      newList(@[VOID])))
     check run(compileSource("""
       (fn target [x : Void] true)
       (let b ($runtime/bind_shape ($runtime/signature target) (raw_args) {}))

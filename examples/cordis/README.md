@@ -72,13 +72,6 @@ allowed only for explicitly admitted host plugins and cannot bypass a configured
 loader ceiling. Source-loaded plugins always receive an explicit restricted
 context. These policy values are host inputs, separate from the data manifest.
 
-`LoaderOptions.descriptor_factory`, when supplied, receives the prepared
-module, normalized entry, and generation graph, and returns a `PluginSpec`.
-Harness uses this to verify source digests and run its existing bounded,
-capability-empty `init(DescriptorContext)` contract. It seals the module's
-entry capability ceiling before activation. Stored generated modules keep
-their existing exports and imports.
-
 `LoaderOptions.publication` optionally accepts a `PublicationParticipant`.
 Cordis calls `prepare` before candidate activation, `publish(ticket)` while
 replacing live indexes and before notifications or old cleanup, and
@@ -97,3 +90,4 @@ Lifecycle transitions run on the runtime's host executor. A notification from
 restricted plugin code therefore cannot impose its ambient permissions or
 deadline on host transition bookkeeping; `PluginInvoker` still applies each
 plugin's own context and limits to its callbacks.
+

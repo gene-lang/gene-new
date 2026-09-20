@@ -1,2 +1,0 @@
-# An unannotated helper inherits the caller and its retained module ceiling.
-(fn write_where [path] ($fs/write_text path "from the plugin"))

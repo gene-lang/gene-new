@@ -135,7 +135,7 @@
     (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000)
     evaluation_limits))
   (var sandbox
-    (env ^bindings bindings ^capabilities []
+    (env ^bindings bindings
       ^policy {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb
                ^timeout_ms limits/timeout_ms}))
   (var existing_events (log_events h))
@@ -148,12 +148,6 @@
         (var rendered
           (try
             $"${(eval program ^in sandbox)}"
-          catch MissingCapability
-            # A denial is a value shown to the next model round.
-            (if_yes raise_errors
-              (fail (CommandError ^code "code_error"
-                ^message $"refused: ${$err/operation} needs ${$err/capability}")))
-            $"refused: ${$err/operation} needs ${$err/capability}"
           catch Any
             (if ($str/contains? $err/message " requires ")
               (do
@@ -466,7 +460,7 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
   (fn run [host input]
     (host .PluginHost:request_tool "fs.read" input ^continuation measured))
   (fn init [ctx : DescriptorContext] : Plugin
-    ^capabilities []
+   
     (Plugin ^id "file_length" ^contextual true
       ^provides [["tools" "file_length"]] ^requires [["tools" "fs.read"]]
       ^activate (fn [] (fn [host]
@@ -480,7 +474,7 @@ confirms it. Return exactly one map with ^type and no surrounding prose.""")
 
 The root must be (mod plugin ...). Its top level contains only declarations
 (import/import_impl/fn/type/impl/protocol/alias/enum). init takes one
-DescriptorContext, declares ^capabilities [], and only constructs a descriptor.
+DescriptorContext, declares, and only constructs a descriptor.
 activate is a thunk returning a host callback. The descriptor id must equal
 the requested plugin name. Tools may have different names; advertise them all.
 

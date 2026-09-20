@@ -11,7 +11,6 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Streams](streams.md)
 - [Tasks, channels, and actors](concurrency.md)
 - [Modules and native boundaries](modules.md)
-- [Authority and sandbox boundaries](authority.md)
 
 `tests/spec_runner.nim` is the executable contract. If implemented prose and
 those tests disagree, resolve the discrepancy explicitly. Historical design

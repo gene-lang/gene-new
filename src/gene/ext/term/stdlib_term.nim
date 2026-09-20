@@ -1,4 +1,4 @@
-## Local terminal authority: PTY sessions, the libvterm state machine, and the
+## Local terminal support: PTY sessions, the libvterm state machine, and the
 ## owned curses screen (docs/stdlib.md `terminal` and `curses`).
 ##
 ## `include`d by stdlib.nim late -- it depends on `nativeReceiverIs` and the
@@ -31,12 +31,10 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     schedulerPtr: pointer
     sessionId: int
     maxBytes: int
-    capabilityContext: CapabilityContext
 
   var terminalUpdatePending: seq[TerminalUpdatePending]
 
   proc terminalHandleId(name: string, value: Value, scope: Scope,
-                        call: ptr NativeCall = nil,
                         requireOpen = true): int =
     if not nativeReceiverIs(scope, value, "TerminalSession"):
       raiseTerminalError(name & " expects a terminal/Session", scope)
@@ -49,13 +47,11 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let nativeId = int(id.intVal)
     if requireOpen and not terminalSessions.hasKey(nativeId):
       raiseTerminalError(name & ": terminal session is unavailable", scope)
-    if call != nil:
-      discard retainedResourceCapabilities(name, value, call)
     nativeId
 
   proc terminalSession(name: string, value: Value,
-                       scope: Scope, call: ptr NativeCall): TerminalSession =
-    terminalSessions[terminalHandleId(name, value, scope, call)]
+                       scope: Scope): TerminalSession =
+    terminalSessions[terminalHandleId(name, value, scope)]
 
   proc terminalEnvironment(overrides: Value, name: string,
                            scope: Scope): seq[string] =
@@ -138,18 +134,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       let pending {.cursor.} = terminalUpdatePending[i]
       let task = pending.taskOwner
       var remove = false
-      var authorityValid = pending.capabilityContext != nil
-      if authorityValid:
-        for grant in pending.capabilityContext.grants:
-          if not grant.isValid:
-            authorityValid = false
-            break
-      if not authorityValid:
-        if tryFailTask(task,
-            "terminal/next_update: retained capability was revoked"):
-          wakeTaskWaitersIn(cast[SchedulerState](pending.schedulerPtr), task)
-        remove = true
-      elif task.taskCancelled:
+      if task.taskCancelled:
         remove = true
       elif not terminalSessions.hasKey(pending.sessionId):
         if tryFailTask(task, "terminal/next_update: session is closed"):
@@ -180,7 +165,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if scope == nil or scope.application == nil:
       raiseTerminalError("terminal/next_update requires a scheduler scope",
                          scope)
-    let id = terminalHandleId("terminal/next_update", args[0], scope, call)
+    let id = terminalHandleId("terminal/next_update", args[0], scope)
     var maxBytes = defaultTerminalPumpBytes
     if call != nil:
       for i, argName in call[].namedNames:
@@ -201,9 +186,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         raiseTerminalError(
           "terminal/next_update already has a waiter for this session", scope)
     let task = newExternalTask()
-    let pending = TerminalUpdatePending(sessionId: id, maxBytes: maxBytes,
-      capabilityContext: retainedResourceCapabilities("terminal/next_update",
-                                                       args[0], call))
+    let pending = TerminalUpdatePending(sessionId: id, maxBytes: maxBytes)
     pending.taskOwner = retainedCopy(task)
     pending.sessionOwner = retainedCopy(args[0])
     pending.schedulerPtr = cast[pointer](schedulerForScope(scope))
@@ -251,8 +234,6 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             "terminal/open got unexpected named argument: " & argName, scope)
     if command.len == 0:
       raiseTerminalError("terminal/open requires a non-empty ^cmd", scope)
-    let grant = requireActiveCapability("terminal/open", "os/Pty", call,
-                                        [capString(command), capString(cwd)])
     try:
       let session = openTerminalSession(
         @[command] & commandArgs, cwd = cwd, rows = rows, cols = cols,
@@ -263,7 +244,6 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       terminalSessions[id] = session
       let handle = newNativeWrapper(builtInTypeHead(scope, "TerminalSession"),
         {"id": newInt(id), "closed": newCell(FALSE)})
-      retainResourceCapabilities(scope, handle, newCapabilityContext([grant]))
       handle
     except GeneError:
       raise
@@ -275,7 +255,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                       call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/pump", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/pump", args[0], scope, call)
+    let session = terminalSession("terminal/pump", args[0], scope)
     var maxBytes = defaultTerminalPumpBytes
     if call != nil:
       for i, argName in call[].namedNames:
@@ -302,15 +282,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                           call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/snapshot", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    terminalSnapshotValue(terminalSession("terminal/snapshot", args[0], scope,
-                                            call))
+    terminalSnapshotValue(terminalSession("terminal/snapshot", args[0], scope))
 
   proc biTerminalCaptureText(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/capture_text", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/capture_text", args[0], scope,
-                                  call)
+    let session = terminalSession("terminal/capture_text", args[0], scope)
     var maxBytes = 64 * 1024
     if call != nil:
       for i, argName in call[].namedNames:
@@ -336,7 +314,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                        call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/write", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/write", args[0], scope, call)
+    let session = terminalSession("terminal/write", args[0], scope)
     var bytes = ""
     var set = false
     if call != nil:
@@ -394,7 +372,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                      call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/key", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/key", args[0], scope, call)
+    let session = terminalSession("terminal/key", args[0], scope)
     var key = ""
     var sequence = ""
     var controlCode = 0
@@ -452,7 +430,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                        call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/paste", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/paste", args[0], scope, call)
+    let session = terminalSession("terminal/paste", args[0], scope)
     var active = false
     var set = false
     if call != nil:
@@ -476,7 +454,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                        call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/focus", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/focus", args[0], scope, call)
+    let session = terminalSession("terminal/focus", args[0], scope)
     var active = false
     var set = false
     if call != nil:
@@ -505,7 +483,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                        call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/mouse", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/mouse", args[0], scope, call)
+    let session = terminalSession("terminal/mouse", args[0], scope)
     var row = 0
     var col = 0
     var direction = 0
@@ -544,7 +522,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                         call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/resize", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/resize", args[0], scope, call)
+    let session = terminalSession("terminal/resize", args[0], scope)
     var rows = 0
     var cols = 0
     if call != nil:
@@ -569,7 +547,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                         call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/signal", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/signal", args[0], scope, call)
+    let session = terminalSession("terminal/signal", args[0], scope)
     var signalName = ""
     if call != nil:
       for i, argName in call[].namedNames:
@@ -599,7 +577,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                       call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/stop", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/stop", args[0], scope, call)
+    let session = terminalSession("terminal/stop", args[0], scope)
     try:
       session.stop()
       terminalSnapshotValue(session)
@@ -611,8 +589,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                              call: ptr NativeCall): Value {.nimcall.} =
     requireOne("terminal/request_stop", args)
     let scope = if call == nil: nil else: call[].dispatchScope
-    let session = terminalSession("terminal/request_stop", args[0], scope,
-                                  call)
+    let session = terminalSession("terminal/request_stop", args[0], scope)
     var graceMs = 200
     if call != nil:
       for i, argName in call[].namedNames:
@@ -658,7 +635,6 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       else:
         inc i
     closed.setCellValue(TRUE)
-    releaseResourceCapabilities(scope, args[0])
     NIL
 else:
   proc pollTerminalUpdateCompletions() = discard

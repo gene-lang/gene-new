@@ -445,12 +445,6 @@ require a session-bound CSRF token on mutations. Authenticate snapshots and
 WebSocket upgrades as well as writes. Never place credentials in query strings,
 access logs, transcript records, or browser storage.
 
-Credentials, provider configuration, workspace roots, and capability grants
-remain launcher-owned. First release has no credential-entry form, arbitrary
-filesystem-path parameter, generic eval endpoint, or proxy to model endpoints.
-Static serving uses a fixed asset allowlist. Remote binding requires a later
-authenticated/TLS deployment design and is outside this launch mode.
-
 ## 9. Implementation direction
 
 Author browser logic in Gene, compiled through the existing web profile. Use
@@ -534,3 +528,4 @@ The client retains at most 600 rendered transcript records and fetches earlier
 pages on demand. Reading older pages preserves the scroll position and offers a
 return to the latest output. Session/run core projections upgrade the event
 manifest to format 2; text-event readers accept both versions 1 and 2.
+

@@ -86,7 +86,7 @@
   # working tree; load_sandboxed still resolves code against that snapshot.
   (var launch_dir ($os/launch_dir))
   (var text
-    (with_capabilities [(fs/ReadDir launch_dir)]
+    (do
       ($fs/read_text manifest_path)))
   # A manifest is Gene data, so reading it is `read_all` and a prop lookup —
   # there is no parser here and there should not be one. `read_all` answers a

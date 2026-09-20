@@ -2787,9 +2787,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         raise webError(loc,
           "FFI is outside the web profile: browsers cannot load native libraries")
       if segments.len > 0 and segments[0] in
-          ["fs", "net", "process", "env", "capability"]:
+          ["fs", "net", "process", "env"]:
         raise webError(loc,
-          "capabilities are outside the web profile: browser authority must cross an explicit JS boundary")
+          "host I/O is outside the web profile: browser authority must cross an explicit JS boundary")
       if builtin in ["freeze", "thaw"]:
         raise webError(loc,
           "deep freeze/thaw is outside the web profile: it requires persistent structural sharing")
@@ -9495,7 +9495,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
 proc compileWebFileAsset*(sourcePath: string,
                           readSource: proc(path: string): string {.closure.}): WebAsset =
   ## Publish an authored Gene module graph using the same mount mechanism as
-  ## web_module. The native caller supplies capability-checked source reads;
+  ## web_module. The native caller supplies the source reads;
   ## no application JS bootstrap or temporary emitted directory is required.
   let modules = loadWebGraph(sourcePath, readSource)
   let entry = modules[^1]

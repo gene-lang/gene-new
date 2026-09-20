@@ -1,3 +1,0 @@
-(mod capability_init_denied)
-(fn needs_fs [] ^capabilities [(fs/Write ".")] 1)
-(with_capabilities [] (needs_fs))

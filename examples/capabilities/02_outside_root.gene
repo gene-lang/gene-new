@@ -1,5 +1,0 @@
-# The same read fails without a grant and succeeds with an explicit fs/Read root.
-# Input is ordinary data; permission is supplied by the launcher.
-(fn main [args]
-  ($fs/read_text args/0)
-  0)

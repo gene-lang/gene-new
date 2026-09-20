@@ -254,21 +254,6 @@ envelope formats. Corruption remains a separate error.
 
 `register_module` accepts a quoted module AST:
 
-```gene
-(register_module workspace h "echo"
-  (quote
-    (mod plugin
-      (import [Plugin DescriptorContext PluginContext PluginHost]
-        ^from "../../../src/plugin_api")
-      (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
-      (fn init [ctx : DescriptorContext] : Plugin
-        ^capabilities []
-        ...)))
-  ^scope "session"
-  ^selectors []
-  ^dependencies [])
-```
-
 The registration sequence is:
 
 1. validate a filename-safe ID and an inert quoted `mod` node;
@@ -413,26 +398,6 @@ Capability selectors stored in composition are inert maps:
 {^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
 ```
 
-The named roots are `workspace` (the selected project, defaulting to the Harness
-package) and `state` (harness state). The launcher selects the project with
-`GENE_HARNESS_PROJECT`; the web server also accepts `--project`. Relative traversal and absolute paths are rejected. At
-activation the harness expands the map to an ordinary absolute capability
-selector and evaluates the activation under `with_capabilities`. Resolution is
-against the application's immutable host ceiling and therefore fails rather
-than widens. Namespace visibility in the module sandbox is not authority; the
-active capability context remains the native enforcement boundary.
-
-A profile may carry `^limits`, applied to every plugin it installs with the
-capability context left inherited. The default budget suits a callback doing
-local computation; a deployment whose author is a remote model has commands
-that legitimately block on a network round trip, and there the default is not a
-guard against runaway code but a guarantee that the deployment cannot work.
-Trusted browser/chat callbacks allow one million steps for model transport,
-author validation and module registration, with a 120-second deadline. Custom
-plugins retain their own default 100,000-step/2-second policy. Pure model code
-has a separate 100,000-step/2-second evaluator budget; the outer registration
-transaction has room to perform host work after that evaluator returns.
-
 Generic command/tool/seam callbacks, interaction validators, cleanup hooks, subscribers, and
 views additionally pass through owner-aware wrappers. The core boundary flushes
 state only after the attenuated callback scope unwinds, so opaque retained Store
@@ -551,10 +516,6 @@ is rejected. Function continuations cannot cross a question boundary. The same
 mechanism works from `/tool`, the model agent, and CLI. Matching reply retries
 remain reads even while a resumed run or another session is active.
 
-Defaults are suggestions, never implicit replies. Input cannot enlarge the
-launcher's capability ceiling. Secret input is refused; credentials belong in
-launcher configuration. Continuations contain data, not live resources.
-
 ## 12. Entry point and filesystem layout
 
 `main.gene` uses `GENE_HARNESS_HOME`, defaulting to
@@ -570,10 +531,6 @@ plugins/generated/
   <workspace-sha256>/
     <module-sha256>.gene  verified loader cache (ignored by git)
 ```
-
-An external home must be granted by the launcher with
-`--allow_read_write_dir`. The environment variable chooses a path; it does not
-mint filesystem authority.
 
 Core first prepares authored descriptors and validates their event schemas.
 Baseline profiles then install checked-in provider/agent/view plugins, and the
@@ -658,3 +615,4 @@ The detailed scope, module ownership, interface, UI behavior, compatibility
 changes, and acceptance cases live in the linked design. Launch instructions
 are in the package README. The browser state and rendering modules, page markup,
 and styling are all authored in Gene.
+

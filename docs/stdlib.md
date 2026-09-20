@@ -36,51 +36,13 @@ This recipe writes a file under the launch directory:
 The native CLI grants no external authority by default. Supply a policy before
 the entry file, or use `gene eval` to have the runner display a returned value:
 
-```sh
-gene run --cap '[(fs/Read "/path/to/data")]' report.gene
-gene eval --cap '[(fs/ReadWrite ".")]' '($fs/write_text "greeting.txt" "Hello from Gene")'
-```
-
-The old directory grant flags are removed. CLI policies replace environment
-defaults rather than adding to them. Declaration rows and `with_capabilities`
-use the same normalized policy core. Retained handles cannot replace current authority with
-their origin grants. See the [authority contract](spec/authority.md) and
-[implementation tracker](implementation/capabilities-v1.md).
-
 For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching,
 locking and asynchronous filesystem adapters remain unsupported in the initial
 normalized profile until their operation/ownership contracts are adopted.
 
-`write_text_atomic` stages and synchronizes a regular file, then guards its
-same-directory publication. Under normalized authority, revocation or a changed
-binding prevents later use of a retained descriptor. Unpublished temporary
-entries are removed only with live write authority; close never flushes buffered
-application data after revocation. See the
-[filesystem profile](implementation/capabilities-filesystem-profile.md).
-
-`$fs/try_lock` and application file logging are also unsupported in the initial
-normalized profile. They require adopted operation, ownership, and cleanup
-contracts before application use; the removed `fs/WriteFile` selector is not a
-way to authorize them.
-
 ## HTTP server
 
 Save this as `server.gene` and run it with `gene run server.gene`:
-
-```gene
-(import $net/http [listen serve text])
-
-(fn handle [request]
-  (match request/path
-    (when "/" (text 200 "Hello from Gene"))
-    (else (text 404 "Not found"))))
-
-(fn main [args]
-  ^capabilities [(net/Listen ^host "127.0.0.1" ^port 8080)]
-  (let server (listen ^host "127.0.0.1" ^port 8080))
-  (serve server ^handler handle)
-  0)
-```
 
 The server supports request tasks, routing, admission limits, timeouts,
 access/error hooks, actor-pool dispatch, and WebSockets. A sleeping request
@@ -93,27 +55,9 @@ adds forms, SQLite, and browser behavior.
 
 ## HTTP client
 
-```gene
-(import $net/http_client [request])
-(let response (await (request ^url "https://example.com")))
-($println response/status)
-```
-
 `request` returns a Task. Use the streaming client operation for bounded chunk
 consumption and cancellation. Network operations require active permissions;
 host/setup errors are distinct from HTTP response status.
-
-The normalized capability path uses `net/Http` component constraints and guards
-both submission and worker startup. Preparing a request grants no authority:
-
-```gene
-(import $net/http_client [prepare describe_operation send])
-(let prepared (prepare "GET" "https://api.example.com/status?"))
-(let decision ($capabilities/check_operation (describe_operation prepared)))
-(if decision/allowed
-  (await (send prepared))
-  nil)
-```
 
 `send` accepts one immutable prepared request plus transport limits or `^ca_file`;
 it rejects replacement method, URL, headers, or body arguments. An explicit CA
@@ -121,13 +65,6 @@ file requires separate filesystem read authority. Exact query bytes, including
 an empty query delimiter, survive preparation and transmission. Application
 Authorization/Cookie headers are ordinary request data; the client has no
 automatic credential or cookie store in this profile.
-
-Redirects are returned without following them. A later request to the redirected
-target needs its own guard. The initial native transport uses fresh HTTP/1.1
-connections, disables environment proxies, verifies TLS, and rejects CONNECT,
-authority/framing overrides and protocol upgrades. A denied request raises a
-typed capability error; transport failures use `HttpClientError`. See the
-[HTTP enforcement profile](implementation/capabilities-http-profile.md).
 
 ## SQLite
 
@@ -281,3 +218,4 @@ names. Embedded `web_module` code can enhance server-rendered markup; see
 
 Use the [language guide](language.md) for call, message, and import syntax.
 Exact lifecycle and boundary rules remain in [the specification](spec/README.md).
+

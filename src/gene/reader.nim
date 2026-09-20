@@ -39,7 +39,6 @@ type
     lexeme*: string
     flags*: string
     line*, col*: int
-    invalidCapabilityGap*: bool
 
   SpannedToken* = object
     kind*: TokenKind
@@ -77,8 +76,6 @@ type
     line*, col*: int
     tokens: seq[Token]
     tokIdx: int
-    lastTokenEnd: int
-    invalidCapabilityTokens: int
     parseDepth: int
     context: ReadContextStack
     locs: Table[uint64, SourceLoc]
@@ -820,12 +817,8 @@ proc tokenizeImpl(r: var Reader,
       # Interpolation scanning needs only the lexical position and balanced
       # delimiters, not a token stream.
       if interpolationClosers == nil:
-        let badGap = reader.tokens.len > 0 and tokStart == reader.lastTokenEnd and
-          reader.tokens[^1].kind in {tkSymbol, tkString, tkInt, tkRBracket} and
-          tokKind in {tkString, tkInt, tkSymbol, tkCaret, tkCaretCaret}
         reader.tokens.add Token(kind: tokKind, lexeme: tokLexeme, flags: tokFlags,
-                                line: tokLine, col: tokCol, invalidCapabilityGap: badGap)
-        reader.lastTokenEnd = reader.pos
+                                line: tokLine, col: tokCol)
 
   template trackDelimiter(tokKind: TokenKind) =
     if interpolationClosers != nil and
@@ -1175,11 +1168,6 @@ proc next(r: var Reader): Token =
   result = r.peek()
   if r.tokIdx < r.tokens.len:
     r.tokIdx += 1
-    if result.invalidCapabilityGap or result.kind notin {
-        tkLParen, tkRParen, tkLBracket, tkRBracket, tkString, tkInt, tkSymbol,
-        tkCaret, tkCaretCaret} or
-        (result.kind == tkSymbol and result.lexeme in ["nil", "void"]):
-      inc r.invalidCapabilityTokens
 
 proc parseForm(r: var Reader, inList = false): Value
 
@@ -1737,7 +1725,6 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var props = initPropTable()
   var meta = initPropTable()
   var body = newSeq[Value]()
-  var duplicateProps, duplicateCapabilities: bool
 
   var first = true
   var inPipe = false
@@ -1769,11 +1756,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
         val = r.parseForm()
-      if props.hasKey(key):
-        duplicateProps = true
-        duplicateCapabilities = duplicateCapabilities or key == "capabilities"
-        if r.options.rejectDuplicateProps:
-          r.raiseReadErrorAt(keyTok, "duplicate property '^" & key & "'")
+      if props.hasKey(key) and r.options.rejectDuplicateProps:
+        r.raiseReadErrorAt(keyTok, "duplicate property '^" & key & "'")
       props[key] = val
     of tkAt, tkAtAt:
       if not segmentLoc.hasSourceLoc:
@@ -1872,8 +1856,6 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     result = finishNodeSegment(head, props, body, meta, immutable)
   else:
     result = finishNodeSegment(head, props, body, meta, immutable)
-  if result.kind == vkNode:
-    result.setNodeReadDuplicates(duplicateProps, duplicateCapabilities)
 
 proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
   var items = initPropTable()
@@ -2007,7 +1989,6 @@ proc parseWrapOperand(r: var Reader, marker: Token, label: string): Value =
   r.parseForm(inList = false)
 
 proc parseForm(r: var Reader, inList = false): Value =
-  let capabilityStart = r.invalidCapabilityTokens
   r.skipDatumComments()
   let tok = r.next()
   if r.options.maxDepth > 0 and r.parseDepth > r.options.maxDepth:
@@ -2021,7 +2002,6 @@ proc parseForm(r: var Reader, inList = false): Value =
       r.restoreReadContext(contextDepth)
   template finish(value: Value): untyped =
     let parsed = value
-    parsed.setInvalidCapabilitySyntax(r.invalidCapabilityTokens != capabilityStart)
     r.recordSourceLoc(parsed, tok)
     return parsed
   case tok.kind

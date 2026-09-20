@@ -792,8 +792,7 @@ proc registerEventNamespace(root: Scope) =
   ## `event` is a new stdlib root, registered under `gene/event` like every
   ## other lowercase stdlib namespace (§7). Case is the rule the compiler
   ## already enforces: `$event/Bus` and `(import gene/event [Bus])` both work,
-  ## bare `event/Bus` does not, and `event` is deliberately *not* added to
-  ## `bareCapabilityNamespaces`.
+  ## and bare `event/Bus` does not.
   let errorProtocol = root.vars["Error"]
   proc defineEventError(name: string, parent: Value): Value =
     result =

@@ -2,19 +2,11 @@
 ## loopback tests validate request/response, streaming, bounds, and cancellation
 ## without external network access; TLS coverage below uses a local certificate.
 
-proc runHttpClient(name, source: string,
-                   allowReadDir = ""): tuple[output: string, exitCode: int] =
+proc runHttpClient(name, source: string): tuple[output: string, exitCode: int] =
   buildHttpGene()
   let path = httpTestDir / name
   writeFile(path, source)
-  # `gene run`'s default filesystem root is the launch directory
-  # (proposals/capabilities.md §5.1), and these fixtures live under the system
-  # temp dir. A test that hands the client a path to read has to grant that
-  # directory the same way a real invocation would.
-  var policy = ""
-  if allowReadDir.len > 0:
-    policy = " --allow_read_dir " & quoteShell(allowReadDir)
-  let run = execCmdEx(httpGeneExe & " run" & policy & " " & quoteShell(path))
+  let run = execCmdEx(httpGeneExe & " run " & quoteShell(path))
   (run.output.strip, run.exitCode)
 
 suite "net/http_client e2e":
@@ -32,7 +24,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8201)
     ready.close()
     let client = runHttpClient("client-request.gene", """
-(import $net/http_client [Http request])
+(import $net/http_client [request])
 (var r (await (request ^method "POST" ^url "http://127.0.0.1:8201/echo"
                        ^headers {^content-type "text/plain"} ^body "hello")))
 ($println [r/status r/body r/truncated r/headers/x-test])
@@ -51,7 +43,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8202)
     ready.close()
     let client = runHttpClient("client-stream.gene", """
-(import $net/http_client [Http stream])
+(import $net/http_client [stream])
 (var transfer (stream ^url "http://127.0.0.1:8202/events"
                       ^channel_capacity 2 ^max_pending_bytes 4096))
 (var seen ($cell ""))
@@ -76,7 +68,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8203)
     ready.close()
     let client = runHttpClient("client-cap.gene", """
-(import $net/http_client [Http request])
+(import $net/http_client [request])
 (var r (await (request ^url "http://127.0.0.1:8203/cap" ^max_bytes 4)))
 ($println [r/status r/body r/truncated])
 """)
@@ -94,7 +86,7 @@ suite "net/http_client e2e":
     ready.close()
     let started = getMonoTime()
     let client = runHttpClient("client-cancel.gene", """
-(import $net/http_client [Http request])
+(import $net/http_client [request])
 (var t (request ^url "http://127.0.0.1:8204/slow"))
 ($sleep 100)
 (t .cancel)
@@ -127,16 +119,16 @@ suite "net/http_client e2e":
       let ready = httpConnect(8205)
       ready.close()
       let untrusted = runHttpClient("client-tls-untrusted.gene", """
-(import $net/http_client [Http request])
+(import $net/http_client [request])
 (await (request ^url "https://127.0.0.1:8205/" ^timeout_ms 5000))
 """)
       check untrusted.exitCode != 0
       let client = runHttpClient("client-tls.gene", """
-(import $net/http_client [Http request])
+(import $net/http_client [request])
 (import $str [starts_with?])
 (var r (await (request ^url "https://127.0.0.1:8205/"
                        ^ca_file "/CERT_PATH/" ^timeout_ms 5000)))
 ($println [r/status (starts_with? r/effective_url "https://") r/truncated])
-""".replace("/CERT_PATH/", cert), allowReadDir = cert.parentDir)
+""".replace("/CERT_PATH/", cert))
       check client.exitCode == 0
       check client.output == "[200 true false]"

@@ -7,8 +7,8 @@ tests/*
 !tests/*.mjs
 !tests/transpile/
 !tests/transpile/**
-# Hand-written Gene programs the capability suite loads as entry modules. They
-# are source, not build output, and `tests/*` was silently excluding them — the
+# Hand-written Gene programs the test suites load as entry modules. They are
+# source, not build output, and `tests/*` was silently excluding them — the
 # suite passed only on a machine where they happened to exist.
 !tests/fixtures/
 !tests/fixtures/**

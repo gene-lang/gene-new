@@ -31,13 +31,6 @@ a wrong guess that reaches a file costs a whole debug cycle.
 
 The rest of the surface:
 
-| Command | Use |
-|---|---|
-| `./bin/gene run f.gene [args…]` | Run top level, then call `main`. Positional args arrive as a node — `args/0` is the first. |
-| `./bin/gene fmt f.gene` | Canonical layout. Doubles as a syntax check, and shows you the idiomatic spelling of what you wrote. |
-| `./bin/gene parse f.gene` | What the reader actually built. Reach for it when a form means something you did not intend. |
-| `./bin/gene run --allow_read_dir DIR …` | Add filesystem access beyond the default launch-directory grant. |
-
 **Completion criterion:** every construct in the code you deliver has either
 appeared in a successful probe, or come verbatim from `examples/style_guide.gene`
 — and the finished file runs, then survives `gene fmt` unchanged. `fmt` is
@@ -143,3 +136,4 @@ In the repository itself:
 
 Changing the *implementation* (Nim under `src/`) rather than writing Gene is a
 different job with different gates — `AGENTS.md` governs it.
+

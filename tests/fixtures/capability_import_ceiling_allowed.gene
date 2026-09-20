@@ -1,6 +1,0 @@
-(mod capability_import_ceiling_allowed)
-
-# Import bounds select available authority without requiring full coverage.
-(import [wants_fs] ^from "./capability_import_ceiling_dep.gene"
-  ^capabilities [(fs/Write ".")])
-(fn main [] (wants_fs))

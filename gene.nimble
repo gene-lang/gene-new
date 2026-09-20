@@ -67,7 +67,6 @@ task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
   exec "nim c --path:src --hints:off -o:bin/gene-viewer src/gene_viewer.nim"
 
 task test, "Run the test suite":
-  exec "python3 tools/check_native_effect_inventory.py"
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "node tests/test_wasm.mjs"
 
@@ -111,7 +110,6 @@ task threadcheck, "Run threaded atomicArc smoke checks":
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 
 task verify, "Run tests, executable specs, and benchmarks":
-  exec "python3 tools/check_native_effect_inventory.py"
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"

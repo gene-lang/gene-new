@@ -2,7 +2,7 @@
 
 import std/[algorithm, os, sets, strutils, tables]
 import ./[digest, gir, gir_codec, package, printer, process_lock, reader,
-          system_dependency, types, vm, capability_startup, module_sources]
+          system_dependency, types, vm]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
@@ -743,17 +743,8 @@ proc buildOne(engine: BuildEngine, request: BuildRequest,
 
   proc compilePayload(): tuple[executable: ExecutableGir, payload: string] =
     let app = newApplication(localGraph(graph, pkg.id), pkg.root)
-    discard app.configureCapabilityStartup(CapabilityStartupOptions())
-    var admitted: seq[AdmittedModuleArtifact]
     for dependency in dependencies:
-      admitted.add app.admittedPackageArtifacts(dependency.compiledModules)
-    let snapshot = app.filesystemCapabilities.captureModuleSources(pkg.root)
-    var ownedPaths: seq[string]
-    for path in snapshot.sourcePaths:
-      let owner = app.owningPackage(path)
-      if owner != nil and owner.id == pkg.id: ownedPaths.add path
-    app.admitApplicationSources(pkg.root / entry,
-      [snapshot.selectModuleSources(ownedPaths)], admitted)
+      app.installCompiledModules(dependency.compiledModules)
     result.executable = app.compileFileModuleBundle(
       pkg.root / entry, pkg.id, includeLibraryModules = kind == bakGeneLibrary)
     result.payload = encodeExecutableGir(result.executable)

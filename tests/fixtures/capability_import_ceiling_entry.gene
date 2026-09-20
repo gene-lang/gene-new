@@ -1,6 +1,0 @@
-(mod capability_import_ceiling_entry)
-
-# The retained import bound excludes ordinary filesystem authority.
-(import [wants_fs] ^from "./capability_import_ceiling_dep.gene"
-  ^capabilities [])
-(fn main [] (wants_fs))

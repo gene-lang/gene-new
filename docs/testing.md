@@ -204,10 +204,6 @@ invoking their `main` functions. Calling `run` at module top level during this
 collection is an error. `gene run tests/list_spec.gene` invokes `main` and remains
 useful for the single-file example above.
 
-The application package is selected from the launch directory, or an explicit
-`--package-root`. Discovery and imports obey existing capabilities and package
-boundaries. The filesystem grant options from `gene run` are also accepted.
-
 The older manifest-based test build workflow is available as
 `gene test --package [selector]`. It builds each selected `^tests` entry and
 invokes its `main`, preserving that workflow separately from spec discovery.
@@ -226,3 +222,4 @@ capture, hook order, failures, diagnostic snapshots, and backend admission.
 [`tests/test_cli.nim`](../tests/test_cli.nim) covers discovery, imports, load
 errors, reports, and exit status. These complement the existing compiler/runtime
 conformance tests.
+

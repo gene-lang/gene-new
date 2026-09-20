@@ -267,18 +267,6 @@ builtins root.
 
 That rules out the two cheap fixes:
 
-- **Withholding namespace imports is not the authority boundary.** The active
-  capability context is; `--grant` is not a launcher authority channel.
-- **Auditing a mod's `import` lines does nothing**, because the mod need not
-  write one.
-
-**The security boundary is the module's capability ceiling.** Namespace
-filtering remains useful defense in depth and produces clearer “API absent”
-errors, but it is not what protects the filesystem. A sandboxed module gets a
-restricted builtins scope *and* a sealed context ceiling; nested imports and
-later re-entry intersect with that ceiling, so neither a visible builtin nor a
-broader caller can restore removed authority.
-
 ### D5.2 The restricted root (surface filtering)
 
 The design turns on one property of the VM: **`gene` is resolved at runtime, not
@@ -716,7 +704,6 @@ also follow the same rules instead of inheriting JavaScript coercion.
 Application-foundations follow-up: named defaults (`^name : T = expression`)
 now run in the callee's scope, with supplied argument evaluation order preserved.
 The current restrictions are recorded in `docs/workflows.md#web-applications`.
-
 
 `^name : T` was a VM-only parameter form: a module function declaring one failed
 to transpile. That is a small hole with a large consequence, because `^name` is
@@ -2618,3 +2605,4 @@ examples/miclone/
   tools/                  harnesses that cannot be Gene — a DOM stub, the
                           process-booting smokes, and web_spec.mjs
 ```
+

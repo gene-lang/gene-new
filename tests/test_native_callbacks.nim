@@ -1,6 +1,5 @@
 import std/[os, tempfiles, unittest]
-import gene/[capabilities, compiler, fs_capabilities, native_api, printer, types, vm]
-import ./capability_test_support
+import gene/[compiler, native_api, printer, types, vm]
 
 {.compile: "fixtures/native_callback_fixture.c".}
 type VisitCallback = proc(context: pointer, value: int64): cint {.cdecl, raises: [].}
@@ -49,9 +48,9 @@ proc fixtureVisit(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
 
 proc callbackScope(): Scope =
   result = newGlobalScope()
-  result.define("visit", newNativeCallFn("test/visit", fixtureVisit, effectKind = nekGuarded))
-  result.define("reenter", newNativeFn("test/reenter", reenterVisitor, effectKind = nekCapabilityFree))
-  result.define("close_active", newNativeFn("test/close_active", closeActiveVisitor, effectKind = nekCapabilityFree))
+  result.define("visit", newNativeCallFn("test/visit", fixtureVisit))
+  result.define("reenter", newNativeFn("test/reenter", reenterVisitor))
+  result.define("close_active", newNativeFn("test/close_active", closeActiveVisitor))
 
 proc callbackEval(source: string): string =
   run(compileSource(source), callbackScope()).print()
@@ -100,20 +99,6 @@ suite "native synchronous callback boundary":
       (let bounded ($runtime/bind_call visit [work] ^policy {^max_steps 200}))
       (try (bounded) false catch Error true)
     """) == "true"
-
-  test "callback authority cannot recover a caller's removed capability":
-    let root = expandFilename(createTempDir("gene-callback-capabilities-", ""))
-    defer: removeDir(root)
-    writeFile(root / "data", "kept")
-    let app = newFilesystemPolicyApp(root)
-    let scope = newGlobalScope(app)
-    scope.define("visit", newNativeCallFn("test/visit", fixtureVisit, effectKind = nekGuarded))
-    scope.define("path", newStr(root / "data"))
-    check run(compileSource("""
-      (fn read [value] ($fs/read_text path) true)
-      [(visit read)
-       (try (with_capabilities [] (visit read)) false catch MissingCapability true)]
-    """), scope).print() == "[0 true]"
 
   test "panics and cancellation return from C before resuming control propagation":
     expect GenePanic:

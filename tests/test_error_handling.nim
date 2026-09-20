@@ -1,6 +1,5 @@
-import gene/[capabilities, compiler, error_analysis, fs_capabilities, gir, gir_codec, printer, reader, types, vm]
+import gene/[compiler, error_analysis, gir, gir_codec, printer, reader, types, vm]
 import std/[json, os, strutils, tables, unittest]
-import ./capability_test_support
 
 proc gradualErrorEval(source: string): Value =
   run(compileSource(source, sourceName = "error_handling_spec.gene"),
@@ -1486,8 +1485,7 @@ suite "errors — retained strict assumptions":
   test "initialization assumptions protect root and nested declaration groups":
     for localSlots in [false, true]:
       let scope = newGlobalScope(newApplication())
-      scope.define("trigger", newNativeCallFn("trigger", widenInitializerDependency,
-        effectKind = nekCapabilityFree))
+      scope.define("trigger", newNativeCallFn("trigger", widenInitializerDependency))
       let source = """
         (mod initial ^errors_mode strict)
         (fn helper [] ^errors [] 1)
@@ -1498,8 +1496,7 @@ suite "errors — retained strict assumptions":
       # Only the initialization depended on this provider; its lease is gone.
       scope.assign("helper", gradualErrorEval("(fn [] ^errors [Error] 2)"))
     let scope = newGlobalScope(newApplication())
-    scope.define("trigger", newNativeCallFn("trigger", widenInitializerDependency,
-      effectKind = nekCapabilityFree))
+    scope.define("trigger", newNativeCallFn("trigger", widenInitializerDependency))
     let namespace = run(strictErrorCompile("""
       (ns inner
         (fn helper [] ^errors [] 1)
@@ -1517,7 +1514,7 @@ suite "errors — retained strict assumptions":
       (impl Error for Local (message message [] : Str ^errors [] "retained generation"))
       (fn raise_error [] ^errors [Error] (fail (Local ^code 7)))
     """)
-    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let app = newApplication(root)
     let scope = newGlobalScope(app)
     let program = """
       (var tx ($runtime/sandbox_transaction))
@@ -1539,7 +1536,7 @@ suite "errors — retained strict assumptions":
     createDir(root)
     let path = root / "message.txt"
     writeFile(path, "permitted")
-    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let app = newApplication(root)
     let producer = newGlobalScope(app)
     producer.implOverlayRoot = true
     let held = run(compileSource("""
@@ -1555,13 +1552,6 @@ suite "errors — retained strict assumptions":
       checkpoint error.errVal.print()
       raise
     let restricted = newGlobalScope(app)
-    restricted.evalCapabilityCeiling = app.capabilities.newPolicyContext([])
-    restricted.define("held", held)
-    let rejected = run(compileSource("""
-      (try (try (fail held) catch Error $err_msg)
-        catch ErrorContractViolation $err/cause)
-    """), restricted)
-    check rejected.head.typeName == "MissingCapability"
 
   test "removing a canonical provider rejects publication until the caller is released":
     let root = getCurrentDir() / "tmp" / "error_provider_removal"

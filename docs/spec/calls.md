@@ -19,10 +19,6 @@ callees must be message values. Invalid callees are rejected before send
 arguments run; message names may not end in `!`, and there is no lexical
 callable fallback.
 
-Name access and permission for external effects are distinct. All these call
-forms use the [authority contract](authority.md); a caller binding, imported
-function, or retained handle cannot substitute for the active capability checks.
-
 Call and `new` spreads merge the operand's anatomy: List elements become
 positionals, PropMap entries become named arguments, and a node contributes
 both props and body while dropping its head. A spliced prop replaces an
@@ -79,12 +75,6 @@ nil-admitting types permit omission; `Any` remains required. Omitted arguments
 stay omitted, so target defaults run per invocation. Supplied runtime Void
 remains supplied; literal void props follow the reader's normal removal rule.
 The target's own arity and parameter checks still apply after view checks.
-
-Inputs and results cross ordinary typed boundaries using the signature's
-authored type/implementation scope. Calls respect the actual caller's authority
-and the creating context's capability ceiling. Adaptation may create a distinct
-view without changing the target. Reapplying an equivalent contract may reuse
-a view; adaptation does not promise identity preservation or function variance.
 
 `^errors [E]` bounds ordinary invocation errors, including target-owned default
 evaluation; `^errors []` admits none. `Error` opens the row, so `[E Error]`
@@ -281,19 +271,6 @@ its sampled memory/time checks. This operation does not isolate native code.
 The policy accepts the three budget fields above; sandbox loading remains the
 boundary for feature-admission flags such as `allow_ffi`.
 
-`^capabilities` optionally supplies an inert selector list, using the same
-selector vocabulary as `with_capabilities`. It resolves at binding time in the
-creating scope and can only select from that scope's active context. Omitting
-it retains that context as a ceiling; `[]` selects no authority. Each later
-invocation intersects that captured ceiling with its actual caller's context,
-so moving a bound function cannot recover removed authority.
-
-```gene
-($runtime/bind_call read_config []
-  ^capabilities (quote [(fs/ReadFile filename)])
-  ^policy {^max_steps 10000})
-```
-
 The `filename` reference is resolved while binding. No declaration is added
 to a source module. The runtime compiles its private trampoline once per
 application and gives each binding separate mutable dispatch caches.
@@ -370,7 +347,7 @@ MVP compiler-dispatched heads:
 do if if_yes if_not && || ?? ! let var const set new fn macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
-protocol impl derive with_capabilities web_module
+protocol impl derive web_module
 ```
 <!-- compiler-head-dispatch:end -->
 
@@ -432,3 +409,4 @@ declaration/import/type contexts resolve qualified names statically. Static
 scalar/key selector segments are pure. Callable, call-stage, and send segments
 are executable: they are non-serializable and invalid for `assoc_in` and
 `update_in`. Strict missing lookup raises `SelectorMissing` with `^segment`.
+

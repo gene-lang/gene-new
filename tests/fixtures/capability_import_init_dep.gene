@@ -1,7 +1,0 @@
-(mod capability_import_init_dep)
-
-# The importer's empty bound applies before this attempted top-level read.
-(var captured
-  (try ($fs/read_text "tests/fixtures/capability_import_init_dep.gene")
-    catch MissingCapability "denied"))
-(fn what_happened [] : Str captured)

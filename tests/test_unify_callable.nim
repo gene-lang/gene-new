@@ -1,6 +1,5 @@
-import ./capability_test_support
 import std/[os, strutils, tables, tempfiles, unittest]
-import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer, types, vm]
+import gene/[compiler, gir, gir_codec, printer, types, vm]
 
 template unifyCallableCheck(source, expected: string) =
   check run(compileSource(source), newGlobalScope()).print() == expected
@@ -270,21 +269,3 @@ suite "unified callable — checked signatures":
     let decoded = decodeExecutableGir(encodeExecutableGir(artifact))
     check run(decoded.modules[0].chunk, newGlobalScope()).print() == "[7 7]"
 
-when not defined(geneWasm):
-  suite "unified callable — authority":
-    test "creating and calling authority both restrict a view":
-      let root = expandFilename(createTempDir("gene-callable-caps-", ""))
-      defer: removeDir(root)
-      writeFile(root / "data", "callable")
-      let app = newFilesystemPolicyApp(root)
-      let scope = newGlobalScope(app)
-      scope.define("file", newStr(root / "data"))
-      check run(compileSource("""
-        (fn read [] ($fs/read_text file))
-        (fn make [] : (Callable [] Str) read)
-        (let full (make))
-        (let narrow (with_capabilities [] (make)))
-        [(full)
-         (try (narrow) false catch MissingCapability true)
-         (try (with_capabilities [] (full)) false catch MissingCapability true)]
-      """), scope).print() == "[\"callable\" true true]"

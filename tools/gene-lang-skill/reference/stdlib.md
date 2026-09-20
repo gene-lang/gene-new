@@ -16,19 +16,6 @@ $ /tmp/dump_globals
 
 Reached bare-with-`$`: `($println x)`, `($size xs)`.
 
-```text
-$ != * + - / // < <= == > >= not panic same?
-absent? nil? present? void? empty? leaf? contains? size first last
-head props body meta declarations construct_type
-map filter take into to_stream to_pairs_stream
-freeze freeze_shallow thaw assoc_in update_in key range
-to_str to_sym to_int to_float hash chars graphemes
-cell atomic_cell channel buffer bytes Set set_has? set_size Regex
-date datetime time duration timezone now today sleep
-read_all read_one lex_all print println
-capabilities_of capability_type_info check_capabilities
-```
-
 Arithmetic is prefix, and **`//` is remainder, not floor division**: `(/ 7 2)`
 is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 
@@ -102,8 +89,6 @@ Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
 | `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneError` `SandboxGeneration` `SandboxTransaction` |
 | `$C` | — | C ABI type constructors for FFI (`Int`, `Ptr`, `CStr`, `Slice`, …) |
 
-`$fs` calls require a capability grant — see `reference/declarations.md`.
-
 ## Type message surfaces
 
 Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
@@ -144,3 +129,4 @@ code points.
 Where a name appears both as a root function and a message (`size`, `empty?`,
 `first`, `last`, `contains?`, `to_stream`), they are the *same* function value,
 so `($size xs)` and `xs/.size` are interchangeable.
+

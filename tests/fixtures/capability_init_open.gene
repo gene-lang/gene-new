@@ -1,3 +1,0 @@
-(mod capability_init_open)
-(fn needs_fs [] ^capabilities [(fs/Write ".")] 1)
-(var initialized (needs_fs))

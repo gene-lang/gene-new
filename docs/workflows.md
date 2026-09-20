@@ -17,9 +17,6 @@ gene run hello.gene Ada
 gene eval '(+ 1 2)'
 ```
 
-`main` may return nil for success or an integer exit code. Program arguments
-are strings; they do not carry capability grants.
-
 ## Packages
 
 From a project directory, initialize an application package:
@@ -156,27 +153,11 @@ console.log(double(21n)); // 42n
 | PropMap | Object |
 | Nominal type | Generated class instance |
 
-The web profile supports annotated functions, macros, types/protocols, matching,
-paths, collections, streams, a structured async subset, and checked DOM/JS
-interop. Fexprs, runtime eval, actors/channels, native FFI, and VM capability
-contexts remain outside it. It rejects unsupported forms rather than silently
-running different semantics.
-
 For a server and browser in one file, use `web_module`. It sees its own
 compiled web unit, not surrounding server bindings such as a database handle.
 The [Todo app](../examples/todo_app/src/main.gene) demonstrates the complete
 route/HTML/CSS/browser flow; [web_component.gene](../examples/web_component.gene)
 is a smaller browser example.
-
-For a browser client split across Gene files, load its entry with
-`($web/load "path/to/client.gene")` and pass that asset to
-`($web/script asset ^mount "root")`. The entry has the same
-`main [root : EventTarget] : Void` contract. `web/load` reads the import graph
-under the caller's filesystem capabilities and serves only compiled Gene;
-it does not admit `js/fn` imports. Generated mounts, dependencies, and source
-maps are content-addressed together. The
-[Harness browser client](../examples/gene-harness/README.md#browser-client)
-uses this path without an authored JavaScript bootstrap or a separate bundler.
 
 A server-rendered page can also be exported to a static host. Choose its public
 asset location with `($web/set_asset_base "/docs/assets")`, render the page,
@@ -204,14 +185,6 @@ the exported ABI through Node.
 
 ## Native interop
 
-Call-scoped synchronous callbacks use typed native shims on the owning root
-lane. SQLite `visit_text_rows` is the first library adapter. The Nim-facing
-native API is version 5, transports cancellation explicitly, and requires an
-admitted effect disposition for native callables used under normalized capability
-policies. Existing native modules must be rebuilt. See the
-[callback contract](spec/modules.md#synchronous-native-callbacks) for entry,
-lifetime, and failure rules.
-
 Native extensions use opaque Gene values and explicit root handles. Managed
 wrapper types own native resources; typed-native code uses explicit unboxed
 representations and generated ownership adapters.
@@ -221,37 +194,10 @@ gene compile --target c examples/native/sqlite_rows.gene
 nimble native_example
 ```
 
-The C backend is experimental. Use the [native example](../examples/native/README.md)
-for the actual compile/link/load workflow and platform prerequisites. Dynamic
-FFI and AOT loading are unsupported in the initial normalized capability profile.
-Admitting arbitrary native code does not create an in-process sandbox.
-
 ## Permissions and deployment
-
-Native execution starts with no ordinary external authority. Select one inert
-policy through `--capabilities`/`--cap`, `--capabilities-file`/`--cap-file`, or
-`GENE_CAPABILITIES`. CLI input replaces the environment; an explicit `[]` grants
-nothing, and invalid selected input never falls back:
-
-```sh
-gene run --cap '[(fs/Read "/path/to/data")]' report.gene
-gene run --cap-file permissions.gene --source-root ./src ./src/main.gene
-```
-
-The old `--allow_*_dir` flags are removed. Source-file execution admits the entry
-file; `--source-root` explicitly adds frozen `.gene` source bundles for imports.
-It grants no application filesystem permission. File runs do not automatically
-acquire package dependencies; project runs use the host-selected verified build
-graph and execute only its admitted artifacts and explicit additional sources.
-
-The initial profile supports guarded filesystem and HTTP operations. Application
-printing, live environment/input access, subprocesses, databases and other
-unadopted operations reject explicitly. `gene eval` and the REPL may display a
-returned result under the runner's private output responsibility. See the
-[native inventory](implementation/capabilities-native-inventory.md) and
-[migration tracker](implementation/capabilities-v1.md) for remaining work.
 
 Namespace exposure, retained resource restrictions, and execution policy are
 separate controls. If embedding untrusted code or plugins, read the
-[authority contract](spec/authority.md) and [known limits](development.md#status)
+[known limits](development.md#status)
 before treating an Env or a restricted namespace as a sandbox.
+

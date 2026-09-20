@@ -5,12 +5,11 @@
 ## format number still makes malformed or mismatched payloads fail closed.
 
 import std/[algorithm, json, jsonutils, sets, strutils, tables]
-import ./[capabilities, gir, printer, reader, types]
+import ./[gir, printer, reader, types]
 
-# Inert capability literals, required/dynamic boundaries, and structured loop
-# control are part of the executable contract. Earlier selector metadata cannot
-# be interpreted as a version-1 request or silently treated as an absent row.
-const GirArtifactFormat* = 17
+# The number changes whenever the chunk layout does, so a stale artifact fails
+# closed instead of being read with a different shape.
+const GirArtifactFormat* = 18
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -33,16 +32,6 @@ proc fromJsonHook(scope: var Scope, node: JsonNode) =
     raise newException(ValueError, "encoded GIR must not contain a live scope")
   scope = nil
 
-proc toJsonHook(context: CapabilityContext): JsonNode =
-  if context != nil:
-    raise newException(ValueError, "executable GIR cannot serialize live capability authority")
-  newJNull()
-
-proc fromJsonHook(context: var CapabilityContext, node: JsonNode) =
-  if node.kind != JNull:
-    raise newException(ValueError, "encoded GIR must not contain capability authority")
-  context = nil
-
 proc validateInertValue(value: Value, seen: var HashSet[uint64]) =
   if value.kind > vkPipeline:
     raise newException(ValueError, "executable GIR contains a runtime value: " & $value.kind)
@@ -50,7 +39,7 @@ proc validateInertValue(value: Value, seen: var HashSet[uint64]) =
   if seen.containsOrIncl(value.bits): return
   case value.kind
   of vkNode:
-    if value.resourceAuthorityId != 0 or value.hasErrorWitness:
+    if value.nodeResourceId != 0 or value.hasErrorWitness:
       raise newException(ValueError, "executable GIR contains a retained runtime resource")
     validateInertValue(value.head, seen)
     for item in value.body: validateInertValue(item, seen)
@@ -147,11 +136,7 @@ proc toJsonHook(fn: FunctionProto, options = initToJsonOptions()): JsonNode
 proc validateUnlinkedFunction(fn: FunctionProto) =
   if fn == nil: return
   if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf or
-      fn.builtinErrorMessage or fn.boundCapabilityCeiling != nil or
-      fn.boundExecutionPolicy != nil or fn.capabilityCacheRegistryId != 0 or
-      fn.capabilityCacheEpoch != 0 or fn.capabilityCacheParent != nil or
-      fn.capabilityCacheCeiling != nil or fn.capabilityCacheTransition.context != nil or
-      fn.capabilityCacheTransition.presence != nil:
+      fn.builtinErrorMessage or fn.boundExecutionPolicy != nil:
     raise newException(ValueError, "executable GIR contains runtime-only invocation metadata")
 
 proc toJsonHook(chunk: Chunk,
@@ -220,8 +205,6 @@ proc restoreChunkOwners(root: Chunk) =
       restoreFunction(fn)
     for body in chunk.subchunks:
       restoreChunk(body, nil)
-    for boundary in chunk.capabilityBlocks:
-      restoreChunk(boundary.body, nil)
     for loop in chunk.forLoops:
       restoreChunk(loop.body, nil)
     for match in chunk.matches:
@@ -262,64 +245,13 @@ proc restoreChunkOwners(root: Chunk) =
 
   restoreChunk(root, nil)
 
-proc linkCapabilityBases(root: Chunk, base: string) =
-  var seen = initHashSet[pointer]()
-  proc relocate(row: var CapabilityRow) =
-    if row.literal != nil and row.literal.source.kind == csoSource and
-        row.literal.source.name == root.sourceName:
-      var source = row.literal.source
-      source.baseDirectory = base
-      row.literal = buildCapabilitySourceLiteral(row.literal.entries, cuRequest, source)
-  proc visit(body: Chunk)
-  proc visitFunction(fn: FunctionProto) =
-    if fn == nil: return
-    relocate(fn.capabilityRow)
-    visit(fn.chunk)
-    visit(fn.scopelessChunk)
-    for value in fn.paramDefaults: visit(value.defaultChunk)
-    for parameter in fn.namedParams: visit(parameter.defaultValue.defaultChunk)
-  proc visit(body: Chunk) =
-    if body == nil or seen.containsOrIncl(cast[pointer](body)): return
-    relocate(body.moduleCapabilityRow)
-    for spec in body.imports.mitems: relocate(spec.capabilityRow)
-    for boundary in body.capabilityBlocks:
-      relocate(boundary.row)
-      visit(boundary.body)
-    for fn in body.functions: visitFunction(fn)
-    for child in body.subchunks: visit(child)
-    for loop in body.forLoops: visit(loop.body)
-    for branch in body.matches:
-      for clause in branch.clauses: visit(clause.body)
-      visit(branch.elseBody)
-    for attempt in body.tries:
-      visit(attempt.body)
-      for clause in attempt.catches: visit(clause.body)
-      visit(attempt.ensureBody)
-    for typ in body.typeProtos:
-      visitFunction(typ.ctorFn)
-      for message in typ.messages: visitFunction(message.fn)
-      for impl in typ.inlineImpls:
-        for message in impl.messages: visitFunction(message.fn)
-    for typ in body.enumProtos:
-      for message in typ.messages: visitFunction(message.fn)
-      for impl in typ.inlineImpls:
-        for message in impl.messages: visitFunction(message.fn)
-    for protocol in body.protocolProtos:
-      visitFunction(protocol.deriveFn)
-      for message in protocol.messages: visitFunction(message.fn)
-    for impl in body.implProtos:
-      for message in impl.messages: visitFunction(message.fn)
-  visit(root)
-
-proc cloneCompiledChunk*(chunk: Chunk, capabilityBase = ""): Chunk =
+proc cloneCompiledChunk*(chunk: Chunk): Chunk =
   ## Each initialized domain owns its mutable invocation metadata. Clone the
   ## inert compiler template before the runtime links declarations into it.
   if chunk == nil:
     raise newException(ValueError, "compiled chunk is missing")
   result = jsonTo(toJson(chunk), Chunk)
   result.restoreChunkOwners()
-  if capabilityBase.len > 0:
-    result.linkCapabilityBases(capabilityBase)
 
 proc cloneCompiledModule*(compiled: CompiledModule): CompiledModule =
   result = jsonTo(toJson(compiled), CompiledModule)

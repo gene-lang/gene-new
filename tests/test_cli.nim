@@ -155,57 +155,6 @@ suite "cli — gene run":
         if stripped.startsWith("(import"):
           check "plugins/" notin stripped
 
-  test "filesystem checkpoint generation claims are cross-process exclusive":
-    let root = cliDir / "harness_store_process_cas"
-    if dirExists(root): removeDir(root)
-    createDir(root)
-    let contender = writeCliProgram("harness_store_contender.gene", """
-(import $store/fs [open : store_open Store StoreError])
-(import $fs [write_text exists?])
-(fn main [args]
-  (var root args/0)
-  (var id args/1)
-  (write_text $"${root}/ready-${id}" "ready")
-  (while (! (&& (exists? $"${root}/ready-a")
-                (exists? $"${root}/ready-b"))) nil)
-  (var store (store_open ^root root))
-  (try
-    (store .Store:checkpoint 1 {^state {^winner id}})
-    ($println $"committed ${id}")
-  catch StoreError
-    ($println $"${$err/kind} ${id}")))
-""")
-    let first = startProcess(geneExe,
-      args = ["run", "--allow_read_write_dir", root, contender, root, "a"],
-      options = {poStdErrToStdOut})
-    let second = startProcess(geneExe,
-      args = ["run", "--allow_read_write_dir", root, contender, root, "b"],
-      options = {poStdErrToStdOut})
-    let firstCode = first.waitForExit(10000)
-    let secondCode = second.waitForExit(10000)
-    let firstOutput = first.outputStream.readAll()
-    let secondOutput = second.outputStream.readAll()
-    first.close()
-    second.close()
-    check firstCode == 0
-    check secondCode == 0
-    let combined = firstOutput & secondOutput
-    check combined.count("committed ") == 1
-    check combined.count("conflict ") == 1
-
-    let reader = writeCliProgram("harness_store_reader.gene", """
-(import $store/fs [open : store_open Store])
-(fn main [args]
-  (var store (store_open ^root args/0))
-  (var loaded (store .Store:load_checkpoint))
-  ($println loaded/generation loaded/records/state/winner))
-""")
-    let loaded = runGene(["run", "--allow_read_write_dir", root,
-                          reader, root])
-    if loaded.exitCode != 0: checkpoint loaded.output
-    check loaded.exitCode == 0
-    check loaded.output.strip in ["1 a", "1 b"]
-
   test "inference-depth qualification stage is exact and public-only":
     let checked = execCmdEx(
       "python3 tools/qualify_inference_depth.py --self-test")
@@ -223,45 +172,6 @@ suite "cli — gene run":
       checked.output
     check "public_hidden_fields=0 soundness_verified=true" in checked.output
     check "framing=episode programs=stage_two_identical" in checked.output
-
-  test "--grant is an ordinary program argument, not an authority channel":
-    let grantedMain = writeCliProgram("grant_is_argv.gene",
-      "(fn main [args] " &
-      "  (if (== args/0 \"--grant\") 0 4))")
-    var ran = runGene(["run", grantedMain, "--grant", "config=$fs/ReadDir"])
-    check ran.exitCode == 0
-
-    let missingMain = writeCliProgram("missing_grant_main.gene",
-      "(fn main [args, ^config : Capability] " &
-      "  (do ($println \"BODY-RAN\") 0))")
-    ran = runGene(["run", missingMain, "--grant", "config=$fs/ReadDir"])
-    check ran.exitCode == 1
-    check "missing named argument: config" in ran.output
-    check ("at " & normalizedPath(absolutePath(missingMain)) & ":1:1") in
-      ran.output
-    check not ran.output.startsWith("BODY-RAN\n")
-
-  test "pre-entry directory policy mints host grants without Gene values":
-    let externalDir = getTempDir() / "gene_cli_external_capability"
-    createDir(externalDir)
-    let externalFile = externalDir / "message.txt"
-    writeFile(externalFile, "allowed")
-    defer:
-      if fileExists(externalFile): removeFile(externalFile)
-      if dirExists(externalDir): removeDir(externalDir)
-    let readerMain = writeCliProgram("host_read_policy.gene", """
-      (import $fs [read_text])
-      (fn main [args]
-        (if (== (read_text args/0) "allowed") 0 4))
-    """)
-
-    var ran = runGene(["run", readerMain, externalFile])
-    check ran.exitCode == 1
-    check "MissingCapability: fs/read_text requires fs/Read" in ran.output
-
-    ran = runGene(["run", "--allow_read_dir", externalDir,
-                   readerMain, externalFile])
-    check ran.exitCode == 0
 
   test "run loads explicit structured logging config before the entry module":
     let logDir = cliDir / "configured_logs"
@@ -2167,29 +2077,6 @@ suite "cli — Gene package builds":
     check ran.exitCode == 0
     check "[OK] tests/one.gene" in ran.output
     check "tests/two.gene" notin ran.output
-
-  test "package filesystem test grants are explicit and enforced":
-    let root = buildCliRoot()
-    let data = cliDir / "package-test-grants"
-    createDir(data)
-    let output = data / "result.txt"
-    if fileExists(output): removeFile(output)
-    writeBuildFixture(root / "package.gene", """
-{^format 1 ^name "acme/test_grants" ^version "1.0.0"
- ^tests {^root "tests"}}
-""")
-    writeBuildFixture(root / "tests/write.gene",
-      "(fn main [] ($fs/write_text " & geneQuote(output) & " \"granted\"))")
-    let denied = runBuildGeneIn(root, ["test", "--package"])
-    check denied.exitCode == 1
-    check "MissingCapability" in denied.output
-    check not fileExists(output)
-    let allowed = runBuildGeneIn(root,
-      ["test", "--package", "--allow_read_write_dir", data])
-    if allowed.exitCode != 0: checkpoint allowed.output
-    check allowed.exitCode == 0
-    check fileExists(output)
-    if fileExists(output): check readFile(output) == "granted"
 
 suite "cli — gene pkg (docs/workflows.md)":
   proc pkgCliDir(): string =

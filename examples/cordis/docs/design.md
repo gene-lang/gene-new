@@ -274,75 +274,6 @@ The following declarations describe the intended surface. They are design
 sketches; the implementation may split private representation types without
 changing their behavior.
 
-```gene
-(enum InstanceState
-  pending loading active failed unloading disposed)
-
-(enum PluginCallKind
-  activate availability validate_schema validate_service merge_config
-  bind_service hook cleanup)
-
-(enum HookMode emit parallel serial bail waterfall)
-
-(enum ReconcileMode incremental staged)
-
-(protocol Disposable
-  (message dispose [] : Nil))
-
-(protocol PluginInvoker
-  (message invoke [call] : Any))
-
-(type InvocationLimits
-  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
-
-(type RuntimeOptions
-  ^props {^logger Logger
-          ^invoker PluginInvoker
-          ^default_limits InvocationLimits})
-
-(type PluginCall
-  ^props {^kind PluginCallKind
-          ^callable Callable
-          ^args (List Any)
-          ^instance_uid Int
-          ^entry_id Str?
-          ^capability_selectors List
-          ^capabilities_restricted Bool
-          ^logger Logger?
-          ^limits InvocationLimits})
-
-(type LoaderOptions
-  ^props {^plugin_root Str
-          ^shared (List Str)
-          ^max_namespaces (List Str)
-          ^capability_catalog Map
-          ^capability_ceiling Any
-          ^default_limits InvocationLimits?
-          ^reload_policy Any?})
-
-(type ServiceKey
-  ^props {^id Str
-          ^contract Any
-          ^check Callable
-          ^config_schema Callable?
-          ^merge_config Callable?
-          ^bind Callable?})
-
-(type HookKey
-  ^props {^id Str ^mode HookMode ^payload_schema Callable?})
-
-(type Requirement
-  ^props {^key ServiceKey ^config Any?})
-
-(type PluginSpec
-  ^props {^id Str
-          ^config_schema Callable?
-          ^requires (List Requirement)
-          ^provides (List ServiceKey)
-          ^reload Str?
-          ^activate Callable})
-```
-
 The public operations are conceptually:
 
 ```text
@@ -420,41 +351,12 @@ anywhere else. `RuntimeOptions/logger` is the base logger described in section
 15. `default_limits` are used unless a loader entry or derived host context
 narrows them. Limits may be narrowed but never raised above the runtime value.
 
-`PluginInvoker` is a real seam because Cordis ships a default bounded adapter
-and the harness can supply an owner-aware audited adapter. The runtime gives it a
-shallow-immutable call row containing the `PluginCallKind`, callable, argument
-list, instance and entry identities, effective capability selectors, and
-effective limits. `capabilities_restricted` distinguishes trusted inheritance
-from an explicitly empty selector list; without it, a manifest requesting no
-capabilities could accidentally inherit the host context. The invoker calls the
-callable exactly once and either returns its value or raises the typed failure
-for that call. The default adapter uses `$runtime/bind_call` to bind the existing
-callable and arguments to its execution limits and capability ceiling. It
-executes the resulting zero-argument function as a root-lane task and observes
-it through `Task/join`, then clears the local bound-function reference in
-`ensure` to break its captured-scope cycle. This preserves suspension
-while containing recoverable errors and panics; `$runtime/guard_call` remains
-the smaller synchronous adapter seam. No other runtime path invokes
-plugin-supplied code. The
-engine acquires an owner invocation lease before calling the invoker and
-releases it in `ensure`; unloading closes the external gate and waits for its
-count to reach zero. Cleanup then uses a serialized teardown permit but still
-passes through the same invoker. A call that requests its own instance's
-disposal queues the transition and returns instead of waiting on itself.
-
 `LoaderOptions` contain the trusted plugin root, admitted shared modules,
 maximum namespace set, capability catalog and ceiling, default invocation
 limits, and reload policy. They are host values, never manifest data.
 `Runtime/loader` returns an owned façade over the runtime's private engine;
 context movement and prospective provider indexes are deliberately absent from
 the ordinary `Runtime` interface.
-
-`Context/derive` accepts only `^isolate`, `^intercept`, `^capabilities`, and
-`^limits`. Live code keys `isolate` and `intercept` by admitted `ServiceKey`
-values; the loader resolves serialized service ids before deriving. Capability
-selectors and invocation limits can only narrow their parent values. Derivation
-cannot change runtime identity, owner instance, declared-key access, or loader
-entry identity.
 
 `Disposable` is the one-message lifetime protocol: `dispose` is idempotent and
 may await cleanup. `ProviderLease/refresh` re-runs the availability predicate;
@@ -648,14 +550,6 @@ A `Context` is an immutable view containing:
 - persistent config-overlay rows;
 - the allowed service-key set derived from requirements and provisions; and
 - the entry/call-site capability attenuation policy.
-
-The last item is opaque runtime metadata, not a capability grant stored in a
-Gene object. A module ceiling is attached before initialization by its
-`SandboxGeneration` and follows escaped callables; it is not copied into or
-replaced by a Cordis context. Entering plugin code intersects the host context,
-that callee's module ceiling, the entry policy, and any call-site
-`with_capabilities` selector. Context derivation can only add another
-intersection.
 
 Derivation returns a new view and does not mutate the parent:
 
@@ -1257,12 +1151,6 @@ or explicit host preprocessing.
 
 ## 13. Hot reload
 
-Cordis never edits an existing Gene module identity in place. Each candidate
-belongs to a fresh, runtime-identified `SandboxGeneration`. Its immutable graph
-snapshot records source and shared compile-interface digests; its policy records
-namespace and capability ceilings. Generation release, rather than ad-hoc
-module-cache deletion, reclaims rejected and replaced graphs.
-
 Reload is a composition transaction:
 
 1. Debounce and coalesce changed paths. The file adapter uses capability-gated
@@ -1461,10 +1349,6 @@ mutex around the current design is not sufficient.
  ^transitions [...]}
 ```
 
-Snapshots expose ids, states, labels, generations, and error summaries. They
-do not expose cleanup closures, capability grants, mutable config objects,
-provider internals, or hook callbacks.
-
 The following errors are distinct because their remedies differ:
 
 - `UndeclaredRequirement`
@@ -1618,31 +1502,6 @@ private state transitions.
 
 ### Loader and HMR
 
-- incremental reconciliation may leave only the changed entry failed, while
-  staged reconciliation publishes every candidate or none;
-- nested disable/enable and group moves reconcile correctly;
-- config persistence is atomic and path-relative;
-- patches cannot silently target the wrong module;
-- manifests cannot enlarge namespace or capability ceilings;
-- loader entry ids remain distinct from optional expected plugin ids;
-- sandbox restrictions follow escaped callbacks;
-- sandbox compilation, macros, and top-level execution are bounded before they
-  begin;
-- changed dependencies reload every affected plugin root;
-- shared/runtime changes request full restart;
-- candidate import or activation failure leaves old instances working;
-- successful swap does not expose duplicate providers;
-- replacement includes the transitive service-consumer closure, and old
-  providers remain alive until those consumers have joined;
-- candidate staging documents external effects and rejects an unsupported
-  reload mode;
-- old cleanup failure reports `recovery_required`;
-- discarded and replaced sandbox generations release all cache and registry
-  roots;
-- watcher overflow requests a rescan rather than silently losing changes; and
-- repeated rapid reloads leave no stale hooks, effects, tasks, or module
-  identities reachable.
-
 At least one test service must have both plain and contextual adapters. At least
 one loader test uses an in-memory composition adapter and one uses a real
 temporary filesystem, so the loader seam is justified rather than hypothetical.
@@ -1679,21 +1538,6 @@ cheaper than discovering the same gap from a second example written to fit.
 
 ## 21. Deliberate non-goals
 
-- No transparent `ctx.foo` property injection.
-- No JavaScript decorators, callable classes, or prototype mixins.
-- No generic context accessor or associated-property subsystem; a service
-  module exposes a protocol or a private binding façade.
-- No overloading garbage collection as plugin or subscription cleanup.
-- No global mutable context or process-wide singleton registry.
-- No automatic capability grant from a manifest, service, or plugin id.
-- No hidden cross-lane locking or unbounded hook/timer queues.
-- No arbitrary expression evaluation in configuration files.
-- No individual mutation of Gene's live application module cache; only
-  generation transaction commit and lifecycle release.
-- No claim that HMR preserves sockets, tasks, or arbitrary in-memory state.
-- No second logging stack.
-- No public exposure of the kernel's internal seams for mocks.
-
 The result is recognizably Cordis: contexts control where services resolve,
 instances control when plugins exist, and effects make teardown a property of
 the runtime rather than plugin discipline. It is also recognizably Gene:
@@ -1701,3 +1545,4 @@ protocols remain the service contracts, modules and capabilities remain real
 security seams, structured concurrency owns work, nominal values replace
 stringly typed identity where possible, and lifecycle behavior is explicit at
 the call site.
+

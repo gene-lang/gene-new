@@ -1,2 +1,0 @@
-# No module request or strict mode is needed for a pure helper.
-(fn helper [] 1)

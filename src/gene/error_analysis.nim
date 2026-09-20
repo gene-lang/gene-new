@@ -463,7 +463,7 @@ proc newErrorAnalysis*(root: Chunk,
   let builtins = newErrorEnvironment(nil, "builtin", "")
   for name in ["RuntimeError", "TypeError", "ErrorContractViolation", "AssertionError",
                "MatchError", "SelectorMissing", "CompileError", "CallKindError",
-               "MessageError", "CapabilityError", "MissingCapability", "ParseError",
+               "MessageError", "ParseError",
                "JsonError", "OsError", "DbError", "EndOfStream"]:
     let typ = AnalyzedType(info: builtinError(name), constructorKnown: true, methodsKnown: true,
       fields: initTable[string, Value](), methods: initTable[string, AnalyzedFunction]())
@@ -1791,30 +1791,21 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
                                            initialState = addr cleanupState)
         absorb(cleanup)
       push value
-    of opTaskScope, opSupervisor, opWithCapabilities:
-      if inst.op == opWithCapabilities and chunk.capabilityBlocks[inst.intArg].dynamicPolicy:
-        discard state.pop()
-      let bodyChunk = if inst.op == opWithCapabilities:
-                        chunk.capabilityBlocks[inst.intArg].body
-                      else: chunk.subchunks[inst.intArg]
+    of opTaskScope, opSupervisor:
       let bodyEnvironment = newErrorEnvironment(environment, environment.source, environment.prefix)
       bodyEnvironment.values = state.bindings
       var nestedState = state
-      let body = analysis.analyzeBody(bodyChunk, bodyEnvironment, function, depth + 1, permitted,
+      let body = analysis.analyzeBody(chunk.subchunks[inst.intArg], bodyEnvironment, function, depth + 1, permitted,
                                       initialState = addr nestedState)
       errors.mergeErrors(body.errors)
-      if inst.op == opWithCapabilities:
-        errors.mergeErrors(oneError("CapabilityError"))
-        absorb(body)
-      else:
-        # Scope exit waits without consuming child outcomes. Scheduler state
-        # failures (for example, deadlock) belong to the wait operation; a
-        # child's deferred row belongs to await, not to this implicit wait.
-        errors.mergeErrors(oneError("RuntimeError"))
-        result.taskCode = result.taskCode or body.taskCode
-        if body.finalState != nil:
-          state.adoptFlow(body.finalState[])
-        if body.exceptionState != nil: observeException(body.exceptionState[])
+      # Scope exit waits without consuming child outcomes. Scheduler state
+      # failures (for example, deadlock) belong to the wait operation; a
+      # child's deferred row belongs to await, not to this implicit wait.
+      errors.mergeErrors(oneError("RuntimeError"))
+      result.taskCode = result.taskCode or body.taskCode
+      if body.finalState != nil:
+        state.adoptFlow(body.finalState[])
+      if body.exceptionState != nil: observeException(body.exceptionState[])
       push body.value
     of opSpawn:
       let bodyEnvironment = newErrorEnvironment(environment, environment.source, environment.prefix)

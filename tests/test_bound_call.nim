@@ -1,6 +1,5 @@
-import gene/[compiler, types, vm, printer, capabilities, fs_capabilities]
+import gene/[compiler, types, vm, printer]
 import std/[unittest, os, tempfiles, strutils]
-import ./capability_test_support
 
 proc evalBoundCall(source: string): Value =
   run(compileSource(source), newGlobalScope())
@@ -135,42 +134,3 @@ suite "runtime bound calls":
       " (try ($runtime/bind_call target [] ^policy {^allow_ffi false}) " &
       " false catch Any true)]").print() == "[true true]"
 
-when defined(posix):
-  suite "bound call authority":
-    test "creation and invocation ceilings both apply":
-      let root = expandFilename(createTempDir("gene-bound-call-", ""))
-      defer: removeDir(root)
-      writeFile(root / "data", "bound")
-      let app = newFilesystemPolicyApp(root)
-      let scope = newGlobalScope(app)
-      scope.define("file", newStr(root / "data"))
-      let source = "(fn read [] ($fs/read_text file)) " &
-        "(var full ($runtime/bind_call read [])) " &
-        "(var empty ($runtime/bind_call read [] ^capabilities ($capabilities/parse \"[]\"))) " &
-        "(var narrow (with_capabilities [] ($runtime/bind_call read []))) " &
-        "[(full) " &
-        " (try (empty) false catch MissingCapability true) " &
-        " (try (narrow) false catch MissingCapability true) " &
-        " (try (with_capabilities [] (full)) false catch MissingCapability true)]"
-      check run(compileSource(source), scope).print() ==
-        "[\"bound\" true true true]"
-
-    test "a checked dynamic row captures values at binding time":
-      let root = expandFilename(createTempDir("gene-bound-selectors-", ""))
-      defer: removeDir(root)
-      createDir(root / "one")
-      createDir(root / "two")
-      writeFile(root / "one" / "data", "one")
-      writeFile(root / "two" / "data", "two")
-      let app = newFilesystemPolicyApp(root)
-      let scope = newGlobalScope(app)
-      scope.define("tree", newStr(root / "one"))
-      scope.define("first", newStr(root / "one" / "data"))
-      scope.define("second", newStr(root / "two" / "data"))
-      let source = "(var path first) " &
-        "(fn read [] ($fs/read_text path)) " &
-        "(var f ($runtime/bind_call read [] " &
-        " ^capabilities ($capabilities/build [($capabilities/entry \"fs/Read\" [tree] [])]))) " &
-        "(var value (f)) (set path second) " &
-        "[value (try (f) false catch MissingCapability true)]"
-      check run(compileSource(source), scope).print() == "[\"one\" true]"
