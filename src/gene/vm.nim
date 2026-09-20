@@ -28251,7 +28251,7 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
     # tightens a sandbox is still a typo nobody sees.
     if item.strVal notin sandboxableNamespaces:
       raise newException(GeneError,
-        "unknown capability namespace in grants: " & item.strVal &
+        "unknown namespace in grants: " & item.strVal &
         " (expected one of " & sandboxableNamespaces.join(", ") & ")")
     grants.add item.strVal
   # Refused rather than defaulted. A caller with no Application cannot be handed

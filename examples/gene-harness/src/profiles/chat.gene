@@ -2,7 +2,7 @@
 # behind `build`.
 #
 #   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
-#     gene run --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+#     gene run \
 #     src/main.gene chat
 #
 # Shares the CLI's commands, code execution and views. The two plugins that

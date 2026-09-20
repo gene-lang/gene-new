@@ -1,6 +1,6 @@
 # The `cli` deployment: a real filesystem and plain-text output.
 #
-#   gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene cli
+#   gene run examples/gene-harness/src/main.gene cli
 #
 # What distinguishes this profile from `web` is not code shape — both are three
 # plugins with the same ids — but *authority*. The filesystem provider here

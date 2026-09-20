@@ -7,7 +7,7 @@
 # For the interactive shell and for `build`, run it from the package directory
 # so that a capability row naming `plugins/generated` means this one:
 #
-#   cd examples/gene-harness && gene run --allow_read_dir /tmp src/main.gene cli
+#   cd examples/gene-harness && gene run src/main.gene cli
 #
 # This is what `package.gene` names as the application entry, and it is the
 # whole of what an entry point has to do here: pick a profile, hand it to

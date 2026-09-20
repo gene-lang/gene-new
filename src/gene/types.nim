@@ -492,7 +492,6 @@ type
     implValidationEpoch*: uint64
     implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
-    loaderState*: RootRef # immutable VM-owned source policy and defining base
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
@@ -824,7 +823,6 @@ type
     immutable: bool
 
   EnvData = ref object of GeneObjectData
-    loaderState: RootRef
     cycleRefs: int            # Value-held refs, for trial-deletion collection
     parent: Value         # parent Env value, or NIL
     bindings: Table[string, Value]
@@ -872,7 +870,6 @@ type
     closed: bool
     source: Value
     callable: Value
-    loaderState: RootRef
     remaining: int64
     pull: StreamPullProc
     close: StreamCloseProc
@@ -3748,16 +3745,6 @@ proc setEnvClosedScope*(v: Value, closed: bool) =
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).closedScope = closed
 
-proc envLoaderState*(v: Value): RootRef =
-  if v.kind != vkEnv:
-    raise newException(FieldDefect, "value is not an Env")
-  EnvData(objData(v)).loaderState
-
-proc setEnvLoaderState*(v: Value, state: RootRef) =
-  if v.kind != vkEnv:
-    raise newException(FieldDefect, "value is not an Env")
-  EnvData(objData(v)).loaderState = state
-
 proc envPolicy*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
@@ -4060,7 +4047,6 @@ proc closeStream*(v: Value) =
         firstError = cleanupError
   data.source = NIL
   data.callable = NIL
-  data.loaderState = nil
   data.generatorCode = nil
   data.generatorScope = nil
   data.generatorStack.setLen(0)
@@ -4082,9 +4068,6 @@ proc streamSource*(v: Value): Value =
 
 proc streamCallable*(v: Value): Value =
   streamData(v).callable
-
-proc streamLoaderState*(v: Value): RootRef =
-  streamData(v).loaderState
 
 proc streamRemaining*(v: Value): int64 =
   streamData(v).remaining
@@ -7497,8 +7480,7 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
                     callable: Value = NIL, remaining: int64 = -1,
                     itemType: Value = NIL, errType: Value = NIL,
                     itemScope: Scope = nil,
-                    close: StreamCloseProc = nil,
-                    loaderState: RootRef = nil): Value =
+                    close: StreamCloseProc = nil): Value =
   # The stream owns its callable strongly, like every other heap container
   # (channels, cells, actor state). Weakening the captured-scope edge here
   # dangles when the operand stack held the only strong reference to an
@@ -7506,7 +7488,6 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
   # back is a leak, not a crash, matching the container-wide tradeoff.
   let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
-                       loaderState: loaderState,
                        remaining: remaining, pull: pull, close: close, itemType: itemType,
                        errType: errType, itemScope: itemScope, closed: false))
 

@@ -86,7 +86,7 @@ def main():
         if args.url == URL and not port_open():
             world.mkdir(parents=True, exist_ok=True)
             with log_path.open("w") as log:
-                server = subprocess.Popen([GENE, "run", "--allow_read_write_dir", str(world), "server"],
+                server = subprocess.Popen([GENE, "run", "server"],
                     cwd=MICLONE, env={**os.environ, "GENE_MICLONE_WORLD": str(world)},
                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             print(f"Starting server on {world}", flush=True)

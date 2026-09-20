@@ -147,9 +147,9 @@ async function bootServer() {
   await mkdir(WORLD, { recursive: true });
   if (recovery)
     execFileSync(GENE,
-      ["run", "--allow_read_write_dir", WORLD, "probes/run_recovery_fixture.gene", WORLD],
+      ["run", "probes/run_recovery_fixture.gene", WORLD],
       { cwd: MICLONE, stdio: "pipe" });
-  child = spawn(GENE, ["run", "--allow_read_write_dir", WORLD, "server"], {
+  child = spawn(GENE, ["run", "server"], {
     cwd: MICLONE,
     env: { ...process.env, GENE_MICLONE_WORLD: WORLD },
     stdio: ["ignore", "pipe", "pipe"],
@@ -263,7 +263,7 @@ try {
   P.decode_hello(helloFrame, new_cursor(), hello);
   const expectedBlocks = hello[5] * hello[6] * hello[7];
   const savedBlocks = Number(execFileSync(GENE,
-    ["run", "--allow_read_write_dir", WORLD, "probes/run_saved_blocks.gene", WORLD,
+    ["run", "probes/run_saved_blocks.gene", WORLD,
       ...(process.env.MICLONE_SMOKE_RECOVERY ? ["recovery"] : [])],
     { cwd: MICLONE, encoding: "utf8" }).trim());
   say(savedBlocks === expectedBlocks,

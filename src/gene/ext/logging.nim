@@ -263,7 +263,7 @@ proc newFileLogSink*(name, path: string, format = lfGene,
 proc newFileLogSinkFromHandle*(name, path: string, file: File,
                                format = lfGene,
                                flush = lflError): LogSink =
-  ## Construct a sink around a handle already opened by an authority provider.
+  ## Construct a sink around a handle the caller already opened.
   ## Ownership transfers to the sink.
   if file == nil:
     raise newException(IOError, "file log sink handle must not be nil")
@@ -360,7 +360,7 @@ proc resolveRouteId*(name: string): int =
   resolveRoute(name).id
 
 proc newDirectLogRoute*(sink: LogSink, level = llTrace): int =
-  ## Capability-gated Gene constructors use a direct one-sink route without
+  ## Gene constructors that own a single sink use a direct one-sink route without
   ## mutating hierarchical configuration or affecting other loggers.
   if sink == nil:
     raise newException(ValueError, "direct log route requires a sink")

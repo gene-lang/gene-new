@@ -187,9 +187,8 @@
 (var run_commands
   {^build "git clone https://github.com/gene-lang/gene-new.git\ncd gene-new\nnimble build"
    ^codex_login "codex -c cli_auth_credentials_store='\"file\"' login"
-   ^start "bin/gene run --allow_read_dir \"${CODEX_HOME:-$HOME/.codex}\" \\\n  examples/gene-harness/src/web/server.gene"
-   ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
+   ^start "bin/gene run ^openrouter "GENE_HARNESS_PROVIDER=openrouter OPENROUTER_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^anthropic "GENE_HARNESS_PROVIDER=anthropic ANTHROPIC_API_KEY=... \\\n  bin/gene run examples/gene-harness/src/web/server.gene"
    ^offline "bin/gene run examples/gene-harness/src/web/server.gene --offline"
    ^prompt "Build a workspace-scoped line_count plugin that accepts a filename and counts non-empty lines by composing fs.read. Inspect its contract and test it against README.md before reporting success."
-   ^dirs "mkdir -p /tmp/harness-home\nbin/gene run \\\n  --allow_read_write_dir /tmp/harness-home \\\n  --allow_read_write_dir \"$HOME/code/my-app\" \\\n  --allow_read_dir \"${CODEX_HOME:-$HOME/.codex}\" \\\n  examples/gene-harness/src/web/server.gene \\\n  --home /tmp/harness-home --project \"$HOME/code/my-app\""})
+   ^dirs "mkdir -p /tmp/harness-home\nbin/gene run \\\n  \\\n  })

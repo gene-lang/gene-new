@@ -781,7 +781,6 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
-    repeatControlLoop*: bool # structured while/loop/repeat body, sharing its owner scope
     immutableBindings*: seq[string]
     moduleRefNames*: seq[string] # predeclared before source-unit execution
     exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports

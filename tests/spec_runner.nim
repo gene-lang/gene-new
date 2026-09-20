@@ -4961,7 +4961,7 @@ suite "spec — implicit self in message bodies from design §10":
     # A path that names nothing is an unknown annotation, not a crash, and it
     # is catchable.
     check_eval("($str/starts_with? " &
-               " (try ((fn [x : $fs/ReadDir] x) nil) catch Error $err/message) " &
+               " (try ((fn [x : $fs/Missing] x) nil) catch Error $err/message) " &
                " \"unknown type annotation\")",
                "true")
 

@@ -181,13 +181,8 @@ one node.
 `main` returns `Nil` for exit 0 or an in-range `Int` exit code. Any other value
 is a boundary error.
 
-## Capabilities
-
-Host authority is explicit. An ungranted `$fs` call fails with
-`MissingCapability` rather than reading anything:
-
 ## Eval
 
-`eval` runs a form under the scope and the authority it is written in. An `Env`
+`eval` runs a form under the scope it is written in. An `Env`
 narrows from there:
 

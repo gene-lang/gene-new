@@ -301,7 +301,7 @@ when defined(geneRcStats):
     test "eval overlays without escaping functions are reclaimed":
       check leakedManaged("(eval (quote (+ 1 2)) ^in (env))") == 0
       check leakedManaged("(eval (quote cap) " &
-                          "^in (env ^capabilities {^cap [1]}))") == 0
+                          "^in (env ^bindings {^cap [1]}))") == 0
       check leakedManaged("(eval (quote (do " &
                           "  (protocol P (message value [self] : Int)) " &
                           "  (type T ^props {}) " &

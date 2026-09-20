@@ -1863,15 +1863,14 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       push (if inst.op == opIteratorNext: analysis.valueFromType(value.resultType, environment)
             elif inst.op == opIteratorHasNext: scalarValue("Bool") else: scalarValue("Nil"))
     of opForEach:
-      let structured = chunk.forLoops[inst.intArg].body.repeatControlLoop
-      let iterable = if structured: scalarValue("Nil") else: state.pop()
-      if not structured and iterable.kind == avStream:
+      let iterable = state.pop()
+      if iterable.kind == avStream:
         if not iterable.streamTaskSafe:
           result.taskCode = true
           for task in state.knownTasks: state.mayConsumed.incl task
         analysis.retainReturnedErrors(iterable, "stream", function, loc)
         errors.mergeErrors(iterable.deferredRow())
-      elif not structured and iterable.kind notin {avList, avRange}: errors.open = true
+      elif iterable.kind notin {avList, avRange}: errors.open = true
       var loopState = state
       loopState.stack = @[]
       for iteration in 0..<32:

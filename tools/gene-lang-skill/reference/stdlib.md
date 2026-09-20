@@ -45,12 +45,9 @@ Error types: `Error` (protocol) plus `TypeError` `MessageError` `CallKindError`
 `ChannelClosed` `ActorError` `ActorClosed` `ActorFailure` `ReplyAlreadySent`
 `OsError` `HttpError` `HttpClientError` `JsonError` `SerdeError` `DbError`
 `StoreError` `UrlError` `TerminalError` `CursesError` `RefError`
-`RuntimeLaneError` `WatcherClosed` and the
-capability errors (`MissingCapability`, `AmbiguousCapability`,
-`CapabilityError`, `CapabilityScopeError`, `CapabilityTypeError`,
-`UnknownCapabilityType`, `UnsupportedCapability`).
+`RuntimeLaneError` `WatcherClosed`.
 
-Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
+Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 
 ## Namespaces
 
