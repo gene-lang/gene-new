@@ -1,14 +1,16 @@
 # Gene Capabilities: Grants, Requests, Block Boundaries, Checks, and Guards
 
-**Status:** Consolidated proposed target design; not a claim about implemented behavior.  
+**Status:** Proposed version-1 contract; provider implementation gates are listed in section 17.
+
 **Date:** 2026-09-19.
-**Scope:** Inert capability specifications; trusted grant configuration; module, function, and block requests; optional requirements; attenuation; provider-specific authorization; concrete-operation checks and mandatory guards; invocation and deferred-execution boundaries.
 
-This is a complete replacement proposal, not an addendum. It preserves independent grant entries, whole-body and per-property matching of complete alternatives, namespace naming, and command-line precedence. Mandatory admission supports collective coverage of provider-defined alternatives as specified in section 3.4. It incorporates the review corrections and makes additional recommended decisions explicit in section 19. Once adopted, implementation and examples should move to this contract rather than accumulate parallel legacy authorization paths.
+**Scope:** Inert capability specifications and checked builders; trusted grant configuration; application, callable, and block requests; optional requirements; attenuation; provider-specific authorization; concrete-operation checks and mandatory guards; module initialization, invocation, and deferred-execution boundaries.
 
-Names follow the updated document's `namespace/Name` convention: a lowercase namespace and CamelCase capability name. Thus the HTTP example is `(net/Http ^^optional)`. Identifiers are case-sensitive; `net/http` is not silently case-folded to `net/Http`. An alternate spelling requires an explicitly admitted alias. `cap/x` remains a schematic name only in the inherited comparison examples; it is not an exception to the production naming rule.
+This document defines one target contract. Entries remain independent, mandatory admission supports collective coverage of provider-defined alternatives, and independent authority boundaries intersect. Implementation and examples should follow this contract rather than accumulate parallel authorization paths. Provider-specific enforcement details identified in section 17 must be specified before implementing the affected provider.
 
-Source examples specify target behavior. New APIs and `require_capabilities` are proposed interfaces, not assertions that those names already exist. No Gene implementation or test suite was executed to prepare this revision. Section 15 gives the implementation sequence; section 17 identifies the remaining provider-specific details.
+Names use `namespace/Name`: a lowercase namespace and CamelCase capability name. Thus the HTTP example is `(net/Http ^^optional)`. Identifiers are case-sensitive; `net/http` is not silently case-folded to `net/Http`. An alternate spelling requires an explicitly admitted alias.
+
+Source examples and acceptance cases specify target behavior, not implemented or tested behavior. Section 15 gives the implementation sequence; section 17 separates settled semantics from remaining implementation gates.
 
 ## Reading map
 
@@ -21,7 +23,7 @@ Source examples specify target behavior. New APIs and `require_capabilities` are
 | How are CLI, files, and environment values selected? | 9 |
 | Where does capability-specific logic live? | 10–12 |
 | What must implementations test and preserve? | 13–17 |
-| Which changes are new recommendations? | 19 |
+| Which decisions must be completed before provider implementation? | 17 |
 
 ## 1. Central decisions and the five roles
 
@@ -41,7 +43,7 @@ The same data can be supplied to different operations. Its receiving API determi
 | Role | Input and result | Responsibility |
 | --- | --- | --- |
 | Host grant | Trusted startup policy → opaque runtime authority | Establish what the application may potentially do, within administrator/embedding ceilings. |
-| Code request | A module, function, or required block's declaration → admitted, restricted execution | Mandatory entries must match available authority; optional entries do not block entry. The declared row also limits the boundary. |
+| Code request | An application, callable, or required block's declaration → admitted, restricted execution | Mandatory entries must match available authority; optional entries do not block entry. The declared row also limits the boundary. |
 | Block grant / upper bound | Current authority plus a policy → restricted block execution | Delegate at most the intersection to everything executing through the block. This is attenuation, not creation of a root grant. |
 | Programmatic check | A requirement row or concrete operation → a structured decision | Let code choose a fallback or explain missing authority without performing the requested effect. Policy checks and operation checks remain distinct. |
 | Operation guard | The actual operation about to execute → proceed or raise | Enforce permission at the trusted effect boundary. An earlier successful check never removes this obligation. |
@@ -141,8 +143,8 @@ A literal does not admit executable expressions, interpolation, metadata, arbitr
 (fs/Read (compute_path))          # Invalid.
 (fs/Read $"${home}/data")         # Invalid.
 (net/Http ^options {^port 8080})  # Invalid.
-(cap/x 3.5)                      # Invalid in version 1.
-(cap/x nil)                      # Invalid.
+(cap/X 3.5)                       # Invalid in version 1.
+(cap/X nil)                       # Invalid.
 ```
 
 A launcher configuration may have a wrapper containing a capabilities field. That wrapper is outside this grammar.
@@ -178,7 +180,7 @@ The provider rejects lists in fields for which it defines no list semantics. A m
 
 An empty outer row `[]` selects no authority. An omitted declaration or startup source is not an empty row. No unqualified row-level `*` is introduced; `fs/*` selects a namespace, while body/property `*` is an unrestricted constraint value.
 
-The token `*` and the string `"*"` are distinct. The token is unrestricted in the field's entire valid domain. The string is a pattern over strings only.
+The token `*` and the string `"*"` are distinct. The token is unrestricted in the field's entire valid domain. A string follows the provider field's literal or pattern semantics; it never becomes the unrestricted token. In a generic pattern field, `"*"` matches strings only. A provider with a narrower grammar may reject that pattern.
 
 ### 2.4 The reserved `optional` property
 
@@ -194,7 +196,7 @@ All three describe an unrestricted HTTP request that is optional at admission. `
 
 | Receiving context | Is `optional` allowed? |
 | --- | --- |
-| Application/module/function/message/constructor request row | Yes. |
+| Application/function/message/constructor request row | Yes. |
 | `require_capabilities` block | Yes. |
 | Programmatic requirement check | Yes; required and optional results remain distinguishable. |
 | CLI/config/environment interpreted as host grant configuration | No, even when its value is false. Grants are not optional requests. |
@@ -209,17 +211,23 @@ The admission flag does not affect `Ops(entry)`, matching of actual operations, 
 
 A literal remains inert even in source declarations and boundary forms; it is not an ordinary expression list whose capability heads are invoked.
 
-Dynamic hosts may parse configured text into an immutable `CapabilitySpecRow`, using a proposed operation such as:
+Version 1 supplies both a parser for policy text and a checked builder for runtime values. Both produce the same immutable `CapabilitySpecRow`. A dynamic bound can be used as follows:
 
 ```gene
-(let bound ($capabilities/parse policy_text))
+(let bound ($capabilities/build entries source_context))
 (with_capabilities bound
   (plugin input))
 ```
 
-The whole `bound` expression is evaluated once before boundary entry. It must produce a validated spec-row value; it is not a symbol-valued argument inside a literal. Parsing uses an explicit source kind and normalization base, with the same size and schema limits as the CLI. This does not introduce textual interpolation or arbitrary execution within a capability literal.
+The whole `bound` expression is evaluated once before boundary entry. It must produce a validated spec-row value; it is not a symbol-valued argument inside a literal. Both construction paths use an explicit source kind and normalization base, with the same size and schema limits as the CLI. This does not introduce textual interpolation or arbitrary execution within a capability literal.
 
-Spec-row values carry data and normalization provenance, not authority. The runtime revalidates catalog compatibility and the receiving context's allowed admission metadata. A cached or serialized row cannot bypass those checks. A checked programmatic builder may be added using the same schema; arbitrary mutable maps are not accepted as runtime grants.
+The builder accepts checked entry descriptions, copies supplied values, validates complete provider schemas, and freezes the result. Capability identifiers and property labels are validated separately from resource values. Quotes, parentheses, and other syntax characters in a supplied value cannot create another entry or property. Applications should use the builder for dynamic resource values rather than interpolate them into policy text. Parsing remains available for intentionally authored policy text; the parser cannot make interpolation safe on behalf of its caller.
+
+Builder string values are literal resource values by default. An explicit pattern constructor is required to request pattern interpretation in a field that supports it. The provider encodes literals without widening them: a value containing `*` denotes that character, or is rejected if the resource domain does not admit it. It must never become an implicit wildcard. Pattern constructors obey the provider's pattern grammar, including HTTP's restricted host grammar. An explicit unrestricted constructor corresponds to the token `*`; the string `"*"` does not. Serialization preserves these distinctions using the provider's escaping rules, or rejects a value that cannot be represented faithfully.
+
+Relative values are normalized once against the supplied stable base; callers need not pre-normalize them. A missing required base is an error. The base is immutable provenance, not permission. Builder and parser results may be used in `with_capabilities`, `require_capabilities`, and requirement checks, subject to the receiving operation's metadata rules. Static callable declarations remain literals in version 1.
+
+Spec-row values carry data and normalization provenance, not authority. The runtime revalidates catalog compatibility and the receiving context's allowed admission metadata. A cached or serialized row cannot bypass those checks. Arbitrary mutable maps are not accepted as runtime grants.
 
 ## 3. Semantic coverage and conservative admission matching
 
@@ -273,16 +281,16 @@ fs/* >= fs/Read
 net/Http = (net/Http) = (net/Http *)
 
 (net/Http *)
-  >= (net/Http "http://localhost*")
+  >= (net/Http ^schemes ["http"] ^hosts ["localhost"])
   >= (net/Http "http://localhost:8080/status")
   >= (net/Http "http://localhost:8080/status" ^methods ["GET"])
 
-(cap/x 5) >= (cap/x 4)             # Numeric body declared as an upper limit.
-(cap/x "a" "b") >= (cap/x "a")     # Body declared as resource alternatives.
-(cap/x "a*d") >= (cap/x "abcd")    # Full-string pattern semantics.
+(cap/X 5) >= (cap/X 4)             # Numeric body declared as an upper limit.
+(cap/X "a" "b") >= (cap/X "a")     # Body declared as resource alternatives.
+(cap/X "a*d") >= (cap/X "abcd")    # Full-string pattern semantics.
 ```
 
-Namespace examples assume an admitted provider and a compatible schema. Filesystem examples use directory-tree roots. `localhost*` illustrates textual matching, not local-only network access. `cap/x` is the schematic provider described in the header.
+Namespace examples assume an admitted provider and a compatible schema. Filesystem examples use directory-tree roots. HTTP URL bodies are exact shorthand, and hostname patterns follow section 12 rather than generic full-URL globbing. `cap/X` is the schematic provider described in the header.
 
 ### 3.3 Matching an entire requested entry
 
@@ -306,7 +314,7 @@ For alternative bodies:
 
 denotes read operations under either root. It is not an operation requiring both roots on every call. A grant entry with both alternatives can match a requested entry containing either or both. Different provider-defined structured bodies retain their declared meaning.
 
-After normalization, an unrestricted request field does not match a grant that restricts that field. HTTP normalization may refine omitted component fields using facts logically implied by a concrete URL body; section 12 explains why this does not change the policy's meaning. Normalization must retain the original body and correlations.
+After normalization, an unrestricted request field does not match a grant that restricts that field. HTTP exact-URL shorthand is converted losslessly to the canonical component constraints before comparison, as specified in section 12. No correlation may be discarded.
 
 Composition of comparison results must be precise: any definite failed field makes that candidate a nonmatch, even if another field is unproved. A candidate is `cannot_prove` only when no field is definitely failed and at least one necessary comparison is unproved. A later complete matching entry succeeds regardless of an earlier inconclusive candidate.
 
@@ -342,7 +350,7 @@ For each applicable grant row G:
 
 This is a coverage proof over the existing grant row. It does not merge grants or create a new live grant. Their provenance, revocation, and origin restrictions remain independent, and concrete-operation guards still check complete entries at the point of use.
 
-The provider defines which body and property forms are alternatives. Filesystem roots and HTTP allowed-method lists support this decomposition. When several independent fields contain alternatives, the proof must cover every permitted combination. Each derived entry retains all other constraints, including the original body restrictions needed to preserve correlations. The proof representation may remain symbolic rather than materialize every combination.
+The provider defines which body and property forms are alternatives. `fs/Read` roots and HTTP allowed-method lists support this decomposition. Filesystem requests whose operation domain includes a rename across two roots cannot be decomposed into single-root entries if that would lose the cross-root operation; see section 11.1. When several independent fields contain alternatives, the proof must cover every permitted combination. Each derived entry retains all other constraints needed to preserve correlations. The proof representation may remain symbolic rather than materialize every combination.
 
 For example, grants for GET on A and POST on B do not admit a request for both GET and POST on either host: POST on A and GET on B remain uncovered. Splitting alternatives never lets one grant supply the host while another supplies the method for the same operation.
 
@@ -350,19 +358,19 @@ Structured bodies and indivisible compound operations are not split merely becau
 
 If `/tmp` is missing from the example's grants, the mandatory request fails with a diagnostic identifying the `/tmp` alternative. An upper-bound block or optional request still selects the exact available intersection, as in section 7; neither requires full mandatory admission.
 
-### 3.5 Properties constrain the whole body
+### 3.5 Properties constrain the complete entry
 
 ```gene
 (net/Http
-  "https://api.example.com/*"
-  "https://backup.example.com/*"
+  ^schemes ["https"]
+  ^hosts ["api.example.com" "backup.example.com"]
   ^methods ["GET"])
 ```
 
 means:
 
 ```text
-(URL matches either body alternative)
+(scheme is HTTPS AND hostname is either listed host)
 AND (method is GET)
 ```
 
@@ -372,8 +380,8 @@ Omitted methods are unrestricted within the provider's supported operation domai
 
 ```gene
 [
-  (net/Http "https://a.example/*" ^methods ["GET"])
-  (net/Http "https://b.example/*" ^methods ["POST"])
+  (net/Http ^schemes ["https"] ^hosts ["a.example"] ^methods ["GET"])
+  (net/Http ^schemes ["https"] ^hosts ["b.example"] ^methods ["POST"])
 ]
 ```
 
@@ -406,7 +414,7 @@ The schema also defines units, valid integer range, and meaningful combinations.
 For an upper-limit capability:
 
 ```text
-(cap/x 5) >= (cap/x 4)
+(cap/X 5) >= (cap/X 4)
 ```
 
 is correct. A per-operation maximum of five covers a per-operation maximum of four.
@@ -544,7 +552,7 @@ Retain source location, authored grouping, base-directory identity, catalog/prov
 
 Safe local transformations include shorthand expansion and provider-defined canonicalization, deduplication of alternatives with set semantics, and addition of constraints proved to be logically implied by the same entry's original constraints.
 
-In particular, adding a host projection derived from a concrete URL is safe only while the original URL constraint remains. With several URLs, retaining both the body and its component projections prevents creating new host/path combinations.
+In particular, one exact HTTP URL can be replaced by an equivalent complete set of component constraints, including its exact query-presence/value constraint. Distinct URLs remain separate entries; collecting their hosts and paths into independent lists would introduce new combinations.
 
 Do not merge grant entries. Exact request decomposition for admission is permitted under section 3.4 while retaining the authored request and its metadata. Do not sort structured bodies, reinterpret arbitrary strings as numbers, discard unknown fields, or approximate an inconvenient intersection with a broader policy.
 
@@ -585,15 +593,17 @@ B: reads under /tmp
 
 Do not delete B merely because A currently covers it. If A is revoked, B must continue to authorize its own operations. Sharing compiled symbolic matchers is safe; merging independent grant validity is not.
 
-A retained resource must preserve its actual origin restrictions and relevant authorizing context, not accidentally become dependent only on whichever overlapping entry was searched first. Where multiple grant alternatives remain valid for the resource, their validity remains represented. Entry-order changes must not alter permission merely by choosing a different short-circuit winner.
+A retained resource preserves its origin context as an immutable context reference containing independent live-grant references and all applicable ceilings. It also retains resource-specific restrictions such as the resolved target, open mode, and adapter-owned identity. Retaining the context is sufficient; the resource need not enumerate every grant that matched at creation or remember a short-circuit winner. Later use authorizes the actual operation against both the current context and this origin context, and must satisfy the resource-specific restrictions. Multiple origin grants therefore remain alternatives with independent validity. Entry-order changes must not alter permission merely by choosing a different first match.
 
 New host grants do not silently appear in existing immutable contexts. Live revocation can invalidate referenced grants; adding or adopting authority requires an explicit trusted-host context operation. Source-file or environment changes alone do neither.
 
 ### 6.5 Cache symbolic work, not irrevocable permission
 
-Normalization and field-containment proofs may be cached by content and provider/catalog version. A proof is not a live grant, and a successful operation check is not a durable authorization ticket.
+Normalization and field-containment proofs may be cached by content and provider/catalog version. Immutable intersection structures and compiled admission plans may be memoized by context identity, row identity, and those versions. A proof is not a live grant, and a successful operation check is not a durable authorization ticket.
 
-Runtime decisions must still account for current context, grant validity, resource origin, and actual operation facts. If decision caching is used, those dependencies must be validated at every effect boundary. Keeping the pure matcher fast is preferable to caching a context-free boolean that can become stale.
+Context identity alone does not establish current validity: an immutable context can reference a revoked grant or changed provider state. Reusing a successful admission result requires revalidating all live dependencies before callee-owned defaults or body execution, or validating sound validity epochs covering those dependencies. The validation must establish the same admission result as a fresh entry check; guards alone cannot repair a stale admission decision. Revocation may invalidate a previously chosen witness while another independently valid grant still covers the requirement, so revalidation must allow a fresh search rather than bind admission permanently to one witness.
+
+Runtime operation decisions also account for current context, grant validity, resource origin, and actual operation facts at every effect boundary. No context-free cached boolean is permission. Revocation after a valid admission can still make a subsequent operation fail its guard; admission never reserves authority.
 
 ## 7. Application requests, optional capabilities, and block bounds
 
@@ -611,7 +621,7 @@ This proposal assigns the existing-style `with_capabilities` form to **upper-bou
 
 The bodies retain ordinary lexical control flow. They are not automatically wrapped in lambdas, and the forms do not implicitly spawn, await, drain streams, retry work, or catch the body's failures.
 
-Module and callable `^capabilities` declarations use the request semantics below. These are explicit target decisions, not assumptions about the current compiler.
+Application and callable `^capabilities` declarations use the request semantics below. Module-level `^capabilities` declarations are not part of version 1 and must be rejected rather than ignored. Module loading and initialization follow section 14.4.
 
 ### 7.2 Mandatory and optional requests
 
@@ -704,13 +714,15 @@ These are admission facts, not necessarily proofs that the resulting intersectio
 
 An all-optional row can be admissible while permitting no operations. A function with fallback code must not make the same capability a mandatory entry and then expect to handle its absence inside the body.
 
+An all-optional request row and a pure upper-bound row with the same constraints produce the same effective authority. The optional request additionally documents fallback intent and supplies per-entry requirement-report information. Neither promises that the selected intersection is nonempty; code checks the concrete operation it intends to perform.
+
 ### 7.5 Worked mandatory reconciliation
 
 ```gene
 # Host grants:
 [
   (fs/Read "/tmp")
-  (net/Http "http://localhost:8080/*" ^methods ["GET"])
+  (net/Http ^schemes ["http"] ^hosts ["localhost"] ^ports [8080] ^methods ["GET"])
 ]
 
 # Requested row:
@@ -763,6 +775,8 @@ All unrelated authority is excluded. A block that selects HTTP but no filesystem
 
 runs with no external-operation capabilities. It does not remove the supplied input's in-memory mutability or make native code harmless; see section 14.
 
+These examples bound the synchronous execution of `untrusted_callback`. The host must install the callback's admitted loader/eval ceiling before running untrusted code. Any API that retains callbacks for later execution must bind the registration context as specified in section 14.5; an ordinary mutable registry does not provide this behavior automatically. A block alone does not confine escaped plain function references.
+
 ### 7.7 Nested blocks cannot recover broader authority
 
 ```gene
@@ -772,6 +786,8 @@ runs with no external-operation capabilities. It does not remove the supplied in
 ```
 
 The inner policy is intersected with the outer read-only restriction. It cannot add writing or access outside the outer tree, regardless of how broad the application root grant was.
+
+This is a dynamic-extent guarantee. Deferred execution also needs the retained callback, task, stream, or loader/eval rules in section 14.5.
 
 Restoring the caller's context after exit is a runtime-managed operation, not a capability available to the block. A callee's own `^capabilities` declaration, imported implementation, or saved context cannot replace the active restriction with an older root.
 
@@ -791,29 +807,18 @@ The read entry must fully match available authority before body execution. HTTP 
 
 This form is useful when failure must happen before starting a multi-step operation. It does not reserve resource access for the entire operation: guards still check live validity when effects occur, and later revocation can cause failure.
 
-### 7.9 Modules, functions, messages, and constructors
+### 7.9 Applications, functions, messages, and constructors
 
 | Boundary | Admission point | Effective authority |
 | --- | --- | --- |
 | Application manifest request, when provided | Before application-controlled initialization | Host authority ∩ request constraints. |
-| Module `^capabilities` | Before that module's initialization | Current authority ∩ module selection and admitted origin ceilings. |
-| Function/message/constructor `^capabilities` | At each invocation, before callee-owned defaults and body | Current authority ∩ applicable module/retained ceilings ∩ request constraints. |
+| Function/message/constructor `^capabilities` | At each invocation, before callee-owned defaults and body | Current authority ∩ applicable loader/eval/retained ceilings ∩ request constraints. |
 | `require_capabilities` block | Before its first body form | Current authority ∩ requested constraints. |
 | `with_capabilities` block | Before its first body form; no mandatory-coverage assertion | Current authority ∩ upper-bound row. |
 
-Proposed module example:
+Module-level request rows are excluded from version 1. A module author can declare callable requirements or wrap explicit initialization work in `require_capabilities`. The host supplies loader/origin ceilings; source declarations cannot replace them. Removing module rows does not remove the need to define authority-sensitive initialization and module-cache ownership, which section 14.4 specifies.
 
-```gene
-(mod reporting
-  ^capabilities [
-    (fs/Read "/home/user/project")
-    (net/Http ^^optional)
-  ])
-```
-
-A module declaration establishes the module's admitted ceiling and an initialization requirement. Subsequent entries into module-defined code intersect that retained ceiling with the actual caller; they do not restore initialization authority. A mandatory condition that must be checked on every callable entry belongs on that callable. Merely retrieving an already-initialized module does not rerun initialization or grant its importer additional authority.
-
-Unannotated helpers still execute under the current narrowed context. Their omission does not opt out of the module, block, task, or retained ceilings.
+Unannotated helpers still execute under the current narrowed context. Their omission does not opt out of loader/origin, block, task, or retained ceilings. Merely retrieving an initialized module does not rerun initialization or grant its importer additional authority.
 
 An explicit row selects its union of mandatory and optional constraints as a maximum. Two entries with the same provider but different flags do not cancel one another's obligations; a mandatory narrow entry remains mandatory even beside an optional broad entry.
 
@@ -854,7 +859,7 @@ No regular-expression syntax, `?` wildcard, or character-class syntax is implied
 Provide a glob-layer escape for a literal asterisk. With ordinary Gene string escaping applied first:
 
 ```gene
-(cap/x "a\\*d")
+(cap/X "a\\*d")
 ```
 
 has a pattern-layer escaped asterisk and matches the literal resource string `a*d`. The parser, printer, and provider tests must agree on the two escaping layers.
@@ -895,7 +900,7 @@ An exact runtime intersection can retain both predicates even when simplifying o
 
 ```sh
 gene run \
-  --capabilities '[(fs/ReadWrite "/home/user/project" "/tmp") (net/Http "http://localhost:8080/*" ^methods ["GET"])]' \
+  --capabilities '[(fs/ReadWrite "/home/user/project" "/tmp") (net/Http ^schemes ["http"] ^hosts ["localhost"] ^ports [8080] ^methods ["GET"])]' \
   app.gene
 
 gene run --cap '[(fs/Read "/tmp")]' app.gene
@@ -917,7 +922,7 @@ Where `caps.gene` contains:
 ```gene
 [
   (fs/ReadWrite "/home/user/project")
-  (net/Http "https://api.example.com/*" ^methods ["GET" "POST"])
+  (net/Http ^schemes ["https"] ^hosts ["api.example.com"] ^methods ["GET" "POST"])
 ]
 ```
 
@@ -932,7 +937,7 @@ A broader host configuration may instead designate a `capabilities` field contai
 A suggested variable name is `GENE_CAPABILITIES`:
 
 ```sh
-export GENE_CAPABILITIES='[(fs/Read "/tmp") (net/Http "http://localhost:8080/*" ^methods ["GET"])]'
+export GENE_CAPABILITIES='[(fs/Read "/tmp") (net/Http ^schemes ["http"] ^hosts ["localhost"] ^ports [8080] ^methods ["GET"])]'
 gene run app.gene
 ```
 
@@ -950,6 +955,8 @@ Command-line policy (--capabilities, --cap, --capabilities-file, --cap-file)
 ```
 
 The selected source replaces every lower source entirely, including the built-in default grants. When `--capabilities` is present, the program receives exactly the row it names and nothing from the built-in default. The built-in default applies only when no source is present.
+
+The version-1 built-in launcher default is `[]`: no ordinary external-operation authority. A host may supply a different explicit policy through the documented configuration or embedding interface, subject to its independent ceilings. There are no implicit filesystem or network grants. Omission and explicit `[]` remain distinct source-selection states even though they have the same operation coverage when the built-in default is selected.
 
 An independent administrator or embedding ceiling always intersects the selected policy. A stale environment value must not widen an explicit restrictive command-line row.
 
@@ -1027,22 +1034,29 @@ initialize(granted_policy, trusted_host_authority) -> RuntimeGrantState
 
 validate_operation_facts(facts) -> ConcreteOperation | invalid_operation
 
+validate_shared_operation_state(concrete_operation)
+    -> valid | provider_failure(scope=shared, cause)
+
 authorize_entry(runtime_grant_state, normalized_entry, concrete_operation)
-    -> allow | deny(reason) | provider_failure(cause)
+    -> allow | deny(reason) | provider_failure(scope=entry, cause)
 ```
 
-The engine composes field-comparison results using section 3 and evaluates independent authority boundaries. It first tries whole-entry matching, then uses provider-defined alternatives for collective admission. `authorize_entry` checks an entire operation against an entire entry, including every supported restriction and relevant live provider state. Admission decomposition does not alter this operation guard.
+The engine composes field-comparison results using section 3 and evaluates independent authority boundaries. It first tries whole-entry matching, then uses provider-defined alternatives for collective admission. `authorize_entry` checks an entire operation against an entire entry, including every supported restriction and relevant live provider state. Only failures proved isolated to that entry use `scope=entry`; an unexpected failure or newly discovered shared-state failure aborts entry search as a shared failure. Admission decomposition does not alter this operation guard.
 
 For providers needing resolution-time enforcement, a guard/prepare operation may produce an internal, short-lived resource resolution that the adapter immediately uses. That value is not a public transferable permission ticket and must not be usable with a different operation. Pure comparisons alone are not enough to guard a filesystem open safely.
 
 Normalization and comparison functions should be deterministic over validated inputs. Provider initialization and real resource operations are separately effectful. A checker must not invoke application callbacks as part of deciding permission.
 
-### 10.4 Three public concepts: parse, requirement check, operation check
+### 10.4 Public construction and checking interfaces
 
-Recommended public semantic interfaces:
+Version-1 public semantic interfaces:
 
 ```text
 parse(text, explicit_source_context) -> immutable CapabilitySpecRow
+
+build(checked_entry_descriptions, explicit_source_context)
+    -> immutable CapabilitySpecRow
+    literal resource values by default; patterns/unrestricted values explicit
 
 check_requirements(request_row) -> RequirementReport
     queries the current context; does not enter or narrow a block
@@ -1052,7 +1066,7 @@ check_operation(operation_description) -> CapabilityDecision
     queries one concrete operation; does not perform it
 ```
 
-Suggested Gene spellings are `$capabilities/parse`, `$capabilities/check_requirements`, and `$capabilities/check_operation`. Final exported names should be selected once and used everywhere; these operations must remain semantically distinguishable even if a convenience façade shares a namespace.
+The public operation names are `$capabilities/parse`, `$capabilities/build`, `$capabilities/check_requirements`, and `$capabilities/check_operation`. The builder's entry/literal/pattern constructor signatures and report layouts must be finalized before their implementation, following sections 2.5 and 17. These operations remain semantically distinguishable even when they share a namespace.
 
 `RequirementReport` includes `admitted` for mandatory entries and per-entry match status. Optional entries do not make `admitted` false merely because they lack a full match. A report must not claim that every optional operation is permitted.
 
@@ -1064,11 +1078,11 @@ A programmatic operation description may be constructed by ordinary code, using 
 
 ```text
 authorize_current(operation):
-    validate concrete facts and provider identity
+    validate concrete facts, provider identity, and shared enforcement state
     obtain current effective authority and applicable resource-origin restrictions
-    for every independent authority boundary:
-        require one valid complete entry that allows this operation
-    return a structured decision
+    evaluate each applicable row using the order-independent rules below
+    combine independent row decisions using those rules
+    return the structured decision
 
 check_operation(operation):
     return authorize_current(operation)
@@ -1085,6 +1099,23 @@ The public check can return `allowed = false` with a reason for denial or provid
 The guard is used at the trusted effect boundary. If exposed for diagnostics, a user-callable guard still cannot authorize a later unguarded primitive; the real operation guards itself.
 
 Under identical operation facts, context, resource origin, provider state, and grant-validity state, check and guard make the same decision. Their difference is control flow: a check lets the program choose, while a guard prevents the effect on denial.
+
+Authorization distinguishes shared failures from entry-local failures. Invalid operation facts, failure to establish the actual guarded target, and failure of shared provider/enforcement state prevent all entries from authorizing the operation. Validate those prerequisites before entry search; an earlier matching entry cannot hide them. A provider that cannot isolate a failure to one entry must classify it as shared.
+
+Shared validation must cover every dependency that could invalidate an otherwise allowing entry. If the provider cannot separate shared validation from entry evaluation, it must evaluate the applicable entries as a group and surface shared failures before reducing row results. It cannot stop at an allow and thereby hide a shared failure that would appear only under a different entry order.
+
+For a validated operation with usable shared state, each complete entry yields `allow`, `deny`, or an entry-local `provider_failure`. Revoked or expired grants yield a denial with the corresponding validity reason. Combine decisions as follows:
+
+| Combination | Decision |
+| --- | --- |
+| One row has at least one complete, independently valid `allow` | Row allows, even if another entry has an isolated evaluation failure. |
+| No entry allows, and at least one entry has an evaluation failure | Row reports provider failure; no fabricated ordinary denial. |
+| All entries deny, or the row is empty | Row denies. |
+| Every independent row allows | Authorization allows. |
+| At least one independent row definitely denies | Authorization denies, even if another row is inconclusive due to failure. |
+| No row definitely denies, and at least one reports failure | Authorization reports provider failure. |
+
+These reductions are order-independent. An entry-local failure is never converted to an allowing entry; another complete grant can supply an independent proof. A bounded evaluation that exhausts its budget is a failure, not a denial or permission. Short-circuiting is permitted only when it preserves these rules and completed shared validation. Diagnostic detail may include additional safe causes, but the decision category cannot depend on entry order. Cancellation and panic always propagate.
 
 ### 10.6 A successful check is not a reservation
 
@@ -1121,7 +1152,7 @@ Conceptual client API, proposed for illustration:
 
 If a host grants only GET for `api.example.com`, this function may use that request. If it grants no HTTP, the function enters and returns its fallback. A later network error is not converted into the fallback automatically, and later revocation can still make `send` fail.
 
-A generic HTTP library must not install a mandatory unrestricted `[net/Http]` request on every client function or its module merely because it performs HTTP. That precondition would reject narrowly granted callers before the concrete guard is reached. The generic adapter should inherit the current constrained context, or select HTTP through an optional row/upper bound, and enforce the actual prepared request. Fixed-purpose APIs may declare narrower mandatory requirements when they genuinely need that complete policy.
+A generic HTTP library must not install a mandatory unrestricted `[net/Http]` request on every client function merely because it performs HTTP. That precondition would reject narrowly granted callers before the concrete guard is reached. The generic adapter should inherit the current constrained context, or select HTTP through an optional row/upper bound, and enforce the actual prepared request. Fixed-purpose APIs may declare narrower mandatory requirements when they genuinely need that complete policy.
 
 ### 10.8 Guard every sanctioned path, not just a convenient wrapper
 
@@ -1141,7 +1172,7 @@ Initialize resource state only for authorized policy portions and under the exis
 
 If constructing a set of grants fails partway, release already-acquired provider resources before publishing the root context. A selected invalid source or provider initialization failure does not fall back to broader defaults. Optional requests do not excuse operational initialization errors in authority the host actually chose to establish.
 
-Provider exceptions never become `allow`. Unknown operations, invalid state, or inability to enforce the configured restriction deny execution or produce a typed unsupported/provider failure before the effect. Error reporting must preserve the original cause without calling an untrusted formatter in the authorization path.
+Provider exceptions never become allowing entries. Shared validation or enforcement failures prevent the effect; an isolated entry-local failure combines with other decisions according to section 10.5. Unknown operations and inability to enforce the configured restriction are not permission. Error reporting must preserve the original cause without calling an untrusted formatter in the authorization path.
 
 ## 11. Filesystem provider semantics
 
@@ -1164,7 +1195,25 @@ means read operations rooted at `/tmp` and its permitted descendants. It is not 
 
 Body alternatives are alternative roots; properties constrain the whole body. `fs/ReadWrite` can imply equally constrained `fs/Read` and `fs/Write` only through the admitted implication definition.
 
-The provider must explicitly list which operation kinds belong to each capability. Enumeration, creation, deletion, rename, overwrite, metadata access, and handle reuse are not inferred from English names. Compound operations need an explicit demand model; do not decompose one merely to bypass complete-entry authorization.
+Version 1 uses `fs/Read`, `fs/Write`, and the constraint-preserving composite `fs/ReadWrite`. The operation-to-capability contract is:
+
+| Operation | Required authority and checked resources |
+| --- | --- |
+| Read file contents; inspect ordinary file/directory metadata | `fs/Read` for the resolved resource. |
+| Enumerate a directory | `fs/Read` for the directory; reading a child's contents is a separate operation. |
+| Create, append, overwrite, or truncate a regular file; create a directory | `fs/Write` for the target entry and its containing directory. A data-reading mode additionally requires `fs/Read`. |
+| Delete a file or empty directory | `fs/Write` for the removed entry and its containing directory. Recursive deletion is a sequence of separately guarded operations. |
+| Rename, including replacement | One complete `fs/Write`-permitting entry in each applicable authority row must cover both source and destination entries and their containing directories. Separate entries cannot each supply one side. |
+| Copy file contents | A defined composite of source read and destination write operations. Check both demands before starting the copy, then guard each actual read/write and destructive open. Different entries may supply the separately modeled read and write demands. Copy is not transactional, and later revocation can stop it after partial work. |
+| Reuse a retained handle | The corresponding read/write demand plus current authority, origin context, resolved resource identity, and open-mode restrictions. Possession alone supplies none of these permissions. |
+| Change permissions/ownership; create hard links, symlinks, special files, or memory mappings | Unsupported in this initial provider contract; reject until a separate operation contract and enforcement profile are adopted. |
+| Close an already-owned handle without further data effects | Release-only cleanup under section 14.6. Buffered writes require ordinary write authority; close is not a flush privilege. |
+
+Body roots are literal directory-tree selectors, not generic glob patterns. A token `*` is unrestricted; a string containing `*` is a literal path character where the target platform admits it. Root containment is evaluated using the provider's constrained-resolution model, never raw string prefixing.
+
+Root alternatives describe the allowed resource set within an entry. For `fs/Read`, splitting a list of roots preserves its single-resource operation set. For `fs/Write` and `fs/ReadWrite`, a grouped entry can additionally cover a rename between those roots. The provider must retain that complete compound operation during admission; it cannot claim an exact decomposition into singleton roots when that drops permitted cross-root renames. A containment proof may remain conservative without weakening the guard.
+
+Version 1 does not follow symlinks in guarded resource traversal. Selecting/initializing a root and resolving subsequent operations must use a platform-specific profile that defines root identity, parent traversal, replacement races, and retained-handle behavior before implementation. Operations whose no-follow or identity guarantees cannot be enforced are rejected. The platform profile may narrow supported operations but cannot reinterpret this table or silently broaden traversal.
 
 ### 11.2 Normalize against a stable source base
 
@@ -1199,32 +1248,44 @@ The check must not perform the requested read/write as a test. The actual read/w
 
 ## 12. HTTP provider semantics and independently testable guard logic
 
-### 12.1 The primary example
+### 12.1 One canonical component representation
 
 ```gene
 (net/Http ^hosts ["api.example.com"] ^methods ["GET"])
 ```
 
-The body is unrestricted. This entry permits an HTTP operation only when its actual hostname is `api.example.com` under the provider's host normalization and its actual method is GET. It does not imply POST, HEAD, a subdomain, another port restriction, or local-network restriction beyond the fields actually configured.
+This entry permits an HTTP operation only when its actual normalized hostname is `api.example.com` and its actual method is GET. Omitted fields are unrestricted within the supported HTTP domain. It does not imply POST, HEAD, subdomains, a port restriction, or a network-address restriction.
 
-With methods represented as exact alternatives, HEAD is not automatically implied by GET. Methods retain the exact semantics chosen by the transport/provider; do not invent case-folding or implicit verb implications in a generic string matcher.
+Every HTTP entry normalizes to one conjunction of component constraints. There is no separate full-URL pattern predicate. The supported properties are:
+
+| Property | Version-1 meaning |
+| --- | --- |
+| `schemes` | Exact alternatives from `"http"` and `"https"`. |
+| `hosts` | Exact normalized hosts or the restricted subdomain patterns in section 12.4. |
+| `ports` | Exact integer alternatives in 1–65535, compared to the effective port. |
+| `paths` | Whole-path string patterns, with section 8's escaping, over the normalized path only. A wildcard cannot consume a host, query, or other component. |
+| `queries` | Exact serialized query alternatives without the leading `?`. Boolean `false` denotes absence of the query delimiter; `""` denotes a present but empty query. Other booleans are invalid. Query strings have no wildcard semantics. |
+| `methods` | Validated, case-sensitive exact method alternatives. HEAD is not implied by GET. |
+
+Each field accepts a scalar or a flat list of alternatives of its admitted kind. Omitting it or supplying the token `*` is unrestricted; an empty alternatives list permits no operation. In HTTP fields the unrestricted token is supplied as the whole field value, not mixed into a list. All fields are conjunctive. Independent lists intentionally select their cross product; correlated alternatives must be written as separate complete entries.
 
 ### 12.2 Prepared requests and concrete facts
 
-The trusted HTTP adapter prepares the request once, validates it, and derives a complete descriptor:
+The trusted adapter prepares and validates an immutable request, then derives its concrete operation facts:
 
 ```text
 HttpOperation:
-    normalized_url
+    normalized_url                 # derived serialization, not another policy field
     scheme
     hostname
     effective_port
     path
-    query facts, when supported by the configured schema
+    query_present
+    serialized_query               # defined when query_present is true
     actual_method
 ```
 
-These fields are concrete values. They contain no admission flag and do not use an omitted field to mean unrestricted permission. If the caller omits a request method, the adapter fills the method it will actually send before checking. If necessary facts cannot be determined, it rejects the operation.
+These are concrete values, not permission patterns. If the request omits a method, the adapter determines the method it will actually send before checking. Missing or contradictory facts are invalid input. An absent query is an explicit fact, not missing operation data or unrestricted permission.
 
 ```text
 prepared = prepare_request(actual_arguments)
@@ -1233,108 +1294,111 @@ guard_operation(net/Http, facts)
 transport.send(prepared)
 ```
 
-Use the same parser/normalizer for policy normalization and prepared operation facts. The guard must inspect the authority of the actual URL, not an unrelated caller-supplied `hostname` property. Connection reuse, proxy configuration, or an authority/header override must not send a materially different target from the guarded one; the initial adapter may reject conflicting overrides rather than support ambiguous behavior.
+Policy normalization and request preparation use the same versioned component contract. The adapter guards the actual URL authority and binds those facts to the effect. Caller-supplied host facts, a conflicting Host/authority override, or transport rewriting cannot select a different target after authorization.
 
 ### 12.3 A dedicated HTTP authorization function
-
-Keep the operation matcher small and independently tested:
 
 ```text
 authorize_http_entry(entry, operation):
     require valid, complete HTTP operation facts
-    require entry's complete URL-body constraint matches normalized_url
     require entry.schemes permits operation.scheme
     require entry.hosts permits operation.hostname
     require entry.ports permits operation.effective_port
     require entry.paths permits operation.path
+    require entry.queries permits (operation.query_present, operation.serialized_query)
     require entry.methods permits operation.actual_method
-    check every other admitted HTTP restriction
     return allow only when all apply
 ```
 
-The core selects entries and combines authority boundaries. This function handles HTTP meaning. Initialization and resource-origin validity may be checked by a wrapper, but cannot be omitted from the final decision.
+The engine combines complete entries and independent ceilings. Shared provider validation, origin restrictions, and live validity remain mandatory; entry-local failures follow section 10.5. The matcher has no second full-URL constraint to reconcile with the component fields.
 
-Shared helpers can implement pattern alternatives and integer membership. Ports use exact integer alternatives, not numeric maximum ordering. The schema should use exact alternatives for schemes/methods and documented exact/pattern matching for hosts/paths. Unknown constraints fail schema validation, not open access at the guard.
+### 12.4 Exact-URL shorthand and restricted host patterns
 
-### 12.4 Compact body patterns
+An entry's body is either unrestricted (omitted or token `*`) or exactly one absolute URL:
 
 ```gene
-(net/Http "http://localhost:8080/status" ^methods ["GET"])
+(net/Http "https://api.example.com/status" ^methods ["GET"])
 
+[
+  (net/Http "https://api.example.com/status" ^methods ["GET"])
+  (net/Http "https://backup.example.com/health" ^methods ["GET"])
+]
+```
+
+Several URLs require several entries. Mixing `*` with a URL, supplying multiple body URLs, or using whole-URL glob syntax is invalid. A raw `*` in URL shorthand is rejected to avoid ambiguity; use component constraints or checked literal construction for an actual asterisk in a path or query. URL shorthand is converted to exact scheme, host, effective-port, path, and query constraints before admission and operation matching. The original spelling remains only as diagnostic provenance.
+
+Component restrictions express patterns directly:
+
+```gene
 (net/Http
-  "https://api.example.com/*"
-  "https://backup.example.com/*"
+  ^schemes ["https"]
+  ^hosts ["*.example.com"]
+  ^paths ["/api/*"]
   ^methods ["GET"])
 ```
 
-Body alternatives constrain complete normalized URL matching; all properties apply to every alternative.
+The only hostname wildcard syntax is a complete leftmost `*.` followed by an exact DNS suffix. It matches one or more complete labels before that suffix, never the suffix itself. For example, `*.example.com` matches `a.example.com` and `a.b.example.com`, but not `example.com` or `example.com.evil.test`. It does not match IP literals. Partial-label and other wildcard placements, including `localhost*`, `api.*.example.com`, and the string `"*"`, are rejected. Use the token `*` to leave hosts unrestricted.
 
-Under the generic glob rule:
+Thus `(net/Http "http://localhost*")` and `(net/Http ^hosts ["localhost*"])` are both invalid, by explicit grammar rather than an assumption that component scoping makes them safe. An exact hostname policy is still not a loopback-IP policy.
 
-```gene
-(net/Http "http://localhost*")
-```
-
-can match `http://localhost.evil.example/`. It is not an exact-localhost restriction. Do not describe that pattern as local-only access.
-
-For structured restrictions:
-
-```gene
-(net/Http *
-  ^schemes ["http"]
-  ^hosts ["localhost"]
-  ^ports [8080]
-  ^paths ["/status"]
-  ^methods ["GET"])
-```
-
-The body and properties are conjunctive. A broad body cannot cancel a narrow property.
-
-### 12.5 Concrete URL normalization for requirement admission
-
-Operation authorization already extracts hostname and method from a real request. Policy-to-policy admission needs an additional, explicit normalization rule for compact exact URLs.
+### 12.5 Lossless shorthand normalization and admission
 
 Given:
 
 ```gene
 # Grant:
-(net/Http * ^hosts ["api.example.com"])
+(net/Http ^hosts ["api.example.com"])
 
 # Mandatory request:
 (net/Http "https://api.example.com/status" ^methods ["GET"])
 ```
 
-the request's exact URL logically restricts its hostname even though `^hosts` was omitted. The recommended normalizer derives provable scheme/host/effective-port/path projections from that exact URL and intersects them with explicitly authored component constraints. It retains the original URL-body constraint.
+the request normalizes to component constraints equivalent to:
 
-After this normalization, independent property matching can recognize the host restriction without requiring the programmer to repeat it. This is not adding permission: the added host constraint was already implied by the original body.
+```gene
+(net/Http
+  ^schemes ["https"]
+  ^hosts ["api.example.com"]
+  ^ports [443]
+  ^paths ["/status"]
+  ^queries [false]
+  ^methods ["GET"])
+```
 
-For multiple exact URL alternatives, each projection is the union of that component's possibilities, still conjoined with the original alternatives. The original body must remain to preserve host/path/port correlations. Do not replace it with independently combined projections.
+The grant covers the requested host while leaving the other dimensions unrestricted, so ordinary per-field comparison admits the request. No projection or cross-field theorem prover is needed.
 
-Derive a projection only when it is proved for all body matches under the actual supported URL semantics. A wildcard in a location that prevents sound derivation leaves that projection unrestricted or represented by a conservative exact constraint. A proof limit may make mandatory admission inconclusive; it does not weaken operation guarding.
+An exact URL without `?` selects query absence. A URL ending in `?` selects a present empty query; a URL containing `?x=1` selects exactly `x=1`. Converting any of these into an unrestricted query field would broaden permission and is forbidden. Components that cannot be represented faithfully under the supported normalization profile are rejected, never discarded.
 
-The reverse direction can remain conservative: a structured request and a compact grant might denote compatible sets without satisfying the per-field admission procedure. Diagnostics distinguish inability to match from a demonstrated forbidden request. The proposal does not require a general cross-field theorem prover.
+Explicit component properties on an exact-URL entry are intersected with the URL-derived constraints. A conflicting property yields an empty operation set, not an override. Exact path values containing pattern characters must be represented as literal constraints or correctly escaped patterns. Provider normalization preserves that distinction.
 
-### 12.6 Normalization details the provider must pin down
+Two URL entries remain two complete tuples. Combining their host/path/query components into independent lists is not a valid normalization. Finite alternative decomposition remains available within an entry's supported component lists without changing these correlations.
 
-Before advertising support, the HTTP provider's own contract and fixtures must fix:
+### 12.6 Normalization and transport implementation gate
 
-- supported URL schemes and treatment of host case/IDNA/trailing-dot spellings;
-- explicit versus default ports, IPv4/IPv6 literals, and credential-bearing URLs;
-- path/query percent encoding, empty paths, fragments, and any query restriction;
-- method validation and exact matching; and
-- which overrides, redirects, retries, proxies, and pooled connections are supported.
+The following semantic choices are fixed for version 1:
 
-The design does not silently select an unrelated parser's behavior. Policy facts and actual transport targets must agree. Unsupported ambiguous forms are rejected. Avoid including secrets from URLs or headers in denial reports.
+| Area | Contract |
+| --- | --- |
+| Schemes and ports | HTTP and HTTPS only; absent ports become 80 and 443 respectively. Explicit default ports have the same operation meaning. |
+| DNS names | Case-insensitive ASCII DNS spelling, normalized to lowercase. Unicode host input and trailing-dot spellings are rejected in the initial profile; there is no implicit IDNA or trailing-dot conversion. ASCII IDNA labels remain exact ASCII names. |
+| IP literals | Only canonical IPv4/IPv6 forms admitted by the provider's pinned parser profile. Reject ambiguous numeric spellings and IPv6 zone identifiers. No DNS wildcard matching of IP literals. |
+| User information and fragments | Reject credential-bearing URLs and fragment-bearing URLs in both shorthand and actual requests rather than silently discard their components. |
+| Empty paths | Normalize to `/` in both policy and prepared operation facts. |
+| Query | Preserve absent versus empty versus nonempty, parameter order, duplicates, and encoded values. Do not decode into a map, sort, or silently broaden to arbitrary queries. |
+| Methods | Validate the exact method token the adapter sends; no capability-layer case folding or verb implication. |
+| Target overrides and proxies | The initial adapter rejects caller target/Host/authority overrides and proxy configuration; it disables implicit environment proxy selection. Additional modes require an explicit enforcement contract. |
+| Redirects and retries | Disable unchecked automatic handling. Each explicitly supported redirected or retried request is prepared and guarded again before it starts. |
+| Pooled connections | Reuse only when the adapter can establish that the guarded scheme, authority, port, and any configured network-address restriction still describe the actual connection. Otherwise reject reuse or open a newly guarded connection. |
+
+Before provider implementation, a versioned normalization/transport profile must specify the exact accepted IP syntax, path and query percent-encoding treatment, dot-segment handling, and the transport's serialization behavior, with paired policy/request fixtures. It must also specify supported redirect status/method rules and pooled-connection checks. This is a prerequisite to implementation, not permission for adapters to select different URL meanings. Unsupported ambiguous forms are rejected. Denial reports redact query values and other secrets.
 
 ### 12.7 Redirects, retries, DNS, and later work
 
-Each redirect is a new target operation with its resulting method and URL. Guard that operation before sending it; disable automatic unchecked redirect behavior in the underlying client.
+Each redirect is a new target operation with its resulting method and URL. Guard that operation before sending it. A hostname policy is different from an IP/network destination policy. If the host installs both, enforce both at the appropriate resolution/connect point. An implementation without enforcement for a configured network-address restriction must reject that configuration.
 
-A hostname policy is different from an IP/network destination policy. If the host installs both, enforce both at the appropriate resolution/connect point. `localhost` or a name beginning with that text is not a substitute for a loopback-address policy.
+A logical hostname guard does not promise that DNS remains unchanged. A successful check does not authorize a new target or future retry. Revalidate at each new external-operation start and on relevant retained-resource reuse. An in-progress I/O operation need not be retroactively undone by revocation; subsequent effects remain subject to live guards.
 
-A logical hostname guard does not promise that DNS remains unchanged, and a successful prior check does not authorize a new redirect target or unlimited future retries. Revalidate at each new external-operation start and on relevant retained-resource reuse. An in-progress I/O operation need not be retroactively undone by revocation; subsequent effects remain subject to live guards.
-
-Internal transport mechanics needed to implement an authorized HTTP operation stay inside the trusted adapter. Do not expose a general unguarded socket merely because an HTTP request passed. Whether a deployment adds an independent lower-level network restriction is an explicit provider/host policy, not a grant inferred from a namespace name.
+Internal transport mechanics needed to implement an authorized HTTP operation stay inside the trusted adapter. Do not expose a general unguarded socket merely because an HTTP request passed. Separate lower-level network restrictions are explicit host/provider policy, not grants inferred from a namespace name.
 
 ## 13. Errors, reports, validation limits, and error-handling integration
 
@@ -1353,7 +1417,7 @@ The following are semantic outcomes; implementations may reuse existing typed er
 | Concrete operation denied | Actual operation summary and denying authority boundary; no effect started. |
 | Invalid concrete operation | Missing/contradictory facts; not an unrestricted request. |
 | Invalid or revoked live grant | Safe provenance and validity information; do not expose forgeable authority objects. |
-| Provider initialization/evaluation failure | Original structured cause; no allow, no silent policy fallback. |
+| Provider initialization/evaluation failure | Original structured cause; shared failures prevent execution, entry-local failures combine under section 10.5; no silent policy fallback. |
 
 A field comparator's counterexample is a counterexample for that field. It is not automatically a valid counterexample operation for the full policy when other constraints correlate the fields. State that limitation in diagnostics.
 
@@ -1425,8 +1489,8 @@ Caller-owned callee/receiver/argument expressions use Gene's existing evaluation
 
 ```text
 available = actual caller context
-          ∩ callee module admission ceiling
-          ∩ applicable import/bound/eval origin ceilings
+          ∩ callee's host-admitted loader/eval origin ceiling
+          ∩ applicable bound/registration/resource origin ceilings
 
 if callable declares a request row:
     require full matching for its mandatory entries
@@ -1436,9 +1500,22 @@ execute defaults and body under available
 restore caller on all returns/unwinds
 ```
 
-A protocol message's dispatch still selects ordinary behavior. It cannot select a different capability provider, bypass the selected implementation's module ceiling, or replace current authority. Constructor default evaluation and initialization use the same ordering.
+A protocol message's dispatch still selects ordinary behavior. It cannot select a different capability provider, bypass the selected implementation's loader/origin ceiling, or replace current authority. Constructor default evaluation and initialization use the same ordering.
 
-Module initialization follows its own request boundary and supplied loader policy before executing top-level application code. Once admitted, its retained maximum is combined with later callers rather than used as an alternative authority source. Do not infer current permission from a warm module cache or a successful earlier initialization.
+Module-level `^capabilities` is rejected in version 1. Ordinary import initializes application-controlled code under the actual importing context intersected with its host-admitted loader/origin policy. Source acquisition may use private control-plane authority under section 14.8, but that authority never becomes initialization authority. Importing inside `with_capabilities []` cannot trigger broader application-controlled top-level effects.
+
+Removing module declarations does not make initialization independent of authority: top-level code can branch on operation checks, allocate retained resources, or construct different exported state. Version 1 distinguishes two kinds of initialized module instances:
+
+| Instance kind | Initialization and cache contract |
+| --- | --- |
+| Ordinary lazy instance | Scoped to the loading owner, source/catalog revision, loader policy, and initializing effective-context identity. Retain that origin ceiling with the instance and its defined callables. Reuse only in that admitted instance domain; do not publish it as a process-global singleton available to other initialization contexts. Compiled inert code may be shared separately. |
+| Explicitly shared instance | The host selects and initializes it in a declared startup phase before untrusted imports can choose its initialization context. Initialization uses the selected startup authority intersected with application and loader/origin ceilings. Later imports retrieve the initialized instance; calls still intersect the actual caller with its retained origin ceiling. No application-triggered lazy initialization may borrow this startup authority. |
+
+An import from a different ordinary initialization context obtains a separately admitted instance, unless the host explicitly supplied a shared instance. Passing an already-created module object across contexts preserves its retained ceiling and does not turn it into a new cache entry. Shared mutable module state remains a host sharing decision, separate from external authority.
+
+Failed initialization publishes no usable exports. Mark that instance generation failed and retain the original failure within its cache domain; a narrower caller's failure cannot poison an unrelated instance domain or a host's shared instance. Do not automatically retry under broader authority or silently change contexts. An explicit host retry creates a new generation after resource cleanup; earlier external effects are not transactionally undone. A shared-instance startup failure fails that declared startup step rather than deferring privileged initialization to a later importer. Cyclic or concurrent imports must not expose partially initialized exports as a way around these rules; the loader must define its cycle/wait behavior before implementation.
+
+Cache hits never grant authority or establish present live validity. Retained-resource guards and callable admission still run under the actual invocation context. A mandatory condition needed at every invocation belongs on the callable, and cached admission follows section 6.5.
 
 This proposal does not introduce capability-row variance or a new static effect system. Public callable/protocol contract tooling must retain mandatory versus optional metadata. Comparing only the union of permitted operations loses an observable entry precondition: a required entry and an optional entry with the same constraints have different admission behavior.
 
@@ -1446,13 +1523,13 @@ This proposal does not introduce capability-row variance or a new static effect 
 
 | Value or boundary | Required authority behavior |
 | --- | --- |
-| Ordinary synchronous function or message call | Intersect actual caller with applicable declaration/module/retained ceilings. A call cannot elevate the restricted block. |
-| Ordinary closure created inside a temporary block | Creation alone does not automatically capture that temporary dynamic bound. It uses its documented callable/module/eval ceilings when later invoked. Do not promise stronger capture without an explicit retained mechanism. |
+| Ordinary synchronous function or message call | Intersect actual caller with applicable declaration/loader/eval/retained ceilings. A call cannot elevate the restricted block. |
+| Ordinary closure created inside a temporary block | Creation alone does not capture that temporary dynamic bound. Later invocation uses the actual caller and applicable callable/loader/eval ceilings. This dynamic-only rule is the version-1 contract. |
 | Bounded callable / `runtime/bind_call` | Retain the creating ceiling and intersect with every later caller. Bind inside the restricted block to preserve that bound across escape. |
 | Eval-created code and sandboxed module code | Retain the admitted evaluation/module ceiling, installed before untrusted execution. A later broader caller cannot erase it. |
 | Task started inside the boundary | Capture the effective context at spawn. Suspending and resuming do not replace it with a worker or host root context. Ordinary task lifetime rules remain separate. |
 | Generator/lazy pipeline created under a boundary | Retain the defined creation/execution ceiling; pull and close also apply the actual consumer's relevant ceiling. Returning the stream is not executing or authorizing all its later effects. |
-| Registered callback | The retaining API must bind its owner and ceiling explicitly. A plain function reference is not proof of captured registration authority. |
+| Registered callback | Every sanctioned callback-retaining API captures the effective registration context and owner, regardless of where the function was created. Dispatch intersects the registration ceiling, callable origin ceiling, and active dispatcher context. A plain function reference cannot bypass this wrapper. |
 | Retained file/socket/database handle | Preserve origin constraints and check current permission at each relevant operation. Possession alone is not operation authority. |
 | Native callback | Apply its admitted callback/owner ceiling and active invocation policy. Foreign-thread entry cannot silently borrow root authority. Unsupported modes are rejected. |
 
@@ -1468,9 +1545,13 @@ A useful retained-call pattern is:
 (bounded)
 ```
 
-The binder name refers to the previously discussed Gene runtime seam; the normalized literal behavior here is part of this proposed revision. Creation does not call the target. Later invocation retains the restricted ceiling and still intersects the actual caller's context.
+Creation does not call the target. Later invocation retains the restricted ceiling and still intersects the actual caller's context.
 
-Do not silently make every plain closure capture temporary dynamic authority as an incidental implementation of block grants. If that language-wide semantic change is ever wanted, it needs its own design and migration. For untrusted generated extensions, use a sealed module/eval ceiling or an explicitly bounded callable.
+Do not silently make every plain closure capture temporary dynamic authority as an incidental implementation of block grants. For untrusted generated extensions, install a retained loader/eval ceiling before execution and use bounded callables or registration APIs when retaining work.
+
+Registration capture applies equally to a closure created during registration and to a pre-existing function reference passed in. Capturing newly created closures alone would not protect the latter. Retaining APIs include event handlers, timers, scheduled callbacks, and native callback registrations. Foreign-thread dispatch uses a host-admitted dispatcher context and the registration ceiling, never an implicit root context; unsupported modes are rejected. Re-registering an already bounded callable adds an intersection and cannot strip its earlier ceiling.
+
+An ordinary mutable list or object is not a callback-retaining API. If untrusted code can store arbitrary function references there, the host must bind them under an admitted owner ceiling before executing them. It cannot assume that creation inside a block sealed those values. Likewise, capability bounds do not authorize arbitrary queued closures as privileged host continuations.
 
 ### 14.6 Cleanup and lifetime are not new privileges
 
@@ -1500,7 +1581,11 @@ Install name isolation, admission restrictions, and numeric execution policies b
 
 Static declaration paths use the declaring module's stable base; literals inside that module share the base. CLI, environment, and configuration files use section 9. A dynamic spec carries an explicit base supplied to its parser/normalizer. Base identity is metadata, not permission.
 
-The trusted launcher may need narrowly admitted control-plane operations to read its selected configuration and approved source graph before application entry. Those operations are not default application capabilities and their handles must not be exposed to the program. Therefore `--cap []` can still load an approved application while giving its executed code no ordinary filesystem/network authority. Import/source acquisition remains governed by its own admitted source policy rather than arbitrary file access through a hidden back door.
+The trusted launcher may need narrowly admitted control-plane operations to read its selected configuration and approved source graph before application entry. Those operations are not default application capabilities and their handles must not be exposed to the program. Therefore `--cap []`, including the built-in default, can load an approved application while giving its executed code no ordinary filesystem/network authority.
+
+The host's source policy identifies admitted entry modules, dependency origins/versions, and resolver rules. Supplying a launcher entry file admits acquisition of that entry, not arbitrary files named by application code. Dependencies must be selected by the host's configured package/source resolver and checked against the source policy before acquisition. In the absence of such admission, dependency acquisition is rejected. Dynamic imports obey the same policy; constructing a path or URL in application code is not source admission. The loader must not expose raw source/configuration handles or a general read/fetch primitive through this control plane.
+
+Acquisition and inert parsing do not authorize application-controlled macros, provider registration, module initialization, or arbitrary compilation callbacks. Any application-controlled execution uses the applicable caller/loader ceilings. Shared module initialization occurs only in the explicit startup phase described in section 14.4. A host-configured source graph or retained compiled-code cache does not waive these execution rules.
 
 ### 14.9 Harness and Cordis integration
 
@@ -1514,9 +1599,13 @@ Use the shared capability core for profile/module/block/check/guard logic. Persi
 
 ## 15. Implementation sequence and bounded scope
 
+### Phase 0 — Complete the applicable implementation gates
+
+Finalize the provider operation/resolution profiles, loader instance/cache rules, public builder/report signatures, and concrete validation limits listed in section 17 before implementing the affected subsystem. The core reader and abstract policy algebra can proceed independently of platform-specific enforcement profiles. Do not let an adapter implementation implicitly choose unresolved permission semantics.
+
 ### Phase 1 — Reader, catalog, and normalized constraints
 
-Implement the restricted reader with duplicate detection and preserved locations. Separate core admission metadata from provider restrictions. Reuse it across source literals, CLI text, capability files, environment values, and checked dynamic parsing.
+Implement the restricted reader with duplicate detection and preserved locations. Separate core admission metadata from provider restrictions. Reuse it across source literals, CLI text, capability files, environment values, and checked dynamic parsing. Supply the checked builder in this phase, with literal-by-default values, explicit patterns, explicit bases, and immutable output; dynamic bounds must not depend on string interpolation.
 
 Implement trusted catalog identities, frozen namespace expansion, constraint-preserving implications, and provider-local validators. Preserve the source naming convention and reject malformed optional entries.
 
@@ -1528,11 +1617,11 @@ Implement filesystem and HTTP provider-specific authorization functions and a sm
 
 Create one shared concrete authorization evaluator used by programmatic checks and effect guards. Inventory sanctioned entry points and use fake transports/resources to verify that denied operations never start. Retained handles and redirect/retry paths participate from the beginning.
 
-Pin the provider-specific details in section 17 rather than claiming that a generic literal matcher alone implements safe filesystem or HTTP access.
+Implement against the provider profiles completed in Phase 0. Use HTTP's canonical component schema and lossless exact-URL shorthand, the filesystem operation table, and the order-independent failure rules. A generic literal matcher alone does not implement safe filesystem or HTTP access.
 
 ### Phase 3 — Host grants and startup sources
 
-Select exactly one source with the precedence in section 9. Explicit rows replace lower defaults; `[]` contributes none. Apply administrator ceilings, initialize only authorized state, and roll back partial initialization on failure.
+Select exactly one source with the precedence in section 9. Explicit rows replace lower defaults; the built-in default is `[]`. Apply administrator ceilings, initialize only authorized state, and roll back partial initialization on failure.
 
 Keep startup source/loader authority separate from application authority. Neither a stored policy nor an environment edit mutates live grants after startup.
 
@@ -1540,15 +1629,15 @@ Keep startup source/loader authority separate from application authority. Neithe
 
 Implement mandatory admission, including collective coverage of complete request alternatives within each authority row, and exact intersection with the full requested row. Implement `^^optional` as partial-availability selection without a full-match entry precondition.
 
-Add `with_capabilities` as pure attenuation and the separate required-block operation. Install callable selection before callee-owned defaults. Define module initialization and retained ceiling behavior explicitly.
+Add `with_capabilities` as pure attenuation and the separate required-block operation. Install callable selection before callee-owned defaults. Reject module-level request rows. Implement ordinary import under caller/loader ceilings, scoped lazy module instances, and explicitly initialized shared instances under section 14.4.
 
-Test all control transfers and nested attempts to recover root authority. Do not ship only straight-line push/pop examples.
+Test all control transfers and nested attempts to recover root authority. Cached mandatory admission must revalidate live dependencies before defaults/body execution, including memory-only effects. Do not ship only straight-line push/pop examples.
 
 ### Phase 5 — Deferred boundaries and lifecycle
 
 Integrate tasks, lazy streams, bind_call/retained callbacks, module/eval origins, and native entry with the same policy state. Add authority restoration to every optimized and cancellation path accepted by each backend.
 
-Preserve grant provenance and live revocation. Keep resource/callback cleanup independent of the ordinary policy predicates without turning cleanup into a privilege channel.
+Preserve grant provenance and live revocation through retained origin-context references plus resource-specific restrictions. Bind registration contexts for both new and pre-existing function references; plain closure creation remains dynamic-only. Keep resource/callback cleanup independent of the ordinary policy predicates without turning cleanup into a privilege channel.
 
 ### Phase 6 — Tooling, migration, and applications
 
@@ -1586,6 +1675,13 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | L18 | Namespace has no admitted match or name is unknown | Reject even if optional. |
 | L19 | Catalog changes after wildcard expansion | Existing authority unchanged. |
 | L20 | Application-defined type/impl repeats a provider name | Cannot substitute for trusted authorization behavior. |
+| L21 | Builder resource value contains quotes, parentheses, or property syntax | Remains one value; cannot add an entry or property. |
+| L22 | Builder literal value contains `*` | Literal character or domain error; never an implicit pattern or unrestricted token. |
+| L23 | Explicit builder pattern or unrestricted value | Validated against its provider grammar; semantics survive faithful serialization/reparse. |
+| L24 | Builder receives a relative path, then cwd or input collection changes | Captured base and immutable copied values determine the unchanged row. |
+| L25 | Builder row in a required block/check versus a pure bound | Same normalized constraints; optional metadata accepted only in request contexts. |
+| L26 | Module-level `^capabilities` declaration | Rejected as unsupported, not silently ignored. |
+| L27 | No startup policy source is supplied | Select built-in `[]`; approved source acquisition supplies no ordinary application grants. |
 
 ### 16.2 Algebra and mandatory admission
 
@@ -1608,8 +1704,8 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | A15 | Optional broad request plus mandatory narrow request | Preserve mandatory obligation during normalization. |
 | A16 | Independent broad grant revoked while narrower grant remains | Narrower authority still works; no unsafe redundancy elimination. |
 | A17 | Reorder overlapping grants | Same authorization outcomes and equivalent retained validity behavior. |
-| A18 | Exact URL's implied host restriction | Normalization supports admission beneath exact host grant, retaining original URL constraint. |
-| A19 | Several exact URLs projected to host/path lists | No extra cross-product URLs become permitted. |
+| A18 | Exact URL request beneath exact host grant | Lossless component normalization permits ordinary per-field admission; no separate URL predicate. |
+| A19 | Two exact URLs with different host/path/query combinations | Retain two complete entries; no extra cross-product URLs become permitted. |
 | A20 | Grouped root request with one root absent from the grant row | Admission fails; identify the unmatched root alternative. |
 | A21 | Separate GET and POST grants for the same URL; one request allowing both methods | Admission succeeds through exact method alternatives. |
 | A22 | GET-on-A and POST-on-B grants; one request for GET or POST on A or B | Admission fails; POST-on-A and GET-on-B are not covered. |
@@ -1617,6 +1713,7 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | A24 | Grouped roots admitted through separate grants; one grant is later revoked | Its operations fail the real guard; the other grant retains its own authority. |
 | A25 | Provider-defined indivisible multi-resource operation | No decomposition into separately granted resource facts; match the complete operation shape. |
 | A26 | Whole-entry match fails and alternative expansion exceeds its proof budget | Report `cannot_prove`; mandatory boundary does not execute. |
+| A27 | Grouped write-root request includes cross-root rename; grants are separate single-root entries | Do not claim coverage through an inexact singleton-root decomposition. |
 
 ### 16.3 Optional requests and upper-bound blocks
 
@@ -1638,8 +1735,11 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | B14 | Body return/break/continue/error/panic/cancellation | Context restored without changing ordinary control target. |
 | B15 | Default expression performs an effect | Callee request/ceiling is already installed. |
 | B16 | Explicit argument expression before callee entry | Uses caller schedule; wrapping the complete call bounds it. |
-| B17 | Required module initializes once, later invoked by narrower caller | Cannot recover module initialization authority. |
+| B17 | Host-initialized shared module later invoked by a narrower caller | Callable and guard use caller ∩ retained origin ceiling; no recovery of startup authority. |
 | B18 | All-optional requirement check reports admitted | Does not imply any concrete operation is allowed. |
+| B19 | Mandatory admission is cached, then its only covering grant is revoked | Next invocation rejects before defaults or body, including in-memory mutations. |
+| B20 | Cached admission witness revokes but an independent covering grant remains | Fresh dependency validation/search can still admit; no permanent first-witness dependency. |
+| B21 | All-optional request and pure bound select the same constraints | Same effective authority; only admission/report intent differs. |
 
 ### 16.4 Concrete checks and guard placement
 
@@ -1655,7 +1755,7 @@ For these cases use `(net/Http ^hosts ["api.example.com"] ^methods ["GET"])` unl
 | G06 | Missing required operation facts | Invalid operation, not unrestricted access. |
 | G07 | Check succeeds, then context narrows or grant revokes | Later guard denies. |
 | G08 | Same frozen facts/context/provider validity | Check and guard agree. |
-| G09 | Provider authorization throws or exhausts matching budget | No effect; distinguish provider failure from ordinary denial. |
+| G09 | Shared provider validation fails, or entry evaluation fails with no independent allowing entry | No effect; preserve provider failure under section 10.5 rather than invent permission. |
 | G10 | Redirect leaves allowed target or changes to a forbidden method | Second request denied before sending it. |
 | G11 | Lazy request stream returned without consumption | No implicit external operations; each actual later operation is guarded. |
 | G12 | Public alternative/lower-level adapter path | Cannot bypass common enforcement. |
@@ -1666,6 +1766,12 @@ For these cases use `(net/Http ^hosts ["api.example.com"] ^methods ["GET"])` unl
 | G17 | Successful policy requirement check | Does not remove operation guards or reserve future permission. |
 | G18 | Denial and provider diagnostics | Safe facts only; no credentials or live authority objects. |
 | G19 | Generic HTTP client called under a narrow host/method grant | No artificial mandatory-unrestricted entry requirement; the permitted concrete request reaches its real guard. |
+| G20 | One entry has an isolated failure and another independently allows; reverse entry order | Row allows in both orders after shared validation. |
+| G21 | Shared target/provider validation fails beside a seemingly allowing entry | No effect in either order; an entry cannot bypass shared prerequisites. |
+| G22 | No entry allows and one fails evaluation; reverse entry order | Same provider-failure result, not an ordinary denial. |
+| G23 | One independent row definitely denies and another reports failure | Denial in either row order; no effect. |
+| G24 | Retained handle has overlapping origin grants; one revokes | Reevaluate origin context alternatives; another live origin grant may still permit the operation. |
+| G25 | Current and origin contexts allow a write, but retained handle is read-only | Deny due to resource-specific mode; context retention does not erase handle restrictions. |
 
 ### 16.5 Deferred execution, runtime integration, and restoration
 
@@ -1685,6 +1791,15 @@ For these cases use `(net/Http ^hosts ["api.example.com"] ^methods ["GET"])` unl
 | R12 | Trusted host processes a plugin tool request | Validate named operation and owner policy; no arbitrary privileged closure execution. |
 | R13 | Runtime backend cannot enforce the contract | Reject explicitly; no silent success or weaker advertised sandbox. |
 | R14 | Capability block receives a mutable live object | External authority bound holds; tests do not mistake it for in-memory isolation. |
+| R15 | Pre-existing function registered inside `with_capabilities []`, then dispatched by broader code | Registration wrapper retains empty authority; creating the function earlier cannot bypass it. |
+| R16 | Newly created closure registered under the same empty bound | Same registration ceiling as R15; no special exemption or extra authority. |
+| R17 | Bound callback is re-registered under another context | Intersect both retained ceilings and actual dispatcher; no stripping an earlier bound. |
+| R18 | Restricted import attempts top-level external effects | Initialization stays under caller ∩ loader/origin ceiling; loader acquisition authority cannot authorize them. |
+| R19 | Narrow owner/context imports a module before a broader independent owner/context | Separate ordinary instance domains; first importer cannot set the other's cached exports or failure. |
+| R20 | Shared module has authority-sensitive initialization | Host explicitly initializes before untrusted imports; warm lookup never triggers broader lazy initialization. |
+| R21 | Module initialization fails after allocating a resource | No usable partial exports; clean up, retain failure for that instance generation, no automatic broader retry. |
+| R22 | Application dynamically imports an unadmitted path or URL | Reject source acquisition; no hidden general read/fetch capability. |
+| R23 | Native callback enters from a foreign thread | Intersect admitted dispatcher and registration/owner ceilings; unsupported context establishment rejects entry. |
 
 ### 16.6 Model-based and property-based checks
 
@@ -1713,22 +1828,42 @@ For pattern comparators, check exact/literal escaping, whole-string matching, em
 
 A passing policy test does not prove the adapter used the guarded target. Integration tests must record the actual native/transport effect, redirects, cleanup, and execution context at the work site.
 
-## 17. Provider and API details to finalize
+### 16.7 Provider contracts and normalization
 
-The cross-cutting contract is fixed by this proposal, including optional semantics, block attenuation, mandatory admission, and shared operation checks/guards. The following choices still require concrete provider/API definitions and fixtures before their implementations can be advertised as complete:
+| ID | Case | Required result |
+| --- | --- | --- |
+| P01 | Two URLs in one HTTP body, whole-URL glob, or partial-label hostname wildcard | Reject; never reinterpret as unrestricted or drop one URL. |
+| P02 | `*.example.com` against base name, nested subdomain, and suffix-confusion name | Deny base name and suffix-confusion name; allow admitted one-or-more-label subdomains. |
+| P03 | Exact URL with absent, empty, or nonempty query | Preserve three distinct constraints through normalization and checking. |
+| P04 | Exact URL and structured fields disagree | Retain conjunction/empty coverage; authored fields do not override URL facts. |
+| P05 | Query has duplicate keys, reordered parameters, percent encodings, or literal `*` | Apply the pinned exact-query contract; no map conversion or wildcard interpretation. |
+| P06 | Unsupported scheme, Unicode/trailing-dot host, URL credentials/fragment, authority override, or proxy mode | Reject before the transport begins. |
+| P07 | URL shorthand and prepared request use equivalent default-port/empty-path spelling | Same component facts and permission outcome under the pinned normalization profile. |
+| P08 | Filesystem rename between separately granted roots | Deny unless one complete permitting entry in each row covers all required source/destination resources. |
+| P09 | File copy has separate read and write grants | Follow the explicit composite-demand model; no write begins without its guard and no claim of transactional rollback. |
+| P10 | Filesystem traversal encounters a symlink or unsupported identity guarantee | Reject; no prefix-check or unchecked-follow fallback. |
+| P11 | Closing a buffered writer after revocation would flush data | Release-only path cannot flush; ordinary write authorization is required for the data effect. |
+| P12 | Platform or transport cannot enforce its adopted profile | Reject unsupported operation/configuration; do not silently weaken the profile. |
 
-| Area | Remaining specific decision |
+## 17. Decisions required before implementation
+
+The reader and abstract policy algebra can be implemented from this contract. Provider and runtime integration work must first complete the applicable gates below. These gates are design inputs to implementation, not details to choose implicitly while wiring effect adapters. No provider may be advertised as complete until its profile and acceptance fixtures are enforced.
+
+The following semantics are settled here: optional partial availability; mandatory admission with live validation; dynamic block bounds; checked literal-by-default builders; rejection of module request rows; caller-bounded ordinary initialization and explicit shared startup instances; registration-context capture; retained origin contexts; canonical HTTP components; the filesystem operation table; order-independent authorization outcomes; and the built-in empty startup policy.
+
+| Area | Required artifact before the affected implementation starts |
 | --- | --- |
-| Filesystem | Final capability names, operation vocabulary, compound-operation demands, platform-safe path and symlink handling, and release-only behavior. |
-| HTTP | Supported schemes and all normalization items in section 12.6; any separately required network-address policy. |
-| Public API | Final names/layouts for validated SpecRow, RequirementReport, CapabilityDecision, and provider-specific operation-description helpers. |
-| Compiler integration | Exact representation/opcodes for boundary entry/restoration and how request metadata appears in public callable interfaces. |
-| Configuration | Host config wrapper/discovery, documented implementation size/proof limits, and admitted default root policy when no source is supplied. |
-| Resource initialization | Per-provider rollback/release behavior and what advisory checks may inspect without performing the requested effect. |
+| Filesystem | A platform-specific constrained-resolution profile implementing section 11.1's operation-to-capability table. Specify root acquisition/identity, parent traversal, no-follow enforcement, replacement/rename races, retained-handle identity after moves, and release without unauthorized buffered effects. Include adversarial resolution and compound-operation fixtures. |
+| HTTP | A versioned parser/normalizer and transport profile implementing section 12. Specify precise IP syntax, percent encoding and dot-segment behavior, serialization agreement, redirect status/method rules, retry starts, and pooled-connection validation. Include paired policy/request fixtures preserving exact queries and rejecting unsupported overrides/proxies. Any separately configured network-address policy needs its own enforcement contract. |
+| Loader | Source-policy configuration and resolver admission rules; concrete cache/instance keys, source/catalog revisions, cycle/concurrency handling, failure generations, and explicit shared startup sequencing. These must preserve section 14.4's caller bounds and owner/context isolation. |
+| Public API | Concrete checked-entry/literal/pattern/unrestricted constructors for `$capabilities/build`, explicit source-context/base arguments, and immutable `CapabilitySpecRow`, `RequirementReport`, and `CapabilityDecision` layouts. Define faithful printing/serialization and stable reason codes without exposing authority. |
+| Compiler/runtime | Boundary entry/restoration representation, declaration metadata, registration wrappers, task/stream/native-entry context propagation, and validity dependencies or epochs for cached admission. Unsupported backend paths must reject the feature. |
+| Configuration and limits | Host wrapper/discovery rules, source-policy transport, and published size/expansion/proof limits. Preserve the fixed source precedence, built-in `[]`, and explicit separation of source acquisition from application execution. |
+| Provider state and checks | Initialization rollback, release-only behavior, permitted advisory metadata inspection, shared versus entry-local failure classification, and the point at which a live-validity observation establishes admission or starts an operation. |
 
-These are not permission to reinterpret `^^optional`, allow block escalation, merge entries, or silently drop unsupported restrictions. Unsupported forms or enforcement modes must be rejected until their contract exists.
+Each profile must state its supported operation subset and rejected modes, provide concrete expected outcomes, and use the shared core. Unsupported forms or enforcement modes remain rejected until their contract exists. A profile can narrow support but cannot change the authority algebra, broaden constraints, or create an unguarded fallback.
 
-No general static effect inference, negative permissions, user-defined authority providers, consumable quotas, or arbitrary persistent authority objects are introduced by this document.
+General static effect inference, negative permissions, user-defined authority providers, consumable quotas, implicit ordinary-closure capture, and arbitrary persistent authority objects are outside version 1. Platform support and precise library signatures remain implementation gates.
 
 ## 18. Core specification wording
 
@@ -1736,170 +1871,12 @@ No general static effect inference, negative permissions, user-defined authority
 >
 > Semantic coverage is inclusion of permitted operation sets. Mandatory request admission uses sound whole-body and per-property matching of complete entries, with exact provider-defined decomposition allowing different request alternatives to match different grants in the same row. Every applicable authority row must cover the request independently. The procedure remains conservative for unsupported or bounded proofs. Optional requested entries do not prevent boundary entry when unmatched; they select whatever exact overlap is already available. The full request row bounds the entered code, and its optional metadata does not affect operation authorization.
 >
-> `with_capabilities` delegates an upper bound by intersecting the current context with its row. It cannot mint grants or restore broader saved authority. Required blocks and callable/module declarations perform their specified mandatory admission checks before their body or callee-owned defaults run. The runtime preserves and restores authority across ordinary control flow, failure, suspension, and supported optimized execution.
+> `with_capabilities` delegates an upper bound by intersecting the current context with its row. It cannot mint grants or restore broader saved authority. Required blocks and application/callable declarations perform their specified mandatory admission checks before their body or callee-owned defaults run. Reused admission results revalidate live dependencies at entry. Module declarations do not create request boundaries; ordinary initialization remains bounded by its caller and host-admitted loader policy. The runtime preserves and restores authority across ordinary control flow, failure, suspension, and supported optimized execution.
 >
 > Programmatic requirement checks and concrete-operation checks answer different questions. Checks and mandatory effect guards share the same provider authorization meaning, but a successful check does not reserve permission or replace the guard. Trusted adapters derive the actual operation facts and enforce permission at the point of work, including relevant redirects, retained-resource reuse, origin restrictions, and live validity. Optional capability requests never make guards optional.
 >
-> Normalization must not broaden permission, destroy entry correlations, erase mandatory obligations, or discard independent grant provenance. Unsupported enforcement and provider failures never become authorization.
+> Dynamic policy construction uses a checked builder with literal values distinguished from explicit patterns. Plain closure creation does not capture temporary block bounds; retaining APIs bind registration contexts, including for pre-existing function references. Retained resources preserve their origin context and resource-specific restrictions.
+>
+> Normalization must not broaden permission, destroy entry correlations, erase mandatory obligations, or discard independent grant provenance. Unsupported enforcement and shared provider failures prevent authorization; entry-local failures require an independent complete allowing entry under the order-independent decision rules.
 
 **One literal format; trusted providers; explicit requests; optional availability; block-level upper bounds; shared checks and guards; no implicit escalation.**
-
-## 19. Consolidation decisions, source basis, and status
-
-### 19.1 What is preserved from the updated document
-
-The baseline is the user-supplied `capabilities(1).md`, titled *Gene Capabilities: Normalized Literals, Coverage, and Reconciliation*, dated 2026-09-15.
-
-Preserved decisions include the inert grammar; complete-body and per-property comparison; independent grant entries; `namespace/Name` identifiers and terminal namespace selectors; provider-selected numeric/boolean/list meaning; exact intersections; CLI aliases and one-source rule; CLI/environment/config/default precedence; explicit empty-policy replacement; trusted providers; resource origins; and the distinction between namespace exposure and authority. The earlier prohibition on collective request matching is superseded by section 3.4's exact alternative decomposition.
-
-### 19.2 Review corrections incorporated
-
-| Earlier concern | Resolution in this document |
-| --- | --- |
-| Exact semantic coverage was conflated with conservative admission matching. | Separate operation-set coverage from mandatory admission and distinguish their diagnostics; support exact finite alternatives without requiring arbitrary union-containment proofs. |
-| A concrete URL implied its hostname, but independent policy fields could reject the precise request. | Provider normalization derives proved component projections while retaining the original body/correlations. Runtime operation checks independently extract actual facts. |
-| Redundancy elimination could erase a separately revocable grant. | Preserve independent live provenance and validity; share symbolic matchers without collapsing grants. |
-
-### 19.3 Additional decisions made in this consolidation
-
-| Topic | Recommended target decision |
-| --- | --- |
-| Grant/request/check/guard separation | Distinct receiving operations using one format and shared trusted provider semantics. |
-| Collective request coverage | Provider-defined alternatives may be covered by different complete grants in the same row; preserve every constraint, independent ceilings, and live grant provenance. |
-| Granting to a block | `with_capabilities` means upper-bound attenuation of the actual caller, never elevation. |
-| Required blocks | A separate `require_capabilities` operation performs admission plus restriction. |
-| Optional spelling | `^^optional` / `^optional true`, rendered as `(net/Http ^^optional)` under the baseline naming convention. |
-| Optional partial availability | Keep the exact available intersection, rather than discard an optional broad entry unless fully matched. |
-| Optional validation | Only absence of authority is nonfatal to entry; invalid names, malformed constraints, and provider errors stay explicit. |
-| Flag placement | Request contexts only; rejected in grants, pure ceilings/bounds, and operation facts. |
-| Module row | Admission before initialization and a retained module maximum; callable entry requirements are checked on invocation. |
-| Check versus guard | Shared evaluator; check is advisory, guard is mandatory at the real effect boundary. |
-| Ordinary closure escape | No silent language-wide capture change; use admitted module/eval ceilings or explicit bounded/retained callables. |
-| Dynamic configured policies | Immutable validated spec values may be computed/parsed outside a literal and supplied once to a boundary; they never carry grants. |
-
-These rows identify proposed completions rather than presenting every API spelling as a prior user decision. They are included so an implementing agent can review one coherent target instead of inferring missing semantics independently.
-
-### 19.4 Scope of evidence
-
-This document is grounded in the supplied updated proposal and the subsequent design discussion, including the user's HTTP hostname/method guard example and requests for block upper bounds and optional capabilities. It does not incorporate unrelated error-checking or Self-type proposals as additional authority.
-
-It is a design artifact, not a repository audit, standards compliance certification, security certification, or report of executed tests. Provider implementation details and runtime support must be verified through the acceptance cases before making support claims. No implementation is changed by creating this file.
-
-## 20. Open review comments
-
-These comments record a review of sections 1–19 and the author's responses to it. They are open items, not adopted decisions: sections 1–19 stand as written until one of them is resolved. Each comment states its status so an implementing agent does not mistake an unresolved question for a settled contract.
-
-| # | Comment | Status |
-| --- | --- | --- |
-| 20.1 | Plain closures escape a block's upper bound | Open; needs further investigation |
-| 20.2 | Dynamic policies are built by string interpolation | Open; needs further investigation |
-| 20.3 | What `^^optional` means | Resolved by the author's definition; two consequences to keep visible |
-| 20.4 | Module-level `^capabilities` may be removed | Proposed for removal in version 1 |
-| 20.5 | Two URL representations in the HTTP provider | Open recommendation; no response yet |
-| 20.6 | Retained resources recording which grants matched | Open recommendation; no response yet |
-| 20.7 | Cost of per-invocation admission | Open recommendation; no response yet |
-| 20.8 | Conversation residue in the header and section 19 | Editorial |
-
-### 20.1 Plain closures escape a block's upper bound
-
-**Status: open; needs further investigation.**
-
-Section 7.6 illustrates a bound with `(with_capabilities [...] (untrusted_callback input))`, while section 14.5 states that a plain closure created inside a block does not retain that block's bound. Code running inside the block can therefore store a closure and have it executed later under the caller's broader authority:
-
-```gene
-(with_capabilities []
-  (plugin_init registry))      # plugin stores (fn [] ($fs/write_text ...))
-
-(run_handlers registry)        # handlers now execute with host authority
-```
-
-Tasks, generators, lazy pipelines, and bound callables all retain their creation ceiling; the plain closure is the one exception. Retaining a ceiling can only narrow authority, never widen it, so capture would be sound by construction, and a closure created outside any capability block would carry no ceiling at all.
-
-Questions to settle before changing section 14.5:
-
-- the cost of retaining a ceiling reference on closures created inside a block, and whether escape analysis can prove that a given closure never outlives the block;
-- whether trusted code legitimately creates a closure inside a bounded block for deliberate later use under broader authority;
-- whether escape should narrow the closure (invoke under creation ceiling ∩ caller) or be rejected outright at the escape point;
-- how the rule interacts with the runtime's existing function-escape and scope-ownership machinery.
-
-Until this is resolved, `with_capabilities` bounds a dynamic extent. It is not confinement of untrusted code, and the examples in sections 7.6 and 7.7 should not be read as such.
-
-### 20.2 Dynamic policies are built by string interpolation
-
-**Status: open; needs further investigation.**
-
-Because literals reject variables (section 2.2), the only version-1 route from a runtime value to a bound is text through `$capabilities/parse` (section 2.5):
-
-```gene
-($capabilities/parse $"[(fs/Read \"${dir}\")]")
-```
-
-A `dir` of `x") (fs/ReadWrite "/` adds a second entry to the parsed row. Attenuation keeps the result within the caller's authority, so this is not an escalation past the caller, but it silently widens the bound the author intended to impose on the callee — which is the entire purpose of the block.
-
-Options to weigh:
-
-- promote the checked builder mentioned in section 2.5 to version 1, so that a row is constructed from values rather than from text, and reserve `parse` for host and configuration text;
-- restrict `parse` to explicitly host-supplied source kinds, so an application cannot use it on assembled text at all;
-- keep text parsing and supply a quoting/escaping operation, accepting that a missed call site is a silent widening.
-
-Questions to settle: which normalization base a value-built row carries; whether such a row may appear in mandatory request positions or only in bounds; and whether the builder should reject a body value that is not already normalized against a base.
-
-### 20.3 What `^^optional` means
-
-**Author's definition: an optional entry means the code can choose an alternative route when the capability is not granted.**
-
-This is the intended reading of sections 2.4, 7.3, and 7.4. Mandatory entries are for code that cannot proceed without the authority; optional entries are for code that carries a fallback. The earlier review suggestion to invert the default — bounds by default with an opt-in `^^required` — is withdrawn under this definition.
-
-Two consequences must stay visible in the specification:
-
-1. **"Not granted" is usually not a yes/no fact.** Section 7.3 keeps the available overlap, so partial availability is the normal case: GET granted, POST not. Code choosing a route must therefore ask about the concrete operation it intends to perform (sections 10.4 and 10.6), not about the capability family. A cached boolean such as `has_http` cannot express the answer, which section 10.6 already states.
-2. **An optional entry and an upper-bound entry compute the same effective authority.** They differ in intent and in what the requirement report says (section 7.4), not in the resulting policy. That is acceptable, but the specification should say so plainly, so an implementer does not look for a behavioral difference that does not exist. An optional entry additionally documents "this code has a fallback", which a plain bound does not.
-
-One caveat from section 10.7 survives unchanged: a general-purpose library function should not declare a mandatory unrestricted entry, because that rejects narrowly granted callers before any concrete guard runs.
-
-### 20.4 Module-level `^capabilities` may be removed
-
-**Status: removal proposed by the author; recommended for version 1.**
-
-The review's concern: section 7.9 admits a module against the authority current at its initialization, and section 14.4 does not re-initialize a cached module. The first importer therefore decides what every later importer gets. A plugin running under `with_capabilities []` that imports `reporting` first leaves the application with a failed or empty result for the same module.
-
-Removing module rows would:
-
-- delete that order dependence, along with the retained-module-ceiling rules in sections 7.9 and 14.4 and case B17;
-- leave module-defined code running under its caller's authority, intersected with loader and origin policy and with whatever each callable declares;
-- keep confinement of untrusted modules where it already belongs — in the loader's admitted policy (section 14.7), which the host supplies rather than the module's own source.
-
-What would be lost:
-
-- a module-wide maximum covering every function a module defines, so an author who wants that must declare it per callable;
-- an initialization-time requirement, so a module that cannot work at all without some authority fails at first use rather than at import.
-
-Neither loss is severe: the first is a convenience, and the second trades an early failure for a failure at the real guard, which every other path already relies on.
-
-If module rows are kept instead, the order dependence must be fixed directly: derive both initialization authority and the retained ceiling from the loader's policy for that module intersected with its declared row, never from the importing site's dynamic context.
-
-### 20.5 Two URL representations in the HTTP provider
-
-**Status: open recommendation.**
-
-The projection machinery in section 12.5, cases A18 and A19, and the requirement to retain the original body for correlation all exist to reconcile a URL body with the `^schemes`/`^hosts`/`^ports`/`^paths` fields. One representation would remove all of it: allow at most one URL per `net/Http` entry and convert it into component fields during normalization, with several URLs written as several entries, as parallel rules already are. Restrict `*` to a single component, such as `*.example.com` or `/api/*`.
-
-That also turns the pattern `"http://localhost*"` into a rejected literal rather than the documented hazard described in section 12.4.
-
-### 20.6 Retained resources recording which grants matched
-
-**Status: open recommendation.**
-
-Section 6.4 requires that "where multiple grant alternatives remain valid for the resource, their validity remains represented", which prevents a retained handle from using the stop-at-first-match rule and forces it to track every covering grant. Sections 11.3 and 14.5 already require each use of a handle to be authorized against the current context, so recording the origin ceiling — a context — rather than the matching grant produces the same outcome, keeps first match order-independent as case A17 requires, and removes the bookkeeping.
-
-### 20.7 Cost of per-invocation admission
-
-**Status: open recommendation.**
-
-Section 7.9 admits a declared row at every invocation, so a frequently called declared function repeats intersections and possibly bounded containment proofs on every call. Contexts are immutable, so admission and intersection results can be memoized by context identity, row identity, and catalog version. Guards remain responsible for live validity, so a memoized admission result can never authorize an effect by itself. Section 6.5 currently reads as discouraging this; it should distinguish a context-free cached boolean, which is unsafe, from a cache keyed by the context.
-
-### 20.8 Conversation residue
-
-**Status: editorial.**
-
-The header's basis line refers to `capabilities(1).md` and "the subsequent review", and section 19 is largely a changelog of the discussion that produced this revision. Both will age badly once this document lands in the repository as the capability contract. Section 19.3 is worth keeping in some form, since it marks which decisions were proposed rather than chosen by the author; the rest can go.
