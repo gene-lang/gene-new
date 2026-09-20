@@ -8437,6 +8437,22 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
       boundPolicy.maxSteps, boundPolicy.maxMemoryMb, boundPolicy.timeoutMs,
       boundScope.evalBudget)
 
+proc canBypassCallBudget(proto: FunctionProto, calleeScope,
+                         callerScope: Scope): bool {.inline.} =
+  ## A call may skip `applyCallBudget` only within one module and when the
+  ## function carries no bound execution policy: crossing modules may enter a
+  ## module execution policy, which must install its own budget for the call.
+  ##
+  ## This decides "same module" exactly as `applyCallBudget` does, through
+  ## `moduleRootScope`, not the `moduleBase` cache. Two scopes that had not yet
+  ## populated the cache would both read nil, compare equal, and skip a
+  ## boundary the budget code would have applied.
+  if proto == nil or proto.boundExecutionPolicy != nil or
+      calleeScope == nil or callerScope == nil:
+    return false
+  let calleeRoot = calleeScope.moduleRootScope()
+  calleeRoot != nil and calleeRoot == callerScope.moduleRootScope()
+
 proc builtinsScope*(app: Application): Scope =
   ## The single built-ins root scope for this application. Every module/program
   ## scope created for `app` shares these built-in protocol/type values, and the
@@ -15819,12 +15835,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCallBudget(callee.fnScope, scope):
                 let native = applyNativeCompiled(callee, proto, [], NamedArgs())
                 if native.handled:
                   spush native.value
                   continue
-              if proto.scopelessChunk != nil and proto.params.len == 0:
+              if proto.scopelessChunk != nil and proto.params.len == 0 and
+                  proto.canBypassCallBudget(callee.fnScope, scope):
                 # Scopeless 0-arg call (see the direct-call site).
                 let callerScope = scope
                 enterBytecodeCall(proto.scopelessChunk, callerScope, false,
@@ -15950,7 +15968,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCallBudget(callee.fnScope, scope):
                 let native =
                   if argCount == 0:
                     applyNativeCompiled(callee, proto, [], NamedArgs())
@@ -15962,6 +15981,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spush native.value
                   continue
               if proto.scopelessChunk != nil and argCount == proto.params.len and
+                  proto.canBypassCallBudget(callee.fnScope, scope) and
                   (not proto.scopelessNeedsIntArgs or inst[].flag or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call: the args already on the shared stack become
@@ -16010,6 +16030,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundValuesMayCapture = callValuesMayCapture)
               elif argCount == 1 and proto.canFastBindUnaryInt and
                   proto.returnKnownBareInt and
+                  proto.canBypassCallBudget(callee.fnScope, scope) and
                   (inst[].flag or stack[argsStart].kind == vkInt):
                 let callScope = bindUnaryIntCallScope(callee, proto,
                                                       stack[argsStart])
@@ -16020,6 +16041,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundValuesMayCapture = false)
               elif argCount > 1 and proto.canFastBindPositionalInt and
                   proto.returnKnownBareInt and argCount == proto.params.len and
+                  proto.canBypassCallBudget(callee.fnScope, scope) and
                   inst[].flag:
                 let callScope = bindPositionalIntCallScope(callee, proto,
                   stack.toOpenArray(argsStart, (sp - 1)),
@@ -16395,7 +16417,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCallBudget(callee.fnScope, scope):
                 var nativeNamed: NamedArgs
                 if namedCount > 0:
                   nativeNamed = namedArgsFromStack(inst[].names, stack,
@@ -16413,6 +16436,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if namedCount == 0 and proto.scopelessChunk != nil and
                   argCount == proto.params.len and
+                  proto.canBypassCallBudget(callee.fnScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call (see the direct-call site): shift the args
@@ -16658,7 +16682,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let fnProto = FunctionProto(code)
-              if fnProto.nativeOp != ncoNone:
+              if fnProto.nativeOp != ncoNone and
+                  fnProto.canBypassCallBudget(callee.fnScope, scope):
                 let native = applyNativeCompiled(callee, fnProto, args, named)
                 if native.handled:
                   strunc(calleeIndex)
@@ -26722,9 +26747,10 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                        proto: FunctionProto,
                        callerScope: Scope = nil): Value =
   let positional = callee.fnParams
-  let native = applyNativeCompiled(callee, proto, args, named)
-  if native.handled:
-    return statementCallResult(proto.returnType, native.value)
+  if proto.canBypassCallBudget(callee.fnScope, callerScope):
+    let native = applyNativeCompiled(callee, proto, args, named)
+    if native.handled:
+      return statementCallResult(proto.returnType, native.value)
   if proto.simpleCall and named.len == 0:
     if args.len != positional.len:
       raise newException(GeneError,
@@ -26757,6 +26783,11 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     else:
       callee.fnScope
     callScope.seedFunctionProtocolEntry(callee)
+    if hasModulePolicy:
+      applyCallBudget(proto, callScope, callee.fnScope, callerScope,
+                      policyRoot, callerRoot, rootsKnown = true)
+    else:
+      applyCallBudget(proto, callScope, callee.fnScope, callerScope)
     try:
       return statementCallResult(proto.returnType,
         runPooled(proto.chunk, callScope,
