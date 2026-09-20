@@ -3,16 +3,21 @@
 import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, net, os,
             options, osproc, sets, strutils, tables, times, unicode]
 import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
-          host_capabilities, package, printer, reader, types, type_contracts]
-import ./[callable_reflection, error_analysis, native_errors]
+          host_capabilities, http_capabilities, package, printer, reader, types, type_contracts]
+import ./[callable_reflection, error_analysis, gir_codec, native_errors]
+import ./module_sources
+import ./native_effects
+import ./capability_startup
 import ./ext/logging
 export type_contracts
 
 proc builtinNativeFn(name: string, impl: NativeProc, acceptsNamed = false): Value =
-  newNativeFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name))
+  newNativeFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name),
+    builtinNativeEffectKind(name), classifyNativeFastKind(name))
 
 proc builtinNativeCallFn(name: string, impl: NativeCallProc, acceptsNamed = true): Value =
-  newNativeCallFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name))
+  newNativeCallFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name),
+    builtinNativeEffectKind(name))
 
 when not defined(emscripten) and not defined(geneWasm):
   import ./process_lock
@@ -125,6 +130,8 @@ type
   GeneReturn = object of CatchableError
     value: Value
     targetDepth: int
+    loopExit: bool
+    loopContinue: bool
 
   FrameKind = enum
     fkNormal
@@ -254,6 +261,8 @@ type
     namespaceName: string
     capabilityContext: CapabilityContext
     capabilityPresence: CapabilityPresence
+    closeCapabilityCeiling: CapabilityContext # retained across cleanup suspension/unwind
+    loaderState: ModuleLoaderState # execution origins, independent of lexical scope
     started: bool          # false until first scheduled (resume restores the rest)
     workerSafe: bool       # snapshot-isolated; eligible for opt-in worker lane
     task: Value            # the Task this fiber settles, for spawn/await fibers
@@ -354,13 +363,33 @@ type
     runtimeDependencies: seq[string]
     compileDependencies: seq[string]
 
+  ModuleLoaderOrigin = ref object of RootObj
+    identity, cacheKey, directory: string
+    root: Scope
+    shared: Table[string, Value]
+    policy: ModuleExecutionPolicy
+    sources: ModuleSourceSnapshot
+    additionalSources: seq[ModuleSourceSnapshot]
+    artifacts: Table[string, CompiledModule]
+    artifactKeys: Table[string, string]
+    artifactBases: Table[string, string]
+    directoryBound: bool
+    exposedNamespaces: seq[string]
+
+  AdmittedModuleArtifact* = object
+    path*: string
+    artifact*: CompiledModule
+    resourceBase*: string
+
+  ModuleLoaderState = ref object of RootObj
+    basePath: string
+    package: Package
+    primary: ModuleLoaderOrigin
+    origins: seq[ModuleLoaderOrigin]
+
   ResourceCapabilityRecord = object
     application: RuntimeContext
     context: CapabilityContext
-
-  CapabilityFacadeBinding = object
-    facade: Value
-    scope: Scope
 
   DeclarationNotReadyError = object of GeneError
 
@@ -400,13 +429,15 @@ type
   CapabilityHostConfigureProc* = proc(
     registry: CapabilityRegistry,
     filesystem: FilesystemProvider,
-    host: HostCapabilityProvider): seq[CapabilityGrant] {.closure.}
+    host: HostCapabilityProvider) {.closure.}
 
   TestCallback = object
     fn: Value
     capture: Scope # keep capture visible to ORC; fn's back-reference is weak
     takesContext: bool
     loc: SourceLoc
+    capabilityCeiling: CapabilityContext
+    loaderState: ModuleLoaderState
 
   TestEntry = ref object
     description: string
@@ -492,17 +523,24 @@ type
     hostCapabilityProvider: HostCapabilityProvider
     rootCapabilityContext: CapabilityContext
     applicationCapabilityContext: CapabilityContext
+    startupCapabilityAuthority: CapabilityStartupAuthority
+    startupCapabilityAttempted: bool
     capabilitiesMaterialized: bool
     requireStrictDependencies: bool
     boundedModulePaths: HashSet[string]
-    capabilitySpecProtocol: Value
-    capabilityFacades: Table[string, CapabilityFacadeBinding]
-    capabilityCanonicalCache: Table[string, CapabilitySpec]
     moduleCache: Table[string, Value]
+    hostInitializedModules: Table[string, Value]
+    admittedModuleSources: Table[string, ModuleSourceSnapshot]
+    applicationLoaderState: ModuleLoaderState
+    applicationEntryPath: string
+    capabilityModuleGenerations: Table[string, uint64]
+    nextCapabilityModuleGeneration: uint64
     moduleEpoch: uint64
     moduleLoading: HashSet[string]
+    capabilityDomainFailures: Table[string, ref CatchableError]
     moduleCompileHeaders: Table[string, ModuleCompileHeader]
     moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
+    installedModuleTemplates: Table[string, CompiledModule]
     moduleCompileLoading: HashSet[string]
     portableCompileNames: bool
     implEpoch: uint64
@@ -531,6 +569,7 @@ type
     # direction that mattered: a mod picked any path in the package root and got
     # a host module with host authority (see `loadSandboxedModule`).
     sandboxShared: HashSet[string]
+    sandboxSharedInstances: Table[string, Value]
     currentModuleDir: string
     # --- packages (docs/workflows.md) --------------------------------
     #
@@ -600,13 +639,17 @@ type
     sgsReleased
 
   SandboxAppState = object
-    capabilityFacades: Table[string, CapabilityFacadeBinding]
-    capabilityCanonicalCache: Table[string, CapabilitySpec]
     moduleCache: Table[string, Value]
+    hostInitializedModules: Table[string, Value]
+    admittedModuleSources: Table[string, ModuleSourceSnapshot]
+    capabilityModuleGenerations: Table[string, uint64]
+    nextCapabilityModuleGeneration: uint64
     moduleEpoch: uint64
     moduleLoading: HashSet[string]
+    capabilityDomainFailures: Table[string, ref CatchableError]
     moduleCompileHeaders: Table[string, ModuleCompileHeader]
     moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
+    installedModuleTemplates: Table[string, CompiledModule]
     moduleCompileLoading: HashSet[string]
     implEpoch: uint64
     rootImpls: seq[ProtocolImpl]
@@ -892,6 +935,151 @@ type
 # flag are thread-local execution context; the queues they select are owned by
 # Application.
 var activeScheduler {.threadvar.}: SchedulerState
+var activeLoaderState {.threadvar.}: ModuleLoaderState
+var activeContinuationLoaderState {.threadvar.}: ModuleLoaderState
+
+proc loaderStateValue(value: RootRef): ModuleLoaderState =
+  if value == nil: return nil
+  if not (value of ModuleLoaderState):
+    raise newException(GeneError, "invalid retained loader state")
+  ModuleLoaderState(value)
+
+proc mergeLoaderStates(primary, ceiling: ModuleLoaderState): ModuleLoaderState =
+  if primary == nil: return ceiling
+  if ceiling == nil: return primary
+  result = ModuleLoaderState(basePath: primary.basePath, package: primary.package,
+    primary: if primary.primary != nil: primary.primary else: ceiling.primary)
+  if result.basePath.len == 0:
+    result.basePath = ceiling.basePath
+    result.package = ceiling.package
+  var keys = initHashSet[string]()
+  for state in [primary, ceiling]:
+    for origin in state.origins:
+      if not keys.containsOrIncl(origin.identity): result.origins.add origin
+  result.origins.sort(proc(a, b: ModuleLoaderOrigin): int = cmp(a.identity, b.identity))
+  if result.origins.len > MaxCapabilityAuthorityRows:
+    raise newException(GeneError, "loader source-bound count limit exceeded")
+
+proc scopeLoaderState(scope: Scope): ModuleLoaderState =
+  var current = scope
+  while current != nil:
+    result = mergeLoaderStates(result, loaderStateValue(current.loaderState))
+    current = current.parent
+  result = mergeLoaderStates(result, activeContinuationLoaderState)
+
+proc loaderStateKey(state: ModuleLoaderState): string =
+  if state == nil: return ""
+  for origin in state.origins:
+    result.add $origin.identity.len & ":" & origin.identity
+    if result.len > MaxCapabilityContextIdentityBytes:
+      raise newException(GeneError, "loader source-bound key limit exceeded")
+
+proc hasSourceSnapshot(state: ModuleLoaderState): bool =
+  state != nil and state.origins.len > 0
+
+proc sourceSnapshot(origin: ModuleLoaderOrigin, path: string): ModuleSourceSnapshot =
+  if origin.sources.hasSource(path): return origin.sources
+  for snapshot in origin.additionalSources:
+    if snapshot.hasSource(path): return snapshot
+
+proc admitsSource(origin: ModuleLoaderOrigin, path: string): bool =
+  origin.sourceSnapshot(path) != nil or origin.artifacts.hasKey(path)
+
+proc admittedSharedModule(state: ModuleLoaderState, path: string): Value =
+  result = NIL
+  if not state.hasSourceSnapshot: return
+  for origin in state.origins:
+    if origin.shared.hasKey(path):
+      if result.kind != vkNil and not same(result, origin.shared[path]):
+        raise newException(GeneError, "loader source bounds select different shared instances")
+      result = origin.shared[path]
+  if result.kind != vkNil:
+    for origin in state.origins:
+      if not origin.shared.hasKey(path) or not same(result, origin.shared[path]):
+        raise newException(GeneError, "shared module instance is not admitted by every source bound")
+
+proc requireAdmittedSource(state: ModuleLoaderState, path: string) =
+  if state.hasSourceSnapshot:
+    for origin in state.origins:
+      if not origin.admitsSource(path):
+        raise newException(GeneError, "module source is absent from a retained source snapshot: " & path)
+
+proc admittedArtifact(state: ModuleLoaderState, path: string): Option[CompiledModule] =
+  if not state.hasSourceSnapshot: return none(CompiledModule)
+  state.requireAdmittedSource(path)
+  var key = ""
+  var selected = false
+  var compiled: CompiledModule
+  for origin in state.origins:
+    if origin.artifacts.hasKey(path):
+      if selected and key != origin.artifactKeys[path]:
+        raise newException(GeneError, "retained artifact admissions disagree: " & path)
+      key = origin.artifactKeys[path]
+      compiled = origin.artifacts[path]
+      selected = true
+  if not selected: return none(CompiledModule)
+  for origin in state.origins:
+    if not origin.artifacts.hasKey(path):
+      raise newException(GeneError, "source and compiled admissions cannot be substituted: " & path)
+  some(compiled)
+
+proc admittedResourceBase(state: ModuleLoaderState, path: string): string =
+  result = parentDir(path)
+  if state.hasSourceSnapshot:
+    var selected = false
+    for origin in state.origins:
+      if origin.artifactBases.hasKey(path):
+        let base = origin.artifactBases[path]
+        if selected and result != base:
+          raise newException(GeneError, "retained artifact resource bases disagree: " & path)
+        result = base
+        selected = true
+
+proc admittedSourcePaths(state: ModuleLoaderState): seq[string] =
+  if not state.hasSourceSnapshot: return
+  var paths = initHashSet[string]()
+  for origin in state.origins:
+    for path in origin.sources.sourcePaths: paths.incl path
+    for snapshot in origin.additionalSources:
+      for path in snapshot.sourcePaths: paths.incl path
+    for path in origin.artifacts.keys: paths.incl path
+  for path in paths:
+    var admitted = true
+    for origin in state.origins:
+      if not origin.admitsSource(path): admitted = false
+    if admitted: result.add path
+  result.sort()
+
+proc admittedSourceText(state: ModuleLoaderState, path: string): string =
+  if not state.hasSourceSnapshot:
+    raise newException(GeneError, "module source has no admitted snapshot")
+  var selected = false
+  for origin in state.origins:
+    let snapshot = origin.sourceSnapshot(path)
+    if snapshot == nil:
+      raise newException(GeneError, "module source is absent from a retained source snapshot: " & path)
+    let source = snapshot.sourceText(path)
+    if selected and result != source:
+      raise newException(GeneError, "retained source snapshots disagree on module contents: " & path)
+    result = source
+    selected = true
+
+proc sourceCandidateExists(path: string): bool =
+  if activeLoaderState.hasSourceSnapshot:
+    for origin in activeLoaderState.origins:
+      if origin.shared.hasKey(path) or origin.admitsSource(path): return true
+    return false
+  fileExists(path)
+
+proc hasLoaderRestrictions(scope: Scope): bool =
+  scopeLoaderState(scope).hasSourceSnapshot
+
+proc loaderCapabilities(state: ModuleLoaderState, current: CapabilityContext): CapabilityContext =
+  result = current
+  if state != nil:
+    for origin in state.origins:
+      if origin.policy != nil and origin.policy.capabilityCeiling != nil:
+        result = intersectContexts(result, origin.policy.capabilityCeiling)
 var activeFiberRunning {.threadvar.}: bool
 var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
@@ -1042,13 +1230,17 @@ proc sandboxGenerationPrepared(id: uint64): bool =
     release(resourceAuthorityLock)
 
 proc captureSandboxAppState(app: Application): SandboxAppState =
-  result.capabilityFacades = app.capabilityFacades
-  result.capabilityCanonicalCache = app.capabilityCanonicalCache
   result.moduleCache = app.moduleCache
+  result.hostInitializedModules = app.hostInitializedModules
+  result.admittedModuleSources = app.admittedModuleSources
+  result.capabilityModuleGenerations = app.capabilityModuleGenerations
+  result.nextCapabilityModuleGeneration = app.nextCapabilityModuleGeneration
   result.moduleEpoch = app.moduleEpoch
   result.moduleLoading = app.moduleLoading
+  result.capabilityDomainFailures = app.capabilityDomainFailures
   result.moduleCompileHeaders = app.moduleCompileHeaders
   result.moduleCompileArtifacts = app.moduleCompileArtifacts
+  result.installedModuleTemplates = app.installedModuleTemplates
   result.moduleCompileLoading = app.moduleCompileLoading
   result.implEpoch = app.implEpoch
   result.rootImpls = app.builtinsScope().impls
@@ -1070,13 +1262,17 @@ proc captureSandboxAppState(app: Application): SandboxAppState =
   result.webSourceMapsSet = app.webSourceMapsSet
 
 proc installSandboxAppState(app: Application, state: SandboxAppState) =
-  app.capabilityFacades = state.capabilityFacades
-  app.capabilityCanonicalCache = state.capabilityCanonicalCache
   app.moduleCache = state.moduleCache
+  app.hostInitializedModules = state.hostInitializedModules
+  app.admittedModuleSources = state.admittedModuleSources
+  app.capabilityModuleGenerations = state.capabilityModuleGenerations
+  app.nextCapabilityModuleGeneration = state.nextCapabilityModuleGeneration
   app.moduleEpoch = state.moduleEpoch
   app.moduleLoading = state.moduleLoading
+  app.capabilityDomainFailures = state.capabilityDomainFailures
   app.moduleCompileHeaders = state.moduleCompileHeaders
   app.moduleCompileArtifacts = state.moduleCompileArtifacts
+  app.installedModuleTemplates = state.installedModuleTemplates
   app.moduleCompileLoading = state.moduleCompileLoading
   app.implEpoch = state.implEpoch
   app.builtinsScope().impls = state.rootImpls
@@ -1147,8 +1343,8 @@ proc wakeTaskWaiters(task: Value)
 when compileOption("threads"):
   import std/atomics
 
-  # In-flight native operations running on dedicated OS threads that will
-  # settle a Task or feed a Channel (os/exec-*-async, future libcurl client).
+  # In-flight native operations that will settle a Task or feed a Channel,
+  # including dedicated workers and scheduler-polled terminal input.
   # Root-level blocking waits consult this before declaring deadlock: an
   # external thread can still unblock them, so they poll instead of raising.
   var externalNativeOps: Atomic[int]
@@ -1162,10 +1358,15 @@ when compileOption("threads"):
   proc externalNativeOpsPending(): bool =
     externalNativeOps.load(moAcquire) > 0
 else:
-  # Without OS threads (wasm, --threads:off) the dedicated-thread native ops
-  # that feed this counter are compiled out, so nothing is ever pending.
+  # Terminal/curses polling can make external progress without a worker thread.
+  # Keep the same lifecycle counter for those adapters in unthreaded builds.
+  var externalNativeOps = 0
+  proc beginExternalNativeOp() {.inline.} =
+    inc externalNativeOps
+  proc endExternalNativeOp() {.inline.} =
+    dec externalNativeOps
   proc externalNativeOpsPending(): bool {.inline.} =
-    false
+    externalNativeOps > 0
 
 # Schedule a task's own fiber to observe a cancellation request. Awaiters are
 # woken when that fiber finishes cleanup and settles the task as cancelled.
@@ -1891,7 +2092,8 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          named: NamedArgs): tuple[handled: bool, value: Value]
 proc applySelector(selector, target: Value): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
-                   named: NamedArgs): tuple[scope: Scope, returnType: Value]
+                   named: NamedArgs, callerScope: Scope = nil):
+                   tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
 proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value]
 proc admitErrorValue(value: Value, scope: Scope): Value
@@ -1905,12 +2107,9 @@ proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string
 proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
 proc typeExprLabel(expr: Value): string
-proc capabilityArgFromValue(value: Value): CapabilityArg
 proc moduleRootScope(scope: Scope): Scope
 proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
                           receiver: Value): Value
-proc capabilitySpecFromValue(value: Value, scope: Scope): CapabilitySpec
-proc capabilityTypeForFacade(app: Application, facade: Value): CapabilityType
 proc fileModulePath(scope: Scope): string
 
 # ---------------------------------------------------------------------------
@@ -4800,8 +4999,9 @@ proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if args.len != 2:
     raise newException(GeneError, "Env/extend expects 2 arguments, got " & $args.len)
   requireEnv("Env/extend", args[0])
-  newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0],
-         bindingScope = call.dispatchScope)
+  result = newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0],
+                  bindingScope = call.dispatchScope)
+  result.setEnvLoaderState(scopeLoaderState(call.dispatchScope))
 
 proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -4835,21 +5035,38 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
     bindings[name] = escapeWeakFunctions(value)
   result = newEnv(bindings)
   result.setEnvClosedScope(true)
+  result.setEnvLoaderState(mergeLoaderStates(scopeLoaderState(source),
+    scopeLoaderState(if activeVmScope != nil: activeVmScope[] else: nil)))
 
 proc invokeStreamCallback(stream, item: Value): Value
 proc closeStreamCallback(stream: Value) {.nimcall.}
 
-proc pullMappedStream(stream: Value, dropVoid: bool): StreamPullResult =
+template enterStreamBoundary(stream: Value) =
   let savedCapabilities = activeCapabilityContext
   let savedPresence = activeCapabilityPresence
+  let savedScope = activeVmScope
+  var boundaryScope: Scope
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
+    activeVmScope = savedScope
+  if stream.streamCapabilityCeiling.isPolicyContext and activeVmScope == nil:
+    raise newException(GeneError,
+      "UnsupportedCapability: deferred callback entry requires a consumer scope")
+  let origin = loaderStateValue(stream.streamLoaderState)
+  if origin != nil and activeVmScope != nil:
+    boundaryScope = newScope(activeVmScope[])
+    boundaryScope.loaderState = mergeLoaderStates(origin, scopeLoaderState(activeVmScope[]))
+    activeVmScope = addr boundaryScope
   if stream.streamCapabilityCeiling != nil and
       activeCapabilityContext != stream.streamCapabilityCeiling:
     activeCapabilityContext = intersectContexts(activeCapabilityContext,
       stream.streamCapabilityCeiling)
-    activeCapabilityPresence = nil
-  defer:
-    activeCapabilityContext = savedCapabilities
-    activeCapabilityPresence = savedPresence
+  activeCapabilityContext = loaderCapabilities(origin, activeCapabilityContext)
+  activeCapabilityPresence = nil
+
+proc pullMappedStream(stream: Value, dropVoid: bool): StreamPullResult =
+  enterStreamBoundary(stream)
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "map item")
@@ -4865,16 +5082,7 @@ proc pullFilterMapStream(stream: Value): StreamPullResult {.nimcall.} =
   pullMappedStream(stream, true)
 
 proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
-  let savedCapabilities = activeCapabilityContext
-  let savedPresence = activeCapabilityPresence
-  if stream.streamCapabilityCeiling != nil and
-      activeCapabilityContext != stream.streamCapabilityCeiling:
-    activeCapabilityContext = intersectContexts(activeCapabilityContext,
-      stream.streamCapabilityCeiling)
-  activeCapabilityPresence = nil
-  defer:
-    activeCapabilityContext = savedCapabilities
-    activeCapabilityPresence = savedPresence
+  enterStreamBoundary(stream)
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "filter item")
@@ -4883,6 +5091,7 @@ proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
   StreamPullResult(has: false, item: NIL)
 
 proc pullTakeStream(stream: Value): StreamPullResult {.nimcall.} =
+  enterStreamBoundary(stream)
   let source = stream.streamSource
   while stream.streamRemaining > 0 and source.streamHasNext:
     stream.setStreamRemaining(stream.streamRemaining - 1)
@@ -4936,7 +5145,7 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
   let callback = if dropVoid: biFilterMap else: biMap
   let scope = if call != nil: call.dispatchScope else: nil
   if args.len == 1:
-    return newSelectorCallStage(newNativeCallFn(name, callback, acceptsNamed = false), args)
+    return newSelectorCallStage(builtinNativeCallFn(name, callback, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, name & " expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
@@ -4945,7 +5154,7 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
     result = newLazyStream(receiver,
       (if dropVoid: pullFilterMapStream else: pullMapStream),
       callable = args[1], close = closeStreamCallback,
-      capabilityCeiling = activeCapabilityContext)
+      capabilityCeiling = activeCapabilityContext, loaderState = scopeLoaderState(scope))
   of vkList, vkSet:
     var items: seq[Value]
     let source = if receiver.kind == vkList: receiver.listItems else: receiver.setItems
@@ -4995,7 +5204,7 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   of vkStream:
     result = newLazyStream(receiver, pullFilterStream,
       callable = args[1], close = closeStreamCallback,
-      capabilityCeiling = activeCapabilityContext)
+      capabilityCeiling = activeCapabilityContext, loaderState = scopeLoaderState(scope))
   of vkList:
     var items: seq[Value]
     for item in receiver.listItems:
@@ -5044,7 +5253,9 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     var remaining = requireInt64("take count", args[1])
     if remaining < 0:
       raise newException(GeneError, "take count must be non-negative")
-    result = newLazyStream(receiver, pullTakeStream, remaining = remaining)
+    result = newLazyStream(receiver, pullTakeStream, remaining = remaining,
+      close = closeStreamCallback,
+      capabilityCeiling = activeCapabilityContext, loaderState = scopeLoaderState(scope))
     if remaining == 0:
       result.detachStreamSource()
   of vkList:
@@ -6481,8 +6692,10 @@ proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
     raw[i] = char(byte(v))
   newBytes(raw)
 
-proc activeCapabilitiesForCall(call: ptr NativeCall):
+proc activeCapabilitiesForCall*(call: ptr NativeCall):
     tuple[app: Application, context: CapabilityContext] =
+  ## Trusted native-adapter API: use the active context, never the application's
+  ## broader startup grants, when guarding the operation about to execute.
   let scope = if call == nil: nil else: call[].dispatchScope
   result.app = scope.application()
   if result.app == nil:
@@ -6491,13 +6704,30 @@ proc activeCapabilitiesForCall(call: ptr NativeCall):
   result.context =
     if activeCapabilityContext != nil:
       activeCapabilityContext
+    elif call != nil and call[].capabilityContext != nil:
+      call[].capabilityContext
     elif result.app.applicationCapabilityContext != nil:
       result.app.applicationCapabilityContext
     else:
       result.app.rootCapabilityContext
+  if call != nil and call[].capabilityContext != nil and
+      call[].capabilityContext != result.context:
+    result.context = intersectContexts(result.context, call[].capabilityContext)
+  var boundary = scope
+  while boundary != nil:
+    if boundary.evalCapabilityCeiling != nil:
+      result.context = intersectContexts(result.context, boundary.evalCapabilityCeiling)
+    if boundary.moduleExecutionPolicy != nil and
+        boundary.moduleExecutionPolicy.capabilityCeiling != nil:
+      result.context = intersectContexts(result.context,
+        boundary.moduleExecutionPolicy.capabilityCeiling)
+    boundary = boundary.parent
+  result.context = loaderCapabilities(scopeLoaderState(scope), result.context)
 
 proc raiseCapabilityGeneError(scope: Scope, kind, message: string,
-                              capability = "", operation = "")
+                              capability = "", operation = "", reason = "",
+                              authorityRow = -1,
+                              cause: ref CatchableError = nil)
                               {.noreturn.} =
   var props = initPropTable()
   props["message"] = newStr(message)
@@ -6505,12 +6735,51 @@ proc raiseCapabilityGeneError(scope: Scope, kind, message: string,
     props["capability"] = newStr(capability)
   if operation.len > 0:
     props["operation"] = newStr(operation)
+  if reason.len > 0:
+    props["reason"] = newStr(reason)
+  if authorityRow >= 0:
+    props["authority_row"] = newInt(authorityRow)
   var error: ref GeneError
   new(error)
   error.msg = kind & ": " & message
   error.errVal = newNode(builtInTypeHead(scope, kind), props = props)
   error.hasErrVal = true
+  error.parent = cause
   raise error
+
+proc raiseCapabilityOperationError*(scope: Scope, name, capability: string,
+                                   error: ref CapabilityError) {.noreturn.} =
+  if error of CapabilityGuardError:
+    let decision = cast[ref CapabilityGuardError](error).decision
+    raiseCapabilityGeneError(scope,
+      if decision.kind == cdProviderFailure: "CapabilityProviderError"
+      else: "MissingCapability",
+      name & ": " & decision.reason, capability, name, decision.reason,
+      decision.authorityRow, error)
+  if error of CapabilityOperationError:
+    raiseCapabilityGeneError(scope, "CapabilityTypeError",
+      name & ": invalid operation", capability, name, "invalid_operation",
+      cause = error)
+  raiseCapabilityGeneError(scope, "CapabilityProviderError",
+    name & ": provider evaluation failed", capability, name, "provider_failure",
+    cause = error)
+
+proc raiseCapabilityBoundaryError(scope: Scope, error: ref CapabilityError)
+                                  {.noreturn.} =
+  if error of CapabilityRequirementError:
+    let entry = cast[ref CapabilityRequirementError](error).failedEntry
+    if entry.status == caProviderFailure:
+      raiseCapabilityGeneError(scope, "CapabilityProviderError",
+        "capability requirement evaluation failed", operation = "capability boundary",
+        reason = "provider_failure", authorityRow = entry.authorityRow, cause = error)
+    let unproved = entry.status == caCannotProve
+    raiseCapabilityGeneError(scope,
+      if unproved: "CapabilityScopeError" else: "MissingCapability",
+      error.msg, operation = "capability boundary",
+      reason = if unproved: "cannot_prove" else: "unmatched_requirement",
+      authorityRow = entry.authorityRow, cause = error)
+  raiseCapabilityGeneError(scope, "CapabilityTypeError", error.msg,
+    operation = "capability boundary", reason = "invalid_policy", cause = error)
 
 proc capabilityErrorKind(message: string): string =
   if message.startsWith("unknown capability type"):
@@ -6526,12 +6795,44 @@ proc capabilityErrorKind(message: string): string =
   else:
     "CapabilityTypeError"
 
+proc rejectUnmigratedCapabilityEffect(name: string, scope: Scope = nil) =
+  if activeCapabilityContext.isPolicyContext:
+    if scope == nil:
+      raise newException(GeneError,
+        "UnsupportedCapability: " & name & " has no admitted operation contract")
+    raiseCapabilityGeneError(scope, "UnsupportedCapability",
+      name & " has no admitted operation contract in the active capability profile",
+      operation = name, reason = "unsupported_operation")
+
+proc guardNativeEffect(callee: Value, scope: Scope) =
+  if not activeCapabilityContext.isPolicyContext: return
+  let caller = if scope != nil: scope
+               elif activeVmScope != nil: activeVmScope[] else: nil
+  case callee.nativeEffectKind
+  of nekCapabilityFree, nekGuarded:
+    discard # Guarded adapters still authorize their actual operation facts.
+  of nekHostControl:
+    if caller == nil or hasLoaderRestrictions(caller):
+      raiseCapabilityGeneError(caller, "UnsupportedCapability",
+        "private host control is unavailable to application code",
+        operation = callee.nativeFnName, reason = "private_host_operation")
+  of nekUnsupported, nekUnclassified:
+    raiseCapabilityGeneError(caller, "UnsupportedCapability",
+      "native operation has no admitted contract in the active capability profile",
+      operation = callee.nativeFnName,
+      reason = if callee.nativeEffectKind == nekUnclassified:
+                 "unclassified_native" else: "unsupported_operation")
+
 proc requireActiveCapability(name, typeName: string, call: ptr NativeCall,
                              positional: openArray[CapabilityArg] = [],
                              named: openArray[CapabilityNamedArg] = []):
                              CapabilityGrant =
   let active = activeCapabilitiesForCall(call)
   let scope = if call == nil: nil else: call[].dispatchScope
+  if active.context.isPolicyContext:
+    raiseCapabilityGeneError(scope, "UnsupportedCapability",
+      name & " has not adopted the active capability profile", typeName, name,
+      "unsupported_operation")
   try:
     let capabilityType = active.app.capabilityRegistry.capabilityType(typeName)
     let spec = newCapabilitySpec(capabilityType, positional, named)
@@ -6562,44 +6863,6 @@ proc requireRetainedCapabilities(name: string, call: ptr NativeCall,
   except CapabilityError as error:
     raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
       name & ": " & error.msg, operation = name)
-
-proc biCheckCapabilities(args: openArray[Value],
-                         call: ptr NativeCall): Value {.nimcall.} =
-  ## `(check_capabilities sel ...)` — `true` when *every* selector resolves to
-  ## at least one grant in the active context.
-  ##
-  ## Resolution runs through the same path `^capabilities` and the operation
-  ## itself use, so a `true` here and admission at the boundary cannot
-  ## disagree. It reports authority, not outcome: the target may still be
-  ## missing or fail for host reasons.
-  if args.len == 0:
-    raise newException(GeneError,
-      "check_capabilities expects at least one capability specification")
-  let scope = if call == nil: nil else: call[].dispatchScope
-  let active = activeCapabilitiesForCall(call)
-  for arg in args:
-    let spec = capabilitySpecFromValue(arg, scope)
-    try:
-      # Mirror `requireActiveCapability` exactly, so the check and the operation
-      # cannot disagree: no grant is `false`, one grant is `true`, and several
-      # is the same `AmbiguousCapability` the operation would raise. Answering
-      # `true` there would promise an admission that is really a failure, and
-      # `false` would blame missing authority for what is too much of it.
-      let grants = active.app.capabilityRegistry.resolveSelector(
-        active.context, spec)
-      if grants.len == 0:
-        return FALSE
-      if grants.len > 1:
-        raiseCapabilityGeneError(scope, "AmbiguousCapability",
-          "check_capabilities matched multiple grants for " &
-            spec.capabilityType.name,
-          spec.capabilityType.name, "check_capabilities")
-    except CapabilityError as error:
-      # A malformed or unregistered capability type is a bug in the caller, not
-      # an answer about availability, so it stays an error rather than `false`.
-      raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
-        "check_capabilities: " & error.msg, operation = "check_capabilities")
-  TRUE
 
 proc retainResourceCapabilities(scope: Scope, resource: Value,
                                 context: CapabilityContext) =
@@ -6813,14 +7076,16 @@ when defined(geneWasm):
       {.cast(gcsafe).}:
         geneWasmEmit(s))
 
-proc biPrint(args: openArray[Value]): Value {.nimcall.} =
+proc biPrint(args: openArray[Value], call: ptr NativeCall = nil): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("print", if call == nil: nil else: call[].dispatchScope)
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
   when defined(geneWasm): geneWasmEmit(parts.join(" "))
   else: stdout.write parts.join(" ")
   NIL
 
-proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
+proc biPrintln(args: openArray[Value], call: ptr NativeCall = nil): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("println", if call == nil: nil else: call[].dispatchScope)
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
   when defined(geneWasm):
@@ -7028,115 +7293,11 @@ proc requireCPtr(name: string, value: Value) =
   if value.kind != vkCPtr:
     raise newException(GeneError, name & " expects a C pointer")
 
-proc requireCapability(name: string, value: Value) =
-  if value.kind != vkCapability:
-    raise newException(GeneError, name & " expects a Capability")
-
 proc requireString(name: string, value: Value) =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
 
-proc biCapabilityName(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Capability/name", args)
-  requireCapability("Capability/name", args[0])
-  newStr(args[0].capabilityName)
-
-proc biCapabilityCanonicalize(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("CapabilitySpec/canonicalize", args)
-  requireCapability("CapabilitySpec/canonicalize", args[0])
-  args[0]
-
-proc biCapabilityDescribe(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("CapabilitySpec/describe", args)
-  if args[0].kind == vkCapability:
-    newStr(args[0].capabilityName)
-  else:
-    newStr(args[0].print)
-
-proc capabilityArgValue(argument: CapabilityArg): Value =
-  case argument.kind
-  of cakNil: NIL
-  of cakBool: newBool(argument.boolValue)
-  of cakInt: newInt(argument.intValue)
-  of cakString: newStr(argument.stringValue)
-  of cakSymbol: newSym(argument.symbolValue)
-  of cakList:
-    var items = newSeqOfCap[Value](argument.listValue.len)
-    for item in argument.listValue:
-      items.add capabilityArgValue(item)
-    newList(items, immutable = true)
-  of cakMap:
-    var entries = initPropTable()
-    for item in argument.mapValue:
-      entries[item.name] = capabilityArgValue(item.value)
-    newMap(entries, immutable = true)
-
-proc capabilityTemplateArgValue(argument: CapabilityTemplateArg): Value =
-  case argument.kind
-  of ctakLiteral:
-    capabilityArgValue(argument.literal)
-  of ctakParameter:
-    newSym(argument.parameterName)
-
-proc capabilitySelectorValue(selector: CapabilitySelectorTemplate): Value =
-  case selector.kind
-  of cskAll:
-    newSym("*")
-  of cskNamespace:
-    newSym(selector.namespaceName & "/*")
-  of cskExact:
-    var properties = initPropTable()
-    if selector.optional:
-      properties["optional"] = TRUE
-    for argument in selector.named:
-      properties[argument.name] = capabilityTemplateArgValue(argument.value)
-    var positional: seq[Value]
-    for argument in selector.positional:
-      positional.add capabilityTemplateArgValue(argument)
-    newNode(newSym(selector.typeName), props = properties, body = positional)
-
-proc biCapabilitiesOf(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("capabilities_of", args)
-  var callable = args[0]
-  if callable.kind == vkProtocolMessage:
-    callable = callable.protocolMessageSignatureFn
-  if callable.kind != vkFunction or callable.fnCode == nil or
-      not (callable.fnCode of FunctionProto):
-    raise newException(GeneError,
-      "capabilities_of expects a function or protocol message")
-  let row = FunctionProto(callable.fnCode).capabilityRow
-  if row.inheritsCapabilities:
-    return newList(@[newSym("*")])
-  var selectors: seq[Value]
-  for selector in row.selectors:
-    selectors.add capabilitySelectorValue(selector)
-  newList(selectors)
-
-proc biCapabilityTypeInfo(args: openArray[Value],
-                          call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("capability_type_info", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
-  let app = scope.application()
-  if app == nil:
-    raise newException(GeneError,
-      "capability_type_info requires an application runtime")
-  let capabilityType =
-    if args[0].kind == vkCapability and args[0].capabilityIsAdmitted:
-      args[0].capabilitySpec.capabilityType
-    elif args[0].kind == vkType:
-      app.capabilityTypeForFacade(args[0])
-    elif args[0].kind == vkNode and args[0].head.kind == vkType:
-      app.capabilityTypeForFacade(args[0].head)
-    else:
-      raise newException(GeneError,
-        "capability_type_info expects an admitted capability type")
-  let provider = app.capabilityRegistry.providerFor(capabilityType)
-  var info = initPropTable()
-  info["name"] = newStr(capabilityType.name)
-  info["provider"] = newStr(provider.name)
-  info["enforced"] = TRUE
-  info["gene_facade"] = newBool(capabilityType.isGeneFacade)
-  newMap(info)
+include ./capability_api
 
 proc requirePort(name: string, value: Value): int =
   let raw = requireInt64(name, value)
@@ -7203,19 +7364,12 @@ proc asyncIoQueueFullTask(name: string): Value =
 
 proc activeFilesystemForCall(call: ptr NativeCall):
     tuple[provider: FilesystemProvider, context: CapabilityContext] =
-  let scope = if call == nil: nil else: call[].dispatchScope
-  let app = scope.application()
+  let active = activeCapabilitiesForCall(call)
+  let app = active.app
   if app == nil or app.filesystemProvider == nil:
     raise newException(GeneError,
       "filesystem operation requires an application runtime")
-  let context =
-    if activeCapabilityContext != nil:
-      activeCapabilityContext
-    elif app.applicationCapabilityContext != nil:
-      app.applicationCapabilityContext
-    else:
-      app.rootCapabilityContext
-  (app.filesystemProvider, context)
+  (app.filesystemProvider, active.context)
 
 proc biFsReadTextAsync(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
@@ -7415,6 +7569,8 @@ proc incrementalReplScopeForEnv*(env: Value): Scope
 proc run*(chunk: Chunk, scope: Scope,
           validateImplRequirements = true,
           initialCapabilities: CapabilityContext = nil): Value
+proc validateCapabilityModuleChunk(chunk: Chunk)
+proc validateCapabilityFunction(proto: FunctionProto)
 
 when not defined(geneWasm):
   # Host-only, for the reason the `web` import above states.
@@ -7628,8 +7784,8 @@ proc biTypeName(args: openArray[Value]): Value {.nimcall.} =
 
 proc typeReflectionMessage(name: string): Value =
   case name
-  of "fields": newNativeFn("Type/fields", biTypeFields)
-  of "name": newNativeFn("Type/name", biTypeName)
+  of "fields": builtinNativeFn("Type/fields", biTypeFields)
+  of "name": builtinNativeFn("Type/name", biTypeName)
   else: NIL
 
 proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
@@ -7795,14 +7951,6 @@ proc buildBuiltins(app: Application): Scope =
   # serializes by identity reference (serde, docs/stdlib.md).
   let serdeRefProtocol = newProtocol("SerdeRef", [])
   result.define("SerdeRef", serdeRefProtocol)
-  let capabilityDescribeDefault = newNativeFn(
-    "CapabilitySpec/describe", biCapabilityDescribe)
-  let capabilitySpecProtocol = newProtocol(
-    "CapabilitySpec", ["canonicalize", "describe"],
-    signatures = [NIL, capabilityDescribeDefault],
-    hasDefaults = [false, true], scope = result)
-  app.capabilitySpecProtocol = capabilitySpecProtocol
-  result.define("CapabilitySpec", capabilitySpecProtocol)
   let callType = newType("Call", NIL,
                          @[
                            TypeField(name: "named", optional: false,
@@ -7874,14 +8022,19 @@ proc buildBuiltins(app: Application): Scope =
       TypeField(name: "capability", optional: true,
                 typeExpr: newSym("Str"), scope: result),
       TypeField(name: "operation", optional: true,
-                typeExpr: newSym("Str"), scope: result)],
+                typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "reason", optional: true,
+                typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "authority_row", optional: true,
+                typeExpr: newSym("Int"), scope: result)],
     @[errorProtocol], result)
   result.define("CapabilityError", capabilityError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: capabilityError)
   for name in ["UnknownCapabilityType", "UnsupportedCapability",
                "MissingCapability", "CapabilityScopeError",
-               "AmbiguousCapability", "CapabilityTypeError"]:
+               "AmbiguousCapability", "CapabilityTypeError",
+               "CapabilityProviderError"]:
     result.define(name, newType(name, capabilityError, @[], @[], result))
   # A send that resolves to an Fexpr is a distinct dynamic call-kind
   # mismatch. It inherits TypeError's diagnostic fields and Error impl so
@@ -8042,114 +8195,106 @@ proc buildBuiltins(app: Application): Scope =
   result.define("==", builtinNativeFn("==", biEq))
   result.define("!=", builtinNativeFn("!=", biNe))
   result.define("contains?",
-                sharedBuiltinNative("contains?", newNativeFn("contains?", biContains)))
+                sharedBuiltinNative("contains?", builtinNativeFn("contains?", biContains)))
   result.define("same?", builtinNativeFn("same?", biSame))
-  result.define("check_capabilities",
-                newNativeCallFn("check_capabilities", biCheckCapabilities,
-                                acceptsNamed = false))
-  result.define("capabilities_of",
-                newNativeFn("capabilities_of", biCapabilitiesOf))
-  result.define("capability_type_info",
-                newNativeCallFn("capability_type_info", biCapabilityTypeInfo,
-                                acceptsNamed = false))
-  result.define("hash", newNativeFn("hash", biHash))
+  result.define("hash", builtinNativeFn("hash", biHash))
   result.define("not", builtinNativeFn("not", biNot))
   # The four node projections are both bare wrapper functions and messages on
   # the `Node` type. Bind one value each so `(head n)` and `(n .head)` name the
   # same function rather than two natives that merely behave alike.
-  let headFn = sharedBuiltinNative("head", newNativeFn("head", biHead))
-  let propsFn = sharedBuiltinNative("props", newNativeFn("props", biProps))
-  let bodyFn = sharedBuiltinNative("body", newNativeFn("body", biBody))
-  let metaFn = sharedBuiltinNative("meta", newNativeFn("meta", biMeta))
+  let headFn = sharedBuiltinNative("head", builtinNativeFn("head", biHead))
+  let propsFn = sharedBuiltinNative("props", builtinNativeFn("props", biProps))
+  let bodyFn = sharedBuiltinNative("body", builtinNativeFn("body", biBody))
+  let metaFn = sharedBuiltinNative("meta", builtinNativeFn("meta", biMeta))
   result.define("head", headFn)
   result.define("props", propsFn)
   result.define("body", bodyFn)
   result.define("meta", metaFn)
   result.define("construct_type",
-                newNativeFn("construct_type", biConstructType))
+                builtinNativeFn("construct_type", biConstructType))
   result.define("to_str", builtinNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
-  result.define("to_sym", newNativeFn("to_sym", biToSym))
-  result.define("to_int", newNativeFn("to_int", biToInt))
-  result.define("to_float", newNativeFn("to_float", biToFloat))
-  result.define("chars", newNativeFn("chars", biChars))
-  result.define("bytes", newNativeFn("bytes", biBytes))
-  result.define("graphemes", newNativeFn("graphemes", biGraphemes))
+  result.define("to_sym", builtinNativeFn("to_sym", biToSym))
+  result.define("to_int", builtinNativeFn("to_int", biToInt))
+  result.define("to_float", builtinNativeFn("to_float", biToFloat))
+  result.define("chars", builtinNativeFn("chars", biChars))
+  result.define("bytes", builtinNativeFn("bytes", biBytes))
+  result.define("graphemes", builtinNativeFn("graphemes", biGraphemes))
   result.define("$", builtinNativeCallFn("$", biDollar, acceptsNamed = false))
-  result.define("freeze_shallow", newNativeFn("freeze_shallow", biFreezeShallow))
-  result.define("freeze", newNativeFn("freeze", biFreeze))
-  result.define("thaw", newNativeFn("thaw", biThaw))
-  result.define("key", newNativeFn("key", biSelectorKey))
-  result.define("buffer", newNativeCallFn("buffer", biBuffer,
+  result.define("freeze_shallow", builtinNativeFn("freeze_shallow", biFreezeShallow))
+  result.define("freeze", builtinNativeFn("freeze", biFreeze))
+  result.define("thaw", builtinNativeFn("thaw", biThaw))
+  result.define("key", builtinNativeFn("key", biSelectorKey))
+  result.define("buffer", builtinNativeCallFn("buffer", biBuffer,
                                           acceptsNamed = false))
-  result.define("Regex", newNativeCallFn("Regex", biRegex))
+  result.define("Regex", builtinNativeCallFn("Regex", biRegex))
   let regexScope = newScope(result)
-  regexScope.define("match", newNativeCallFn("regex/match", biRegexMatch,
+  regexScope.define("match", builtinNativeCallFn("regex/match", biRegexMatch,
                                              acceptsNamed = false))
-  regexScope.define("find_all", newNativeCallFn("regex/find_all", biRegexFindAll,
+  regexScope.define("find_all", builtinNativeCallFn("regex/find_all", biRegexFindAll,
                                                 acceptsNamed = false))
-  regexScope.define("replace", newNativeFn("regex/replace", biRegexReplace))
+  regexScope.define("replace", builtinNativeFn("regex/replace", biRegexReplace))
   regexScope.define("replace_all",
-                    newNativeFn("regex/replace_all", biRegexReplaceAll))
-  regexScope.define("split", newNativeFn("regex/split", biRegexSplit))
+                    builtinNativeFn("regex/replace_all", biRegexReplaceAll))
+  regexScope.define("split", builtinNativeFn("regex/split", biRegexSplit))
   result.define("regex", newNamespace("regex", regexScope))
   result.define("range", builtinNativeFn("range", biRange))
   result.defineBuiltinType(vkRange, "Range", {
-    "start": newNativeFn("Range/start", biRangeStart),
-    "stop": newNativeFn("Range/stop", biRangeStop),
-    "step": newNativeFn("Range/step", biRangeStep),
-    "inclusive?": newNativeFn("Range/inclusive?", biRangeInclusive),
-    "size": newNativeFn("Range/size", biRangeSize)})
-  result.define("date", newNativeFn("date", biDate))
-  result.define("time", newNativeFn("time", biTime))
-  result.define("datetime", newNativeFn("datetime", biDateTime))
-  result.define("timezone", newNativeFn("timezone", biTimezone))
-  result.define("duration", newNativeFn("duration", biDuration))
-  result.define("today", newNativeFn("today", biToday))
-  result.define("now", newNativeFn("now", biNow))
+    "start": builtinNativeFn("Range/start", biRangeStart),
+    "stop": builtinNativeFn("Range/stop", biRangeStop),
+    "step": builtinNativeFn("Range/step", biRangeStep),
+    "inclusive?": builtinNativeFn("Range/inclusive?", biRangeInclusive),
+    "size": builtinNativeFn("Range/size", biRangeSize)})
+  result.define("date", builtinNativeFn("date", biDate))
+  result.define("time", builtinNativeFn("time", biTime))
+  result.define("datetime", builtinNativeFn("datetime", biDateTime))
+  result.define("timezone", builtinNativeFn("timezone", biTimezone))
+  result.define("duration", builtinNativeFn("duration", biDuration))
+  result.define("today", builtinNativeFn("today", biToday))
+  result.define("now", builtinNativeFn("now", biNow))
   result.defineBuiltinType(vkDate, "Date", {
-    "year": newNativeFn("Date/year", biDateYear),
-    "month": newNativeFn("Date/month", biDateMonth),
-    "day": newNativeFn("Date/day", biDateDay)})
+    "year": builtinNativeFn("Date/year", biDateYear),
+    "month": builtinNativeFn("Date/month", biDateMonth),
+    "day": builtinNativeFn("Date/day", biDateDay)})
   result.defineBuiltinType(vkTime, "Time", {
-    "hour": newNativeFn("Time/hour", biTimeHour),
-    "minute": newNativeFn("Time/minute", biTimeMinute),
-    "second": newNativeFn("Time/second", biTimeSecond),
-    "microsecond": newNativeFn("Time/microsecond", biTimeMicrosecond),
-    "offset": newNativeFn("Time/offset", biTimeOffset),
-    "timezone": newNativeFn("Time/timezone", biTimeTimezone)})
+    "hour": builtinNativeFn("Time/hour", biTimeHour),
+    "minute": builtinNativeFn("Time/minute", biTimeMinute),
+    "second": builtinNativeFn("Time/second", biTimeSecond),
+    "microsecond": builtinNativeFn("Time/microsecond", biTimeMicrosecond),
+    "offset": builtinNativeFn("Time/offset", biTimeOffset),
+    "timezone": builtinNativeFn("Time/timezone", biTimeTimezone)})
   result.defineBuiltinType(vkDateTime, "DateTime", {
-    "year": newNativeFn("DateTime/year", biDateTimeYear),
-    "month": newNativeFn("DateTime/month", biDateTimeMonth),
-    "day": newNativeFn("DateTime/day", biDateTimeDay),
-    "hour": newNativeFn("DateTime/hour", biDateTimeHour),
-    "minute": newNativeFn("DateTime/minute", biDateTimeMinute),
-    "second": newNativeFn("DateTime/second", biDateTimeSecond),
-    "microsecond": newNativeFn("DateTime/microsecond", biDateTimeMicrosecond),
-    "offset": newNativeFn("DateTime/offset", biDateTimeOffset),
-    "timezone": newNativeFn("DateTime/timezone", biDateTimeTimezone)})
+    "year": builtinNativeFn("DateTime/year", biDateTimeYear),
+    "month": builtinNativeFn("DateTime/month", biDateTimeMonth),
+    "day": builtinNativeFn("DateTime/day", biDateTimeDay),
+    "hour": builtinNativeFn("DateTime/hour", biDateTimeHour),
+    "minute": builtinNativeFn("DateTime/minute", biDateTimeMinute),
+    "second": builtinNativeFn("DateTime/second", biDateTimeSecond),
+    "microsecond": builtinNativeFn("DateTime/microsecond", biDateTimeMicrosecond),
+    "offset": builtinNativeFn("DateTime/offset", biDateTimeOffset),
+    "timezone": builtinNativeFn("DateTime/timezone", biDateTimeTimezone)})
   result.defineBuiltinType(vkTimezone, "Timezone", {
-    "offset": newNativeFn("Timezone/offset", biTimezoneOffset),
-    "name": newNativeFn("Timezone/name", biTimezoneName)})
+    "offset": builtinNativeFn("Timezone/offset", biTimezoneOffset),
+    "name": builtinNativeFn("Timezone/name", biTimezoneName)})
   result.defineBuiltinType(vkDuration, "Duration", {
-    "microseconds": newNativeFn("Duration/microseconds", biDurationMicroseconds),
-    "milliseconds": newNativeFn("Duration/milliseconds", biDurationMilliseconds),
-    "seconds": newNativeFn("Duration/seconds", biDurationSeconds)})
-  result.define("Set", newNativeFn("Set", biSet))
-  result.define("set_has?", newNativeFn("set_has?", biSetHas))
-  result.define("set_size", newNativeFn("set_size", biSetSize))
+    "microseconds": builtinNativeFn("Duration/microseconds", biDurationMicroseconds),
+    "milliseconds": builtinNativeFn("Duration/milliseconds", biDurationMilliseconds),
+    "seconds": builtinNativeFn("Duration/seconds", biDurationSeconds)})
+  result.define("Set", builtinNativeFn("Set", biSet))
+  result.define("set_has?", builtinNativeFn("set_has?", biSetHas))
+  result.define("set_size", builtinNativeFn("set_size", biSetSize))
   # Shared natives, bound once. Each is both a bare library function and a
   # message on one or more container types, so `($size xs)` and `(xs .size)`
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
   let sizeFn = sharedBuiltinNative("size", builtinNativeFn("size", biListSize))
   let emptyFn = sharedBuiltinNative("empty?", builtinNativeFn("empty?", biListEmpty))
-  let firstFn = sharedBuiltinNative("first", newNativeFn("first", biListFirst))
-  let lastFn = sharedBuiltinNative("last", newNativeFn("last", biListLast))
+  let firstFn = sharedBuiltinNative("first", builtinNativeFn("first", biListFirst))
+  let lastFn = sharedBuiltinNative("last", builtinNativeFn("last", biListLast))
   let toStreamFn = sharedBuiltinNative("to_stream",
     builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
-                                            newNativeFn("to_pairs_stream", biToPairsStream))
+                                            builtinNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (design §6.2) are call-fns so the
   # dispatcher can reach the send's scope: a receiver whose type declares no
   # such method raises the send path's recoverable MessageError, never a kind
@@ -8172,16 +8317,16 @@ proc buildBuiltins(app: Application): Scope =
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
   result.define("empty?", emptyFn)
-  result.define("leaf?", newNativeFn("leaf?", biIsLeaf))
+  result.define("leaf?", builtinNativeFn("leaf?", biIsLeaf))
   result.define("nil?", builtinNativeFn("nil?", biIsNil))
   result.define("void?", builtinNativeFn("void?", biIsVoid))
-  result.define("absent?", newNativeFn("absent?", biIsAbsent))
+  result.define("absent?", builtinNativeFn("absent?", biIsAbsent))
   result.define("present?", builtinNativeFn("present?", biIsPresent))
   result.define("first", firstFn)
   result.define("last", lastFn)
   result.defineBuiltinType(vkList, "List", {
-    "assoc": newNativeFn("List/assoc", biListAssoc),
-    "set": newNativeFn("List/set", biListSetBang),
+    "assoc": builtinNativeFn("List/assoc", biListAssoc),
+    "set": builtinNativeFn("List/set", biListSetBang),
     "push": builtinNativeFn("List/push", biListPushBang),
     "size": sizeFn,
     "empty?": emptyFn,
@@ -8201,10 +8346,10 @@ proc buildBuiltins(app: Application): Scope =
   # `to_stream` here: the pair stream is `to_pairs_stream` (§6.2), and a
   # message that always raises a kind error must not sit in the table.
   let mapType = result.defineBuiltinType(vkMap, "Map", {
-    "assoc": newNativeFn("Map/assoc", biMapAssoc),
-    "get": newNativeFn("Map/get", biMapGet),
-    "put": newNativeFn("Map/put", biMapPutBang),
-    "delete": newNativeFn("Map/delete", biMapDeleteBang),
+    "assoc": builtinNativeFn("Map/assoc", biMapAssoc),
+    "get": builtinNativeFn("Map/get", biMapGet),
+    "put": builtinNativeFn("Map/put", biMapPutBang),
+    "delete": builtinNativeFn("Map/delete", biMapDeleteBang),
     "map": mapFn,
     "filter_map": filterMapFn,
     "filter": filterFn,
@@ -8217,25 +8362,25 @@ proc buildBuiltins(app: Application): Scope =
   # distinction between universal anatomy and the concrete `Node` type, and
   # `builtinReceiverMessage` routes the instance case back to this same table.
   result.defineBuiltinType(vkNode, "Node", {
-    "set_prop": newNativeFn("Node/set_prop", biNodeSetPropBang),
-    "set_body": newNativeFn("Node/set_body", biNodeSetBodyBang),
-    "push_body": newNativeFn("Node/push_body", biNodePushBodyBang),
+    "set_prop": builtinNativeFn("Node/set_prop", biNodeSetPropBang),
+    "set_body": builtinNativeFn("Node/set_body", biNodeSetBodyBang),
+    "push_body": builtinNativeFn("Node/push_body", biNodePushBodyBang),
     "head": headFn,
     "props": propsFn,
     "body": bodyFn,
     "meta": metaFn})
   result.defineBuiltinType(vkBuffer, "Buffer", {
-    "len": newNativeFn("Buffer/len", biBufferLen),
-    "get": newNativeFn("Buffer/get", biBufferGet),
-    "set": newNativeCallFn("Buffer/set", biBufferSetBang,
+    "len": builtinNativeFn("Buffer/len", biBufferLen),
+    "get": builtinNativeFn("Buffer/get", biBufferGet),
+    "set": builtinNativeCallFn("Buffer/set", biBufferSetBang,
                             acceptsNamed = false),
-    "fill": newNativeCallFn("Buffer/fill", biBufferFillBang,
+    "fill": builtinNativeCallFn("Buffer/fill", biBufferFillBang,
                              acceptsNamed = false),
-    "copy_from": newNativeCallFn("Buffer/copy_from", biBufferCopyFromBang,
+    "copy_from": builtinNativeCallFn("Buffer/copy_from", biBufferCopyFromBang,
                                   acceptsNamed = false),
-    "to_list": newNativeFn("Buffer/to_list", biBufferToList),
-    "to_bytes": newNativeFn("Buffer/to_bytes", biBufferToBytes),
-    "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})
+    "to_list": builtinNativeFn("Buffer/to_list", biBufferToList),
+    "to_bytes": builtinNativeFn("Buffer/to_bytes", biBufferToBytes),
+    "elem_type": builtinNativeFn("Buffer/elem_type", biBufferElemType)})
   # The fixed-width numeric names, bound as values so they can be *passed*
   # rather than only annotated. `matchesBuiltinType` has always known them, so
   # `(fn f [x : F32] ...)` already worked; what did not work was
@@ -8269,49 +8414,33 @@ proc buildBuiltins(app: Application): Scope =
                     ("Char", vkChar)]:
         gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
   let deviceScope = newScope(result)
-  deviceScope.define("Compute",
-    newCapability(app.hostCapabilityProvider.types.deviceCompute))
-  deviceScope.define("buffer", newNativeCallFn("device/buffer", biDeviceBuffer,
+  deviceScope.define("buffer", builtinNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
   let deviceBufferScope = newScope(deviceScope)
   deviceBufferScope.define("len",
-                           newNativeFn("device/Buffer/len", biDeviceBufferLen))
+                           builtinNativeFn("device/Buffer/len", biDeviceBufferLen))
   deviceBufferScope.define("backend",
-                           newNativeFn("device/Buffer/backend",
+                           builtinNativeFn("device/Buffer/backend",
                                        biDeviceBufferBackend))
   deviceBufferScope.define("elem_type",
-                           newNativeFn("device/Buffer/elem_type",
+                           builtinNativeFn("device/Buffer/elem_type",
                                        biDeviceBufferElemType))
   deviceScope.define("Buffer", newNamespace("device/Buffer", deviceBufferScope))
   result.define("device", newNamespace("device", deviceScope))
   let clockScope = newScope(result)
-  clockScope.define("Monotonic",
-    newCapability(app.hostCapabilityProvider.types.clockMonotonic))
   result.define("clock", newNamespace("clock", clockScope))
-  let capabilityTypeValue = result.defineBuiltinType(vkCapability, "Capability", {
-    "name": newNativeFn("Capability/name", biCapabilityName)})
-  result.impls.add ProtocolImpl(
-    protocol: capabilitySpecProtocol,
-    receiver: capabilityTypeValue,
-    messages: @[
-      ImplMessage(
-        message: capabilitySpecProtocol.protocolMessages["canonicalize"],
-        fn: newNativeFn("CapabilitySpec/canonicalize",
-                        biCapabilityCanonicalize)),
-      ImplMessage(
-        message: capabilitySpecProtocol.protocolMessages["describe"],
-        fn: capabilityDescribeDefault)])
+  discard result.defineBuiltinType(vkCapability, "Capability", [])
   var sandboxTransactionMessages = initTable[string, Value]()
   sandboxTransactionMessages["prepare"] =
-    newNativeCallFn("SandboxTransaction/prepare",
+    builtinNativeCallFn("SandboxTransaction/prepare",
                     biSandboxTransactionPrepare,
                     acceptsNamed = false)
   sandboxTransactionMessages["commit"] =
-    newNativeCallFn("SandboxTransaction/commit",
+    builtinNativeCallFn("SandboxTransaction/commit",
                     biSandboxTransactionCommit,
                     acceptsNamed = false)
   sandboxTransactionMessages["discard"] =
-    newNativeCallFn("SandboxTransaction/discard",
+    builtinNativeCallFn("SandboxTransaction/discard",
                     biSandboxTransactionDiscard,
                     acceptsNamed = false)
   let sandboxTransactionType = newType(
@@ -8320,15 +8449,15 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxTransaction", sandboxTransactionType)
   var sandboxGenerationMessages = initTable[string, Value]()
   sandboxGenerationMessages["module"] =
-    newNativeCallFn("SandboxGeneration/module",
+    builtinNativeCallFn("SandboxGeneration/module",
                     biSandboxGenerationModule,
                     acceptsNamed = false)
   sandboxGenerationMessages["graph"] =
-    newNativeCallFn("SandboxGeneration/graph",
+    builtinNativeCallFn("SandboxGeneration/graph",
                     biSandboxGenerationGraph,
                     acceptsNamed = false)
   sandboxGenerationMessages["release"] =
-    newNativeCallFn("SandboxGeneration/release",
+    builtinNativeCallFn("SandboxGeneration/release",
                     biSandboxGenerationRelease,
                     acceptsNamed = false)
   let sandboxGenerationType = newType(
@@ -8337,34 +8466,34 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
-                      newNativeFn("runtime/gc_stats", biRuntimeGcStats))
+                      builtinNativeFn("runtime/gc_stats", biRuntimeGcStats))
   runtimeScope.define("guard_call",
-                      newNativeCallFn("runtime/guard_call",
+                      builtinNativeCallFn("runtime/guard_call",
                                       biRuntimeGuardCall,
                                       acceptsNamed = false))
   runtimeScope.define("callable?",
-                      newNativeCallFn("runtime/callable?",
+                      builtinNativeCallFn("runtime/callable?",
                                       biRuntimeCallable,
                                       acceptsNamed = false))
   runtimeScope.define("bind_call",
-                      newNativeCallFn("runtime/bind_call", biRuntimeBindCall))
+                      builtinNativeCallFn("runtime/bind_call", biRuntimeBindCall))
   runtimeScope.define("signature",
-                      newNativeCallFn("runtime/signature", biRuntimeSignature,
+                      builtinNativeCallFn("runtime/signature", biRuntimeSignature,
                                       acceptsNamed = false))
   runtimeScope.define("constructor_signature",
-                      newNativeFn("runtime/constructor_signature", biRuntimeConstructorSignature))
+                      builtinNativeFn("runtime/constructor_signature", biRuntimeConstructorSignature))
   runtimeScope.define("bind_shape",
-                      newNativeFn("runtime/bind_shape", biRuntimeBindShape))
+                      builtinNativeFn("runtime/bind_shape", biRuntimeBindShape))
   runtimeScope.define("require_root_lane",
-                      newNativeCallFn("runtime/require_root_lane",
+                      builtinNativeCallFn("runtime/require_root_lane",
                                       biRuntimeRequireRootLane,
                                       acceptsNamed = false))
   runtimeScope.define("sandbox_transaction",
-                      newNativeCallFn("runtime/sandbox_transaction",
+                      builtinNativeCallFn("runtime/sandbox_transaction",
                                       biRuntimeSandboxTransaction,
                                       acceptsNamed = false))
   runtimeScope.define("configure_module",
-                      newNativeCallFn("runtime/configure_module",
+                      builtinNativeCallFn("runtime/configure_module",
                                       biRuntimeConfigureModule,
                                       acceptsNamed = false))
   # design §D5's loader. It lives under `runtime`, which is itself in
@@ -8379,57 +8508,47 @@ proc buildBuiltins(app: Application): Scope =
   # with an empty module cache — which is exactly the bug that made a mod's
   # `Game` a different type from the host's.
   runtimeScope.define("load_sandboxed",
-                      newNativeCallFn("runtime/load_sandboxed",
+                      builtinNativeCallFn("runtime/load_sandboxed",
                                       biRuntimeLoadSandboxed,
                                       acceptsNamed = false))
   result.define("runtime", newNamespace("runtime", runtimeScope))
   let fsScope = newScope(result)
-  fsScope.define("ReadDir", newCapability(app.filesystemProvider.types.readDir))
-  fsScope.define("WriteDir", newCapability(app.filesystemProvider.types.writeDir))
-  fsScope.define("ReadWriteDir",
-                 newCapability(app.filesystemProvider.types.readWriteDir))
-  fsScope.define("ReadFile", newCapability(app.filesystemProvider.types.readFile))
-  fsScope.define("WriteFile", newCapability(app.filesystemProvider.types.writeFile))
   fsScope.define("read_text_async",
-                 newNativeCallFn("fs/read_text_async", biFsReadTextAsync,
+                 builtinNativeCallFn("fs/read_text_async", biFsReadTextAsync,
                                  acceptsNamed = false))
   fsScope.define("write_text_async",
-                 newNativeCallFn("fs/write_text_async", biFsWriteTextAsync,
+                 builtinNativeCallFn("fs/write_text_async", biFsWriteTextAsync,
                                  acceptsNamed = false))
   result.define("fs", newNamespace("fs", fsScope))
-  # `net` is created here with the socket capability and the raw TCP ops;
+  # `net` is created here with the raw TCP operation adapters;
   # `registerStdlibNamespaces` extends this same namespace with `http` and
   # `http_client` rather than rebinding the name, so there is one `net`.
   let netScope = newScope(result)
-  netScope.define("Connect",
-    newCapability(app.hostCapabilityProvider.types.netConnect))
-  netScope.define("Listen",
-    newCapability(app.hostCapabilityProvider.types.netListen))
   netScope.define("tcp_read_text_async",
-                  newNativeCallFn("net/tcp_read_text_async",
+                  builtinNativeCallFn("net/tcp_read_text_async",
                                   biNetTcpReadTextAsync,
                                   acceptsNamed = false))
   netScope.define("tcp_write_text_async",
-                  newNativeCallFn("net/tcp_write_text_async",
+                  builtinNativeCallFn("net/tcp_write_text_async",
                                   biNetTcpWriteTextAsync,
                                   acceptsNamed = false))
   result.define("net", newNamespace("net", netScope))
-  result.define("cell", newNativeFn("cell", biCell))
+  result.define("cell", builtinNativeFn("cell", biCell))
   result.defineBuiltinType(vkCell, "Cell", {
-    "get": newNativeFn("Cell/get", biCellGet),
-    "set": newNativeFn("Cell/set", biCellSet),
-    "swap": newNativeFn("Cell/swap", biCellSwap),
-    "update": newNativeFn("Cell/update", biCellUpdate)})
-  result.define("atomic_cell", newNativeFn("atomic_cell", biAtomicCell))
+    "get": builtinNativeFn("Cell/get", biCellGet),
+    "set": builtinNativeFn("Cell/set", biCellSet),
+    "swap": builtinNativeFn("Cell/swap", biCellSwap),
+    "update": builtinNativeFn("Cell/update", biCellUpdate)})
+  result.define("atomic_cell", builtinNativeFn("atomic_cell", biAtomicCell))
   result.defineBuiltinType(vkAtomicCell, "AtomicCell", {
-    "load": newNativeFn("AtomicCell/load", biAtomicCellLoad),
-    "store": newNativeFn("AtomicCell/store", biAtomicCellStore),
-    "swap": newNativeFn("AtomicCell/swap", biAtomicCellSwap),
+    "load": builtinNativeFn("AtomicCell/load", biAtomicCellLoad),
+    "store": builtinNativeFn("AtomicCell/store", biAtomicCellStore),
+    "swap": builtinNativeFn("AtomicCell/swap", biAtomicCellSwap),
     "compare_exchange":
-      newNativeFn("AtomicCell/compare_exchange", biAtomicCellCompareExchange)})
+      builtinNativeFn("AtomicCell/compare_exchange", biAtomicCellCompareExchange)})
   let cScope = newScope(result)
-  cScope.define("close", newNativeFn("C/close", biCPtrClose))
-  cScope.define("closed?", newNativeFn("C/closed?", biCPtrClosed))
+  cScope.define("close", builtinNativeFn("C/close", biCPtrClose))
+  cScope.define("closed?", builtinNativeFn("C/closed?", biCPtrClosed))
   for name in ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32",
                "Int64", "UInt64", "Float", "Double", "Char", "UChar",
                "Short", "UShort", "Int", "UInt", "Long", "ULong",
@@ -8439,27 +8558,25 @@ proc buildBuiltins(app: Application): Scope =
     cScope.define(name, cAbiTypeValue(name))
   result.define("C", newNamespace("C", cScope))
   let ffiScope = newScope(result)
-  ffiScope.define("open", newNativeCallFn("ffi/open", biFfiOpen,
+  ffiScope.define("open", builtinNativeCallFn("ffi/open", biFfiOpen,
                                            acceptsNamed = false))
-  ffiScope.define("bind", newNativeCallFn("ffi/bind", biFfiBind,
+  ffiScope.define("bind", builtinNativeCallFn("ffi/bind", biFfiBind,
                                            acceptsNamed = false))
   # The FFI capability/type surface joins the same `ffi` namespace as the
   # operations, rather than sitting beside it under an uppercase name.
-  ffiScope.define("Load",
-    newCapability(app.hostCapabilityProvider.types.ffiLoad))
   ffiScope.define("Callable", ffiTypeValue("Callable"))
   let ffiLibraryScope = newScope(ffiScope)
   ffiLibraryScope.define("close",
-                         newNativeFn("ffi/Library/close", biFfiLibraryClose))
+                         builtinNativeFn("ffi/Library/close", biFfiLibraryClose))
   ffiLibraryScope.define("closed?",
-                         newNativeFn("ffi/Library/closed?", biFfiLibraryClosed))
+                         builtinNativeFn("ffi/Library/closed?", biFfiLibraryClosed))
   ffiLibraryScope.define("path",
-                         newNativeFn("ffi/Library/path", biFfiLibraryPath))
+                         builtinNativeFn("ffi/Library/path", biFfiLibraryPath))
   ffiScope.define("Library", newNamespace("ffi/Library", ffiLibraryScope))
   result.define("ffi", newNamespace("ffi", ffiScope))
   result.defineBuiltinType(vkTask, "Task", {
-    "cancel": newNativeFn("Task/cancel", biTaskCancel),
-    "detach": newNativeCallFn("Task/detach", biTaskDetach,
+    "cancel": builtinNativeFn("Task/cancel", biTaskCancel),
+    "detach": builtinNativeCallFn("Task/detach", biTaskDetach,
                                              acceptsNamed = false),
     "join": builtinNativeCallFn("Task/join", biTaskJoin,
                                          acceptsNamed = false)})
@@ -8490,17 +8607,17 @@ proc buildBuiltins(app: Application): Scope =
       hasBacking: false, backing: NIL)],
     NIL, result)
   result.define("TryNext", tryNextType)
-  result.define("channel", newNativeCallFn("channel", biChannel))
+  result.define("channel", builtinNativeCallFn("channel", biChannel))
   result.defineBuiltinType(vkChannel, "Channel", {
-    "send": newNativeCallFn("Channel/send", biChannelSend,
+    "send": builtinNativeCallFn("Channel/send", biChannelSend,
                             acceptsNamed = false),
-    "try_send": newNativeCallFn("Channel/try_send", biChannelTrySend,
+    "try_send": builtinNativeCallFn("Channel/try_send", biChannelTrySend,
                                 acceptsNamed = false),
-    "recv": newNativeCallFn("Channel/recv", biChannelRecv,
+    "recv": builtinNativeCallFn("Channel/recv", biChannelRecv,
                             acceptsNamed = false),
-    "try_recv": newNativeCallFn("Channel/try_recv", biChannelTryRecv,
+    "try_recv": builtinNativeCallFn("Channel/try_recv", biChannelTryRecv,
                                 acceptsNamed = false),
-    "close": newNativeCallFn("Channel/close", biChannelClose,
+    "close": builtinNativeCallFn("Channel/close", biChannelClose,
                              acceptsNamed = false)})
   # A lowercase namespace holds functions; an uppercase one is a type's message
   # surface (design §3). So operations that act *on* an actor reference live on
@@ -8508,19 +8625,19 @@ proc buildBuiltins(app: Application): Scope =
   # stay functions under `actor`: `spawn` creates a reference, and `stop` /
   # `continue` are actor-body control signals.
   result.defineBuiltinType(vkActorRef, "Actor", {
-    "send": newNativeCallFn("Actor/send", biActorSend, acceptsNamed = false),
-    "try_send": newNativeCallFn("Actor/try_send", biActorTrySend,
+    "send": builtinNativeCallFn("Actor/send", biActorSend, acceptsNamed = false),
+    "try_send": builtinNativeCallFn("Actor/try_send", biActorTrySend,
                                 acceptsNamed = false),
-    "ask": newNativeCallFn("Actor/ask", biActorAsk),
-    "snapshot": newNativeFn("Actor/snapshot", biActorSnapshot),
-    "upgrade": newNativeCallFn("Actor/upgrade", biActorUpgrade)})
+    "ask": builtinNativeCallFn("Actor/ask", biActorAsk),
+    "snapshot": builtinNativeFn("Actor/snapshot", biActorSnapshot),
+    "upgrade": builtinNativeCallFn("Actor/upgrade", biActorUpgrade)})
   let actorScope = newScope(result)
-  actorScope.define("spawn", newNativeCallFn("actor/spawn", biActorSpawn))
-  actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
-  actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
+  actorScope.define("spawn", builtinNativeCallFn("actor/spawn", biActorSpawn))
+  actorScope.define("continue", builtinNativeFn("actor/continue", biActorContinue))
+  actorScope.define("stop", builtinNativeFn("actor/stop", biActorStop))
   result.define("actor", newNamespace("actor", actorScope))
   result.defineBuiltinType(vkReplyTo, "ReplyTo", {
-    "send": newNativeCallFn("ReplyTo/send", biReplyToSend,
+    "send": builtinNativeCallFn("ReplyTo/send", biReplyToSend,
                                              acceptsNamed = false)})
   # `|` builds a union type expression as a value (design §7.4.1). It joins the
   # operators rather than the library: it is language syntax everywhere else —
@@ -8528,23 +8645,23 @@ proc buildBuiltins(app: Application): Scope =
   # one spelling that is *not* pre-bound made the same form mean different
   # things in different positions. A program may still shadow it, as with any
   # other operator.
-  result.define("|", sharedBuiltinNative("|", newNativeFn("|", biUnionType)))
+  result.define("|", sharedBuiltinNative("|", builtinNativeFn("|", biUnionType)))
   result.define("respond_to?",
-                newNativeCallFn("respond_to?", biRespondTo,
+                builtinNativeCallFn("respond_to?", biRespondTo,
                                 acceptsNamed = false))
-  result.define("declarations", newNativeFn("declarations", biDeclarations))
+  result.define("declarations", builtinNativeFn("declarations", biDeclarations))
   result.defineBuiltinType(vkNamespace, "Namespace", {
-    "bindings": newNativeFn("Namespace/bindings", biNamespaceBindings),
-    "lookup": newNativeFn("Namespace/lookup", biNamespaceLookup),
-    "declarations": newNativeFn("Namespace/declarations", biNamespaceDeclarations)})
+    "bindings": builtinNativeFn("Namespace/bindings", biNamespaceBindings),
+    "lookup": builtinNativeFn("Namespace/lookup", biNamespaceLookup),
+    "declarations": builtinNativeFn("Namespace/declarations", biNamespaceDeclarations)})
   result.defineBuiltinType(vkModule, "Module", {
-    "root_namespace": newNativeFn("Module/root_namespace", biModuleRootNamespace),
-    "name": newNativeFn("Module/name", biModuleName),
-    "path": newNativeFn("Module/path", biModulePath),
-    "meta": newNativeFn("Module/meta", biModuleMeta),
-    "declarations": newNativeFn("Module/declarations", biModuleDeclarations)})
+    "root_namespace": builtinNativeFn("Module/root_namespace", biModuleRootNamespace),
+    "name": builtinNativeFn("Module/name", biModuleName),
+    "path": builtinNativeFn("Module/path", biModulePath),
+    "meta": builtinNativeFn("Module/meta", biModuleMeta),
+    "declarations": builtinNativeFn("Module/declarations", biModuleDeclarations)})
   result.defineBuiltinType(vkEnv, "Env", {
-    "extend": newNativeCallFn("Env/extend", biEnvExtend,
+    "extend": builtinNativeCallFn("Env/extend", biEnvExtend,
                               acceptsNamed = false)})
   # `snapshot` takes a **CallerEnv**, not an `Env`, so it was the one member
   # that made `Env` look like a namespace: as a static factory it had no
@@ -8552,12 +8669,12 @@ proc buildBuiltins(app: Application): Scope =
   # settles that — `(caller_env .snapshot ["x"])` reads as what it does, and
   # `Env` is left holding only the message that genuinely takes an `Env`.
   result.defineBuiltinType(vkCallerEnv, "CallerEnv", {
-    "snapshot": newNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
+    "snapshot": builtinNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
   result.define("read_one", builtinNativeCallFn("read_one", biReadOne,
                                             acceptsNamed = false))
   result.define("read_all", builtinNativeCallFn("read_all", biReadAll,
                                             acceptsNamed = false))
-  result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
+  result.define("lex_all", builtinNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
   result.define("to_stream", toStreamFn)
   result.define("to_pairs_stream", toPairsStreamFn)
@@ -8566,14 +8683,15 @@ proc buildBuiltins(app: Application): Scope =
   result.define("filter", filterFn)
   result.define("take", takeFn)
   result.define("into", intoFn)
-  result.define("assoc_in", newNativeFn("assoc_in", biAssocIn))
-  result.define("update_in", newNativeFn("update_in", biUpdateIn))
-  result.define("panic", newNativeFn("panic", biPanic))
-  result.define("sleep", newNativeCallFn("sleep", biSleep,
+  result.define("assoc_in", builtinNativeFn("assoc_in", biAssocIn))
+  result.define("update_in", builtinNativeFn("update_in", biUpdateIn))
+  result.define("panic", builtinNativeFn("panic", biPanic))
+  result.define("sleep", builtinNativeCallFn("sleep", biSleep,
                                           acceptsNamed = false))
-  result.define("print", newNativeFn("print", biPrint))
-  result.define("println", newNativeFn("println", biPrintln))
+  result.define("print", builtinNativeCallFn("print", biPrint, acceptsNamed = false))
+  result.define("println", builtinNativeCallFn("println", biPrintln, acceptsNamed = false))
   registerStdlibNamespaces(result)
+  registerCapabilityNamespace(result)
   # `Stream` registers after the stdlib namespaces because `each` is the one
   # pipeline op with no bare root binding — it lives only in the `stream`
   # namespace — and the type's table should hold that same value rather than a
@@ -8663,32 +8781,18 @@ proc newApplicationState(root: string,
   let capabilityRegistry = newCapabilityRegistry()
   let filesystemProvider = capabilityRegistry.admitFilesystemProvider()
   let hostCapabilityProvider = capabilityRegistry.admitHostCapabilityProvider()
-  let configuredGrants =
-    if configure == nil: @[]
-    else: configure(capabilityRegistry, filesystemProvider,
-                    hostCapabilityProvider)
+  if configure != nil:
+    configure(capabilityRegistry, filesystemProvider, hostCapabilityProvider)
   capabilityRegistry.freeze()
-  # Package discovery and filesystem authority are independent. Relative
-  # stdlib paths have always been launch-cwd relative, and the capability root
-  # must use the same anchor (`gene run path/to/app.gene` must not silently
-  # reinterpret "tmp/x" beneath the entry file's directory).
-  var rootGrants = @[filesystemProvider.grantReadWriteDir(launchRoot)]
-  rootGrants.add hostCapabilityProvider.rootGrants()
-  for grant in configuredGrants:
-    if not grant.belongsTo(capabilityRegistry):
-      raise newException(CapabilityError,
-        "host capability configuration returned a foreign or nil root grant")
-    rootGrants.add grant
-  let rootCapabilityContext = newCapabilityContext(rootGrants)
+  # Source/package discovery is private host work, never application authority.
+  # Embedding and launcher construction share the same normalized empty default.
+  # Hosts install policy or explicit live normalized grants after catalog freeze.
+  let rootCapabilityContext = capabilityRegistry.newPolicyContext([])
   Application(capabilityRegistry: capabilityRegistry,
                        errorFunctionCreated: installStrictErrorLease,
                        filesystemProvider: filesystemProvider,
                        hostCapabilityProvider: hostCapabilityProvider,
                        rootCapabilityContext: rootCapabilityContext,
-                       capabilityFacades:
-                         initTable[string, CapabilityFacadeBinding](),
-                       capabilityCanonicalCache:
-                         initTable[string, CapabilitySpec](),
                        moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
                        moduleCompileHeaders:
@@ -8740,9 +8844,9 @@ proc newApplication*(startDir = ""): Application =
 proc newApplicationConfigured*(startDir: string,
                                configure: CapabilityHostConfigureProc):
                                Application =
-  ## Host-only extension seam. The callback admits trusted providers, types,
-  ## entailments, and root grants before the registry freezes; it is never
-  ## callable from Gene source.
+  ## Host-only catalog extension seam. The callback admits trusted providers,
+  ## types and entailments before freeze. It does not establish root authority:
+  ## use configureCapabilityStartup or setRootCapabilities afterward.
   if configure == nil:
     raise newException(CapabilityError,
       "configured application requires a host capability callback")
@@ -8813,7 +8917,46 @@ proc setRootCapabilities*(app: Application, context: CapabilityContext) =
   if app.capabilitiesMaterialized:
     raise newException(GeneError,
       "application root capabilities are frozen after entry materialization")
+  if not context.isPolicyContext:
+    raise newException(CapabilityError,
+      "application root authority requires a normalized capability context")
+  # Reject foreign catalogs before changing the application. A legacy or
+  # unrelated context must not disable normalized native-entry enforcement.
+  discard app.capabilityRegistry.policyRows(context)
   app.rootCapabilityContext = context
+
+proc beginCapabilityStartup(app: Application) =
+  ## Host-only, one-shot startup. Failure leaves a normalized empty context;
+  ## catching a configuration error cannot recover implicit legacy defaults.
+  if app == nil or app.startupCapabilityAttempted or app.capabilitiesMaterialized or
+      app.moduleCompileHeaders.len != 0 or app.moduleCompileArtifacts.len != 0 or
+      app.moduleCache.len != 0:
+    raise newException(GeneError,
+      "configure startup capabilities once, before compiling or executing application code")
+  app.startupCapabilityAttempted = true
+  app.setRootCapabilities(app.capabilityRegistry.newPolicyContext([]))
+
+proc installCapabilityStartup(app: Application, selected: CapabilityStartupSelection,
+    ceilings: openArray[CapabilitySpecRow]): CapabilityStartupAuthority =
+  let row = app.capabilityRegistry.startupCapabilityPolicy(selected, app.filesystemProvider)
+  let authority = app.capabilityRegistry.initializeStartupCapabilities(row, ceilings)
+  app.startupCapabilityAuthority = authority
+  app.setRootCapabilities(authority.context)
+  authority
+
+proc configureCapabilityStartup*(app: Application,
+    options: CapabilityStartupOptions, environment: Option[string] = none(string),
+    hostDefault = CapabilityHostDefault(),
+    ceilings: openArray[CapabilitySpecRow] = []): CapabilityStartupAuthority =
+  app.beginCapabilityStartup()
+  let selected = selectCapabilityStartup(options, app.launchDir, environment, hostDefault)
+  app.installCapabilityStartup(selected, ceilings)
+
+proc configureCapabilityStartup*(app: Application,
+    selected: CapabilityStartupSelection,
+    ceilings: openArray[CapabilitySpecRow] = []): CapabilityStartupAuthority =
+  app.beginCapabilityStartup()
+  app.installCapabilityStartup(selected, ceilings)
 
 proc launchDirectory*(app: Application): string =
   app.launchDir
@@ -8932,230 +9075,56 @@ proc application*(scope: Scope): Application =
     return Application(scope.application)
   currentApplication()
 
+proc scopeCapabilityCeilings(scope: Scope, incoming: CapabilityContext): CapabilityContext =
+  result = incoming
+  var current = scope
+  while current != nil:
+    if current.evalCapabilityCeiling != nil:
+      result = intersectContexts(result, current.evalCapabilityCeiling)
+    if current.moduleExecutionPolicy != nil and
+        current.moduleExecutionPolicy.capabilityCeiling != nil:
+      result = intersectContexts(result, current.moduleExecutionPolicy.capabilityCeiling)
+    current = current.parent
+  result = loaderCapabilities(scopeLoaderState(scope), result)
+
 proc executionCapabilities(scope: Scope): CapabilityContext =
-  if activeCapabilityContext != nil:
-    return activeCapabilityContext
   let app = scope.application()
-  if app == nil or app.rootCapabilityContext == nil:
-    return newCapabilityContext()
-  if app.applicationCapabilityContext != nil:
-    app.applicationCapabilityContext
-  else:
-    app.rootCapabilityContext
-
-proc boundCapabilityArg(argument: CapabilityTemplateArg,
-                        boundScope: Scope): CapabilityArg =
-  case argument.kind
-  of ctakLiteral:
-    argument.literal
-  of ctakParameter:
-    if boundScope == nil:
-      raise newException(GeneError,
-        "capability selector parameter is unavailable: " &
-        argument.parameterName)
-    let slot = argument.parameterSlot
-    let value =
-      if slot >= 0 and slot < boundScope.slots.len and
-          boundScope.slotDefined(slot):
-        boundScope.slots[slot]
-      else:
-        boundScope.lookup(argument.parameterName)
-    capabilityArgFromValue(value)
-
-proc linkCapabilityFacade(app: Application, proto: TypeProto,
-                          facade: Value, scope: Scope) =
-  if proto.capabilityName.len == 0:
-    return
-  if not proto.staticTopLevel:
-    raise newException(GeneError,
-      "capability specification facade " & proto.name &
-      " must be a static top-level declaration")
-  let capabilityType = app.capabilityRegistry.capabilityType(
-    proto.capabilityName)
-  if not capabilityType.isGeneFacade:
-    raise newException(GeneError,
-      "capability type is native and cannot be claimed by a Gene facade: " &
-      proto.capabilityName)
-  let modulePath = scope.fileModulePath()
-  let declarationIdentity =
-    (if modulePath.len == 0: "program"
-     else: app.moduleIdentityFor(modulePath)) & "#" & proto.name
-  if capabilityType.facadeIdentity != declarationIdentity or
-      capabilityType.schemaHash != proto.capabilitySchemaHash:
-    raise newException(GeneError,
-      "capability facade metadata does not match the host-admitted descriptor: " &
-      proto.capabilityName)
-  if app.capabilityFacades.hasKey(proto.capabilityName):
-    let existing = app.capabilityFacades[proto.capabilityName]
-    if not same(existing.facade, facade):
-      raise newException(GeneError,
-        "capability facade is already linked: " & proto.capabilityName)
-    return
-  app.capabilityFacades[proto.capabilityName] =
-    CapabilityFacadeBinding(facade: facade, scope: scope)
-
-proc invokeCapabilityCanonicalizer(app: Application,
-                                   binding: CapabilityFacadeBinding,
-                                   value: Value): Value =
-  let savedCapabilities = activeCapabilityContext
-  let savedPresence = activeCapabilityPresence
-  activeCapabilityContext = newCapabilityContext()
-  activeCapabilityPresence = nil
-  try:
-    let target = resolveQualifiedSend(binding.scope,
-      app.capabilitySpecProtocol, "canonicalize", value)
-    result = applyCall(target, [value], NamedArgs(), binding.scope)
-  finally:
-    activeCapabilityContext = savedCapabilities
-    activeCapabilityPresence = savedPresence
-
-proc specFromCanonicalFacade(capabilityType: CapabilityType,
-                             binding: CapabilityFacadeBinding,
-                             value: Value): CapabilitySpec =
-  if value.kind != vkNode or not same(value.head, binding.facade):
-    raise newException(CapabilityError,
-      "CapabilitySpec/canonicalize must return the linked facade type")
-  if not value.nodeImmutable:
-    raise newException(CapabilityError,
-      "CapabilitySpec/canonicalize must return a deeply immutable snapshot")
-  if value.meta.len != 0:
-    raise newException(CapabilityError,
-      "CapabilitySpec/canonicalize result must not contain metadata")
-  var positional = newSeqOfCap[CapabilityArg](value.body.len)
-  for item in value.body:
-    positional.add capabilityArgFromValue(item)
-  var named = newSeqOfCap[CapabilityNamedArg](value.props.len)
-  for name, item in value.props:
-    named.add capNamed(name, capabilityArgFromValue(item))
-  newCapabilitySpec(capabilityType, positional, named)
-
-proc canonicalCapabilitySpec(app: Application,
-                             capabilityType: CapabilityType,
-                             positional: openArray[CapabilityArg],
-                             named: openArray[CapabilityNamedArg]):
-                             CapabilitySpec =
-  let raw = newCapabilitySpec(capabilityType, positional, named)
-  if not capabilityType.isGeneFacade:
-    return raw
-  let key = raw.canonicalKey
-  if app.capabilityCanonicalCache.hasKey(key):
-    return app.capabilityCanonicalCache[key]
-  if not app.capabilityFacades.hasKey(capabilityType.name):
-    raise newException(CapabilityError,
-      "UnsupportedCapability: admitted Gene facade is not linked: " &
-      capabilityType.name)
-  let binding = app.capabilityFacades[capabilityType.name]
-  var body = newSeqOfCap[Value](raw.positional.len)
-  for item in raw.positional:
-    body.add capabilityArgValue(item)
-  var names = newSeqOfCap[string](raw.named.len)
-  var values = newSeqOfCap[Value](raw.named.len)
-  for item in raw.named:
-    names.add item.name
-    values.add capabilityArgValue(item.value)
-  try:
-    let input = constructTypedInstance(binding.facade, body,
-      NamedArgs(names: names, values: values), immutable = true)
-    let firstValue = app.invokeCapabilityCanonicalizer(binding, input)
-    let first = specFromCanonicalFacade(capabilityType, binding, firstValue)
-    let secondValue = app.invokeCapabilityCanonicalizer(binding, firstValue)
-    let second = specFromCanonicalFacade(capabilityType, binding, secondValue)
-    if first != second:
-      raise newException(CapabilityError,
-        "CapabilitySpec/canonicalize must be idempotent")
-    app.capabilityCanonicalCache[key] = first
-    first
-  except CapabilityError:
-    raise
-  except GeneError as error:
-    raise newException(CapabilityError,
-      "CapabilitySpec/canonicalize failed for " & capabilityType.name &
-      ": " & error.msg)
-
-proc capabilityTypeForFacade(app: Application, facade: Value): CapabilityType =
-  for name, binding in app.capabilityFacades:
-    if same(binding.facade, facade):
-      return app.capabilityRegistry.capabilityType(name)
-  raise newException(CapabilityError,
-    "UnsupportedCapability: value is not a linked capability facade")
-
-proc capabilitySpecFromValue(value: Value, scope: Scope): CapabilitySpec =
-  if value.kind == vkCapability and value.capabilityIsAdmitted:
-    return value.capabilitySpec
-  let app = scope.application()
-  if app == nil:
-    raise newException(GeneError,
-      "capability specification requires an application runtime")
-  let facade =
-    if value.kind == vkType: value
-    elif value.kind == vkNode and value.head.kind == vkType: value.head
-    else: NIL
-  if facade.kind != vkType:
-    raise newException(GeneError,
-      "expected an admitted capability specification or linked facade")
-  let capabilityType = app.capabilityTypeForFacade(facade)
-  if value.kind == vkType:
-    return app.canonicalCapabilitySpec(capabilityType, [], [])
-  if value.meta.len != 0:
-    raise newException(GeneError,
-      "capability specification values must not contain metadata")
-  var positional = newSeqOfCap[CapabilityArg](value.body.len)
-  for item in value.body:
-    positional.add capabilityArgFromValue(item)
-  var named = newSeqOfCap[CapabilityNamedArg](value.props.len)
-  for name, item in value.props:
-    named.add capNamed(name, capabilityArgFromValue(item))
-  app.canonicalCapabilitySpec(capabilityType, positional, named)
+  let available =
+    if activeCapabilityContext != nil: activeCapabilityContext
+    elif app.applicationCapabilityContext != nil: app.applicationCapabilityContext
+    else: app.rootCapabilityContext
+  scope.scopeCapabilityCeilings(available)
 
 proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
                                  parent: CapabilityContext,
                                  inheritedPresence: CapabilityPresence,
-                                 boundScope: Scope): CapabilityTransition =
+                                 boundScope: Scope, required = true): CapabilityTransition =
   if row.inheritsCapabilities:
-    return CapabilityTransition(context: parent,
-                                presence: inheritedPresence)
+    return CapabilityTransition(context: parent, presence: inheritedPresence)
   if app == nil:
-    raise newException(GeneError,
-      "capability declaration requires an application runtime")
-  var selected: seq[CapabilityGrant]
+    raise newException(GeneError, "capability boundary requires an application")
   try:
-    for selector in row.selectors:
-      case selector.kind
-      of cskAll:
-        for grant in app.capabilityRegistry.resolveProjection(parent):
-          selected.add grant
-      of cskNamespace:
-        for grant in app.capabilityRegistry.resolveProjection(
-            parent, selector.namespaceName):
-          selected.add grant
-      of cskExact:
-        let capabilityType = app.capabilityRegistry.capabilityType(
-          selector.typeName)
-        var positional = newSeqOfCap[CapabilityArg](selector.positional.len)
-        for argument in selector.positional:
-          positional.add boundCapabilityArg(argument, boundScope)
-        var named = newSeqOfCap[CapabilityNamedArg](selector.named.len)
-        for argument in selector.named:
-          named.add capNamed(argument.name,
-                             boundCapabilityArg(argument.value, boundScope))
-        let spec = app.canonicalCapabilitySpec(capabilityType,
-                                               positional, named)
-        let grants = app.capabilityRegistry.resolveSelector(parent, spec)
-        if grants.len == 0 and not selector.optional:
-          raiseCapabilityGeneError(boundScope, "MissingCapability",
-            "declaration requires " & selector.typeName,
-            selector.typeName, "capability declaration")
-        for grant in grants:
-          selected.add grant
-    CapabilityTransition(context: newCapabilityContext(selected))
+    let literal =
+      if row.literal != nil: row.literal
+      elif row.selectors.len == 0:
+        readCapabilityLiteral("[]", cuRequest, CapabilitySourceContext())
+      else:
+        raise newException(CapabilityError, "obsolete capability metadata requires recompilation")
+    let use = if required: cuRequest else: cuBound
+    let normalized = app.capabilityRegistry.normalizeCapabilityRow(literal, use)
+    var available = parent
+    if not available.isPolicyContext and normalized.len == 0:
+      available = app.capabilityRegistry.newPolicyContext([])
+    result.context =
+      if required: app.capabilityRegistry.requireCapabilities(available, normalized)
+      else: app.capabilityRegistry.attenuateCapabilities(available, normalized)
   except CapabilityError as error:
-    raiseCapabilityGeneError(boundScope, capabilityErrorKind(error.msg),
-      error.msg, operation = "capability declaration")
+    raiseCapabilityBoundaryError(boundScope, error)
 
 proc resolveCapabilityRow(app: Application, row: CapabilityRow,
                           parent: CapabilityContext,
                           boundScope: Scope): CapabilityContext =
-  resolveCapabilityTransition(app, row, parent, nil, boundScope).context
+  resolveCapabilityTransition(app, row, parent, nil, boundScope, required = false).context
 
 proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
                                   lexicalScope: Scope, callerScope: Scope,
@@ -9165,8 +9134,27 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
                                   callerRootHint: Scope = nil,
                                   rootsKnown = false):
                                   CapabilityTransition =
+  if proto != nil and boundScope != nil and boundScope.preparedCapabilityCode != nil and
+      boundScope.preparedCapabilityCode == FunctionCode(proto):
+    result = boundScope.preparedCapabilityTransition
+    boundScope.preparedCapabilityCode = nil
+    boundScope.preparedCapabilityTransition = CapabilityTransition()
+    return
+  let sourceState = scopeLoaderState(lexicalScope)
+  let callerState = scopeLoaderState(
+    if callerScope != nil: callerScope
+    elif activeVmScope != nil: activeVmScope[] else: nil)
+  let combinedSource = mergeLoaderStates(sourceState, callerState)
+  if loaderStateKey(combinedSource) != loaderStateKey(sourceState):
+    if boundScope == lexicalScope:
+      boundScope = newScope(lexicalScope)
+    boundScope.loaderState = combinedSource
   var parent = incoming
   var parentPresence = incomingPresence
+  let sourceCapabilities = loaderCapabilities(combinedSource, parent)
+  if sourceCapabilities != parent:
+    parent = sourceCapabilities
+    parentPresence = nil
   # Eval overlays share the surrounding module identity for name resolution,
   # but their retained ceiling still applies to every escaped lexical callable.
   if lexicalScope != nil and lexicalScope.evalCapabilityCeiling != nil:
@@ -9215,6 +9203,8 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
       boundScope.evalBudget)
   if not crossesModule and
       (proto == nil or proto.capabilityRow.inheritsCapabilities):
+    if parent.isPolicyContext:
+      validateCapabilityFunction(proto)
     return CapabilityTransition(context: parent, presence: parentPresence)
 
   let app = boundScope.application()
@@ -9267,7 +9257,7 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
       ceiling = if ceiling == nil: pinned else: intersectContexts(ceiling, pinned)
 
   when not (compileOption("threads") and defined(gcAtomicArc)):
-    if proto != nil and proto.capabilityRow.isStatic and
+    if proto != nil and proto.capabilityRow.inheritsCapabilities and
         proto.capabilityCacheRegistryId == app.capabilityRegistry.identity and
         proto.capabilityCacheEpoch == app.capabilityRegistry.capabilityEpoch and
         proto.capabilityCacheParent == parent and
@@ -9278,7 +9268,8 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
   var availablePresence = parentPresence
   if crossesModule:
     available =
-      if ceiling == nil: newCapabilityContext()
+      if ceiling == nil:
+        if parent.isPolicyContext: parent else: newCapabilityContext()
       else: intersectContexts(parent, ceiling)
     # Crossing a module ceiling is a new declaration boundary. Exact
     # availability from the caller cannot leak through as though this
@@ -9291,8 +9282,10 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
     else:
       resolveCapabilityTransition(app, proto.capabilityRow,
                                   available, availablePresence, boundScope)
+  if result.context.isPolicyContext:
+    validateCapabilityFunction(proto)
   when not (compileOption("threads") and defined(gcAtomicArc)):
-    if proto != nil and proto.capabilityRow.isStatic:
+    if proto != nil and proto.capabilityRow.inheritsCapabilities:
       proto.capabilityCacheRegistryId = app.capabilityRegistry.identity
       proto.capabilityCacheEpoch = app.capabilityRegistry.capabilityEpoch
       proto.capabilityCacheParent = parent
@@ -9311,11 +9304,20 @@ proc canBypassCapabilityBoundary(proto: FunctionProto, calleeScope,
   ## scopes that had not yet populated it would both read nil, compare equal,
   ## and skip a boundary the transition would have applied. A security check
   ## must not depend on when some other call path warmed a cache.
+  # A supplied body may first enter through a same-module optimized call.
+  # Validate its declarations before considering that optimization. An omitted
+  # row with no retained/origin transition still inherits the exact active
+  # context; requiring the slow path would change otherwise safe typed-native
+  # argument adapters and traces without adding an authority boundary.
+  if activeCapabilityContext.isPolicyContext:
+    validateCapabilityFunction(proto)
   if proto == nil or not proto.capabilityRow.inheritsCapabilities or
       proto.boundExecutionPolicy != nil or proto.boundCapabilityCeiling != nil or
       calleeScope == nil or callerScope == nil:
     return false
   if calleeScope.evalCapabilityCeiling != nil:
+    return false
+  if hasLoaderRestrictions(calleeScope) or hasLoaderRestrictions(callerScope):
     return false
   let calleeRoot = calleeScope.moduleRootScope()
   calleeRoot != nil and calleeRoot == callerScope.moduleRootScope()
@@ -9426,6 +9428,7 @@ proc newGlobalScope*(app: Application): Scope =
     if app.sandboxRoot != nil and app.sandboxRestricting: app.sandboxRoot
     else: app.builtinsScope()
   result = newScope(parent, application = app)
+  result.loaderState = if activeLoaderState != nil: activeLoaderState else: app.applicationLoaderState
   result.moduleRoot = true
   result.moduleBase = nil
   result.moduleStatic = true
@@ -9537,9 +9540,7 @@ proc biRuntimeBindCall(args: openArray[Value],
     case name
     of "policy": policy = value
     of "capabilities":
-      if value.kind != vkList:
-        raise newException(GeneError,
-          "runtime/bind_call ^capabilities must be a selector List")
+      discard capabilityRowArgument("runtime/bind_call ^capabilities", value)
       selectors = value
       hasSelectors = true
     of "named":
@@ -9557,11 +9558,13 @@ proc biRuntimeBindCall(args: openArray[Value],
         "loading to restrict " & flag)
   let app = caller.application()
   let parentCapabilities = caller.executionCapabilities()
-  let ceiling =
-    if hasSelectors:
-      resolveCapabilityRow(app, compileCapabilitySelection(selectors),
-                           parentCapabilities, caller)
-    else: parentCapabilities
+  var ceiling = parentCapabilities
+  if hasSelectors:
+    try:
+      ceiling = app.capabilityRegistry.attenuateCapabilities(parentCapabilities,
+        capabilityRowArgument("runtime/bind_call ^capabilities", selectors))
+    except CapabilityError as error:
+      raiseCapabilityBoundaryError(caller, error)
   let bound = newScope(caller, application = app)
   bound.evalBudget = nil  # A fresh budget starts on invocation, not binding.
   bound.define("__bound_target", escapeWeakFunctions(args[0]))
@@ -9727,7 +9730,12 @@ proc urlModuleDir(url: string): string =
   let slash = path.rfind('/')
   origin & (if slash <= 0: "/" else: path[0 ..< slash])
 
+proc loadingCapabilities(app: Application): CapabilityContext
+
 proc validateModuleUrl(app: Application, url, rawPath: string): string =
+  if app.loadingCapabilities().isPolicyContext:
+    raise newException(GeneError,
+      "UnsupportedCapability: URL source acquisition requires an authenticated loader profile")
   if not app.allowUrlModules:
     raise newException(GeneError,
       "URL module imports require a 'gene runurl' entry: " & rawPath)
@@ -9756,7 +9764,7 @@ proc moduleCandidate(base, relPath: string): string =
   if splitFile(relPath).ext.len > 0:
     return direct
   result = direct & ".gene"
-  if fileExists(result) and fileExists(direct):
+  if sourceCandidateExists(result) and sourceCandidateExists(direct):
     raisePackageError(pecModuleAmbiguous,
       "module reference \"" & relPath & "\" matches two files",
       ["candidate: " & result, "candidate: " & direct])
@@ -9770,7 +9778,7 @@ proc resolveInModuleBases(pkg: Package, relPath: string): string =
     let candidate = moduleCandidate(base, relPath)
     if fallback.len == 0:
       fallback = candidate
-    if fileExists(candidate):
+    if sourceCandidateExists(candidate):
       return candidate
   if fallback.len == 0:
     raisePackageError(pecModuleNotFound,
@@ -9862,6 +9870,9 @@ proc fetchUrlModuleSource(app: Application, url: string):
   ## Fetch (or return the cached) source for a URL module identity. Both the
   ## compile-time macro-discovery phase and runtime initialization read
   ## through this cache, so each URL is fetched at most once per run.
+  if app.loadingCapabilities().isPolicyContext:
+    raise newException(GeneError,
+      "UnsupportedCapability: URL source acquisition requires an authenticated loader profile")
   if app.urlSources.hasKey(url):
     return app.urlSources[url]
   if not app.allowUrlModules:
@@ -9895,6 +9906,35 @@ proc moduleSourceDir(app: Application, absPath: string): string =
     parentDir(absPath)
 
 proc loadModuleValue(app: Application, absPath: string): Value
+proc resolveModuleRefForScope(app: Application, scope: Scope, path: string,
+                             pkgName = ""): string =
+  if activeWorkerThread and scope.executionCapabilities().isPolicyContext:
+    raise newException(GeneError,
+      "module resolution requires the application's root lane")
+  let state = scopeLoaderState(scope)
+  let savedState = activeLoaderState
+  activeLoaderState = mergeLoaderStates(state, savedState)
+  defer: activeLoaderState = savedState
+  if state == nil or state.basePath.len == 0:
+    return app.resolveModuleRef(path, pkgName)
+  var savedDir = app.currentModuleDir
+  let savedPackage = app.currentPackage
+  app.currentModuleDir = app.moduleSourceDir(state.basePath)
+  if state.package != nil: app.currentPackage = state.package
+  try:
+    result = app.resolveModuleRef(path, pkgName)
+  finally:
+    app.currentModuleDir = savedDir
+    app.currentPackage = savedPackage
+proc loadModuleForScope(app: Application, scope: Scope, path: string,
+                        context: CapabilityContext = nil): Value
+
+proc isSharedModuleForScope(app: Application, scope: Scope, path: string): bool =
+  if app.sandboxSharedInstances.hasKey(path): return true
+  let state = mergeLoaderStates(scopeLoaderState(scope), activeLoaderState)
+  if state != nil:
+    for origin in state.origins:
+      if origin.shared.hasKey(path): return true
 
 proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
   if expected.kind != vkType:
@@ -10481,6 +10521,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
     if parent != nil: parent.moduleBase
     else: nil
   scope.simpleCallScope = false
+  scope.loaderState = nil
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
   scope.annotationSelfType = NIL
@@ -10546,6 +10587,7 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     if parent != nil: parent.moduleBase
     else: nil
   result.simpleCallScope = true
+  result.loaderState = nil
   result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   result.evalBudget =
     if parent != nil: parent.evalBudget
@@ -10828,6 +10870,9 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.application = nil
     scope.evalBudget = nil
     scope.evalCapabilityCeiling = nil
+    scope.loaderState = nil
+    scope.preparedCapabilityCode = nil
+    scope.preparedCapabilityTransition = CapabilityTransition()
     scope.moduleExecutionPolicy = nil
     scope.borrowedCallerEnv = false
     scope.moduleRoot = false
@@ -10886,6 +10931,9 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.application = nil
   scope.evalBudget = nil
   scope.evalCapabilityCeiling = nil
+  scope.loaderState = nil
+  scope.preparedCapabilityCode = nil
+  scope.preparedCapabilityTransition = CapabilityTransition()
   scope.borrowedCallerEnv = false
   if pools.callScopesLen < MaxCallScopePool:
     pools.callScopes[pools.callScopesLen] = scope
@@ -11386,6 +11434,8 @@ proc overlappingMessage(a, b: ProtocolImpl): Value =
         return left.message
   NIL
 
+proc inheritCapabilityContract(app: Application, contractFn, implementationFn: Value): Value
+
 proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
   var messages = pending.messages
   var ctorFn = pending.ctorFn
@@ -11402,11 +11452,12 @@ proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
         "type message " & proto.name & "/" & message.name &
         (if inherited.kind != vkNil: " requires ^override true"
          else: " declares ^override but has no inherited target"))
-    let resolved = resolveMessageContract(messages[message.name], typ,
+    var resolved = resolveMessageContract(messages[message.name], typ,
       rejectSelf = inherited.kind != vkNil, declarationScope = annotationScope)
     if inherited.kind != vkNil:
       validateCallableSignature(inherited, resolved,
         "type message " & proto.name & "/" & message.name)
+      resolved = inheritCapabilityContract(scope.application(), inherited, resolved)
     messages[message.name] = functionForScopeStorage(resolved, scope)
   if ctorFn.kind != vkNil:
     ctorFn = functionForScopeStorage(
@@ -11518,83 +11569,59 @@ proc affectedIndexedScopes(app: Application, impl: ProtocolImpl): seq[Scope] =
         if not present:
           result.add scope
 
-proc literalCapabilitySpec(app: Application,
-                           selector: CapabilitySelectorTemplate):
-                           Option[CapabilitySpec] =
-  if app == nil or selector.kind != cskExact:
-    return none(CapabilitySpec)
-  var positional: seq[CapabilityArg]
-  for argument in selector.positional:
-    if argument.kind != ctakLiteral:
-      return none(CapabilitySpec)
-    positional.add argument.literal
-  var named: seq[CapabilityNamedArg]
-  for argument in selector.named:
-    if argument.value.kind != ctakLiteral:
-      return none(CapabilitySpec)
-    named.add capNamed(argument.name, argument.value.literal)
-  try:
-    some(newCapabilitySpec(
-      app.capabilityRegistry.capabilityType(selector.typeName),
-      positional, named))
-  except CapabilityError:
-    none(CapabilitySpec)
+proc effectiveCapabilityContract(app: Application, row: CapabilityRow): seq[string] =
+  if row.inheritsCapabilities:
+    return @["absent"]
+  let literal = if row.literal != nil: row.literal
+                elif row.selectors.len == 0:
+                  readCapabilityLiteral("[]", cuRequest, CapabilitySourceContext())
+                else:
+                  raise newException(GeneError, "obsolete capability contract metadata")
+  let normalized = app.capabilityRegistry.normalizeCapabilityRow(literal, cuRequest)
+  result.add "present"
+  var entries: seq[string]
+  for entry in normalized.entries:
+    entries.add (if entry.optional: "optional:" else: "mandatory:") & entry.policy.canonicalKey
+  entries.sort()
+  result.add entries
 
-proc selectorCoveredByContract(app: Application, contract,
-                               implementation: CapabilitySelectorTemplate): bool =
-  case contract.kind
-  of cskAll:
-    true
-  of cskNamespace:
-    case implementation.kind
-    of cskAll:
-      false
-    of cskNamespace:
-      implementation.namespaceName == contract.namespaceName
-    of cskExact:
-      implementation.typeName.startsWith(contract.namespaceName & "/")
-  of cskExact:
-    if implementation.kind != cskExact:
-      return false
-    if contract.optional and not implementation.optional:
-      return false
-    if sameSelectorAuthority(contract, implementation):
-      return true
-    let broadSpec = app.literalCapabilitySpec(contract)
-    let narrowSpec = app.literalCapabilitySpec(implementation)
-    if broadSpec.isNone or narrowSpec.isNone:
-      return false
-    let provider = app.capabilityRegistry.providerFor(
-      broadSpec.get.capabilityType)
-    if provider != app.capabilityRegistry.providerFor(
-        narrowSpec.get.capabilityType):
-      return false
-    provider.subsumes(broadSpec.get, narrowSpec.get) == csYes
-
-proc capabilityContractCompatible(app: Application, contractFn,
-                                  implementationFn: Value): bool =
+proc inheritCapabilityContract(app: Application, contractFn, implementationFn: Value): Value =
   if contractFn.kind != vkFunction or implementationFn.kind != vkFunction or
-      contractFn.fnCode == nil or implementationFn.fnCode == nil or
       not (contractFn.fnCode of FunctionProto) or
       not (implementationFn.fnCode of FunctionProto):
-    return false
+    raise newException(GeneError, "capability contracts require callable metadata")
   let contract = FunctionProto(contractFn.fnCode).capabilityRow
-  let implementation = FunctionProto(implementationFn.fnCode).capabilityRow
-  if sameCapabilityRow(contract, implementation):
-    return true
+  let original = FunctionProto(implementationFn.fnCode)
+  if not original.capabilityRow.inheritsCapabilities:
+    if effectiveCapabilityContract(app, contract) !=
+        effectiveCapabilityContract(app, original.capabilityRow):
+      raise newException(GeneError, "implementation changes its inherited ^capabilities contract")
+    return implementationFn
   if contract.inheritsCapabilities:
-    return implementation.inheritsCapabilities
-  if implementation.inheritsCapabilities:
-    return false
-  for selector in implementation.selectors:
-    var covered = false
-    for allowed in contract.selectors:
-      if app.selectorCoveredByContract(allowed, selector):
-        covered = true
-        break
-    if not covered:
-      return false
-  true
+    return implementationFn
+  # Inherit into the implementation value, without mutating an independently
+  # held source function or an already-published implementation on failure.
+  let proto = FunctionProto()
+  proto[] = original[]
+  proto.capabilityRow = contract
+  proto.simpleCall = false
+  proto.needsCallScope = true
+  proto.poolCallScope = false
+  proto.fastBindUnaryInt = false
+  proto.fastBindPositionalInt = false
+  proto.fastBindRequiredNamed = false
+  proto.nativeOp = ncoNone
+  proto.scopelessChunk = nil
+  proto.capabilityCacheRegistryId = 0
+  proto.capabilityCacheParent = nil
+  proto.capabilityCacheCeiling = nil
+  if original.chunk != nil:
+    proto.chunk = newChunk()
+    proto.chunk[] = original.chunk[]
+    proto.chunk.owner = proto
+    proto.chunk.dispatchCache = @[]
+  newFunction(implementationFn.fnName, proto.params, proto, implementationFn.fnScope,
+    implementationFn.fnChecksErrors, implementationFn.fnErrorTypes, implementationFn.isSyntaxFn)
 
 proc protocolIdentities(protocol: Value): seq[Value] =
   var pending = @[protocol]
@@ -11673,14 +11700,6 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
     raise newException(GeneError, "impl receiver must be a type")
-  let app = scope.application()
-  let isCapabilitySpec = app != nil and
-    app.capabilitySpecProtocol.kind == vkProtocol and
-    same(protocol, app.capabilitySpecProtocol)
-  if isCapabilitySpec and visibility != ivCanonical:
-    raise newException(GeneError,
-      "CapabilitySpec has one application-global implementation per facade; " &
-      "scoped and overlay implementations are not allowed")
   let ancestors = if useProspectiveAncestors: prospectiveAncestors
                   else: ancestorImpls(scope, receiver)
   let bindings = conformanceSelfBindings(protocol, receiver, ancestors)
@@ -11703,31 +11722,16 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
     for entry in localMessages:
       if entry.message.bits == message.bits:
         inc count
-        let resolvedFn = functionForScopeStorage(
+        var resolvedFn = functionForScopeStorage(
           resolveMessageContract(entry.fn, receiver,
             rejectSelf = inherited.fn.kind != vkNil), scope)
-        entries.add ImplMessage(message: message, fn: resolvedFn)
-        resolvedLocals.add ImplMessage(message: message, fn: resolvedFn)
-        if signatureFn.kind != vkNil and not isCapabilitySpec:
+        if signatureFn.kind != vkNil:
           validateCallableSignature(signatureFn, resolvedFn,
             "impl " & protocol.protocolName & " for " & receiver.typeName &
             " message " & qualifiedMessageName(message))
-          if not capabilityContractCompatible(scope.application(),
-                                               signatureFn, resolvedFn):
-            raise newException(GeneError,
-              "impl " & protocol.protocolName & " for " & receiver.typeName &
-              " message " & qualifiedMessageName(message) &
-              " broadens its ^capabilities contract")
-        if isCapabilitySpec and
-            message.protocolMessageName == "canonicalize":
-          if entry.fn.kind != vkFunction or entry.fn.fnCode == nil or
-              not (entry.fn.fnCode of FunctionProto):
-            raise newException(GeneError,
-              "CapabilitySpec/canonicalize must be a Gene function")
-          let row = FunctionProto(entry.fn.fnCode).capabilityRow
-          if not row.declaresCapabilities or row.selectors.len != 0:
-            raise newException(GeneError,
-              "CapabilitySpec/canonicalize must declare ^capabilities []")
+          resolvedFn = inheritCapabilityContract(scope.application(), signatureFn, resolvedFn)
+        entries.add ImplMessage(message: message, fn: resolvedFn)
+        resolvedLocals.add ImplMessage(message: message, fn: resolvedFn)
     if count == 0:
       let defaultFn = message.protocolMessageDefaultFn
       if inheritBodies and inherited.fn.kind != vkNil:
@@ -11741,6 +11745,8 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
         raise newException(GeneError,
           "impl " & protocol.protocolName & " for " & receiver.typeName &
           " is missing message: " & qualifiedMessageName(message))
+    if count == 0 and signatureFn.kind != vkNil:
+      entries[^1].fn = inheritCapabilityContract(scope.application(), signatureFn, entries[^1].fn)
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
@@ -12270,7 +12276,9 @@ proc activateStagedImpls(stage: Scope) =
 
   var retained: seq[ProtocolImpl]
   var changed = false
-  let retainCandidateCanonical = stage.sandboxGenerationId != 0
+  let retainCandidateCanonical = stage.sandboxGenerationId != 0 or
+    (stage.moduleExecutionPolicy != nil and
+     stage.moduleExecutionPolicy.capabilityCeiling.isPolicyContext)
   var canonical = root.impls
   for pending in stage.impls:
     if pending.visibility == ivCanonical:
@@ -12618,14 +12626,14 @@ proc biEnumFromBacking(args: openArray[Value]): Value =
 
 proc enumReflectionMessage(name: string): Value =
   case name
-  of "variants": newNativeFn("Enum/variants", biEnumVariants)
-  of "names": newNativeFn("Enum/names", biEnumNames)
-  of "name": newNativeFn("Enum/name", biEnumName)
-  of "ordinal": newNativeFn("Enum/ordinal", biEnumOrdinal)
-  of "from_name": newNativeFn("Enum/from_name", biEnumFromName)
-  of "from_ordinal": newNativeFn("Enum/from_ordinal", biEnumFromOrdinal)
-  of "backing": newNativeFn("Enum/backing", biEnumBacking)
-  of "from_backing": newNativeFn("Enum/from_backing", biEnumFromBacking)
+  of "variants": builtinNativeFn("Enum/variants", biEnumVariants)
+  of "names": builtinNativeFn("Enum/names", biEnumNames)
+  of "name": builtinNativeFn("Enum/name", biEnumName)
+  of "ordinal": builtinNativeFn("Enum/ordinal", biEnumOrdinal)
+  of "from_name": builtinNativeFn("Enum/from_name", biEnumFromName)
+  of "from_ordinal": builtinNativeFn("Enum/from_ordinal", biEnumFromOrdinal)
+  of "backing": builtinNativeFn("Enum/backing", biEnumBacking)
+  of "from_backing": builtinNativeFn("Enum/from_backing", biEnumFromBacking)
   else: NIL
 
 proc convertMessage(scope: Scope, name: string,
@@ -13186,6 +13194,7 @@ proc snapshotScopeChain(source: Scope,
   result.moduleStatic = source.moduleStatic
   result.forceOverlayImpls = source.forceOverlayImpls
   result.evalCapabilityCeiling = source.evalCapabilityCeiling
+  result.loaderState = source.loaderState
   result.annotationSelfType = source.annotationSelfType
   scopeMap[key] = result
   if source.slots.len > 0:
@@ -13893,12 +13902,14 @@ proc namespaceForEnvSource(source: Value): Value =
   else:
     VOID
 
-proc normalizeEnvImport(app: Application, item: Value): Value =
+proc normalizeEnvImport(app: Application, scope: Scope, item: Value,
+                        context: CapabilityContext): Value =
   case item.kind
   of vkModule, vkNamespace:
     item
   of vkString:
-    loadModuleValue(app, app.resolveModulePath(item.strVal))
+    loadModuleForScope(app, scope,
+      app.resolveModuleRefForScope(scope, item.strVal), context)
   else:
     raise newException(GeneError,
       "env ^imports entries must be modules, namespaces, or module path strings")
@@ -14959,11 +14970,31 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   # generator pulls, without pinning it on a captured lexical environment.
   # An independently scheduled task uses its own scope/budget instead.
   let previousVmBudget = activeVmBudget
+  let previousContinuationLoaderState = activeContinuationLoaderState
+  let consumerLoaderState =
+    if stopOnYield and activeVmScope != nil: scopeLoaderState(activeVmScope[])
+    else: nil
+  if fiber != nil:
+    # A scheduler switches execution origins as well as authority. Only a
+    # generator's synchronous consumer contributes an additional dynamic bound;
+    # unrelated scheduled fibers use their own captured origins.
+    activeContinuationLoaderState = mergeLoaderStates(fiber.loaderState,
+      consumerLoaderState)
+  defer: activeContinuationLoaderState = previousContinuationLoaderState
   let generatorCallerCeiling =
     if stopOnYield: activeCapabilityContext else: nil
-  template restrictGeneratorContext(context: CapabilityContext): CapabilityContext =
-    (if generatorCallerCeiling == nil or context == generatorCallerCeiling: context
-     else: intersectContexts(context, generatorCallerCeiling))
+  template restrictContinuationContext(context: CapabilityContext): CapabilityContext =
+    block:
+      var restricted = context
+      if generatorCallerCeiling != nil and restricted != generatorCallerCeiling:
+        restricted = intersectContexts(restricted, generatorCallerCeiling)
+      # Closing a suspended item callback is another consumer boundary. Keep
+      # it on the continuation itself: pumping the scheduler must not restrict
+      # unrelated tasks, and restoring a saved caller frame cannot erase it.
+      if fiber != nil and fiber.closeCapabilityCeiling != nil and
+          restricted != fiber.closeCapabilityCeiling:
+        restricted = intersectContexts(restricted, fiber.closeCapabilityCeiling)
+      restricted
   let inheritedBudget =
     if previousVmBudget != nil and (fiber == nil or stopOnYield):
       previousVmBudget[]
@@ -14982,7 +15013,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   let previousVmScope = activeVmScope
   activeVmScope = addr scope
   defer: activeVmScope = previousVmScope
-  var capabilityContext = restrictGeneratorContext(executionCapabilities(scope))
+  var capabilityContext = restrictContinuationContext(executionCapabilities(scope))
   var capabilityPresence = activeCapabilityPresence
   var recycleScope = false
   var stack = move stackArg
@@ -15104,9 +15135,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
     curInitializationLease = fiber.initializationLease
-    capabilityContext = restrictGeneratorContext(fiber.capabilityContext)
+    capabilityContext = restrictContinuationContext(fiber.capabilityContext)
     if capabilityContext == nil:
-      capabilityContext = restrictGeneratorContext(executionCapabilities(scope))
+      capabilityContext = restrictContinuationContext(executionCapabilities(scope))
     activeCapabilityContext = capabilityContext
     capabilityPresence = fiber.capabilityPresence
     activeCapabilityPresence = capabilityPresence
@@ -15115,7 +15146,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     frames = acquireFrameStack(gVmPools)
     recycleScope = fiber.recycleScope
     if fiber.capabilityContext != nil:
-      capabilityContext = restrictGeneratorContext(fiber.capabilityContext)
+      capabilityContext = restrictContinuationContext(fiber.capabilityContext)
       activeCapabilityContext = capabilityContext
     capabilityPresence = fiber.capabilityPresence
     activeCapabilityPresence = capabilityPresence
@@ -15175,7 +15206,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curOwnedScope = f.extra.ownedScope
       curNamespaceName = f.extra.namespaceName
       if f.extra.restoresCapabilityState:
-        capabilityContext = restrictGeneratorContext(f.extra.restoreCapabilities)
+        capabilityContext = restrictContinuationContext(f.extra.restoreCapabilities)
         activeCapabilityContext = capabilityContext
         capabilityPresence = f.extra.restoreCapabilityPresence
         activeCapabilityPresence = capabilityPresence
@@ -15258,7 +15289,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       frames[^1].extra.restoresCapabilityState = true
       frames[^1].extra.restoreCapabilities = capabilityContext
       frames[^1].extra.restoreCapabilityPresence = capabilityPresence
-      capabilityContext = restrictGeneratorContext(nextTransition.context)
+      capabilityContext = restrictContinuationContext(nextTransition.context)
       capabilityPresence = nextTransition.presence
       activeCapabilityContext = capabilityContext
       activeCapabilityPresence = capabilityPresence
@@ -15328,6 +15359,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.initializationLease = curInitializationLease
     fiber.capabilityContext = capabilityContext
     fiber.capabilityPresence = capabilityPresence
+    fiber.loaderState = activeContinuationLoaderState
     fiber.started = true
     fiber.frames = move frames
     fiber.tailTraceFrames = move tailTraceFrames
@@ -15448,7 +15480,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseCallScope(gVmPools, f.scope)
 
   template advanceForLoop() =
-    if curForStream.kind == vkStream:
+    if curForBody != nil and curForBody.repeatControlLoop:
+      chunk = curForBody
+      scope = frames[^1].scope
+      curStackBase = sp
+      ip = 0
+      validateImplRequirements = false
+      returnType = NIL
+      returnLabel = ""
+      curChecksErrors = false
+      curErrorTypes = @[]
+      curFnName = ""
+      curFrameKind = fkForBody
+      evalBudget = executionBudget(scope)
+    elif curForStream.kind == vkStream:
       if curForStream.streamHasNext:
         let item = checkedStreamNext(curForStream, "for item")
         let ownerScope = frames[^1].scope
@@ -16472,7 +16517,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           requireStream("pipeline to_stream result", upstream)
           spush newLazyStream(upstream, pullMapStream, callable = callback,
             close = closeStreamCallback,
-            capabilityCeiling = FunctionProto(callback.fnCode).boundCapabilityCeiling)
+            capabilityCeiling = FunctionProto(callback.fnCode).boundCapabilityCeiling,
+            loaderState = scopeLoaderState(scope))
         of opMakeEnv:
           let policy = spop()
           let capabilities = spop()
@@ -16488,24 +16534,39 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "env ^imports must be a list")
           if module.kind != vkNil and module.kind notin {vkModule, vkNamespace}:
             raise newException(GeneError, "env ^module must be a Module or Namespace")
-          if capabilities.kind != vkNil and capabilities.kind != vkMap:
-            raise newException(GeneError, "env ^capabilities must be a map")
           discard evalPolicyMaxSteps(policy)
-          var imports: seq[Value]
           let app = scope.application()
-          for item in importsValue.listItems:
-            imports.add normalizeEnvImport(app, item)
-          let envValue = newEnv(bindingsFromMap("env ^bindings", bindingMap),
-                                parent, imports, module, capabilities, policy,
-                                bindingScope = scope)
+          var ceiling: CapabilityContext
           if inst[].intArg >= 0:
-            # §14: a selector row is resolved **here**, against the creating
-            # context, not deferred to `eval`. Resolving late would let an Env
-            # minted under a narrow context be evaluated later under a wider
-            # one and pick up authority its creator never held.
+            # Capture at creation; eval additionally intersects its caller.
             let capBlock = chunk.capabilityBlocks[inst[].intArg]
-            envValue.setEnvCapabilityContext(
-              resolveCapabilityRow(app, capBlock.row, capabilityContext, scope))
+            if capBlock.dynamicPolicy:
+              let row = capabilityRowArgument("env ^capabilities", capabilities)
+              try:
+                ceiling = app.capabilityRegistry.attenuateCapabilities(capabilityContext, row)
+              except CapabilityError as error:
+                raiseCapabilityBoundaryError(scope, error)
+            else:
+              ceiling = resolveCapabilityRow(app, capBlock.row, capabilityContext, scope)
+          var importingContext = if ceiling != nil: ceiling else: capabilityContext
+          var sourceState = scopeLoaderState(scope)
+          if parent.kind == vkEnv:
+            for itemEnv in envChain(parent):
+              let parentCeiling = itemEnv.envCapabilityContext
+              if parentCeiling != nil:
+                importingContext = intersectContexts(importingContext, parentCeiling)
+              sourceState = mergeLoaderStates(sourceState, loaderStateValue(itemEnv.envLoaderState))
+          importingContext = loaderCapabilities(sourceState, importingContext)
+          let importingScope = newScope(scope)
+          importingScope.loaderState = sourceState
+          var imports: seq[Value]
+          for item in importsValue.listItems:
+            imports.add normalizeEnvImport(app, importingScope, item, importingContext)
+          let envValue = newEnv(bindingsFromMap("env ^bindings", bindingMap),
+                                parent, imports, module, NIL, policy,
+                                bindingScope = scope)
+          envValue.setEnvCapabilityContext(ceiling)
+          envValue.setEnvLoaderState(sourceState)
           spush envValue
         of opEval:
           let env = spop()
@@ -16540,11 +16601,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var granted =
             if capabilityContext != nil: capabilityContext
             else: newCapabilityContext()
+          let evaluatorSource = scopeLoaderState(scope)
+          var sourceState: ModuleLoaderState
           if env.kind == vkEnv:
             for itemEnv in envChain(env):
               let ceiling = itemEnv.envCapabilityContext
               if ceiling != nil and ceiling != granted:
                 granted = intersectContexts(granted, ceiling)
+              sourceState = mergeLoaderStates(loaderStateValue(itemEnv.envLoaderState), sourceState)
+            sourceState = mergeLoaderStates(sourceState, evaluatorSource)
+          else:
+            sourceState = mergeLoaderStates(scopeLoaderState(env.callerEnvScope), evaluatorSource)
+          granted = loaderCapabilities(sourceState, granted)
+          evalScope.loaderState = sourceState
           pushFrame()
           installCapabilityTransition(
             CapabilityTransition(context: granted, presence: nil))
@@ -16558,6 +16627,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush newTypeAlias(inst[].name, expr)
         of opMakeType:
           let proto = chunk.typeProtos[inst[].intArg]
+          if proto.capabilityName.len > 0 or proto.capabilitySchemaHash.len > 0:
+            raise newException(GeneError,
+              "obsolete capability facade metadata requires recompilation")
           let parent = spop()
           if parent.kind != vkNil and parent.kind != vkType:
             raise newException(GeneError, "type parent must be a type")
@@ -16665,7 +16737,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.requiredImplTypes.add typ
             else:
               scope.validateRequiredImplType(typ)
-          scope.application().linkCapabilityFacade(proto, typ, scope)
           spush typ
         of opMakeEnum:
           let proto = chunk.enumProtos[inst[].intArg]
@@ -16875,24 +16946,33 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if spec.fromModule:
             let app = scope.application()
             let dependencyPath =
-              app.resolveModuleRef(spec.modulePath, spec.pkgName)
+              app.resolveModuleRefForScope(scope, spec.modulePath, spec.pkgName)
             var importer: Value
             if scope.moduleRootScope().lookupOptional("this_mod", importer) and
                 importer.kind == vkModule:
               importer.recordModuleDependency(dependencyPath)
-            if spec.hasCapabilityRow:
-              # §5.3.1. Recorded before the load, because the dependency has
-              # to *initialize* under the bound too — a call-boundary
-              # intersection alone arrives after its top level has already
-              # run, and §5.3 is explicit that data captured then cannot be
-              # retracted. The path set is consulted by
-              # `moduleInitializationCapabilities`.
-              app.boundedModulePaths.incl dependencyPath
-              if scope.moduleRootScope().lookupOptional("this_mod", importer) and
-                  importer.kind == vkModule:
-                importer.recordImportCapabilityRow(dependencyPath,
-                                                   spec.capabilityRow)
-            source = loadModuleValue(app, dependencyPath)
+            if spec.hasCapabilityRow and capabilityContext.isPolicyContext:
+              if app.isSharedModuleForScope(scope, dependencyPath):
+                raise newException(GeneError,
+                  "shared module imports retain their admitted identity; bind callable values to add a bound")
+              let selected = resolveCapabilityRow(app, spec.capabilityRow,
+                capabilityContext, scope)
+              let savedCapabilities = activeCapabilityContext
+              activeCapabilityContext = selected
+              try:
+                source = loadModuleForScope(app, scope, dependencyPath, selected)
+              finally:
+                activeCapabilityContext = savedCapabilities
+            else:
+              if spec.hasCapabilityRow:
+                # Transitional legacy import metadata. Normalized imports
+                # instead initialize a distinct instance under their bound.
+                app.boundedModulePaths.incl dependencyPath
+                if scope.moduleRootScope().lookupOptional("this_mod", importer) and
+                    importer.kind == vkModule:
+                  importer.recordImportCapabilityRow(dependencyPath,
+                                                     spec.capabilityRow)
+              source = loadModuleForScope(app, scope, dependencyPath, capabilityContext)
           else:
             # Resolve the import-source root as initialized-local → builtin →
             # error. `lookupOptional` walks the scope chain (nearer in-file
@@ -16964,12 +17044,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError,
               "import_impl receiver must be a type")
           let app = scope.application()
-          let dependencyPath = app.resolveModulePath(spec.modulePath)
+          let dependencyPath = app.resolveModuleRefForScope(scope, spec.modulePath)
           var importer: Value
           if scope.moduleRootScope().lookupOptional("this_mod", importer) and
               importer.kind == vkModule:
             importer.recordModuleDependency(dependencyPath)
-          let source = loadModuleValue(app, dependencyPath)
+          let source = loadModuleForScope(app, scope, dependencyPath, capabilityContext)
           scope.importScopedImpl(source.moduleRootNamespace.nsScope,
                                  protocol, receiver)
           spush NIL
@@ -17660,7 +17740,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   rejectSyntaxCallWithoutSite(callee, scope)
                 var boundScope: Scope
                 var boundReturnType: Value
-                if namedCount > 0 and proto.canFastBindRequiredNamed:
+                if namedCount > 0 and proto.canFastBindRequiredNamed and
+                    proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                   boundScope = bindRequiredNamedCallScope(callee, proto,
                     callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
@@ -18464,8 +18545,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           scope.bindMatchedValues(binds, replaceExisting = true)
           spush target
         of opForEach:
-          var coll = spop()
           let fp = chunk.forLoops[inst[].intArg]
+          if fp.body.repeatControlLoop:
+            let loopScope = scope
+            pushFrame()
+            enterFrame(fp.body, loopScope, false, fkForBody)
+            curForItems = @[]
+            curForStream = NIL
+            curForBody = fp.body
+            continue
+          var coll = spop()
           if coll.kind == vkRange:
             coll = rangeStream(coll)
           if coll.kind == vkStream:
@@ -18527,18 +18616,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let stream = spop()
           requireStream("for iterator", stream)
           stream.closeStream()
-        of opLoopBreak:
-          if curFrameKind != fkForBody:
-            raise newException(GeneError, "break is only valid inside a loop")
-          strunc(curStackBase)
-          breakForLoop()
-          continue
-        of opLoopContinue:
-          if curFrameKind != fkForBody:
-            raise newException(GeneError, "continue is only valid inside a loop")
-          strunc(curStackBase)
-          advanceForLoop()
-          continue
+        of opLoopBreak, opLoopContinue:
+          var target = -1
+          if curFrameKind == fkForBody:
+            target = frames.len
+          else:
+            for index in countdown(frames.high, returnDepth):
+              if frames[index].kind == fkForBody:
+                target = index
+                break
+          if target < 0:
+            raise newException(GeneError, "loop transfer has no enclosing loop")
+          var signal: ref GeneReturn
+          new(signal)
+          signal.value = NIL
+          signal.targetDepth = target
+          signal.loopExit = true
+          signal.loopContinue = inst[].op == opLoopContinue
+          raise signal
         of opTry:
           # Run the try body as a Frame on the heap stack (not a nested runLoop), so
           # deep recursion through try-wrapped code does not grow the Nim stack. The
@@ -18565,9 +18660,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           continue
         of opWithCapabilities:
           let capBlock = chunk.capabilityBlocks[inst[].intArg]
-          let nextTransition = resolveCapabilityTransition(
-            scope.application(), capBlock.row, capabilityContext,
-            capabilityPresence, scope)
+          var nextTransition: CapabilityTransition
+          if capBlock.dynamicPolicy:
+            let row = capabilityRowArgument("capability block", spop())
+            let app = scope.application()
+            try:
+              nextTransition.context =
+                if capBlock.required:
+                  app.capabilityRegistry.requireCapabilities(capabilityContext, row)
+                else:
+                  app.capabilityRegistry.attenuateCapabilities(capabilityContext, row)
+            except CapabilityError as error:
+              raiseCapabilityBoundaryError(scope, error)
+          else:
+            nextTransition = resolveCapabilityTransition(scope.application(), capBlock.row,
+              capabilityContext, capabilityPresence, scope, capBlock.required)
+          if nextTransition.context.isPolicyContext:
+            validateCapabilityModuleChunk(capBlock.body)
           # The body is an independently compiled chunk, so its locals are
           # numbered from zero. Running it directly in the caller's scope — as
           # this did — made the body's slot 0 alias the caller's slot 0. At the
@@ -19102,6 +19211,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
+      # A callback may also close its own stream while running. Its close
+      # ceiling was installed after runLoop entry and applies before cleanup.
+      capabilityContext = restrictContinuationContext(capabilityContext)
+      activeCapabilityContext = capabilityContext
+      if fiber != nil:
+        activeContinuationLoaderState = mergeLoaderStates(
+          activeContinuationLoaderState, fiber.loaderState)
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
@@ -19145,7 +19261,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # Explicit return is a structured exit: skip catches, but unwind every
       # active ensure and close loop-owned streams before leaving the nearest
       # function frame.
-      if curFrameKind == fkForBody and
+      if curFrameKind == fkForBody and not (r.loopExit and frames.len == r.targetDepth) and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
       releaseCurrentCallScope()
@@ -19180,10 +19296,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
           loadFrameRegs(owner)
-          closeCurrentForStream()
+          if not (r.loopExit and frames.len == r.targetDepth):
+            closeCurrentForStream()
           releaseCurrentCallScope()
         elif frames.len == r.targetDepth:
-          frameReturn(r.value)
+          if r.loopExit:
+            strunc(curStackBase)
+            if r.loopContinue: advanceForLoop()
+            else: breakForLoop()
+          else:
+            frameReturn(r.value)
           cleanupStarted = true
           break
         elif frames.len == 0:
@@ -19194,7 +19316,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
           loadFrameRegs(owner)
-          closeCurrentForStream()
+          if not (r.loopExit and frames.len == r.targetDepth):
+            closeCurrentForStream()
           releaseCurrentCallScope()
       if cleanupStarted:
         continue
@@ -19242,21 +19365,27 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true,
         assembly.finished = true
         assembly.scope = nil
         scope.implAssembly = nil
-  if initialCapabilities == nil and scope != nil:
-    var module: Value
-    if not scope.lookupOptional("this_mod", module):
-      scope.application().materializeScriptCapabilities()
+  # Module initialization is application execution too. Version 1 has no
+  # module request rows that defer selection of the application root policy.
+  app.materializeScriptCapabilities()
   let savedCapabilities = activeCapabilityContext
   let savedPresence = activeCapabilityPresence
   activeCapabilityContext =
-    if initialCapabilities != nil: initialCapabilities
-    elif savedCapabilities != nil: savedCapabilities
+    if initialCapabilities != nil: scope.scopeCapabilityCeilings(initialCapabilities)
     else: scope.executionCapabilities()
   if initialCapabilities != nil or savedCapabilities == nil:
     activeCapabilityPresence = nil
   defer:
     activeCapabilityContext = savedCapabilities
     activeCapabilityPresence = savedPresence
+  if not activeCapabilityContext.isPolicyContext:
+    raise newException(GeneError,
+      "execution requires a normalized capability context")
+  try:
+    discard app.capabilityRegistry.policyRows(activeCapabilityContext)
+  except CapabilityError as error:
+    raiseCapabilityBoundaryError(scope, error)
+  validateCapabilityModuleChunk(chunk)
   withScheduler(scope):
     let workerLease = beginSchedulerWorkerLease()
     defer:
@@ -19728,7 +19857,9 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
     return nil
   let state = actor.actorState
   let args = [newActorContext(actor), state, item.message]
-  var bound = bindCallScope(handler, proto, args, NamedArgs())
+  var bound = bindCallScope(handler, proto, args, NamedArgs(), scope)
+  let transition = functionCapabilityTransition(proto, bound.scope, handler.fnScope,
+    scope, scope.executionCapabilities(), activeCapabilityPresence)
   let workerSafe =
     item.workerAllowed and actorFiberWorkerSafe(actor, handler, state,
                                                 item.message, item.reply, scope)
@@ -19738,8 +19869,9 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
         actorOwner: actor, actorReturnType: bound.returnType, actorScope: scope,
         actorAskReply: item.reply, actorMessage: item.message, started: false,
         workerSafe: workerSafe,
-        capabilityContext: scope.executionCapabilities(),
-        capabilityPresence: activeCapabilityPresence)
+        capabilityContext: transition.context,
+        capabilityPresence: transition.presence,
+        loaderState: scopeLoaderState(bound.scope))
 
 proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start
@@ -20281,7 +20413,8 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
                 started: false, workerSafe: workerSafe,
                 capabilityContext: scope.executionCapabilities(),
-                capabilityPresence: activeCapabilityPresence)
+                capabilityPresence: activeCapabilityPresence,
+                loaderState: scopeLoaderState(scope))
   enqueueRunnable(f)
   task
 
@@ -20418,13 +20551,19 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 
-proc closeStreamCallback(stream: Value) {.nimcall.} =
+proc cancelStreamCallback(stream: Value) =
   let continuation = stream.streamGeneratorContinuation
   if continuation == nil:
     return
-  let pending = Fiber(continuation).task
+  let frame = Fiber(continuation)
+  let pending = frame.task
   if pending.taskDone:
     return
+  frame.closeCapabilityCeiling =
+    if frame.closeCapabilityCeiling == nil: activeCapabilityContext
+    else: intersectContexts(frame.closeCapabilityCeiling, activeCapabilityContext)
+  frame.loaderState = mergeLoaderStates(frame.loaderState,
+    scopeLoaderState(if activeVmScope != nil: activeVmScope[] else: nil))
   pending.requestTaskCancellation()
   if activeTask.kind == vkTask and activeTask.taskSharesState(pending):
     raise newException(GeneCancel, "pipeline stream was closed")
@@ -20436,6 +20575,26 @@ proc closeStreamCallback(stream: Value) {.nimcall.} =
     error.hasErrVal = pending.taskHasErrorValue
     error.errVal = pending.taskErrorValue
     raise error
+
+proc closeStreamCallback(stream: Value) {.nimcall.} =
+  # Own upstream cleanup here so types.closeStream cannot run it after this
+  # adapter's retained boundary has been restored. Detach before entry checks:
+  # a rejected native entry must not fall back to an unbounded upstream close.
+  let source = stream.streamSource
+  stream.detachStreamSource()
+  enterStreamBoundary(stream)
+  var firstError: ref CatchableError
+  try:
+    cancelStreamCallback(stream)
+  except CatchableError as error:
+    firstError = error
+  if source.kind == vkStream:
+    try:
+      source.closeStream()
+    except CatchableError as error:
+      if firstError == nil: firstError = error
+  if firstError != nil:
+    raise firstError
 
 proc invokeStreamCallback(stream, item: Value): Value =
   ## The native pull shell cannot save a Nim stack when a callback awaits.
@@ -20469,7 +20628,8 @@ proc invokeStreamCallback(stream, item: Value): Value =
   let frame = Fiber(chunk: proto.chunk, scope: callScope, task: pending,
     privateCall: true,
     capabilityContext: transition.context,
-    capabilityPresence: transition.presence)
+    capabilityPresence: transition.presence,
+    loaderState: mergeLoaderStates(scopeLoaderState(callScope), scopeLoaderState(caller)))
   stream.setStreamGeneratorContinuation(frame)
   try:
     runFiber(frame)
@@ -23441,6 +23601,7 @@ proc ffiAotBufferLease*(where, label: string, value: Value): FfiBufferLease =
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
                       named: NamedArgs, dispatchScope: Scope): Value =
+  rejectUnmigratedCapabilityEffect("ffi/Callable", dispatchScope)
   if named.len != 0:
     raise newException(GeneError,
       "FFI callable '" & callee.ffiCallableName & "' does not accept named arguments")
@@ -27839,7 +28000,8 @@ proc constructEnumVariant(variant: Value, args: openArray[Value],
   newNode(variant, body = body)
 
 proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray[Value],
-                            named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+                            named: NamedArgs, preparedScope: Scope):
+                            tuple[scope: Scope, returnType: Value] =
   ## Build a fully-bound call scope for a non-simple function call: arity check,
   ## named-arg validation, generic inference, per-parameter type adaptation,
   ## defaults, and rest gathering. Returns the scope plus the instantiated return
@@ -27877,14 +28039,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       raise newException(GeneError,
         "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
-  var callScope =
-    if proto.poolCallScope:
-      acquireCallScope(callee.fnScope, proto.localNames)
-    else:
-      let fresh = newScope(callee.fnScope)
-      fresh.prepareSlots(proto.localNames)
-      fresh
-  callScope.seedFunctionProtocolEntry(callee)
+  let callScope = preparedScope
   if proto.isSyntaxFn and args.len > 0 and args[0].kind == vkCallerEnv:
     # Any child/eval scope and closure created during this syntax call inherits
     # the marker. Escape checks can therefore reject authority captured
@@ -28010,14 +28165,41 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
   (callScope, rt)
 
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
-                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+                   named: NamedArgs, callerScope: Scope = nil):
+                   tuple[scope: Scope, returnType: Value] =
+  var prepared =
+    if proto.poolCallScope:
+      acquireCallScope(callee.fnScope, proto.localNames)
+    else:
+      let fresh = newScope(callee.fnScope)
+      fresh.prepareSlots(proto.localNames)
+      fresh
+  let invoker = if callerScope != nil: callerScope
+                elif activeVmScope != nil: activeVmScope[]
+                else: nil
+  # Entry failure belongs to the caller; do not translate it through the
+  # callee's body/default error contract before the callee has entered.
+  let transition = functionCapabilityTransition(proto, prepared, callee.fnScope,
+    invoker, prepared.executionCapabilities(), activeCapabilityPresence)
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  activeCapabilityContext = transition.context
+  activeCapabilityPresence = transition.presence
   try:
-    bindCallScopeUnchecked(callee, proto, args, named)
+    # Strict error-proof activation belongs to the entered callee's error
+    # contract. Capability admission above remains an error of the caller.
+    prepared.seedFunctionProtocolEntry(callee)
+    result = bindCallScopeUnchecked(callee, proto, args, named, prepared)
+    result.scope.preparedCapabilityCode = proto
+    result.scope.preparedCapabilityTransition = transition
   except GeneError as error:
     let translated = translateErrorBoundary(callee.fnChecksErrors, callee.fnErrorTypes,
                                              callee.fnName, callee.fnScope, error)
     if translated == error: raise
     raise translated
+  finally:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
 
 proc statementCallResult(typ, value: Value): Value {.inline.} =
   if typ.isBareVoidType: VOID
@@ -28088,7 +28270,8 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         releaseCallScope(callScope)
   var callScope: Scope
   var returnType: Value
-  if named.len > 0 and proto.canFastBindRequiredNamed:
+  if named.len > 0 and proto.canFastBindRequiredNamed and
+      proto.canBypassCapabilityBoundary(callee.fnScope, callerScope):
     callScope = bindRequiredNamedCallScope(callee, proto, callee.fnName,
                                            args, named)
     returnType = proto.returnType
@@ -28097,7 +28280,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     callScope = bindPositionalIntCallScope(callee, proto, args)
     returnType = proto.returnType
   else:
-    var bound = bindCallScope(callee, proto, args, named)
+    var bound = bindCallScope(callee, proto, args, named, callerScope)
     callScope = bound.scope
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
@@ -28107,7 +28290,9 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
   if proto.isGenerator:
     let fiber = Fiber(chunk: proto.chunk, scope: callScope,
                       capabilityContext: callTransition.context,
-                      capabilityPresence: callTransition.presence)
+                      capabilityPresence: callTransition.presence,
+                      loaderState: mergeLoaderStates(scopeLoaderState(callScope),
+                        scopeLoaderState(callerScope)))
     when defined(geneGeneratorStats):
       inc generatorContinuationAllocations
     var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream,
@@ -28498,49 +28683,39 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
   finally:
     dec activeConstructionDepth
 
-proc capabilityArgFromValue(value: Value): CapabilityArg =
-  case value.kind
-  of vkNil:
-    capNil()
-  of vkBool:
-    capBool(value.boolVal)
-  of vkInt:
-    # The same guard `compileCapabilityLiteral` applies. Without it `intVal`
-    # truncates a bignum silently, and because arguments are canonicalized
-    # into a spec's key — and from there into grant identity — two requests
-    # that differ only above 64 bits would resolve to one grant.
-    if not value.intFitsInt64:
-      raise newException(GeneError,
-        "capability specification integer is outside the capability " &
-        "scalar range")
-    capInt(value.intVal)
-  of vkString:
-    capString(value.strVal)
-  of vkSymbol:
-    capSymbol(value.symVal)
-  of vkList:
-    if not value.listImmutable:
-      raise newException(GeneError,
-        "capability specification lists must be deeply immutable")
-    var items = newSeqOfCap[CapabilityArg](value.listItems.len)
-    for item in value.listItems:
-      items.add capabilityArgFromValue(item)
-    capList(items)
-  of vkMap:
-    if not value.mapImmutable:
-      raise newException(GeneError,
-        "capability specification maps must be deeply immutable")
-    var entries = newSeqOfCap[CapabilityNamedArg](value.mapEntries.len)
-    for name, item in value.mapEntries:
-      entries.add capNamed(name, capabilityArgFromValue(item))
-    capMap(entries)
-  else:
-    raise newException(GeneError,
-      "capability specifications accept only deeply immutable data")
-
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
+  # Direct embedding/SDK calls are execution entry points too. Establish the
+  # selected application's normalized policy before any native dispatch or
+  # optimized function path, even when there is no enclosing bytecode frame.
+  let outerCapabilities = activeCapabilityContext
+  let outerPresence = activeCapabilityPresence
+  defer:
+    activeCapabilityContext = outerCapabilities
+    activeCapabilityPresence = outerPresence
+  if activeCapabilityContext == nil:
+    let callerScope =
+      if dispatchScope != nil: dispatchScope
+      elif activeVmScope != nil: activeVmScope[]
+      else: nil
+    let ownerScope =
+      if callerScope != nil: callerScope
+      elif callee.kind == vkFunction: callee.fnScope
+      elif callee.kind == vkProtocolMessage: callee.protocolMessageScope
+      elif callee.kind == vkCallableView: callee.callableViewScope
+      else: nil
+    let app = ownerScope.application()
+    app.materializeScriptCapabilities()
+    # Holding a callable identifies its catalog/origin, not a caller grant.
+    # An embedder supplies a dispatch scope to invoke with selected authority.
+    activeCapabilityContext =
+      if callerScope != nil: callerScope.executionCapabilities()
+      else: app.capabilityRegistry.newPolicyContext([])
+    activeCapabilityPresence = nil
+    if not activeCapabilityContext.isPolicyContext:
+      raise newException(GeneError, "execution requires a normalized capability context")
+    discard app.capabilityRegistry.policyRows(activeCapabilityContext)
   case callee.kind
   of vkCallableView:
     let caller =
@@ -28596,6 +28771,29 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     return applyCall(target, args, named,
       if dispatchScope == nil: bound else: dispatchScope, site, loc)
   of vkNativeFn:
+    # Host SDK entry may have no active VM frame. Establish the supplied
+    # caller's context before dispatch and keep it installed for nested calls.
+    let savedNativeCapabilities = activeCapabilityContext
+    let savedNativePresence = activeCapabilityPresence
+    let savedNativeScope = activeVmScope
+    # The context pointer borrows this local for the whole native call. A
+    # cursor prevents ARC from moving it into NativeCall and nil-ing the slot.
+    var nativeScope {.cursor.} = if dispatchScope != nil: dispatchScope
+                                 elif activeVmScope != nil: activeVmScope[] else: nil
+    if activeCapabilityContext == nil and nativeScope != nil:
+      var entry = NativeCall(dispatchScope: nativeScope)
+      try:
+        activeCapabilityContext = activeCapabilitiesForCall(addr entry).context
+      except CapabilityError as error:
+        raiseCapabilityBoundaryError(nativeScope, error)
+      activeCapabilityPresence = nil
+    if nativeScope != nil:
+      activeVmScope = addr nativeScope
+    defer:
+      activeCapabilityContext = savedNativeCapabilities
+      activeCapabilityPresence = savedNativePresence
+      activeVmScope = savedNativeScope
+    guardNativeEffect(callee, nativeScope)
     if named.len == 0 and args.len == 2:
       let fast = tryFastNative2(callee, args[0], args[1])
       if fast.handled:
@@ -28619,9 +28817,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     var call = NativeCall(calleeName: callee.nativeFnName,
                           namedNames: named.names,
                           namedValues: named.toSeq(),
-                          dispatchScope: dispatchScope,
+                          dispatchScope: nativeScope,
                           site: site,
-                          loc: loc)
+                          loc: loc,
+                          capabilityContext: activeCapabilityContext)
     callImpl(args, addr call)
   of vkFfiCallable:
     applyFfiCallable(callee, args, named, dispatchScope)
@@ -28656,19 +28855,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     constructTypedInstance(callee, args, named,
       immutable = site.kind == vkNode and site.nodeImmutable)
   of vkCapability:
-    if not callee.capabilityIsAdmitted:
-      raise newException(GeneError,
-        "capability type has no admitted provider: " & callee.capabilityName)
-    var positional = newSeqOfCap[CapabilityArg](args.len)
-    for arg in args:
-      positional.add capabilityArgFromValue(arg)
-    var properties = newSeqOfCap[CapabilityNamedArg](named.len)
-    for i, name in named.names:
-      if name == "optional":
-        raise newException(GeneError,
-          "^^optional is valid only in a ^capabilities declaration")
-      properties.add capNamed(name, capabilityArgFromValue(named.valueAt(i)))
-    newCapability(callee.capabilitySpec.capabilityType, positional, properties)
+    raise newException(GeneError,
+      "capability specifications are inert data; use capabilities/parse or capabilities/build")
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):
@@ -28822,13 +29010,39 @@ proc collectStaticImportForms(forms: openArray[Value], first = 0): seq[Value] =
     else:
       discard
 
-proc moduleCompileCacheIdentity(app: Application, absPath: string): string =
-  let base = app.moduleIdentityFor(absPath)
-  if activeSandboxCompileKey.len > 0 and
-      absPath.isRelativeTo(activeSandboxCompileDir):
-    "sandbox:" & activeSandboxCompileKey & "\x1f" & base
+proc loadingCapabilities(app: Application): CapabilityContext =
+  result =
+    if activeCapabilityContext != nil: activeCapabilityContext
+    elif app.applicationCapabilityContext != nil: app.applicationCapabilityContext
+    else: app.rootCapabilityContext
+  if result.isPolicyContext:
+    if activeSandboxPolicy != nil and activeSandboxPolicy.capabilityCeiling != nil:
+      result = intersectContexts(result, activeSandboxPolicy.capabilityCeiling)
+    discard app.capabilityRegistry.policyRows(result)
+
+proc moduleInstanceBaseIdentity(app: Application, base: string): string =
+  "capability-instance:" & app.loadingCapabilities().domainKey & "\x1f" &
+    loaderStateKey(activeLoaderState) & "\x1f" & base
+
+proc moduleInstanceCacheIdentity(app: Application, base: string): string =
+  let context = app.loadingCapabilities()
+  if context.isPolicyContext:
+    let prefix = app.moduleInstanceBaseIdentity(base)
+    prefix & "\x1egeneration:" & $app.capabilityModuleGenerations.getOrDefault(prefix)
   else:
     base
+
+proc moduleCompileCacheIdentity(app: Application, absPath: string): string =
+  let base = app.moduleIdentityFor(absPath)
+  let shared = activeLoaderState.admittedSharedModule(absPath)
+  if shared.kind == vkModule: return shared.moduleInstanceKey
+  if app.sandboxSharedInstances.hasKey(absPath):
+    return app.sandboxSharedInstances[absPath].moduleInstanceKey
+  if activeSandboxCompileKey.len > 0 and
+      absPath.isRelativeTo(activeSandboxCompileDir):
+    app.moduleInstanceCacheIdentity("sandbox:" & activeSandboxCompileKey & "\x1f" & base)
+  else:
+    app.moduleInstanceCacheIdentity(base)
 
 proc moduleCompileHeader(app: Application,
                          absPath: string): ModuleCompileHeader =
@@ -28836,14 +29050,16 @@ proc moduleCompileHeader(app: Application,
   if app.moduleCompileHeaders.hasKey(identity):
     return app.moduleCompileHeaders[identity]
   let source =
-    if absPath.isUrlModulePath:
+    if activeLoaderState.hasSourceSnapshot:
+      activeLoaderState.admittedSourceText(absPath)
+    elif absPath.isUrlModulePath:
       app.fetchUrlModuleSource(absPath).body
     else:
       if not fileExists(absPath):
         raisePackageError(pecModuleNotFound, "module not found: " & absPath)
       readFile(absPath)
   let sourceName =
-    if app.portableCompileNames: identity else: absPath
+    if app.portableCompileNames: app.moduleIdentityFor(absPath) else: absPath
   let unit = readAllWithLocs(source, sourceName)
   result = ModuleCompileHeader(path: absPath, unit: unit,
                                compileInterface:
@@ -28860,6 +29076,21 @@ proc compileModuleArtifactRaw(app: Application,
   let identity = app.moduleCompileCacheIdentity(absPath)
   if app.moduleCompileArtifacts.hasKey(identity):
     return app.moduleCompileArtifacts[identity]
+  let installedIdentity = app.moduleIdentityFor(absPath)
+  let admitted = activeLoaderState.admittedArtifact(absPath)
+  if admitted.isSome:
+    let compiled = cloneCompiledModule(admitted.get)
+    result = ModuleCompileArtifact(chunk: compiled.chunk, macroExports: compiled.macroExports,
+      syntaxFnExports: compiled.syntaxFnExports, compileInterface: compiled.compileInterface)
+    app.moduleCompileArtifacts[identity] = result
+    return
+  if not activeLoaderState.hasSourceSnapshot and
+      app.installedModuleTemplates.hasKey(installedIdentity):
+    let compiled = cloneCompiledModule(app.installedModuleTemplates[installedIdentity])
+    result = ModuleCompileArtifact(chunk: compiled.chunk, macroExports: compiled.macroExports,
+      syntaxFnExports: compiled.syntaxFnExports, compileInterface: compiled.compileInterface)
+    app.moduleCompileArtifacts[identity] = result
+    return
   if identity in app.moduleCompileLoading:
     raise newException(GeneError,
       "compile-time macro dependency cycle at " & absPath)
@@ -28887,9 +29118,23 @@ proc compileModuleArtifactRaw(app: Application,
       let raw = importSpec.importKey
       let depPath = app.resolveModuleRef(importSpec.modulePath,
                                          importSpec.pkgName)
+      if activeSandboxPolicy != nil and
+          activeSandboxPolicy.capabilityCeiling.isPolicyContext and
+          app.sandboxDir.len > 0 and absPath.isRelativeTo(app.sandboxDir) and
+          not depPath.isRelativeTo(app.sandboxDir) and depPath notin app.sandboxShared:
+        raise newException(GeneError,
+          "capability domain import names an unadmitted source")
       var dependency: ModuleCompileArtifact
       var compileDependency = importSpec.reexport
       let depIdentity = app.moduleCompileCacheIdentity(depPath)
+      if not app.moduleCompileArtifacts.hasKey(depIdentity) and
+          activeLoaderState.admittedSharedModule(depPath).kind == vkNil and
+          activeLoaderState.admittedArtifact(depPath).isSome:
+        discard compileModuleArtifactRaw(app, depPath)
+      if not app.moduleCompileArtifacts.hasKey(depIdentity) and
+          not activeLoaderState.hasSourceSnapshot and
+          app.installedModuleTemplates.hasKey(app.moduleIdentityFor(depPath)):
+        discard compileModuleArtifactRaw(app, depPath)
       var depInterface: CompileNamespaceInterface
       if app.moduleCompileArtifacts.hasKey(depIdentity):
         # A verified dependency artifact is the authoritative compiler input.
@@ -29121,6 +29366,8 @@ proc compileModuleArtifact(app: Application, absPath: string): ModuleCompileArti
 
 proc resolvedModuleCeiling(app: Application, module: Value,
                            parent: CapabilityContext): CapabilityContext =
+  if module.moduleCapabilityCeiling.isPolicyContext:
+    return module.moduleCapabilityCeiling
   let row = module.moduleCapabilityRow
   result = if row.inheritsCapabilities:
     parent
@@ -29158,6 +29405,12 @@ proc materializeLoadedModule(app: Application, module: Value) =
 proc moduleInitializationCapabilities(app: Application,
                                       row: CapabilityRow,
                                       modulePath = ""): CapabilityContext =
+  if app != nil:
+    let caller = app.loadingCapabilities()
+    if caller.isPolicyContext:
+      return if activeSandboxPolicy != nil and activeSandboxPolicy.capabilityCeiling != nil:
+               intersectContexts(caller, activeSandboxPolicy.capabilityCeiling)
+             else: caller
   ## Open/pass-through modules preserve Gene's existing top-level semantics.
   ## Once materialized, lazy initialization uses the fixed application context
   ## rather than whichever narrowed caller happened to load the singleton
@@ -29165,6 +29418,12 @@ proc moduleInitializationCapabilities(app: Application,
   ## context. A module that declares any narrowing initializes empty and must
   ## perform effects from a declared callable after ceilings are materialized.
   if app != nil and app.sandboxRoot != nil:
+    if activeSandboxPolicy != nil and
+        activeSandboxPolicy.capabilityCeiling.isPolicyContext:
+      let caller =
+        if activeCapabilityContext != nil: activeCapabilityContext
+        else: app.rootCapabilityContext
+      return intersectContexts(caller, activeSandboxPolicy.capabilityCeiling)
     return newCapabilityContext()
   if not row.inheritsCapabilities:
     return newCapabilityContext()
@@ -29216,7 +29475,9 @@ proc materializeApplicationCapabilities(app: Application, entry: Value) =
     if module.kind != vkModule:
       continue
     let ceiling =
-      if same(module, entry):
+      if module.moduleCapabilityCeiling.isPolicyContext:
+        module.moduleCapabilityCeiling
+      elif same(module, entry):
         applicationContext
       else:
         app.resolvedModuleCeiling(module, applicationContext)
@@ -29242,22 +29503,70 @@ proc materializeScriptCapabilities(app: Application) =
   app.capabilitiesMaterialized = true
 
 proc rejectSandboxNativeDeclarations(chunk: Chunk) =
-  if chunk == nil:
-    return
-  if chunk.ffiLibraries.len > 0 or chunk.ffiFns.len > 0 or
-      chunk.ffiStructs.len > 0 or chunk.ffiUnions.len > 0 or
-      chunk.ffiSignatures.len > 0:
+  var seen = initHashSet[pointer]()
+  proc visit(body: Chunk)
+  proc visitFunction(fn: FunctionProto) =
+    if fn == nil: return
+    visit(fn.chunk)
+    visit(fn.scopelessChunk)
+    for value in fn.paramDefaults: visit(value.defaultChunk)
+    for parameter in fn.namedParams: visit(parameter.defaultValue.defaultChunk)
+  proc visit(body: Chunk) =
+    if body == nil or seen.containsOrIncl(cast[pointer](body)): return
+    if body.ffiLibraries.len > 0 or body.ffiFns.len > 0 or
+        body.ffiStructs.len > 0 or body.ffiUnions.len > 0 or
+        body.ffiSignatures.len > 0:
+      raise newException(GeneError, "sandbox policy disables FFI and native declarations")
+    if body.webModules.len > 0:
+      raise newException(GeneError, "sandbox policy disables embedded web module declarations")
+    for typ in body.typeProtos:
+      if typ.capabilityName.len > 0 or typ.capabilitySchemaHash.len > 0:
+        raise newException(GeneError,
+          "obsolete capability facade metadata requires recompilation")
+      if typ.nativeType != nil:
+        raise newException(GeneError, "sandbox policy disables native type declarations")
+      visitFunction(typ.ctorFn)
+      for message in typ.messages: visitFunction(message.fn)
+      for impl in typ.inlineImpls:
+        for message in impl.messages: visitFunction(message.fn)
+    for typ in body.enumProtos:
+      for message in typ.messages: visitFunction(message.fn)
+      for impl in typ.inlineImpls:
+        for message in impl.messages: visitFunction(message.fn)
+    for protocol in body.protocolProtos:
+      visitFunction(protocol.deriveFn)
+      for message in protocol.messages: visitFunction(message.fn)
+    for impl in body.implProtos:
+      for message in impl.messages: visitFunction(message.fn)
+    for fn in body.functions: visitFunction(fn)
+    for child in body.subchunks: visit(child)
+    for boundary in body.capabilityBlocks: visit(boundary.body)
+    for loop in body.forLoops: visit(loop.body)
+    for branch in body.matches:
+      for clause in branch.clauses: visit(clause.body)
+      visit(branch.elseBody)
+    for attempt in body.tries:
+      visit(attempt.body)
+      for clause in attempt.catches: visit(clause.body)
+      visit(attempt.ensureBody)
+  visit(chunk)
+
+proc validateCapabilityModuleChunk(chunk: Chunk) =
+  if chunk == nil: return
+  if chunk.moduleCapabilityRow.declaresCapabilities or chunk.capabilitiesStrict or
+      chunk.requireStrictDependencies:
     raise newException(GeneError,
-      "sandbox policy disables FFI and native declarations")
-  for typ in chunk.typeProtos:
-    if typ.nativeType != nil or typ.capabilityName.len > 0:
-      raise newException(GeneError,
-        "sandbox policy disables native and capability type declarations")
-  if chunk.webModules.len > 0:
-    raise newException(GeneError,
-      "sandbox policy disables embedded web module declarations")
-  for child in chunk.subchunks:
-    rejectSandboxNativeDeclarations(child)
+      "module capability declarations and strict mode are unsupported in capability v1")
+  rejectSandboxNativeDeclarations(chunk)
+
+proc validateCapabilityFunction(proto: FunctionProto) =
+  if proto == nil: return
+  validateCapabilityModuleChunk(proto.chunk)
+  validateCapabilityModuleChunk(proto.scopelessChunk)
+  for value in proto.paramDefaults:
+    validateCapabilityModuleChunk(value.defaultChunk)
+  for parameter in proto.namedParams:
+    validateCapabilityModuleChunk(parameter.defaultValue.defaultChunk)
 
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
@@ -29319,18 +29628,29 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       ["directory: " & app.sandboxDir,
        "shared: " & (if sharedList.len == 0: "(none)"
                      else: sharedList.join(", "))])
-  let identity =
+  if app.sandboxSharedInstances.hasKey(absPath):
+    return app.sandboxSharedInstances[absPath]
+  let shared = activeLoaderState.admittedSharedModule(absPath)
+  if shared.kind == vkModule: return shared
+  let legacyIdentity =
     if inSandbox:
       "sandbox:" & app.sandboxKey & "\x1f" & app.moduleIdentityFor(absPath)
     else:
       app.moduleIdentityFor(absPath)
+  let identity = app.moduleInstanceCacheIdentity(legacyIdentity)
+  let initializing = app.loadingCapabilities()
   if app.moduleCache.hasKey(identity):
     return app.moduleCache[identity]
+  if initializing.isPolicyContext and app.capabilityDomainFailures.hasKey(identity):
+    raise app.capabilityDomainFailures[identity]
   if identity in app.moduleLoading:
     raise newException(GeneError,
       "runtime module initialization cycle at " & absPath)
-  if not absPath.isUrlModulePath and not fileExists(absPath) and
-      not app.moduleCompileArtifacts.hasKey(identity):
+  if activeLoaderState.hasSourceSnapshot:
+    activeLoaderState.requireAdmittedSource(absPath)
+  elif not absPath.isUrlModulePath and not fileExists(absPath) and
+      not app.moduleCompileArtifacts.hasKey(identity) and
+      not app.installedModuleTemplates.hasKey(app.moduleIdentityFor(absPath)):
     raisePackageError(pecModuleNotFound, "module not found: " & absPath)
   app.moduleLoading.incl identity
   # **Held across the run, not just the scope.** A module's imports happen while
@@ -29341,24 +29661,34 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   app.sandboxRestricting = inSandbox
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
-  if inSandbox and activeSandboxGenerationId != 0:
-    modScope.sandboxGenerationId = activeSandboxGenerationId
+  modScope.loaderState = ModuleLoaderState(basePath: absPath,
+    package: app.packageForModule(absPath),
+    primary: if activeLoaderState == nil: nil else: activeLoaderState.primary,
+    origins: if activeLoaderState == nil: @[] else: activeLoaderState.origins)
+  if inSandbox:
+    if activeSandboxGenerationId != 0:
+      modScope.sandboxGenerationId = activeSandboxGenerationId
     if activeSandboxPolicy != nil:
       modScope.moduleExecutionPolicy = activeSandboxPolicy
       modScope.evalBudget = evalBudgetForLimits(
         activeSandboxPolicy.maxSteps,
         activeSandboxPolicy.maxMemoryMb,
         activeSandboxPolicy.timeoutMs,
-        nil)
+        if activeVmBudget != nil: activeVmBudget[] else: nil)
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
   app.currentPackage = app.packageForModule(absPath)
   result = bindThisModule(modScope, splitFile(absPath).name, absPath,
                           app.currentPackage)
+  result.setModuleInstanceKey(identity)
   try:
     let artifact = compileModuleArtifact(app, absPath)
-    if inSandbox and activeSandboxGenerationId != 0:
+    if initializing.isPolicyContext:
+      validateCapabilityModuleChunk(artifact.chunk)
+    if inSandbox and (activeSandboxGenerationId != 0 or
+        (activeSandboxPolicy != nil and
+         activeSandboxPolicy.capabilityCeiling.isPolicyContext)):
       rejectSandboxNativeDeclarations(artifact.chunk)
     if modScope.evalBudget != nil:
       consumeEvalStep(modScope.evalBudget)
@@ -29368,14 +29698,26 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       app.requireStrictDependencies = true
     let initializationCapabilities = app.moduleInitializationCapabilities(
       artifact.chunk.moduleCapabilityRow, absPath)
+    if initializationCapabilities.isPolicyContext and modScope.moduleExecutionPolicy == nil:
+      modScope.moduleExecutionPolicy = ModuleExecutionPolicy(maxSteps: -1,
+        maxMemoryMb: -1, timeoutMs: -1, capabilityCeiling: initializationCapabilities)
     # Top-level code may call functions declared by this module before the
     # application-wide materialization pass. Give those boundaries the same
     # provisional ceiling as the module's initialization context; the fixed
     # application-derived ceiling replaces it after loading.
     result.setModuleCapabilityCeiling(initializationCapabilities)
-    discard run(artifact.chunk, modScope,
+    let executable = if initializationCapabilities.isPolicyContext:
+                       cloneCompiledChunk(artifact.chunk,
+                         if absPath.isUrlModulePath: ""
+                         else: activeLoaderState.admittedResourceBase(absPath))
+                     else: artifact.chunk
+    discard run(executable, modScope,
                 initialCapabilities = initializationCapabilities)
     activateStagedImpls(modScope)
+  except CatchableError as error:
+    if initializing.isPolicyContext:
+      app.capabilityDomainFailures[identity] = error
+    raise
   finally:
     app.sandboxRestricting = savedRestricting
     app.currentModuleDir = savedDir
@@ -29385,6 +29727,110 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   inc app.moduleEpoch
   if app.capabilitiesMaterialized:
     app.materializeLoadedModule(result)
+
+proc loadModuleForScope(app: Application, scope: Scope, path: string,
+                        context: CapabilityContext = nil): Value =
+  let state = mergeLoaderStates(scopeLoaderState(scope), activeLoaderState)
+  var selected = if context != nil: context else: scope.executionCapabilities()
+  if activeWorkerThread and selected.isPolicyContext:
+    raise newException(GeneError,
+      "module loading requires the application's root lane")
+  selected = loaderCapabilities(state, selected)
+  if state == nil or state.origins.len == 0:
+    let savedCapabilities = activeCapabilityContext
+    activeCapabilityContext = selected
+    try: return loadModuleValue(app, path)
+    finally: activeCapabilityContext = savedCapabilities
+
+  var shared = NIL
+  var owned = true
+  for origin in state.origins:
+    if origin.shared.hasKey(path):
+      owned = false
+      if shared.kind == vkNil: shared = origin.shared[path]
+      elif not same(shared, origin.shared[path]):
+        raise newException(GeneError, "loader source bounds select different shared instances")
+    elif path.isUrlModulePath or
+        (origin.directoryBound and not path.isRelativeTo(origin.directory)):
+      raise newException(GeneError, "module source is outside its retained loader policy: " & path)
+  if not owned:
+    for origin in state.origins:
+      if not origin.shared.hasKey(path) or not same(shared, origin.shared[path]):
+        raise newException(GeneError, "shared module instance is not admitted by every source bound")
+    return shared
+
+  var boundedOrigin: ModuleLoaderOrigin
+  for origin in state.origins:
+    if origin.directoryBound and (boundedOrigin == nil or
+        origin.directory.isRelativeTo(boundedOrigin.directory)):
+      boundedOrigin = origin
+  let directory = if boundedOrigin == nil: "" else: boundedOrigin.directory
+  var namespaces: seq[string]
+  if boundedOrigin != nil:
+    for name in boundedOrigin.exposedNamespaces:
+      var admitted = true
+      for origin in state.origins:
+        if origin.directoryBound and name notin origin.exposedNamespaces:
+          admitted = false
+      if admitted: namespaces.add name
+  var sharedInstances = initTable[string, Value]()
+  for sourcePath, module in state.primary.shared:
+    var admitted = true
+    for origin in state.origins:
+      if not origin.shared.hasKey(sourcePath) or not same(module, origin.shared[sourcePath]):
+        admitted = false
+    if admitted: sharedInstances[sourcePath] = module
+
+  let savedRoot = app.sandboxRoot
+  var savedKey = app.sandboxKey
+  var savedDir = app.sandboxDir
+  let savedRestricting = app.sandboxRestricting
+  let savedShared = app.sandboxShared
+  let savedSharedInstances = app.sandboxSharedInstances
+  let savedState = activeLoaderState
+  let savedPolicy = activeSandboxPolicy
+  let savedCapabilities = activeCapabilityContext
+  var savedCompileKey = activeSandboxCompileKey
+  var savedCompileDir = activeSandboxCompileDir
+  let savedBudget = activeVmBudget
+  var maxSteps, maxMemory, timeout: int64 = -1
+  for origin in state.origins:
+    if origin.policy != nil:
+      let policy = origin.policy
+      if policy.maxSteps >= 0: maxSteps = if maxSteps < 0: policy.maxSteps else: min(maxSteps, policy.maxSteps)
+      if policy.maxMemoryMb >= 0: maxMemory = if maxMemory < 0: policy.maxMemoryMb else: min(maxMemory, policy.maxMemoryMb)
+      if policy.timeoutMs >= 0: timeout = if timeout < 0: policy.timeoutMs else: min(timeout, policy.timeoutMs)
+  var budget = evalBudgetForLimits(maxSteps, maxMemory, timeout,
+    if savedBudget != nil: savedBudget[] else: nil)
+  app.sandboxRoot = if boundedOrigin == nil: nil else: app.sandboxedBuiltins(namespaces)
+  app.sandboxKey = if boundedOrigin == nil: "" else: boundedOrigin.cacheKey
+  app.sandboxDir = directory
+  app.sandboxRestricting = boundedOrigin != nil
+  app.sandboxShared = initHashSet[string]()
+  for sourcePath in sharedInstances.keys: app.sandboxShared.incl sourcePath
+  app.sandboxSharedInstances = sharedInstances
+  activeLoaderState = state
+  activeSandboxPolicy = ModuleExecutionPolicy(maxSteps: maxSteps, maxMemoryMb: maxMemory,
+    timeoutMs: timeout, capabilityCeiling: selected)
+  activeCapabilityContext = selected
+  activeVmBudget = addr budget
+  activeSandboxCompileKey = app.sandboxKey
+  activeSandboxCompileDir = directory
+  try:
+    result = loadModuleValue(app, path)
+  finally:
+    app.sandboxRoot = savedRoot
+    app.sandboxKey = savedKey
+    app.sandboxDir = savedDir
+    app.sandboxRestricting = savedRestricting
+    app.sandboxShared = savedShared
+    app.sandboxSharedInstances = savedSharedInstances
+    activeLoaderState = savedState
+    activeSandboxPolicy = savedPolicy
+    activeCapabilityContext = savedCapabilities
+    activeVmBudget = savedBudget
+    activeSandboxCompileKey = savedCompileKey
+    activeSandboxCompileDir = savedCompileDir
 
 proc validateImplCollection(impls: openArray[ProtocolImpl]) =
   for i in 0 ..< impls.len:
@@ -29445,6 +29891,9 @@ proc reloadFileModule*(app: Application, path: string): Value =
   ## Compile and execute a replacement off to the side, then replace canonical
   ## registrations and explicit import_impl copies in one commit. Runtime
   ## overlays are deliberately absent from the prospective checks.
+  let savedSourceState = activeLoaderState
+  if activeLoaderState == nil: activeLoaderState = app.applicationLoaderState
+  defer: activeLoaderState = savedSourceState
   if path.isUrlModulePath:
     # URL content is mutable and unpinned; reload stays file-only until the
     # disk cache + lockfile stage of design §15.9.
@@ -29458,6 +29907,18 @@ proc reloadFileModule*(app: Application, path: string): Value =
       "module path escapes package root: " & path,
       ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
   let identity = app.moduleIdentityFor(absPath)
+  if app.loadingCapabilities().isPolicyContext:
+    let prefix = app.moduleInstanceBaseIdentity(identity)
+    let previous = app.capabilityModuleGenerations.getOrDefault(prefix)
+    inc app.nextCapabilityModuleGeneration
+    app.capabilityModuleGenerations[prefix] = app.nextCapabilityModuleGeneration
+    try:
+      result = loadModuleValue(app, absPath)
+      app.hostInitializedModules[identity] = result
+      return
+    except:
+      app.capabilityModuleGenerations[prefix] = previous
+      raise
   if not app.moduleCache.hasKey(identity):
     return loadModuleValue(app, absPath)
   if identity in app.moduleLoading:
@@ -29607,6 +30068,129 @@ proc entryModulePath(app: Application, path: string): string =
       "module path escapes package root: " & path,
       ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
 
+proc admitApplicationSources*(app: Application, entryPath: string,
+    snapshots: openArray[ModuleSourceSnapshot] = [],
+    artifacts: openArray[AdmittedModuleArtifact] = [],
+    shared: openArray[Value] = []) =
+  ## Trusted host admission. Inputs are already acquired snapshots or verified
+  ## inert artifacts; ordinary source code cannot extend this policy.
+  if app == nil or app.applicationLoaderState != nil or
+      not app.rootCapabilityContext.isPolicyContext or activeVmScope != nil:
+    raise newException(GeneError,
+      "application source admission requires an unentered host startup boundary")
+  let origin = ModuleLoaderOrigin(identity: "application-source-admission-pending",
+    directory: app.appPackage.root, root: app.builtinsScope(),
+    policy: ModuleExecutionPolicy(maxSteps: -1, maxMemoryMb: -1, timeoutMs: -1,
+      capabilityCeiling: app.applicationCapabilities()))
+  # Any failure leaves a rejecting source policy; a caught error cannot restore
+  # raw source loading or private host-control access.
+  app.applicationLoaderState = ModuleLoaderState(primary: origin, origins: @[origin])
+  let entry = if entryPath.len == 0: "" else: app.entryModulePath(entryPath)
+  var paths = initTable[string, string]()
+  var identities = initTable[string, string]()
+  var bytes = 0
+  proc record(path, content: string) =
+    if not path.isAbsolute or normalizedPath(path) != path or '\0' in path or
+        app.owningPackage(path) == nil:
+      raise newException(GeneError, "admitted source has no resolved package owner: " & path)
+    if paths.hasKey(path):
+      if paths[path] != content:
+        raise newException(GeneError, "conflicting source admissions: " & path)
+      return
+    let identity = app.moduleIdentityFor(path)
+    if identities.hasKey(identity) and identities[identity] != path:
+      raise newException(GeneError, "admitted sources collide on module identity: " & identity)
+    if paths.len >= 1024 or content.len > 128 * 1024 * 1024 - bytes:
+      raise newException(GeneError, "application source admission limit exceeded")
+    identities[identity] = path
+    paths[path] = content
+    bytes += content.len
+  var admittedSnapshots: seq[ModuleSourceSnapshot]
+  for snapshot in snapshots:
+    if snapshot == nil: raise newException(GeneError, "nil application source snapshot")
+    for path in snapshot.sourcePaths:
+      record(path, "text:" & snapshot.sourceText(path))
+    admittedSnapshots.add snapshot
+  var admittedArtifacts = initTable[string, CompiledModule]()
+  var artifactKeys = initTable[string, string]()
+  var artifactBases = initTable[string, string]()
+  for input in artifacts:
+    let path = input.path
+    let copied = cloneCompiledModule(input.artifact)
+    if copied.identity != app.moduleIdentityFor(path):
+      raise newException(GeneError, "artifact identity does not match its admitted path")
+    let base = if input.resourceBase.len == 0: parentDir(path) else: input.resourceBase
+    if not base.isAbsolute or normalizedPath(base) != base or '\0' in base:
+      raise newException(GeneError, "artifact resource base must be absolute and normalized")
+    let encoded = encodeExecutableGir(ExecutableGir(entryIdentity: copied.identity, modules: @[copied]))
+    let key = sha256Hex(encoded) & ":" & base
+    record(path, "artifact:" & encoded & ":base:" & base)
+    admittedArtifacts[path] = copied
+    artifactKeys[path] = key
+    artifactBases[path] = base
+  var sharedModules = initTable[string, Value]()
+  for module in shared:
+    if module.kind != vkModule or module.moduleRootNamespace.nsScope.application != app:
+      raise newException(GeneError, "shared application module belongs to another owner")
+    var initialized = false
+    for candidate in app.moduleCache.values:
+      if same(candidate, module): initialized = true
+    if not initialized:
+      raise newException(GeneError, "shared application module has not completed initialization")
+    let path = module.modulePath
+    if paths.hasKey(path) or sharedModules.hasKey(path) or path == entry:
+      raise newException(GeneError, "shared and ordinary source admissions conflict: " & path)
+    sharedModules[path] = module
+  if entry.len > 0 and not paths.hasKey(entry):
+    raise newException(GeneError, "application entry is absent from the admitted source graph")
+  var ordered: seq[string]
+  for path in paths.keys: ordered.add path
+  ordered.sort()
+  var identity = "application-sources-v1:" & $app.capabilityRegistry.identity & ":" &
+    $entry.len & ":" & entry
+  for path in ordered:
+    identity.add $path.len & ":" & path & ":" & sha256Hex(paths[path])
+  ordered.setLen(0)
+  for path in sharedModules.keys: ordered.add path
+  ordered.sort()
+  for path in ordered:
+    identity.add $path.len & ":" & path & ":shared:" & $sharedModules[path].moduleRuntimeId
+  origin.identity = identity
+  origin.cacheKey = identity
+  origin.additionalSources = admittedSnapshots
+  origin.artifacts = admittedArtifacts
+  origin.artifactKeys = artifactKeys
+  origin.artifactBases = artifactBases
+  origin.shared = sharedModules
+  app.applicationEntryPath = entry
+
+proc admittedPackageArtifacts*(app: Application,
+    modules: openArray[CompiledModule]): seq[AdmittedModuleArtifact] =
+  ## Translate authenticated package metadata to exact runtime paths without
+  ## probing mutable source or guessing between the package and library roots.
+  for compiled in modules:
+    var owner: Package
+    for pkg in app.packagesById.values:
+      if compiled.identity.startsWith(pkg.packageIdentity & "::"):
+        owner = pkg
+        break
+    if owner == nil or compiled.sourcePath.len == 0 or compiled.sourcePath.isAbsolute or
+        '\\' in compiled.sourcePath or '\0' in compiled.sourcePath:
+      raise newException(GeneError, "compiled module has no admitted package-relative source path")
+    for part in compiled.sourcePath.split('/'):
+      if part in ["", ".", ".."]:
+        raise newException(GeneError, "invalid compiled module source path")
+    let path = normalizedPath(owner.root / compiled.sourcePath)
+    if app.moduleIdentityFor(path) != compiled.identity:
+      raise newException(GeneError, "compiled module source path disagrees with its identity")
+    result.add AdmittedModuleArtifact(path: path, artifact: compiled)
+
+template useApplicationSources(app: Application) =
+  let savedApplicationLoaderState = activeLoaderState
+  if activeLoaderState == nil:
+    activeLoaderState = app.applicationLoaderState
+  defer: activeLoaderState = savedApplicationLoaderState
+
 proc requireEntryWithinPackage*(app: Application, entryPath: string) =
   ## With an explicit package-root override in effect, the entry file must be
   ## inside the override root (§4). Entry-relative discovery satisfies this by
@@ -29629,14 +30213,16 @@ proc loadFileModule*(app: Application, path: string): Value =
   ## Load a host file path as an application module. This is used by program
   ## startup; source-level `^from "path"` imports still go through
   ## `resolveModulePath` so leading slash stays package-root-relative there.
+  useApplicationSources(app)
   let absPath = app.entryModulePath(path)
   app.adoptEntryModule(absPath)
   result = loadModuleValue(app, absPath)
   app.materializeApplicationCapabilities(result)
+  app.hostInitializedModules[app.moduleIdentityFor(absPath)] = result
 
 proc loadSandboxedModule*(app: Application, dir, entry: string,
                           grants: seq[string], shared: seq[string],
-                          isolationKey = ""): Value =
+                          isolationKey = "", sourceRevisionKey = ""): Value =
   ## Load `dir/entry` with only the standard-library namespaces in `grants` — the
   ## capability boundary design §D5 promised and §D5.1 found missing.
   ##
@@ -29686,7 +30272,11 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   let sandboxDir =
     if dir.isAbsolute: normalizedDir(dir)
     else: normalizedDir(app.appPackage.root / dir)
-  if not dirExists(sandboxDir):
+  let normalizedLoading = app.loadingCapabilities().isPolicyContext
+  let sourceRevision = if sourceRevisionKey.len > 0: sourceRevisionKey else: isolationKey
+  let sourceKey = $sandboxDir.len & ":" & sandboxDir & $sourceRevision.len & ":" & sourceRevision
+  if not (normalizedLoading and app.admittedModuleSources.hasKey(sourceKey)) and
+      not dirExists(sandboxDir):
     raisePackageError(pecModuleNotFound,
       "sandbox directory not found: " & dir)
   if not app.isWithinPackageRoot(sandboxDir):
@@ -29710,27 +30300,78 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   # hole, and the hole would show as the mod failing to import something the host
   # believes it shared.
   var sharedSet: HashSet[string]
+  var sharedInstances = initTable[string, Value]()
   for item in shared:
     let p =
       if item.isAbsolute: normalizedPath(absolutePath(item))
       else: normalizedPath(app.appPackage.root / item)
     let withExt = if splitFile(p).ext.len == 0: p & ".gene" else: p
-    if not fileExists(withExt):
+    sharedSet.incl withExt
+    if app.loadingCapabilities().isPolicyContext:
+      let identity = app.moduleIdentityFor(withExt)
+      if not app.hostInitializedModules.hasKey(identity):
+        raise newException(GeneError,
+          "shared capability contract must be initialized by the host before loading")
+      sharedInstances[withExt] = app.hostInitializedModules[identity]
+    elif not fileExists(withExt):
       raisePackageError(pecModuleNotFound,
         "shared module not found: " & item)
-    sharedSet.incl withExt
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
   app.sandboxKey = grants.sorted().join(",") & "\x1e" & isolationKey
   app.sandboxDir = sandboxDir
   app.sandboxShared = sharedSet
+  app.sandboxSharedInstances = sharedInstances
+  let savedLoaderState = activeLoaderState
+  let savedPolicy = activeSandboxPolicy
   try:
+    let initializing = app.loadingCapabilities()
+    if initializing.isPolicyContext:
+      if not app.admittedModuleSources.hasKey(sourceKey):
+        if app.admittedModuleSources.len >= 64:
+          raise newException(GeneError, "module source snapshot count limit exceeded")
+        var retainedBytes = 0
+        for snapshot in app.admittedModuleSources.values:
+          retainedBytes += snapshot.sourceBytes
+        try:
+          let snapshot = app.filesystemProvider.captureModuleSources(sandboxDir)
+          if snapshot.sourceBytes > 128 * 1024 * 1024 - retainedBytes:
+            raise newException(GeneError, "retained module source byte limit exceeded")
+          app.admittedModuleSources[sourceKey] = snapshot
+        except CapabilityError as error:
+          let failure = newException(GeneError, "module source acquisition failed: " & error.msg)
+          failure.parent = error
+          raise failure
+      let sources = app.admittedModuleSources[sourceKey]
+      if activeSandboxPolicy == nil:
+        activeSandboxPolicy = ModuleExecutionPolicy(maxSteps: -1,
+          maxMemoryMb: -1, timeoutMs: -1, capabilityCeiling: initializing)
+      let policy = activeSandboxPolicy
+      var originKey = "source-policy-v1:"
+      for part in [app.sandboxKey, sandboxDir, initializing.domainKey,
+                   $policy.maxSteps, $policy.maxMemoryMb, $policy.timeoutMs,
+                   sources.sourceDigest]:
+        originKey.add $part.len & ":" & part
+      var sharedPaths: seq[string]
+      for path in sharedInstances.keys: sharedPaths.add path
+      sharedPaths.sort()
+      for path in sharedPaths:
+        originKey.add $path.len & ":" & path & ":" &
+          $sharedInstances[path].moduleRuntimeId & ";"
+      let origin = ModuleLoaderOrigin(identity: originKey,
+        cacheKey: app.sandboxKey, directory: sandboxDir, root: root,
+        shared: sharedInstances, policy: policy, sources: sources,
+        directoryBound: true, exposedNamespaces: grants)
+      activeLoaderState = ModuleLoaderState(primary: origin, origins: @[origin])
     result = loadModuleValue(app, absPath)
   finally:
+    activeLoaderState = savedLoaderState
+    activeSandboxPolicy = savedPolicy
     app.sandboxRoot = nil
     app.sandboxKey = ""
     app.sandboxDir = ""
     app.sandboxShared.clear()
+    app.sandboxSharedInstances.clear()
 
 proc biRuntimeLoadSandboxed(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.} =
@@ -29809,6 +30450,9 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   # could re-enter with grants of its own choosing. The call site is the only
   # thing that knows who is asking, so ask it: a scope chain that reaches a
   # sandbox root is a sandboxed caller, whenever it calls.
+  if hasLoaderRestrictions(scope):
+    raise newException(GeneError,
+      "a sandboxed module cannot load another sandboxed module")
   var walk = scope
   while walk != nil:
     for _, sandboxRoot in app.sandboxRoots:
@@ -29834,6 +30478,7 @@ proc newRuntimeResourceHandle(scope: Scope, typeName: string,
   result.setResourceAuthorityId(id)
 
 proc scopeInsideSandbox(app: Application, scope: Scope): bool =
+  if hasLoaderRestrictions(scope): return true
   var current = scope
   while current != nil:
     for _, sandboxRoot in app.sandboxRoots:
@@ -29870,6 +30515,10 @@ proc sandboxTransactionRecord(name: string, handle: Value,
       (scope == nil or scope.application != result.record.application):
     raise newException(GeneError,
       name & " transaction belongs to another application")
+  if result.record.application != nil and
+      result.record.application.scopeInsideSandbox(scope):
+    raise newException(GeneError,
+      "a sandboxed module cannot manage sandbox transactions")
   if currentEventLane() != result.record.ownerLane:
     raise newException(GeneError,
       name & " transaction is owned by another lane")
@@ -29984,30 +30633,22 @@ proc compileInterfaceDigest(iface: CompileNamespaceInterface): string =
 
 proc sandboxRuntimeIdentity(app: Application, path, sandboxDir,
                             sandboxKey: string): string =
+  if activeLoaderState != nil:
+    for origin in activeLoaderState.origins:
+      if origin.shared.hasKey(path): return origin.shared[path].moduleInstanceKey
   let base = app.moduleIdentityFor(path)
-  if path.isRelativeTo(sandboxDir):
-    "sandbox:" & sandboxKey & "\x1f" & base
-  else:
-    base
+  app.moduleInstanceCacheIdentity(
+    if path.isRelativeTo(sandboxDir): "sandbox:" & sandboxKey & "\x1f" & base
+    else: base)
 
 proc sandboxHeaderForPath(app: Application, path, sandboxDir,
                           sandboxKey: string): ModuleCompileHeader =
-  let base = app.moduleIdentityFor(path)
-  let key =
-    if path.isRelativeTo(sandboxDir):
-      "sandbox:" & sandboxKey & "\x1f" & base
-    else:
-      base
+  let key = app.sandboxRuntimeIdentity(path, sandboxDir, sandboxKey)
   app.moduleCompileHeaders.getOrDefault(key)
 
 proc sandboxArtifactForPath(app: Application, path, sandboxDir,
                             sandboxKey: string): ModuleCompileArtifact =
-  let base = app.moduleIdentityFor(path)
-  let key =
-    if path.isRelativeTo(sandboxDir):
-      "sandbox:" & sandboxKey & "\x1f" & base
-    else:
-      base
+  let key = app.sandboxRuntimeIdentity(path, sandboxDir, sandboxKey)
   app.moduleCompileArtifacts.getOrDefault(key)
 
 proc sandboxModuleForPath(app: Application, path, sandboxDir,
@@ -30101,6 +30742,10 @@ proc sandboxGraph(app: Application, entryPath, sandboxDir, sandboxKey: string,
       deps.add row.value
     let source =
       if header != nil: header.unit.source
+      elif activeLoaderState.hasSourceSnapshot and owned:
+        activeLoaderState.admittedSourceText(path)
+      elif app.loadingCapabilities().isPolicyContext:
+        raise newException(GeneError, "module graph has no admitted source record: " & path)
       elif fileExists(path): readFile(path)
       else: ""
     let iface =
@@ -30226,7 +30871,9 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
     nextState = captureSandboxAppState(app)
     for key, value in nextState.moduleCache:
       if key notin beforeModuleKeys and
-          key.startsWith("sandbox:" & sandboxKey & "\x1f"):
+          (key.startsWith("sandbox:" & sandboxKey & "\x1f") or
+           (value.kind == vkModule and
+            value.moduleRootNamespace.nsScope.sandboxGenerationId == generationId)):
         moduleKeys.add key
         moduleEntries[key] = value
     for key in nextState.moduleCompileHeaders.keys:
@@ -30249,8 +30896,13 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
         if pending.originPath.len > 0 and
             pending.originPath.isRelativeTo(sandboxDir):
           canonicalImpls.add pending
-    graph = sandboxGraph(app, module.modulePath, sandboxDir, sandboxKey,
-                         moduleKeys, compileKeys)
+    let savedSourceState = activeLoaderState
+    activeLoaderState = scopeLoaderState(module.moduleRootNamespace.nsScope)
+    try:
+      graph = sandboxGraph(app, module.modulePath, sandboxDir, sandboxKey,
+                           moduleKeys, compileKeys)
+    finally:
+      activeLoaderState = savedSourceState
   finally:
     activeSandboxCompileKey = savedCompileKey
     activeSandboxCompileDir = savedCompileDir
@@ -30416,7 +31068,7 @@ proc implsWithoutGeneration(app: Application,
 proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/release", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope = requireSandboxHostScope("SandboxGeneration/release", call)
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/release", args[0], scope).record
   case generation.state
@@ -30485,29 +31137,65 @@ proc loadCompiledFileModule*(app: Application, path: string,
   ## after the build has authenticated a different source snapshot.
   if chunk == nil:
     raise newException(GeneError, "compiled entry chunk is missing")
+  useApplicationSources(app)
   let absPath = app.entryModulePath(path)
+  if activeLoaderState.hasSourceSnapshot:
+    activeLoaderState.requireAdmittedSource(absPath)
+    let expected = compileModuleArtifact(app, absPath)
+    let expectedModule = CompiledModule(identity: app.moduleIdentityFor(absPath),
+      chunk: expected.chunk, macroExports: expected.macroExports,
+      syntaxFnExports: expected.syntaxFnExports, compileInterface: expected.compileInterface)
+    var candidate = expectedModule
+    candidate.chunk = chunk
+    if encodeExecutableGir(ExecutableGir(entryIdentity: expectedModule.identity, modules: @[expectedModule])) !=
+        encodeExecutableGir(ExecutableGir(entryIdentity: candidate.identity, modules: @[candidate])):
+      raise newException(GeneError, "compiled entry differs from its admitted source revision")
   app.adoptEntryModule(absPath)
-  let identity = app.moduleIdentityFor(absPath)
+  let identity = app.moduleInstanceCacheIdentity(app.moduleIdentityFor(absPath))
+  let initializing = app.loadingCapabilities()
   if app.moduleCache.hasKey(identity):
-    return app.moduleCache[identity]
+    result = app.moduleCache[identity]
+    app.hostInitializedModules[app.moduleIdentityFor(absPath)] = result
+    return
+  if initializing.isPolicyContext and app.capabilityDomainFailures.hasKey(identity):
+    raise app.capabilityDomainFailures[identity]
+  if identity in app.moduleLoading:
+    raise newException(GeneError, "runtime module initialization cycle at " & absPath)
   app.moduleLoading.incl identity
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
+  modScope.loaderState = ModuleLoaderState(basePath: absPath,
+    package: app.packageForModule(absPath),
+    primary: if activeLoaderState == nil: nil else: activeLoaderState.primary,
+    origins: if activeLoaderState == nil: @[] else: activeLoaderState.origins)
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
   app.currentPackage = app.packageForModule(absPath)
   result = bindThisModule(modScope, splitFile(absPath).name, absPath,
                           app.currentPackage)
+  result.setModuleInstanceKey(identity)
   try:
+    if initializing.isPolicyContext:
+      validateCapabilityModuleChunk(chunk)
     result.setModuleCapabilities(chunk.moduleCapabilityRow)
     result.setModuleCapabilitiesStrict(chunk.capabilitiesStrict)
     let initializationCapabilities = app.moduleInitializationCapabilities(
       chunk.moduleCapabilityRow, absPath)
+    if initializationCapabilities.isPolicyContext:
+      modScope.moduleExecutionPolicy = ModuleExecutionPolicy(maxSteps: -1,
+        maxMemoryMb: -1, timeoutMs: -1, capabilityCeiling: initializationCapabilities)
     result.setModuleCapabilityCeiling(initializationCapabilities)
-    discard run(chunk, modScope,
+    let executable = if initializationCapabilities.isPolicyContext:
+                       cloneCompiledChunk(chunk, activeLoaderState.admittedResourceBase(absPath))
+                     else: chunk
+    discard run(executable, modScope,
                 initialCapabilities = initializationCapabilities)
     activateStagedImpls(modScope)
+  except CatchableError as error:
+    if initializing.isPolicyContext:
+      app.capabilityDomainFailures[identity] = error
+    raise
   finally:
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
@@ -30515,10 +31203,12 @@ proc loadCompiledFileModule*(app: Application, path: string,
   app.moduleCache[identity] = result
   inc app.moduleEpoch
   app.materializeApplicationCapabilities(result)
+  app.hostInitializedModules[app.moduleIdentityFor(absPath)] = result
 
 proc compileFileModule*(app: Application, path: string): Chunk =
   ## Compile a file module and its macro dependencies without running any
   ## module's runtime phase. Used by tooling/cross-compilation surfaces.
+  useApplicationSources(app)
   let absPath = app.entryModulePath(path)
   app.adoptEntryModule(absPath)
   compileModuleArtifact(app, absPath).chunk
@@ -30530,6 +31220,7 @@ proc compileFileModuleBundle*(app: Application, path,
   ## root. Imports are traversed across package boundaries so compilation sees
   ## the exact dependency interfaces, but each artifact owns only modules from
   ## its package; dependency bundles remain distinct build products.
+  useApplicationSources(app)
   let absEntry = app.entryModulePath(path)
   if app.moduleCompileHeaders.len != 0:
     raise newException(GeneError,
@@ -30541,13 +31232,16 @@ proc compileFileModuleBundle*(app: Application, path,
       "compiled package is absent from the application graph: " & packageId)
   let targetPackage = app.packagesById[packageId]
   result.entryIdentity = app.moduleIdentityFor(absEntry)
-  var visited = initHashSet[string]()
+  var visited = initTable[string, string]()
   var owned = initTable[string, ModuleCompileArtifact]()
 
   proc compileTree(absPath: string) =
     let identity = app.moduleIdentityFor(absPath)
-    if visited.containsOrIncl(identity):
+    if visited.hasKey(identity):
+      if visited[identity] != absPath:
+        raise newException(GeneError, "module paths collide on a compiled identity: " & identity)
       return
+    visited[identity] = absPath
     let artifact = compileModuleArtifact(app, absPath)
     let owner = app.packageForModule(absPath)
     if owner != nil and owner.id == packageId:
@@ -30581,6 +31275,10 @@ proc compileFileModuleBundle*(app: Application, path,
   compileTree(absEntry)
   if includeLibraryModules and targetPackage.hasLibrary:
     for base in targetPackage.moduleBases():
+      if activeLoaderState.hasSourceSnapshot:
+        for candidate in activeLoaderState.admittedSourcePaths:
+          if candidate.isRelativeTo(base): compileTree(candidate)
+        continue
       if not dirExists(base):
         continue
       var paths: seq[string]
@@ -30597,6 +31295,7 @@ proc compileFileModuleBundle*(app: Application, path,
   for identity in identities:
     let artifact = owned[identity]
     result.modules.add CompiledModule(identity: identity,
+      sourcePath: relativePath(visited[identity], targetPackage.root).replace('\\', '/'),
       chunk: artifact.chunk,
       macroExports: artifact.macroExports,
       syntaxFnExports: artifact.syntaxFnExports,
@@ -30611,10 +31310,17 @@ proc installCompiledModules*(app: Application,
   ## Install verified build products into the compile-artifact cache before
   ## runtime initialization. `loadModuleValue` then executes these chunks and
   ## never calls the source compiler for a packaged import.
+  var prepared: seq[CompiledModule]
+  var identities = initHashSet[string]()
   for compiled in modules:
     if compiled.identity.len == 0 or compiled.chunk == nil:
       raise newException(GeneError,
         "compiled module bundle contains an invalid entry")
+    if identities.containsOrIncl(compiled.identity):
+      raise newException(GeneError, "compiled module bundle contains duplicate identities")
+    prepared.add cloneCompiledModule(compiled)
+  for index, compiled in modules:
+    app.installedModuleTemplates[compiled.identity] = prepared[index]
     app.moduleCompileArtifacts[compiled.identity] = ModuleCompileArtifact(
       chunk: compiled.chunk,
       macroExports: compiled.macroExports,
@@ -30623,3 +31329,4 @@ proc installCompiledModules*(app: Application,
 
 include ./testing
 include ./error_runtime
+include ./capability_domains

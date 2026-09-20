@@ -2,6 +2,7 @@ import gene/capabilities
 import gene/fs_capabilities
 import gene/host_capabilities
 import gene/[compiler, gir, printer, reader, types, vm]
+import ./capability_test_support
 import std/[options, os, strutils, tables, tempfiles, unittest]
 
 type
@@ -39,49 +40,6 @@ method intersect(provider: TestDirProvider,
         result.add provider.intersectGrant(a, b, a.capabilityType, a.scope)
       elif b.scope.isWithin(a.scope):
         result.add provider.intersectGrant(a, b, a.capabilityType, b.scope)
-
-proc newGeneFacadeTestApp(capabilityName, identity, schema: string,
-                          root = "/workspace"): Application =
-  newApplicationConfigured(getCurrentDir(),
-    proc(registry: CapabilityRegistry, filesystem: FilesystemProvider,
-         host: HostCapabilityProvider): seq[CapabilityGrant] =
-      discard filesystem
-      discard host
-      let provider = TestDirProvider()
-      registry.admitProvider(provider, "app")
-      let capabilityType = registry.admitGeneType(provider,
-        capabilityName, identity, schema)
-      @[provider.mintRootGrant(capabilityType, root)])
-
-proc newApplicationRootedAt(root: string): Application =
-  ## `newApplication`'s argument anchors *module resolution* only; filesystem
-  ## authority deliberately follows the launch directory so `gene run
-  ## path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry file
-  ## (vm.nim, newApplicationState). A fixture operating under `root` grants it
-  ## the way an embedding host or `--allow_read_write_dir` would.
-  result = newApplication(root)
-  result.setRootCapabilities(newCapabilityContext(
-    @(result.rootCapabilities.grants) &
-    @[result.filesystemCapabilities.grantReadWriteDir(root)]))
-
-proc facadeSchema(name: string, hasStringBody = true): string =
-  capabilityFacadeSchemaHash(name, bodySchema =
-    (if hasStringBody: newList(@[newSym("Str")]) else: NIL))
-
-proc evalAuthorityProbe(source: string): string =
-  let root = createTempDir("gene-eval-authority-", "")
-  defer: removeDir(root)
-  let first = root / "first.txt"
-  let second = root / "second.txt"
-  writeFile(first, "first")
-  writeFile(second, "second")
-  let app = newApplication(root)
-  app.setRootCapabilities(newCapabilityContext(
-    @[app.filesystemCapabilities.grantReadDir(root)]))
-  let scope = newGlobalScope(app)
-  scope.define("first", newStr(first))
-  scope.define("second", newStr(second))
-  run(compileSource(source), scope).print()
 
 suite "capability providers":
   test "provider admission is exclusive and frozen before program code":
@@ -497,828 +455,285 @@ suite "filesystem capability provider":
         newCapabilitySpec(fs.types.writeFile, [capString("link.txt")],
           [capNamed("follow_symlinks", capBool(true))]))
 
-suite "capability specifications in Gene":
-  test "calling a capability type constructs an inert specification":
+suite "unsupported native resource entry":
+  test "database and store APIs reject before creating files or retained authority":
+    let root = expandFilename(createTempDir("gene-unsupported-resources-", ""))
+    defer: removeDir(root)
+    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let scope = newGlobalScope(app)
+    scope.define("root", newStr(root))
+    scope.define("database", newStr(root / "database.sqlite"))
+    let baseline = resourceAuthorityRecordCount()
+    for operation in ["($db/sqlite/open database)", "($store/fs/open ^root root)"]:
+      check run(compileSource("(try " & operation &
+        " catch UnsupportedCapability $err/reason)"), scope).strVal ==
+        "unsupported_operation"
+      check resourceAuthorityRecordCount() == baseline
+    check not fileExists(root / "database.sqlite")
+    var entries = 0
+    for entry in walkDir(root): inc entries
+    check entries == 0
+
+proc migrationEval(scope: Scope, root, source: string): Value =
+  run(compileSource(source, root / "entry.gene", useLocalSlots = false), scope)
+
+suite "capability source migration":
+  test "legacy capability constructors and selector APIs are no longer exported":
+    let scope = newApplication().builtinsScope().lookup("gene").nsScope
+    for source in ["fs/ReadDir", "fs/WriteDir", "fs/ReadWriteDir",
+                   "fs/ReadFile", "fs/WriteFile", "net/Connect", "net/Listen",
+                   "net/Http", "os/Env", "os/Exec", "os/Pty", "os/Process",
+                   "ffi/Load", "db/Postgres", "crypto/Random", "device/Compute",
+                   "clock/Monotonic",
+                   "CapabilitySpec", "check_capabilities", "capabilities_of",
+                   "capability_type_info"]:
+      checkpoint source
+      let parts = source.split('/')
+      var owner = scope
+      for index in 0 ..< parts.len - 1:
+        let namespace = owner.lookup(parts[index])
+        require namespace.kind == vkNamespace
+        owner = namespace.nsScope
+      # Namespace exports exclude lexical ancestors (for example, os/Env must
+      # not be confused with the unrelated builtin Env type in its parent).
+      check not owner.vars.hasKey(parts[^1])
+
+  test "even a host-supplied old specification is no longer callable":
+    let app = newApplication()
+    let scope = newGlobalScope(app)
+    scope.define("legacy", newCapability(app.filesystemCapabilities.types.readDir))
+    expect GeneError:
+      discard run(compileSource("(legacy \"/tmp\")"), scope)
+    expect GeneError:
+      discard run(compileSource("(($capabilities/parse \"[]\"))"), scope)
+
+  test "Gene capability canonicalizers cannot enter the authorization path":
+    for source in [
+      "(type Area ^capability \"app/Area\")",
+      "(type Area ^capability \"app/Area\" ^body [Str] " &
+        "(impl CapabilitySpec (message canonicalize [] ^capabilities [] self)))"]:
+      var message = ""
+      try: discard compileSource(source)
+      except GeneError as error: message = error.msg
+      check "Gene capability facades were removed" in message
+
+  test "old facade metadata in a supplied compiled chunk is rejected":
     let scope = newGlobalScope()
-    let value = run(compileSource("(fs/WriteDir \"tmp\")"), scope)
-    check value.print == "(fs/WriteDir \"tmp\")"
+    discard run(compileSource("(let touched ($cell false))", useLocalSlots = false), scope)
+    let chunk = compileSource("""
+      (protocol Derivation
+        (derive [t req] (touched .set true) nil))
+      (type Area ^derive [Derivation])
+    """, useLocalSlots = false)
+    require chunk.typeProtos.len == 1
+    chunk.typeProtos[0].capabilityName = "app/Area"
+    var message = ""
+    try: discard run(chunk, scope)
+    except GeneError as error: message = error.msg
+    check "obsolete capability facade metadata" in message
+    check not run(compileSource("(touched .get)"), scope).boolVal
 
-  test "named properties remain inert specification data":
-    let scope = newGlobalScope()
-    let value = run(
-      compileSource("(fs/WriteFile ^append true \"tmp/test.md\")"), scope)
-    check value.print == "(fs/WriteFile ^append true \"tmp/test.md\")"
-
-  test "reflection exposes canonical rows and the enforcing provider":
-    let scope = newGlobalScope(newApplication())
+  test "catalog identifiers are independent of ordinary source bindings":
+    let app = newApplication()
+    app.setRootCapabilities(app.capabilities.newPolicyContext([]))
     let value = run(compileSource("""
-      (fn write_report [filename]
-        ^capabilities [(fs/WriteFile filename)]
-        nil)
-      [(capabilities_of write_report)
-       (capability_type_info fs/WriteDir)]
-    """), scope)
-    check value.listItems[0].print == "[(fs/WriteFile filename)]"
-    let info = value.listItems[1]
-    check info.mapEntries["provider"].strVal == "fs"
-    check info.mapEntries["enforced"].boolVal
-
-  test "a host-admitted Gene facade canonicalizes and resolves end to end":
-    let schema = facadeSchema("WriteArea")
-    let app = newGeneFacadeTestApp("app/WriteArea",
-      "program#WriteArea", schema)
-    let source = """
-      (type WriteArea
-        ^capability "app/WriteArea"
-        ^body [Str]
-        (impl CapabilitySpec
-          (message canonicalize []
-            ^capabilities []
-            ($freeze (WriteArea ($str/lower self/0))))))
-      (fn inspect [path]
-        ^capabilities [(app/WriteArea path)]
-        (let info (capability_type_info WriteArea))
-        [(check_capabilities (WriteArea path))
-         info/provider])
-      (inspect "/WORKSPACE/TMP")
-    """
-    let value = run(compileSource(source), newGlobalScope(app))
-    check value.print == "[true \"app\"]"
-
-  test "a linked facade without explicit CapabilitySpec conformance is rejected":
-    let schema = facadeSchema("NoSpec")
-    let app = newGeneFacadeTestApp("app/NoSpec",
-      "program#NoSpec", schema)
-    expect GeneError:
-      discard run(compileSource("""
-        (type NoSpec
-          ^capability "app/NoSpec"
-          ^body [Str])
-        (fn use [path]
-          ^capabilities [(app/NoSpec path)]
-          true)
-        (use "/workspace/tmp")
-      """), newGlobalScope(app))
-
-  test "custom canonicalization rejects mutable and non-idempotent results":
-    let mutableSchema = facadeSchema("MutableArea")
-    let mutableApp = newGeneFacadeTestApp("app/MutableArea",
-      "program#MutableArea", mutableSchema)
-    expect GeneError:
-      discard run(compileSource("""
-        (type MutableArea
-          ^capability "app/MutableArea"
-          ^body [Str]
-          (impl CapabilitySpec
-            (message canonicalize []
-              ^capabilities []
-              (MutableArea self/0))))
-        (fn use [path]
-          ^capabilities [(app/MutableArea path)]
-          true)
-        (use "/workspace/tmp")
-      """), newGlobalScope(mutableApp))
-
-    let unstableSchema = facadeSchema("UnstableArea")
-    let unstableApp = newGeneFacadeTestApp("app/UnstableArea",
-      "program#UnstableArea", unstableSchema)
-    expect GeneError:
-      discard run(compileSource("""
-        (var alternate false)
-        (type UnstableArea
-          ^capability "app/UnstableArea"
-          ^body [Str]
-          (impl CapabilitySpec
-            (message canonicalize []
-              ^capabilities []
-              (set alternate (! alternate))
-              ($freeze (UnstableArea
-                (if alternate "/workspace/a" "/workspace/b"))))))
-        (fn use [path]
-          ^capabilities [(app/UnstableArea path)]
-          true)
-        (use "/workspace/tmp")
-      """), newGlobalScope(unstableApp))
-
-  test "a Gene facade cannot claim a mismatched admitted identity":
-    let schema = facadeSchema("Claimed", hasStringBody = false)
-    let app = newApplicationConfigured(getCurrentDir(),
-      proc(registry: CapabilityRegistry, filesystem: FilesystemProvider,
-           host: HostCapabilityProvider): seq[CapabilityGrant] =
-        discard filesystem
-        discard host
-        let provider = TestDirProvider()
-        registry.admitProvider(provider, "app")
-        discard registry.admitGeneType(provider, "app/Claimed",
-          "attacker/app#Claimed", schema)
-        @[])
-    expect GeneError:
-      discard run(compileSource("""
-        (type Claimed
-          ^capability "app/Claimed")
-      """), newGlobalScope(app))
-
-  test "a Gene facade schema must match the admitted descriptor":
-    let admittedSchema = facadeSchema("SchemaArea", hasStringBody = false)
-    let app = newGeneFacadeTestApp("app/SchemaArea",
-      "program#SchemaArea", admittedSchema)
-    expect GeneError:
-      discard run(compileSource("""
-        (type SchemaArea
-          ^capability "app/SchemaArea"
-          ^body [Str]
-          (impl CapabilitySpec
-            (message canonicalize []
-              ^capabilities []
-              ($freeze self))))
-      """), newGlobalScope(app))
-
-  test "an admitted but unlinked Gene facade raises UnsupportedCapability":
-    let app = newGeneFacadeTestApp("app/UnlinkedArea",
-      "program#UnlinkedArea", facadeSchema("UnlinkedArea"))
-    let value = run(compileSource("""
-      (fn use [path]
-        ^capabilities [(app/UnlinkedArea path)]
-        true)
-      (try (use "/workspace/tmp")
-        catch UnsupportedCapability "unsupported")
+      (let calls ($cell 0))
+      (let fs {^Read (fn [] (calls .set 1))})
+      (fn inspect [] ^capabilities [(fs/Read ^^optional)] (calls .get))
+      [(inspect) (calls .get)]
     """), newGlobalScope(app))
-    check value.strVal == "unsupported"
+    check value.print() == "[0 0]"
 
-suite "compiled capability declarations":
+  test "the compiler preserves inert rows instead of parameter slot selectors":
+    let chunk = compileSource("""
+      (fn inspect [path]
+        ^capabilities [(fs/Read "data") (net/Http ^methods ["GET"] ^^optional)]
+        path)
+    """)
+    let row = chunk.functions[0].capabilityRow
+    require row.literal != nil
+    check row.literal.entries.len == 2
+    check row.literal.entries[0].name == "fs/Read"
+    check row.literal.entries[0].body[0].text == "data"
+    check row.literal.entries[1].optional
+    for text in ["[(fs/Read path)]", "[(fs/Read (compute))]",
+                 "[(app/Publish #[events #{^durable true}])]",
+                 "[(app/Publish {^durable true})]", "*"]:
+      expect GeneError:
+        discard compileSource("(fn bad [path] ^capabilities " & text & " nil)")
+
   test "an enforced compiler catalog rejects unadmitted capability types":
-    let source = readAllWithLocs("""
-      (fn use []
-        ^capabilities [(app/Unknown)]
-        nil)
-    """, "unknown_capability.gene")
-    let imported = initTable[string, Table[string, MacroDef]]()
-    let catalog = initTable[string, CapabilityCompileDescriptor]()
+    let source = readAllWithLocs("(fn use [] ^capabilities [app/Unknown] nil)",
+      "unknown_capability.gene")
     expect GeneError:
-      discard compileFormsWithMacros(source, imported,
-        capabilityCatalog = catalog,
+      discard compileFormsWithMacros(source,
+        initTable[string, Table[string, MacroDef]](),
+        capabilityCatalog = initTable[string, CapabilityCompileDescriptor](),
         enforceCapabilityCatalog = true)
 
-  test "parameter-dependent rows compile to slot descriptors":
-    let chunk = compileSource("""
-      (fn write_file [filename content]
-        ^capabilities [(fs/WriteFile filename ^append true)]
-        nil)
+  test "strict dependency fixtures are explicit rejection cases":
+    for name in ["capability_strict_dep.gene", "capability_strict_deps_entry.gene",
+                 "capability_strict_deps_ok.gene"]:
+      let path = getCurrentDir() / "tests" / "fixtures" / name
+      var message = ""
+      try: discard compileSource(readFile(path), path)
+      except GeneError as error: message = error.msg
+      check "module capability declarations/modes were removed" in message
+
+suite "migrated capability calls and checks":
+  setup:
+    let root = expandFilename(createTempDir("gene-capability-migration-", ""))
+    createDir(root / "allowed")
+    createDir(root / "other")
+    writeFile(root / "allowed" / "note", "hello")
+    writeFile(root / "other" / "note", "outside")
+    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let scope = newGlobalScope(app)
+    scope.define("allowed", newStr(root / "allowed" / "note"))
+    scope.define("other", newStr(root / "other" / "note"))
+    scope.define("tree", newStr(root / "allowed"))
+  teardown:
+    removeDir(root)
+
+  test "mandatory admission precedes defaults and in-memory body effects":
+    check scope.migrationEval(root, """
+      (let entered ($cell false))
+      (fn write [path = (entered .set true)] ^capabilities [(fs/Write "allowed")]
+        (entered .set true))
+      [(try (with_capabilities [] (write)) catch MissingCapability "denied")
+       (entered .get)]
+    """).print() == "[\"denied\" false]"
+
+  test "errors and empty blocks restore the parent's authority":
+    check scope.migrationEval(root, """
+      (fn read [] ^capabilities [(fs/Read "allowed")] ($fs/read_text allowed))
+      (fn fail_empty [] ^capabilities [] (fail (RuntimeError ^message "expected")))
+      (try (fail_empty) catch RuntimeError nil)
+      [(try (with_capabilities [] (read)) catch MissingCapability "denied")
+       (read)]
+    """).print() == "[\"denied\" \"hello\"]"
+
+  test "runtime resource names use the checked builder and select an exact tree":
+    check scope.migrationEval(root, """
+      (let row ($capabilities/build [($capabilities/entry "fs/Read" [tree] [])]))
+      (with_capabilities row
+        [($fs/read_text allowed)
+         (try ($fs/read_text other) catch MissingCapability "denied")])
+    """).print() == "[\"hello\" \"denied\"]"
+
+  test "spawn retains the selected authority without narrowing its parent":
+    check scope.migrationEval(root, """
+      (scope
+        (let child (with_capabilities [] (spawn ^lane root
+          (try ($fs/read_text allowed) catch MissingCapability "denied"))))
+        [(await child) ($fs/read_text allowed)])
+    """).print() == "[\"denied\" \"hello\"]"
+
+  test "requirement checks use the selected context and do not reinterpret bases":
+    check scope.migrationEval(root, """
+      (let good ($capabilities/build [($capabilities/entry "fs/Read" [tree] [])]))
+      (let both ($capabilities/build [
+        ($capabilities/entry "fs/Read" [tree] [])
+        ($capabilities/entry "fs/Read" [other] [])]))
+      (with_capabilities good
+        (let one ($capabilities/check_requirements good))
+        (let two ($capabilities/check_requirements both))
+        [one/admitted two/admitted ($fs/read_text allowed)])
+    """).print() == "[true false \"hello\"]"
+
+  test "empty checks are valid and arbitrary lists are not spec-row values":
+    check scope.migrationEval(root, """
+      (let report ($capabilities/check_requirements ($capabilities/parse "[]")))
+      report/admitted
+    """).boolVal
+    expect GeneError:
+      discard scope.migrationEval(root, "($capabilities/check_requirements [])")
+
+  test "optional broad requests preserve narrow overlap and permit fallback":
+    check scope.migrationEval(root, """
+      (fn probe [path] ^capabilities [(fs/Read ^^optional)]
+        (try ($fs/read_text path) catch MissingCapability "denied"))
+      (let bound ($capabilities/build [($capabilities/entry "fs/Read" [tree] [])]))
+      [(with_capabilities [] (probe allowed))
+       (with_capabilities bound (probe allowed))
+       (with_capabilities bound (probe other))]
+    """).print() == "[\"denied\" \"hello\" \"denied\"]"
+
+  test "standard library writes stay in the declared tree":
+    check scope.migrationEval(root, """
+      (fn write [path] ^capabilities [(fs/Write "allowed")]
+        ($fs/write_text path "changed"))
+      (write allowed)
+      (try (write other) catch MissingCapability "denied")
+    """).strVal == "denied"
+    check readFile(root / "allowed" / "note") == "changed"
+    check readFile(root / "other" / "note") == "outside"
+
+  test "revocation invalidates later admission before memory-only effects":
+    discard scope.migrationEval(root, """
+      (let count ($cell 0))
+      (fn guarded [] ^capabilities [(fs/Read "allowed")]
+        (count .set (+ (count .get) 1)))
+      (guarded)
     """)
-    check chunk.functions.len == 1
-    let row = chunk.functions[0].capabilityRow
-    check row.kind == crkSelect
-    check row.selectors.len == 1
-    check row.selectors[0].kind == cskExact
-    check row.selectors[0].typeName == "fs/WriteFile"
-    check row.selectors[0].positional[0].kind == ctakParameter
-    check row.selectors[0].positional[0].parameterName == "filename"
-    check row.selectors[0].named[0].name == "append"
-    check row.selectors[0].named[0].value.literal.boolValue
-
-  test "deeply immutable custom selector data compiles canonically":
-    let chunk = compileSource("""
-      (fn use []
-        ^capabilities [(app/Publish #[events #{^durable true}])]
-        nil)
-    """)
-    let argument = chunk.functions[0].capabilityRow.selectors[0].positional[0]
-    check argument.kind == ctakLiteral
-    check argument.literal.kind == cakList
-    check argument.literal.listValue[0].kind == cakSymbol
-    check argument.literal.listValue[0].symbolValue == "events"
-    check argument.literal.listValue[1].kind == cakMap
-    check argument.literal.listValue[1].mapValue[0].name == "durable"
-    check argument.literal.listValue[1].mapValue[0].value.boolValue
-
-    for source in [
-      "(fn bad [] ^capabilities [(app/Publish [events])] nil)",
-      "(fn bad [] ^capabilities [(app/Publish {^durable true})] nil)"
-    ]:
-      expect GeneError:
-        discard compileSource(source)
-
-  test "built-in filesystem selector shape is validated while compiling":
-    for source in [
-      "(fn bad [] ^capabilities [(fs/WriteFile \"x\" ^unknown true)] nil)",
-      "(fn bad [] ^capabilities [(fs/ReadDir \"x\" ^append true)] nil)",
-      "(fn bad [] ^capabilities [(fs/WriteFile 7)] nil)",
-      "(fn bad [] ^capabilities [(fs/WriteFile \"x\" ^create \"yes\")] nil)",
-      "(fn bad [] ^capabilities [(fs/WriteFile \"x\" ^follow_symlinks true)] nil)"
-    ]:
-      expect GeneError:
-        discard compileSource(source)
-
-  test "strict public functions require an explicit row":
-    expect GeneError:
-      discard compileSource("""
-        (mod strict_app ^capabilities_mode strict
-          (fn exposed [] nil))
-      """)
-    discard compileSource("""
-      (mod strict_app ^capabilities_mode strict
-        (fn exposed [] ^capabilities * nil)
-        (fn hidden ^^private [] nil))
-    """)
-
-  test "strict public protocol and method declarations require rows":
-    expect GeneError:
-      discard compileSource("""
-        (mod strict_app ^capabilities_mode strict
-          (protocol P (message act [])))
-      """)
-    expect GeneError:
-      discard compileSource("""
-        (mod strict_app ^capabilities_mode strict
-          (type T (message act [] nil)))
-      """)
-    discard compileSource("""
-      (mod strict_app ^capabilities_mode strict
-        (protocol P
-          (message act [] ^capabilities []))
-        (type T
-          (message act [] ^capabilities [] nil)))
-    """)
-
-  test "protocol implementations cannot broaden capability contracts":
-    let scope = newGlobalScope(newApplication())
-    expect GeneError:
-      discard run(compileSource("""
-        (protocol P
-          (message act [] ^capabilities [(fs/WriteDir "tmp")]))
-        (type T)
-        (impl P for T
-          (message act []
-            ^capabilities [(fs/WriteDir "other")]
-            nil))
-      """), scope)
-    discard run(compileSource("""
-      (protocol Q
-        (message act [] ^capabilities [(fs/WriteDir "tmp")]))
-      (type U)
-      (impl Q for U
-        (message act []
-          ^capabilities [(fs/WriteDir "tmp")]
-          nil))
-    """), newGlobalScope(newApplication()))
-
-    discard run(compileSource("""
-      (protocol Narrowable
-        (message act [] ^capabilities [(fs/WriteDir "tmp")]))
-      (type NarrowWriter)
-      (impl Narrowable for NarrowWriter
-        (message act []
-          ^capabilities [(fs/WriteFile "tmp/result.md")]
-          nil))
-    """), newGlobalScope(newApplication()))
-
-    expect GeneError:
-      discard run(compileSource("""
-        (protocol OptionalP
-          (message act []
-            ^capabilities [(fs/WriteDir "tmp" ^^optional)]))
-        (type RequiredWriter)
-        (impl OptionalP for RequiredWriter
-          (message act []
-            ^capabilities [(fs/WriteDir "tmp")]
-            nil))
-      """), newGlobalScope(newApplication()))
-
-    discard run(compileSource("""
-      (protocol Renamed
-        (message save [destination]
-          ^capabilities [(fs/WriteFile destination)]))
-      (type RenamedWriter)
-      (impl Renamed for RenamedWriter
-        (message save [path]
-          ^capabilities [(fs/WriteFile path)]
-          nil))
-    """), newGlobalScope(newApplication()))
-
-suite "capability call boundaries":
-  test "a missing mandatory selector fails before the function body":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    app.setRootCapabilities(newCapabilityContext())
-    check app.rootCapabilities.len == 0
-    check app.capabilities.resolveSelector(
-      app.rootCapabilities,
-      newCapabilitySpec(app.filesystemCapabilities.types.writeDir,
-                        [capString("tmp")])).len == 0
-    expect GeneError:
-      discard run(compileSource("""
-        (var entered false)
-        (fn guarded []
-          ^capabilities [(fs/WriteDir "tmp")]
-          (set entered true))
-        (guarded)
-      """), scope)
-    check not scope.lookup("entered").boolVal
-
-  test "a nested declaration cannot recover authority removed by its parent":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    expect GeneError:
-      discard run(compileSource("""
-        (fn inner []
-          ^capabilities [(fs/WriteDir "/")]
-          1)
-        (fn outer []
-          ^capabilities [(fs/WriteDir "tmp")]
-          (inner))
-        (outer)
-      """), scope)
-
-  test "the parent context is restored after an error":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    let value = run(compileSource("""
-      (fn fails []
-        ^capabilities []
-        (fail "expected"))
-      (fn succeeds []
-        ^capabilities [(fs/WriteDir "tmp")]
-        7)
-      (try (fails) catch Any nil)
-      (succeeds)
-    """), scope)
-    check value.intVal == 7
-
-  test "with_capabilities narrows dynamically and restores on exit":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    let value = run(compileSource("""
-      (fn needs_tmp []
-        ^capabilities [(fs/WriteDir "tmp")]
-        7)
-      (var denied false)
-      (try
-        (with_capabilities [] (needs_tmp))
-        catch Any
-        (set denied true))
-      [denied (needs_tmp)]
-    """), scope)
-    check value.listItems[0].boolVal
-    check value.listItems[1].intVal == 7
-
-  test "with_capabilities can bind a lexical selector argument":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    let value = run(compileSource("""
-      (let dir "tmp")
-      (with_capabilities [(fs/WriteDir dir)] 9)
-    """), scope)
-    check value.intVal == 9
-
-  test "spawn captures the attenuated context without mutating its parent":
-    let value = run(compileSource("""
-      (fn needs_tmp []
-        ^capabilities [(fs/WriteDir "tmp")]
-        7)
-      (var child_result
-        (scope
-          (with_capabilities []
-            (var task (spawn
-              (try (needs_tmp)
-                catch MissingCapability 9)))
-            (await task))))
-      [child_result (needs_tmp)]
-    """), newGlobalScope(newApplication()))
-    check value.print == "[9 7]"
-
-  test "capability failures are typed recoverable errors":
-    let value = run(compileSource("""
-      (fn denied []
-        ^capabilities []
-        ($fs/read_text "missing.txt"))
-      (try (denied)
-        catch MissingCapability
-        [$err/capability $err/operation])
-    """), newGlobalScope(newApplication()))
-    check value.print == "[\"fs/ReadFile\" \"fs/read_text\"]"
-
-  test "a file database resource cannot restore authority in an empty context":
-    let root = getTempDir() / "gene-capability-sqlite-resource"
-    let databasePath = root / "database.sqlite"
-    if dirExists(root):
-      removeDir(root)
-    createDir(root)
-    defer:
-      for suffix in ["database.sqlite", "database.sqlite-wal",
-                     "database.sqlite-shm", "database.sqlite-journal"]:
-        if fileExists(root / suffix): removeFile(root / suffix)
-      removeDir(root)
-    let value = run(compileSource("""
-      (import $db/sqlite [open Db])
-      (var db (open """ & newStr(databasePath).print & """))
-      (db .Db:exec "create table guarded (x integer)")
-      (db .Db:execute "insert into guarded(x) values (?)" 7)
-      (var write_denied false)
-      (var read_denied false)
-      (try
-        (with_capabilities []
-          (db .Db:exec "create table denied (x integer)"))
-        catch MissingCapability
-        (set write_denied true))
-      (try
-        (with_capabilities []
-          (db .Db:query "select x from guarded"))
-        catch MissingCapability
-        (set read_denied true))
-      (db .Db:close)
-      [write_denied read_denied]
-    """), newGlobalScope(newApplicationRootedAt(root)))
-    check value.print == "[true true]"
-
-  test "retained resource authority is released on close and final drop":
-    let root = getTempDir() / "gene-capability-resource-lifecycle"
-    if dirExists(root):
-      removeDir(root)
-    createDir(root)
-    defer:
-      if dirExists(root): removeDir(root)
-    let baseline = resourceAuthorityRecordCount()
-    block:
-      let app = newApplicationRootedAt(root)
-      let scope = newGlobalScope(app)
-      let resource = run(compileSource(
-        "(import $store/fs [open]) (open ^root " &
-        newStr(root).print & ")"), scope)
-      check resourceAuthorityRecordCount() == baseline + 1
-      discard run(compileSource(
-        "(import $store/fs [open Store]) " &
-        "(var s (open ^root " & newStr(root).print & ")) " &
-        "(s .Store:close) s"), newGlobalScope(app))
-      check resourceAuthorityRecordCount() == baseline + 1
-      check resource.kind == vkNode
-    check resourceAuthorityRecordCount() == baseline
-
-  test "check_capabilities resolves selectors against the live context":
-    # Availability is a question about the *context*, not about what this
-    # boundary happened to declare: `"other"` was never named in the row, but a
-    # relative path resolves against the active root and lands inside `tmp/`
-    # (§7.5), so it is genuinely available. Only a path outside the root — here
-    # an absolute one — is not.
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantWriteDir(getCurrentDir())
-    ]))
-    let value = run(compileSource("""
-      (fn inspect []
-        ^capabilities [(fs/WriteDir "tmp")]
-        [
-          (check_capabilities (fs/WriteDir "tmp"))
-          (check_capabilities (fs/WriteDir "other"))
-          (check_capabilities (fs/WriteDir "/etc"))
-        ])
-      (inspect)
-    """), scope)
-    check value.print == "[true true false]"
-
-  test "check_capabilities discovers entailment across capability types":
-    # A `ReadDir` grant satisfies a `ReadFile` selector inside it. Cross-type
-    # satisfaction like this is discovered by `resolve`, which is why the check
-    # resolves rather than consulting a table — and it agrees with the
-    # operation, which succeeds.
-    let root = getTempDir() / "gene-check-entailment"
-    if dirExists(root): removeDir(root)
-    createDir(root)
-    defer: removeDir(root)
-    writeFile(root / "note.txt", "hello")
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantReadDir(root)
-    ]))
-    let value = run(compileSource("""
-      [(check_capabilities (fs/ReadFile "note.txt"))
-       (try (do ($fs/read_text "note.txt") "read")
-         catch MissingCapability "denied")]
-    """), newGlobalScope(app))
-    check value.print == "[true \"read\"]"
-
-  test "check_capabilities reports ambiguity as the operation does":
-    # Overlapping grants are a configuration fault, not an availability answer.
-    # The operation raises `AmbiguousCapability`, so the check raises it too
-    # rather than promising an admission that would then fail.
-    let root = getTempDir() / "gene-check-ambiguous"
-    if dirExists(root): removeDir(root)
-    createDir(root)
-    defer: removeDir(root)
-    writeFile(root / "note.txt", "hello")
-    expect GeneError:
-      discard run(compileSource("""
-        (check_capabilities (fs/ReadFile "note.txt"))
-      """), newGlobalScope(newApplicationRootedAt(root)))
-
-  test "check_capabilities takes several selectors and answers for all of them":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantWriteDir(getCurrentDir())
-    ]))
-    let value = run(compileSource("""
-      (fn inspect []
-        ^capabilities [(fs/WriteDir "tmp")]
-        [
-          (check_capabilities (fs/WriteDir "tmp") (fs/WriteDir "nested"))
-          (check_capabilities (fs/WriteDir "tmp") (fs/WriteDir "/etc"))
-        ])
-      (inspect)
-    """), scope)
-    check value.print == "[true false]"
-
-  test "check_capabilities tracks attenuation and agrees with the operation":
-    # The property that makes it worth having: a `true` must mean the operation
-    # would be admitted, and a `false` that it would be refused. If these ever
-    # disagree the check is worse than no check at all.
-    #
-    # The row is `^^optional` because a mandatory one is enforced at the
-    # declaration, so under `with_capabilities []` the body would never run to
-    # be asked.
-    let value = run(compileSource("""
-      (fn probe [path]
-        ^capabilities [(fs/WriteFile path ^^optional)]
-        [(check_capabilities (fs/WriteFile path))
-         (try (do ($fs/write_text path "x") "wrote")
-           catch MissingCapability "denied")])
-      (with_capabilities [] (probe "missing.txt"))
-    """), newGlobalScope(newApplication()))
-    check value.print == "[false \"denied\"]"
-
-  test "check_capabilities rejects an empty row and a non-selector argument":
-    expect GeneError:
-      discard run(compileSource("(check_capabilities)"),
-                  newGlobalScope(newApplication()))
-    expect GeneError:
-      discard run(compileSource("(check_capabilities 42)"),
-                  newGlobalScope(newApplication()))
-
-  test "an absent optional selector starts with no grant and reports absence":
-    # The boundary still starts — that is what `^^optional` buys — and the body
-    # can see the authority is missing before it tries to use it.
-    let value = run(compileSource("""
-      (fn optional_write [path]
-        ^capabilities [(fs/WriteFile path ^^optional)]
-        [(check_capabilities (fs/WriteFile path))
-         (try ($fs/write_text path "no")
-           catch MissingCapability "denied")])
-      (with_capabilities [] (optional_write "missing.txt"))
-    """), newGlobalScope(newApplication()))
-    check value.print == "[false \"denied\"]"
-
-  test "optional is rejected on an expression capability specification":
-    expect GeneError:
-      discard run(compileSource("(fs/WriteDir ^^optional)"),
-                  newGlobalScope(newApplication()))
-
-  test "the standard library writes through the active exact grant":
-    let root = getTempDir() / "gene-capability-stdlib-test"
-    if dirExists(root):
-      removeDir(root)
-    createDir(root)
-    defer:
-      if fileExists(root / "test.md"):
-        removeFile(root / "test.md")
-      if fileExists(root / "other.md"):
-        removeFile(root / "other.md")
-      removeDir(root)
-
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantWriteDir(root)
-    ]))
-    let scope = newGlobalScope(app)
-    discard run(compileSource("""
-      (fn write_exact [filename content]
-        ^capabilities [(fs/WriteFile filename)]
-        ($fs/write_text filename content))
-      (write_exact "test.md" "hello")
-    """), scope)
-    check readFile(root / "test.md") == "hello"
-
-    expect GeneError:
-      discard run(compileSource("""
-        (fn write_other [filename]
-          ^capabilities [(fs/WriteFile filename)]
-          ($fs/write_text "other.md" "escape"))
-        (write_other "test.md")
-      """), scope)
-    check not fileExists(root / "other.md")
-
-  test "static transitions respect revocation with optional caching":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    let chunk = compileSource("""
-      (fn guarded []
-        ^capabilities [(fs/WriteDir "tmp")]
-        7)
-    """)
-    discard run(chunk, scope)
-    let guarded = scope.lookup("guarded")
-    check guarded.call(@[], @[], @[], scope).intVal == 7
-    let proto = FunctionProto(guarded.fnCode)
-    let cached = proto.capabilityCacheTransition.context
-    when compileOption("threads") and defined(gcAtomicArc):
-      # Shared proto transition caching is disabled on this execution path.
-      check cached == nil
-    else:
-      check cached != nil
-    check guarded.call(@[], @[], @[], scope).intVal == 7
-    check proto.capabilityCacheTransition.context == cached
-
-    let epoch = app.capabilities.capabilityEpoch
-    var filesystemRoot: CapabilityGrant
     for grant in app.rootCapabilities.grants:
-      if grant.capabilityType == app.filesystemCapabilities.types.readWriteDir:
-        filesystemRoot = grant
-        break
-    check filesystemRoot != nil
-    app.filesystemCapabilities.revoke(filesystemRoot)
-    check app.capabilities.capabilityEpoch > epoch
-    expect GeneError:
-      discard guarded.call(@[], @[], @[], scope)
+      app.filesystemCapabilities.revoke(grant)
+    check scope.migrationEval(root, """
+      [(try (guarded) catch MissingCapability "denied") (count .get)]
+    """).print() == "[\"denied\" 1]"
 
-suite "eval capability ceilings":
-  test "a retained Env cannot restore authority removed by its evaluator":
-    check evalAuthorityProbe("""
-      (let saved (env ^capabilities [fs/*]))
-      [(try
-         (with_capabilities []
-           (eval (quote ($fs/read_text first)) ^in saved))
-         catch MissingCapability "denied")
-       (eval (quote ($fs/read_text first)) ^in saved)]
-    """) == "[\"denied\" \"first\"]"
+  test "overlapping live grants are alternatives rather than an ambiguity error":
+    let row = app.capabilities.normalizeCapabilityRow(readCapabilityLiteral(
+      "[(fs/ReadWrite " & newStr(root).print() & ")]", cuGrant,
+      CapabilitySourceContext()), cuGrant)
+    let extra = app.filesystemCapabilities.initializeFilesystemGrant(row.entries[0].policy)
+    app.setRootCapabilities(app.capabilities.newPolicyContext(
+      @(app.rootCapabilities.grants) & @[extra]))
+    check scope.migrationEval(root, "($fs/read_text allowed)").strVal == "hello"
 
-  test "both the Env and evaluator constrain the exact permitted resource":
-    check evalAuthorityProbe("""
-      (let broad (env ^capabilities [fs/*]))
-      (let only_first (env ^capabilities [(fs/ReadFile first)]))
-      [(eval (quote ($fs/read_text first)) ^in only_first)
-       (try (eval (quote ($fs/read_text second)) ^in only_first)
-         catch MissingCapability "denied")
-       (with_capabilities [(fs/ReadFile first)]
-         (eval (quote ($fs/read_text first)) ^in broad))
-       (try
-         (with_capabilities [(fs/ReadFile first)]
-           (eval (quote ($fs/read_text second)) ^in broad))
-         catch MissingCapability "denied")]
-    """) == "[\"first\" \"denied\" \"first\" \"denied\"]"
+  test "inherited contracts require exact mandatory and optional metadata":
+    for replacement in ["[fs/Read]", "[]", "[(fs/Read \"allowed\" ^^optional)]"]:
+      var message = ""
+      try:
+        discard newGlobalScope(app).migrationEval(root, """
+          (protocol P (message read [] ^capabilities [(fs/Read ^^optional)]))
+          (type T)
+          (impl P for T (message read [] ^capabilities """ & replacement & """ nil))
+        """)
+      except GeneError as error: message = error.msg
+      check "implementation changes its inherited ^capabilities contract" in message
+    check scope.migrationEval(root, """
+      (protocol Empty (message read [] ^capabilities []))
+      (type Reader)
+      (impl Empty for Reader (message read []
+        (try ($fs/read_text allowed) catch MissingCapability "denied")))
+      ((Reader) .Empty:read)
+    """).strVal == "denied"
 
-  test "omitted rows inherit dynamically and explicit rows retain creation limits":
-    check evalAuthorityProbe("""
-      (let plain (env ^bindings {^input 1}))
-      (let empty (env ^capabilities []))
-      (let captured (with_capabilities [] (env ^capabilities [fs/*])))
-      [(eval (quote (check_capabilities (fs/ReadFile first))) ^in plain)
-       (with_capabilities []
-         (eval (quote (check_capabilities (fs/ReadFile first))) ^in plain))
-       (eval (quote (check_capabilities (fs/ReadFile first))) ^in empty)
-       (eval (quote (check_capabilities (fs/ReadFile first))) ^in captured)]
-    """) == "[true false false false]"
+suite "migrated module capability fixtures":
+  test "import bounds apply before initialization and remain on escaped calls":
+    let root = getCurrentDir() / "tests" / "fixtures"
+    for (name, outcome) in [
+      ("capability_ceiling_entry.gene", "denied"),
+      ("capability_import_ceiling_entry.gene", "denied"),
+      ("capability_import_ceiling_allowed.gene", "1"),
+      ("capability_import_init_entry.gene", "\"denied\"")]:
+      checkpoint name
+      let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+      let entry = app.loadFileModule(root / name)
+      let scope = newGlobalScope(app)
+      scope.define("entry", entry)
+      var actual = ""
+      try: actual = scope.migrationEval(root, "(entry/main)").print()
+      except GeneError as error:
+        check "MissingCapability" in error.msg
+        actual = "denied"
+      check actual == outcome
 
-  test "extending an Env cannot remove its parent's capability ceiling":
-    check evalAuthorityProbe("""
-      (let parent (env ^capabilities []))
-      (let extended (parent .extend {^input 1}))
-      (let reselected (env ^parent parent ^capabilities [fs/*]))
-      [(try (eval (quote ($fs/read_text first)) ^in extended)
-         catch MissingCapability "denied")
-       (try (eval (quote ($fs/read_text first)) ^in reselected)
-         catch MissingCapability "denied")]
-    """) == "[\"denied\" \"denied\"]"
-
-  test "escaped eval closures retain the intersected creation ceiling":
-    check evalAuthorityProbe("""
-      (let saved (env ^capabilities [fs/*]))
-      (let code (quote (fn [path] ($fs/read_text path))))
-      (let broad (eval code ^in saved))
-      (let limited (with_capabilities [(fs/ReadFile first)] (eval code ^in saved)))
-      [(limited first)
-       (try (limited second) catch MissingCapability "denied")
-       (try (with_capabilities [] (broad first)) catch MissingCapability "denied")
-       (broad second)]
-    """) == "[\"first\" \"denied\" \"denied\" \"second\"]"
-
-  test "nested eval and suspended generators preserve the effective ceiling":
-    check evalAuthorityProbe("""
-      (let saved (env ^capabilities [fs/*]))
-      (let rows
-        (with_capabilities [(fs/ReadFile first)]
-          (eval (quote
-            (do
-              (fn ^^generator produce []
-                (yield ($fs/read_text first))
-                (yield ($fs/read_text second)))
-              (produce))) ^in saved)))
-      [(try
-         (with_capabilities []
-           (eval (quote (eval (quote ($fs/read_text first)) ^in saved)) ^in saved))
-         catch MissingCapability "denied")
-       (rows .next)
-       (try (rows .next) catch MissingCapability "denied")
-       ($fs/read_text second)]
-    """) == "[\"denied\" \"first\" \"denied\" \"second\"]"
-
-  test "nested eval closures retain ceilings through calls and spawn":
-    check evalAuthorityProbe("""
-      (let saved (env ^capabilities [(fs/ReadFile first)]))
-      (let factory (eval (quote (fn [] (fn [path : Str = second] ($fs/read_text path)))) ^in saved))
-      (let nested (factory))
-      [(nested first)
-       (try (nested) catch MissingCapability "denied")
-       (scope (await (spawn
-         (try (nested second) catch MissingCapability "denied"))))]
-    """) == "[\"first\" \"denied\" \"denied\"]"
-
-  test "closing an eval generator restores its caller's context":
-    check evalAuthorityProbe("""
-      (let closed ($cell false))
-      (let saved (env ^capabilities [(fs/ReadFile first)]))
-      (let rows (eval (quote
-        (do (fn ^^generator produce []
-              (try (yield ($fs/read_text first))
-                ensure (closed .set (check_capabilities (fs/ReadFile first)))))
-            (produce))) ^in saved))
-      (let value (rows .next))
-      (rows .close)
-      [value (closed .get) ($fs/read_text second)]
-    """) == "[\"first\" true \"second\"]"
-
-suite "application and module ceilings":
-  test "an imported module ceiling intersects the caller context":
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_ceiling_entry.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
-    let main = entry.moduleRootNamespace.nsScope.lookup("main")
-    expect GeneError:
-      discard main.call()
-
-  test "a narrowed module initializes with an empty context":
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_init_denied.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    expect GeneError:
-      discard app.loadFileModule(entryPath)
-
-  test "an open module initializes under its inherited context":
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_init_open.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
+  test "unannotated modules inherit initialization authority; explicit blocks narrow":
+    let root = getCurrentDir() / "tests" / "fixtures"
+    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
+    let entry = app.loadFileModule(root / "capability_init_open.gene")
     check entry.moduleRootNamespace.nsScope.lookup("initialized").intVal == 1
-
-  test "an import-site ceiling bounds a dependency the importer does not control":
-    # §5.3.1. The dependency declares nothing and would inherit the entry's
-    # `fs/*`; the importer bounds it once, at the import, instead of wrapping
-    # every call site.
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_import_ceiling_entry.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
-    let main = entry.moduleRootNamespace.nsScope.lookup("main")
     expect GeneError:
-      discard main.call()
-
-  test "an import-site ceiling narrows rather than denies":
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_import_ceiling_allowed.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
-    let main = entry.moduleRootNamespace.nsScope.lookup("main")
-    check main.call().intVal == 1
-
-  test "a module bounded by an import ceiling initializes under an empty context":
-    # The half that makes the ceiling real: a call-boundary intersection alone
-    # arrives after the dependency's top level has already run, and §5.3 says
-    # what it captured then cannot be retracted.
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_import_init_entry.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
-    let main = entry.moduleRootNamespace.nsScope.lookup("main")
-    check main.call().strVal == "denied"
-
-  test "require_strict_dependencies fails the link on an open dependency":
-    # §5.0.2: the policy validates interface metadata; it must not recompile
-    # the dependency under a mode its author did not choose, and it must name
-    # the offender rather than failing somewhere inside it later.
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_strict_deps_entry.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    var message = ""
-    try:
-      discard app.loadFileModule(entryPath)
-    except CatchableError as error:
-      message = error.msg
-    check "require_strict_dependencies" in message
-    check "capability_ceiling_dep" in message
-
-  test "require_strict_dependencies accepts a strict dependency":
-    let entryPath = getCurrentDir() / "tests" / "fixtures" /
-      "capability_strict_deps_ok.gene"
-    let app = newApplicationForEntryFile(entryPath)
-    let entry = app.loadFileModule(entryPath)
-    let main = entry.moduleRootNamespace.nsScope.lookup("main")
-    check main.call().intVal == 1
+      discard app.loadFileModule(root / "capability_init_denied.gene")

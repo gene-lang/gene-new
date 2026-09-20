@@ -121,7 +121,7 @@ proc checkTestRegistration(registry: TestRegistry) =
   if registry.running:
     raise newException(GeneError, "cannot register tests during a test run")
 
-proc testCallback(params, fn: Value, loc: SourceLoc): TestCallback =
+proc testCallback(params, fn: Value, call: ptr NativeCall): TestCallback =
   if params.kind != vkList or params.listItems.len > 1 or
       (params.listItems.len == 1 and
        (params.listItems[0].kind != vkSymbol or
@@ -131,7 +131,9 @@ proc testCallback(params, fn: Value, loc: SourceLoc): TestCallback =
     raise newException(GeneError, "test body requires an ordinary function")
   let capture = fn.fnScope
   TestCallback(fn: functionForScopeStorage(fn, capture), capture: capture,
-    takesContext: params.listItems.len == 1, loc: loc)
+    takesContext: params.listItems.len == 1, loc: call.loc,
+    capabilityCeiling: activeCapabilitiesForCall(call).context,
+    loaderState: scopeLoaderState(call.dispatchScope))
 
 proc biTestRegisterGroup(args: openArray[Value],
                          call: ptr NativeCall): Value {.nimcall.} =
@@ -174,7 +176,7 @@ proc biTestRegisterExample(args: openArray[Value],
     if args[3].kind != vkVoid and
         (args[3].kind != vkString or args[3].strVal.len == 0):
       raise newException(GeneError, "it ^skip requires a nonempty literal string")
-    let callback = testCallback(args[1], args[2], call.loc)
+    let callback = testCallback(args[1], args[2], call)
     registry.groups[^1].children.add TestEntry(description: args[0].strVal,
       loc: call.loc, body: callback,
       skipReason: if args[3].kind == vkVoid: "" else: args[3].strVal)
@@ -195,7 +197,7 @@ proc biTestRegisterHook(args: openArray[Value],
     if args.len != 3 or args[0].kind != vkString or
         args[0].strVal notin ["before_each", "after_each"]:
       raise newException(GeneError, "invalid test hook registration")
-    let callback = testCallback(args[1], args[2], call.loc)
+    let callback = testCallback(args[1], args[2], call)
     if args[0].strVal == "before_each":
       registry.groups[^1].beforeEach.add callback
     else:
@@ -312,11 +314,24 @@ proc runTests*(scope: Scope, name = "", report = true): Value =
   let roots = registry.roots
   var examples: seq[Value]
   var passed, failed, errors, skipped: int
-  proc invoke(callback: TestCallback, context: Value) =
-    if callback.takesContext:
-      discard applyCall(callback.fn, [context], NamedArgs(), scope, loc = callback.loc)
-    else:
-      discard applyCall(callback.fn, [], NamedArgs(), scope, loc = callback.loc)
+  proc invoke(callback: TestCallback, context: Value, phase: string): Value =
+    let savedCapabilities = activeCapabilityContext
+    let savedPresence = activeCapabilityPresence
+    defer:
+      activeCapabilityContext = savedCapabilities
+      activeCapabilityPresence = savedPresence
+    activeCapabilityContext = intersectContexts(scope.executionCapabilities(), callback.capabilityCeiling)
+    activeCapabilityPresence = nil
+    let dispatch = newScope(scope)
+    dispatch.loaderState = mergeLoaderStates(callback.loaderState, scopeLoaderState(scope))
+    try:
+      if callback.takesContext:
+        discard applyCall(callback.fn, [context], NamedArgs(), dispatch, loc = callback.loc)
+      else:
+        discard applyCall(callback.fn, [], NamedArgs(), dispatch, loc = callback.loc)
+      NIL
+    except GeneError as error:
+      testDiagnostic(error, phase, dispatch, callback.loc)
   proc runExample(entry: TestEntry, groups: seq[TestEntry], fullName: string) =
     if name.len > 0 and name notin fullName: return
     var diagnostics: seq[Value]
@@ -332,23 +347,21 @@ proc runTests*(scope: Scope, name = "", report = true): Value =
         for group in groups:
           inc entered
           for hook in group.beforeEach:
-            try: invoke(hook, context)
-            except GeneError as error:
-              diagnostics.add testDiagnostic(error, "before_each", scope, hook.loc)
+            let diagnostic = invoke(hook, context, "before_each")
+            if diagnostic.kind != vkNil:
+              diagnostics.add diagnostic
               setupOk = false
               break
           if not setupOk: break
         if setupOk:
-          try: invoke(entry.body, context)
-          except GeneError as error:
-            diagnostics.add testDiagnostic(error, "example", scope, entry.loc)
+          let diagnostic = invoke(entry.body, context, "example")
+          if diagnostic.kind != vkNil: diagnostics.add diagnostic
       finally:
         for i in countdown(entered - 1, 0):
           for j in countdown(groups[i].afterEach.len - 1, 0):
             let hook = groups[i].afterEach[j]
-            try: invoke(hook, context)
-            except GeneError as error:
-              diagnostics.add testDiagnostic(error, "after_each", scope, hook.loc)
+            let diagnostic = invoke(hook, context, "after_each")
+            if diagnostic.kind != vkNil: diagnostics.add diagnostic
       for diagnostic in diagnostics:
         if not diagnostic.mapEntries["assertion"].boolVal:
           status = "error"
@@ -422,6 +435,8 @@ proc biTestRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
       report = value.boolVal
     else:
       raise newException(GeneError, "test/run got unexpected named argument: " & key)
+  if report:
+    rejectUnmigratedCapabilityEffect("test/run reporting", scope)
   runTests(scope, name, report)
 
 proc registerTestingNamespace(root: Scope) =
@@ -451,11 +466,11 @@ proc registerTestingNamespace(root: Scope) =
                                            acceptsNamed = false))
   ns.define("assert_raises", builtinNativeCallFn("test/assert_raises", biAssertRaises,
                                             acceptsNamed = false))
-  ns.define("register_group", newNativeCallFn("test/register_group",
+  ns.define("register_group", builtinNativeCallFn("test/register_group",
     biTestRegisterGroup, acceptsNamed = false))
-  ns.define("register_example", newNativeCallFn("test/register_example",
+  ns.define("register_example", builtinNativeCallFn("test/register_example",
     biTestRegisterExample, acceptsNamed = false))
-  ns.define("register_hook", newNativeCallFn("test/register_hook",
+  ns.define("register_hook", builtinNativeCallFn("test/register_hook",
     biTestRegisterHook, acceptsNamed = false))
-  ns.define("run", newNativeCallFn("test/run", biTestRun))
+  ns.define("run", builtinNativeCallFn("test/run", biTestRun))
   root.define("test", newNamespace("test", ns))

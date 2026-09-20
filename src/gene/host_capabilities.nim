@@ -9,6 +9,7 @@
 
 import std/options
 import ./capabilities
+import ./http_capabilities
 
 type
   HostCapabilityTypes* = object
@@ -25,7 +26,7 @@ type
     deviceCompute*: CapabilityType
     ffiLoad*: CapabilityType
 
-  HostCapabilityProvider* = ref object of CapabilityProvider
+  HostCapabilityProvider* = ref object of HttpCapabilityProvider
     types*: HostCapabilityTypes
 
 
@@ -129,6 +130,7 @@ proc admitHostCapabilityProvider*(registry: CapabilityRegistry):
   result.types.cryptoRandom = registry.admitType(result, "crypto/Random")
   result.types.netConnect = registry.admitType(result, "net/Connect")
   result.types.netHttp = registry.admitType(result, "net/Http")
+  result.httpType = result.types.netHttp
   result.types.netListen = registry.admitType(result, "net/Listen")
   result.types.dbPostgres = registry.admitType(result, "db/Postgres")
   result.types.deviceCompute = registry.admitType(result, "device/Compute")

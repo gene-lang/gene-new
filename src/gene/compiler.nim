@@ -234,7 +234,7 @@ const CoreSpecialFormNames* = [
   "fn", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
-  "with_capabilities", "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
+  "with_capabilities", "require_capabilities", "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
   "protocol", "impl", "derive", "import_impl", "web_module"
 ]
 
@@ -313,8 +313,7 @@ const bareCoreNames* = [
   # unrecoverable-failure mechanism §9 reserves, and `not`/`same?` are spelled
   # forms of primitive operations (`!` and identity). Deliberately short: every
   # entry here is a name a program can no longer use freely.
-  "panic", "not", "same?", "check_capabilities", "capabilities_of",
-  "capability_type_info",
+  "panic", "not", "same?",
 ]
 
 const bareCapabilityNamespaces* = ["fs"]
@@ -894,6 +893,7 @@ proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(c.sourceName), sourceName: c.sourceName,
            gensym: c.gensym,
            sourceLocs: c.sourceLocs, currentLoc: c.currentLoc,
+           unitSource: c.unitSource,
            selfAvailable: c.selfAvailable,
            capabilitiesStrict: c.capabilitiesStrict,
            capabilityCatalog: c.capabilityCatalog,
@@ -1615,6 +1615,7 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
   # keep the default depth so genuine redeclarations remain errors.
   # This concerns bindings only: loop jump targets belong to their own chunk.
   child.repeatBindings = repeatBindings
+  child.loopDepth = c.loopDepth
   if scoped:
     child.enableLocalSlots()
     child.parentSlots = c.parentFrames()
@@ -2694,18 +2695,28 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       meta[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
     var props = initPropTable()
     for key, item in value.props:
-      props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+      if key == "capabilities":
+        props[key] = item
+      else:
+        props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
     let head = c.expandMacroTree(unit, value.head, loc, locs, provenance)
     var body: seq[Value]
-    for item in value.body:
-      body.add c.expandMacroTree(unit, item, loc, locs, provenance)
+    for i, item in value.body:
+      if i == 0 and item.kind == vkList and
+          (value.head.isSymbol("with_capabilities") or
+           value.head.isSymbol("require_capabilities")):
+        body.add item
+      else:
+        body.add c.expandMacroTree(unit, item, loc, locs, provenance)
     result = newNode(head, props = props, body = body, meta = meta,
                      immutable = value.nodeImmutable)
+    result.copyCapabilityReadProvenance(value)
   of vkList:
     var items: seq[Value]
     for item in value.listItems:
       items.add c.expandMacroTree(unit, item, loc, locs, provenance)
     result = newList(items, immutable = value.listImmutable)
+    result.copyCapabilityReadProvenance(value)
   of vkMap:
     var entries = initPropTable()
     for key, item in value.mapEntries:
@@ -4165,207 +4176,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   result.chunk.owner = result
   deriveScopelessChunk(result)
 
-proc capabilityPathSegments(value: Value, context: string): seq[string] =
-  if value.kind != vkNode or not value.head.isSymbol("path") or
-      value.body.len == 0:
-    raise newException(GeneError,
-      context & " must name a namespace-qualified capability type")
-  for segment in value.body:
-    if segment.kind != vkSymbol:
-      raise newException(GeneError,
-        context & " path segments must be symbols")
-    result.add segment.symVal
-
-proc capabilityParameterSlot(proto: FunctionProto, name: string): int =
-  if proto == nil:
-    return -1
-  for i, parameter in proto.params:
-    if parameter == name and i < proto.positionalSlots.len:
-      return proto.positionalSlots[i]
-  for i, parameter in proto.namedParams:
-    if parameter.local == name and i < proto.namedSlots.len:
-      return proto.namedSlots[i]
-  if proto.restParam == name:
-    return proto.restSlot
-  -1
-
-proc compileCapabilityLiteral(value: Value, context: string): CapabilityArg =
-  case value.kind
-  of vkNil:
-    capNil()
-  of vkBool:
-    capBool(value.boolVal)
-  of vkInt:
-    if not value.intFitsInt64:
-      raise newException(GeneError,
-        context & " integer is outside the capability scalar range")
-    capInt(value.intVal)
-  of vkString:
-    capString(value.strVal)
-  of vkSymbol:
-    capSymbol(value.symVal)
-  of vkList:
-    if not value.listImmutable:
-      raise newException(GeneError,
-        context & " list must use immutable #[...] syntax")
-    var items = newSeqOfCap[CapabilityArg](value.listItems.len)
-    for item in value.listItems:
-      items.add compileCapabilityLiteral(item, context)
-    capList(items)
-  of vkMap:
-    if not value.mapImmutable:
-      raise newException(GeneError,
-        context & " map must use immutable #{...} syntax")
-    var entries = newSeqOfCap[CapabilityNamedArg](value.mapEntries.len)
-    for name, item in value.mapEntries:
-      entries.add capNamed(name, compileCapabilityLiteral(item, context))
-    capMap(entries)
-  else:
-    raise newException(GeneError,
-      context & " must be deeply immutable data")
-
-proc compileCapabilityTemplateArg(value: Value, proto: FunctionProto,
-                                  context: string,
-                                  allowLexical = false): CapabilityTemplateArg =
-  case value.kind
-  of vkSymbol:
-    let slot = capabilityParameterSlot(proto, value.symVal)
-    if slot < 0 and not allowLexical:
-      raise newException(GeneError,
-        context & " may reference only literals, parameters, or this; " &
-        "unbound name: " & value.symVal)
-    capParameter(slot, value.symVal)
-  else:
-    capLiteral(compileCapabilityLiteral(value, context))
-
-proc validateBuiltinCapabilitySelector(
-    selector: CapabilitySelectorTemplate) =
-  if selector.kind != cskExact or not selector.typeName.startsWith("fs/"):
-    return
-  if selector.typeName notin ["fs/ReadDir", "fs/WriteDir",
-                              "fs/ReadWriteDir", "fs/ReadFile",
-                              "fs/WriteFile"]:
-    raise newException(GeneError,
-      "unknown filesystem capability type: " & selector.typeName)
-  if selector.positional.len > 1:
-    raise newException(GeneError,
-      selector.typeName & " expects at most one path argument")
-  if selector.positional.len == 1 and
-      selector.positional[0].kind == ctakLiteral and
-      selector.positional[0].literal.kind != cakString:
-    raise newException(GeneError,
-      selector.typeName & " path argument must be a string")
-  for property in selector.named:
-    if property.name notin ["append", "create", "follow_symlinks"]:
-      raise newException(GeneError,
-        "unknown filesystem capability property: " & property.name)
-    if property.name in ["append", "create"] and
-        selector.typeName != "fs/WriteFile":
-      raise newException(GeneError,
-        property.name & " is valid only for fs/WriteFile")
-    if property.value.kind == ctakLiteral and
-        property.value.literal.kind != cakBool:
-      raise newException(GeneError,
-        "filesystem capability property " & property.name & " must be boolean")
-    if property.name == "follow_symlinks" and
-        property.value.kind == ctakLiteral and
-        property.value.literal.boolValue:
-      raise newException(GeneError,
-        "follow_symlinks true is not supported by this filesystem provider")
-
-proc compileCapabilitySelector(c: Compiler, value: Value,
-                               proto: FunctionProto,
-                               allowLexical = false): CapabilitySelectorTemplate =
-  var pathValue: Value
-  var directSegments: seq[string]
-  var arguments: seq[Value]
-  var properties = initPropTable()
-  if value.kind == vkSymbol and '/' in value.symVal:
-    for segment in value.symVal.split('/'):
-      if segment.len > 0:
-        directSegments.add segment
-  elif value.kind == vkNode and value.head.isSymbol("path"):
-    pathValue = value
-  elif value.kind == vkNode and value.head.kind == vkNode and
-      value.head.head.isSymbol("path"):
-    pathValue = value.head
-    arguments = value.body
-    properties = value.props
-  else:
-    raise newException(GeneError,
-      "capability selector must be a type, type application, namespace/*, or *; got " &
-      $value.kind)
-
-  let segments =
-    if directSegments.len > 0: directSegments
-    else: capabilityPathSegments(pathValue, "capability selector")
-  if segments[^1] == "*":
-    if segments.len < 2 or arguments.len != 0 or properties.len != 0:
-      raise newException(GeneError,
-        "namespace capability projection accepts no arguments or properties")
-    result.kind = cskNamespace
-    result.namespaceName = segments[0 ..< segments.high].join("/")
-    return
-
-  if segments.len < 2:
-    raise newException(GeneError,
-      "capability type must be namespace-qualified")
-  result.kind = cskExact
-  result.typeName = segments.join("/")
-  if c.enforceCapabilityCatalog and
-      not c.capabilityCatalog.hasKey(result.typeName):
-    raise newException(GeneError,
-      "unknown or host-unadmitted capability type: " & result.typeName)
-  for i, argument in arguments:
-    result.positional.add compileCapabilityTemplateArg(
-      argument, proto, "capability selector argument " & $i,
-      allowLexical)
-  for name, propertyValue in properties:
-    if name == "optional":
-      if propertyValue.kind != vkBool:
-        raise newException(GeneError, "^optional must be Bool")
-      result.optional = propertyValue.boolVal
-    else:
-      result.named.add CapabilityTemplateNamedArg(
-        name: name,
-        value: compileCapabilityTemplateArg(
-          propertyValue, proto, "capability selector property ^" & name,
-          allowLexical))
-  result.named.sort(proc(a, b: CapabilityTemplateNamedArg): int =
-    cmp(a.name, b.name))
-  validateBuiltinCapabilitySelector(result)
-
-proc compileCapabilityRow(c: Compiler, value: Value,
-                          proto: FunctionProto = nil,
-                          allowLexical = false): CapabilityRow =
-  result.kind = crkSelect
-  if value.kind == vkSymbol and value.symVal == "*":
-    result.selectors.add CapabilitySelectorTemplate(kind: cskAll)
-    return
-  let selectors =
-    if value.kind == vkList: value.listItems
-    else: @[value]
-  for selector in selectors:
-    result.selectors.add c.compileCapabilitySelector(
-      selector, proto, allowLexical)
-
-proc compileCapabilitySelection*(value: Value): CapabilityRow =
-  ## Parse inert selector data for runtime boundaries. Resolution still happens
-  ## against the calling application's admitted providers and active ceiling;
-  ## this does not evaluate Gene code or create grants.
-  let c = Compiler()
-  c.compileCapabilityRow(value, allowLexical = true)
-
-proc normalizedFunctionCapabilityRow(c: Compiler, node: Value,
-                                     proto: FunctionProto,
-                                     isPublic: bool): CapabilityRow =
-  if node.props.hasKey("capabilities"):
-    return c.compileCapabilityRow(node.props["capabilities"], proto)
-  if c.capabilitiesStrict and isPublic:
-    raise newException(GeneError,
-      "strict public function '" & proto.name &
-      "' requires an explicit ^capabilities row")
-  CapabilityRow(kind: crkInherit)
+include ./capability_source
 
 proc disableCapabilityBypasses(proto: FunctionProto) =
   ## Declaring functions must pass through the context boundary. Existing
@@ -6736,29 +6547,11 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
       of "warn": ecmWarn
       of "strict": ecmStrict
       else: ecmDynamic
-  if node.props.hasKey("capabilities_mode"):
-    let mode = node.props["capabilities_mode"]
-    if mode.kind != vkSymbol or mode.symVal notin ["open", "strict"]:
+  for key in ["capabilities", "capabilities_mode", "require_strict_dependencies"]:
+    if node.props.hasKey(key):
       raise newException(GeneError,
-        "^capabilities_mode must be open or strict")
-    c.capabilitiesStrict = mode.symVal == "strict"
-  if node.props.hasKey("require_strict_dependencies"):
-    let requested = node.props["require_strict_dependencies"]
-    if requested.kind != vkBool:
-      raise newException(GeneError,
-        "^require_strict_dependencies must be Bool")
-    c.chunk.requireStrictDependencies = requested.boolVal
-  # Recorded so a dependency's mode can be *checked* without recompiling it
-  # under a mode its author did not choose (§5.0.2). Mode is still erased from
-  # everything the runtime consults for resolution; this is link metadata.
-  c.chunk.capabilitiesStrict = c.capabilitiesStrict
-  c.chunk.moduleCapabilityRow =
-    if node.props.hasKey("capabilities"):
-      c.compileCapabilityRow(node.props["capabilities"])
-    elif c.capabilitiesStrict:
-      CapabilityRow(kind: crkSelect)
-    else:
-      CapabilityRow(kind: crkInherit)
+        "module capability declarations/modes were removed; use callable requests and host loader policy")
+  c.chunk.moduleCapabilityRow = CapabilityRow(kind: crkInherit)
   var meta = initPropTable()
   for key, val in node.meta:
     meta[key] = val
@@ -6809,6 +6602,8 @@ proc compileNs(c: var Compiler, node: Value) =
 proc compileEnv(c: var Compiler, node: Value) =
   if node.body.len != 0:
     raise newException(GeneError, "env does not take positional arguments")
+  if node.nodeDuplicateCapabilities:
+    raise newException(GeneError, "duplicate env capability declaration")
   for key, _ in node.props:
     if key notin ["bindings", "parent", "imports", "module", "capabilities", "policy"]:
       raise newException(GeneError, "env unknown option: ^" & key)
@@ -6828,23 +6623,19 @@ proc compileEnv(c: var Compiler, node: Value) =
     compileExpr(c, node.props["module"])
   else:
     c.emitConst NIL
-  # `^capabilities` carries two different things, told apart by shape
-  # (capabilities.md §14). A **list** is a selector row — the ambient authority
-  # evaluated code runs under — and is compiled like any other row rather than
-  # as an expression, because `(fs/ReadDir "x")` in expression position would
-  # be a call to something that is not a function. A **map** stays the lexical
-  # binding overlay it has always been: it says which names exist, not what
-  # they may do. `^bindings` remains the plainer spelling for that.
+  # Like with_capabilities, an Env ceiling is an inert literal or one evaluated
+  # immutable policy value. Name bindings belong exclusively to ^bindings.
   var capabilityRowIndex = -1
   if node.props.hasKey("capabilities") and
       node.props["capabilities"].kind == vkList:
-    let row = c.compileCapabilityRow(node.props["capabilities"],
-                                     allowLexical = true)
+    let row = c.compileCapabilityRow(node.props["capabilities"], use = cuBound)
     capabilityRowIndex = c.chunk.addCapabilityBlock(
       CapabilityBlockProto(row: row, body: nil))
     c.emitConst NIL
   elif node.props.hasKey("capabilities"):
     compileExpr(c, node.props["capabilities"])
+    capabilityRowIndex = c.chunk.addCapabilityBlock(
+      CapabilityBlockProto(dynamicPolicy: true))
   else:
     c.emitConst NIL
   if node.props.hasKey("policy"):
@@ -7778,10 +7569,60 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
+proc hasStructuredLoopBody(value: Value): bool =
+  case value.kind
+  of vkNode:
+    if value.head.kind == vkSymbol:
+      if value.head.symVal in ["fn", "macro", "quote", "quasiquote"]:
+        return false
+      if value.head.symVal in ["with_capabilities", "require_capabilities",
+                              "try", "match", "scope", "supervisor"]:
+        return true
+    for item in value.body:
+      if hasStructuredLoopBody(item): return true
+    for _, item in value.props:
+      if hasStructuredLoopBody(item): return true
+  of vkList:
+    for item in value.listItems:
+      if hasStructuredLoopBody(item): return true
+  else: discard
+  false
+
+proc compileStructuredLoop(c: var Compiler, condition: Value,
+    forms: openArray[Value], step: Value = NIL) =
+  var first = ""
+  if step.kind != vkNil:
+    first = c.nextTemp("loop_first")
+    c.emitConst TRUE
+    c.emitDefineBinding(first)
+  var child = c.childCompiler()
+  child.loopDepth = c.loopDepth + 1
+  child.repeatBindings = true
+  child.chunk.repeatControlLoop = true
+  if first.len > 0:
+    compileExpr(child, newNode(newSym("if"), body = @[
+      newSym(first),
+      newNode(newSym("set"), body = @[newSym(first), FALSE]),
+      step]))
+    discard child.emit(opPop)
+  compileExpr(child, condition)
+  let stop = child.emitJump(opJumpIfFalse)
+  child.prepareStaticImports(forms)
+  child.reserveProtocolBindingsFor(forms)
+  compileBody(child, forms)
+  discard child.emit(opReturn)
+  child.patchJump(stop)
+  discard child.emit(opLoopBreak)
+  c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
+  discard c.emit(opForEach, c.chunk.addForLoop(ForProto(pattern: NIL, body: child.chunk)))
+
 proc compileWhile(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "while requires a condition")
+  if hasStructuredLoopBody(node):
+    c.compileStructuredLoop(body[0], body[1 .. ^1])
+    return
   let start = c.chunk.instructions.len
   c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
   inc c.loopDepth
@@ -7803,6 +7644,9 @@ proc compileLoop(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "loop requires a body")
+  if hasStructuredLoopBody(node):
+    c.compileStructuredLoop(TRUE, body)
+    return
   let start = c.chunk.instructions.len
   c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
   inc c.loopDepth
@@ -7834,6 +7678,13 @@ proc compileRepeat(c: var Compiler, node: Value) =
     c.emitConst newInt(0)
     c.emitDefineBinding(indexName)
 
+    if hasStructuredLoopBody(node):
+      let condition = newNode(newSym("<"), body = @[newSym(indexName), newSym(limitName)])
+      let step = newNode(newSym("set"), body = @[newSym(indexName),
+        newNode(newSym("+"), body = @[newSym(indexName), newInt(1)])])
+      c.compileStructuredLoop(condition, body[3 .. ^1], step)
+      return
+
     let start = c.chunk.instructions.len
     c.emitLoadBinding(indexName)
     c.emitLoadBinding(limitName)
@@ -7864,6 +7715,13 @@ proc compileRepeat(c: var Compiler, node: Value) =
   let remainingName = c.nextTemp("repeat_remaining")
   compileExpr(c, body[0])
   c.emitDefineBinding(remainingName)
+
+  if hasStructuredLoopBody(node):
+    let condition = newNode(newSym(">"), body = @[newSym(remainingName), newInt(0)])
+    let step = newNode(newSym("set"), body = @[newSym(remainingName),
+      newNode(newSym("-"), body = @[newSym(remainingName), newInt(1)])])
+    c.compileStructuredLoop(condition, body[1 .. ^1], step)
+    return
 
   let start = c.chunk.instructions.len
   c.emitLoadBinding(remainingName)
@@ -7897,7 +7755,7 @@ proc compileFor(c: var Compiler, node: Value) =
     raise newException(GeneError, "for requires a pattern, in, and an iterable")
   if body[1].kind != vkSymbol or body[1].symVal != "in":
     raise newException(GeneError, "for requires 'in' after the pattern")
-  if c.allowYield and body.bodyContainsYield(3):
+  if c.allowYield and body.bodyContainsYield(3) and not hasStructuredLoopBody(node):
     let iterName = c.nextTemp("iter")
     compileExpr(c, body[2])                   # iterable on the stack
     discard c.emit(opMakeIterator)
@@ -8024,15 +7882,21 @@ proc compileTry(c: var Compiler, node: Value) =
       repeatBindings = c.loopDepth > 0 or c.repeatBindings)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
-proc compileWithCapabilities(c: var Compiler, node: Value) =
+proc compileWithCapabilities(c: var Compiler, node: Value, required = false) =
   if node.props.len != 0 or node.body.len < 2:
     raise newException(GeneError,
-      "with_capabilities expects a selector row and a body")
-  let row = c.compileCapabilityRow(node.body[0], allowLexical = true)
+      "capability block expects a policy row/value and a body")
+  let dynamicPolicy = node.body[0].kind != vkList
+  var row = CapabilityRow(kind: crkSelect)
+  if dynamicPolicy:
+    compileExpr(c, node.body[0])
+  else:
+    row = c.compileCapabilityRow(node.body[0],
+      use = if required: cuRequest else: cuBound)
   let body = c.compileSubBody(node.body[1 .. ^1])
   discard c.emit(opWithCapabilities,
-                 c.chunk.addCapabilityBlock(
-                   CapabilityBlockProto(row: row, body: body)))
+    c.chunk.addCapabilityBlock(CapabilityBlockProto(row: row, body: body,
+      required: required, dynamicPolicy: dynamicPolicy)))
 
 proc compileTaskScope(c: var Compiler, node: Value) =
   if node.props.len != 0:
@@ -8132,62 +7996,16 @@ proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
 proc rejectUnknownTypeProps(node: Value) =
   for key in node.props.keys:
     if key in ["props", "body", "impl", "derive", "private", "repr",
-               "native", "capability"]:
+               "native"]:
       continue
+    if key == "capability":
+      raise newException(GeneError,
+        "Gene capability facades were removed; capability identities and normalization belong to the trusted provider catalog")
     if key == "sealed":
       raise newException(GeneError,
         "type ^sealed is reserved for future native layout optimization")
     raise newException(GeneError,
       "type got unexpected named argument: " & key)
-
-proc capabilitySchemaValueKey(value: Value): string =
-  case value.kind
-  of vkNil: result = "n"
-  of vkVoid: result = "v"
-  of vkBool: result = if value.boolVal: "b1" else: "b0"
-  of vkInt: result = "i" & value.intToString
-  of vkFloat: result = "f" & $value.floatVal
-  of vkString: result = "s" & $value.strVal.len & ":" & value.strVal
-  of vkSymbol: result = "y" & $value.symVal.len & ":" & value.symVal
-  of vkList:
-    result = "["
-    for item in value.listItems:
-      let key = capabilitySchemaValueKey(item)
-      result.add $key.len & ":" & key
-    result.add "]"
-  of vkMap:
-    var names: seq[string]
-    for name in value.mapEntries.keys:
-      names.add name
-    names.sort()
-    result = "{"
-    for name in names:
-      let key = capabilitySchemaValueKey(value.mapEntries[name])
-      result.add $name.len & ":" & name & $key.len & ":" & key
-    result.add "}"
-  of vkNode:
-    result = "("
-    for part in [value.head,
-                 newMap(value.props),
-                 newList(value.body),
-                 newMap(value.meta)]:
-      let key = capabilitySchemaValueKey(part)
-      result.add $key.len & ":" & key
-    result.add ")"
-  else:
-    raise newException(GeneError,
-      "capability facade schema contains unsupported value kind: " &
-      $value.kind)
-
-proc capabilityFacadeSchemaHash*(name: string, propsSchema = NIL,
-                                 bodySchema = NIL): string =
-  let material = "gene-capability-facade-v1|" & name & "|" &
-    capabilitySchemaValueKey(propsSchema) & "|" &
-    capabilitySchemaValueKey(bodySchema)
-  var hash = 1469598103934665603'u64
-  for character in material:
-    hash = (hash xor uint64(ord(character))) * 1099511628211'u64
-  toHex(hash, 16).toLowerAscii()
 
 proc typeReprMarker(node: Value, name: string): TypeRepr =
   ## `^repr native_wrapper` (design §16.6). The marker is a compile-time symbol,
@@ -8201,33 +8019,6 @@ proc typeReprMarker(node: Value, name: string): TypeRepr =
     raise newException(GeneError,
       "type " & name & " ^repr must be the symbol native_wrapper")
   trNativeWrapper
-
-proc capabilityFacadeMarker(c: Compiler, node: Value, name: string):
-    tuple[capabilityName, schemaHash: string] =
-  if not node.props.hasKey("capability"):
-    return
-  let marker = node.props["capability"]
-  if marker.kind != vkString or marker.strVal.len == 0:
-    raise newException(GeneError,
-      "type " & name & " ^capability must be a non-empty qualified-name Str")
-  result.capabilityName = marker.strVal
-  result.schemaHash = capabilityFacadeSchemaHash(name,
-    node.props.getOrDefault("props", NIL),
-    node.props.getOrDefault("body", NIL))
-  if c.enforceCapabilityCatalog:
-    if not c.capabilityCatalog.hasKey(result.capabilityName):
-      raise newException(GeneError,
-        "capability facade names an unknown or host-unadmitted type: " &
-        result.capabilityName)
-    let admitted = c.capabilityCatalog[result.capabilityName]
-    if admitted.facadeIdentity.len == 0:
-      raise newException(GeneError,
-        "native capability type cannot have a Gene facade: " &
-        result.capabilityName)
-    if admitted.schemaHash != result.schemaHash:
-      raise newException(GeneError,
-        "capability facade schema does not match the host-admitted descriptor: " &
-        result.capabilityName)
 
 proc nativeTypeMarker(c: Compiler, node: Value,
                       name: string): NativeTypeProto =
@@ -8425,10 +8216,6 @@ proc compileType(c: var Compiler, node: Value) =
     memberStart = 3
   validateDeclarationCase("type", name)
   let repr = typeReprMarker(node, name)
-  let capabilityFacade = c.capabilityFacadeMarker(node, name)
-  if capabilityFacade.capabilityName.len > 0 and repr != trOrdinary:
-    raise newException(GeneError,
-      "capability specification facade " & name & " must use ordinary representation")
   let nativeType = c.nativeTypeMarker(node, name)
   let nativeSelfRepr =
     if nativeType == nil: AotRepr()
@@ -8452,15 +8239,6 @@ proc compileType(c: var Compiler, node: Value) =
     else:
       raise newException(GeneError,
         "type body items must be ctor, message, or impl declarations")
-  if capabilityFacade.capabilityName.len > 0:
-    var conformanceCount = 0
-    for item in implNodes:
-      if item.body.len > 0 and item.body[0].isSymbol("CapabilitySpec"):
-        inc conformanceCount
-    if conformanceCount != 1:
-      raise newException(GeneError,
-        "capability facade " & name &
-        " must contain exactly one explicit (impl CapabilitySpec ...)")
   # The ctor compiles first so its ^errors row sits deepest on the stack;
   # opMakeType pops it after the message error rows (design §7.1.1).
   var ctorFn: FunctionProto
@@ -8580,10 +8358,6 @@ proc compileType(c: var Compiler, node: Value) =
                  c.chunk.addType(TypeProto(name: name,
                                            staticTopLevel:
                                              node.bits in c.staticTopLevelImpls,
-                                           capabilityName:
-                                             capabilityFacade.capabilityName,
-                                           capabilitySchemaHash:
-                                             capabilityFacade.schemaHash,
                                            repr: repr,
                                            nativeType: nativeType,
                                            fields: fields,
@@ -9218,6 +8992,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "with_capabilities":
       compileWithCapabilities(c, node)
+      return
+    of "require_capabilities":
+      compileWithCapabilities(c, node, required = true)
       return
     of "scope":
       compileTaskScope(c, node)

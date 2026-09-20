@@ -1,12 +1,12 @@
 # Gene Capabilities: Grants, Requests, Block Boundaries, Checks, and Guards
 
-**Status:** Proposed version-1 contract; provider implementation gates are listed in section 17.
+**Status:** Proposed version-1 contract; provider, compiler/runtime, and backend rollout gates are listed in section 17.
 
 **Date:** 2026-09-19.
 
 **Scope:** Inert capability specifications and checked builders; trusted grant configuration; application, callable, and block requests; optional requirements; attenuation; provider-specific authorization; concrete-operation checks and mandatory guards; module initialization, invocation, and deferred-execution boundaries.
 
-This document defines one target contract. Entries remain independent, mandatory admission supports collective coverage of provider-defined alternatives, and independent authority boundaries intersect. Implementation and examples should follow this contract rather than accumulate parallel authorization paths. Provider-specific enforcement details identified in section 17 must be specified before implementing the affected provider.
+This document defines one target contract. Entries remain independent, mandatory admission supports collective coverage of provider-defined alternatives, and independent authority boundaries intersect. Implementation and examples should follow this contract rather than accumulate parallel authorization paths. The reader and abstract policy algebra are ready to guide implementation; each affected subsystem must first complete its applicable section 17 gates, and backend rollout requires the exhaustive effect inventory.
 
 Names use `namespace/Name`: a lowercase namespace and CamelCase capability name. Thus the HTTP example is `(net/Http ^^optional)`. Identifiers are case-sensitive; `net/http` is not silently case-folded to `net/Http`. An alternate spelling requires an explicitly admitted alias.
 
@@ -842,11 +842,11 @@ Contract equality includes the distinction between an absent row and a present e
 
 Use equality of the contract representation after the specified deterministic normalization, preserving entry grouping and admission metadata. Comparing only operation-set coverage, or using successful admission as an equality proof, is insufficient. No arbitrary semantic-equivalence proof is required; if normalized equality cannot be established, reject the explicit replacement with a diagnostic. The author may omit the row to inherit the contract instead; the compiler must not silently discard an incompatible annotation. If several inherited requirements govern the same implementation slot, their effective contracts must agree; reject conflicting contracts rather than union them or choose one by dispatch order.
 
-Consequently, an optional HTTP requirement cannot become a mandatory HTTP requirement in an implementation, even though both select the same maximum operation set. An inherited `[]` remains empty when the implementation omits a row. An inherited absent row remains distinct from an explicit `[]`; version 1 does not silently accept that replacement as a narrowing override.
+Consequently, an optional HTTP requirement cannot become a mandatory HTTP requirement in an implementation, even though both select the same maximum operation set. The reverse replacement is also incompatible: a mandatory requirement cannot become optional, because version 1 requires equality rather than variance in either direction. An inherited `[]` remains empty when the implementation omits a row. An inherited absent row remains distinct from an explicit `[]`; version 1 does not silently accept that replacement as a narrowing override.
 
 Resolve and validate the effective contract before publishing an implementation for invocation. Direct calls, protocol dispatch, held callable values, bound calls, and adapted calls all enforce that same target contract before target-owned defaults or body execution. An inherited body also retains its defining environment and origin ceilings; choosing a different invocation form cannot replace them.
 
-Binding, adapting, or storing a callable does not erase its target's contract. Additional wrapper declarations, registration ceilings, or retained bounds add their own admission checks and intersections; they never replace the target contract. If a wrapper narrows authority so that the target's mandatory request no longer matches, target entry fails normally. This rule requires retained invocation metadata, not new capability parameters in the public `Callable` type syntax.
+Binding, adapting, or storing a callable does not erase its target's contract. An additional wrapper request declaration applies its own mandatory admission checks and request intersection. Registration ceilings and retained upper bounds only intersect authority; they do not introduce full-coverage preconditions. Neither replaces the target contract. If a wrapper narrows authority so that the target's mandatory request no longer matches, target entry fails normally. This rule requires retained invocation metadata, not new capability parameters in the public `Callable` type syntax.
 
 ## 8. Strings and wildcard containment
 
@@ -1223,7 +1223,9 @@ The initial filesystem/HTTP profile has this family-level disposition. This is t
 
 Thus `$println` is not implicitly permitted by `--cap []`. The runner may display a returned result or diagnostic under its own output policy without lending its output authority to application code. Application-controlled formatting callbacks still execute under their normal caller/owner ceilings, never private host authority. Similarly, a host may deliberately disclose selected environment values as ordinary input, but a live environment lookup cannot masquerade as access to that input.
 
-Before enabling the new default for a backend, produce an exhaustive per-API coverage inventory mapping every effectful export and alias to a category, provider/operation or host purpose, enforcement site, and acceptance case. Include indirect/native paths and legacy adapters; missing inventory entries fail the rollout gate. This does not require implementing every provider: marking an API unsupported and rejecting it is an explicit disposition. Representative tests from every family run under `--cap []`, and every guarded API has a checked enforcement path. No legacy path may retain implicit default authority.
+Before enabling the new default for a backend, produce an exhaustive per-API coverage inventory mapping every effectful export and alias to a category, provider/operation or host purpose, enforcement site, and acceptance case. Include indirect/native paths and legacy adapters; missing inventory entries fail the rollout gate. This does not require implementing every provider: marking an API unsupported and rejecting it before any external effect begins is an explicit disposition. Representative tests from every family run under `--cap []`, and every guarded API has a checked enforcement path. No legacy path may retain implicit default authority.
+
+The family-level table does not substitute for that inventory. Each existing API must resolve to a concrete disposition on each supported backend, including an explicit rejection path for unsupported operations. Aliases may reference one shared entry only when they reach the same enforcement boundary; a family label alone is not evidence that a native or legacy path is covered.
 
 ## 11. Filesystem provider semantics
 
@@ -1440,12 +1442,14 @@ The following semantic choices are fixed for version 1:
 | Target overrides and proxies | The initial adapter rejects caller target/Host/authority overrides and proxy configuration; it disables implicit environment proxy selection. Additional modes require an explicit enforcement contract. |
 | Redirects and retries | Disable unchecked automatic handling. Each explicitly supported redirected or retried request is prepared and guarded again before it starts. |
 | Host-managed authentication | Automatic credentials, cookies, and client authentication are disabled unless an explicit origin/provider policy specifies attachment and reuse. Reselect applicable authentication for every redirected target; permission to contact that target never transfers the previous origin's credentials. |
-| CONNECT and application-facing upgrades | Reject CONNECT/extended-CONNECT tunnels, Upgrade requests, and upgraded connections in the initial profile. Reject CONNECT in configured method alternatives. Unexpected upgrade responses must not expose a socket or upgraded stream to the application. Supporting these modes requires a separately specified guarded interface. |
+| CONNECT and application-facing upgrades | Reject CONNECT/extended-CONNECT tunnels and Upgrade requests in the initial profile before sending the request or opening a tunnel. Reject CONNECT in configured method alternatives. Reject unexpected upgrade responses and release the connection under the cleanup contract; do not expose a socket or upgraded stream to the application. Supporting these modes requires a separately specified guarded interface. |
 | Pooled connections | Reuse only when the adapter can establish that the guarded scheme, authority, port, configured network-address restrictions, and applicable host-managed authentication policy still describe the actual connection. Otherwise reject reuse or open a newly guarded connection. |
 
 Before provider implementation, a versioned normalization/transport profile must specify the exact accepted IP syntax, path and query percent-encoding treatment, dot-segment handling, and the transport's serialization behavior, with paired policy/request fixtures. It must also specify supported redirect status/method rules, host-managed authentication selection or its explicit disablement, pooled-connection checks, and rejection of tunnel/upgrade paths. This is a prerequisite to implementation, not permission for adapters to select different URL meanings. Unsupported ambiguous forms are rejected. Denial reports redact query values and other secrets.
 
 For host-managed authentication, an origin includes normalized scheme, host, and effective port; the provider's policy may impose additional path, owner, credential-lifetime, or authentication-state restrictions. An allowed redirect from A to B requires fresh authentication selection for B. The adapter must not copy A's automatically attached Authorization/Cookie data or client-authentication state merely because B also passes the capability guard. If it cannot reselect credentials or isolate authenticated connections correctly, reject the mode. Retain internal provenance for automatically supplied authentication so rebuilding a request cannot relabel it as application-supplied data. Application-supplied headers remain ordinary request data; this rule does not introduce general information-flow tracking.
+
+A profile may disable host-managed authentication, redirects, or connection reuse entirely. Its acceptance cases must then verify that those modes are unavailable and cannot be re-enabled implicitly by transport defaults. The credential-forwarding cases do not require implementing these optional modes merely to reject unsafe behavior.
 
 ### 12.7 Redirects, retries, DNS, and later work
 
@@ -1661,7 +1665,7 @@ For example, independently instantiating a module that declares `Request` and `H
 
 Implementation lookup uses the exact referenced type/protocol identities and the admitted implementation environment. An implementation for a shared protocol can use that protocol's identity through ordinary language rules, but a same-named declaration in another instance does not automatically receive the implementation. Code and registrations cannot leak between domains through a process-global name-only cache. Capability-provider identities remain those of the trusted catalog; these module rules do not permit application declarations to create or replace providers.
 
-The loader's authority-domain key is stable across fresh allocations of the same normalized authority. It includes the exact live-grant identities and validity dependencies, normalized ceiling graph, and relevant origin/catalog identities; module cache keys additionally include owner, source revision, loader policy, and instance generation. Ignore context-object addresses and diagnostic source locations. Flattening intersections, reordering their operands, and removing repeated identical operands are canonical key operations, while preserving complete rows and independent grant provenance. Repeating the same normalized bound over the same authority therefore reuses the same ordinary instance and declaration identities within that cache domain.
+The loader's authority-domain key is stable across fresh allocations of the same normalized authority. It includes the exact live-grant identities and validity dependencies, normalized ceiling graph, and relevant origin/catalog identities; module cache keys additionally include owner, source revision, loader policy, and instance generation. Ignore context-object addresses and diagnostic source locations. Flattening intersections, reordering their operands, and removing repeated identical operands are canonical key operations, while preserving complete rows and independent grant provenance. Repeating the same normalized bound over the same authority therefore reuses the same ordinary instance and declaration identities when owner, source/catalog revision, loader policy, and instance generation are also unchanged. Equal bounds alone do not merge otherwise distinct cache domains.
 
 This is structural canonicalization, not arbitrary operation-set equivalence. Two separately issued grants remain distinct even if their constraints are equal, and unsupported equivalence proofs do not merge domains. The loader profile must pin any additional canonicalization rules. Live revocation does not mint a new declaration identity or rerun initialization; subsequent admissions and guards observe it. An explicit new instance generation has new declaration identities.
 
@@ -1820,6 +1824,8 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | B25 | Wrapper narrows authority below its target's mandatory requirement | Reject target entry before target-owned defaults/body; wrapper metadata does not replace the target contract. |
 | B26 | Inherited relative path row used from another module base | Retain the declaring base. Explicit replacements compare resolved constraints, not identical path spellings; normalized equivalent replacements are accepted. |
 | B27 | Conflicting inherited rows, or inherited absent row explicitly replaced by `[]` | Reject incompatible replacement/implementation; no implicit variance or dispatch-order choice. |
+| B28 | Retained wrapper bound selects unavailable HTTP; target requests HTTP only optionally | Enter with the available intersection, possibly empty; the bound adds no mandatory precondition and the target's optional contract remains intact. |
+| B29 | Mandatory protocol HTTP requirement replaced by optional HTTP | Reject the implementation contract before publication; exact inherited-contract equality also excludes weakening entry requirements. |
 
 ### 16.4 Concrete checks and guard placement
 
@@ -1852,7 +1858,7 @@ For these cases use `(net/Http ^hosts ["api.example.com"] ^methods ["GET"])` unl
 | G23 | One independent row definitely denies and another reports failure | Denial in either row order; no effect. |
 | G24 | Retained handle has overlapping origin grants; one revokes | Reevaluate origin context alternatives; another live origin grant may still permit the operation. |
 | G25 | Current and origin contexts allow a write, but retained handle is read-only | Deny due to resource-specific mode; context retention does not erase handle restrictions. |
-| G26 | Representative operations from every inventoried built-in effect family under `--cap []` | Follow section 10.10's category and enforcement contract; no legacy alias or adapter retains implicit authority. |
+| G26 | Representative operations from every inventoried built-in effect family under `--cap []` | Follow section 10.10's category and enforcement contract; unsupported calls reject before any external effect, and no legacy alias or adapter retains implicit authority. |
 | G27 | Application invokes `$println` versus runner displays a returned result/diagnostic | Application output is rejected in the initial profile; private host display lends no output authority or privileged formatting callback. |
 | G28 | Application reads a live environment variable versus an explicitly supplied ordinary value | Live lookup is unsupported without an admitted contract; prior deliberate disclosure does not authorize further environment access. |
 | G29 | Exported effect, native path, or backend alias is absent from the coverage inventory | Fail the backend rollout gate; an unclassified path cannot silently become capability-free. |
@@ -1886,7 +1892,7 @@ For these cases use `(net/Http ^hosts ["api.example.com"] ^methods ["GET"])` unl
 | R23 | Native callback enters from a foreign thread | Intersect admitted dispatcher and registration/owner ceilings; unsupported context establishment rejects entry. |
 | R24 | Same source independently initialized in two ordinary instance domains | Distinct locally declared nominal types/protocols; defaults and implementation registrations retain their own instance environments. |
 | R25 | Host and plugin import the same explicitly shared contract instance | Share its declaration identities, including through aliases/re-exports; caller ceilings still apply to behavior. |
-| R26 | Repeated imports use freshly allocated but canonically identical bounds and live-grant references | Reuse the same ordinary instance/domain and declaration identities; context-object allocation is irrelevant. |
+| R26 | Repeated imports use freshly allocated but canonically identical bounds and live-grant references, with the same owner, source/catalog revision, loader policy, and instance generation | Reuse the same ordinary instance/domain and declaration identities; context-object allocation is irrelevant. |
 | R27 | Equal symbolic constraints refer to independently issued live grants | Do not merge authority domains or declarations merely by operation-set equality; preserve separate revocation dependencies. |
 | R28 | Compiled code is reused under another admitted module domain | Bind compile-time/runtime type, import, macro, and implementation references consistently; relink/recompile or reject stale linkage. |
 | R29 | A value or declaration reference crosses ordinary instance domains | Preserve its originating identity; a same-named destination declaration does not become identical or inherit its implementations. |
@@ -1934,10 +1940,11 @@ A passing policy test does not prove the adapter used the guarded target. Integr
 | P10 | Filesystem traversal encounters a symlink or unsupported identity guarantee | Reject; no prefix-check or unchecked-follow fallback. |
 | P11 | Closing a buffered writer after revocation would flush data | Release-only path cannot flush; ordinary write authorization is required for the data effect. |
 | P12 | Platform or transport cannot enforce its adopted profile | Reject unsupported operation/configuration; do not silently weaken the profile. |
-| P13 | Credentialed request redirects from A to B, both permitted by `net/Http` | Reselect B's host-managed authentication under its policy; do not automatically forward A's credentials/cookies/client-authentication state. |
+| P13 | Credentialed request redirects from A to B, both permitted by `net/Http` | If the profile supports this mode, reselect B's host-managed authentication under its policy; otherwise reject the mode. Never automatically forward A's credentials/cookies/client-authentication state. |
 | P14 | Redirect changes scheme/port or connection reuse changes authentication applicability | Revalidate the full origin and authentication policy; use correctly isolated state or reject the mode. |
 | P15 | CONNECT method policy/request, extended-CONNECT tunnel, or application Upgrade request | Reject unsupported configuration/operation before opening a tunnel or sending an upgrade request; HTTP grants alone cannot enable it. |
 | P16 | Server supplies an unexpected protocol-upgrade response | Reject and release according to the cleanup contract; no upgraded stream or raw socket is exposed to application code. |
+| P17 | Profile disables host-managed authentication, redirects, or connection reuse while the transport offers them by default | Keep the modes disabled; reject attempts to enable unsupported behavior, with no automatic credential attachment or unguarded follow-up request. |
 
 ## 17. Decisions required before implementation
 

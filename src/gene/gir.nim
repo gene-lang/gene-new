@@ -654,6 +654,8 @@ type
   CapabilityBlockProto* = ref object
     row*: CapabilityRow
     body*: Chunk
+    required*: bool
+    dynamicPolicy*: bool
 
   NodeBuildProto* = object
     metaNames*: seq[string]
@@ -803,6 +805,7 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
+    repeatControlLoop*: bool # structured while/loop/repeat body, sharing its owner scope
     immutableBindings*: seq[string]
     moduleRefNames*: seq[string] # predeclared before source-unit execution
     exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports
@@ -849,6 +852,7 @@ type
     ## or runtime needs. Artifacts carry module bundles, never filesystem
     ## paths or a requirement to re-read dependency source.
     identity*: string
+    sourcePath*: string      # normalized package-relative path; never an absolute host path
     chunk*: Chunk
     macroExports*: Table[string, MacroDef]
     syntaxFnExports*: seq[string]

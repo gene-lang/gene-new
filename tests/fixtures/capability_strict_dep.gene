@@ -1,3 +1,4 @@
+# Intentionally obsolete: compilation must reject removed module modes.
 (mod capability_strict_dep
   ^capabilities_mode strict
   ^capabilities [])

@@ -1,196 +1,292 @@
-# Authority, evaluation, and sandbox boundaries
+# Authority, evaluation, and capability boundaries
 
-**Status:** normative for the implemented VM surface described here. For
-usage, start with [permissions and deployment](../workflows.md#permissions-and-deployment).
-[Development status](../development.md#status) records the limits of these claims.
+This is the version-1 authority contract. The [proposal](../proposals/capabilities.md)
+contains the complete semantics and acceptance cases; the
+[implementation tracker](../implementation/capabilities-v1.md) distinguishes
+implemented paths from outstanding integration. Native execution commands now
+use the empty startup default and explicit source admission. Embedding applications
+also start with normalized empty authority. Remaining adapters, legacy internals
+and full application workflows are still being migrated.
 
 ## Separate the layers
 
 | Layer | Responsibility |
 | --- | --- |
-| `Env` / `CallerEnv` | Supply names and values for evaluation. An `Env` may also retain a separate capability ceiling. |
-| Namespace exposure | Controls which APIs a module can name directly. |
+| `Env` / `CallerEnv` | Supply names and values for evaluation; an Env can also retain a separate authority ceiling. |
+| Namespace exposure | Controls which APIs code can name directly. |
 | Capability context | Authorizes external operations through trusted providers and adapters. |
-| Resource handle | Identifies a resource, whose origin restrictions are checked together with the active context. |
-| Execution policy | Bounds VM execution; sandbox loading also restricts declaration admission. |
+| Resource handle | Identifies a resource with retained origin, identity, and mode restrictions. |
+| Execution policy | Bounds execution time, steps, and memory; loader policy also controls admitted sources and declarations. |
 
-These layers compose. A visible filesystem API does not grant permission to
-read a file. Conversely, hiding a namespace does not remove a function or
-resource already supplied through a binding or admitted shared module.
-Access to Cells, closures, and caller values can permit ordinary in-memory
-effects without granting filesystem, network, process, or native authority.
+A visible filesystem API grants no permission to read. Hiding a namespace does
+not revoke a callable or resource already supplied through a binding. Ordinary
+in-memory mutation remains possible without external-operation authority.
 
-## Specifications, grants, and roots
+## Inert policies and trusted grants
 
-Gene capability types and specifications describe requests. For example,
-`(fs/ReadFile path)` is inert data; constructing it does not authorize a read.
-Sealed grants and contexts are runtime objects, never ordinary Gene values.
-Trusted providers own resolution, intersection, validity, and revocation.
-Providers and facade descriptors are admitted by the host before the registry
-freezes and before module initialization. Gene declarations cannot admit a
-provider or mint a root grant.
-
-The native CLI and ordinary host constructors have compatibility defaults:
-filesystem access beneath the launch directory and the built-in host-provider
-grants. `gene run` is therefore not a deny-by-default sandbox. Pre-entry
-`--allow_read_dir`, `--allow_write_dir`, and `--allow_read_write_dir` options
-add host grants; they do not remove the defaults. An embedder can replace the
-root context through `setRootCapabilities` before entry materialization.
-Root grants are frozen after that point. Module discovery paths and filesystem
-grant roots are independent.
-
-`main` receives program arguments, not grant values. Strings such as `--grant`
-after the entry file are ordinary data. See [modules](modules.md).
-
-## Selection and invocation
-
-`^capabilities [...]` selects from the available context. An empty list
-selects none; `*` inherits the available context; `fs/*` projects the filesystem
-grants already available. Mandatory selectors fail when unsatisfied. Optional
-selectors permit execution without that grant, and operations still enforce
-their requirements. `check_capabilities` tests the active context through the
-same provider resolution; it does not mint or retain permission.
-
-Open mode is the compatibility default. Strict mode requires declaration rows
-where specified by the compiler. Changing mode does not widen runtime authority.
-Function and protocol declaration rows select from the context remaining after
-module, import-site, and retained ceilings have been applied.
-
-For an ordinary invocation or evaluation:
-
-```text
-available = active invoker context ∩ applicable retained ceilings
-effective = declaration/call-site selection from available
-```
-
-Intersection is provider-defined. It is not a comparison of grant object
-identity or a re-resolution against the original host root. A retained context
-is a ceiling, never a replacement for a narrower invoker context. Normal return
-and exceptional exit restore the caller's dynamic context.
-
-| Boundary | Implemented rule |
-| --- | --- |
-| Ordinary function/closure | Uses the invoker's context, constrained by its declaration and applicable module/eval ceilings. Creating a plain closure inside `with_capabilities` does not itself capture that temporary context. |
-| Imported function/message | Intersects the invoker context with the callee module ceiling and applicable import-site ceiling before applying the declaration row. Module initialization is bounded separately. |
-| `runtime/bind_call` | Retains the creating context and optional selection; each invocation intersects that ceiling with its invoker. |
-| `eval` | Intersects the evaluator context with retained rows on the target `Env` and its parents. Functions created in that eval retain the resulting ceiling. |
-| Generator | Retains execution context across suspension; a pull or close also applies the current consumer's ceiling and restores the consumer's context afterward. |
-| Lazy `map` / `filter_map` / `filter` and `=>` | Retain their creation ceiling; demanding an item intersects it with the consumer context before upstream or callback execution. |
-| Spawned task | Captures the context active at spawn; task-local narrowing does not mutate the parent. |
-
-Do not infer callback registration semantics from ordinary closure capture.
-An API that retains a callback must define its attachment and invocation rule.
-Use `runtime/bind_call` when an explicit retained ceiling is needed. Arbitrary
-foreign callback entry is not covered by this table.
-
-## Environments and evaluation
-
-Use `^bindings` for ordinary values and a selector list for capability selection:
+A capability row describes constraints; constructing one never grants authority.
+Only the host establishes root grants using the frozen provider catalog. Source
+name resolution, application types, and scoped implementations cannot replace a
+provider or its authorization behavior.
 
 ```gene
-(var e
-  (env ^bindings {^input "hello"}
-       ^capabilities []
-       ^policy {^max_steps 10000}))
-(eval (quote input) ^in e) # "hello"
+[(fs/Read "/srv/app/data")
+ (net/Http ^hosts ["api.example.com"] ^methods ["GET"] ^^optional)]
 ```
 
-Runnable examples: [Env ceilings](../../examples/capabilities/07_env.gene)
-and [call-site attenuation](../../examples/capabilities/04_with_capabilities.gene).
+The row is inert. Heads are catalog identifiers and values are restricted data,
+not expressions or variable references. Duplicate properties, unknown schemas,
+reader extensions, and malformed optional entries are errors. `fs/*` expands the
+admitted namespace at normalization; there is no row-level `*` inheritance form.
 
-An ordinary `Env` overlays explicit bindings, parent bindings, imports, and
-module bindings on the scope where `eval` executes. It does not hide that
-scope's names. A `CallerEnv` explicitly supplies the fexpr caller's bindings;
-its named `snapshot` creates a closed capture with no evaluation-site lexical
-fallback. Neither mechanism by itself creates external-operation grants.
+Entries are independent alternatives. A grant must match a complete operation;
+fields from unrelated grants cannot be combined. Separate authority rows
+intersect. Mandatory admission can collectively cover provider-defined request
+alternatives while preserving every entry's field correlations and live-grant
+provenance. A bounded proof can report that coverage cannot be established.
 
-The current `Env ^capabilities` syntax has two distinct forms:
+Capability identifiers exist in the trusted catalog, not as callable values in
+ordinary Gene namespaces. Use `$capabilities/parse` for authored policy text or
+`$capabilities/entry` with `$capabilities/build` for runtime values. Calling a
+policy value is an error. `type ^capability`, Gene `CapabilitySpec` canonicalizers,
+the old constructor exports, and the selector-based `check_capabilities` API
+have been removed. The old `capabilities_of` and `capability_type_info` reflection
+functions are also removed; their selector representations do not describe the
+new contract. Callable contracts remain in compiler/runtime metadata, including
+inherited mandatory/optional obligations and the absent-versus-empty distinction.
 
-- A **list** is a selector row, resolved against the creating active context.
-  Its retained ceiling, and any parent Env ceilings, apply at every evaluation.
-  `Env/extend` and `^parent` cannot remove a parent's capability restrictions.
-- A **map** is a legacy name-binding overlay. It creates no grants and adds no
-  capability ceiling. New examples should use `^bindings` for these values.
+Use `$capabilities/check_requirements` with an immutable row to ask about
+mandatory admission, or `$capabilities/check_operation` with provider-prepared
+facts to ask about one concrete operation. An empty requirement row is valid.
+Neither check reserves permission, and overlapping complete live grants are
+alternatives rather than an ambiguity error. Dynamic resource names belong in
+the checked builder, not in static declaration literals.
 
-Without a selector row anywhere in the Env chain, evaluation inherits the
-evaluator's context. An explicit `[]` restricts it to no external capabilities.
-Passing an Env created under broader grants into a narrower context cannot
-restore the removed grants:
+`fs/Read`, `fs/Write`, and `fs/ReadWrite` replace the old file/directory capability
+names. Filesystem roots are literal tree selectors, not string prefixes or glob
+patterns. Relative declaration roots use the declaring source file's directory;
+ordinary relative filesystem operations use the provider's captured launch
+working directory. Narrowing a policy does not change where relative I/O resolves.
+The [filesystem profile](../implementation/capabilities-filesystem-profile.md)
+defines descriptor-based resolution and rejected operations.
+
+Filesystem reads and writes use guarded, unbuffered descriptors. Retained native
+handles preserve their original binding, identity, mode and authority; later use
+cannot borrow a broader caller's grants to replace a revoked origin. Atomic
+writes guard staging and publication separately. Denial before publication leaves
+the destination unchanged. Cleanup closes owned descriptors, but removing a
+staging entry still needs live write authority, so a failed write can leave a
+temporary entry. A durability error after publication can leave the complete
+replacement in place. The profile defines these failure and cleanup cases.
+
+## Requests and upper bounds
+
+| Form | Entry rule | Execution authority |
+| --- | --- | --- |
+| Omitted callable declaration, without an inherited contract | No additional request boundary. | Actual caller intersected with all applicable retained/loader ceilings. |
+| `^capabilities []` | Admission succeeds. | No selected external-operation authority. |
+| Callable request row | Every mandatory entry must be covered; optional entries do not block entry. | Available authority intersected with the complete request row. |
+| `with_capabilities row` | No full-coverage requirement. | Available authority intersected with the bound. |
+| `require_capabilities row` | Mandatory admission before the block body. | Available authority intersected with the request. |
 
 ```gene
-(var saved (env ^capabilities [fs/*]))
-(with_capabilities []
-  (eval (quote ($fs/read_text "data.txt")) ^in saved))
-# MissingCapability, even if saved was created with access to data.txt.
+(fn fetch [] ^capabilities [(net/Http ^^optional)]
+  # Enter even without HTTP; any attempted request still needs its real guard.
+  42)
+
+(with_capabilities [] (untrusted_callback input))
+(require_capabilities [(fs/Read "/srv/app/data")] (read_index))
 ```
 
-Eval's execution limits compose with the evaluator's limits and propagate
-through calls. Its source-level `import` is rejected; dependencies must be
-supplied through the supported Env import/binding path. This does not make
-ordinary `eval` the sandbox-generation loader: an Env is not a complete
-untrusted-code isolation boundary.
+Optional entries select their exact available overlap, possibly none. They do
+not disable guards or promise that all operations in a family are available.
+Invalid metadata remains an error. Optional entries can report an inspection
+failure without adding an entry precondition; they do not relabel it as ordinary
+unavailable authority or authorize an operation through a failed provider.
+Pure bounds reject optional metadata, including explicit false.
 
-`allow_ffi` and `allow_native_compile` are accepted only as false in Env policy
-data; they do not create authority or replace capability checks. The implemented
-declaration restrictions of transactional sandbox loading are described below.
-Do not treat an Env policy field as proof of general native-code isolation.
+The callee's boundary is installed before its default arguments and body run.
+Explicit argument expressions follow the caller's ordinary evaluation schedule;
+wrap the whole call to restrict those expressions too. Return, loop exits,
+exceptions, suspension, and cleanup restore the enclosing execution context.
 
-## Resources and native boundaries
+Protocol implementations and method overrides inherit one effective contract.
+An omitted replacement annotation inherits it; an explicit row must match the
+normalized inherited contract, including mandatory/optional obligations and
+absent-versus-empty distinctions. Relative paths retain their original base.
+Direct, held, bound, adapted, and protocol calls enforce the same target contract.
+Wrappers add restrictions and never replace the target's requirements.
+Module request annotations, open/strict capability modes, parameter-dependent
+selectors, and `require_strict_dependencies` are removed.
 
-An effectful resource operation must be authorized by both its origin
-restrictions and the current context. Passing a handle into an empty context
-does not delegate I/O permission. Origin metadata is internal to the runtime;
-it is not a forgeable Gene property. Providers check grant validity at use,
-including revocation of retained grants. Resource release/close operations
-have their own cleanup rules and do not confer new operating permission.
+## Dynamic policy values and checks
 
-`$ffi/open` takes a library path and checks active `ffi/Load` authority.
-`$ffi/bind`, dynamic FFI invocation, and loaded AOT entries check retained
-origin restrictions together with the active context. A library or callable
-handle is not a substitute for that check.
+The public constructors return immutable values:
 
-Trusted providers, native adapters, and loaded native libraries are part of
-the trusted computing base. Once arbitrary native code is admitted, the VM
-cannot confine its direct host effects in-process. The web backend relies on
-its host/browser environment and has no VM capability-context sandbox.
+```gene
+(var from_text
+  ($capabilities/parse "[(fs/Read \"data\")]"
+    ^base "/srv/app" ^source "application settings"))
 
-## Sandboxed module loading and publication
+(var entry
+  ($capabilities/entry "net/Http" []
+    [["hosts" [($capabilities/pattern "*.example.com")]]
+     ["methods" ["GET"]]]))
+(var bound ($capabilities/build [entry]))
+(with_capabilities bound (work))
+```
 
-The `grants` strings accepted by `load_sandboxed` and sandbox-generation
-preparation are **namespace exposure choices**, not resource capability grants.
-For example, `["fs"]` makes filesystem APIs available to name; operation-level
-capability checks still apply. `dir`, the shared-module allowlist, namespace
-exposure, capability ceilings, and execution limits are distinct controls.
+`entry` takes a capability name, positional-value list, and property-pair list.
+Its optional fourth Boolean supplies request optionality. Pairs preserve duplicate
+names for validation. Runtime strings are literal by default; `pattern` marks
+an explicit pattern and the zero-argument `$capabilities/any` constructor marks
+an unrestricted value. The provider must support the selected constraint kind.
+`build` copies and validates entries; later changes to the input lists do not
+alter a row. Neither constructor executes capability heads.
 
-The compatibility `load_sandboxed` path initializes and publishes immediately.
-Configuring its module afterward cannot retroactively constrain initialization.
-Transactional preparation bounds compilation, macro expansion, initialization,
-and escaped entries by its supplied policy. It rejects FFI, native/capability
-type, and embedded-web declarations. Prepared module/compile caches, impls,
-serde origins, and scopes remain prospective until atomic commit.
+`parse` and `build` accept `^base` and `^source`. A supplied base is absolute;
+relative resource selectors require a base. Without relative resource values,
+the base can be omitted. A dynamic boundary operand is evaluated once and must
+produce a checked `CapabilitySpecRow`, not an ordinary list or map.
 
-Commit checks the live module/impl base before publication. Discard and release
-have explicit lifecycle rules. Admitted shared modules retain host identity and
-policy, so the shared allowlist is part of the trust decision. A sandbox cannot
-invoke the sandbox-management entry points itself; sharing a host wrapper that
-performs privileged management still exposes that wrapper's behavior.
-See [modules](modules.md) for the transaction lifecycle.
+```gene
+(var report ($capabilities/check_requirements bound))
+report/admitted
 
-## Verification and limits of the claim
+(var prepared ($net/http_client/prepare "GET" "https://api.example.com/status"))
+(var description ($net/http_client/describe_operation prepared))
+(var decision ($capabilities/check_operation description))
+decision/allowed
+```
 
-| Contract area | Executable coverage |
+A requirement report preserves mandatory versus optional results. An operation
+decision concerns one validated concrete operation. Both use the active context,
+return read-only data, and neither performs the effect nor reserves permission.
+Requirement entries distinguish `provider_failure` from unmatched coverage and
+incomplete proofs, with a safe `failure_scope` of `entry` or `shared`. A complete
+independent proof can satisfy an entry-local failure; a shared failure prevents
+that requirement from matching. Admission still depends only on mandatory
+entries. Required boundaries raise `CapabilityProviderError` when a mandatory
+provider failure remains, preserving its internal cause.
+HTTP preparation is pure. `await ($net/http_client/send prepared)` sends the
+prepared request under the actual caller's authority. `request` and `stream`
+prepare their named arguments through the same validation and guard path.
+The native worker obtains a fresh live-authority decision when it is ready to
+start; a queued request cannot rely on its earlier successful check. Redirects
+are returned to the caller, and following one requires another guarded request.
+The initial transport rejects proxies, target/framing overrides, CONNECT and
+protocol upgrades, and does not retain cookies or managed authentication.
+Trusted adapters independently derive and guard the operation they actually
+perform, including redirects and retained-resource reuse.
+
+Guard denials are recoverable `MissingCapability` errors with the capability,
+operation, and stable `reason`; available decisions also identify `authority_row`.
+Provider evaluation failures use `CapabilityProviderError`, and invalid operation
+facts use `CapabilityTypeError`. Internal exception chains preserve provider
+causes without exposing credentials or live authority objects. Unsupported
+operations use `UnsupportedCapability`; ordinary filesystem failures remain
+`OsError`. Optionality does not suppress any of these failures.
+
+## Retained and deferred execution
+
+| Boundary | Authority rule |
 | --- | --- |
-| Provider algebra, revocation, exact filesystem checks, resource reuse, module/import ceilings, Env intersections and escaped eval code | `tests/test_capabilities.nim` |
-| Bound callback creation/invocation ceilings | `tests/test_bound_call.nim` |
-| Pipeline creation/consumption and generator consumer ceilings | `tests/test_pipeline.nim` |
-| Namespace restrictions, shared modules, escaped calls, prospective activation, and policy limits | `tests/test_modules.nim` |
-| Env bindings, snapshots, evaluation policy, and runtime FFI surface | `tests/test_vm.nim`, `tests/spec_runner.nim` |
+| Plain closure | Invocation uses the actual caller and applicable declaration/loader/eval ceilings. Creation inside a temporary block alone captures no extra ceiling. |
+| `runtime/bind_call` | Captures its creation ceiling and intersects each invoker. Optional `^capabilities` accepts an immutable policy row, as an additional bound. |
+| Callable adaptation | Preserves target contracts and retained restrictions. |
+| Env / eval | A supplied Env row captures creation authority; evaluation also intersects every parent Env ceiling and the evaluator's context. Escaped eval functions retain that result. |
+| Generator and lazy pipeline | Retain creation/execution ceilings; pull and close also apply the consumer's ceiling. |
+| Spawned task | Captures the effective spawn context, preserving it across suspension and resumption. |
+| Callback-retaining API | Captures registration context even for an existing function; dispatch intersects registration, callable origin, and dispatcher ceilings. Each adapter requires coverage. |
+| Resource handle | Every data operation requires current and origin authority plus resource identity and mode restrictions. |
 
-These tests establish specific implemented behavior. They do not constitute an
-audit of every adapter, callback API, native extension, or backend. Stronger
-sandbox claims require evidence for those boundaries rather than inference
-from a namespace filter, an Env value, or the proposal's acceptance criteria.
+Env name bindings use `^bindings`; `^capabilities` accepts an inert bound or an
+immutable policy value. The legacy capability-map name overlay is rejected.
 
-A separate existing hang in eval-defined nominal types with methods remains
-outside this coverage. The eval retention tests above cover functions and
-generators; they do not certify that declaration path.
+```gene
+(var saved (env ^bindings {^input "hello"}
+                ^capabilities ($capabilities/parse "[]")
+                ^policy {^max_steps 10000}))
+(eval (quote input) ^in saved) # "hello"
+```
+
+Omitting the Env bound adds no ceiling; an explicit empty row remains empty.
+`Env/extend` and `^parent` cannot remove parent ceilings. An Env controls neither
+all accessible names nor arbitrary mutable references. It is not a complete
+untrusted-code isolation boundary. Eval imports remain restricted to its
+supported dependency/binding path, and execution budgets compose separately.
+
+Release-only cleanup may close an owned resource after revocation. It may not
+flush buffered application writes or perform unrelated effects using host
+privileges. A previously obtained handle does not authorize later I/O by itself.
+
+## Modules, startup, and rollout
+
+Ordinary initialization executes under caller authority intersected with admitted
+loader/origin policy. Its instance domain includes owner, source/catalog revision,
+loader policy, and a canonical authority-domain key. Independently initialized
+domains own distinct nominal types and protocols. Explicitly shared, preinitialized
+contract instances provide shared identity. Compile-time and runtime bindings
+must select the same domain; equivalent fresh context objects do not create new
+identities. Ordinary normalized imports retain their initialization ceilings and
+use authority-specific instances. Native sandbox directories now capture immutable
+source bundles through no-follow filesystem reads, and source policies survive
+calls and Env values. Other acquisition modes, concurrency and initialization
+cleanup remain part of the [loader integration gate](../implementation/capabilities-loader-profile.md).
+
+The target startup precedence is an explicit CLI row or CLI-selected capability
+file, then `GENE_CAPABILITIES`, host configuration defaults, and finally the
+built-in empty policy. Multiple CLI policy sources are rejected. Each selected source replaces lower-priority
+sources; independent administrator ceilings still intersect it. Invalid selected
+sources fail without fallback. Private source/configuration acquisition and
+runner diagnostics do not lend authority to application code.
+
+Before switching a backend to the empty default, every effectful API, alias,
+native path, and retained operation must be classified as guarded, private host,
+explicitly capability-free, or unsupported. The initial filesystem/HTTP profile
+does not implicitly exempt application output, live environment access, stdin,
+clocks, entropy, databases, subprocesses, or arbitrary native code. Unsupported
+families must reject operations until their contracts and adapters are adopted.
+See proposal section 10.10 and the implementation tracker for rollout gates.
+
+## Native callable admission
+
+The [native inventory](../implementation/capabilities-native-inventory.md) assigns
+every registered native implementation an explicit disposition. That immutable
+metadata is attached by trusted constructors; a display name, alias, bound call
+or callable adaptation cannot supply or erase it. Unclassified extensions and
+unsupported operations reject before the native implementation runs. Guarded
+adapters still check the actual operation and live authority at the effect site.
+
+For host extensions, `newNativeFn`, `newNativeCallFn` and the explicit overloads
+of `geneModuleDefineNative` / `geneModuleDefineNativeCall` accept `effectKind`.
+The default is `nekUnclassified`. Use `nekCapabilityFree` only for an audited
+in-memory operation, or `nekGuarded` for an adapter that performs its own effect
+guard. This is a trusted host declaration, not a proof that arbitrary native
+code is safe. Arithmetic fast paths are reserved for admitted builtin
+implementations; naming an extension `+` does not select one.
+
+A guarded Nim adapter obtains the effective context with
+`activeCapabilitiesForCall(call)` and passes that context to the admitted provider.
+It must not substitute `app.rootCapabilities`. `raiseCapabilityOperationError`
+translates provider failures and denials into the shared safe Gene errors.
+Call-aware native adapters receive an opaque captured context in `NativeCall`;
+that context is still intersected with any active caller and retained ceilings.
+Direct SDK calls with a dispatch scope establish that scope's current and retained
+ceilings for the native body and its nested calls, then restore the caller.
+
+The native API version is 5. The older registration overloads keep their argument
+shapes but create unclassified callables; older native binaries must be rebuilt.
+The ordinary startup policy, callback adapters currently rejected by the initial
+profile, and private host admission still need their remaining rollout work.
+
+## Verification scope
+
+Core reader, algebra, provider, and domain tests are separate from actual-adapter
+and execution-boundary tests. The focused suites include
+`test_capability_boundaries.nim`, `test_capability_deferred.nim`,
+`test_bound_call.nim`, `test_pipeline.nim`, and `test_unify_callable.nim` for
+invocation, evaluation, suspension, and retained ceilings. Filesystem tests
+observe real effects; HTTP policy tests alone do not establish transport safety.
+Passing these tests is not completion of the loader, startup, effect-inventory,
+callback-adapter, or Harness migration.

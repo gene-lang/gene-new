@@ -206,7 +206,9 @@ the exported ABI through Node.
 
 Call-scoped synchronous callbacks use typed native shims on the owning root
 lane. SQLite `visit_text_rows` is the first library adapter. The Nim-facing
-native API is version 4 and transports cancellation explicitly. See the
+native API is version 5, transports cancellation explicitly, and requires an
+admitted effect disposition for native callables used under normalized capability
+policies. Existing native modules must be rebuilt. See the
 [callback contract](spec/modules.md#synchronous-native-callbacks) for entry,
 lifetime, and failure rules.
 
@@ -221,20 +223,35 @@ nimble native_example
 
 The C backend is experimental. Use the [native example](../examples/native/README.md)
 for the actual compile/link/load workflow and platform prerequisites. Dynamic
-FFI loading requires active `ffi/Load` permission. Admitting arbitrary native
-code does not create an in-process sandbox.
+FFI and AOT loading are unsupported in the initial normalized capability profile.
+Admitting arbitrary native code does not create an in-process sandbox.
 
 ## Permissions and deployment
 
-Ordinary native CLI runs have compatibility grants for the launch directory
-and built-in host facilities. Additional directory flags are host policy:
+Native execution starts with no ordinary external authority. Select one inert
+policy through `--capabilities`/`--cap`, `--capabilities-file`/`--cap-file`, or
+`GENE_CAPABILITIES`. CLI input replaces the environment; an explicit `[]` grants
+nothing, and invalid selected input never falls back:
 
 ```sh
-gene run --allow_read_dir /path/to/data report.gene
+gene run --cap '[(fs/Read "/path/to/data")]' report.gene
+gene run --cap-file permissions.gene --source-root ./src ./src/main.gene
 ```
 
-Narrow within Gene using capability rows or `with_capabilities`. Namespace
-exposure, retained resource restrictions, and execution policy are separate
-controls. If embedding untrusted code or plugins, read the
+The old `--allow_*_dir` flags are removed. Source-file execution admits the entry
+file; `--source-root` explicitly adds frozen `.gene` source bundles for imports.
+It grants no application filesystem permission. File runs do not automatically
+acquire package dependencies; project runs use the host-selected verified build
+graph and execute only its admitted artifacts and explicit additional sources.
+
+The initial profile supports guarded filesystem and HTTP operations. Application
+printing, live environment/input access, subprocesses, databases and other
+unadopted operations reject explicitly. `gene eval` and the REPL may display a
+returned result under the runner's private output responsibility. See the
+[native inventory](implementation/capabilities-native-inventory.md) and
+[migration tracker](implementation/capabilities-v1.md) for remaining work.
+
+Namespace exposure, retained resource restrictions, and execution policy are
+separate controls. If embedding untrusted code or plugins, read the
 [authority contract](spec/authority.md) and [known limits](development.md#status)
 before treating an Env or a restricted namespace as a sandbox.

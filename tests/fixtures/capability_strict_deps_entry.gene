@@ -1,3 +1,4 @@
+# Intentionally obsolete: compilation must reject removed module modes.
 (mod capability_strict_deps_entry
   ^capabilities_mode strict
   ^require_strict_dependencies true

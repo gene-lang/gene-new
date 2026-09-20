@@ -73,10 +73,10 @@ execution policy are separate controls.
   the `runtime` namespace was granted accidentally.
 - Runtime `declarations` exposes only bindings with real runtime `^value`;
   macros/derives remain compiler artifacts.
-- `gene run [--allow_read_dir dir] [--allow_write_dir dir]
-  [--allow_read_write_dir dir] file [--] [args...]` executes top level, then
-  calls `main`. Pre-entry directory options mint host grants without evaluating
-  Gene code. Positional strings form the first argument; `--grant` after the
+- `gene run [--cap row | --cap-file path] [--source-root dir] file [--] [args...]`
+  executes top level, then calls `main`. Startup policy is inert and defaults to
+  `[]`. The entry and explicitly admitted source roots provide code acquisition,
+  not application filesystem permission. Positional strings form the first argument; `--grant` after the
   entry file is ordinary program data, not an authority channel. Embedders
   establish the root capability context through the host API.
 - `main` returns `Nil` for exit 0 or an in-range `Int` exit code; other values

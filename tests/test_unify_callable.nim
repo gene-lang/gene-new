@@ -1,3 +1,4 @@
+import ./capability_test_support
 import std/[os, strutils, tables, tempfiles, unittest]
 import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer, types, vm]
 
@@ -272,16 +273,14 @@ suite "unified callable — checked signatures":
 when not defined(geneWasm):
   suite "unified callable — authority":
     test "creating and calling authority both restrict a view":
-      let root = createTempDir("gene-callable-caps-", "")
+      let root = expandFilename(createTempDir("gene-callable-caps-", ""))
       defer: removeDir(root)
       writeFile(root / "data", "callable")
-      let app = newApplication(root)
-      app.setRootCapabilities(newCapabilityContext(
-        @[app.filesystemCapabilities.grantReadDir(root)]))
+      let app = newFilesystemPolicyApp(root)
       let scope = newGlobalScope(app)
       scope.define("file", newStr(root / "data"))
       check run(compileSource("""
-        (fn read ^capabilities * [] ($fs/read_text file))
+        (fn read [] ($fs/read_text file))
         (fn make [] : (Callable [] Str) read)
         (let full (make))
         (let narrow (with_capabilities [] (make)))

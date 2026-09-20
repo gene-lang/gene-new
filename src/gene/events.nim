@@ -876,29 +876,29 @@ proc registerEventNamespace(root: Scope) =
   # arguments: `NativeCall` is the only channel that carries the calling scope,
   # and that scope is what resolves the error types a raise must construct with
   # the caller's own identities.
-  let emitNative = newNativeCallFn("EventSink/emit", biEventSinkEmit,
+  let emitNative = builtinNativeCallFn("EventSink/emit", biEventSinkEmit,
                                    acceptsNamed = false)
 
   let busType = eventScope.defineBuiltinType(vkEventBus, "Bus", {
-    "subscribe": newNativeCallFn("Bus/subscribe", biEventBusSubscribe),
-    "publish": newNativeCallFn("Bus/publish", biEventBusPublish,
+    "subscribe": builtinNativeCallFn("Bus/subscribe", biEventBusSubscribe),
+    "publish": builtinNativeCallFn("Bus/publish", biEventBusPublish,
                                acceptsNamed = false),
-    "close": newNativeCallFn("Bus/close", biEventBusClose,
+    "close": builtinNativeCallFn("Bus/close", biEventBusClose,
                              acceptsNamed = false),
-    "closed?": newNativeCallFn("Bus/closed?", biEventBusClosed,
+    "closed?": builtinNativeCallFn("Bus/closed?", biEventBusClosed,
                                acceptsNamed = false),
-    "subscription_count": newNativeCallFn("Bus/subscription_count",
+    "subscription_count": builtinNativeCallFn("Bus/subscription_count",
                                           biEventBusSubscriptionCount,
                                           acceptsNamed = false),
     "emit": emitNative},
-    ctor = newNativeCallFn("event/Bus", biEventBusNew))
+    ctor = builtinNativeCallFn("event/Bus", biEventBusNew))
 
   discard eventScope.defineBuiltinType(
     vkEventSubscription, "Subscription", {
-      "cancel": newNativeCallFn("Subscription/cancel",
+      "cancel": builtinNativeCallFn("Subscription/cancel",
                                 biEventSubscriptionCancel,
                                 acceptsNamed = false),
-      "active?": newNativeCallFn("Subscription/active?",
+      "active?": builtinNativeCallFn("Subscription/active?",
                                  biEventSubscriptionActive,
                                  acceptsNamed = false)})
 
@@ -908,24 +908,24 @@ proc registerEventNamespace(root: Scope) =
   let recordingSinkType = eventScope.defineBuiltinType(
     vkRecordingSink, "RecordingSink", {
       "emit": emitNative,
-      "events": newNativeCallFn("RecordingSink/events", biRecordingSinkEvents,
+      "events": builtinNativeCallFn("RecordingSink/events", biRecordingSinkEvents,
                                 acceptsNamed = false),
-      "clear": newNativeCallFn("RecordingSink/clear", biRecordingSinkClear,
+      "clear": builtinNativeCallFn("RecordingSink/clear", biRecordingSinkClear,
                                acceptsNamed = false)},
-    ctor = newNativeCallFn("event/RecordingSink", biRecordingSinkNew,
+    ctor = builtinNativeCallFn("event/RecordingSink", biRecordingSinkNew,
                            acceptsNamed = false))
 
   let nullSinkType = eventScope.defineBuiltinType(vkNullSink, "NullSink", {
       "emit": emitNative},
-    ctor = newNativeCallFn("event/NullSink", biNullSinkNew,
+    ctor = builtinNativeCallFn("event/NullSink", biNullSinkNew,
                            acceptsNamed = false))
 
   let compositeSinkType = eventScope.defineBuiltinType(
     vkCompositeSink, "CompositeSink", {
       "emit": emitNative,
-      "sinks": newNativeCallFn("CompositeSink/sinks", biCompositeSinkSinks,
+      "sinks": builtinNativeCallFn("CompositeSink/sinks", biCompositeSinkSinks,
                                acceptsNamed = false)},
-    ctor = newNativeCallFn("event/CompositeSink", biCompositeSinkNew,
+    ctor = builtinNativeCallFn("event/CompositeSink", biCompositeSinkNew,
                            acceptsNamed = false))
 
   # `event/Bus` implements `EventSink`, and so do the three shipped sinks, so
@@ -937,7 +937,7 @@ proc registerEventNamespace(root: Scope) =
       protocol: eventSinkProtocol, receiver: receiver,
       messages: @[ImplMessage(message: emitMessage, fn: emitNative)])
 
-  eventScope.define("exact", newNativeCallFn("event/exact", biEventExact,
+  eventScope.define("exact", builtinNativeCallFn("event/exact", biEventExact,
                                              acceptsNamed = false))
   eventScope.define("EventTypeError", eventTypeError)
   eventScope.define("EventFrozenError", eventFrozenError)

@@ -1,3 +1,4 @@
+import ./capability_test_support
 import std/[os, strutils, tables, tempfiles, unittest]
 import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer, types, vm]
 
@@ -436,20 +437,18 @@ suite "pipeline — prepared lazy invocation":
 when defined(posix):
   suite "pipeline — retained authority":
     test "both creating and consuming capability ceilings apply":
-      let root = createTempDir("gene-pipeline-caps-", "")
+      let root = expandFilename(createTempDir("gene-pipeline-caps-", ""))
       defer: removeDir(root)
       writeFile(root / "data", "pipeline")
-      let app = newApplication(root)
-      app.setRootCapabilities(newCapabilityContext(
-        @[app.filesystemCapabilities.grantReadDir(root)]))
+      let app = newFilesystemPolicyApp(root)
       let scope = newGlobalScope(app)
       scope.define("file", newStr(root / "data"))
       check run(compileSource("""
-        (fn read ^capabilities * [x] ($fs/read_text file))
+        (fn read [x] ($fs/read_text file))
         (let full ([1] => read))
         (let narrow (with_capabilities [] ([1] => read)))
         (let later ([1] => read))
-        (fn ^^generator rows ^capabilities * [] (yield ($fs/read_text file)))
+        (fn ^^generator rows [] (yield ($fs/read_text file)))
         (let producer (rows))
         (let high_source (rows))
         (let narrow_source (with_capabilities [] (high_source => (fn [x] x))))

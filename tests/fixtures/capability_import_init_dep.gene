@@ -1,13 +1,7 @@
 (mod capability_import_init_dep)
 
-# Top-level effect: under an import ceiling this must run with an empty
-# context, so the capture §5.3 warns about cannot happen.
+# The importer's empty bound applies before this attempted top-level read.
 (var captured
-  (try
-    ($fs/read_text "tests/fixtures/capability_import_init_dep.gene")
-    catch Any
-    "denied"))
-
-(fn what_happened [] : Str
-  ^capabilities *
-  captured)
+  (try ($fs/read_text "tests/fixtures/capability_import_init_dep.gene")
+    catch MissingCapability "denied"))
+(fn what_happened [] : Str captured)

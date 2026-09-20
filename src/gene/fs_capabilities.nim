@@ -28,7 +28,71 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   }
 
   static int gene_fs_open_read_at(int parent, const char *name) {
-    return openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    return openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+  }
+
+  static int gene_fs_regular_fd(int fd) {
+    struct stat info;
+    return fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
+  }
+
+  static int gene_fs_entry_kind_at(int parent, const char *name) {
+    struct stat info;
+    if (fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (S_ISREG(info.st_mode)) return 0;
+    if (S_ISDIR(info.st_mode)) return 1;
+    if (S_ISLNK(info.st_mode)) return 2;
+    return 3;
+  }
+
+  static int gene_fs_open_checked_write_at(int parent, const char *name,
+                                         int append, int create) {
+    int flags = O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+    if (append) flags |= O_APPEND;
+    if (create) flags |= O_CREAT;
+    int fd = openat(parent, name, flags, 0666);
+    if (fd < 0) return -1;
+    if (!gene_fs_regular_fd(fd) || (!append && ftruncate(fd, 0) != 0)) {
+      int saved = errno;
+      close(fd);
+      errno = saved ? saved : EINVAL;
+      return -1;
+    }
+    return fd;
+  }
+
+  static int gene_fs_open_retained_at(int parent, const char *name,
+                                    int mode, int append, int create,
+                                    int exclusive) {
+    int flags = (mode == 0 ? O_RDONLY : mode == 1 ? O_WRONLY : O_RDWR)
+                | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+    if (append) flags |= O_APPEND;
+    if (create) flags |= O_CREAT;
+    if (exclusive) flags |= O_EXCL;
+    int fd = openat(parent, name, flags, exclusive ? 0600 : 0666);
+    if (fd < 0) return -1;
+    if (!gene_fs_regular_fd(fd)) {
+      close(fd);
+      errno = EINVAL;
+      return -1;
+    }
+    return fd;
+  }
+
+  static int gene_fs_rename_between(int source_parent, const char *source,
+                                   int target_parent, const char *target) {
+    return renameat(source_parent, source, target_parent, target);
+  }
+
+  static int gene_fs_stat_identity(int parent, const char *name,
+                                   unsigned long long *device,
+                                   unsigned long long *inode) {
+    struct stat info;
+    if (fstatat(parent, name[0] ? name : ".", &info, AT_SYMLINK_NOFOLLOW) != 0)
+      return -1;
+    *device = (unsigned long long)info.st_dev;
+    *inode = (unsigned long long)info.st_ino;
+    return 0;
   }
 
   static int gene_fs_open_write_at(int parent, const char *name,
@@ -96,6 +160,19 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     {.importc: "gene_fs_open_dir_at", nodecl.}
   proc openReadAt(parent: cint, name: cstring): cint
     {.importc: "gene_fs_open_read_at", nodecl.}
+  proc regularFd(fd: cint): cint {.importc: "gene_fs_regular_fd", nodecl.}
+  proc entryKindAt(parent: cint, name: cstring): cint
+    {.importc: "gene_fs_entry_kind_at", nodecl.}
+  proc openCheckedWriteAt(parent: cint, name: cstring, append, create: cint): cint
+    {.importc: "gene_fs_open_checked_write_at", nodecl.}
+  proc openRetainedAt(parent: cint, name: cstring,
+                      mode, append, create, exclusive: cint): cint
+    {.importc: "gene_fs_open_retained_at", nodecl.}
+  proc renameBetween(sourceParent: cint, source: cstring,
+                     targetParent: cint, target: cstring): cint
+    {.importc: "gene_fs_rename_between", nodecl.}
+  proc statIdentity(parent: cint, name: cstring, device, inode: ptr culonglong): cint
+    {.importc: "gene_fs_stat_identity", nodecl.}
   proc openWriteAt(parent: cint, name: cstring,
                    append, create: cint): cint
     {.importc: "gene_fs_open_write_at", nodecl.}
@@ -121,7 +198,19 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     {.importc, header: "<dirent.h>", sideEffect.}
 
 type
+  FsRootAnchorObj = object
+    logicalRoot: string
+    fd: cint
+  FsRootAnchor = ref FsRootAnchorObj
+
+  FilesystemEntryKind* = enum
+    fekFile, fekDirectory, fekSymlink, fekOther
+  FilesystemDirectoryEntry* = object
+    name*: string
+    kind*: FilesystemEntryKind
+
   FilesystemCapabilityTypes* = object
+    read*, write*, readWrite*: CapabilityType
     readDir*: CapabilityType
     writeDir*: CapabilityType
     readWriteDir*: CapabilityType
@@ -130,6 +219,10 @@ type
 
   FilesystemProvider* = ref object of CapabilityProvider
     types*: FilesystemCapabilityTypes
+    operationBase: string
+    normalizedAnchors: Table[string, FsRootAnchor]
+    normalizedGrantRoots: Table[string, seq[string]]
+    normalizedFileCount: int
     when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       ## Retained anchor handles, keyed by `operationAnchor` (§7.5: "anchor
       ## resolution at a directory handle"). Re-opening the anchor by path per
@@ -142,6 +235,8 @@ type
       anchorHandles*: Table[string, cint]
 
   FilesystemCapabilityError* = object of CapabilityError
+  FilesystemEntryExistsError = object of FilesystemCapabilityError
+  FilesystemBindingUnavailable = object of FilesystemCapabilityError
   AmbiguousCapabilityError* = object of FilesystemCapabilityError
 
   FsRight = enum
@@ -153,6 +248,14 @@ type
     append: bool
     create: bool
     followSymlinks: bool
+
+proc `=destroy`(anchor: var FsRootAnchorObj) =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if anchor.fd >= 0:
+      discard posix.close(anchor.fd)
+      anchor.fd = -1
+  anchor.logicalRoot = ""
+  `=destroy`(anchor.logicalRoot)
 
 proc canonicalCapabilityPath*(path: string): string =
   ## Lexical normalization, then the real path of the longest prefix that
@@ -199,13 +302,16 @@ proc isPathWithin(path, root: string): bool =
 
 proc typeRights(provider: FilesystemProvider,
                 capabilityType: CapabilityType): FsRights =
-  if capabilityType == provider.types.readDir or
+  if capabilityType == provider.types.read or
+      capabilityType == provider.types.readDir or
       capabilityType == provider.types.readFile:
     {frRead}
-  elif capabilityType == provider.types.writeDir or
+  elif capabilityType == provider.types.write or
+      capabilityType == provider.types.writeDir or
       capabilityType == provider.types.writeFile:
     {frWrite}
-  elif capabilityType == provider.types.readWriteDir:
+  elif capabilityType == provider.types.readWrite or
+      capabilityType == provider.types.readWriteDir:
     {frRead, frWrite}
   else:
     {}
@@ -264,10 +370,17 @@ proc validateSpec(provider: FilesystemProvider,
     discard requested.positionalString(0)
   provider.filePolicy(requested.capabilityType, requested.named)
 
+proc normalizedFilesystemGrantValid(provider: FilesystemProvider,
+                                     grant: CapabilityGrant): bool
+
 method validity*(provider: FilesystemProvider,
                  grant: CapabilityGrant): CapabilityValidity =
   if not grant.isOwnedBy(provider):
     return CapabilityValidity()
+  if grant.capabilityType in [provider.types.read, provider.types.write,
+                             provider.types.readWrite]:
+    if not provider.normalizedFilesystemGrantValid(grant):
+      return CapabilityValidity()
   grant.sealedValidity
 
 method subsumes*(provider: FilesystemProvider,
@@ -455,11 +568,18 @@ proc admitFilesystemProvider*(registry: CapabilityRegistry): FilesystemProvider 
   if registry == nil:
     raise newException(CapabilityError,
       "filesystem provider admission requires a registry")
-  result = FilesystemProvider()
+  result = FilesystemProvider(operationBase: normalizedPath(getCurrentDir()),
+    normalizedAnchors: initTable[string, FsRootAnchor](),
+    normalizedGrantRoots: initTable[string, seq[string]]())
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     initLock(result.anchorLock)
     result.anchorHandles = initTable[string, cint]()
   registry.admitProvider(result, "fs")
+  result.types.read = registry.admitType(result, "fs/Read")
+  result.types.write = registry.admitType(result, "fs/Write")
+  result.types.readWrite = registry.admitType(result, "fs/ReadWrite")
+  registry.admitEntailment(result, result.types.readWrite, result.types.read)
+  registry.admitEntailment(result, result.types.readWrite, result.types.write)
   result.types.readDir = registry.admitType(result, "fs/ReadDir")
   result.types.writeDir = registry.admitType(result, "fs/WriteDir")
   result.types.readWriteDir = registry.admitType(result, "fs/ReadWriteDir")
@@ -734,8 +854,17 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         discard removeAt(parent.fd, temporary.cstring)
       discard posix.close(parent.fd)
 
+proc readBytesV1(provider: FilesystemProvider, context: CapabilityContext, path: string): string
+proc writeBytesV1(provider: FilesystemProvider, context: CapabilityContext, path, content: string)
+proc writeBytesAtomicV1(provider: FilesystemProvider, context: CapabilityContext, path, content: string)
+proc pathExistsV1(provider: FilesystemProvider, context: CapabilityContext, path: string): bool
+proc listDirV1(provider: FilesystemProvider, context: CapabilityContext, path: string): seq[string]
+proc mutateV1(provider: FilesystemProvider, context: CapabilityContext, kind, path: string)
+
 proc readBytes*(provider: FilesystemProvider, context: CapabilityContext,
                 path: string): string =
+  if context.isPolicyContext:
+    return provider.readBytesV1(context, path)
   let grant = provider.resolveOperation(context, provider.types.readFile, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let fd = grant.openOperation(false)
@@ -755,6 +884,9 @@ proc readText*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc writeBytes*(provider: FilesystemProvider, context: CapabilityContext,
                  path, content: string) =
+  if context.isPolicyContext:
+    provider.writeBytesV1(context, path, content)
+    return
   let grant = provider.resolveOperation(context, provider.types.writeFile, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let fd = grant.openOperation(true)
@@ -775,6 +907,9 @@ proc writeText*(provider: FilesystemProvider, context: CapabilityContext,
 proc writeBytesAtomic*(provider: FilesystemProvider,
                        context: CapabilityContext,
                        path, content: string) =
+  if context.isPolicyContext:
+    provider.writeBytesAtomicV1(context, path, content)
+    return
   let grant = provider.resolveOperation(context, provider.types.writeFile, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if not grant.isValid:
@@ -794,6 +929,9 @@ proc writeTextAtomic*(provider: FilesystemProvider,
 proc openWriteFile*(provider: FilesystemProvider, context: CapabilityContext,
                     path: string, append = false, create = true):
                     tuple[file: File, grant: CapabilityGrant] =
+  if context.isPolicyContext:
+    raise newException(FilesystemCapabilityError,
+      "UnsupportedCapability: raw buffered files cannot enforce retained authority; use openFilesystemFile")
   ## Open a retained file handle through the same handle-relative confinement
   ## used by one-shot writes. The returned grant is the resource's immutable
   ## creation-time ceiling; callers must re-intersect it with active authority
@@ -820,6 +958,9 @@ proc openWriteFile*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc tryFileLock*(provider: FilesystemProvider, context: CapabilityContext,
                   path: string): int =
+  if context.isPolicyContext:
+    raise newException(FilesystemCapabilityError,
+      "UnsupportedCapability: file locks are outside the initial filesystem profile")
   ## A lifetime claim on a stable inode. Never unlink lock files: a waiter
   ## opening a replacement inode would otherwise acquire a second lock.
   ## The kernel releases the claim on close or process death.
@@ -845,6 +986,8 @@ proc closeFileLock*(fd: int) {.raises: [].} =
 
 proc pathExists*(provider: FilesystemProvider, context: CapabilityContext,
                  path: string): bool =
+  if context.isPolicyContext:
+    return provider.pathExistsV1(context, path)
   let grant = provider.resolveOperation(context, provider.types.readDir, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if grant.scope == grant.operationAnchor:
@@ -896,6 +1039,8 @@ proc pathExists*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc listDir*(provider: FilesystemProvider, context: CapabilityContext,
               path: string): seq[string] =
+  if context.isPolicyContext:
+    return provider.listDirV1(context, path)
   let grant = provider.resolveOperation(context, provider.types.readDir, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let fd = grant.openDirectory
@@ -924,6 +1069,9 @@ proc listDir*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc makeDir*(provider: FilesystemProvider, context: CapabilityContext,
               path: string) =
+  if context.isPolicyContext:
+    provider.mutateV1(context, "mkdir", path)
+    return
   let grant = provider.resolveOperation(context, provider.types.writeDir, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if not grant.isValid:
@@ -935,6 +1083,9 @@ proc makeDir*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc restrictDirToOwner*(provider: FilesystemProvider,
                          context: CapabilityContext, path: string) =
+  if context.isPolicyContext:
+    raise newException(FilesystemCapabilityError,
+      "UnsupportedCapability: permission changes are outside the filesystem profile")
   let grant = provider.resolveOperation(context, provider.types.writeDir, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let fd = grant.openDirectory
@@ -953,6 +1104,9 @@ proc restrictDirToOwner*(provider: FilesystemProvider,
 
 proc removeFile*(provider: FilesystemProvider, context: CapabilityContext,
                  path: string) =
+  if context.isPolicyContext:
+    provider.mutateV1(context, "remove_file", path)
+    return
   let grant = provider.resolveOperation(context, provider.types.writeFile, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let parent = grant.openParent
@@ -971,6 +1125,9 @@ proc removeFile*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc removeDir*(provider: FilesystemProvider, context: CapabilityContext,
                 path: string) =
+  if context.isPolicyContext:
+    provider.mutateV1(context, "remove_dir", path)
+    return
   let grant = provider.resolveOperation(context, provider.types.writeDir, path)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let parent = grant.openParent
@@ -992,6 +1149,10 @@ proc removeDir*(provider: FilesystemProvider, context: CapabilityContext,
 
 proc realPath*(provider: FilesystemProvider, context: CapabilityContext,
                path: string): string =
+  if context.isPolicyContext:
+    if not provider.pathExistsV1(context, path):
+      raise newException(FilesystemCapabilityError, "filesystem target does not exist")
+    return normalizedPath(absolutePath(path, provider.operationBase))
   ## Capability-safe canonical path. The provider's default no-follow policy
   ## deliberately rejects symlinked ancestors instead of resolving through
   ## them, so this never reveals or returns a target outside the sealed root.
@@ -1013,3 +1174,5 @@ proc realPath*(provider: FilesystemProvider, context: CapabilityContext,
       finally:
         discard posix.close(parent.fd)
   result = grant.scope
+
+include ./fs_capability_policy

@@ -46,8 +46,8 @@ else:
 # Manual reference counting (below) relies on ARC/ORC move semantics and runs
 # =copy/=sink/=dup/=destroy over raw alloc0 objects holding GC-managed fields.
 # A --mm:refc build would mismanage those fields, so fail fast instead.
-when not (defined(gcOrc) or defined(gcArc)):
-  {.error: "gene/types requires --mm:orc or --mm:arc (see nim.cfg)".}
+when not (defined(gcOrc) or defined(gcArc) or defined(gcAtomicArc)):
+  {.error: "gene/types requires --mm:orc, --mm:arc or --mm:atomicArc (see nim.cfg)".}
 
 type
   SourceLoc* = object
@@ -310,6 +310,7 @@ type
     refCount: int
     shared: int
     immutable: bool
+    invalidCapabilitySyntax: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     items: seq[Value]
@@ -346,6 +347,9 @@ type
     refCount: int
     shared: int
     immutable: bool
+    duplicateReadProps: bool
+    duplicateReadCapabilities: bool
+    invalidCapabilitySyntax: bool
     ## Deep immutability, distinct from `immutable` (events.md §6.5).
     ## `immutable` says "this container's own head/props/body cannot change";
     ## `deepFrozen` says "nothing reachable from here can change". Only deep
@@ -501,6 +505,9 @@ type
     ## independently of module identity. Escaped callables intersect this with
     ## the invoker's active context. Nil means no additional lexical ceiling.
     evalCapabilityCeiling*: CapabilityContext
+    loaderState*: RootRef # immutable VM-owned source policy and defining base
+    preparedCapabilityCode*: FunctionCode
+    preparedCapabilityTransition*: CapabilityTransition
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
@@ -536,6 +543,7 @@ type
     dispatchScope*: Scope
     site*: Value             # the source call-site node, or NIL (design §3)
     loc*: SourceLoc          # bytecode call location when available
+    capabilityContext*: CapabilityContext # host-captured invocation context, never a root grant
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -674,6 +682,11 @@ type
     identity*: string
     version*: string
 
+  NativeEffectKind* = enum
+    ## Trusted, immutable implementation metadata; a callable name is not an
+    ## authorization contract. Unclassified host extensions reject in v1.
+    nekUnclassified, nekCapabilityFree, nekGuarded, nekHostControl, nekUnsupported
+
   GeneFunction = object
     refCount: int
     shared: int
@@ -699,6 +712,7 @@ type
     acceptsNamed: bool
     fastKind: NativeFastKind
     errorMetadata: NativeErrorMetadata
+    effectKind: NativeEffectKind
 
   # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
@@ -760,6 +774,8 @@ type
     modulePath: string    # non-empty only for file-backed module roots
 
   ModuleData = ref object of GeneObjectData
+    runtimeId: int
+    instanceKey: string
     name: string
     path: string
     root: Value
@@ -846,6 +862,7 @@ type
     immutable: bool
 
   EnvData = ref object of GeneObjectData
+    loaderState: RootRef
     cycleRefs: int            # Value-held refs, for trial-deletion collection
     parent: Value         # parent Env value, or NIL
     bindings: Table[string, Value]
@@ -902,6 +919,7 @@ type
     source: Value
     callable: Value
     capabilityCeiling: CapabilityContext
+    loaderState: RootRef
     remaining: int64
     pull: StreamPullProc
     close: StreamCloseProc
@@ -1046,9 +1064,17 @@ type
     elemType: Value
     length: int
 
+  CapabilityValueForm* = enum
+    cvfEntry, cvfRow, cvfPattern, cvfAny, cvfPrepared, cvfBuilderEntry
+
   CapabilityData = ref object of GeneObjectData
     name: string
     spec: CapabilitySpec
+    form: CapabilityValueForm
+    row: CapabilitySpecRow
+    pattern: string
+    prepared: RootRef
+    builderEntry: CapabilityLiteralRow
 
   FfiLibraryData = ref object of GeneObjectData
     handle: pointer
@@ -3349,6 +3375,36 @@ proc nodeImmutable*(v: Value): bool =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
 
+proc nodeDuplicateProps*(v: Value): bool =
+  v.kind == vkNode and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).duplicateReadProps
+
+proc nodeDuplicateCapabilities*(v: Value): bool =
+  v.kind == vkNode and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).duplicateReadCapabilities
+
+proc setNodeReadDuplicates*(v: Value, properties, capabilities: bool) =
+  if v.kind != vkNode:
+    raise newException(FieldDefect, "duplicate provenance requires a node")
+  let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  node.duplicateReadProps = properties
+  node.duplicateReadCapabilities = capabilities
+
+proc invalidCapabilitySyntax*(v: Value): bool =
+  case v.kind
+  of vkNode: cast[ptr GeneNode](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax
+  of vkList: cast[ptr GeneList](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax
+  else: false
+
+proc setInvalidCapabilitySyntax*(v: Value, invalid: bool) =
+  case v.kind
+  of vkNode: cast[ptr GeneNode](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax = invalid
+  of vkList: cast[ptr GeneList](v.bits and PAYLOAD_MASK).invalidCapabilitySyntax = invalid
+  else: discard
+
+proc copyCapabilityReadProvenance*(target, source: Value) =
+  target.setInvalidCapabilitySyntax(source.invalidCapabilitySyntax)
+  if target.kind == vkNode and source.kind == vkNode:
+    target.setNodeReadDuplicates(source.nodeDuplicateProps, source.nodeDuplicateCapabilities)
+
 proc nodeConstructing*(v: Value): bool {.inline.} =
   v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing
 
@@ -3612,7 +3668,13 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
 proc nativeFastKind*(v: Value): NativeFastKind {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
-  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).fastKind
+  let native = cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK)
+  if native.effectKind == nekCapabilityFree: native.fastKind else: nfkNone
+
+proc nativeEffectKind*(v: Value): NativeEffectKind {.inline.} =
+  if v.kind != vkNativeFn:
+    raise newException(FieldDefect, "value is not a native function")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).effectKind
 
 proc nativeErrorMetadata*(v: Value): lent NativeErrorMetadata {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
@@ -3715,6 +3777,21 @@ proc modulePath*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).path
+
+proc moduleRuntimeId*(v: Value): int =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).runtimeId
+
+proc moduleInstanceKey*(v: Value): string =
+  if v.kind != vkModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).instanceKey
+
+proc setModuleInstanceKey*(v: Value, key: string) =
+  if v.kind != vkModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).instanceKey = key
 
 proc moduleRootNamespace*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
@@ -3868,6 +3945,16 @@ proc setEnvCapabilityContext*(v: Value, context: CapabilityContext) =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).capabilityContext = context
+
+proc envLoaderState*(v: Value): RootRef =
+  if v.kind != vkEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).loaderState
+
+proc setEnvLoaderState*(v: Value, state: RootRef) =
+  if v.kind != vkEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).loaderState = state
 
 proc envPolicy*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
@@ -4174,6 +4261,7 @@ proc closeStream*(v: Value) =
   data.source = NIL
   data.callable = NIL
   data.capabilityCeiling = nil
+  data.loaderState = nil
   data.generatorCode = nil
   data.generatorScope = nil
   data.generatorStack.setLen(0)
@@ -4198,6 +4286,9 @@ proc streamCallable*(v: Value): Value =
 
 proc streamCapabilityCeiling*(v: Value): CapabilityContext =
   streamData(v).capabilityCeiling
+
+proc streamLoaderState*(v: Value): RootRef =
+  streamData(v).loaderState
 
 proc streamRemaining*(v: Value): int64 =
   streamData(v).remaining
@@ -5094,11 +5185,37 @@ proc capabilityName*(v: Value): string =
   capabilityData(v).name
 
 proc capabilityIsAdmitted*(v: Value): bool =
-  capabilityData(v).spec.capabilityType.isValid
+  capabilityData(v).form == cvfEntry and capabilityData(v).spec.capabilityType.isValid
+
+proc capabilityForm*(v: Value): CapabilityValueForm = capabilityData(v).form
+
+proc capabilityRowValue*(v: Value): CapabilitySpecRow =
+  let data = capabilityData(v)
+  if data.form != cvfRow or data.row == nil:
+    raise newException(GeneError, "expected an immutable CapabilitySpecRow")
+  data.row
+
+proc capabilityPatternValue*(v: Value): string =
+  let data = capabilityData(v)
+  if data.form != cvfPattern:
+    raise newException(GeneError, "expected a capability pattern value")
+  data.pattern
+
+proc capabilityPreparedValue*(v: Value): RootRef =
+  let data = capabilityData(v)
+  if data.form != cvfPrepared:
+    raise newException(GeneError, "expected a prepared capability operation")
+  data.prepared
+
+proc capabilityEntryValue*(v: Value): CapabilityEntryLiteral =
+  let data = capabilityData(v)
+  if data.form != cvfBuilderEntry:
+    raise newException(GeneError, "expected a checked capability entry")
+  data.builderEntry.entries[0]
 
 proc capabilitySpec*(v: Value): CapabilitySpec =
   let data = capabilityData(v)
-  if not data.spec.capabilityType.isValid:
+  if data.form != cvfEntry or not data.spec.capabilityType.isValid:
     raise newException(GeneError,
       "capability type is not admitted: " & data.name)
   data.spec
@@ -7337,6 +7454,32 @@ proc newCapability*(name: string): Value =
     raise newException(GeneError, "capability name must not be empty")
   boxObject(CapabilityData(objKind: okCapability, name: name))
 
+proc newCapabilityRowValue*(row: CapabilitySpecRow): Value =
+  if row == nil:
+    raise newException(GeneError, "nil capability specification row")
+  boxObject(CapabilityData(objKind: okCapability, form: cvfRow,
+    name: "CapabilitySpecRow", row: row))
+
+proc newCapabilityPatternValue*(pattern: string): Value =
+  boxObject(CapabilityData(objKind: okCapability, form: cvfPattern,
+    name: "CapabilityPattern", pattern: pattern))
+
+proc newCapabilityAnyValue*(): Value =
+  boxObject(CapabilityData(objKind: okCapability, form: cvfAny,
+    name: "CapabilityAny"))
+
+proc newPreparedCapabilityValue*(name: string, prepared: RootRef): Value =
+  if prepared == nil:
+    raise newException(GeneError, "nil prepared operation")
+  boxObject(CapabilityData(objKind: okCapability, form: cvfPrepared,
+    name: name, prepared: prepared))
+
+proc newCapabilityEntryValue*(entry: CapabilityEntryLiteral): Value =
+  let checked = buildCapabilityLiteral([entry], cuRequest,
+    CapabilitySourceContext(kind: csoBuilder, name: "<capability entry>"))
+  boxObject(CapabilityData(objKind: okCapability, form: cvfBuilderEntry,
+    name: entry.name, builderEntry: checked))
+
 proc newCapability*(capabilityType: CapabilityType,
                     positional: openArray[CapabilityArg] = [],
                     named: openArray[CapabilityNamedArg] = []): Value =
@@ -7537,7 +7680,7 @@ proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                             releaseName: releaseName,
                             releaseAddress: releaseAddress))
 
-proc classifyNativeFastKind(name: string): NativeFastKind =
+proc classifyNativeFastKind*(name: string): NativeFastKind =
   case name
   of "+": nfkAdd
   of "-": nfkSub
@@ -7550,19 +7693,23 @@ proc classifyNativeFastKind(name: string): NativeFastKind =
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false,
-                  errorMetadata = NativeErrorMetadata()): Value =
+                  errorMetadata = NativeErrorMetadata(),
+                  effectKind = nekUnclassified,
+                  fastKind = nfkNone): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.impl = impl
   p.acceptsNamed = acceptsNamed
-  p.fastKind = classifyNativeFastKind(name)
+  p.fastKind = fastKind
   p.errorMetadata = errorMetadata
+  p.effectKind = effectKind
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNativeCallFn*(name: string, impl: NativeCallProc,
                       acceptsNamed = true,
-                      errorMetadata = NativeErrorMetadata()): Value =
+                      errorMetadata = NativeErrorMetadata(),
+                      effectKind = nekUnclassified): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
@@ -7570,6 +7717,7 @@ proc newNativeCallFn*(name: string, impl: NativeCallProc,
   p.acceptsNamed = acceptsNamed
   p.fastKind = nfkNone
   p.errorMetadata = errorMetadata
+  p.effectKind = effectKind
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",
@@ -7577,12 +7725,21 @@ proc newNamespace*(name: string, scope: Scope, modulePath = "",
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope,
                           moduleRoot: moduleRoot, modulePath: modulePath))
 
+var moduleIdentitySeq: int
+
+proc nextModuleIdentity(): int =
+  when compileOption("threads"):
+    atomicFetchAdd(addr moduleIdentitySeq, 1, ATOMIC_RELAXED) + 1
+  else:
+    inc moduleIdentitySeq
+    moduleIdentitySeq
+
 proc newModule*(name: string, root: Value, path = "",
                 meta: sink PropTable = initPropTable()): Value =
   if root.kind != vkNamespace:
     raise newException(FieldDefect, "module root is not a Namespace")
   boxObject(ModuleData(objKind: okModule, name: name, path: path, root: root,
-                       meta: meta))
+                       meta: meta, runtimeId: nextModuleIdentity()))
 
 proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL,
@@ -7652,7 +7809,8 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
                     itemType: Value = NIL, errType: Value = NIL,
                     itemScope: Scope = nil,
                     close: StreamCloseProc = nil,
-                    capabilityCeiling: CapabilityContext = nil): Value =
+                    capabilityCeiling: CapabilityContext = nil,
+                    loaderState: RootRef = nil): Value =
   # The stream owns its callable strongly, like every other heap container
   # (channels, cells, actor state). Weakening the captured-scope edge here
   # dangles when the operand stack held the only strong reference to an
@@ -7660,7 +7818,7 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
   # back is a leak, not a crash, matching the container-wide tradeoff.
   let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
-                       capabilityCeiling: capabilityCeiling,
+                       capabilityCeiling: capabilityCeiling, loaderState: loaderState,
                        remaining: remaining, pull: pull, close: close, itemType: itemType,
                        errType: errType, itemScope: itemScope, closed: false))
 

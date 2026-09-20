@@ -30,30 +30,38 @@ This recipe writes a file under the launch directory:
 ```gene
 (import $fs [write_text read_text])
 (write_text "greeting.txt" "Hello from Gene")
-($println (read_text "greeting.txt"))
+(read_text "greeting.txt")
 ```
 
-The native CLI grants filesystem access under the launch directory by default.
-Additional directories can be selected before the entry file:
+The native CLI grants no external authority by default. Supply a policy before
+the entry file, or use `gene eval` to have the runner display a returned value:
 
 ```sh
-gene run --allow_read_dir /path/to/data report.gene
+gene run --cap '[(fs/Read "/path/to/data")]' report.gene
+gene eval --cap '[(fs/ReadWrite ".")]' '($fs/write_text "greeting.txt" "Hello from Gene")'
 ```
 
-Narrow permission inside the program with a declaration row or
-`with_capabilities`. A retained file/database handle cannot restore permission
-removed by the current context. See the [capability examples](../examples/capabilities/README.md)
-and [authority contract](spec/authority.md).
+The old directory grant flags are removed. CLI policies replace environment
+defaults rather than adding to them. Declaration rows and `with_capabilities`
+use the same normalized policy core. Retained handles cannot replace current authority with
+their origin grants. See the [authority contract](spec/authority.md) and
+[implementation tracker](implementation/capabilities-v1.md).
 
-For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching is
-available through `$fs/watch`; close watchers when finished.
+For byte-oriented I/O use `read_bytes` / `write_bytes`. Filesystem watching,
+locking and asynchronous filesystem adapters remain unsupported in the initial
+normalized profile until their operation/ownership contracts are adopted.
 
-`($fs/try_lock path)` acquires a nonblocking native POSIX file claim under
-`fs/WriteFile` authority, returning an `FsFileLock` or nil if already held.
-Call `(claim .close)` to release it; release is idempotent and process exit
-also releases the claim. The file's contents are preserved. Keep the lock file
-in place so every claimant uses the same inode. Paths use the normal confined,
-symlink-rejecting filesystem resolution.
+`write_text_atomic` stages and synchronizes a regular file, then guards its
+same-directory publication. Under normalized authority, revocation or a changed
+binding prevents later use of a retained descriptor. Unpublished temporary
+entries are removed only with live write authority; close never flushes buffered
+application data after revocation. See the
+[filesystem profile](implementation/capabilities-filesystem-profile.md).
+
+`$fs/try_lock` and application file logging are also unsupported in the initial
+normalized profile. They require adopted operation, ownership, and cleanup
+contracts before application use; the removed `fs/WriteFile` selector is not a
+way to authorize them.
 
 ## HTTP server
 
@@ -94,6 +102,32 @@ adds forms, SQLite, and browser behavior.
 `request` returns a Task. Use the streaming client operation for bounded chunk
 consumption and cancellation. Network operations require active permissions;
 host/setup errors are distinct from HTTP response status.
+
+The normalized capability path uses `net/Http` component constraints and guards
+both submission and worker startup. Preparing a request grants no authority:
+
+```gene
+(import $net/http_client [prepare describe_operation send])
+(let prepared (prepare "GET" "https://api.example.com/status?"))
+(let decision ($capabilities/check_operation (describe_operation prepared)))
+(if decision/allowed
+  (await (send prepared))
+  nil)
+```
+
+`send` accepts one immutable prepared request plus transport limits or `^ca_file`;
+it rejects replacement method, URL, headers, or body arguments. An explicit CA
+file requires separate filesystem read authority. Exact query bytes, including
+an empty query delimiter, survive preparation and transmission. Application
+Authorization/Cookie headers are ordinary request data; the client has no
+automatic credential or cookie store in this profile.
+
+Redirects are returned without following them. A later request to the redirected
+target needs its own guard. The initial native transport uses fresh HTTP/1.1
+connections, disables environment proxies, verifies TLS, and rejects CONNECT,
+authority/framing overrides and protocol upgrades. A denied request raises a
+typed capability error; transport failures use `HttpClientError`. See the
+[HTTP enforcement profile](implementation/capabilities-http-profile.md).
 
 ## SQLite
 

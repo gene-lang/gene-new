@@ -1,203 +1,61 @@
 # Capability examples
 
-Seven programs illustrate the [implemented authority contract](../../docs/spec/authority.md).
-The [capability reference](../../docs/spec/authority.md) explains provider and
-propagation details. The examples show both successful operations and denials.
+These programs exercise the [version-1 authority contract](../../docs/spec/authority.md).
+Run them from this directory after building `bin/gene`. They use assertions and
+exit codes because application printing is unsupported in the initial profile.
+A successful example exits with status 0.
 
-Build the CLI first:
-
-```bash
-nimble build          # produces bin/gene
-cd examples/capabilities
+```sh
+G=../../bin/gene
+mkdir -p reports out/public out/plugin
+$G run --cap '[]' 01_open_mode.gene
+$G run --cap '[(fs/Read ".")]' 02_outside_root.gene README.md
+$G run --cap '[(fs/Write ".")]' 03_declared_function.gene
+$G run --cap '[(fs/Write ".")]' 04_with_capabilities.gene
+$G run --cap '[(fs/Write ".")]' --source-root . 05_import_ceiling.gene
+$G run --cap '[]' 06_strict_dependencies.gene
+$G run --cap '[(fs/Read ".")]' 07_env.gene
 ```
 
-All commands below assume that working directory, and `G=../../bin/gene`.
+The launcher defaults to `[]`. CLI policy replaces environment policy and other
+lower sources; it never adds implicit filesystem or network grants. The old
+`--allow_*_dir` flags are removed. A capability file contains the same inert row:
 
----
-
-## The two rules everything else follows from
-
-**1. The launcher's root is the launch directory.** `gene run` grants the
-directory you ran it from, plus the nominal host capabilities. Reaching
-outside it is denied until `--allow_read_dir` / `--allow_write_dir` /
-`--allow_read_write_dir` or an embedding host says otherwise. Confinement is
-something someone chooses; it is not a default that silently arrives.
-
-**2. A relative path resolves against the granted directory, not the process
-cwd.** Under `(fs/WriteDir "out")`, the path `"private.txt"` means
-`out/private.txt`. This is the single most surprising thing here, and it is
-why example 3 needs an *absolute* path to demonstrate an escape — a relative
-one cannot escape, it just lands inside.
-
-A corollary: **a granted directory must already exist**, because the runtime
-opens it as a handle. Examples 4 and 5 ask you to `mkdir -p` first.
-
----
-
-## 1. Open mode — no capability code at all
-
-A program that attenuates nothing writes nothing.
-
-```bash
-$G run 01_open_mode.gene
+```sh
+$G run --cap-file permissions.gene program.gene
 ```
 
-```
-written under the launcher's root
-```
+Relative policy roots use the declaring module, capability file, or captured
+launch directory as specified by their source. **Operation paths remain relative
+to the captured launch directory**: a bound for `out/public` does not make
+`"inside.txt"` mean `out/public/inside.txt`.
 
-## 2. The default root, and widening it
+The initial filesystem profile rejects symlink traversal, including symlinked
+roots. On macOS use physical paths such as `/private/tmp` rather than `/tmp`.
+Granted directory roots must exist before startup initialization.
 
-```bash
-echo "demo payload" > /tmp/gene_cap_demo.txt
-$G run 02_outside_root.gene /tmp/gene_cap_demo.txt
-```
+The examples cover:
 
-Denied — `/tmp` is outside the launch directory:
+1. Empty authority with an unannotated function.
+2. An actual read authorized by an explicit host policy. Running this example
+   without its read grant produces `MissingCapability`.
+3. A mandatory callable request rejected before its body when the caller is empty.
+4. Temporary attenuation, actual-operation denial, and caller restoration.
+5. Bounded dependency initialization and retained invocation authority.
+6. Required blocks and optional HTTP availability. Its historical filename is
+   retained, but strict module modes and module request rows no longer exist.
+7. Env bindings, inherited/empty bounds, and escaped eval closure ceilings.
 
-```
-Error: MissingCapability: fs/read_text requires fs/ReadFile
-  at .../02_outside_root.gene:8:13
-     8 |   ($println ($fs/read_text args/0))
-       |             ^
-```
+`--source-root` admits a frozen code bundle for imports. It does not grant
+application permission to read those files. Example 5 needs it for `plugin.gene`;
+entry-only admission deliberately does not include sibling modules.
 
-The same program with the host policy that grants it:
+To inspect a value through the runner's private result display:
 
-```bash
-$G run --allow_read_dir /tmp 02_outside_root.gene /tmp/gene_cap_demo.txt
-```
-
-```
-demo payload
-```
-
-`/tmp` is a symlink to `private/tmp` on macOS, and a grant names the resource
-rather than the route to it: the root is resolved once when the grant is
-minted, so `--allow_read_dir /tmp` and `--allow_read_dir /private/tmp` mean the
-same thing. A symlink planted *inside* a granted directory is still refused —
-that is the confinement §7.5 is for, and it is checked before any handle is
-opened.
-
-## 3. A declared row is checked before the body runs
-
-`save_report` declares `(fs/WriteFile path)` — exactly the file it was handed.
-The entry narrows the application to `reports/`.
-
-```bash
-$G run 03_declared_function.gene "$PWD/escaped.txt"
+```sh
+$G eval --cap '[(fs/Read ".")]' '($fs/read_text "README.md")'
 ```
 
-```
-wrote  ok.txt
-denied:  /…/escaped.txt  is outside (fs/WriteDir "reports")
-```
-
-```bash
-find reports -type f     # reports/ok.txt
-ls escaped.txt           # No such file
-```
-
-The denial happens at the boundary, so the body never ran and nothing partial
-was written. Note `"ok.txt"` landed in `reports/ok.txt` — rule 2.
-
-## 4. Narrowing one call with `with_capabilities`
-
-```bash
-mkdir -p out/public
-$G run 04_with_capabilities.gene
-```
-
-```
-wrote  private.txt
-wrote  inside.txt
-denied under with_capabilities: ../private_again.txt
-wrote  after.txt
-```
-
-```bash
-find out -type f
-# out/after.txt
-# out/private.txt
-# out/public/inside.txt
-```
-
-The wrapped call is confined to `out/public`; the `..` escape is refused; and
-the call *after* the block has the wider authority back. Attenuation is
-dynamically scoped and one-directional — it can never widen.
-
-## 5. Bounding a dependency you do not control
-
-`plugin.gene` declares nothing, so it would inherit whatever the entry holds.
-The importer bounds it once, at the import, rather than remembering to wrap
-every call site:
-
-```gene
-(import [write_where] ^from "./plugin.gene"
-  ^capabilities [(fs/WriteDir "plugin")])
-```
-
-```bash
-mkdir -p out/plugin
-$G run 05_import_ceiling.gene
-```
-
-```
-plugin wrote  allowed.txt
-denied: the import ceiling confines the plugin to out/plugin
-```
-
-```bash
-find out -type f          # out/plugin/allowed.txt — and nothing else
-```
-
-A call into the module receives
-`caller ∩ module_ceiling ∩ import_ceiling`. The dependency also *initializes*
-under the bound, which is what stops it capturing anything at load time that a
-later call-site narrowing could not retract.
-
-## 6. Requiring dependencies to carry contracts
-
-```bash
-$G run 06_strict_dependencies.gene
-```
-
-```
-Error: ^require_strict_dependencies: these modules were compiled in open mode
-and declare no capability contract: /…/examples/capabilities/open_dep.gene
-```
-
-This is a *link* check against interface metadata. It names every offender at
-once, and it never recompiles a dependency under a mode its author did not
-choose — the open-mode library stays open-mode; the application declines to
-depend on it.
-
----
-
-## 7. Env bindings and retained ceilings
-
-```bash
-$G run 07_env.gene
-```
-
-This example separates lexical bindings from operation permission. An omitted
-Env row inherits the evaluator context; an empty row selects no external
-permissions. Extending an Env preserves its parent's ceiling. A saved broad
-Env cannot restore grants inside an empty context, and escaped evaluated
-closures retain the effective intersection. The example also checks an actual
-denied read and restoration of the caller context.
-
----
-
-## Cleaning up
-
-```bash
-rm -rf out reports "/tmp/gene_cap_demo.txt"
-```
-
-## Where to read more
-
-- [Authority contract](../../docs/spec/authority.md).
-- [Capability reference](../../docs/spec/authority.md) §5.1 (host root and `--allow_*`), §5.3.1
-  (import-site ceilings), §5.0.2 (`^require_strict_dependencies`), §5.6
-  (call-site attenuation), §7.5 (path confinement).
+The [implementation tracker](../../docs/implementation/capabilities-v1.md) records
+remaining adapter and application migration work. These examples do not claim
+that every legacy facility has an adopted capability contract.

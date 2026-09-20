@@ -1,12 +1,6 @@
-(mod capability_import_ceiling_entry
-  ^capabilities [fs/*])
+(mod capability_import_ceiling_entry)
 
-# The dependency declares nothing and would otherwise inherit the entry's
-# filesystem authority. The importer bounds it here, once, instead of wrapping
-# every call site (capabilities.md §5.3.1).
+# The retained import bound excludes ordinary filesystem authority.
 (import [wants_fs] ^from "./capability_import_ceiling_dep.gene"
   ^capabilities [])
-
-(fn main []
-  ^capabilities *
-  (wants_fs))
+(fn main [] (wants_fs))

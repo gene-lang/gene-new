@@ -9,6 +9,7 @@ proc buildTestRoot(): string =
     makeMaterializedTreeWritable(result)
     removeDir(result)
   createDir(result)
+  result = expandFilename(result)
 
 proc writeBuildFile(path, source: string) =
   createDir(parentDir(path))

@@ -155,7 +155,7 @@ type
     logEnabled*: GeneLogEnabledProc
     logEmit*: GeneLogEmitProc
 
-const GeneApiVersion* = 4   # 4: explicit cancellation status and owned synchronous callbacks.
+const GeneApiVersion* = 5   # 5: immutable native effect metadata and normalized entry enforcement.
 const GeneApiFeatureCount* = 35
 const GeneModuleInitSymbol* = "gene_module_init"
 
@@ -264,14 +264,26 @@ proc geneModuleDefine*(module: GeneModule, name: string,
     result = panicResult(e)
 
 proc geneModuleDefineNative*(module: GeneModule, name: string,
+                             impl: NativeProc,
+                             effectKind: NativeEffectKind): GeneResult =
+  geneModuleDefine(module, name, newNativeFn(name, impl, effectKind = effectKind))
+
+proc geneModuleDefineNative*(module: GeneModule, name: string,
                              impl: NativeProc): GeneResult =
-  geneModuleDefine(module, name, newNativeFn(name, impl))
+  geneModuleDefineNative(module, name, impl, nekUnclassified)
+
+proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
+                                 impl: NativeCallProc,
+                                 acceptsNamed: bool,
+                                 effectKind: NativeEffectKind): GeneResult =
+  geneModuleDefine(module, name,
+                   newNativeCallFn(name, impl, acceptsNamed = acceptsNamed,
+                                   effectKind = effectKind))
 
 proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
                                  impl: NativeCallProc,
                                  acceptsNamed: bool): GeneResult =
-  geneModuleDefine(module, name,
-                   newNativeCallFn(name, impl, acceptsNamed = acceptsNamed))
+  geneModuleDefineNativeCall(module, name, impl, acceptsNamed, nekUnclassified)
 
 proc geneDefineWrapperType*(module: GeneModule, name: string,
                             fields: openArray[GeneWrapperField]): GeneResult =

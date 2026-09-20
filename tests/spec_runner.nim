@@ -3518,14 +3518,12 @@ suite "spec — numeric boundaries from design":
                "catch TypeError $err/expected)",
                "\"(device/Buffer F64)\"")
 
-  test "FFI runtime loading uses ambient authority":
-    check_eval("[$ffi/Load ($ffi/Load .name)]",
-               "[(ffi/Load) \"ffi/Load\"]")
+  test "FFI runtime loading rejects the normalized capability profile":
     let denied = newApplication()
-    denied.setRootCapabilities(newCapabilityContext())
-    expect GeneError:
-      discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
-                  newGlobalScope(denied))
+    denied.setRootCapabilities(denied.capabilities.newPolicyContext([]))
+    check run(compileSource("(try ($ffi/open \"libmissing-gene-new\") " &
+      "catch UnsupportedCapability $err/reason)"),
+      newGlobalScope(denied)).strVal == "unsupported_operation"
     expect GeneError:
       discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
                   newGlobalScope())
@@ -7741,22 +7739,23 @@ suite "spec — Env and eval from design":
                "catch CompileError $err/message)",
                "\"eval cannot use import; add imports to Env\"")
 
-  test "the legacy Env capabilities map supplies name bindings":
+  test "Env name bindings remain separate from its capability bound":
     check_eval("(var e (env ^bindings {^fs \"binding\"} " &
-               "           ^capabilities {^fs \"capability\" ^net \"closed\"})) " &
-               "[(eval (quote fs) ^in e) (eval (quote net) ^in e)]",
-               "[\"binding\" \"closed\"]")
+               "           ^capabilities [])) " &
+               "(eval (quote fs) ^in e)", "\"binding\"")
+    check_eval_error("(env ^capabilities {^fs \"capability\"})",
+                     "CapabilitySpecRow")
 
-  test "capability types construct inert specifications":
-    check_eval("[$fs/ReadDir " &
-               " ($fs/ReadDir .name) " &
-               " ((fn [cap : Capability] (cap .name)) $fs/WriteDir)]",
-               "[(fs/ReadDir) \"fs/ReadDir\" \"fs/WriteDir\"]")
-    check_eval("(var e (env ^capabilities {^fs $fs/ReadDir})) " &
-               "(eval (quote (fs .name)) ^in e)",
-               "\"fs/ReadDir\"")
-    check_eval("(var ch ($channel)) " &
-               "(try (ch .send $fs/ReadDir) " &
+  test "capability policies are immutable data from the trusted catalog":
+    let app = newApplication()
+    app.setRootCapabilities(app.capabilities.newPolicyContext([]))
+    check run(compileSource("(var row ($capabilities/parse \"[]\")) " &
+      "(var report ($capabilities/check_requirements row)) report/admitted"),
+      newGlobalScope(app)).boolVal
+    check_eval_error("(($capabilities/parse \"[]\"))", "inert data")
+    check_compile_error("(type Area ^capability \"app/Area\")", "facades were removed")
+    check_eval("(var ch ($channel ^capacity 1)) " &
+               "(try (ch .send ($capabilities/parse \"[]\")) " &
                "catch TypeError $err/expected)",
                "\"Send\"")
 
@@ -9461,7 +9460,7 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                "   (contains? $err/message \"not data\")])",
                "[true true]")
     check_eval("(import $serde [write_data SerdeError]) " &
-               "(try (write_data {^net $net/Connect}) " &
+               "(try (write_data {^net ($capabilities/parse \"[net/Http]\")}) " &
                "catch SerdeError $err/path)",
                "\"net\"")
 

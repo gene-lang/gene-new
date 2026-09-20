@@ -1,6 +1,7 @@
 import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer,
              reader, types, vm]
-import std/[os, strutils, tables, unittest]
+import std/[json, os, strutils, tables, unittest]
+import ./capability_test_support
 
 template ck(src, expected: string) =
   ## Compile and run a program string, then compare its printed result.
@@ -482,22 +483,30 @@ suite "compiler — GIR emission":
       sawTailCall = sawTailCall or inst.tail
     check sawTailCall
 
-  test "GIR rejects serialized runtime Self binding state":
-    for field in ["binding", "resolved", "provenance"]:
+  test "GIR rejects runtime Self binding state at encoding and decoding":
+    for field in ["annotationSelfBits", "contractResolved", "signatureHadSelf"]:
       let chunk = compileSource("(fn f [x] x)")
-      let proto = chunk.functions[0]
-      case field
-      of "binding": proto.annotationSelfBits = 1
-      of "resolved": proto.contractResolved = true
-      else: proto.signatureHadSelf = true
       let artifact = ExecutableGir(entryIdentity: "test/runtime-state",
         modules: @[CompiledModule(identity: "test/runtime-state", chunk: chunk,
           macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
           compileInterface: CompileNamespaceInterface(
             entries: initTable[string, CompileInterfaceEntry]()))])
-      let encoded = encodeExecutableGir(artifact)
+      let encoded = parseJson(encodeExecutableGir(artifact))
+      let proto = chunk.functions[0]
+      case field
+      of "annotationSelfBits":
+        proto.annotationSelfBits = 1
+        encoded["modules"][0]["chunk"]["functions"][0][field] = %1
+      of "contractResolved":
+        proto.contractResolved = true
+        encoded["modules"][0]["chunk"]["functions"][0][field] = %true
+      else:
+        proto.signatureHadSelf = true
+        encoded["modules"][0]["chunk"]["functions"][0][field] = %true
       expect ValueError:
-        discard decodeExecutableGir(encoded)
+        discard encodeExecutableGir(artifact)
+      expect ValueError:
+        discard decodeExecutableGir($encoded)
 
   test "GIR values round-trip quoted pipeline syntax":
     let chunk = compileSource(
@@ -1723,7 +1732,8 @@ suite "vm — named arguments":
   test "native call envelope carries named arguments":
     let scope = newGlobalScope()
     scope.define("native-envelope",
-                 newNativeCallFn("native-envelope", nativeEnvelopeEcho))
+                 newNativeCallFn("native-envelope", nativeEnvelopeEcho,
+                   effectKind = nekCapabilityFree))
     check run(compileSource("(native-envelope ^scale 3 4)"), scope).print() ==
       "[\"native-envelope\" 1 1 scale 3 4]"
 
@@ -2103,20 +2113,14 @@ suite "vm — env and eval":
        "(eval (quote x) ^in child)",
        "20"
 
-  test "the legacy Env capabilities map supplies name bindings":
-    ck "(var e (env ^capabilities {^fs \"sandbox\"})) " &
-       "(eval (quote fs) ^in e)",
-       "\"sandbox\""
-    ck "(var e (env ^bindings {^fs \"binding\"} " &
-       "           ^capabilities {^fs \"capability\"})) " &
-       "(eval (quote fs) ^in e)",
-       "\"binding\""
-    ck "(var base (env ^capabilities {^fs \"sandbox\"})) " &
+  test "Env bindings are separate from capability policy":
+    ck "(var base (env ^bindings {^fs \"sandbox\"})) " &
        "(var child (base .extend {^x 1})) " &
        "(eval (quote [fs x]) ^in child)",
        "[\"sandbox\" 1]"
-    expect GeneError:
-      discard runStr("(env ^capabilities [1])")
+    for value in ["{^fs \"sandbox\"}", "[1]", "nil"]:
+      expect GeneError:
+        discard runStr("(env ^capabilities " & value & ")")
 
   test "eval policy limits execution by steps, time, and memory":
     ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max_steps 20}))",
@@ -2586,14 +2590,12 @@ suite "vm — cooperative scheduler":
     # The bytes here are the point: 0x80 and 0xFF are not valid UTF-8 on their
     # own, so `read_text` would mangle them. A binary format needs the pair
     # (design.md §D7.3), and until now only the write half existed.
-    let path = getTempDir() / "gene-read-bytes-test.bin"
+    let root = expandFilename(getTempDir())
+    let path = root / "gene-read-bytes-test.bin"
     defer:
       if fileExists(path):
         removeFile(path)
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantReadWriteDir(getTempDir())
-    ]))
+    let app = newFilesystemPolicyApp(root, "fs/ReadWrite")
     let scope = newGlobalScope(app)
     scope.define("path", newStr(path))
     check run(compileSource(
@@ -2603,73 +2605,35 @@ suite "vm — cooperative scheduler":
         "    ($binary/to_list payload))"),
       scope).print() == "true"
     # Reading needs active read authority, not merely some filesystem grant.
-    let writeOnly = newApplication()
-    writeOnly.setRootCapabilities(newCapabilityContext([
-      writeOnly.filesystemCapabilities.grantWriteDir(getTempDir())
-    ]))
+    let writeOnly = newFilesystemPolicyApp(root, "fs/Write")
     let writeOnlyScope = newGlobalScope(writeOnly)
     writeOnlyScope.define("path", newStr(path))
     expect GeneError:
       discard run(compileSource("($fs/read_bytes path)"), writeOnlyScope)
 
-  test "$fs/read_text_async returns an awaitable task":
-    let path = getTempDir() / "gene-read-text-async-test.txt"
-    writeFile(path, "hello async")
-    defer:
-      if fileExists(path):
-        removeFile(path)
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantReadDir(getTempDir())
-    ]))
-    let scope = newGlobalScope(app)
-    scope.define("path", newStr(path))
-    check run(compileSource("(await ($fs/read_text_async path))"),
-              scope).print() == "\"hello async\""
-    let deniedApp = newApplication()
-    deniedApp.setRootCapabilities(newCapabilityContext([
-      deniedApp.filesystemCapabilities.grantWriteDir(getTempDir())
-    ]))
-    let deniedScope = newGlobalScope(deniedApp)
-    deniedScope.define("path", newStr(path))
-    expect GeneError:
-      discard run(compileSource("(await ($fs/read_text_async path))"), deniedScope)
+  test "async filesystem APIs reject until their operation profile is adopted":
+    let root = expandFilename(getTempDir())
+    let path = root / "gene-unsupported-async-test.txt"
+    writeFile(path, "unchanged")
+    defer: removeFile(path)
+    for capability in ["fs/Read", "fs/Write", "fs/ReadWrite"]:
+      let app = newFilesystemPolicyApp(root, capability)
+      let scope = newGlobalScope(app)
+      scope.define("path", newStr(path))
+      for operation in ["($fs/read_text_async path)",
+                        "($fs/write_text_async path \"changed\")"]:
+        check run(compileSource("(try " & operation &
+          " catch UnsupportedCapability $err/reason)"), scope).strVal ==
+          "unsupported_operation"
+      check readFile(path) == "unchanged"
 
-  test "$fs/write_text_async returns an awaitable task":
-    let path = getTempDir() / "gene-write-text-async-test.txt"
-    defer:
-      if fileExists(path):
-        removeFile(path)
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext([
-      app.filesystemCapabilities.grantWriteDir(getTempDir())
-    ]))
-    let scope = newGlobalScope(app)
-    scope.define("path", newStr(path))
-    check run(compileSource(
-      "(await ($fs/write_text_async path \"written async\"))"),
-      scope).kind == vkNil
-    check readFile(path) == "written async"
-    let deniedApp = newApplication()
-    deniedApp.setRootCapabilities(newCapabilityContext([
-      deniedApp.filesystemCapabilities.grantReadDir(getTempDir())
-    ]))
-    let deniedScope = newGlobalScope(deniedApp)
-    deniedScope.define("path", newStr(path))
-    expect GeneError:
-      discard run(compileSource(
-        "(await ($fs/write_text_async path \"nope\"))"), deniedScope)
-
-  test "net TCP async operations require connect authority":
-    let app = newApplication()
-    app.setRootCapabilities(newCapabilityContext())
-    let scope = newGlobalScope(app)
-    expect GeneError:
-      discard run(compileSource(
-        "($net/tcp_read_text_async \"127.0.0.1\" 1 1 1)"), scope)
-    expect GeneError:
-      discard run(compileSource(
-        "($net/tcp_write_text_async \"127.0.0.1\" 1 \"x\" 1)"), scope)
+  test "raw TCP APIs reject without an adopted transport contract":
+    let scope = newGlobalScope(newApplication())
+    for operation in ["($net/tcp_read_text_async \"127.0.0.1\" 1 1 1)",
+                      "($net/tcp_write_text_async \"127.0.0.1\" 1 \"x\" 1)"]:
+      check run(compileSource("(try " & operation &
+        " catch UnsupportedCapability $err/reason)"), scope).strVal ==
+        "unsupported_operation"
 
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch ($channel ^capacity 1)) " &

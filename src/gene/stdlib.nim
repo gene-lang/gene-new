@@ -2545,6 +2545,21 @@ const
   CurlAbortedByCallback = 42.cint
   CurlOptWriteData = 10001.cint
   CurlOptUrl = 10002.cint
+  CurlOptProxy = 10004.cint
+  CurlOptPreProxy = 10262.cint
+  CurlOptRequestTarget = 10266.cint
+  CurlOptPathAsIs = 234.cint
+  CurlOptHttpVersion = 84.cint
+  CurlOptNetrc = 51.cint
+  CurlOptHttpAuth = 107.cint
+  CurlOptProxyAuth = 111.cint
+  CurlOptFreshConnect = 74.cint
+  CurlOptForbidReuse = 75.cint
+  CurlOptSslVerifyPeer = 64.cint
+  CurlOptSslVerifyHost = 81.cint
+  CurlOptProtocols = 181.cint
+  CurlOptHttpProxyTunnel = 61.cint
+  CurlOptNoBody = 44.cint
   CurlOptWriteFunction = 20011.cint
   CurlOptPostFields = 10015.cint
   CurlOptHttpHeader = 10023.cint
@@ -2768,6 +2783,7 @@ when compileOption("threads"):
     HttpClientCtx = object
       httpMethod: SharedExecText
       url: SharedExecText
+      requestTarget: SharedExecText
       body: SharedExecText
       caData: SharedExecText
       headers: ptr SharedExecArg
@@ -2795,11 +2811,20 @@ when compileOption("threads"):
       resultTimedOut: bool
       cancelRequested: bool
       workerDone: bool
+      startLock: Lock
+      startCond: Cond
+      startRequested: bool
+      startDecision: int # 0 = pending, 1 = start, -1 = denied/cancelled
+      protocolUpgrade: bool
+      unsupportedTransport: bool
     HttpClientPending {.acyclic.} = ref object
       ctx: ptr HttpClientCtx
       taskOwner: Value
       channelOwner: Value
       capabilityContext: CapabilityContext
+      registry: CapabilityRegistry
+      operation: CapabilityOperation
+      scope: Scope
       authorityRevoked: bool
 
   const httpClientMaxWorkers = 16
@@ -2883,6 +2908,14 @@ when compileOption("threads"):
     let total = size * count
     if total > csize_t(high(int)):
       return 0
+    var line = newString(int(total))
+    if line.len > 0:
+      copyMem(addr line[0], data, line.len)
+    if line.startsWith("HTTP/"):
+      let parts = strutils.splitWhitespace(line)
+      if parts.len >= 2 and parts[1] == "101":
+        ctx.protocolUpgrade = true
+        return 0
     let copied = appendHttpBuffer(ctx.responseHeaders, data, int(total))
     if copied < int(total):
       ctx.headersTruncated = true
@@ -2898,6 +2931,7 @@ when compileOption("threads"):
       return
     discard consumeSharedExecText(ctx.httpMethod)
     discard consumeSharedExecText(ctx.url)
+    discard consumeSharedExecText(ctx.requestTarget)
     discard consumeSharedExecText(ctx.body)
     discard consumeSharedExecText(ctx.caData)
     discard consumeSharedExecText(ctx.effectiveUrl)
@@ -2913,6 +2947,8 @@ when compileOption("threads"):
       deallocShared(header)
       header = next
     deinitLock(ctx.chunkLock)
+    deinitCond(ctx.startCond)
+    deinitLock(ctx.startLock)
     deallocShared(ctx)
 
   proc parseCurlHeaders(raw: string): PropTable =
@@ -2942,9 +2978,35 @@ when compileOption("threads"):
       while i < httpClientPending.len:
         let pending {.cursor.} = httpClientPending[i]
         let ctx = pending.ctx
+        if ctx.schedulerPtr != cast[pointer](currentScheduler()):
+          inc i
+          continue
         var task {.cursor.}: Value
         task.bits = ctx.taskBits
-        if not pending.authorityRevoked:
+        if pending.operation != nil:
+          withLock ctx.startLock:
+            if ctx.startRequested and ctx.startDecision == 0:
+              if task.taskCancelled:
+                ctx.startDecision = -1
+              else:
+                try:
+                  pending.registry.guardCapabilityOperation(
+                    pending.capabilityContext, pending.operation)
+                  ctx.startDecision = 1
+                except CapabilityError as error:
+                  pending.authorityRevoked = true
+                  ctx.startDecision = -1
+                  signal(ctx.startCond)
+                  try:
+                    raiseCapabilityOperationError(pending.scope,
+                      "net/http_client", "net/Http", error)
+                  except GeneError as failure:
+                    if tryFailTask(task, failure.msg,
+                        admitErrorValue(failure.errVal,
+                          pending.scope.application().builtinsScope()), hasValue = true):
+                      wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+              signal(ctx.startCond)
+        elif not pending.authorityRevoked:
           for grant in pending.capabilityContext.grants:
             if not grant.isValid:
               pending.authorityRevoked = true
@@ -2953,8 +3015,7 @@ when compileOption("threads"):
                   "net/http_client: retained capability was revoked"):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
               break
-        let cancelled = task.taskCancelled or ctx.resultCancelled or
-                        pending.authorityRevoked
+        let cancelled = task.taskCancelled or pending.authorityRevoked
         if task.taskCancelled:
           atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
         var head, tail: ptr SharedExecLine
@@ -3013,8 +3074,27 @@ when compileOption("threads"):
               not pending.authorityRevoked:
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
-              if tryFailTask(task, failure):
-                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+              if ctx.protocolUpgrade or ctx.unsupportedTransport:
+                try:
+                  raiseCapabilityGeneError(pending.scope, "UnsupportedCapability",
+                    if ctx.protocolUpgrade: "HTTP protocol upgrades are unsupported"
+                    else: "HTTP transport cannot enforce its capability profile",
+                    "net/Http", "net/http_client",
+                    if ctx.protocolUpgrade: "unsupported_upgrade"
+                    else: "unsupported_transport")
+                except GeneError as error:
+                  if tryFailTask(task, error.msg,
+                      admitErrorValue(error.errVal,
+                        pending.scope.application().builtinsScope()), hasValue = true):
+                    wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+              else:
+                try:
+                  raiseHttpClientError(failure, pending.scope, "transport")
+                except GeneError as error:
+                  if tryFailTask(task, error.msg,
+                      admitErrorValue(error.errVal,
+                        pending.scope.application().builtinsScope()), hasValue = true):
+                    wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
             else:
               var response = initPropTable()
               response["status"] = newInt(ctx.responseStatus)
@@ -3050,6 +3130,7 @@ when compileOption("threads"):
         return
       let httpMethod = readSharedExecText(ctx.httpMethod)
       let url = readSharedExecText(ctx.url)
+      let requestTarget = readSharedExecText(ctx.requestTarget)
       let body = readSharedExecText(ctx.body)
       let easy = gCurlApi.easyInit()
       if easy == nil:
@@ -3059,9 +3140,31 @@ when compileOption("threads"):
       try:
         template setopt(call: untyped, label: string) =
           if call != CurlOk:
+            ctx.unsupportedTransport = true
             fail("could not set " & label)
             return
         setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptUrl, url.cstring), "URL")
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptRequestTarget,
+                              requestTarget.cstring), "request target")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptPathAsIs, 1),
+               "path preservation")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptHttpVersion, 2),
+               "HTTP/1.1")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptProtocols, 3),
+               "HTTP/HTTPS protocols")
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptProxy, ""),
+               "no proxy")
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptPreProxy, ""),
+               "no pre-proxy")
+        for option in [CurlOptHttpProxyTunnel, CurlOptNetrc, CurlOptHttpAuth,
+                       CurlOptProxyAuth]:
+          setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, option, 0),
+                 "no tunnels or managed authentication")
+        for option in [CurlOptFreshConnect, CurlOptForbidReuse, CurlOptSslVerifyPeer]:
+          setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, option, 1),
+                 "fresh verified connection")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptSslVerifyHost, 2),
+               "TLS hostname verification")
         setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptCustomRequest,
                               httpMethod.cstring),
                "method")
@@ -3104,6 +3207,16 @@ when compileOption("threads"):
           setopt(cCurlSetoptOff(gCurlApi.setoptAddr, easy,
                                 CurlOptPostFieldSizeLarge, body.len.int64),
                  "request body size")
+        if httpMethod == "HEAD":
+          setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoBody, 1),
+                 "HEAD response")
+        # libcurl can retry a 417 response after an Expect: 100-continue
+        # handshake. Suppress that automatic mode; a later request must pass
+        # through a new prepared/guarded operation.
+        headerList = gCurlApi.slistAppend(nil, "Expect:")
+        if headerList == nil:
+          fail("could not disable the Expect handshake")
+          return
         var header = ctx.headers
         while header != nil:
           let text = readSharedExecText(header.text)
@@ -3117,6 +3230,18 @@ when compileOption("threads"):
           setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptHttpHeader,
                                 headerList),
                  "request headers")
+        # No managed runtime graph crosses into this worker. The owner guards
+        # the actual immutable request only once the configured handle is ready.
+        withLock ctx.startLock:
+          ctx.startRequested = true
+          while ctx.startDecision == 0:
+            wait(ctx.startCond, ctx.startLock)
+          if ctx.startDecision < 0:
+            ctx.resultCancelled = true
+            return
+        if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+          ctx.resultCancelled = true
+          return
         let code = gCurlApi.easyPerform(easy)
         if code != CurlOk:
           if code == CurlAbortedByCallback and
@@ -3124,7 +3249,9 @@ when compileOption("threads"):
             ctx.resultCancelled = true
           else:
             ctx.resultTimedOut = code == CurlOperationTimedOut
-            let detail = if ctx.bufferOverflow:
+            let detail = if ctx.protocolUpgrade:
+                "protocol upgrades are unsupported"
+              elif ctx.bufferOverflow:
                 "stream buffer exceeded its configured byte cap"
               elif gCurlApi.easyStrerror(code) == nil:
                 "libcurl error " & $code
@@ -3138,13 +3265,9 @@ when compileOption("threads"):
           fail("could not read response status")
           return
         ctx.responseStatus = int(status)
-        var effective: cstring
-        if cCurlGetinfoPtr(gCurlApi.getinfoAddr, easy, CurlInfoEffectiveUrl,
-                           addr effective) == CurlOk and
-            effective != nil:
-          ctx.effectiveUrl = sharedExecText($effective)
-        else:
-          ctx.effectiveUrl = sharedExecText(url)
+        # No redirects are followed. Report the exact guarded URL, including
+        # a present empty query, rather than reserializing curl's URL parser.
+        ctx.effectiveUrl = sharedExecText(url)
       except CatchableError as e:
         fail(e.msg)
       finally:
@@ -3201,17 +3324,14 @@ else:
   proc pollHttpClientCompletions() =
     discard
 
-proc validHttpMethod(httpMethod: string): bool =
-  if httpMethod.len == 0:
-    return false
-  for ch in httpMethod:
-    if not (ch in {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}):
-      return false
-  true
-
 proc biHttpClientStart(name: string, streaming: bool,
-                       args: openArray[Value], call: ptr NativeCall): Value =
+                       args: openArray[Value], call: ptr NativeCall,
+                       prepared: PreparedCapabilityHttpRequest = nil): Value =
   let scope = if call == nil: nil else: call[].dispatchScope
+  when not compileOption("threads"):
+    raiseCapabilityGeneError(scope, "UnsupportedCapability",
+      "HTTP transport requires a threaded runtime", "net/Http", name,
+      "unsupported_transport")
   if args.len != 0:
     raiseHttpClientError(name & " expects only named arguments", scope)
   var httpMethod = "GET"
@@ -3227,6 +3347,8 @@ proc biHttpClientStart(name: string, streaming: bool,
   if call != nil:
     for i, argName in call[].namedNames:
       let value = call[].namedValues[i]
+      if prepared != nil and argName in ["method", "url", "headers", "body"]:
+        raiseHttpClientError(name & " cannot replace prepared request data", scope)
       case argName
       of "method":
         requireStr(name & " ^method", value)
@@ -3270,16 +3392,30 @@ proc biHttpClientStart(name: string, streaming: bool,
       else:
         raiseHttpClientError(name & " got unexpected named argument: " & argName,
                              scope)
-  if not validHttpMethod(httpMethod):
-    raiseHttpClientError(name & " ^method contains invalid characters", scope)
-  if not (url.startsWith("http://") or url.startsWith("https://")):
-    raiseHttpClientError(name & " ^url must use http:// or https://", scope)
-  var grant: CapabilityGrant
+  var request = prepared
   try:
-    grant = requireActiveCapability(name, "net/Http", call,
+    if request == nil:
+      request = prepareCapabilityHttpRequest(httpMethod, url, headers, body)
+  except CapabilityError as error:
+    raiseCapabilityOperationError(scope, name, "net/Http", error)
+  httpMethod = request.httpMethod
+  url = request.facts.url
+  headers = request.headers
+  body = request.body
+  let active = activeCapabilitiesForCall(call)
+  var retained = active.context
+  var operation: CapabilityOperation
+  if retained.isPolicyContext:
+    operation = HttpCapabilityProvider(active.app.hostCapabilityProvider).
+      describeHttpOperation(request)
+    try:
+      active.app.capabilityRegistry.guardCapabilityOperation(retained, operation)
+    except CapabilityError as error:
+      raiseCapabilityOperationError(scope, name, "net/Http", error)
+  else:
+    let grant = requireActiveCapability(name, "net/Http", call,
       named = [capNamed("url", capString(url))])
-  except GeneError as error:
-    raiseHttpClientError(error.msg, scope)
+    retained = newCapabilityContext([grant])
   if timeoutMs <= 0 or maxBytes <= 0 or pendingBytes <= 0 or channelCapacity <= 0:
     raiseHttpClientError(name & " limits must be positive", scope)
   if timeoutMs > 86_400_000 or maxBytes > HttpHardMaxBytes or
@@ -3301,6 +3437,10 @@ proc biHttpClientStart(name: string, streaming: bool,
       let fs = activeFilesystem(call)
       caData = fs.provider.readBytes(fs.context, caFile)
     except CatchableError as error:
+      if error of CapabilityGuardError or error of CapabilityOperationError or
+          error of CapabilityProviderFailure:
+        raiseCapabilityOperationError(scope, name & " ^ca_file", "fs/Read",
+          cast[ref CapabilityError](error))
       raiseHttpClientError(name & " ^ca_file: " & error.msg, scope)
   loadCurlApi(scope)
   when compileOption("threads"):
@@ -3315,6 +3455,7 @@ proc biHttpClientStart(name: string, streaming: bool,
     let ctx = cast[ptr HttpClientCtx](allocShared0(sizeof(HttpClientCtx)))
     ctx.httpMethod = sharedExecText(httpMethod)
     ctx.url = sharedExecText(url)
+    ctx.requestTarget = sharedExecText(request.requestTarget)
     ctx.body = sharedExecText(body)
     ctx.caData = sharedExecText(caData)
     ctx.taskBits = task.bits
@@ -3326,6 +3467,10 @@ proc biHttpClientStart(name: string, streaming: bool,
     ctx.responseBody.cap = maxBytes
     ctx.responseHeaders.cap = HttpHeaderMaxBytes
     initLock(ctx.chunkLock)
+    initLock(ctx.startLock)
+    initCond(ctx.startCond)
+    if operation == nil:
+      ctx.startDecision = 1
     var headerTail: ptr SharedExecArg
     for header in headers:
       let node = cast[ptr SharedExecArg](allocShared0(sizeof(SharedExecArg)))
@@ -3336,7 +3481,8 @@ proc biHttpClientStart(name: string, streaming: bool,
         headerTail.next = node
       headerTail = node
     let pending = HttpClientPending(ctx: ctx,
-      capabilityContext: newCapabilityContext([grant]))
+      capabilityContext: retained, registry: active.app.capabilityRegistry,
+      operation: operation, scope: scope)
     pending.taskOwner = retainedCopy(task)
     pending.channelOwner = retainedCopy(channel)
     withLock httpClientLock:
@@ -3368,6 +3514,15 @@ proc biHttpClientStart(name: string, streaming: bool,
 proc biHttpClientRequest(args: openArray[Value],
                          call: ptr NativeCall): Value {.nimcall.} =
   biHttpClientStart("net/http_client/request", false, args, call)
+
+proc biHttpClientSend(args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("net/http_client/send", args)
+  if args[0].kind != vkCapability or args[0].capabilityForm != cvfPrepared or
+      not (args[0].capabilityPreparedValue of PreparedCapabilityHttpRequest):
+    raise newException(GeneError, "http_client/send expects a prepared HTTP request")
+  biHttpClientStart("net/http_client/send", false, [], call,
+    PreparedCapabilityHttpRequest(args[0].capabilityPreparedValue))
 
 proc biHttpClientStream(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
@@ -3418,7 +3573,9 @@ proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
 
 proc cClearErr(f: File) {.importc: "clearerr", header: "<stdio.h>".}
 
-proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
+proc biOsReadLine(args: openArray[Value], call: ptr NativeCall = nil): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("os/read_line",
+    if call == nil: nil else: call[].dispatchScope)
   ## Read one line from stdin; returns nil at EOF. No capability: reading the
   ## program's own stdin is not host authority the way env/exec/files are.
   if args.len != 0:
@@ -3662,8 +3819,20 @@ proc activeFilesystem(call: ptr NativeCall):
       app.rootCapabilityContext
   (app.filesystemProvider, context)
 
-proc raiseFilesystemOperationError(name, capability, message: string,
+proc raiseFilesystemOperationError(name, capability: string,
+                                   error: ref CatchableError,
                                    scope: Scope) {.noreturn.} =
+  if error of GeneError:
+    raise error
+  if error of CapabilityGuardError or error of CapabilityOperationError or
+      error of CapabilityProviderFailure:
+    raiseCapabilityOperationError(scope, name, capability,
+      cast[ref CapabilityError](error))
+  let message = error.msg
+  if message.startsWith("UnsupportedCapability"):
+    raiseCapabilityGeneError(scope, "UnsupportedCapability",
+      name & ": unsupported filesystem operation", capability, name,
+      "unsupported_operation", cause = error)
   if message.startsWith("MissingCapability"):
     raiseCapabilityGeneError(scope, "MissingCapability",
       name & " requires " & capability, capability, name)
@@ -3673,6 +3842,9 @@ proc raiseFilesystemOperationError(name, capability, message: string,
   if "outside" in message or "escapes" in message:
     raiseCapabilityGeneError(scope, "CapabilityScopeError",
       name & ": " & message, capability, name)
+  if error of CapabilityError and not (error of FilesystemCapabilityError):
+    raiseCapabilityOperationError(scope, name, capability,
+      cast[ref CapabilityError](error))
   raiseOsError(name & ": " & message, scope)
 
 proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -3693,7 +3865,7 @@ proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       release(resourceAuthorityLock)
     newRuntimeResourceHandle(scope, "FsFileLock", id)
   except CatchableError as error:
-    raiseFilesystemOperationError("fs/try_lock", "fs/WriteFile", error.msg, scope)
+    raiseFilesystemOperationError("fs/try_lock", "fs/Write", error, scope)
 
 proc biFsFileLockClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("FsFileLock/close", args)
@@ -3852,6 +4024,8 @@ proc raiseWatcherClosed(scope: Scope) {.noreturn.} =
   raise error
 
 proc biFsWatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("fs/watch",
+    if call == nil: nil else: call[].dispatchScope)
   if args.len != 1:
     raise newException(GeneError, "fs/watch expects one path")
   requireStr("fs/watch path", args[0])
@@ -3899,10 +4073,12 @@ proc biFsWatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
       release(resourceAuthorityLock)
     newRuntimeResourceHandle(scope, "FsWatcher", id)
   except CatchableError as error:
-    raiseFilesystemOperationError("fs/watch", "fs/ReadDir", error.msg, scope)
+    raiseFilesystemOperationError("fs/watch", "fs/Read", error, scope)
 
 proc biFsWatcherRecv(args: openArray[Value],
-                     call: ptr NativeCall): Value {.nimcall.} =
+                            call: ptr NativeCall): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("FsWatcher/recv",
+    if call == nil: nil else: call[].dispatchScope)
   requireOne("FsWatcher/recv", args)
   let scope = if call == nil: nil else: call[].dispatchScope
   let record = fsWatcherRecord("FsWatcher/recv", args[0], call)
@@ -3923,8 +4099,8 @@ proc biFsWatcherRecv(args: openArray[Value],
     try:
       record.refreshFsWatcher(context)
     except CatchableError as error:
-      raiseFilesystemOperationError("FsWatcher/recv", "fs/ReadDir",
-                                    error.msg, scope)
+      raiseFilesystemOperationError("FsWatcher/recv", "fs/Read",
+                                    error, scope)
     if record.queue.len > 0:
       continue
     let deadline = timerDeadline(25)
@@ -3965,7 +4141,7 @@ proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nim
     let fs = activeFilesystem(call)
     newStr(fs.provider.readText(fs.context, args[0].strVal))
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/read_text", "fs/ReadFile", e.msg, scope)
+    raiseFilesystemOperationError("fs/read_text", "fs/Read", e, scope)
 
 proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/read_text, and the read half `fs/write_bytes` has
@@ -3980,7 +4156,7 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
     let fs = activeFilesystem(call)
     newBytes(fs.provider.readBytes(fs.context, args[0].strVal))
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/read_bytes", "fs/ReadFile", e.msg, scope)
+    raiseFilesystemOperationError("fs/read_bytes", "fs/Read", e, scope)
 
 proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/write_text. Same capability, same path
@@ -3997,7 +4173,7 @@ proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.n
     let fs = activeFilesystem(call)
     fs.provider.writeBytes(fs.context, args[0].strVal, args[1].bytesVal)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/write_bytes", "fs/WriteFile", e.msg,
+    raiseFilesystemOperationError("fs/write_bytes", "fs/Write", e,
                                   scope)
   NIL
 
@@ -4011,7 +4187,7 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
     let fs = activeFilesystem(call)
     fs.provider.writeText(fs.context, args[0].strVal, args[1].strVal)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/write_text", "fs/WriteFile", e.msg,
+    raiseFilesystemOperationError("fs/write_text", "fs/Write", e,
                                   scope)
   NIL
 
@@ -4027,8 +4203,8 @@ proc biFsWriteTextAtomicSync(args: openArray[Value],
     let fs = activeFilesystem(call)
     fs.provider.writeTextAtomic(fs.context, args[0].strVal, args[1].strVal)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/write_text_atomic", "fs/WriteFile",
-                                  e.msg, scope)
+    raiseFilesystemOperationError("fs/write_text_atomic", "fs/Write",
+                                  e, scope)
   NIL
 
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -4040,7 +4216,7 @@ proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     let fs = activeFilesystem(call)
     newBool(fs.provider.pathExists(fs.context, args[0].strVal))
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/exists?", "fs/ReadDir", e.msg, scope)
+    raiseFilesystemOperationError("fs/exists?", "fs/Read", e, scope)
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -4054,7 +4230,7 @@ proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       names.add newStr(name)
     newList(names)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/list_dir", "fs/ReadDir", e.msg, scope)
+    raiseFilesystemOperationError("fs/list_dir", "fs/Read", e, scope)
 
 proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -4065,7 +4241,7 @@ proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     let fs = activeFilesystem(call)
     fs.provider.makeDir(fs.context, args[0].strVal)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/make_dir", "fs/WriteDir", e.msg, scope)
+    raiseFilesystemOperationError("fs/make_dir", "fs/Write", e, scope)
   NIL
 
 proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -4077,7 +4253,7 @@ proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     let fs = activeFilesystem(call)
     fs.provider.removeFile(fs.context, args[0].strVal)
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/remove", "fs/WriteFile", e.msg, scope)
+    raiseFilesystemOperationError("fs/remove", "fs/Write", e, scope)
   NIL
 
 proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -4089,7 +4265,7 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     let fs = activeFilesystem(call)
     newStr(fs.provider.realPath(fs.context, args[0].strVal))
   except CatchableError as e:
-    raiseFilesystemOperationError("fs/real_path", "fs/ReadDir", e.msg, scope)
+    raiseFilesystemOperationError("fs/real_path", "fs/Read", e, scope)
 
 # --- json: parse and stringify over Gene value kinds (docs/stdlib.md "Module Layout") ---
 
@@ -4550,6 +4726,7 @@ proc logSource(call: ptr NativeCall): LogSource =
 
 proc emitLogger(name: string, logger: Value, level: LogLevel, message: Value,
                 payload: Value, call: ptr NativeCall): Value =
+  rejectUnmigratedCapabilityEffect(name, if call == nil: nil else: call[].dispatchScope)
   requireLogger(name, logger)
   discard requireRetainedCapabilities(name, call,
                                       logger.loggerCapabilityContext)
@@ -4577,6 +4754,8 @@ proc biLogNewLogger(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 
 proc biLogNewFileLogger(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("log/new_file_logger",
+    if call == nil: nil else: call[].dispatchScope)
   if args.len != 2:
     raise newException(GeneError,
       "log/new_file_logger expects (name, path)")
@@ -6210,6 +6389,7 @@ proc loadSqliteApi(scope: Scope) =
   gSqliteApi = api
 
 proc sqliteHandle(name: string, conn: Value, scope: Scope): pointer =
+  rejectUnmigratedCapabilityEffect(name, scope)
   result = dbConnHandle(name, conn, "SqliteDb", scope)
   if result in activeSqliteVisits:
     raiseDbError(name & ": connection is active in a native row callback", scope)
@@ -6400,6 +6580,8 @@ proc sqlitePersistIfCommitted(conn: Value, db: pointer, mutated: bool,
     sqlitePersist(conn, db, call, scope)
 
 proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  rejectUnmigratedCapabilityEffect("sqlite/open",
+    if call == nil: nil else: call[].dispatchScope)
   requireOne("sqlite/open", args)
   requireStr("sqlite/open path", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -7927,7 +8109,7 @@ proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
     let key = path & "\x1f" & geneName
     stagedEntries.add (key, entry)
     entries[geneName] = newNativeCallFn(key, aotEntryDispatch,
-                                        acceptsNamed = false)
+      acceptsNamed = false, effectKind = nekUnsupported)
     ""
 
   if manifest != nil and countAddr != nil:
@@ -8012,16 +8194,16 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("FsChange", fsChangeType)
   var fsWatcherMessages = initTable[string, Value]()
   fsWatcherMessages["recv"] =
-    newNativeCallFn("FsWatcher/recv", biFsWatcherRecv,
+    builtinNativeCallFn("FsWatcher/recv", biFsWatcherRecv,
                     acceptsNamed = false)
   fsWatcherMessages["close"] =
-    newNativeCallFn("FsWatcher/close", biFsWatcherClose,
+    builtinNativeCallFn("FsWatcher/close", biFsWatcherClose,
                     acceptsNamed = false)
   let fsWatcherType = newType("FsWatcher", NIL, @[], @[], root,
                               messages = fsWatcherMessages)
   root.define("FsWatcher", fsWatcherType)
   var fsFileLockMessages = initTable[string, Value]()
-  fsFileLockMessages["close"] = newNativeCallFn("FsFileLock/close",
+  fsFileLockMessages["close"] = builtinNativeCallFn("FsFileLock/close",
     biFsFileLockClose, acceptsNamed = false)
   let fsFileLockType = newType("FsFileLock", NIL, @[], @[], root,
     messages = fsFileLockMessages)
@@ -8046,22 +8228,22 @@ proc registerStdlibNamespaces(root: Scope) =
   let logScope = newScope(root)
   logScope.define("LogLevel", logLevel)
   logScope.define("Logger", newSym("Logger"))
-  logScope.define("new_logger", newNativeCallFn("log/new_logger",
+  logScope.define("new_logger", builtinNativeCallFn("log/new_logger",
                                                 biLogNewLogger))
   logScope.define("new_file_logger",
-    newNativeCallFn("log/new_file_logger", biLogNewFileLogger))
-  logScope.define("enabled?", newNativeCallFn("Logger/enabled?",
+    builtinNativeCallFn("log/new_file_logger", biLogNewFileLogger))
+  logScope.define("enabled?", builtinNativeCallFn("Logger/enabled?",
                                                biLoggerEnabled,
                                                acceptsNamed = false))
-  logScope.define("emit", newNativeCallFn("Logger/emit", biLoggerEmit))
-  logScope.define("child", newNativeCallFn("Logger/child", biLoggerChild))
-  logScope.define("with", newNativeCallFn("Logger/with", biLoggerWith,
+  logScope.define("emit", builtinNativeCallFn("Logger/emit", biLoggerEmit))
+  logScope.define("child", builtinNativeCallFn("Logger/child", biLoggerChild))
+  logScope.define("with", builtinNativeCallFn("Logger/with", biLoggerWith,
                                            acceptsNamed = false))
-  logScope.define("error", newNativeCallFn("Logger/error", biLoggerError))
-  logScope.define("warn", newNativeCallFn("Logger/warn", biLoggerWarn))
-  logScope.define("info", newNativeCallFn("Logger/info", biLoggerInfo))
-  logScope.define("debug", newNativeCallFn("Logger/debug", biLoggerDebug))
-  logScope.define("trace", newNativeCallFn("Logger/trace", biLoggerTrace))
+  logScope.define("error", builtinNativeCallFn("Logger/error", biLoggerError))
+  logScope.define("warn", builtinNativeCallFn("Logger/warn", biLoggerWarn))
+  logScope.define("info", builtinNativeCallFn("Logger/info", biLoggerInfo))
+  logScope.define("debug", builtinNativeCallFn("Logger/debug", biLoggerDebug))
+  logScope.define("trace", builtinNativeCallFn("Logger/trace", biLoggerTrace))
   root.define("log", newNamespace("log", logScope))
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
@@ -8071,7 +8253,7 @@ proc registerStdlibNamespaces(root: Scope) =
   stdStreamScope.define("to_stream",
     builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   stdStreamScope.define("to_pairs_stream",
-                        newNativeFn("to_pairs_stream", biToPairsStream))
+                        builtinNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (§6.2) must bind the same process-wide
   # dispatchers the root and the type tables hold — `sharedBuiltinNative`
   # returns those instances; the fresh values built here are discarded.
@@ -8091,12 +8273,12 @@ proc registerStdlibNamespaces(root: Scope) =
   stdStreamScope.define("each",
     sharedBuiltinNative("each", builtinNativeCallFn("each", biEach, acceptsNamed = false)))
   let stdNodeScope = newScope(root)
-  stdNodeScope.define("head", newNativeFn("head", biHead))
-  stdNodeScope.define("props", newNativeFn("props", biProps))
-  stdNodeScope.define("body", newNativeFn("body", biBody))
-  stdNodeScope.define("meta", newNativeFn("meta", biMeta))
+  stdNodeScope.define("head", builtinNativeFn("head", biHead))
+  stdNodeScope.define("props", builtinNativeFn("props", biProps))
+  stdNodeScope.define("body", builtinNativeFn("body", biBody))
+  stdNodeScope.define("meta", builtinNativeFn("meta", biMeta))
   stdNodeScope.define("declarations",
-                      newNativeFn("declarations", biDeclarations))
+                      builtinNativeFn("declarations", biDeclarations))
   let stdParseScope = newScope(root)
   stdParseScope.define("parse_int", builtinNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
@@ -8114,134 +8296,134 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("parse", newNamespace("parse", stdParseScope))
   # `gene/bit` and `gene/bytes` — the primitives a binary format needs.
   let bitScope = newScope(root)
-  bitScope.define("and", newNativeFn("bit/and", biBitAnd))
-  bitScope.define("or", newNativeFn("bit/or", biBitOr))
-  bitScope.define("xor", newNativeFn("bit/xor", biBitXor))
-  bitScope.define("not", newNativeFn("bit/not", biBitNot))
-  bitScope.define("shl", newNativeFn("bit/shl", biBitShl))
-  bitScope.define("shr", newNativeFn("bit/shr", biBitShr))
+  bitScope.define("and", builtinNativeFn("bit/and", biBitAnd))
+  bitScope.define("or", builtinNativeFn("bit/or", biBitOr))
+  bitScope.define("xor", builtinNativeFn("bit/xor", biBitXor))
+  bitScope.define("not", builtinNativeFn("bit/not", biBitNot))
+  bitScope.define("shl", builtinNativeFn("bit/shl", biBitShl))
+  bitScope.define("shr", builtinNativeFn("bit/shr", biBitShr))
   root.define("bit", newNamespace("bit", bitScope))
   let bytesScope = newScope(root)
-  bytesScope.define("from_list", newNativeFn("binary/from_list", biBytesFromList))
-  bytesScope.define("to_list", newNativeFn("binary/to_list", biBytesToList))
+  bytesScope.define("from_list", builtinNativeFn("binary/from_list", biBytesFromList))
+  bytesScope.define("to_list", builtinNativeFn("binary/to_list", biBytesToList))
   bytesScope.define("to_buffer",
-                    newNativeFn("binary/to_buffer", biBytesToBuffer))
-  bytesScope.define("size", newNativeFn("binary/size", biBytesSize))
-  bytesScope.define("get", newNativeFn("binary/get", biBytesGet))
-  bytesScope.define("concat", newNativeFn("binary/concat", biBytesConcat))
-  bytesScope.define("slice", newNativeFn("binary/slice", biBytesSlice))
-  bytesScope.define("from_str", newNativeFn("binary/from_str", biBytesFromStr))
-  bytesScope.define("to_str", newNativeFn("binary/to_str", biBytesToStr))
+                    builtinNativeFn("binary/to_buffer", biBytesToBuffer))
+  bytesScope.define("size", builtinNativeFn("binary/size", biBytesSize))
+  bytesScope.define("get", builtinNativeFn("binary/get", biBytesGet))
+  bytesScope.define("concat", builtinNativeFn("binary/concat", biBytesConcat))
+  bytesScope.define("slice", builtinNativeFn("binary/slice", biBytesSlice))
+  bytesScope.define("from_str", builtinNativeFn("binary/from_str", biBytesFromStr))
+  bytesScope.define("to_str", builtinNativeFn("binary/to_str", biBytesToStr))
   # Number codecs, all little-endian at a byte offset (design.md §D7.3).
-  bytesScope.define("get_u16", newNativeFn("binary/get_u16", biBytesGetU16))
-  bytesScope.define("get_u32", newNativeFn("binary/get_u32", biBytesGetU32))
-  bytesScope.define("get_i32", newNativeFn("binary/get_i32", biBytesGetI32))
-  bytesScope.define("get_f32", newNativeFn("binary/get_f32", biBytesGetF32))
-  bytesScope.define("get_f64", newNativeFn("binary/get_f64", biBytesGetF64))
-  bytesScope.define("put_u8", newNativeFn("binary/put_u8", biBytesPutU8))
-  bytesScope.define("put_u16", newNativeFn("binary/put_u16", biBytesPutU16))
-  bytesScope.define("put_u32", newNativeFn("binary/put_u32", biBytesPutU32))
-  bytesScope.define("put_i32", newNativeFn("binary/put_i32", biBytesPutI32))
-  bytesScope.define("put_f32", newNativeFn("binary/put_f32", biBytesPutF32))
-  bytesScope.define("put_f64", newNativeFn("binary/put_f64", biBytesPutF64))
+  bytesScope.define("get_u16", builtinNativeFn("binary/get_u16", biBytesGetU16))
+  bytesScope.define("get_u32", builtinNativeFn("binary/get_u32", biBytesGetU32))
+  bytesScope.define("get_i32", builtinNativeFn("binary/get_i32", biBytesGetI32))
+  bytesScope.define("get_f32", builtinNativeFn("binary/get_f32", biBytesGetF32))
+  bytesScope.define("get_f64", builtinNativeFn("binary/get_f64", biBytesGetF64))
+  bytesScope.define("put_u8", builtinNativeFn("binary/put_u8", biBytesPutU8))
+  bytesScope.define("put_u16", builtinNativeFn("binary/put_u16", biBytesPutU16))
+  bytesScope.define("put_u32", builtinNativeFn("binary/put_u32", biBytesPutU32))
+  bytesScope.define("put_i32", builtinNativeFn("binary/put_i32", biBytesPutI32))
+  bytesScope.define("put_f32", builtinNativeFn("binary/put_f32", biBytesPutF32))
+  bytesScope.define("put_f64", builtinNativeFn("binary/put_f64", biBytesPutF64))
   root.define("binary", newNamespace("binary", bytesScope))
   # `gene/math`, reachable as `$math/floor` like every other root namespace.
   let mathScope = newScope(root)
-  mathScope.define("floor", newNativeFn("math/floor", biMathFloor))
-  mathScope.define("ceil", newNativeFn("math/ceil", biMathCeil))
-  mathScope.define("trunc", newNativeFn("math/trunc", biMathTrunc))
-  mathScope.define("round", newNativeFn("math/round", biMathRound))
-  mathScope.define("abs", newNativeFn("math/abs", biMathAbs))
-  mathScope.define("sign", newNativeFn("math/sign", biMathSign))
-  mathScope.define("sqrt", newNativeFn("math/sqrt", biMathSqrt))
-  mathScope.define("exp", newNativeFn("math/exp", biMathExp))
-  mathScope.define("log", newNativeFn("math/log", biMathLog))
-  mathScope.define("log2", newNativeFn("math/log2", biMathLog2))
-  mathScope.define("log10", newNativeFn("math/log10", biMathLog10))
-  mathScope.define("sin", newNativeFn("math/sin", biMathSin))
-  mathScope.define("cos", newNativeFn("math/cos", biMathCos))
-  mathScope.define("tan", newNativeFn("math/tan", biMathTan))
-  mathScope.define("asin", newNativeFn("math/asin", biMathAsin))
-  mathScope.define("acos", newNativeFn("math/acos", biMathAcos))
-  mathScope.define("atan", newNativeFn("math/atan", biMathAtan))
-  mathScope.define("atan2", newNativeFn("math/atan2", biMathAtan2))
-  mathScope.define("pow", newNativeFn("math/pow", biMathPow))
-  mathScope.define("hypot", newNativeFn("math/hypot", biMathHypot))
-  mathScope.define("min", newNativeFn("math/min", biMathMin))
-  mathScope.define("max", newNativeFn("math/max", biMathMax))
-  mathScope.define("clamp", newNativeFn("math/clamp", biMathClamp))
+  mathScope.define("floor", builtinNativeFn("math/floor", biMathFloor))
+  mathScope.define("ceil", builtinNativeFn("math/ceil", biMathCeil))
+  mathScope.define("trunc", builtinNativeFn("math/trunc", biMathTrunc))
+  mathScope.define("round", builtinNativeFn("math/round", biMathRound))
+  mathScope.define("abs", builtinNativeFn("math/abs", biMathAbs))
+  mathScope.define("sign", builtinNativeFn("math/sign", biMathSign))
+  mathScope.define("sqrt", builtinNativeFn("math/sqrt", biMathSqrt))
+  mathScope.define("exp", builtinNativeFn("math/exp", biMathExp))
+  mathScope.define("log", builtinNativeFn("math/log", biMathLog))
+  mathScope.define("log2", builtinNativeFn("math/log2", biMathLog2))
+  mathScope.define("log10", builtinNativeFn("math/log10", biMathLog10))
+  mathScope.define("sin", builtinNativeFn("math/sin", biMathSin))
+  mathScope.define("cos", builtinNativeFn("math/cos", biMathCos))
+  mathScope.define("tan", builtinNativeFn("math/tan", biMathTan))
+  mathScope.define("asin", builtinNativeFn("math/asin", biMathAsin))
+  mathScope.define("acos", builtinNativeFn("math/acos", biMathAcos))
+  mathScope.define("atan", builtinNativeFn("math/atan", biMathAtan))
+  mathScope.define("atan2", builtinNativeFn("math/atan2", biMathAtan2))
+  mathScope.define("pow", builtinNativeFn("math/pow", biMathPow))
+  mathScope.define("hypot", builtinNativeFn("math/hypot", biMathHypot))
+  mathScope.define("min", builtinNativeFn("math/min", biMathMin))
+  mathScope.define("max", builtinNativeFn("math/max", biMathMax))
+  mathScope.define("clamp", builtinNativeFn("math/clamp", biMathClamp))
   mathScope.define("pi", newFloat(PI))
   mathScope.define("e", newFloat(E))
   mathScope.define("tau", newFloat(TAU))
   root.define("math", newNamespace("math", mathScope))
   let strScope = newScope(root)
-  strScope.define("join", newNativeFn("str/join", biStrJoin))
-  strScope.define("split", newNativeFn("str/split", biStrSplit))
-  strScope.define("trim", newNativeFn("str/trim", biStrTrim))
-  strScope.define("lower", newNativeFn("str/lower", biStrLower))
-  strScope.define("byte_size", newNativeFn("str/byte_size", biStrByteSize))
-  strScope.define("slice_bytes", newNativeFn("str/slice_bytes", biStrSliceBytes))
-  strScope.define("to_utf8", newNativeFn("str/to_utf8", biStrToUtf8))
-  strScope.define("from_utf8", newNativeFn("str/from_utf8", biStrFromUtf8))
-  strScope.define("starts_with?", newNativeFn("str/starts_with?",
+  strScope.define("join", builtinNativeFn("str/join", biStrJoin))
+  strScope.define("split", builtinNativeFn("str/split", biStrSplit))
+  strScope.define("trim", builtinNativeFn("str/trim", biStrTrim))
+  strScope.define("lower", builtinNativeFn("str/lower", biStrLower))
+  strScope.define("byte_size", builtinNativeFn("str/byte_size", biStrByteSize))
+  strScope.define("slice_bytes", builtinNativeFn("str/slice_bytes", biStrSliceBytes))
+  strScope.define("to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8))
+  strScope.define("from_utf8", builtinNativeFn("str/from_utf8", biStrFromUtf8))
+  strScope.define("starts_with?", builtinNativeFn("str/starts_with?",
                                               biStrStartsWith))
-  strScope.define("ends_with?", newNativeFn("str/ends_with?", biStrEndsWith))
-  strScope.define("contains?", newNativeFn("str/contains?", biStrContains))
+  strScope.define("ends_with?", builtinNativeFn("str/ends_with?", biStrEndsWith))
+  strScope.define("contains?", builtinNativeFn("str/contains?", biStrContains))
   root.define("str", newNamespace("str", strScope))
   let aotScope = newScope(root)
-  aotScope.define("load", newNativeCallFn("aot/load", biAotLoad,
+  aotScope.define("load", builtinNativeCallFn("aot/load", biAotLoad,
                                            acceptsNamed = false))
   root.define("aot", newNamespace("aot", aotScope))
   let htmlScope = newScope(root)
-  htmlScope.define("escape", newNativeFn("html/escape", biHtmlEscape))
-  htmlScope.define("attr_escape", newNativeFn("html/attr_escape", biHtmlEscape))
-  htmlScope.define("render", newNativeCallFn("html/render", biHtmlRender,
+  htmlScope.define("escape", builtinNativeFn("html/escape", biHtmlEscape))
+  htmlScope.define("attr_escape", builtinNativeFn("html/attr_escape", biHtmlEscape))
+  htmlScope.define("render", builtinNativeCallFn("html/render", biHtmlRender,
                                               acceptsNamed = false))
   root.define("html", newNamespace("html", htmlScope))
   when not defined(geneWasm):
     let webScope = newScope(root)
-    webScope.define("script", newNativeCallFn("web/script", biWebScript))
-    webScope.define("load", newNativeCallFn("web/load", biWebLoad,
+    webScope.define("script", builtinNativeCallFn("web/script", biWebScript))
+    webScope.define("load", builtinNativeCallFn("web/load", biWebLoad,
                                             acceptsNamed = false))
-    webScope.define("stylesheet", newNativeCallFn("web/stylesheet",
+    webScope.define("stylesheet", builtinNativeCallFn("web/stylesheet",
                                                   biWebStylesheet,
                                                   acceptsNamed = false))
-    webScope.define("asset_base", newNativeCallFn("web/asset_base",
+    webScope.define("asset_base", builtinNativeCallFn("web/asset_base",
                                                   biWebAssetBase,
                                                   acceptsNamed = false))
-    webScope.define("set_asset_base", newNativeCallFn("web/set_asset_base",
+    webScope.define("set_asset_base", builtinNativeCallFn("web/set_asset_base",
                                                       biWebSetAssetBase,
                                                       acceptsNamed = false))
-    webScope.define("set_source_maps", newNativeCallFn("web/set_source_maps",
+    webScope.define("set_source_maps", builtinNativeCallFn("web/set_source_maps",
                                                        biWebSetSourceMaps,
                                                        acceptsNamed = false))
-    webScope.define("published_routes", newNativeCallFn("web/published_routes",
+    webScope.define("published_routes", builtinNativeCallFn("web/published_routes",
                                                         biWebPublishedRoutes,
                                                         acceptsNamed = false))
     root.define("web", newNamespace("web", webScope))
   let cssScope = newScope(root)
-  cssScope.define("css", newNativeFn("css/css", biCss))
-  cssScope.define("rule", newNativeFn("css/rule", biCssRule))
-  cssScope.define("decl_value", newNativeFn("css/decl_value", biCssDeclValue))
-  cssScope.define("media", newNativeFn("css/media", biCssMedia))
-  cssScope.define("keyframes", newNativeFn("css/keyframes", biCssKeyframes))
-  cssScope.define("frame", newNativeFn("css/frame", biCssFrame))
-  cssScope.define("scoped", newNativeFn("css/scoped", biCssScoped))
-  cssScope.define("class_name", newNativeFn("css/class_name", biCssClassName))
-  cssScope.define("render", newNativeCallFn("css/render", biCssRender,
+  cssScope.define("css", builtinNativeFn("css/css", biCss))
+  cssScope.define("rule", builtinNativeFn("css/rule", biCssRule))
+  cssScope.define("decl_value", builtinNativeFn("css/decl_value", biCssDeclValue))
+  cssScope.define("media", builtinNativeFn("css/media", biCssMedia))
+  cssScope.define("keyframes", builtinNativeFn("css/keyframes", biCssKeyframes))
+  cssScope.define("frame", builtinNativeFn("css/frame", biCssFrame))
+  cssScope.define("scoped", builtinNativeFn("css/scoped", biCssScoped))
+  cssScope.define("class_name", builtinNativeFn("css/class_name", biCssClassName))
+  cssScope.define("render", builtinNativeCallFn("css/render", biCssRender,
                                              acceptsNamed = false))
   root.define("css", newNamespace("css", cssScope))
   let urlScope = newScope(root)
   urlScope.define("encode_component",
-                  newNativeFn("url/encode_component", biUrlEncodeComponent))
+                  builtinNativeFn("url/encode_component", biUrlEncodeComponent))
   urlScope.define("decode_component",
-                  newNativeCallFn("url/decode_component", biUrlDecodeComponent,
+                  builtinNativeCallFn("url/decode_component", biUrlDecodeComponent,
                                   acceptsNamed = false))
   urlScope.define("parse_query",
-                  newNativeCallFn("url/parse_query", biUrlParseQuery,
+                  builtinNativeCallFn("url/parse_query", biUrlParseQuery,
                                   acceptsNamed = false))
   urlScope.define("format_query",
-                  newNativeFn("url/format_query", biUrlFormatQuery))
+                  builtinNativeFn("url/format_query", biUrlFormatQuery))
   urlScope.define("UrlError", root.vars["UrlError"])
   root.define("url", newNamespace("url", urlScope))
   let httpScope = newScope(root)
@@ -8286,43 +8468,48 @@ proc registerStdlibNamespaces(root: Scope) =
                                            scope: root)],
                                @[], root)
   httpScope.define("RequestMsg", requestMsgType)
-  httpScope.define("serve", newNativeCallFn("http/serve", biHttpServe))
-  httpScope.define("listen", newNativeCallFn("http/listen", biHttpListen))
-  httpScope.define("stop", newNativeCallFn("http/stop", biHttpStop))
-  httpScope.define("status", newNativeCallFn("http/status", biHttpStatus))
-  httpScope.define("route", newNativeCallFn("http/route", biHttpRoute))
-  httpScope.define("actor_pool", newNativeCallFn("http/actor_pool",
+  httpScope.define("serve", builtinNativeCallFn("http/serve", biHttpServe))
+  httpScope.define("listen", builtinNativeCallFn("http/listen", biHttpListen))
+  httpScope.define("stop", builtinNativeCallFn("http/stop", biHttpStop))
+  httpScope.define("status", builtinNativeCallFn("http/status", biHttpStatus))
+  httpScope.define("route", builtinNativeCallFn("http/route", biHttpRoute))
+  httpScope.define("actor_pool", builtinNativeCallFn("http/actor_pool",
                                                  biHttpActorPool))
   httpScope.define("supervisor_policy",
-                   newNativeCallFn("http/supervisor_policy",
+                   builtinNativeCallFn("http/supervisor_policy",
                                    biHttpSupervisorPolicy))
-  httpScope.define("bytes", newNativeCallFn("http/bytes", biHttpBytes,
+  httpScope.define("bytes", builtinNativeCallFn("http/bytes", biHttpBytes,
                                             acceptsNamed = false))
-  httpScope.define("text", newNativeCallFn("http/text", biHttpText,
+  httpScope.define("text", builtinNativeCallFn("http/text", biHttpText,
                                            acceptsNamed = false))
-  httpScope.define("html", newNativeCallFn("http/html", biHttpHtml,
+  httpScope.define("html", builtinNativeCallFn("http/html", biHttpHtml,
                                            acceptsNamed = false))
-  httpScope.define("json", newNativeCallFn("http/json", biHttpJson,
+  httpScope.define("json", builtinNativeCallFn("http/json", biHttpJson,
                                            acceptsNamed = false))
-  httpScope.define("redirect", newNativeCallFn("http/redirect", biHttpRedirect,
+  httpScope.define("redirect", builtinNativeCallFn("http/redirect", biHttpRedirect,
                                                acceptsNamed = false))
-  httpScope.define("not_found", newNativeCallFn("http/not_found",
+  httpScope.define("not_found", builtinNativeCallFn("http/not_found",
                                                 biHttpNotFound,
                                                 acceptsNamed = false))
-  httpScope.define("ws_accept", newNativeCallFn("http/ws_accept",
+  httpScope.define("ws_accept", builtinNativeCallFn("http/ws_accept",
                                                 biHttpWsAccept))
-  httpScope.define("ws_send", newNativeCallFn("http/ws_send", biHttpWsSend,
+  httpScope.define("ws_send", builtinNativeCallFn("http/ws_send", biHttpWsSend,
                                               acceptsNamed = false))
-  httpScope.define("ws_close", newNativeCallFn("http/ws_close", biHttpWsClose,
+  httpScope.define("ws_close", builtinNativeCallFn("http/ws_close", biHttpWsClose,
                                                acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
   let httpClientScope = newScope(root)
-  httpClientScope.define("Http",
-    newCapability(app.hostCapabilityProvider.types.netHttp))
   httpClientScope.define("request",
-    newNativeCallFn("net/http_client/request", biHttpClientRequest))
+    builtinNativeCallFn("net/http_client/request", biHttpClientRequest))
+  httpClientScope.define("send",
+    builtinNativeCallFn("net/http_client/send", biHttpClientSend))
+  httpClientScope.define("prepare",
+    builtinNativeCallFn("net/http_client/prepare", biPrepareCapabilityHttp))
+  httpClientScope.define("describe_operation",
+    builtinNativeCallFn("net/http_client/describe_operation", biDescribeCapabilityHttp,
+                    acceptsNamed = false))
   httpClientScope.define("stream",
-    newNativeCallFn("net/http_client/stream", biHttpClientStream))
+    builtinNativeCallFn("net/http_client/stream", biHttpClientStream))
   httpClientScope.define("HttpClientError", httpClientError)
   # Extend the `net` namespace buildBuiltins already created (socket capability
   # and raw TCP ops) instead of rebinding the name, so `net/Connect` and
@@ -8348,8 +8535,6 @@ proc registerStdlibNamespaces(root: Scope) =
   let dbScope = newScope(root)
   dbScope.define("Db", dbProtocol)
   dbScope.define("DbError", dbError)
-  dbScope.define("Postgres",
-    newCapability(app.hostCapabilityProvider.types.dbPostgres))
   # Native wrappers (design §16.6): the props hold an owned connection pointer,
   # so only the backend's `open` may create one. The marker is what rejects
   # `(SqliteDb)`, a value that would pass the nominal boundary and fail only at
@@ -8377,10 +8562,10 @@ proc registerStdlibNamespaces(root: Scope) =
     @[dbProtocol], root, repr = trNativeWrapper)
   root.define("PostgresDb", postgresDbType)
   let dbSqliteScope = newScope(root)
-  dbSqliteScope.define("open", newNativeCallFn("sqlite/open", biSqliteOpen,
+  dbSqliteScope.define("open", builtinNativeCallFn("sqlite/open", biSqliteOpen,
                                                acceptsNamed = false))
   dbSqliteScope.define("visit_text_rows",
-    newNativeCallFn("sqlite/visit_text_rows", biSqliteVisitTextRows, acceptsNamed = false))
+    builtinNativeCallFn("sqlite/visit_text_rows", biSqliteVisitTextRows, acceptsNamed = false))
   dbSqliteScope.define("SqliteDb", sqliteDbType)
   dbSqliteScope.define("Db", dbProtocol)
   dbSqliteScope.define("DbError", dbError)
@@ -8388,28 +8573,28 @@ proc registerStdlibNamespaces(root: Scope) =
     protocol: dbProtocol, receiver: sqliteDbType,
     messages: @[
       ImplMessage(message: dbMessages["exec"],
-                  fn: newNativeCallFn("Db/exec", biSqliteExec,
+                  fn: builtinNativeCallFn("Db/exec", biSqliteExec,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["query"],
-                  fn: newNativeCallFn("Db/query", biSqliteQuery,
+                  fn: builtinNativeCallFn("Db/query", biSqliteQuery,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["query_one"],
-                  fn: newNativeCallFn("Db/query_one", biSqliteQueryOne,
+                  fn: builtinNativeCallFn("Db/query_one", biSqliteQueryOne,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["execute"],
-                  fn: newNativeCallFn("Db/execute", biSqliteExecute,
+                  fn: builtinNativeCallFn("Db/execute", biSqliteExecute,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["transaction"],
-                  fn: newNativeCallFn("Db/transaction", biSqliteTransaction,
+                  fn: builtinNativeCallFn("Db/transaction", biSqliteTransaction,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["close"],
-                  fn: newNativeCallFn("Db/close", biDbClose,
+                  fn: builtinNativeCallFn("Db/close", biDbClose,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["closed?"],
-                  fn: newNativeCallFn("Db/closed?", biDbClosed,
+                  fn: builtinNativeCallFn("Db/closed?", biDbClosed,
                                       acceptsNamed = false))])
   let dbPostgresScope = newScope(root)
-  dbPostgresScope.define("open", newNativeCallFn("postgres/open",
+  dbPostgresScope.define("open", builtinNativeCallFn("postgres/open",
                                                  biPostgresOpen,
                                                  acceptsNamed = false))
   dbPostgresScope.define("PostgresDb", postgresDbType)
@@ -8419,25 +8604,25 @@ proc registerStdlibNamespaces(root: Scope) =
     protocol: dbProtocol, receiver: postgresDbType,
     messages: @[
       ImplMessage(message: dbMessages["exec"],
-                  fn: newNativeCallFn("Db/exec", biPostgresExec,
+                  fn: builtinNativeCallFn("Db/exec", biPostgresExec,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["query"],
-                  fn: newNativeCallFn("Db/query", biPostgresQuery,
+                  fn: builtinNativeCallFn("Db/query", biPostgresQuery,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["query_one"],
-                  fn: newNativeCallFn("Db/query_one", biPostgresQueryOne,
+                  fn: builtinNativeCallFn("Db/query_one", biPostgresQueryOne,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["execute"],
-                  fn: newNativeCallFn("Db/execute", biPostgresExecute,
+                  fn: builtinNativeCallFn("Db/execute", biPostgresExecute,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["transaction"],
-                  fn: newNativeCallFn("Db/transaction", biPostgresTransaction,
+                  fn: builtinNativeCallFn("Db/transaction", biPostgresTransaction,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["close"],
-                  fn: newNativeCallFn("Db/close", biDbClose,
+                  fn: builtinNativeCallFn("Db/close", biDbClose,
                                       acceptsNamed = false)),
       ImplMessage(message: dbMessages["closed?"],
-                  fn: newNativeCallFn("Db/closed?", biDbClosed,
+                  fn: builtinNativeCallFn("Db/closed?", biDbClosed,
                                       acceptsNamed = false))])
   dbScope.define("sqlite", newNamespace("db/sqlite", dbSqliteScope))
   dbScope.define("postgres", newNamespace("db/postgres", dbPostgresScope))
@@ -8478,7 +8663,7 @@ proc registerStdlibNamespaces(root: Scope) =
   storeScope.define("Store", storeProtocol)
   storeScope.define("StoreError", storeError)
   let storeSqliteScope = newScope(root)
-  storeSqliteScope.define("open", newNativeCallFn("store/sqlite/open",
+  storeSqliteScope.define("open", builtinNativeCallFn("store/sqlite/open",
                                                   biStoreSqliteOpen))
   storeSqliteScope.define("Store", storeProtocol)
   storeSqliteScope.define("StoreError", storeError)
@@ -8487,33 +8672,33 @@ proc registerStdlibNamespaces(root: Scope) =
     protocol: storeProtocol, receiver: sqliteStoreType,
     messages: @[
       ImplMessage(message: storeMessages["put"],
-                  fn: newNativeCallFn("Store/put", biStorePut)),
+                  fn: builtinNativeCallFn("Store/put", biStorePut)),
       ImplMessage(message: storeMessages["get"],
-                  fn: newNativeCallFn("Store/get", biStoreGet)),
+                  fn: builtinNativeCallFn("Store/get", biStoreGet)),
       ImplMessage(message: storeMessages["has?"],
-                  fn: newNativeCallFn("Store/has?", biStoreHas,
+                  fn: builtinNativeCallFn("Store/has?", biStoreHas,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["delete"],
-                  fn: newNativeCallFn("Store/delete", biStoreDelete,
+                  fn: builtinNativeCallFn("Store/delete", biStoreDelete,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["keys"],
-                  fn: newNativeCallFn("Store/keys", biStoreKeys,
+                  fn: builtinNativeCallFn("Store/keys", biStoreKeys,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["clear"],
-                  fn: newNativeCallFn("Store/clear", biStoreClear,
+                  fn: builtinNativeCallFn("Store/clear", biStoreClear,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["checkpoint"],
-                  fn: newNativeCallFn("Store/checkpoint", biStoreCheckpoint,
+                  fn: builtinNativeCallFn("Store/checkpoint", biStoreCheckpoint,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["load_checkpoint"],
-                  fn: newNativeCallFn("Store/load_checkpoint",
+                  fn: builtinNativeCallFn("Store/load_checkpoint",
                                       biStoreLoadCheckpoint,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["close"],
-                  fn: newNativeCallFn("Store/close", biStoreClose,
+                  fn: builtinNativeCallFn("Store/close", biStoreClose,
                                       acceptsNamed = false))])
   let storeFsScope = newScope(root)
-  storeFsScope.define("open", newNativeCallFn("store/fs/open", biStoreFsOpen))
+  storeFsScope.define("open", builtinNativeCallFn("store/fs/open", biStoreFsOpen))
   storeFsScope.define("Store", storeProtocol)
   storeFsScope.define("StoreError", storeError)
   storeFsScope.define("FsStore", fsStoreType)
@@ -8521,45 +8706,43 @@ proc registerStdlibNamespaces(root: Scope) =
     protocol: storeProtocol, receiver: fsStoreType,
     messages: @[
       ImplMessage(message: storeMessages["put"],
-                  fn: newNativeCallFn("Store/put", biStorePut)),
+                  fn: builtinNativeCallFn("Store/put", biStorePut)),
       ImplMessage(message: storeMessages["get"],
-                  fn: newNativeCallFn("Store/get", biStoreGet)),
+                  fn: builtinNativeCallFn("Store/get", biStoreGet)),
       ImplMessage(message: storeMessages["has?"],
-                  fn: newNativeCallFn("Store/has?", biStoreHas,
+                  fn: builtinNativeCallFn("Store/has?", biStoreHas,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["delete"],
-                  fn: newNativeCallFn("Store/delete", biStoreDelete,
+                  fn: builtinNativeCallFn("Store/delete", biStoreDelete,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["keys"],
-                  fn: newNativeCallFn("Store/keys", biStoreKeys,
+                  fn: builtinNativeCallFn("Store/keys", biStoreKeys,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["clear"],
-                  fn: newNativeCallFn("Store/clear", biStoreClear,
+                  fn: builtinNativeCallFn("Store/clear", biStoreClear,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["checkpoint"],
-                  fn: newNativeCallFn("Store/checkpoint", biStoreCheckpoint,
+                  fn: builtinNativeCallFn("Store/checkpoint", biStoreCheckpoint,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["load_checkpoint"],
-                  fn: newNativeCallFn("Store/load_checkpoint",
+                  fn: builtinNativeCallFn("Store/load_checkpoint",
                                       biStoreLoadCheckpoint,
                                       acceptsNamed = false)),
       ImplMessage(message: storeMessages["close"],
-                  fn: newNativeCallFn("Store/close", biStoreClose,
+                  fn: builtinNativeCallFn("Store/close", biStoreClose,
                                       acceptsNamed = false))])
   storeScope.define("sqlite", newNamespace("store/sqlite", storeSqliteScope))
   storeScope.define("fs", newNamespace("store/fs", storeFsScope))
   root.define("store", newNamespace("store", storeScope))
 
   let cryptoScope = newScope(root)
-  cryptoScope.define("Random",
-    newCapability(app.hostCapabilityProvider.types.cryptoRandom))
-  cryptoScope.define("sha256", newNativeCallFn("crypto/sha256",
+  cryptoScope.define("sha256", builtinNativeCallFn("crypto/sha256",
                                                biCryptoSha256,
                                                acceptsNamed = false))
-  cryptoScope.define("random_hex", newNativeCallFn("crypto/random_hex",
+  cryptoScope.define("random_hex", builtinNativeCallFn("crypto/random_hex",
                                                    biCryptoRandomHex,
                                                    acceptsNamed = false))
-  cryptoScope.define("secure_equal?", newNativeCallFn("crypto/secure_equal?",
+  cryptoScope.define("secure_equal?", builtinNativeCallFn("crypto/secure_equal?",
                                                       biCryptoSecureEqual,
                                                       acceptsNamed = false))
   root.define("crypto", newNamespace("crypto", cryptoScope))
@@ -8567,46 +8750,42 @@ proc registerStdlibNamespaces(root: Scope) =
   # os: env, subprocess, line input (docs/stdlib.md "Module Layout"). Capabilities are
   # ambient values like net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
-  osScope.define("Env", newCapability(app.hostCapabilityProvider.types.osEnv))
-  osScope.define("Exec", newCapability(app.hostCapabilityProvider.types.osExec))
-  osScope.define("Pty", newCapability(app.hostCapabilityProvider.types.osPty))
-  osScope.define("Process",
-    newCapability(app.hostCapabilityProvider.types.osProcess))
-  osScope.define("get_env", newNativeCallFn("os/get_env", biOsGetEnv,
+  osScope.define("get_env", builtinNativeCallFn("os/get_env", biOsGetEnv,
                  acceptsNamed = false))
-  osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
+  osScope.define("env?", builtinNativeCallFn("os/env?", biOsEnvOpt,
                  acceptsNamed = false))
   osScope.define("executable_path",
-                 newNativeCallFn("os/executable_path", biOsExecutablePath,
+                 builtinNativeCallFn("os/executable_path", biOsExecutablePath,
                                  acceptsNamed = false))
   osScope.define("launch_dir",
-                 newNativeCallFn("os/launch_dir", biOsLaunchDir,
+                 builtinNativeCallFn("os/launch_dir", biOsLaunchDir,
                                  acceptsNamed = false))
-  osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
-  osScope.define("exec_stream", newNativeCallFn("os/exec_stream", biOsExecStream))
-  osScope.define("exec_stdio", newNativeCallFn("os/exec_stdio", biOsExecStdio))
-  osScope.define("exec_async", newNativeCallFn("os/exec_async", biOsExecAsync))
+  osScope.define("exec", builtinNativeCallFn("os/exec", biOsExec))
+  osScope.define("exec_stream", builtinNativeCallFn("os/exec_stream", biOsExecStream))
+  osScope.define("exec_stdio", builtinNativeCallFn("os/exec_stdio", biOsExecStdio))
+  osScope.define("exec_async", builtinNativeCallFn("os/exec_async", biOsExecAsync))
   osScope.define("exec_stream_async",
-                 newNativeCallFn("os/exec_stream_async", biOsExecStreamAsync))
+                 builtinNativeCallFn("os/exec_stream_async", biOsExecStreamAsync))
   osScope.define("exec_stdio_async",
-                 newNativeCallFn("os/exec_stdio_async", biOsExecStdioAsync))
+                 builtinNativeCallFn("os/exec_stdio_async", biOsExecStdioAsync))
   osScope.define("begin_interrupt",
-                 newNativeFn("os/begin_interrupt", biOsBeginInterrupt))
+                 builtinNativeFn("os/begin_interrupt", biOsBeginInterrupt))
   osScope.define("take_interrupt",
-                 newNativeFn("os/take_interrupt", biOsTakeInterrupt))
+                 builtinNativeFn("os/take_interrupt", biOsTakeInterrupt))
   osScope.define("end_interrupt",
-                 newNativeFn("os/end_interrupt", biOsEndInterrupt))
+                 builtinNativeFn("os/end_interrupt", biOsEndInterrupt))
   osScope.define("monotonic_ms",
-                 newNativeCallFn("os/monotonic_ms", biOsMonotonicMs,
+                 builtinNativeCallFn("os/monotonic_ms", biOsMonotonicMs,
                                  acceptsNamed = false))
   osScope.define("process_id",
-                 newNativeCallFn("os/process_id", biOsProcessId,
+                 builtinNativeCallFn("os/process_id", biOsProcessId,
                                  acceptsNamed = false))
-  osScope.define("stdin_tty?", newNativeFn("os/stdin_tty?", biOsStdinTty))
-  osScope.define("read_line", newNativeFn("os/read_line", biOsReadLine))
-  osScope.define("read_input", newNativeCallFn("os/read_input", biOsReadInput))
-  osScope.define("refresh_input", newNativeCallFn("os/refresh_input", biOsRefreshInput))
-  osScope.define("close_input", newNativeFn("os/close_input", biOsCloseInput))
+  osScope.define("stdin_tty?", builtinNativeFn("os/stdin_tty?", biOsStdinTty))
+  osScope.define("read_line", builtinNativeCallFn("os/read_line", biOsReadLine,
+                                            acceptsNamed = false))
+  osScope.define("read_input", builtinNativeCallFn("os/read_input", biOsReadInput))
+  osScope.define("refresh_input", builtinNativeCallFn("os/refresh_input", biOsRefreshInput))
+  osScope.define("close_input", builtinNativeFn("os/close_input", biOsCloseInput))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))
 
@@ -8623,35 +8802,35 @@ proc registerStdlibNamespaces(root: Scope) =
   let terminalScope = newScope(root)
   terminalScope.define("Session", terminalSessionType)
   terminalScope.define("TerminalError", terminalError)
-  terminalScope.define("open", newNativeCallFn("terminal/open", biTerminalOpen))
-  terminalScope.define("pump", newNativeCallFn("terminal/pump", biTerminalPump))
+  terminalScope.define("open", builtinNativeCallFn("terminal/open", biTerminalOpen))
+  terminalScope.define("pump", builtinNativeCallFn("terminal/pump", biTerminalPump))
   terminalScope.define("next_update",
-    newNativeCallFn("terminal/next_update", biTerminalNextUpdate))
+    builtinNativeCallFn("terminal/next_update", biTerminalNextUpdate))
   terminalScope.define("snapshot",
-    newNativeCallFn("terminal/snapshot", biTerminalSnapshot,
+    builtinNativeCallFn("terminal/snapshot", biTerminalSnapshot,
                     acceptsNamed = false))
   terminalScope.define("capture_text",
-    newNativeCallFn("terminal/capture_text", biTerminalCaptureText))
+    builtinNativeCallFn("terminal/capture_text", biTerminalCaptureText))
   terminalScope.define("write",
-    newNativeCallFn("terminal/write", biTerminalWrite))
-  terminalScope.define("key", newNativeCallFn("terminal/key", biTerminalKey))
+    builtinNativeCallFn("terminal/write", biTerminalWrite))
+  terminalScope.define("key", builtinNativeCallFn("terminal/key", biTerminalKey))
   terminalScope.define("paste",
-    newNativeCallFn("terminal/paste", biTerminalPaste))
+    builtinNativeCallFn("terminal/paste", biTerminalPaste))
   terminalScope.define("focus",
-    newNativeCallFn("terminal/focus", biTerminalFocus))
+    builtinNativeCallFn("terminal/focus", biTerminalFocus))
   terminalScope.define("mouse",
-    newNativeCallFn("terminal/mouse", biTerminalMouse))
+    builtinNativeCallFn("terminal/mouse", biTerminalMouse))
   terminalScope.define("resize",
-    newNativeCallFn("terminal/resize", biTerminalResize))
+    builtinNativeCallFn("terminal/resize", biTerminalResize))
   terminalScope.define("signal",
-    newNativeCallFn("terminal/signal", biTerminalSignal))
+    builtinNativeCallFn("terminal/signal", biTerminalSignal))
   terminalScope.define("stop",
-    newNativeCallFn("terminal/stop", biTerminalStop,
+    builtinNativeCallFn("terminal/stop", biTerminalStop,
                     acceptsNamed = false))
   terminalScope.define("request_stop",
-    newNativeCallFn("terminal/request_stop", biTerminalRequestStop))
+    builtinNativeCallFn("terminal/request_stop", biTerminalRequestStop))
   terminalScope.define("close",
-    newNativeCallFn("terminal/close", biTerminalClose,
+    builtinNativeCallFn("terminal/close", biTerminalClose,
                     acceptsNamed = false))
   root.define("terminal", newNamespace("terminal", terminalScope))
 
@@ -8666,22 +8845,22 @@ proc registerStdlibNamespaces(root: Scope) =
   let cursesScope = newScope(root)
   cursesScope.define("Screen", cursesScreenType)
   cursesScope.define("CursesError", cursesError)
-  cursesScope.define("open", newNativeCallFn("curses/open", biCursesOpen))
-  cursesScope.define("close", newNativeCallFn("curses/close", biCursesClose,
+  cursesScope.define("open", builtinNativeCallFn("curses/open", biCursesOpen))
+  cursesScope.define("close", builtinNativeCallFn("curses/close", biCursesClose,
                                                acceptsNamed = false))
   cursesScope.define("dimensions",
-    newNativeCallFn("curses/dimensions", biCursesDimensions,
+    builtinNativeCallFn("curses/dimensions", biCursesDimensions,
                     acceptsNamed = false))
-  cursesScope.define("draw", newNativeCallFn("curses/draw", biCursesDraw))
+  cursesScope.define("draw", builtinNativeCallFn("curses/draw", biCursesDraw))
   cursesScope.define("read_input",
-    newNativeCallFn("curses/read_input", biCursesReadInput))
+    builtinNativeCallFn("curses/read_input", biCursesReadInput))
   cursesScope.define("refresh_input",
-    newNativeCallFn("curses/refresh_input", biCursesRefreshInput))
+    builtinNativeCallFn("curses/refresh_input", biCursesRefreshInput))
   cursesScope.define("escape_pressed?",
-    newNativeCallFn("curses/escape_pressed?", biCursesEscapePressed,
+    builtinNativeCallFn("curses/escape_pressed?", biCursesEscapePressed,
                     acceptsNamed = false))
   cursesScope.define("next_event",
-    newNativeCallFn("curses/next_event", biCursesNextEvent,
+    builtinNativeCallFn("curses/next_event", biCursesNextEvent,
                     acceptsNamed = false))
   root.define("curses", newNamespace("curses", cursesScope))
 
@@ -8695,23 +8874,23 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("ReplSession", replSessionType)
   let replScope = newScope(root)
   replScope.define("Session", replSessionType)
-  replScope.define("open", newNativeCallFn("repl/open", biReplOpen,
+  replScope.define("open", builtinNativeCallFn("repl/open", biReplOpen,
                                             acceptsNamed = false))
   replScope.define("eval_source",
-    newNativeCallFn("repl/eval_source", biReplEval,
+    builtinNativeCallFn("repl/eval_source", biReplEval,
                     acceptsNamed = false))
   replScope.define("discard_pending",
-    newNativeCallFn("repl/discard_pending", biReplDiscardPending,
+    builtinNativeCallFn("repl/discard_pending", biReplDiscardPending,
                     acceptsNamed = false))
   replScope.define("eval_guard_begin",
-    newNativeCallFn("repl/eval_guard_begin", biReplEvalGuardBegin,
+    builtinNativeCallFn("repl/eval_guard_begin", biReplEvalGuardBegin,
                     acceptsNamed = false))
   replScope.define("eval_guard_end",
-    newNativeCallFn("repl/eval_guard_end", biReplEvalGuardEnd,
+    builtinNativeCallFn("repl/eval_guard_end", biReplEvalGuardEnd,
                     acceptsNamed = false))
-  replScope.define("close", newNativeCallFn("repl/close", biReplClose,
+  replScope.define("close", builtinNativeCallFn("repl/close", biReplClose,
                                              acceptsNamed = false))
-  replScope.define("run", newNativeCallFn("repl/run", biReplRun))
+  replScope.define("run", builtinNativeCallFn("repl/run", biReplRun))
   root.define("repl", newNamespace("repl", replScope))
 
   # Extend the existing `fs` namespace (built in vm.nim) with sync helpers the
@@ -8720,39 +8899,39 @@ proc registerStdlibNamespaces(root: Scope) =
   if fsNs.kind == vkNamespace:
     fsNs.nsScope.define("FsFileLock", fsFileLockType)
     fsNs.nsScope.define("try_lock",
-      newNativeCallFn("fs/try_lock", biFsTryLock, acceptsNamed = false))
+      builtinNativeCallFn("fs/try_lock", biFsTryLock, acceptsNamed = false))
     fsNs.nsScope.define("FsWatcher", fsWatcherType)
     fsNs.nsScope.define("FsChange", fsChangeType)
     fsNs.nsScope.define("WatcherClosed", watcherClosed)
     fsNs.nsScope.define("watch",
-      newNativeCallFn("fs/watch", biFsWatch))
+      builtinNativeCallFn("fs/watch", biFsWatch))
     fsNs.nsScope.define("read_text",
-      newNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
+      builtinNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",
-      newNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+      builtinNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text_atomic",
-      newNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync,
+      builtinNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync,
                       acceptsNamed = false))
     fsNs.nsScope.define("write_bytes",
-      newNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
+      builtinNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("read_bytes",
-      newNativeCallFn("fs/read_bytes", biFsReadBytesSync, acceptsNamed = false))
+      builtinNativeCallFn("fs/read_bytes", biFsReadBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("exists?",
-      newNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
+      builtinNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",
-      newNativeCallFn("fs/list_dir", biFsListDir, acceptsNamed = false))
+      builtinNativeCallFn("fs/list_dir", biFsListDir, acceptsNamed = false))
     fsNs.nsScope.define("make_dir",
-      newNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
+      builtinNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
-      newNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
+      builtinNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
     fsNs.nsScope.define("real_path",
-      newNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
+      builtinNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
 
   # json: parse/stringify over Gene value kinds (docs/stdlib.md "Module Layout").
   let jsonScope = newScope(root)
-  jsonScope.define("parse", newNativeCallFn("json/parse", biJsonParse,
+  jsonScope.define("parse", builtinNativeCallFn("json/parse", biJsonParse,
                                             acceptsNamed = false))
-  jsonScope.define("stringify", newNativeCallFn("json/stringify",
+  jsonScope.define("stringify", builtinNativeCallFn("json/stringify",
                                                 biJsonStringify,
                                                 acceptsNamed = false))
   jsonScope.define("JsonError", jsonError)
@@ -8762,16 +8941,16 @@ proc registerStdlibNamespaces(root: Scope) =
   # stage 1).
   let serdeScope = newScope(root)
   serdeScope.define("write_data",
-    newNativeCallFn("serde/write_data", biSerdeWriteData,
+    builtinNativeCallFn("serde/write_data", biSerdeWriteData,
                     acceptsNamed = false))
   serdeScope.define("read_data",
-    newNativeCallFn("serde/read_data", biSerdeReadData))
+    builtinNativeCallFn("serde/read_data", biSerdeReadData))
   serdeScope.define("write",
-    newNativeCallFn("serde/write", biSerdeWrite, acceptsNamed = false))
+    builtinNativeCallFn("serde/write", biSerdeWrite, acceptsNamed = false))
   serdeScope.define("read",
-    newNativeCallFn("serde/read", biSerdeRead))
+    builtinNativeCallFn("serde/read", biSerdeRead))
   serdeScope.define("data?",
-    newNativeCallFn("serde/data?", biSerdeDataP, acceptsNamed = false))
+    builtinNativeCallFn("serde/data?", biSerdeDataP, acceptsNamed = false))
   serdeScope.define("SerdeError", serdeError)
   serdeScope.define("SerdeRef", root.vars["SerdeRef"])
   let intField = proc (name: string): TypeField =

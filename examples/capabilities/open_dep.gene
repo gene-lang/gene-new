@@ -1,5 +1,2 @@
-# An open-mode dependency: it declares no capability contract at all.
-
-(mod open_dep)
-
+# No module request or strict mode is needed for a pure helper.
 (fn helper [] 1)

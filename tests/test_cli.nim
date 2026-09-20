@@ -6,7 +6,9 @@ when defined(macosx):
   const SigWinch = 28
 import gene/[package, repl, vm, web]
 
-let cliDir = getTempDir() / "gene_cli_tests"
+# The no-follow source profile requires a physical fixture root. On macOS,
+# getTempDir() commonly starts with the /var symlink.
+let cliDir = expandFilename(getTempDir()) / "gene_cli_tests"
 let geneExe = cliDir / "gene-test-bin"
 let cliArtifactStore = cliDir / "artifact_store"
 var cliBuilt = false
@@ -255,7 +257,7 @@ suite "cli — gene run":
 
     var ran = runGene(["run", readerMain, externalFile])
     check ran.exitCode == 1
-    check "MissingCapability: fs/read_text requires fs/ReadFile" in ran.output
+    check "MissingCapability: fs/read_text requires fs/Read" in ran.output
 
     ran = runGene(["run", "--allow_read_dir", externalDir,
                    readerMain, externalFile])

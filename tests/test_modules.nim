@@ -1,5 +1,6 @@
 import gene/[capabilities, compiler, fs_capabilities, gir, types, vm, printer]
 import std/[os, osproc, strutils, unittest]
+import ./capability_test_support
 
 let modDir = getTempDir() / "gene_module_tests"
 
@@ -1421,7 +1422,7 @@ suite "modules — the capability sandbox (design §D5)":
     check "max steps" in callMessage
 
   test "prepared generation capability sealing covers escaped dependency calls":
-    let root = modDir / "generation_sealed_capabilities"
+    let root = expandFilename(modDir) / "generation_sealed_capabilities"
     let allowed = root / "allowed"
     let denied = root / "denied"
     createDir(allowed)
@@ -1432,21 +1433,23 @@ suite "modules — the capability sandbox (design §D5)":
       "(import $fs [read_text]) (fn read [path] (read_text path))")
     writeFile(root / "entry.gene",
       "(import [read] ^from \"./dependency\") (fn escape [] read)")
-    let result = runSandboxProgram(
+    let source =
       "(var policy {^max_steps 10000 ^max_memory_mb 16 ^timeout_ms 1000}) " &
       "(var tx ($runtime/sandbox_transaction)) " &
       "(var generation (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       " ^entry \"entry.gene\" ^grants [\"fs\"] ^shared [] ^policy policy})) " &
       "(var module (generation .module)) " &
-      "(with_capabilities [(fs/ReadDir \"" & allowed.replace("\\", "/") & "\")] " &
+      "(with_capabilities [(fs/Read \"" & allowed.replace("\\", "/") & "\")] " &
       " ($runtime/configure_module module policy)) " &
       "(var escaped (module/escape)) (tx .commit) " &
       "(var allowed_result (escaped \"" & (allowed / "data").replace("\\", "/") & "\")) " &
       "(var denied_result (try (escaped \"" & (denied / "data").replace("\\", "/") & "\") " &
-      " false catch Any ($str/contains? $err/message \"requires fs/ReadFile\"))) " &
+      " false catch MissingCapability true)) " &
       "(var immutable (try ($runtime/configure_module module policy) false " &
       " catch Any ($str/contains? $err/message \"immutable\"))) " &
-      "(generation .release) [allowed_result denied_result immutable]")
+      "(generation .release) [allowed_result denied_result immutable]"
+    let app = newFilesystemPolicyApp(expandFilename(modDir))
+    let result = run(compileSource(source, useLocalSlots = false), newGlobalScope(app))
     check result.listItems.len == 3
     check result.listItems[0].strVal == "allowed"
     check result.listItems[1].boolVal

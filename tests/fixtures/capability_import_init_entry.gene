@@ -1,9 +1,4 @@
-(mod capability_import_init_entry
-  ^capabilities [fs/*])
-
+(mod capability_import_init_entry)
 (import [what_happened] ^from "./capability_import_init_dep.gene"
   ^capabilities [])
-
-(fn main [] : Str
-  ^capabilities *
-  (what_happened))
+(fn main [] : Str (what_happened))

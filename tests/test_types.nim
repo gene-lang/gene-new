@@ -2141,8 +2141,9 @@ suite "types — function boundaries":
     check run(compileSource("((fn [b : (Buffer C/Char)] b) native-buf)"),
               scope).print() == "(buffer C/Char 2)"
 
-  test "FFI load capability gates runtime library loading":
-    ck "$ffi/Load", "(ffi/Load)"
+  test "legacy host FFI loading cannot enter normalized execution":
+    ck "(try (with_capabilities [] ($ffi/open \"libmissing-gene-new\")) " &
+       "catch UnsupportedCapability $err/reason)", "\"unsupported_operation\""
 
     let scope = newGlobalScope()
     expect GeneError:

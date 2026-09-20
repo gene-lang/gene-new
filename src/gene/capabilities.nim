@@ -5,6 +5,8 @@
 ## grants through CapabilityContext rather than exposing them as Gene Values.
 
 import std/[algorithm, atomics, locks, options, sets, strutils, tables]
+import ./[capability_literals, capability_constraints]
+export capability_literals, capability_constraints
 
 const
   MaxCapabilityGrantCacheEntries* = 4096
@@ -66,6 +68,99 @@ type
     positional*: seq[CapabilityArg]
     named*: seq[CapabilityNamedArg]
 
+  CapabilityPolicyField* = object
+    name*: string
+    constraint*: CapabilityConstraint
+
+  CapabilityPolicyEntry* = ref object
+    policyType: CapabilityType
+    policyBody: CapabilityConstraint
+    policyFields: seq[CapabilityPolicyField]
+    policyKey: string
+
+  CapabilityRequestEntry* = object
+    normalized: CapabilityPolicyEntry
+    optionalValue, optionalPresent: bool
+    authoredIndexValue: int
+    locationValue: CapabilityLocation
+
+  CapabilitySpecRow* = ref object
+    normalizedEntries: seq[CapabilityRequestEntry]
+    catalogIdentity: uint64
+    normalizationSource: CapabilitySourceContext
+
+  CapabilityEntryComparison* = object
+    status*: CapabilityCoverage
+    failedFields*, unprovedFields*: seq[string]
+
+  CapabilityAlternativeResult* = object
+    complete*: bool
+    entries*: seq[CapabilityPolicyEntry]
+
+  CapabilityAdmissionStatus* = enum
+    caMatched, caUnmatched, caCannotProve, caProviderFailure
+
+  CapabilityAuthorityEntry = object
+    policy: CapabilityPolicyEntry
+    grant: CapabilityGrant
+
+  CapabilityAuthorityRow* = ref object
+    authorityEntries: seq[CapabilityAuthorityEntry]
+    authorityCatalog: uint64
+    rootRow: bool
+    authorityKey: string
+
+  CapabilityRequirementResult* = object
+    status*: CapabilityAdmissionStatus
+    optional*: bool
+    authoredIndex*: int
+    authorityRow*: int
+    alternative*: CapabilityPolicyEntry
+    failedFields*, unprovedFields*: seq[string]
+    failure: ref CapabilityProviderFailure
+
+  CapabilityRequirementReport* = object
+    admitted*: bool
+    entries*: seq[CapabilityRequirementResult]
+
+  CapabilityRequirementError* = object of CapabilityError
+    report*: CapabilityRequirementReport
+    failedEntry*: CapabilityRequirementResult
+
+  CapabilityOperationField* = object
+    name*: string
+    value*: CapabilityScalar
+
+  CapabilityOperationState* = ref object of RootObj
+    operationStateOwner: CapabilityProvider
+
+  CapabilityOperation* = ref object
+    operationType: CapabilityType
+    operationKind: string
+    operationBody: seq[CapabilityScalar]
+    operationFields: seq[CapabilityOperationField]
+    preparedState: CapabilityOperationState
+
+  CapabilityDecisionKind* = enum
+    cdDeny, cdAllow, cdProviderFailure
+
+  CapabilityDecision* = object
+    kind*: CapabilityDecisionKind
+    reason*: string
+    authorityRow*: int
+    failure: ref CatchableError
+
+  CapabilityFailureScope* = enum
+    cfsShared, cfsEntry
+
+  CapabilityProviderFailure* = object of CapabilityError
+    scope*: CapabilityFailureScope
+
+  CapabilityOperationError* = object of CapabilityError
+
+  CapabilityGuardError* = object of CapabilityError
+    decision*: CapabilityDecision
+
   CapabilityTemplateArgKind* = enum
     ctakLiteral
     ctakParameter
@@ -94,6 +189,7 @@ type
     positional*: seq[CapabilityTemplateArg]
     named*: seq[CapabilityTemplateNamedArg]
     optional*: bool
+    hasOptional*: bool
 
   CapabilityRowKind* = enum
     crkInherit
@@ -105,6 +201,7 @@ type
     ## empty selection before a proto/chunk is emitted.
     kind*: CapabilityRowKind
     selectors*: seq[CapabilitySelectorTemplate]
+    literal*: CapabilityLiteralRow
 
   CapabilityPresenceEntry* = object
     spec*: CapabilitySpec
@@ -131,6 +228,7 @@ type
     nextTypeId: uint32
     providers: Table[string, CapabilityProvider]
     types: Table[string, CapabilityType]
+    aliases: Table[string, CapabilityType]
     sourcesByTarget: Table[uint32, seq[uint32]]
     targetsBySource: Table[uint32, seq[uint32]]
     entailmentClosure: Table[uint32, seq[uint32]]
@@ -171,11 +269,15 @@ type
     dependencies: seq[RevocationDependency]
     semanticIdentity: string
     semanticId: uint64
+    normalizedPolicy: CapabilityPolicyEntry
 
   CapabilityContext* = ref object
     items: seq[CapabilityGrant]
     semanticId: uint64
     registryId: uint64
+    authorityRows: seq[CapabilityAuthorityRow]
+    domainIdentity: string
+    ownerRegistry: CapabilityRegistry
 
 proc newRevocationToken(registry: CapabilityRegistry): RevocationToken =
   new(result)
@@ -442,6 +544,7 @@ proc newCapabilityRegistry*(): CapabilityRegistry =
     nextContextId: 1,
     providers: initTable[string, CapabilityProvider](),
     types: initTable[string, CapabilityType](),
+    aliases: initTable[string, CapabilityType](),
     sourcesByTarget: initTable[uint32, seq[uint32]](),
     targetsBySource: initTable[uint32, seq[uint32]](),
     contexts: initTable[string, CapabilityContext](),
@@ -497,9 +600,20 @@ proc admitType*(registry: CapabilityRegistry, provider: CapabilityProvider,
       "capability type requires a provider admitted by this registry")
   if registry.frozen:
     raise newException(CapabilityError, "capability registry is frozen")
-  if qualifiedName.len == 0:
-    raise newException(CapabilityError, "capability type name must not be empty")
-  if registry.types.hasKey(qualifiedName):
+  let parts = qualifiedName.split('/')
+  if parts.len < 2 or parts[^1].len == 0 or
+      parts[^1][0] notin {'A'..'Z'}:
+    raise newException(CapabilityError,
+      "capability identity must use lowercase namespace/CamelCase")
+  for i, part in parts:
+    if part.len == 0 or
+        (i < parts.high and part[0] notin {'a'..'z'}):
+      raise newException(CapabilityError, "invalid capability namespace")
+    for c in part:
+      if c notin {'a'..'z', 'A'..'Z', '0'..'9', '_'} or
+          (i < parts.high and c in {'A'..'Z'}):
+        raise newException(CapabilityError, "invalid capability identity")
+  if registry.types.hasKey(qualifiedName) or registry.aliases.hasKey(qualifiedName):
     raise newException(CapabilityError,
       "capability type already admitted: " & qualifiedName)
   result = CapabilityType(registryId: registry.registryId,
@@ -508,6 +622,25 @@ proc admitType*(registry: CapabilityRegistry, provider: CapabilityProvider,
                           qualifiedName: qualifiedName)
   inc registry.nextTypeId
   registry.types[qualifiedName] = result
+
+proc admitCapabilityAlias*(registry: CapabilityRegistry, alias: string,
+                          target: CapabilityType) =
+  if registry == nil or registry.frozen or
+      target.registryId != registry.registryId or not target.isValid:
+    raise newException(CapabilityError,
+      "capability alias requires an unfrozen owning registry")
+  let parts = alias.split('/')
+  if parts.len < 2:
+    raise newException(CapabilityError, "capability alias must be qualified")
+  for part in parts:
+    if part.len == 0 or part[0] notin {'a'..'z', 'A'..'Z'}:
+      raise newException(CapabilityError, "invalid capability alias")
+    for c in part:
+      if c notin {'a'..'z', 'A'..'Z', '0'..'9', '_'}:
+        raise newException(CapabilityError, "invalid capability alias")
+  if registry.types.hasKey(alias) or registry.aliases.hasKey(alias):
+    raise newException(CapabilityError, "capability name already admitted: " & alias)
+  registry.aliases[alias] = target
 
 proc admitGeneType*(registry: CapabilityRegistry,
                     provider: CapabilityProvider,
@@ -585,6 +718,8 @@ proc capabilityType*(registry: CapabilityRegistry,
     raise newException(CapabilityError,
       "capability lookup requires a frozen registry")
   if not registry.types.hasKey(qualifiedName):
+    if registry.aliases.hasKey(qualifiedName):
+      return registry.aliases[qualifiedName]
     raise newException(CapabilityError,
       "unknown capability type: " & qualifiedName)
   registry.types[qualifiedName]
@@ -613,6 +748,11 @@ proc name*(provider: CapabilityProvider): lent string =
   if provider == nil:
     raise newException(CapabilityError, "nil capability provider")
   provider.providerName
+
+proc capabilityRegistry*(provider: CapabilityProvider): CapabilityRegistry =
+  if provider == nil or provider.registry == nil:
+    raise newException(CapabilityError, "provider has no admitted registry")
+  provider.registry
 
 proc namespaceName*(capabilityType: CapabilityType): string =
   let slash = capabilityType.qualifiedName.rfind('/')
@@ -729,7 +869,8 @@ proc mintRootGrant*(provider: CapabilityProvider,
                     scope: string): CapabilityGrant =
   if provider == nil or provider.registry == nil:
     raise newException(CapabilityError, "root grant requires an admitted provider")
-  if capabilityType.providerId != provider.providerId:
+  if capabilityType.registryId != provider.registry.registryId or
+      capabilityType.providerId != provider.providerId:
     raise newException(CapabilityError,
       "provider cannot mint a grant for a type it does not own")
   let token = newRevocationToken(provider.registry)
@@ -927,9 +1068,27 @@ method intersect*(provider: CapabilityProvider,
 let emptyCapabilityContext = CapabilityContext(items: @[], semanticId: 0,
                                                registryId: 0)
 
+proc newPolicyContext*(registry: CapabilityRegistry,
+                       grants: openArray[CapabilityGrant]): CapabilityContext
+proc intersectPolicyContexts(left, right: CapabilityContext): CapabilityContext
+
+proc isPolicyContext*(context: CapabilityContext): bool {.inline.} =
+  context != nil and context.authorityRows.len > 0
+
 proc newCapabilityContext*(grants: openArray[CapabilityGrant] = []): CapabilityContext =
   if grants.len == 0:
     return emptyCapabilityContext
+  var hasNormalized, hasUnmigrated: bool
+  for grant in grants:
+    if grant != nil and grant.normalizedPolicy != nil:
+      hasNormalized = true
+    else:
+      hasUnmigrated = true
+  if hasNormalized:
+    if hasUnmigrated:
+      raise newException(CapabilityError,
+        "cannot mix normalized and unmigrated capability grants")
+    return newPolicyContext(grants[0].provider.registry, grants)
   var normalized = newSeqOfCap[CapabilityGrant](grants.len)
   var registry: CapabilityRegistry
   for grant in grants:
@@ -988,6 +1147,8 @@ proc grants*(context: CapabilityContext): lent seq[CapabilityGrant] =
   context.items
 
 proc intersectContexts*(left, right: CapabilityContext): CapabilityContext =
+  if left.isPolicyContext or right.isPolicyContext:
+    return intersectPolicyContexts(left, right)
   if left == nil or right == nil or left.len == 0 or right.len == 0:
     return newCapabilityContext()
   var leftByProvider = initTable[uint32, seq[CapabilityGrant]]()
@@ -1017,6 +1178,9 @@ proc intersectContexts*(left, right: CapabilityContext): CapabilityContext =
 
 proc resolveSelector*(registry: CapabilityRegistry, context: CapabilityContext,
                       requested: CapabilitySpec): seq[CapabilityGrant] =
+  if context.isPolicyContext:
+    raise newException(CapabilityError,
+      "legacy selector resolution is unavailable for normalized authority")
   if registry == nil or not registry.frozen:
     raise newException(CapabilityError,
       "capability resolution requires a frozen registry")
@@ -1060,6 +1224,9 @@ proc resolveSelector*(registry: CapabilityRegistry, context: CapabilityContext,
 proc resolveProjection*(registry: CapabilityRegistry,
                         context: CapabilityContext,
                         namespace = ""): seq[CapabilityGrant] =
+  if context.isPolicyContext:
+    raise newException(CapabilityError,
+      "legacy projection is unavailable for normalized authority")
   ## Re-mint identity selections so even `*` and `fs/*` advance the checked
   ## ceiling instead of retaining an ancestor grant directly.
   if registry == nil or not registry.frozen:
@@ -1091,3 +1258,8 @@ proc resolveProjection*(registry: CapabilityRegistry,
         break
     if not duplicate:
       result.add grant
+
+include ./capability_policy
+include ./capability_admission
+include ./capability_operations
+include ./capability_contexts

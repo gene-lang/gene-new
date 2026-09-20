@@ -43,6 +43,13 @@ proc printCapabilityArg(argument: CapabilityArg): string =
     result.add "}"
 
 proc printCapability(v: Value): string =
+  case v.capabilityForm
+  of cvfRow: return "(CapabilitySpecRow " & $v.capabilityRowValue.len & " entries)"
+  of cvfPattern: return "(CapabilityPattern " & escapeStr(v.capabilityPatternValue) & ")"
+  of cvfAny: return "(CapabilityAny)"
+  of cvfPrepared: return "(" & v.capabilityName & ")"
+  of cvfBuilderEntry: return "(CapabilityEntry " & v.capabilityName & ")"
+  of cvfEntry: discard
   if not v.capabilityIsAdmitted:
     return "(capability " & v.capabilityName & ")"
   let spec = v.capabilitySpec
