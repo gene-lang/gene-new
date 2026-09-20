@@ -8533,7 +8533,7 @@ suite "spec — store persistence protocol":
                "  catch StoreError $err/kind)]",
                "[corrupt corrupt]", dir)
 
-suite "spec — capability-gated filesystem watching":
+suite "spec — filesystem watching":
   test "watch reports create, modify, and remove in order":
     let root = getTempDir() / "gene-fs-watch-basic"
     removeDir(root)

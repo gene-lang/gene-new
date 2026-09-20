@@ -35,7 +35,7 @@
 #            (sleep ...) does not stall other requests; bounded admission
 #            (^max_in_flight, ^max_body_bytes -> 413, ^request_timeout_ms
 #            -> 504, custom ^overload_response); (listen ...) as the
-#            capability-shaped listener; (status server) metrics; (stop
+#            explicitly owned listener; (status server) metrics; (stop
 #            server) graceful drain.
 #   Phase 3  ^routes table with :param captures (/job/:id -> req/params/id),
 #            meta-based route discovery over (this_mod .declarations),
@@ -71,7 +71,7 @@
 (type JobNotFound ^props {^id Str} ^impl [Error])
 (impl Error for JobNotFound)
 
-# Bind the listener eagerly (capability-shaped surface): the returned Server
+# Bind the listener eagerly (explicitly owned): the returned Server
 # value carries the runtime handle, so handlers can call (status server) and
 # (stop server) on it while serve runs.
 (var server (listen ^host "127.0.0.1" ^port 8091))

@@ -7986,7 +7986,7 @@ proc buildBuiltins(app: Application): Scope =
                                            acceptsNamed = false))
   ffiScope.define("bind", builtinNativeCallFn("ffi/bind", biFfiBind,
                                            acceptsNamed = false))
-  # The FFI capability/type surface joins the same `ffi` namespace as the
+  # The FFI type surface joins the same `ffi` namespace as the
   # operations, rather than sitting beside it under an uppercase name.
   ffiScope.define("Callable", ffiTypeValue("Callable"))
   let ffiLibraryScope = newScope(ffiScope)
@@ -8475,7 +8475,7 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   ## `$fs/WriteDir` cannot write a file no matter what it evaluates". §D5.1
   ## measured that false: `$fs` is `gene/fs` (the reader desugars `$` to
   ## `gene/`), `gene` resolves out of the shared builtins root, and no `import`
-  ## line is needed to reach it. Withholding a capability *argument* stops an
+  ## line is needed to reach it. Withholding an *argument* stops an
   ## accident and not an adversary.
   ##
   ## What makes this work is one instruction. `$fs/write_text` compiles to
@@ -8673,7 +8673,7 @@ proc biRuntimeBindCall(args: openArray[Value],
             body = copyItems(args[1].listItems), immutable = true))
   # Each binding owns its mutable dispatch caches. The template is compiled
   # once per application and never executed, so cloning does not copy a prior
-  # caller's cached resolution or capability transition.
+  # caller's cached resolution.
   let proto = FunctionProto()
   proto[] = app.boundCallTemplate[]
   proto.chunk = newChunk()
@@ -12909,18 +12909,11 @@ proc materializeEvalParent(env: Value, app: Application = nil,
   let chain = envChain(env)
   let module = nearestEnvModule(chain)
   # Root the overlay in the *creating* application's built-ins, not whatever
-  # `currentApplication()` happens to return. They can differ, and when they do
-  # every capability grant reaching evaluated code is minted by one
-  # application's provider and checked against another's, so `isOwnedBy` fails
-  # and the authority silently evaporates. That was invisible while evaluated
-  # code held no authority at all; granting it any makes it load-bearing.
+  # `currentApplication()` happens to return; the two can differ.
   #
   # `lexicalBase` is the scope the `eval` was written in. Rooting the overlay
   # there rather than at bare built-ins is what makes evaluated code see the
-  # bindings around it, which is what an `eval` reads as doing. It also keeps
-  # evaluated code inside the *same module root*, so a function it names is an
-  # ordinary same-module call that inherits the evaluated context — rather than
-  # a module crossing that would re-apply that module's whole ceiling.
+  # bindings around it, which is what an `eval` reads as doing.
   var current =
     if lexicalBase != nil: lexicalBase
     elif app != nil: builtinsScope(app)
@@ -27742,7 +27735,7 @@ proc rejectSandboxNativeDeclarations(chunk: Chunk) =
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
   ## macro discovery has a separate artifact cache and cycle set above and does
-  ## not create scopes, grant capabilities, or execute top-level forms.
+  ## not create scopes or execute top-level forms.
   # The cache key carries the sandbox (design §D5). Without it the cache is a
   # hole through the sandbox in both directions: a module the engine already
   # loaded with full authority would be handed to a mod that must not have it,

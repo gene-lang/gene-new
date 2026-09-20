@@ -32,7 +32,7 @@ I8 I16 I32 I64 U8 U16 U32 U64 F32 F64 Buffer
 Cell AtomicCell Channel Task TaskOutcome Actor ReplyTo Stream
 Date DateTime Time Timezone Duration
 Env CallerEnv Module Namespace Call SyntaxCall Match Token
-Capability TryNext TryRecv FsChange FsWatcher
+TryNext TryRecv FsChange FsWatcher
 SandboxGeneration SandboxTransaction
 ```
 
@@ -53,7 +53,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 
 | Namespace | Functions | Types / sub-namespaces |
 |---|---|---|
-| `$fs` | `exists?` `list_dir` `make_dir` `read_bytes` `read_text` `read_text_async` `real_path` `remove` `watch` `write_bytes` `write_text` `write_text_async` `write_text_atomic` | `FsChange` `FsWatcher` `WatcherClosed`; `ReadDir` `ReadFile` `ReadWriteDir` `WriteDir` `WriteFile` (capabilities) |
+| `$fs` | `exists?` `list_dir` `make_dir` `read_bytes` `read_text` `read_text_async` `real_path` `remove` `watch` `write_bytes` `write_text` `write_text_async` `write_text_atomic` | `FsChange` `FsWatcher` `WatcherClosed`; |
 | `$str` | `byte_size` `contains?` `ends_with?` `from_utf8` `join` `lower` `slice_bytes` `split` `starts_with?` `to_utf8` `trim` | — |
 | `$stream` | `each` `filter` `into` `map` `take` `to_pairs_stream` `to_stream` | — |
 | `$math` | `abs` `acos` `asin` `atan` `atan2` `ceil` `clamp` `cos` `exp` `floor` `hypot` `log` `log10` `log2` `max` `min` `pow` `round` `sign` `sin` `sqrt` `tan` `trunc` | `e` `pi` `tau` |
@@ -116,7 +116,6 @@ Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 | `Module` | `root_namespace` `name` `path` `meta` `declarations` |
 | `Env` | `extend` |
 | `CallerEnv` | `snapshot` |
-| `Capability` | `name` |
 
 `Str` carries no messages of its own — string work goes through `$str/*`,
 `$chars`, and `$graphemes`. `$size` is a *collection* function and rejects a

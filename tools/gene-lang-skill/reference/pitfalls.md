@@ -97,9 +97,7 @@ Build a fresh node with quasiquote instead: `` `(do %forms...) ``.
 `` `(do %(envelope/code)...) `` fails with `value is not callable: vkList`.
 Bind the expression first.
 
-Holding two directory roots also makes a bare relative operation path ambiguous
-(`AmbiguousCapability`) — two roots are two different host targets for the same
-name, and the runtime refuses to guess. Narrow first, or use an absolute path.
+
 
 **`elif` is a clause, not an else-position form.** Once you use `elif`, every
 branch must be a clause — a compact `if` cannot take one as its third argument:

@@ -3585,8 +3585,7 @@ proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
 proc cClearErr(f: File) {.importc: "clearerr", header: "<stdio.h>".}
 
 proc biOsReadLine(args: openArray[Value], call: ptr NativeCall = nil): Value {.nimcall.} =
-  ## Read one line from stdin; returns nil at EOF. No capability: reading the
-  ## program's own stdin is not host authority the way env/exec/files are.
+  ## Read one line from stdin; returns nil at EOF.
   if args.len != 0:
     raise newException(GeneError, "os/read_line takes no arguments")
   try:
@@ -4087,8 +4086,7 @@ proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/read_text, and the read half `fs/write_bytes` has
-  ## been missing (design.md §D7.3). Same capability and same path confinement;
-  ## the difference is that the result is Bytes, so a byte with the high bit set
+  ## been missing (design.md §D7.3). The difference is that the result is Bytes, so a byte with the high bit set
   ## survives instead of being interpreted as UTF-8 and mangled.
   if args.len != 1:
     raise newException(GeneError, "fs/read_bytes expects (path)")
@@ -4100,8 +4098,7 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
     raiseFilesystemOperationError("fs/read_bytes", e, scope)
 
 proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## The binary sibling of fs/write_text. Same capability, same path
-  ## confinement — the only difference is that the payload is Bytes, so a byte
+  ## The binary sibling of fs/write_text. The only difference is that the payload is Bytes, so a byte
   ## with the high bit set survives instead of being mangled by UTF-8 handling.
   if args.len != 2:
     raise newException(GeneError, "fs/write_bytes expects (path, bytes)")
@@ -8358,9 +8355,9 @@ proc registerStdlibNamespaces(root: Scope) =
   httpClientScope.define("stream",
     builtinNativeCallFn("net/http_client/stream", biHttpClientStream))
   httpClientScope.define("HttpClientError", httpClientError)
-  # Extend the `net` namespace buildBuiltins already created (socket capability
-  # and raw TCP ops) instead of rebinding the name, so `net/Connect` and
-  # `net/http` are members of one namespace.
+  # Extend the `net` namespace buildBuiltins already created (the raw TCP ops)
+  # instead of rebinding the name, so the TCP ops and `net/http` are members
+  # of one namespace.
   let netLowerScope = root.vars["net"].nsScope
   netLowerScope.define("http", newNamespace("net/http", httpScope))
   netLowerScope.define("http_client",
@@ -8594,8 +8591,7 @@ proc registerStdlibNamespaces(root: Scope) =
                                                       acceptsNamed = false))
   root.define("crypto", newNamespace("crypto", cryptoScope))
 
-  # os: env, subprocess, line input (docs/stdlib.md "Module Layout"). Capabilities are
-  # ambient values like net/Connect; a launcher can withhold them.
+  # os: env, subprocess, line input (docs/stdlib.md "Module Layout"). 
   let osScope = newScope(root)
   osScope.define("get_env", builtinNativeCallFn("os/get_env", biOsGetEnv,
                  acceptsNamed = false))

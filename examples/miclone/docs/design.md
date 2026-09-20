@@ -254,9 +254,7 @@ understanding why the obvious mechanism does not provide it.
 
 ### D5.1 Why namespace filtering alone is not a sandbox
 
-Gene's capability names construct inert specifications; they do not mint
-authority. A filesystem operation succeeds only when the active context
-contains a matching sealed grant. Merely naming the builtin is insufficient:
+
 
 ```gene
 ($fs/write_text "/tmp/anything" "written")

@@ -24,9 +24,7 @@ proc runProgramInOwnApp(src: string): Value =
   run(compileSource(src), newGlobalScope(newApplication(modDir)))
 
 proc runSandboxProgram(src: string): Value =
-  ## Capability sandbox cases need a fresh host root at the fixture directory;
-  ## ambient filesystem authority is application-owned and cannot be retrofitted
-  ## onto the process-global application after earlier module tests materialize it.
+  ## Sandbox cases use a fresh application rooted at the fixture directory.
   ##
   ## `newApplication`'s argument anchors *module resolution* only. Filesystem
   ## authority deliberately follows the launch directory instead, so that
@@ -1010,7 +1008,7 @@ suite "modules — impl activation across module paths":
         "(import_impl Show2 for U ^from \"./impl_one\") " &
         "(import_impl Show2 for U ^from \"./impl_two\") nil")
 
-suite "modules — the capability sandbox (design §D5)":
+suite "modules — the sandbox loader (design §D5)":
   ## §D5 claimed since revision 1 that "a mod that never receives
   ## `$fs/WriteDir` cannot write a file no matter what it evaluates". §D5.1
   ## measured that false — `$fs` is `gene/fs`, `gene` resolves out of the shared

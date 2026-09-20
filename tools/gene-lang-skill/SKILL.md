@@ -122,7 +122,7 @@ is a call. Write `(quote (foo ^k 1 2))` or `` `(foo ^k 1 2) `` for the node.
 Load by branch — each file is self-contained:
 
 - [`reference/syntax.md`](reference/syntax.md) — literals, nodes, props/meta, paths, selectors, interpolation, spread, destructuring.
-- [`reference/declarations.md`](reference/declarations.md) — `fn`, fexprs, `macro`, `type`, `enum`, `protocol`/`impl`, `ns`, `mod`, `import`, `main`, capabilities.
+- [`reference/declarations.md`](reference/declarations.md) — `fn`, fexprs, `macro`, `type`, `enum`, `protocol`/`impl`, `ns`, `mod`, `import`, `main`.
 - [`reference/control-flow.md`](reference/control-flow.md) — conditionals, loops, `match`, checked errors, streams and generators, tasks and channels.
 - [`reference/stdlib.md`](reference/stdlib.md) — the namespace inventory and the message surface of every built-in type.
 - [`reference/pitfalls.md`](reference/pitfalls.md) — error message → cause → fix. Read this first when a probe fails.
