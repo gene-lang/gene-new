@@ -1,0 +1,77 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+
+(fn chmod [home, mode]
+  (let result ($os/exec ^cmd "/bin/chmod" ^args [mode home]))
+  ($assert (== result/status 0) result/stderr))
+(fn fixture []
+  (let name (p/id "write-failure"))
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+    ^decisions [(brain/response "Quiet first start" "nil")]))
+  (runtime/settle host)
+  host)
+
+(describe "Life persistent failure boundaries"
+  (it "fails actual filesystem publication, preserves the preceding image, and stops dependent work" []
+    (let host (fixture))
+    ((host/decisions .get) .push (brain/response "Attempt a write, then an action"
+      "(do (try (state .put \"unsaved\" true) catch Any nil) (body/world .take \"watering-can\"))"))
+    (body/receive host "trigger" ^external_id "accepted" ^cursor "cursor-1")
+    (let deadline (+ ($os/monotonic_ms) 5000))
+    (loop
+      (runtime/heartbeat host)
+      ($sleep 1)
+      (let active (host/active .get))
+      (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break))
+      (if (> ($os/monotonic_ms) deadline) (p/problem "Execution did not start")))
+    (let running (host/active .get))
+    (let cycle_id running/record/id)
+    (let home host/store/home)
+    (let image ($fs/read_bytes $"${home}/life.sqlite"))
+    (try
+      # The existing DB remains readable. Atomic replacement cannot create its
+      # temporary publication file in this directory. This is a real OS error.
+      (chmod home "500")
+      (let failed (try (runtime/settle host) false catch Any true))
+      ($assert failed "A real publication failure must not report success")
+      ($assert (! ($absent? (host/store/fault .get))))
+      (assert_equal ($fs/read_bytes $"${home}/life.sqlite") image)
+      (chmod home "700")
+      (assert_raises (fn [] (p/put host/store "later" true)) p/LifeError)
+      (assert_raises (fn [] (body/receive host "not acknowledged" ^external_id "unaccepted" ^cursor "cursor-2")) p/LifeError)
+      (assert_equal ($fs/read_bytes $"${home}/life.sqlite") image)
+      ensure
+        (chmod home "700")
+        (runtime/abandon host))
+    (let restored (runtime/open_life home ^clock (fn [] 1000)))
+    (try
+      (assert_equal (p/get restored/store "state/unsaved") nil)
+      (assert_equal (p/get restored/store "later") nil)
+      (let world (p/get restored/store "world"))
+      (assert_equal world/inventory [])
+      ($assert (! ($absent? world/objects/watering-can)))
+      (let chat (p/get restored/store "conversation/garden"))
+      (assert_equal chat/cursor "cursor-1")
+      (assert_equal chat/messages/.size 1)
+      (let cycle (p/get restored/store $"cycle/${cycle_id}"))
+      (assert_equal cycle/status "interrupted")
+      (for event in (p/values restored/store "event/")
+        (if_yes (== event/kind "restart") (assert_equal event/data/clean false)))
+      ensure (runtime/close_life restored)))
+
+  (it "does not report a clean stop when its final checkpoint fails" []
+    (let host (fixture))
+    (body/receive host "already durable")
+    (let home host/store/home)
+    (host/store/fail_next .set true)
+    (assert_raises (fn [] (runtime/close_life host)) p/LifeError)
+    (let restored (runtime/open_life home ^clock (fn [] 1000)))
+    (try
+      (let chat (p/get restored/store "conversation/garden"))
+      (assert_equal chat/messages/.size 1)
+      (for event in (p/values restored/store "event/")
+        (if_yes (== event/kind "restart") (assert_equal event/data/clean false)))
+      ensure (runtime/close_life restored))))

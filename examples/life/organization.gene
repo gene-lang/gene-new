@@ -1,0 +1,87 @@
+(mod organization)
+(import * : p ^from "./persistence")
+(import * : code ^from "./code")
+
+(fn definition [tx, value]
+  (if (|| (!= ($head value/id) Str) (== value/id "")
+          (!= ($head value/roots) List) (!= ($head value/documentation) Str))
+    (p/problem "Organization requires id, roots, and access documentation"))
+  (let references (?? value/code []))
+  (for flag in ["context" "attention" "ownership"]
+    (let enabled (value .get flag))
+    (if_not ($absent? enabled)
+      (if_not (== ($head enabled) Bool) (p/problem "Organization policy flags must be Boolean"))
+      (if_yes (&& enabled ($absent? value/module)) (p/problem "Selected policies require a retained module"))))
+  (if_not ($absent? value/module)
+    (let saved (code/tx_read tx value/module))
+    (if_not (== saved/kind "module") (p/problem "Organization binding code must be a module"))
+    (if_not (references .contains? value/module) (references .push value/module)))
+  (for revision in references (code/tx_read tx revision))
+  (let result (p/copy value))
+  (result .put "code" references)
+  result)
+
+(fn request [tx, candidate, migration, queued, invalidate, ^recovery recovery = false]
+  (let current (p/tx_get tx "selection/pending"))
+  (if_not ($absent? current) (p/problem "An organization replacement is already pending"))
+  (if_not (["invalidate" "compatible" "defer"] .contains? queued)
+    (p/problem "Queued work policy must be invalidate, compatible, or defer"))
+  (let selected (definition tx candidate))
+  (if_not ($absent? (p/tx_get tx $"organization/${selected/id}"))
+    (p/problem "Organization revisions are immutable; choose a new id"))
+  (let meta (p/tx_get tx "meta"))
+  (if_yes (&& (== queued "compatible") (! ((?? selected/compatible []) .contains? meta/organization)))
+    (p/problem "The candidate must explicitly declare compatibility with the current organization"))
+  (let source (if ($absent? migration) "nil" migration))
+  (let revision (code/expression tx "organization migration" source))
+  (let item {^id (p/id "selection") ^status "requested" ^from meta/organization
+    ^definition selected ^migration revision ^queued queued ^invalidate invalidate ^cause tx/cause
+    ^recovery recovery})
+  (if_yes invalidate
+    (for key in (p/tx_keys tx "cycle/")
+      (let cycle (p/tx_get tx key))
+      (if_yes (["preparing" "thinking" "validating" "queued"] .contains? cycle/status)
+        (cycle .put "status" "superseded")
+        (cycle .put "result" "Explicitly invalidated for organization replacement")
+        (cycle .put "invalidated_by" item/id)
+        (p/tx_put tx key cycle))))
+  (p/tx_put tx $"selection/${item/id}" item)
+  (p/tx_put tx "selection/pending" item/id)
+  item/id)
+
+(fn pending [store]
+  (let request_id (p/get store "selection/pending"))
+  (if ($absent? request_id) nil (p/get store $"selection/${request_id}")))
+
+(fn affected? [record, request]
+  (&& (== record/organization request/from) (["queued" "running" "active" "suspended"] .contains? record/status)))
+(fn has_work? [store, request]
+  (for prefix in ["execution/" "job/" "schedule/" "routine/"]
+    (for record in (p/values store prefix)
+      (if_yes (affected? record request) (return true))))
+  false)
+
+(fn disposition [tx, request]
+  (for prefix in ["execution/" "job/" "schedule/" "routine/"]
+    (for key in (p/tx_keys tx prefix)
+      (let record (p/tx_get tx key))
+      (if_yes (affected? record request)
+        (if (== request/queued "defer") (p/problem "Affected work needs an explicit disposition"))
+        (record .put "original_organization" (?? record/original_organization record/organization))
+        (record .put "selection_id" request/id)
+        (if (== request/queued "compatible")
+          (then
+            (record .put "organization" request/definition/id)
+            (if_yes (== prefix "routine/") (record/spec .put "organization" request/definition/id)))
+          (else
+            (record .put "status" "invalidated")
+            (record .put "reason" "Organization changed; owning intention remains for reconsideration")))
+        (p/tx_put tx key record)))))
+
+(fn reject [store, request, status, reason]
+  (let tx (p/begin store request/id))
+  (request .put "status" status)
+  (request .put "result" reason)
+  (p/tx_put tx $"selection/${request/id}" request)
+  (p/tx_put tx "selection/pending" nil)
+  (p/commit tx))

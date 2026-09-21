@@ -1,0 +1,23 @@
+(mod clock)
+# Unix milliseconds from Gene's DateTime fields; fake clocks use this same unit.
+(fn leap? [year]
+  (&& (== (// year 4) 0) (|| (!= (// year 100) 0) (== (// year 400) 0))))
+(fn wall_ms []
+  (let date ($now))
+  (let year date/.year)
+  (let previous (- year 1))
+  (var days (+ (* (- year 1970) 365)
+    (- ($to_int (/ previous 4)) 492)
+    (- 19 ($to_int (/ previous 100)))
+    (- ($to_int (/ previous 400)) 4)))
+  (let lengths [31 (if (leap? year) 29 28) 31 30 31 30 31 31 30 31 30 31])
+  (var month 0)
+  (while (< month (- date/.month 1))
+    (set days (+ days lengths/%month))
+    (set month (+ month 1)))
+  (set days (+ days (- date/.day 1)))
+  (+ (* days 86400000) (* date/.hour 3600000) (* date/.minute 60000)
+     (* date/.second 1000) ($to_int (/ date/.microsecond 1000))
+     # Current $now exposes Nim's utcOffset (minutes west of UTC), not an
+     # ISO offset. Add it when converting the local calendar to Unix time.
+     (* 60000 (?? date/.offset 0))))

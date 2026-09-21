@@ -1,0 +1,144 @@
+(mod api)
+(import $parse [read_all])
+(import * : program ^from "./program")
+(import $db/sqlite [open Db visit_text_rows])
+(var rpc_path ($cell ""))
+(var execution_root ($cell ""))
+(var synchronous_depth ($cell 0))
+(var callback_db ($cell nil))
+(var transport_lock ($channel ^capacity 1))
+(transport_lock .send true)
+(fn configure [path, root] (rpc_path .set path) (execution_root .set root))
+(type LifeError ^props {^message Str} ^impl [Error])
+(impl Error for LifeError)
+(fn rpc [op, data = nil, tx = nil]
+  # Ordinary Gene tasks may call application methods concurrently. Serialize
+  # transport ownership so responses cannot be consumed by the wrong caller.
+  (transport_lock .recv)
+  (try
+    ($fs/write_text_atomic (rpc_path .get)
+      ($serde/write_data {^op op ^data data ^tx tx}))
+    (let response $"${(rpc_path .get)}.reply")
+    # Inside a synchronous callback, local transport must not pump Gene's
+    # scheduler. The bounded worker-only wait leaves the body responsive.
+    (while (! ($fs/exists? response))
+      (if (== (synchronous_depth .get) 0) ($sleep 5)))
+    (let reply ($serde/read_data ($fs/read_text response)))
+    ($fs/remove response)
+    (if_not reply/ok (fail (LifeError ^message reply/error)))
+    reply/value
+    ensure (transport_lock .send true)))
+
+(fn synchronous_callback [callback, tx]
+  # The existing native row-visitor contract is a real VM no-suspend boundary:
+  # it rejects sleep, await, spawn and blocking channel operations transitively.
+  # This private in-memory connection owns no Life records or transactions.
+  (if ($absent? (callback_db .get)) (callback_db .set (open ":memory:")))
+  (let result ($cell nil))
+  (visit_text_rows (callback_db .get) "SELECT 1"
+    (fn [columns values]
+      (synchronous_depth .set 1)
+      (try
+        (result .set (callback tx))
+        true
+        ensure (synchronous_depth .set 0))))
+  (result .get))
+
+(type Store
+  (message get [key, ^tx tx = nil] (rpc "get" {^key key} tx))
+  (message put [key, value, ^tx tx = nil] (rpc "put" {^key key ^value value} tx))
+  (message keys [prefix = "", ^tx tx = nil] (rpc "keys" {^prefix prefix} tx))
+  (message roots [^tx tx = nil] (rpc "roots" nil tx))
+  (message revision [revision, ^tx tx = nil] (rpc "revision" {^revision revision} tx))
+  (message commit [callback]
+    (let tx (rpc "begin"))
+    (try
+      (let result (synchronous_callback callback tx))
+      (rpc "commit" nil tx)
+      result
+      catch Any
+        (rpc "abort" nil tx)
+        (fail $err))))
+(type State
+  (message get [key, ^tx tx = nil] (rpc "get" {^key $"state/${key}"} tx))
+  (message put [key, value, ^tx tx = nil]
+    (rpc "put" {^key $"state/${key}" ^value value} tx)))
+(type Memory
+  # The starter representation is ordinary Gene library code, not a host schema.
+  (message remember [value, ^tx tx = nil]
+    (let record_id (rpc "new_id" nil tx))
+    (let key $"memory/${record_id}")
+    ((Store) .put key value ^tx tx)
+    key)
+  (message recall [query = "", ^limit limit = 10]
+    (var found [])
+    (for key in ((Store) .keys "memory/")
+      (let value ((Store) .get key))
+      (if_yes (&& (< found/.size limit) ($str/contains? ($to_str value) query))
+        (found .push value)))
+    found))
+(type World
+  (message observe [area = "local", ^tx tx = nil] (rpc "observe" {^area area} tx))
+  (message water [id, ^expected expected = nil, ^tx tx = nil]
+    (rpc "water" {^id id ^expected expected} tx))
+  (message take [id, ^tx tx = nil] (rpc "take" {^id id} tx))
+  (message start_walk [destination, ^owner owner = nil, ^tx tx = nil]
+    (rpc "start_walk" {^destination destination ^owner owner} tx)))
+(type Chat
+  (message send [destination, text, ^owner owner = nil, ^in_reply_to in_reply_to = nil, ^tx tx = nil]
+    (rpc "send" {^destination destination ^text text ^owner owner ^in_reply_to in_reply_to} tx))
+  (message history [destination, ^limit limit = 20, ^before before = nil, ^tx tx = nil]
+    (rpc "chat_history" {^destination destination ^limit limit ^before before} tx)))
+(type Scheduler
+  (message wake_after [delay, reason, ^owner owner = nil, ^id id = nil, ^tx tx = nil]
+    (rpc "wake_after" {^delay delay ^reason reason ^owner owner ^id id} tx))
+  (message after [delay, ^code source, ^bindings data = {}, ^missed missed,
+                  ^owner owner = nil, ^id id = nil, ^tx tx = nil]
+    (rpc "after" {^delay delay ^source ($to_str source) ^input data
+                  ^missed missed ^owner owner ^id id} tx))
+  (message timezone [name, ^through_year through_year = 2100, ^refresh refresh = false, ^tx tx = nil]
+    (rpc "timezone" {^name name ^through_year through_year ^refresh refresh ^allow_import ($absent? tx)} tx))
+  (message cron [expression, zone, ^code source = void, ^bindings data = {},
+                 ^reason reason = "Recurring review", ^missed missed,
+                 ^owner owner = nil, ^id id = nil, ^tx tx = nil]
+    (let prepared (if (== ($head zone) Str) (self .timezone zone ^tx tx) zone))
+    (rpc "cron" {^expression expression ^timezone prepared
+      ^source (if ($void? source) nil ($to_str source)) ^input data ^reason reason
+      ^missed missed ^owner owner ^id id} tx))
+  (message get [id, ^tx tx = nil] (rpc "get_schedule" {^id id} tx))
+  (message cancel [id, ^tx tx = nil] (rpc "cancel" {^id id} tx)))
+(type Code
+  (message save [name, source, ^tx tx = nil]
+    (rpc "save_code" {^name name ^source ($to_str source)} tx))
+  (message save_module [name, files, ^entry entry = "main.gene", ^tx tx = nil]
+    (rpc "save_module" {^name name ^files files ^entry entry} tx))
+  (message load [revision, ^tx tx = nil]
+    (let saved (rpc "load_code" {^revision revision} tx))
+    (if (== saved/kind "module") (return (load_module saved)))
+    (program/evaluate (execution_root .get) saved/source {}))
+  (message select [definition, ^migration migration = nil, ^queued queued = "defer",
+                   ^invalidate_inflight invalidate = false]
+    (rpc "select" {^definition definition ^migration (if ($absent? migration) nil ($to_str migration))
+      ^queued queued ^invalidate invalidate})))
+
+(fn load_module [saved]
+  # Ordinary module loader: declarations and transitive imports are compiled as
+  # modules, with their own lexical scopes, never concatenated into eval source.
+  (program/load_module saved))
+(type Life
+  (message inspect_owner [id, ^tx tx = nil] (rpc "get_owner" {^id id} tx))
+  (message owner [id, ^tx tx = nil] (rpc "owner" {^id id} tx))
+  (message cancel_owner [id, ^tx tx = nil] (rpc "cancel_owner" {^id id} tx))
+  (message start_job [source, ^bindings data = {}, ^owner owner = nil, ^tx tx = nil]
+    (rpc "start_job" {^source ($to_str source) ^input data ^owner owner} tx)))
+(type Routines
+  (message register [id, revision, ^handler handler = "run", ^clock clock = "simulation",
+                     ^every_ms every_ms = 1000, ^events events = [], ^bindings data = {},
+                     ^owner owner = nil, ^recovery recovery = "interrupt", ^tx tx = nil]
+    (rpc "register_routine" {^id id ^revision revision ^handler handler ^clock clock
+      ^every_ms every_ms ^events events ^bindings data ^owner owner ^recovery recovery} tx))
+  (message cancel [id, ^tx tx = nil] (rpc "cancel_routine" {^id id} tx)))
+(fn bindings [context, input]
+  {^context context ^input input ^store (Store) ^state (State)
+   ^memory (Memory) ^body {^world (World) ^chat (Chat)}
+   ^scheduler (Scheduler) ^code (Code) ^life (Life) ^routines (Routines)})

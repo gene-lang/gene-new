@@ -1,0 +1,45 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : p ^from "../persistence")
+(import * : calendar ^from "../calendar")
+(import * : timezone ^from "../timezone")
+(import * : cron ^from "../cron")
+
+(fn at [date, time] (* (calendar/local_seconds date time) 1000))
+
+(describe "Life cron calendar"
+  (it "parses ranges, lists, steps, and named calendar fields" []
+    (let rules (timezone/system_rules "UTC" 2100))
+    (let pattern (cron/compile "*/15 8-10 * jan,mar mon-fri"))
+    (assert_equal (cron/next pattern rules (at "2026-03-02" "07:59")) (at "2026-03-02" "08"))
+    (assert_equal (cron/next pattern rules (at "2026-03-02" "08")) (at "2026-03-02" "08:15"))
+    (assert_equal (cron/previous pattern rules (at "2026-03-02" "08:22")) (at "2026-03-02" "08:15"))
+    (let stepped (cron/compile "5/15 * * * *"))
+    (assert_equal stepped/minutes [5 20 35 50])
+    (assert_raises (fn [] (cron/compile "60 9 * * *")) p/LifeError)
+    (assert_raises (fn [] (cron/compile "*/0 * * * *")) p/LifeError)
+    (assert_raises (fn [] (cron/compile "0 9 * *")) p/LifeError))
+
+  (it "applies day-of-month/day-of-week OR when both are restricted" []
+    (let pattern (cron/compile "0 9 1 * mon"))
+    (assert_equal (cron/matches_day? pattern (calendar/civil (calendar/day_number 2026 3 1))) true)
+    (assert_equal (cron/matches_day? pattern (calendar/civil (calendar/day_number 2026 3 2))) true)
+    (assert_equal (cron/matches_day? pattern (calendar/civil (calendar/day_number 2026 3 3))) false))
+
+  (it "uses installed IANA transitions and skips spring gaps and second fall occurrences" []
+    (let rules (timezone/system_rules "America/New_York" 2100))
+    (let daily (cron/compile "0 9 * * *"))
+    (assert_equal (cron/next daily rules (at "2026-03-07" "14")) (at "2026-03-08" "13"))
+    (let gap (cron/compile "30 2 * * *"))
+    (assert_equal (cron/next gap rules (at "2026-03-07" "07:30")) (at "2026-03-09" "06:30"))
+    (let fold (cron/compile "30 1 * * *"))
+    (assert_equal (cron/next fold rules (at "2026-10-31" "05:30")) (at "2026-11-01" "05:30"))
+    (assert_equal (cron/next fold rules (at "2026-11-01" "05:30")) (at "2026-11-02" "06:30"))
+    (assert_equal (cron/previous fold rules (at "2026-11-01" "06:15")) (at "2026-11-01" "05:30")))
+
+  (it "handles fractional offsets and leap-day schedules past 2038" []
+    (let india (timezone/system_rules "Asia/Kolkata" 2100))
+    (assert_equal (cron/next (cron/compile "15 0 * * *") india (at "2026-09-19" "18:44")) (at "2026-09-19" "18:45"))
+    (let utc (timezone/system_rules "UTC" 2110))
+    (assert_equal (cron/next (cron/compile "0 0 29 feb *") utc (at "2096-02-29" "00")) (at "2104-02-29" "00"))
+    (assert_equal (timezone/safe_name? "../private") false)
+    (assert_raises (fn [] (timezone/system_rules "Missing/Timezone" 2100)) p/LifeError)))

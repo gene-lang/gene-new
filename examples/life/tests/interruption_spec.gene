@@ -1,0 +1,76 @@
+(import $test [describe it assert_equal])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+
+(fn crash [kind]
+  (let name (p/id "interrupted"))
+  (let home $"examples/life/tmp/${name}")
+  (let child ($os/exec ^cmd ($os/executable_path)
+    ^args ["run" "examples/life/tests/interruption_fixture.gene" home kind] ^timeout_ms 10000 ^max_bytes 16000))
+  ($assert (!= child/status 0))
+  ($assert ($fs/exists? home) child/stderr)
+  (runtime/open_life home ^clock (fn [] 1000)))
+
+(describe "Interrupted arbitrary execution"
+  (it "dispatches a published job that never started exactly once under its retained ID" []
+    (let host (crash "queued-job"))
+    (try
+      (let before (p/values host/store "job/"))
+      (assert_equal before/.size 1)
+      (assert_equal before/0/status "queued")
+      (assert_equal (p/get host/store "state/job-link") before/0/id)
+      (assert_equal (p/get host/store "state/runs") nil)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/runs") 1)
+      (let after (p/values host/store "job/"))
+      (assert_equal after/0/id before/0/id)
+      (assert_equal after/0/status "succeeded")
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/runs") 1)
+      ensure (runtime/close_life host)))
+
+  (it "preserves partial arbitrary jobs and scheduled programs without replaying their source" []
+    (for kind in ["job" "schedule"]
+      (let host (crash kind))
+      (try
+        (assert_equal (p/get host/store "state/progress") 1)
+        (let records (p/values host/store (if (== kind "job") "job/" "schedule/")))
+        (assert_equal records/.size 1)
+        (assert_equal records/0/status "interrupted")
+        (runtime/settle host)
+        (assert_equal (p/get host/store "state/progress") 1)
+        (let after (p/values host/store (if (== kind "job") "job/" "schedule/")))
+        (assert_equal after/0/status "interrupted")
+        (if_yes (== kind "schedule")
+          (let run (p/get host/store $"execution/${after/0/execution_id}"))
+          (assert_equal run/status "interrupted"))
+        ensure (runtime/close_life host))))
+
+  (it "keeps a scheduled execution that was published but never dispatched eligible" []
+    (let host (crash "queued-schedule"))
+    (try
+      (let schedules (p/values host/store "schedule/"))
+      (let execution_id schedules/0/execution_id)
+      (let before (p/get host/store $"execution/${execution_id}"))
+      (assert_equal before/status "queued")
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/runs") 1)
+      (let after (p/get host/store $"execution/${execution_id}"))
+      (assert_equal after/status "succeeded")
+      (let finished (p/values host/store "schedule/"))
+      (assert_equal finished/0/status "succeeded")
+      ensure (runtime/close_life host)))
+
+  (it "suspends a started routine without a continuation contract and retains its outcome reference" []
+    (let host (crash "routine"))
+    (try
+      (let registration (p/get host/store "routine/arbitrary"))
+      (assert_equal registration/status "suspended")
+      (assert_equal registration/pending nil)
+      (assert_equal registration/last_outcome/status "interrupted")
+      (let run (p/get host/store $"execution/${registration/last_outcome/execution_id}"))
+      (assert_equal run/status "interrupted")
+      (assert_equal (p/get host/store "state/progress") 1)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/progress") 1)
+      ensure (runtime/close_life host))))

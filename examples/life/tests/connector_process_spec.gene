@@ -1,0 +1,177 @@
+(import $test [describe it assert_equal])
+(import * : runtime ^from "../runtime")
+(import * : chat ^from "../chat")
+(import * : p ^from "../persistence")
+(import * : mailbox ^from "./mailbox_support")
+(import * : support ^from "./connector_crash_fixture")
+
+(fn crash [fixture, phase]
+  (let name (p/id "connector-crash"))
+  (let home $"examples/life/tmp/${name}")
+  (let result ($os/exec ^cmd ($os/executable_path)
+    ^args ["run" "examples/life/tests/connector_crash_fixture.gene" home phase fixture/endpoint]
+    ^dir ($fs/real_path ".") ^timeout_ms 20000 ^max_bytes 16384))
+  (assert_equal result/timed_out false result/stderr)
+  # os/exec reports the POSIX signal exit as 128 + SIGKILL, not a bare nonzero.
+  (assert_equal result/status 137 result/stderr)
+  ($assert ($fs/exists? $"${home}/crash-point.data") "Crash hook did not record its phase")
+  (assert_equal ($fs/read_text $"${home}/crash-point.data") phase)
+  home)
+
+(fn snapshot [home]
+  (let store (p/open_store home))
+  (try
+    (let saved (p/get store "state/crash"))
+    {^saved saved ^delivery (p/get store $"delivery/${saved/delivery_id}")
+     ^conversation (p/get store $"conversation/${(chat/conversation_id saved/destination)}")}
+  ensure (p/close_store store)))
+
+(fn check_completion [host, fixture, before, attempts]
+  (let saved before/saved)
+  (let delivered (support/wait_delivered host saved/delivery_id))
+  (assert_equal delivered/attempts attempts)
+  (assert_equal delivered/payload before/delivery/payload)
+  (assert_equal delivered/digest before/delivery/digest)
+  (assert_equal delivered/needs_reconciliation false)
+  ($assert (! ($absent? delivered/receipt)))
+  (let receipt (if (== ($head delivered/receipt) Map) delivered/receipt/receipt delivered/receipt))
+  (assert_equal receipt $"receipt:${saved/operation_id}")
+  (let transcript (support/transcript host saved/destination))
+  (assert_equal transcript/messages/.size 2)
+  (assert_equal transcript/messages/0/id saved/event_id)
+  (assert_equal transcript/messages/1/id saved/delivery_id)
+  (assert_equal transcript/messages/1/speaker "life")
+  (assert_equal transcript/messages/1/thread saved/destination/thread)
+  (assert_equal transcript/messages/1/text "A durable reply")
+  (assert_equal transcript/pending [])
+  (support/pump host)
+  (let remote (mailbox/call fixture "/inspect" {}))
+  # A receipt lookup is not another send attempt, even when remote sends are idempotent.
+  (assert_equal remote/sends 1)
+  (assert_equal remote/effects 1)
+  (assert_equal remote/sent/.size 1)
+  (assert_equal remote/sent/0/operation_id saved/operation_id)
+  (assert_equal remote/sent/0/peer_id "test-peer")
+  (assert_equal remote/sent/0/conversation saved/destination/conversation)
+  (assert_equal remote/sent/0/thread saved/destination/thread)
+  (let retained (remote/deliveries .get saved/operation_id))
+  (assert_equal retained/digest delivered/digest)
+  (assert_equal retained/receipt $"receipt:${saved/operation_id}")
+  (if (!= before/delivery/status "pending") ($assert (> remote/receipts 0)))
+  (assert_equal (host/calls .get) 0))
+
+(fn delivery_crash [phase, durable_status, effects, attempts]
+  (let fixture (mailbox/start))
+  (try
+    (let home (crash fixture phase))
+    (let before (snapshot home))
+    (assert_equal before/delivery/status durable_status)
+    (assert_equal before/delivery/receipt nil)
+    (assert_equal before/delivery/attempts (if (== phase "pending") 0 1))
+    (let payload ($json/parse before/delivery/payload))
+    (assert_equal payload/operation_id before/saved/operation_id)
+    (assert_equal before/delivery/digest ($crypto/sha256 before/delivery/payload))
+    (assert_equal before/conversation/messages/.size 1)
+    (assert_equal before/conversation/pending [before/saved/event_id])
+    (let remote_before (mailbox/call fixture "/inspect" {}))
+    (assert_equal remote_before/effects effects)
+    (assert_equal remote_before/sends effects)
+    (let host (runtime/open_life home ^clock (fn [] 1000)))
+    (try
+      (let recovered (support/delivery host before/saved/delivery_id))
+      (assert_equal recovered/status (if (== phase "pending") "pending" "needs_reconciliation"))
+      (assert_equal recovered/payload before/delivery/payload)
+      (assert_equal recovered/digest before/delivery/digest)
+      # Merely opening the home must not launch an unrecorded send.
+      (let opened (mailbox/call fixture "/inspect" {}))
+      (assert_equal opened/sends effects)
+      (if_yes (== phase "remote_sent_lost_response")
+        (let baseline opened/receipts)
+        (support/wait_for host (fn [] (let remote (mailbox/call fixture "/inspect" {}))
+          (>= remote/receipts (+ baseline 2))) "repeated unknown receipts")
+        (let uncertain (support/delivery host before/saved/delivery_id))
+        (assert_equal uncertain/status "needs_reconciliation")
+        (assert_equal uncertain/receipt nil)
+        (assert_equal uncertain/attempts 1)
+        (let transcript (support/transcript host before/saved/destination))
+        (assert_equal transcript/messages/.size 1)
+        (assert_equal transcript/pending [before/saved/event_id])
+        (let remote (mailbox/call fixture "/inspect" {}))
+        (assert_equal remote/sends 1)
+        (assert_equal remote/effects 1)
+        (mailbox/call fixture "/configure" {^unknown_receipts false ^drop_send_response false}))
+      (check_completion host fixture before attempts)
+    ensure (support/close_host host))
+    # A second recovery must retain the receipt and transcript without even an
+    # idempotent resend of the already confirmed operation.
+    (let again (runtime/open_life home ^clock (fn [] 1000)))
+    (try
+      (check_completion again fixture before attempts)
+      (assert_equal ((support/observations again) .size) 1)
+    ensure (support/close_host again))
+  ensure (mailbox/stop fixture)))
+
+(describe "Life connector process recovery"
+  (it "dispatches a committed pending delivery after a kill before any attempt" []
+    (delivery_crash "pending" "pending" 0 1))
+
+  (it "asks for a receipt after the attempt commit and safely retries not_found with the SAME operation" []
+    (delivery_crash "delivery_before_send" "attempting" 0 2))
+
+  (it "holds unknown receipts after a remote effect and lost response, then reconciles without resend" []
+    (delivery_crash "remote_sent_lost_response" "needs_reconciliation" 1 1))
+
+  (it "recovers a returned HTTP receipt lost before its local commit without repeating the send" []
+    (delivery_crash "delivery_after_receipt" "attempting" 1 1))
+
+  (it "does not treat an unknown receipt as not_found even when no remote send happened" []
+    (let fixture (mailbox/start))
+    (try
+      (let home (crash fixture "delivery_before_send"))
+      (let before (snapshot home))
+      (mailbox/call fixture "/configure" {^unknown_receipts true})
+      (let host (runtime/open_life home ^clock (fn [] 1000)))
+      (try
+        (support/wait_for host (fn [] (let remote (mailbox/call fixture "/inspect" {}))
+          (>= remote/receipts 2)) "unknown receipt for an absent operation")
+        (let uncertain (support/delivery host before/saved/delivery_id))
+        (assert_equal uncertain/status "needs_reconciliation")
+        (assert_equal uncertain/attempts 1)
+        (assert_equal uncertain/receipt nil)
+        (let remote (mailbox/call fixture "/inspect" {}))
+        (assert_equal remote/sends 0)
+        (assert_equal remote/effects 0)
+        (let transcript (support/transcript host before/saved/destination))
+        (assert_equal transcript/messages/.size 1)
+        (assert_equal transcript/pending [before/saved/event_id])
+        (mailbox/call fixture "/configure" {^unknown_receipts false})
+        (check_completion host fixture before 2)
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "publishes ingress identity, transcript, and cursor together across kills around poll commit" []
+    (for phase in ["connector_before_commit" "connector_after_commit"]
+      (let fixture (mailbox/start))
+      (try
+        (let home (crash fixture phase))
+        (let host (runtime/open_life home ^clock (fn [] 1000)))
+        (try
+          (let committed (== phase "connector_after_commit"))
+          (assert_equal (support/cursor host) (if committed 1 0))
+          (assert_equal ((support/observations host) .size) (if committed 1 0))
+          (assert_equal ((p/values host/store "conversation/") .size) (if committed 1 0))
+          (support/wait_cursor host 1)
+          (let original (support/incoming host "crash-input"))
+          (support/inject fixture "crash-input" "Alice" "watering" ^text "Please water later")
+          (support/wait_cursor host 2)
+          (assert_equal ((support/observations host) .size) 1)
+          (assert_equal ((support/incoming host "crash-input") .get "id") original/id)
+          (let transcript (support/transcript host original/reply_to))
+          (assert_equal transcript/messages/.size 1)
+          (assert_equal transcript/pending [original/id])
+          (let remote (mailbox/call fixture "/inspect" {}))
+          (assert_equal remote/sends 0)
+          (assert_equal remote/effects 0)
+          (assert_equal (host/calls .get) 0)
+        ensure (support/close_host host))
+      ensure (mailbox/stop fixture)))))

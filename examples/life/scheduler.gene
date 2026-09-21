@@ -1,0 +1,139 @@
+(mod scheduler)
+(import * : p ^from "./persistence")
+(import * : cron ^from "./cron")
+(import * : timezone ^from "./timezone")
+
+(fn valid_owner [tx, owner]
+  (if ($absent? owner) true (== (p/tx_get tx $"owner/${owner/id}") owner)))
+(fn validate_missed [missed, kind, recurring]
+  (if_yes (&& (== missed "coalesce_once") (|| recurring (== kind "wake"))) (return nil))
+  (if_not (&& (== ($head missed) Map) (== ($head missed/run_within_ms) Int)
+               (>= missed/run_within_ms 0) (== missed/otherwise "expire"))
+    (p/problem "Choose coalesce_once or an explicit run_within_ms/expire policy")))
+
+(fn register [host, tx, record, op, data]
+  (if_not (valid_owner tx data/owner) (p/problem "Owner has been cancelled"))
+  (let id (?? data/id (p/id "schedule")))
+  (let previous (p/tx_get tx $"schedule/${id}"))
+  (var count 0)
+  (for key in (p/tx_keys tx "schedule/")
+    (let item (p/tx_get tx key))
+    (if_yes (["queued" "running"] .contains? item/status) (set count (+ count 1))))
+  (if (&& ($absent? previous) (>= count 128)) (p/problem "Schedule queue limit reached"))
+  (let recurring (== op "cron"))
+  (let kind (if (|| (== op "wake_after") (&& recurring ($absent? data/source))) "wake" "code"))
+  (let missed (?? data/missed (if (== kind "wake") "coalesce_once" nil)))
+  (validate_missed missed kind recurring)
+  (let item {^id id ^generation (if ($absent? previous) 1 (+ (?? previous/generation 0) 1))
+    ^kind kind ^status "queued" ^missed missed ^owner (?? data/owner nil)
+    ^cause record/id ^organization record/organization ^updated_by record/id
+    ^program (?? data/source nil) ^input (?? data/input {}) ^reason (?? data/reason nil)
+    ^pending nil ^consecutive_failures 0})
+  (if recurring
+    (then
+      (let pattern (cron/compile data/expression))
+      (let rules (timezone/read tx data/timezone/revision))
+      (if_not (== rules/name data/timezone/name) (p/problem "Timezone name and revision disagree"))
+      (item .put "recurrence" pattern)
+      (item .put "timezone" data/timezone)
+      (item .put "due" (cron/next pattern rules (host/clock))))
+    (else
+      (if (|| (!= ($head data/delay) Int) (< data/delay 0)) (p/problem "Schedule delay must be nonnegative integer milliseconds"))
+      (item .put "due" (+ (host/clock) data/delay))))
+  (if_not ($absent? previous) (item .put "previous_cause" previous/cause))
+  (p/tx_put tx $"schedule/${id}" item)
+  id)
+
+(fn cancel [tx, id]
+  (let item (p/tx_get tx $"schedule/${id}"))
+  (if ($absent? item) (p/problem "Unknown schedule"))
+  (item .put "status" "cancelled")
+  (item .put "updated_by" tx/cause)
+  (p/tx_put tx $"schedule/${id}" item)
+  item)
+
+(fn inadmissible [tx, record, at, ^dispatch dispatch = false]
+  (if ($absent? record/schedule_id) (return nil))
+  (let item (p/tx_get tx $"schedule/${record/schedule_id}"))
+  (if ($absent? item) (return "invalidated"))
+  (if_not (== (?? item/generation 0) (?? record/schedule_generation 0)) (return "invalidated"))
+  (if (["cancelled" "invalidated" "suspended"] .contains? item/status) (return item/status))
+  (let expires (?? record/expires_at (if (== item/missed "coalesce_once") nil
+    (+ (?? record/occurrence_at item/due) item/missed/run_within_ms))))
+  (if_yes (&& dispatch (! ($absent? expires)) (> at expires)) (return "expired"))
+  nil)
+
+(fn finish [tx, record, status, result]
+  (if ($absent? record/schedule_id) (return nil))
+  (let item (p/tx_get tx $"schedule/${record/schedule_id}"))
+  (if ($absent? item) (return nil))
+  (if_not (== (?? item/generation 0) (?? record/schedule_generation 0)) (return nil))
+  (item .put "last_outcome" {^execution_id record/id ^occurrence_at (?? record/occurrence_at item/due)
+    ^status status ^result result})
+  (item .put "pending" nil)
+  (if_yes (== item/status "running")
+    (if ($absent? item/recurrence)
+      (then (item .put "status" status))
+      (else
+        (let previous (?? item/consecutive_failures 0))
+        (let failures (if (== status "succeeded") 0
+          (if (["failed" "interrupted"] .contains? status) (+ previous 1) previous)))
+        (item .put "consecutive_failures" failures)
+        (item .put "status" (if (|| (>= failures 2) (! ($absent? item/next_error))) "suspended" "queued")))))
+  (p/tx_put tx $"schedule/${item/id}" item))
+
+(fn deliver [host, tx, item, emit]
+  (let meta (p/tx_get tx "meta"))
+  (if_not (valid_owner tx item/owner) (item .put "status" "cancelled"))
+  (if_yes (&& (== item/status "queued") (!= item/organization meta/organization))
+    (item .put "status" "invalidated"))
+  (if_not (== item/status "queued") (return nil))
+  (let recurring (! ($absent? item/recurrence)))
+  (let at (host/clock))
+  (var occurrence item/due)
+  (if_yes recurring
+    (let rules (timezone/read tx item/timezone/revision))
+    (set occurrence (cron/previous item/recurrence rules at))
+    (if (< occurrence item/due) (p/problem "Cron recurrence moved behind its retained due time"))
+    (item .put "coalesced_from" item/due)
+    (let next (try (cron/next item/recurrence rules at)
+      catch Any
+        (item .put "next_error" $err/message)
+        (emit host tx "schedule_failed" {^id item/id ^error $err/message} ^cause item/cause)
+        nil))
+    (item .put "due" next))
+  (item .put "last_occurrence" occurrence)
+  (let generation (?? item/generation 0))
+  (let occurrence_id $"${item/id}:${generation}:${occurrence}")
+  (if_yes (&& (!= item/missed "coalesce_once") (> (- at occurrence) item/missed/run_within_ms))
+    (item .put "last_outcome" {^status "expired" ^occurrence_at occurrence})
+    (item .put "status" (if recurring (if ($absent? item/next_error) "queued" "suspended") "expired"))
+    (emit host tx "missed_schedule" {^id item/id ^occurrence_at occurrence}
+      ^event_id $"missed:${occurrence_id}" ^cause item/cause)
+    (return nil))
+  (if_yes (== item/kind "wake")
+    (emit host tx "wake" {^reason item/reason ^schedule_id item/id ^occurrence_at occurrence}
+      ^event_id $"wake:${occurrence_id}" ^cause item/cause)
+    (item .put "last_outcome" {^status "succeeded" ^occurrence_at occurrence})
+    (item .put "status" (if recurring (if ($absent? item/next_error) "queued" "suspended") "succeeded"))
+    (return nil))
+  (let run {^id $"scheduled:${occurrence_id}" ^status "queued" ^program item/program ^input item/input
+    ^organization item/organization ^owner item/owner ^schedule_id item/id ^schedule_generation generation
+    ^occurrence_at occurrence ^cause item/cause
+    ^expires_at (if (== item/missed "coalesce_once") nil (+ occurrence item/missed/run_within_ms))})
+  (p/tx_put tx $"execution/${run/id}" run)
+  (item .put "status" "running")
+  (item .put "pending" run/id))
+
+(fn due [host, emit]
+  (let tx (p/begin host/store "scheduler"))
+  (for key in (p/tx_keys tx "schedule/")
+    (let item (p/tx_get tx key))
+    (if_yes (&& (== item/status "queued") (<= item/due (host/clock)))
+      (try (deliver host tx item emit)
+        catch Any
+          (item .put "status" "suspended")
+          (item .put "reason" $err/message)
+          (emit host tx "schedule_failed" {^id item/id ^error $err/message} ^cause item/cause))
+      (p/tx_put tx key item)))
+  (if (!= tx/writes {}) (p/commit tx) (p/abort tx)))

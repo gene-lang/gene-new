@@ -1,0 +1,174 @@
+(mod body)
+(import * : p ^from "./persistence")
+(import * : code ^from "./code")
+(import * : organization ^from "./organization")
+(import * : routines ^from "./routines")
+(import * : scheduler ^from "./scheduler")
+(import * : timezone ^from "./timezone")
+(import * : events ^from "./events")
+(import * : chat ^from "./chat")
+
+(fn event [host, tx, kind, data, ^event_id event_id = nil, ^cause cause = nil, ^reply_to reply_to = nil]
+  (events/event host tx kind data ^event_id event_id ^cause cause ^reply_to reply_to))
+
+(fn receive [host, text, ^speaker speaker = "visitor", ^conversation conversation = "garden",
+             ^thread thread = "main", ^external_id external_id = nil, ^cursor cursor = nil]
+  (chat/receive host text ^speaker speaker ^conversation conversation ^thread thread ^external_id external_id ^cursor cursor))
+
+(fn valid_owner [tx, owner]
+  (if ($absent? owner) true (== (p/tx_get tx $"owner/${owner/id}") owner)))
+(fn valid_basis [tx, record]
+  (if_not (valid_owner tx record/owner) (return false))
+  (for owner in (?? record/ownership []) (if_not (valid_owner tx owner) (return false)))
+  true)
+(fn outcome [host, tx, cause, operation, data]
+  (let result {^id (p/id "outcome") ^cause cause ^operation operation ^data data
+    ^at (host/clock) ^status "succeeded"})
+  (p/tx_put tx $"outcome/${result/id}" result)
+  result)
+(fn queued? [item] (["queued" "running"] .contains? item/status))
+
+(fn apply_operation [host, tx, record, op, data]
+  (let cause record/id)
+  (if (== op "get_owner") (return (p/tx_get tx $"owner/${data/id}")))
+  (if (== op "register_routine") (return (routines/register host tx record data)))
+  (if (== op "cancel_routine") (return (routines/cancel tx data/id)))
+  (if (["get" "put"] .contains? op)
+    (then
+      (for prefix in ["meta" "world" "event/" "cycle/" "execution/" "schedule/" "job/"
+                      "owner/" "code/" "organization/" "conversation/" "delivery/" "connector/" "history_gap/" "outcome/" "selection/" "routine/" "commit/" "timezone/" "timezone_selection/" "budget/"]
+        (if_yes ($str/starts_with? data/key prefix)
+          (p/problem "Operational records require their adapter APIs")))
+      (return (if (== op "get") (p/tx_get tx data/key) (p/tx_put tx data/key data/value)))))
+  (if (== op "keys") (return (p/tx_keys tx data/prefix)))
+  (if (== op "new_id") (return (p/id "record")))
+  (if (== op "revision") (return (p/revision host/store data/revision)))
+  (if (== op "roots")
+    (then
+      (let all {})
+      (for key in (p/tx_keys tx) (all .put key (p/tx_get tx key)))
+      (return all)))
+  (if (== op "observe")
+    (then
+      (let world (p/tx_get tx "world"))
+      (if (== data/area "debug") (return world))
+      (let objects [])
+      (for pair in world/objects
+        (if_yes (<= ($math/abs (- pair/1/position world/position)) 2) (objects .push pair/1)))
+      (return {^position world/position ^sim_ms world/sim_ms ^inventory world/inventory ^objects objects})))
+  (if (["water" "take"] .contains? op)
+    (then
+      (let world (p/tx_get tx "world"))
+      (let item (world/objects .get data/id))
+      (if ($absent? item) (p/problem "Object no longer exists"))
+      (if (> ($math/abs (- item/position world/position)) 2) (p/problem "Object is out of reach"))
+      (if_yes (&& (! ($absent? data/expected)) (!= data/expected item/version))
+        (p/problem "World precondition changed"))
+      (if (== op "water")
+        (then
+          (if_not (== item/status "dry") (p/problem "Plant is no longer dry"))
+          (item .put "status" "wet")
+          (item .put "version" (+ item/version 1)))
+        (else
+          (world/inventory .push item/id)
+          (world .put "held" item/id)
+          (world/objects .delete item/id)))
+      (p/tx_put tx "world" world)
+      (return (outcome host tx cause op data))))
+  (if (["start_walk" "start_job"] .contains? op)
+    (then
+      (if_not (valid_owner tx data/owner) (p/problem "Owner has been cancelled"))
+      (let job {^id (p/id "job") ^kind (if (== op "start_walk") "walk" "gene")
+        ^status "queued" ^owner (?? data/owner nil) ^organization record/organization
+        ^cause cause ^input (?? data/input {})})
+      (if (== op "start_walk")
+        (then
+          (let world (p/tx_get tx "world"))
+          (let destination (world/places .get data/destination))
+          (if ($absent? destination) (p/problem "Unknown destination"))
+          (for key in (p/tx_keys tx "job/")
+            (let other (p/tx_get tx key))
+            (if_yes (&& (== other/kind "walk") (queued? other))
+              (p/problem "A walk is already active; inspect or cancel it")))
+          (job .put "destination" destination)
+          (job .put "recovery" "walk@1")
+          (job .put "position" world/position)
+          (job .put "steps" 0))
+        (else (job .put "program" data/source)))
+      (p/tx_put tx $"job/${job/id}" job)
+      (return job)))
+  (if (["owner" "cancel_owner"] .contains? op)
+    (then
+      (let owner (?? (p/tx_get tx $"owner/${data/id}") {^id data/id ^generation 0}))
+      (if_yes (== op "cancel_owner")
+        (owner .put "generation" (+ owner/generation 1))
+        (for prefix in ["schedule/" "job/" "execution/" "routine/" "delivery/"]
+          (for key in (p/tx_keys tx prefix)
+            (let item (p/tx_get tx key))
+            (if_yes (&& (! ($absent? item/owner)) (== item/owner/id data/id)
+                         (|| (queued? item) (["active" "pending" "attempting" "reconciling" "needs_reconciliation"] .contains? item/status)))
+              (let active (|| (&& (== item/status "running")
+                (|| (== prefix "execution/") (&& (== prefix "job/") (== item/kind "gene"))))
+                (["attempting" "reconciling" "needs_reconciliation"] .contains? item/status)))
+              (if active
+                (then
+                  (item .put "cancellation_requested" true)
+                  (item .put "cancellation_cause" cause)
+                  (item .put "cancellation_reason" "Owner generation retired"))
+                (else
+                  (item .put "status" "cancelled")
+                  (item .put "reason" "Owner generation retired")))
+              (p/tx_put tx key item)
+              (event host tx (if active "cancellation_requested" "cancelled") {^id item/id} ^cause cause)))))
+      (p/tx_put tx $"owner/${data/id}" owner)
+      (return owner)))
+  (if (["wake_after" "after" "cron"] .contains? op) (return (scheduler/register host tx record op data)))
+  (if (== op "cancel") (return (scheduler/cancel tx data/id)))
+  (if (== op "get_schedule") (return (p/tx_get tx $"schedule/${data/id}")))
+  (if (== op "timezone") (return (timezone/prepare tx data/name ^through_year data/through_year
+    ^refresh data/refresh ^allow_import data/allow_import)))
+  (if (== op "send") (return (chat/prepare host tx record data)))
+  (if (== op "chat_history") (return (chat/history tx data/destination data/limit data/before)))
+  (if (== op "save_code")
+    (return (code/expression tx data/name data/source)))
+  (if (== op "save_module")
+    (return (code/module_bundle tx data/name data/files data/entry)))
+  (if (== op "select")
+    (return (organization/request tx data/definition data/migration data/queued data/invalidate)))
+  (if (== op "load_code")
+    (then
+      (return (code/tx_read tx data/revision))))
+  (p/problem $"Unknown application operation: ${op}"))
+
+(fn tick [host, elapsed_ms]
+  (if (|| (!= ($head elapsed_ms) Int) (< elapsed_ms 0)) (p/problem "World elapsed time must be nonnegative integer milliseconds"))
+  (let meta (p/get host/store "meta"))
+  (if (!= meta/mode "running") (return nil))
+  # Selection checkpoints the current world; movement resumes only after its
+  # recorded compatibility disposition has been committed with the new roots.
+  (if_not ($absent? (organization/pending host/store)) (return nil))
+  (let tx (p/begin host/store "world-tick"))
+  (let world (p/tx_get tx "world"))
+  (world .put "sim_ms" (+ world/sim_ms elapsed_ms))
+  (for key in (p/tx_keys tx "job/")
+    (let job (p/tx_get tx key))
+    (if_yes (&& (== job/kind "walk") (queued? job))
+      (if (valid_owner tx job/owner)
+        (then
+          (let distance (- job/destination world/position))
+          (let step ($math/min ($math/abs distance) (/ elapsed_ms 1000.0)))
+          (world .put "position" (+ world/position (if (>= distance 0) step (- 0 step))))
+          (world .put "orientation" (if (>= distance 0) "east" "west"))
+          (job .put "position" world/position)
+          (job .put "steps" (+ job/steps 1))
+          (job .put "status" (if (== ($to_float world/position) ($to_float job/destination)) "succeeded" "running"))
+          (outcome host tx job/id "walk_step" {^position world/position ^sim_ms world/sim_ms})
+          (if_yes (== job/status "succeeded")
+            (event host tx "job_outcome" {^id job/id ^position world/position} ^cause job/id)))
+        (else (job .put "status" "cancelled")))
+      (p/tx_put tx key job)))
+  (p/tx_put tx "world" world)
+  (p/commit tx))
+
+(fn due [host]
+  (scheduler/due host event))

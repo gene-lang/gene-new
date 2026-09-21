@@ -1,0 +1,92 @@
+(import $test [describe it assert_equal])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+
+(fn fixture []
+  (let name (p/id "execution-boundary"))
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+    ^decisions [(brain/response "Quiet start" "nil")]))
+  (runtime/settle host)
+  host)
+(fn decide [host, source]
+  ((host/decisions .get) .push (brain/response "Boundary fixture" source))
+  (let event (body/receive host "Exercise the supported Gene boundary"))
+  (runtime/settle host)
+  (for cycle in (p/values host/store "cycle/")
+    (if_yes (&& (cycle/events .contains? event/id) (== cycle/note "Boundary fixture"))
+      (return cycle)))
+  (p/problem "Expected an accepted boundary fixture"))
+
+(describe "Life ordinary Gene execution boundary"
+  (it "rejects suspension and task creation inside grouped callbacks before publication" []
+    (let host (fixture))
+    (try
+      (for operation in ["($sleep 1)" "(spawn nil)" "(do (let waiting ($channel ^capacity 1)) (waiting .recv))"]
+        (let result (decide host $"(store .commit (fn [tx]
+          (state .put \"staged\" true ^tx tx) ${operation}))"))
+        (assert_equal result/status "failed" result/result)
+        ($assert ($str/contains? result/result "synchronous") result/result)
+        (assert_equal (p/get host/store "state/staged") nil))
+      ensure (runtime/close_life host)))
+
+  (it "enforces the synchronous boundary through a saved helper and aborts staged writes" []
+    (let host (fixture))
+    (try
+      (let result (decide host "(do
+        (let revision (code .save \"waiting helper\" (quote (fn [] ($sleep 1)))))
+        (let helper (code .load revision))
+        (store .commit (fn [tx] (state .put \"staged\" true ^tx tx) (helper))))"))
+      (assert_equal result/status "failed" result/result)
+      ($assert ($str/contains? result/result "synchronous") result/result)
+      (assert_equal (p/get host/store "state/staged") nil)
+      ensure (runtime/close_life host)))
+
+  (it "withholds direct I/O from generated callbacks and loaded helper expressions" []
+    (let host (fixture))
+    (let target ($fs/real_path host/store/home))
+    (let path $"${target}/unexpected.txt")
+    (let literal ($json/stringify path))
+    (try
+      (let direct (decide host $"(store .commit (fn [tx]
+        (state .put \"staged\" true ^tx tx) ($fs/write_text ${literal} \"must not appear\")))"))
+      (assert_equal direct/status "failed" direct/result)
+      ($assert (! ($fs/exists? path)))
+      (assert_equal (p/get host/store "state/staged") nil)
+      (let helper (decide host $"(do
+        (let revision (code .save \"I/O helper\" (quote (fn [] ($fs/write_text ${literal} \"must not appear\")))))
+        (let f (code .load revision))
+        (store .commit (fn [tx] (state .put \"staged\" true ^tx tx) (f))))"))
+      (assert_equal helper/status "failed" helper/result)
+      ($assert (! ($fs/exists? path)))
+      (assert_equal (p/get host/store "state/staged") nil)
+      ensure (runtime/close_life host)))
+
+  (it "repeatedly creates and disposes fresh execution scopes while retaining only explicit state" []
+    (let host (fixture))
+    (try
+      (var index 0)
+      (while (< index 24)
+        (let result (decide host "(do
+          (var local 0) (set local (+ local 1))
+          (state .put \"iterations\" (+ 1 (?? (state .get \"iterations\") 0))) local)"))
+        (assert_equal result/status "succeeded" result/result)
+        (assert_equal result/result "1")
+        ($assert ($absent? (host/active .get)))
+        (set index (+ index 1)))
+      (assert_equal (p/get host/store "state/iterations") 24)
+      ensure (runtime/close_life host)))
+
+  (it "serializes application calls from ordinary Gene root tasks without mixing replies" []
+    (let host (fixture))
+    (try
+      (let result (decide host "(scope
+        (let first (spawn ^lane root (state .put \"first\" 11)))
+        (let second (spawn ^lane root (state .put \"second\" 22)))
+        [(await first) (await second)])"))
+      (assert_equal result/status "succeeded" result/result)
+      (assert_equal result/result "[11 22]")
+      (assert_equal (p/get host/store "state/first") 11)
+      (assert_equal (p/get host/store "state/second") 22)
+      ensure (runtime/close_life host))))

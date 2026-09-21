@@ -1,0 +1,100 @@
+# Repeatable garden continuity and rest demonstration, entirely in Gene.
+(mod demo)
+(import * : p ^from "./persistence")
+(import * : runtime ^from "./runtime")
+(import * : body ^from "./body")
+(import * : brain ^from "./brain")
+(import * : code ^from "./code")
+(import * : organization ^from "./organization")
+
+(fn decide [host, text, note, source]
+  ((host/decisions .get) .push (brain/response note source))
+  (body/receive host text ^speaker "visitor-1" ^conversation "garden" ^thread "shade")
+  (runtime/settle host))
+(fn show [host, stage]
+  (let world (p/get host/store "world"))
+  (let meta (p/get host/store "meta"))
+  ($println ($json/stringify {^stage stage ^life_id meta/id ^position world/position
+    ^held world/held ^sim_ms world/sim_ms ^preference (p/get host/store "state/preference")
+    ^rest (p/get host/store "model/rest")})))
+
+(fn main [args]
+  (let name (p/id "demo"))
+  (let home (?? args/0 $"examples/life/tmp/${name}"))
+  (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
+    ^decisions [(brain/response "I will inspect my surroundings before choosing an activity." "(body/world .observe)")]))
+  (runtime/settle host)
+  (decide host "I prefer a shaded garden."
+    "I will retain the visitor's preference, take the watering can, and begin walking toward the garden."
+    "(do
+      (state .put \"preference\" \"shade\")
+      (state .put \"destination\" context/focus/reply_to)
+      (memory .remember {^preference \"shade\" ^speaker \"visitor-1\" ^source context/focus/event_id})
+      (body/world .take \"watering-can\")
+      (let owner (life .owner \"visitor-garden\"))
+      (store .commit (fn [tx]
+        (let job (body/world .start_walk \"garden\" ^owner owner ^tx tx))
+        (state .put \"activity\" job/id ^tx tx)
+        (state .put \"commitment\" {^owner owner ^status \"unfinished\"} ^tx tx)
+        (scheduler .wake_after 600000 \"Revisit the shaded garden request\" ^owner owner ^tx tx))) nil)")
+  (body/tick host 3000)
+  (show host "partway through walk")
+  (let saved_world (p/get host/store "world"))
+  (let saved_job (p/get host/store "state/activity"))
+  (runtime/close_life host)
+
+  (let walking (runtime/open_life home ^clock (fn [] 1000)))
+  ($assert (== (walking/calls .get) 0))
+  ($assert (== (p/get walking/store "world") saved_world))
+  ($assert (== (p/get walking/store "state/activity") saved_job))
+  (show walking "restored before inference")
+  (body/tick walking 7000)
+  (decide walking "How is the garden?"
+    "I have reached the garden. I will water the plant only if the current world allows it, then report the outcome."
+    "(do (body/world .water \"plant-a\" ^expected 1)
+      (body/chat .send (state .get \"destination\") \"The garden plant is now watered.\") nil)")
+  (let watered (p/get walking/store "world"))
+  ($assert (== watered/objects/plant-a/status "wet"))
+  (decide walking "I withdraw the request to change the garden."
+    "I will abandon that commitment and cancel the work owned by it."
+    "(do (life .cancel_owner \"visitor-garden\")
+      (state .put \"commitment\" {^status \"abandoned\" ^reason \"Visitor withdrew the request\"}) nil)")
+  (show walking "garden observed, request revised")
+
+  (let tx (p/begin walking/store "rest-experiment"))
+  (let source ($fs/read_text "examples/life/body/rest.gene"))
+  (let revision (code/module_bundle tx "rest experiment" {^main.gene source} "main.gene"))
+  (organization/request tx {^id "rest@1" ^module revision ^code [revision]
+    ^roots ["model/" "state/" "memory/"] ^attention true
+    ^documentation "Optional Gene rest controller with simulation-time recovery"}
+    "nil" "invalidate" false)
+  (p/commit tx)
+  (runtime/settle walking)
+  (let literal ($json/stringify revision))
+  (decide walking "Take a break."
+    "I will try the selected rest controller and reconsider when its threshold is reached."
+    $"(rest .sleep ${literal})")
+  (body/tick walking 540000)
+  (runtime/settle walking)
+  (let checkpoint (p/get walking/store "model/rest"))
+  ($assert (== checkpoint/energy 42.0))
+  (show walking "sleep checkpoint")
+  (runtime/close_life walking)
+
+  (let resting (runtime/open_life home ^clock (fn [] 3601000)))
+  (try
+    ($assert (== (p/get resting/store "model/rest") checkpoint))
+    (body/receive resting "A message retained while you sleep." ^speaker "visitor-2")
+    (runtime/settle resting)
+    ($assert (== (resting/calls .get) 0))
+    (show resting "sleep restored without inference or offline growth")
+    (body/tick resting 840000)
+    (runtime/settle resting)
+    (let awake (p/get resting/store "model/rest"))
+    ($assert (== awake/energy 70.0))
+    ($assert (== awake/mode "awake"))
+    ($assert (== (resting/calls .get) 1))
+    (show resting "awake after one cognitive wake")
+    ($println $"Inspect the retained experiment with: bin/gene run examples/life/main.gene inspect ${home}")
+    ensure (runtime/close_life resting))
+  nil)

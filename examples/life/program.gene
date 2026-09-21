@@ -1,0 +1,36 @@
+# The supported generated-program boundary is an ordinary sandbox-loaded Gene
+# function. Namespace exposure and execution limits are the VM's own facilities.
+(mod program)
+(import $parse [read_all])
+
+(fn load_module [saved]
+  (let transaction ($runtime/sandbox_transaction))
+  (let generation (transaction .prepare {^dir saved/directory ^entry saved/entry
+    ^grants [] ^shared [] ^label saved/revision
+    ^policy {^max_steps 1000000 ^max_memory_mb 64 ^timeout_ms 2000}}))
+  (let module (generation .module))
+  (transaction .commit)
+  module)
+
+(fn compile_program [root, source, exposed]
+  (let forms (read_all source))
+  (let form (forms .next))
+  (if_yes (forms .has_next) (panic "Expected one complete Gene program"))
+  (var declarations "")
+  (for pair in exposed
+    (let name ($to_str pair/0))
+    (let names (read_all name))
+    (let symbol (names .next))
+    (if (|| (!= ($head symbol) Sym) (names .has_next) (!= ($to_str symbol) name))
+      (panic "Execution binding names must be single Gene symbols"))
+    (let literal ($json/stringify name))
+    (set declarations $"${declarations}\n(let ${name} (__life_bindings .get ${literal}))"))
+  (let text $"(mod generated)\n(fn evaluate [__life_bindings]\n${declarations}\n${source}\n)")
+  (let revision ($crypto/sha256 text))
+  (let entry $"program-${revision}.gene")
+  ($fs/write_text_atomic $"${root}/${entry}" text)
+  (load_module {^directory root ^entry entry ^revision revision}))
+
+(fn evaluate [root, source, exposed]
+  (let module (compile_program root source exposed))
+  (module/evaluate exposed))

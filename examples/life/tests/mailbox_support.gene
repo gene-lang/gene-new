@@ -1,0 +1,63 @@
+(mod mailbox_support)
+(import $net/http_client [request])
+
+(type MailboxError ^props {^message Str} ^impl [Error])
+(impl Error for MailboxError)
+(fn problem [message] (fail (MailboxError ^message message)))
+
+# Supply a previous fixture/home only after its task has stopped/joined.
+# State is retained for inspection/restart; only the stale readiness marker is removed.
+(fn start [home = nil]
+  (let root ($fs/real_path "."))
+  (let directory (?? home $"examples/life/tmp/mailbox-${($crypto/random_hex 12)}"))
+  ($fs/make_dir directory)
+  (let ready $"${directory}/ready.data")
+  (if ($fs/exists? ready) ($fs/remove ready))
+  (let task ($os/exec_async ^cmd ($os/executable_path)
+    ^args ["run" "examples/life/tests/mailbox_fixture.gene" directory] ^dir root
+    ^timeout_ms 120000 ^max_bytes 16384))
+  (var started false)
+  (try
+    (let deadline (+ ($os/monotonic_ms) 5000))
+    (while (&& (! ($fs/exists? ready)) (< ($os/monotonic_ms) deadline)) ($sleep 10))
+    (if_not ($fs/exists? ready)
+      (task .cancel)
+      (let outcome (task .join))
+      (problem $"Mailbox did not become ready within 5 seconds: ${outcome}"))
+    (let endpoint ($fs/read_text ready))
+    (if_not ($str/starts_with? endpoint "http://127.0.0.1:")
+      (problem "Invalid mailbox readiness endpoint"))
+    (set started true)
+    {^home directory ^endpoint endpoint ^task task}
+  ensure
+    (if_not started
+      (task .cancel)
+      (task .join))))
+
+# A Str is an exact raw JSON body (needed to test raw-byte digest conflicts).
+# Other data is JSON encoded. Non-200 tests must explicitly name the expected status.
+(fn call [fixture path data, ^status status = 200, ^timeout_ms timeout_ms = 7000]
+  (if (|| (< timeout_ms 1) (> timeout_ms 10000)) (problem "Invalid mailbox HTTP timeout"))
+  (let raw (if (== ($head data) Str) data ($json/stringify data)))
+  (let result (await (request ^method "POST" ^url $"${fixture/endpoint}${path}"
+    ^headers {^content-type "application/json"} ^body raw
+    ^timeout_ms timeout_ms ^max_bytes 1048576)))
+  (if result/truncated (problem "Mailbox response exceeded the byte bound"))
+  (if (!= result/status status)
+    (problem $"Mailbox ${path}: expected HTTP ${status}, got ${result/status}"))
+  ($json/parse result/body))
+
+(fn stop [fixture]
+  (var replied false)
+  (var outcome nil)
+  (try
+    (call fixture "/stop" {})
+    (set replied true)
+  ensure
+    (if_not replied (fixture/task .cancel))
+    (set outcome (fixture/task .join)))
+  (match outcome
+    (when (TaskOutcome/ok result)
+      (if (!= result/status 0) (problem $"Mailbox exited with status ${result/status}"))
+      result)
+    (else (problem "Mailbox did not exit cleanly"))))

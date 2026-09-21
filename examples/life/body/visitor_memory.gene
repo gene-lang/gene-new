@@ -1,0 +1,33 @@
+# Example of a different cognitive organization. The host knows none of these
+# record layouts. Loaded as a saved module bundle, with ordinary nominal types.
+(mod visitor_memory)
+
+(type VisitorMemory
+  ^props {^store Any}
+  (message recall [query = "", ^limit limit = 10]
+    (let visitor (self/store .get "mind/visitor"))
+    (if (&& (> limit 0) (! ($absent? visitor))) [visitor] []))
+  (message remember [entry, ^tx tx = nil]
+    (let episodes (?? (self/store .get "mind/episodes" ^tx tx) []))
+    (episodes .push entry)
+    (self/store .put "mind/episodes" episodes ^tx tx)))
+
+(type WorkingDocument
+  ^props {^store Any}
+  (message get [key, ^tx tx = nil]
+    (let document (?? (self/store .get "mind/working" ^tx tx) {}))
+    (?? (document .get key) nil))
+  (message put [key, value, ^tx tx = nil]
+    (let document (?? (self/store .get "mind/working" ^tx tx) {}))
+    (document .put key value)
+    (self/store .put "mind/working" document ^tx tx)
+    value))
+
+(fn bind [api]
+  {^memory (VisitorMemory ^store api/store) ^state (WorkingDocument ^store api/store)})
+
+(fn context [api, basis]
+  {^observations basis/observations ^focus basis/focus
+   ^visitor (api/store .get "mind/visitor") ^working (api/store .get "mind/working")
+   ^recent_decisions basis/recent_decisions ^policy_revisions basis/policy_revisions
+   ^api_documentation "memory.recall reads the retained visitor document; state reads and updates the shared working document. Operational APIs remain available."})

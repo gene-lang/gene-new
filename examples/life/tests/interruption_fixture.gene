@@ -1,0 +1,49 @@
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+(import * : code ^from "../code")
+(import * : routines ^from "../routines")
+(fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
+(fn main [args]
+  (let home args/0)
+  (let kind args/1)
+  (let armed ($cell false))
+  (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
+    ^decisions [(brain/response "Quiet" "nil")]
+    ^fault (fn [phase]
+      (if_yes (&& (armed .get) (== kind "queued-job") (== phase "after_commit")) (die)))))
+  (runtime/settle host)
+  (if_yes (== kind "queued-job")
+    ((host/decisions .get) .push (brain/response "Prepare an arbitrary job"
+      "(store .commit (fn [tx]
+        (let job (life .start_job (quote
+          (state .put \"runs\" (+ 1 (?? (state .get \"runs\") 0)))) ^tx tx))
+        (state .put \"job-link\" job/id ^tx tx)))"))
+    (body/receive host "Queue a job")
+    (armed .set true)
+    (runtime/settle host)
+    (p/problem "Expected publication fault"))
+  (let source "(do (state .put \"progress\" 1) ($sleep 60000) (state .put \"progress\" 2))")
+  (let tx (p/begin host/store "interruption-fixture"))
+  (if_yes (== kind "job")
+    (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "start_job" {^source source}))
+  (if_yes (["schedule" "queued-schedule"] .contains? kind)
+    (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "after"
+      {^delay 0 ^source (if (== kind "queued-schedule") "(state .put \"runs\" (+ 1 (?? (state .get \"runs\") 0)))" source)
+       ^missed {^run_within_ms 60000 ^otherwise "expire"}}))
+  (if_yes (== kind "routine")
+    (let revision (code/expression tx "interruptible routine"
+      "(fn [api input] (api/state .put \"progress\" 1) ($sleep 60000) (api/state .put \"progress\" 2))"))
+    (routines/register host tx {^id "fixture" ^organization "starter@1"}
+      {^id "arbitrary" ^revision revision ^every_ms 1000}))
+  (p/commit tx)
+  (if_yes (== kind "queued-schedule") (body/due host) (die))
+  (body/tick host 1000)
+  (let deadline (+ ($os/monotonic_ms) 5000))
+  (while (!= (p/get host/store "state/progress") 1)
+    (runtime/heartbeat host)
+    ($sleep 5)
+    (if (> ($os/monotonic_ms) deadline) (p/problem "Partial effect was not observed")))
+  (die)
+  nil)

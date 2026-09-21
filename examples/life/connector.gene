@@ -1,0 +1,238 @@
+(mod connector)
+(import * : p ^from "./persistence")
+(import * : code ^from "./code")
+(import * : chat ^from "./chat")
+(import * : events ^from "./events")
+(import * : mailbox ^from "./mailbox")
+
+# Retain the actual wire adapter source, and refuse silent revision substitution.
+# Like the host's default worker path, this package is launched from the repo root.
+(let adapter_files {^mailbox.gene ($fs/read_text "examples/life/mailbox.gene")})
+(let adapter_bundle {^entry "mailbox.gene" ^files adapter_files})
+(let adapter_revision ($crypto/sha256 ($serde/write_data adapter_bundle)))
+(fn require [condition, message] (if_not condition (p/problem message)))
+(fn fault [host, phase] (if_not ($absent? host/fault) (host/fault phase)))
+(fn endpoint_check [endpoint]
+  (chat/require_text endpoint "mailbox endpoint" 2048)
+  # No URL credentials, query tokens, fragments, whitespace or redirect following.
+  (for forbidden in ["@" "?" "#" " " "\n" "\r" "\t" "\\" "%"]
+    (require (! ($str/contains? endpoint forbidden)) "Mailbox endpoint must not contain credentials or escapes"))
+  (require (! ($str/ends_with? endpoint "/")) "Mailbox endpoint must not end with a slash")
+  (require (|| ($str/starts_with? endpoint "http://127.0.0.1:")
+               ($str/starts_with? endpoint "https://")) "Use loopback HTTP or HTTPS for mailboxes"))
+
+(fn register [host, id, endpoint, peer_id, ^poll_ms poll_ms = 1000, ^retry_ms retry_ms = 1000]
+  (chat/require_text id "connector ID" 128)
+  (chat/require_text peer_id "peer ID" 128)
+  (endpoint_check endpoint)
+  (for interval in [poll_ms retry_ms]
+    (require (&& (== ($head interval) Int) (>= interval 10) (<= interval 3600000)) "Invalid connector interval"))
+  (let tx (p/begin host/store "connector-register"))
+  (let previous (p/tx_get tx $"connector/${id}"))
+  (if_not ($absent? previous)
+    (require (&& (== previous/endpoint endpoint) (== previous/peer_id peer_id)
+                 (== previous/adapter_revision adapter_revision)) "Connector identity cannot be silently replaced")
+    (p/abort tx)
+    (return previous))
+  (require (< ((p/tx_keys tx "connector/") .size) 16) "Connector limit reached")
+  (let revision (code/module_bundle tx "http-mailbox@1" adapter_files "mailbox.gene"))
+  (let record {^id id ^peer_id peer_id ^cursor 0 ^status "active" ^endpoint endpoint
+    ^adapter_revision revision ^poll_ms poll_ms ^retry_ms retry_ms ^last_error nil})
+  (p/tx_put tx $"connector/${id}" record)
+  (p/commit tx)
+  record)
+
+(fn compatible [tx, registration]
+  (code/tx_read tx registration/adapter_revision)
+  (require (== registration/adapter_revision adapter_revision) "Unsupported retained mailbox adapter revision")
+  (endpoint_check registration/endpoint))
+
+(fn restore [host, tx]
+  (for key in (p/tx_keys tx "connector/")
+    (let registration (p/tx_get tx key))
+    (compatible tx registration)
+    (require (&& (== ($head registration/cursor) Int) (>= registration/cursor 0)
+                 (["active" "error"] .contains? registration/status)) "Invalid retained connector"))
+  (let uncertain [])
+  (for key in (p/tx_keys tx "delivery/")
+    (let delivery (p/tx_get tx key))
+    (if_not (== delivery/destination/adapter "http") (continue))
+    (let registration (p/tx_get tx $"connector/${delivery/destination/connector}"))
+    (require (&& (! ($absent? registration)) (== delivery/peer_id registration/peer_id)
+      (== delivery/endpoint registration/endpoint) (== delivery/adapter_revision registration/adapter_revision)
+      (== ($crypto/sha256 delivery/payload) delivery/digest)) "Invalid retained delivery contract")
+    (if_yes (["attempting" "reconciling" "needs_reconciliation"] .contains? delivery/status)
+      (delivery .put "status" "needs_reconciliation")
+      (delivery .put "needs_reconciliation" true)
+      (p/tx_put tx key delivery)
+      (uncertain .push delivery/id)))
+  uncertain)
+
+(fn accept_poll [host, request, value]
+  (let tx (p/begin host/store "connector-receipt"))
+  (let registration (p/tx_get tx $"connector/${request/connector}"))
+  (require (== registration/cursor request/cursor) "Connector cursor changed during poll")
+  (require (&& (== value/peer_id registration/peer_id) (== ($head value/messages) List)
+    (<= value/messages/.size 32) (== ($head value/cursor) Int)) "Invalid mailbox poll response")
+  (var cursor registration/cursor)
+  (if_not ($absent? value/gap)
+    (require (&& (== value/gap/from cursor) (== ($head value/gap/to) Int)
+                 (> value/gap/to cursor)) "Invalid mailbox history gap")
+    (let id $"gap:${registration/id}:${cursor}:${value/gap/to}")
+    (let gap {^id id ^connector registration/id ^peer_id registration/peer_id
+      ^from cursor ^to value/gap/to ^reason "Remote history unavailable" ^adapter_revision registration/adapter_revision})
+    (p/tx_put tx $"history_gap/${id}" gap)
+    (events/event host tx "history_gap" gap ^event_id id ^visibility [registration/id])
+    (set cursor value/gap/to))
+  (for message in value/messages
+    (chat/require_text message/id "external message ID" 256)
+    (require (&& (== ($head message/cursor) Int) (== message/cursor (+ cursor 1))) "Mailbox cursor skipped a message")
+    (let destination {^adapter "http" ^connector registration/id
+      ^conversation message/conversation ^thread message/thread})
+    (chat/accept host tx message/text message/speaker destination message/id message/cursor)
+    (set cursor message/cursor))
+  (require (== value/cursor cursor) "Mailbox cursor advanced beyond accepted messages")
+  (if_yes (|| (!= cursor registration/cursor) (!= registration/status "active"))
+    (registration .put "cursor" cursor)
+    (registration .put "status" "active")
+    (registration .put "last_error" nil)
+    (p/tx_put tx $"connector/${registration/id}" registration))
+  (if (== tx/writes {})
+    (then (p/abort tx))
+    (else (fault host "connector_before_commit") (p/commit tx) (fault host "connector_after_commit"))))
+
+(fn uncertain [host, delivery, reason]
+  (if (&& (== delivery/status "needs_reconciliation") (== delivery/last_error reason)) (return nil))
+  (delivery .put "status" "needs_reconciliation")
+  (delivery .put "needs_reconciliation" true)
+  (delivery .put "last_error" reason)
+  (p/put host/store $"delivery/${delivery/id}" delivery "delivery-uncertain"))
+(fn valid_owner [tx, delivery]
+  (&& (!= delivery/cancellation_requested true)
+    (|| ($absent? delivery/owner) (== (p/tx_get tx $"owner/${delivery/owner/id}") delivery/owner))))
+
+(fn accept_delivery [host, request, value]
+  (let tx (p/begin host/store "delivery-receipt"))
+  (let delivery (p/tx_get tx $"delivery/${request/id}"))
+  (require (&& (== value/peer_id delivery/peer_id) (== value/operation_id delivery/id)
+               (== value/digest delivery/digest)) "Receipt identity mismatch")
+  (if_yes (== value/status "delivered")
+    (chat/require_text value/receipt "delivery receipt" 256)
+    (fault host "delivery_after_receipt")
+    # Copy only protocol fields, never headers or arbitrary server diagnostics.
+    (chat/delivered tx delivery {^operation_id delivery/id ^peer_id delivery/peer_id
+      ^digest delivery/digest ^receipt value/receipt})
+    (events/event host tx "delivery_outcome" {^id delivery/id ^status "delivered"}
+      ^event_id $"delivered:${delivery/id}" ^cause delivery/cause ^visibility delivery/visibility)
+    (p/commit tx)
+    (return nil))
+  (if_yes (&& (== request/kind "receipt") (== value/status "not_found"))
+    # The remote guarantees absence. An idempotent retry uses identical bytes/ID.
+    (delivery .put "status" (if (valid_owner tx delivery) "pending" "cancelled"))
+    (delivery .put "needs_reconciliation" false)
+    (delivery .put "last_error" nil)
+    (p/tx_put tx $"delivery/${delivery/id}" delivery)
+    (p/commit tx)
+    (return nil))
+  (p/abort tx)
+  (uncertain host delivery "Remote could not confirm delivery"))
+
+(fn failed [host, request]
+  (if (== request/kind "poll")
+    (then
+      (let registration (p/get host/store $"connector/${request/connector}"))
+      (if_not (== registration/status "error")
+        (registration .put "status" "error")
+        (registration .put "last_error" "Mailbox poll failed; cursor retained")
+        (p/put host/store $"connector/${registration/id}" registration "connector-error")))
+    (else (uncertain host (p/get host/store $"delivery/${request/id}") "Delivery not confirmed; query receipt before retry"))))
+
+(fn start_request [host, key, registration, kind, payload, ^id id = nil]
+  (let request (mailbox/launch registration/endpoint $"/${kind}" payload))
+  (request .put "kind" kind)
+  (request .put "connector" registration/id)
+  (request .put "cursor" registration/cursor)
+  (request .put "id" id)
+  (let network (host/network .get))
+  (network/requests .put key request))
+
+(fn tick [host]
+  (p/require_writable host/store)
+  (if (host/stopped .get) (return nil))
+  (let network (host/network .get))
+  (let completed [])
+  (for pair in network/requests
+    (if_not ($absent? (pair/1/done .get)) (completed .push ($to_str pair/0))))
+  (for key in completed
+    (let request (network/requests .get key))
+    (network/requests .delete key)
+    (request/monitor .join)
+    (let result (request/done .get))
+    (var ok result/ok)
+    (if_yes ok
+      (try
+        (if (== request/kind "poll") (accept_poll host request result/value) (accept_delivery host request result/value))
+        catch Any
+          (if_not ($absent? (host/store/fault .get)) (fail $err))
+          (set ok false)))
+    (if_not ok (failed host request))
+    (let registration (p/get host/store $"connector/${request/connector}"))
+    (network/next .put key (+ ($os/monotonic_ms)
+      (if (== request/kind "poll") registration/poll_ms registration/retry_ms))))
+  (let now ($os/monotonic_ms))
+  (for registration in (p/values host/store "connector/")
+    (let poll_key $"poll:${registration/id}")
+    (if_yes (&& ($absent? (network/requests .get poll_key)) (>= now (?? (network/next .get poll_key) 0)))
+      (try (start_request host poll_key registration "poll"
+        ($json/stringify {^peer_id registration/peer_id ^cursor registration/cursor ^limit 32}))
+        catch Any
+          (failed host {^kind "poll" ^connector registration/id})
+          (network/next .put poll_key (+ now registration/retry_ms))))
+    # One outgoing operation per connector at a time; incoming polling stays independent.
+    (let send_key $"delivery:${registration/id}")
+    (if_yes (|| (! ($absent? (network/requests .get send_key))) (< now (?? (network/next .get send_key) 0))) (continue))
+    (let meta (p/get host/store "meta"))
+    (var candidate nil)
+    (var oldest nil)
+    (for delivery in (p/values host/store "delivery/")
+      (if_not (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id)
+        (["pending" "needs_reconciliation"] .contains? delivery/status)) (continue))
+      (if_yes (&& (== delivery/status "pending") (!= meta/mode "running")) (continue))
+      (let dispatched (?? (network/next .get $"attempt:${delivery/id}") 0))
+      (if_yes (|| ($absent? oldest) (< dispatched oldest))
+        (set oldest dispatched)
+        (set candidate delivery)))
+    (if ($absent? candidate) (continue))
+    (for delivery in [candidate]
+      (let reconciling (== delivery/status "needs_reconciliation"))
+      (let tx (p/begin host/store "delivery-attempt"))
+      (if_yes (&& (! reconciling) (! (valid_owner tx delivery)))
+        (delivery .put "status" "cancelled")
+        (p/tx_put tx $"delivery/${delivery/id}" delivery)
+        (p/commit tx)
+        (continue))
+      (compatible tx registration)
+      (if reconciling
+        (then (p/abort tx))
+        (else
+          (delivery .put "status" "attempting")
+          (delivery .put "needs_reconciliation" true)
+          (delivery .put "attempts" (+ delivery/attempts 1))
+          (p/tx_put tx $"delivery/${delivery/id}" delivery)
+          (p/commit tx)))
+      (network/next .put $"attempt:${delivery/id}" now)
+      (if_not reconciling (fault host "delivery_before_send"))
+      (try
+        (start_request host send_key registration (if reconciling "receipt" "send")
+          (if reconciling ($json/stringify {^peer_id delivery/peer_id ^operation_id delivery/id ^digest delivery/digest})
+            delivery/payload) ^id delivery/id)
+        catch Any
+          (uncertain host delivery "Request could not be started; reconciliation required")
+          (network/next .put send_key (+ now registration/retry_ms)))
+      (if_not reconciling (fault host "delivery_after_send"))
+      (break))))
+
+(fn stop [host]
+  (let network (host/network .get))
+  (for pair in network/requests (mailbox/stop pair/1))
+  (host/network .set {^requests {} ^next {}}))

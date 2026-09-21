@@ -1,0 +1,39 @@
+(mod brain)
+(import * : p ^from "./persistence")
+
+(fn response [note, program] {^note note ^program program})
+(fn decode [value]
+  (if (== ($head value) Str)
+    (then
+      (if (> ($str/byte_size value) 131072) (p/problem "Brain response exceeds limit"))
+      (let parts ($str/split ($str/trim value) "```"))
+      (if_not (== parts/.size 5) (p/problem "Expected one text fence followed by one gene fence"))
+      (if (|| (!= ($str/trim parts/0) "") (!= ($str/trim parts/2) "") (!= ($str/trim parts/4) ""))
+        (p/problem "Only whitespace may surround response fences"))
+      (if_not (&& ($str/starts_with? parts/1 "text\n") ($str/starts_with? parts/3 "gene\n"))
+        (p/problem "Expected text then gene fences"))
+      (return (decode (response ($str/trim ($str/slice_bytes parts/1 5 ($str/byte_size parts/1)))
+                               ($str/trim ($str/slice_bytes parts/3 5 ($str/byte_size parts/3))))))))
+  (if (|| ($absent? value/note) ($absent? value/program)) (p/problem "Missing note or program"))
+  (if (|| (== ($str/trim value/note) "") (== ($str/trim value/program) ""))
+    (p/problem "Complete note and program are required"))
+  value)
+
+(fn fake [decisions, context]
+  (let items (decisions .get))
+  (if (> items/.size 0)
+    (then
+      (let first items/0)
+      (let remaining [])
+      (var index 1)
+      (while (< index items/.size)
+        (remaining .push items/%index)
+        (set index (+ index 1)))
+      (decisions .set remaining)
+      (return first)))
+  (for observation in context/observations
+    (if_yes (== observation/kind "first_start")
+      (return (response "I am curious about the garden. I will inspect it and revisit later."
+        "(do (memory .remember {^kind \"first_observation\" ^world (body/world .observe)})
+          (scheduler .wake_after 60000 \"Revisit the garden\") nil)"))))
+  (response "I have considered the observations and will remain quiet for now." "nil"))

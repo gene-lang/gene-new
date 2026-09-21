@@ -1,0 +1,49 @@
+# Launched by process_spec.gene in a separate Gene process.
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+(import * : p ^from "../persistence")
+(import * : code ^from "../code")
+(import * : organization ^from "../organization")
+
+(fn die []
+  ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
+(fn main [args]
+  (let home args/0)
+  (let phase args/1)
+  (if_yes (["migration_staged" "selection_before_commit" "selection_after_commit"] .contains? phase)
+    (let selected_host (runtime/open_life home ^create true ^clock (fn [] 1000)
+      ^decisions [(brain/response "Initial quiet" "nil")]
+      ^fault (fn [at] (if_yes (== at phase) (die)))))
+    (runtime/settle selected_host)
+    (p/put selected_host/store "state/preference" "shade")
+    (body/receive selected_host "Retain the conversation across migration")
+    (let tx (p/begin selected_host/store "selection-fixture"))
+    (let source ($fs/read_text "examples/life/body/visitor_memory.gene"))
+    (let revision (code/module_bundle tx "visitor memory" {^main.gene source} "main.gene"))
+    (organization/request tx {^id "visitors@2" ^module revision ^code [revision] ^roots ["mind/"]
+      ^context true ^documentation "Visitor document with retained provenance"}
+      "(do
+        (let preference (store .get \"state/preference\" ^tx input/tx))
+        (store .put \"mind/visitor\" {^preference preference ^source \"visitor-event\"} ^tx input/tx)
+        (store .put \"mind/working\" {^status \"unfinished\"} ^tx input/tx))"
+      "invalidate" false)
+    (p/commit tx)
+    (runtime/settle selected_host)
+    (p/problem "Expected injected process exit"))
+  (let source (if (== phase "walking")
+    "(do (memory .remember {^preference \"shade\" ^source \"visitor\"})
+      (state .put \"preference\" \"shade\") (body/world .take \"watering-can\")
+      (body/world .start_walk \"garden\")
+      (scheduler .wake_after 60000 \"Later\"))"
+    "(store .commit (fn [tx]
+      (let job (body/world .start_walk \"garden\" ^tx tx))
+      (state .put \"activity\" job/id ^tx tx)))"))
+  (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
+    ^decisions [(brain/response "Crash fixture" source)]
+    ^fault (fn [at] (if_yes (== at phase) (die)))))
+  (runtime/settle host)
+  (body/tick host 4000)
+  (body/receive host "pending" ^speaker "visitor" ^external_id "e1" ^cursor "cursor-1")
+  (die)
+  nil)

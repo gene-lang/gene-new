@@ -1,0 +1,12 @@
+(mod events)
+(import * : p ^from "./persistence")
+(fn event [host, tx, kind, data, ^event_id event_id = nil, ^cause cause = nil,
+           ^reply_to reply_to = nil, ^visibility visibility = []]
+  (let key_id (?? event_id (p/id "event")))
+  (let key $"event/${key_id}")
+  (let previous (p/tx_get tx key))
+  (if_not ($absent? previous) (return previous))
+  (let value {^id key_id ^kind kind ^data (p/copy data) ^cause cause ^at (host/clock)
+    ^considered_by nil ^attempts 0 ^reply_to reply_to ^visibility visibility})
+  (p/tx_put tx key value)
+  value)

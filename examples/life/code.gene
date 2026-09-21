@@ -1,0 +1,57 @@
+(mod code)
+(import * : p ^from "./persistence")
+
+(fn expression [tx, name, source]
+  (let revision ($crypto/sha256 source))
+  (let key $"code/${revision}")
+  (if ($absent? (p/tx_get tx key))
+    (p/tx_put tx key {^revision revision ^kind "expression" ^name name ^source source ^cause tx/cause}))
+  revision)
+
+(fn safe_path? [path]
+  (if (|| (== path "") ($str/starts_with? path "/") ($str/contains? path "\\")) (return false))
+  (for part in ($str/split path "/")
+    (if (["" "." ".."] .contains? part) (return false)))
+  ($str/ends_with? path ".gene"))
+
+(fn module_bundle [tx, name, files, entry]
+  (if_not (== ($head files) Map) (p/problem "Module files must be a map of relative paths to source"))
+  (if (|| (! (safe_path? entry)) ($absent? (files .get entry))) (p/problem "Missing module entry"))
+  (var bytes 0)
+  (for pair in files
+    (if_not (&& (safe_path? ($to_str pair/0)) (== ($head pair/1) Str))
+      (p/problem "Module files must use relative .gene paths and source strings"))
+    (set bytes (+ bytes ($str/byte_size pair/1))))
+  (if (> bytes 262144) (p/problem "Module bundle exceeds local size limit"))
+  (let payload {^entry entry ^files files})
+  (let revision ($crypto/sha256 ($serde/write_data payload)))
+  (let key $"code/${revision}")
+  (if ($absent? (p/tx_get tx key))
+    (p/tx_put tx key {^revision revision ^kind "module" ^name name ^bundle payload ^cause tx/cause}))
+  revision)
+
+(fn check [saved, revision]
+  (if ($absent? saved) (p/problem $"Missing code revision: ${revision}"))
+  (let content (if (== saved/kind "module") ($serde/write_data saved/bundle) saved/source))
+  (if_not (== ($crypto/sha256 content) revision) (p/problem $"Corrupt code revision: ${revision}"))
+  saved)
+(fn read [store, revision] (check (p/get store $"code/${revision}") revision))
+(fn tx_read [tx, revision] (check (p/tx_get tx $"code/${revision}") revision))
+
+(fn materialize [saved, root]
+  (check saved saved/revision)
+  (if_not (== saved/kind "module") (return saved))
+  (let directory $"${root}/modules/${saved/revision}")
+  ($fs/make_dir directory)
+  (for pair in saved/bundle/files
+    (let relative ($to_str pair/0))
+    (if_not (safe_path? relative) (p/problem "Invalid retained module path"))
+    (let parts ($str/split relative "/"))
+    (var parent directory)
+    (var index 0)
+    (while (< index (- parts/.size 1))
+      (set parent $"${parent}/${parts/%index}")
+      ($fs/make_dir parent)
+      (set index (+ index 1)))
+    ($fs/write_text_atomic $"${directory}/${relative}" pair/1))
+  {^revision saved/revision ^kind "module" ^directory directory ^entry saved/bundle/entry})

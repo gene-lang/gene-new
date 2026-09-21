@@ -1,0 +1,177 @@
+# Separate-process, loopback-only mailbox. All routes use POST JSON; no credentials.
+(import $json [parse stringify])
+(import $net/http [listen serve stop Response HttpError])
+
+(type MailboxRequestError ^props {^message Str} ^impl [Error])
+(impl Error for MailboxRequestError)
+(fn invalid [message] (fail (MailboxRequestError ^message message)))
+(fn copy [value] ($serde/read_data ($serde/write_data value)))
+(fn response [status data]
+  (Response ^status status ^headers {^content-type "application/json"} ^body (stringify data)))
+(fn require_text [value]
+  (if (!= ($head value) Str) (invalid "Expected a string")))
+(fn require_int [value maximum]
+  (if (|| (!= ($head value) Int) (< value 0) (> value maximum))
+    (invalid "Expected a bounded nonnegative integer")))
+(fn save [fixture state]
+  # No suspension between snapshot, durable replacement, and publication.
+  ($fs/write_text_atomic $"${fixture/home}/state.data" ($serde/write_data state))
+  (fixture/state .set state))
+(fn bump [fixture key]
+  (let state (copy (fixture/state .get)))
+  (state .put key (+ (state .get key) 1))
+  (save fixture state))
+(fn delay [fixture route]
+  (let state (fixture/state .get))
+  (let ms (state/delay_ms .get route))
+  (if (> ms 0) ($sleep ms)))
+
+(fn poll_mail [fixture data]
+  (require_text data/peer_id)
+  (require_int data/cursor 9007199254740991)
+  (let limit (?? data/limit 32))
+  (require_int limit 32)
+  (if (== limit 0) (invalid "Poll limit must be positive"))
+  (bump fixture "polls")
+  (delay fixture "poll")
+  (let state (fixture/state .get))
+  (let gap (if (< data/cursor state/floor)
+    {^from data/cursor ^to state/floor ^reason "retention"} nil))
+  (var cursor ($math/max data/cursor state/floor))
+  (let messages [])
+  (for message in state/messages
+    (if_yes (&& (> message/cursor cursor) (< messages/.size limit))
+      (messages .push message)
+      (set cursor message/cursor)))
+  (response 200 {^peer_id data/peer_id ^cursor cursor ^messages messages ^gap gap}))
+
+(fn delivery_response [state receipt]
+  (if state/drop_send_response
+    (response 503 {^error "send_response_dropped"})
+    (response 200 receipt)))
+
+(fn send_mail [fixture data raw]
+  # Count HTTP attempts, including conflicts and attempts whose response is lost.
+  (bump fixture "sends")
+  (for key in ["operation_id" "life_id" "peer_id" "conversation" "thread" "text"]
+    (require_text (data .get key)))
+  (let digest ($crypto/sha256 raw))
+  (delay fixture "send")
+  (let state (copy (fixture/state .get)))
+  (let previous (state/deliveries .get data/operation_id))
+  (if_yes (! ($absent? previous))
+    (if (!= previous/digest digest)
+      (return (response 409 {^error "operation_conflict"})))
+    (return (delivery_response state previous)))
+  (let receipt {^peer_id data/peer_id ^operation_id data/operation_id ^digest digest
+    ^status "delivered" ^receipt $"receipt:${data/operation_id}"})
+  (state/deliveries .put data/operation_id receipt)
+  (state/sent .push data)
+  (state .put "effects" (+ state/effects 1))
+  (save fixture state)
+  # Simulated lost response: the effect and receipt are durable before the 503.
+  (delivery_response state receipt))
+
+(fn receipt_for [fixture data]
+  (for key in ["peer_id" "operation_id" "digest"] (require_text (data .get key)))
+  (bump fixture "receipts")
+  (let state (fixture/state .get))
+  (let result {^peer_id data/peer_id ^operation_id data/operation_id ^digest data/digest
+    ^status (if state/unknown_receipts "unknown" "not_found")})
+  (if state/unknown_receipts (return (response 200 result)))
+  (let previous (state/deliveries .get data/operation_id))
+  (if ($absent? previous) (return (response 200 result)))
+  (if (|| (!= previous/peer_id data/peer_id) (!= previous/digest data/digest))
+    (return (response 409 {^error "operation_conflict"})))
+  (response 200 previous))
+
+(fn inject [fixture data]
+  (for key in ["id" "speaker" "text" "conversation" "thread"]
+    (require_text (data .get key)))
+  (let state (copy (fixture/state .get)))
+  (state .put "cursor" (+ state/cursor 1))
+  (let message {^id data/id ^speaker data/speaker ^text data/text
+    ^conversation data/conversation ^thread data/thread ^cursor state/cursor})
+  # Intentionally retain duplicate IDs, so the connector must deduplicate.
+  (state/messages .push message)
+  (save fixture state)
+  (response 200 message))
+
+(fn configure [fixture data]
+  (let state (copy (fixture/state .get)))
+  (if_yes (! ($absent? data/floor))
+    (require_int data/floor state/cursor)
+    (state .put "floor" data/floor))
+  (for key in ["unknown_receipts" "drop_send_response"]
+    (let value (data .get key))
+    (if_yes (! ($absent? value))
+      (if (!= ($head value) Bool) (invalid "Expected a boolean"))
+      (state .put key value)))
+  # delay_ms: integer applies to both routes; {poll: ms, send: ms} sets either.
+  (if_yes (! ($absent? data/delay_ms))
+    (for route in ["poll" "send"]
+      (let ms (if (== ($head data/delay_ms) Int) data/delay_ms
+        (data/delay_ms .get route)))
+      (if_yes (! ($absent? ms))
+        (require_int ms 5000)
+        (state/delay_ms .put route ms))))
+  (save fixture state)
+  (response 200 state))
+
+(fn handle [fixture request]
+  (if (!= request/method "POST") (return (response 405 {^error "post_required"})))
+  (let data (try (parse request/body)
+    catch Any (invalid "Expected JSON")))
+  (match request/path
+    (when "/poll" (poll_mail fixture data))
+    (when "/send" (send_mail fixture data request/body))
+    (when "/receipt" (receipt_for fixture data))
+    (when "/inject" (inject fixture data))
+    (when "/configure" (configure fixture data))
+    (when "/inspect" (response 200 (fixture/state .get)))
+    (when "/stop"
+      (stop fixture/server)
+      (response 200 {^status "stopping"}))
+    (else (response 404 {^error "not_found"}))))
+
+(fn bind_listener []
+  # listen accepts port 0 but currently reports 0 instead of the assigned port.
+  # Decode random hex as an integer, choose 20000..52767, and retain the bind.
+  (var attempts 0)
+  (while (< attempts 64)
+    (let random ($serde/read_data $"(serde_v1 0x${($crypto/random_hex 2)})"))
+    (let port (+ 20000 (/ random 2)))
+    (let server (try (listen ^host "127.0.0.1" ^port port) catch HttpError nil))
+    (if (! ($absent? server)) (return server))
+    (set attempts (+ attempts 1)))
+  (invalid "No mailbox port available after 64 bind attempts"))
+
+(fn main [args]
+  (let home args/0)
+  ($fs/make_dir home)
+  (let claim ($fs/try_lock $"${home}/writer.lock"))
+  (if ($absent? claim) (invalid "Mailbox home already has a writer"))
+  (try
+    (let path $"${home}/state.data")
+    (let state (if ($fs/exists? path) ($serde/read_data ($fs/read_text path))
+      {^cursor 0 ^floor 0 ^messages [] ^deliveries {} ^sent []
+       ^sends 0 ^effects 0 ^polls 0 ^receipts 0
+       ^unknown_receipts false ^drop_send_response false ^delay_ms {^poll 0 ^send 0}}))
+    (let server (bind_listener))
+    (let fixture {^home home ^server server ^state ($cell state)})
+    (try
+      (save fixture state)
+      ($fs/write_text_atomic $"${home}/ready.data" $"http://127.0.0.1:${server/port}")
+      (serve server ^handler (fn [request] (handle fixture request))
+        ^max_connections 32 ^max_in_flight 16 ^max_body_bytes 65536 ^request_timeout_ms 6000
+        ^drain_timeout_ms 6500
+        ^on_error (fn [error]
+          (match error
+            (when (MailboxRequestError ^message message) (response 400 {^error message}))
+            (else (response 500 {^error "mailbox_failure"})))))
+    ensure
+      # serve releases its runtime; stop is only needed if setup failed before it.
+      (try (stop server) catch HttpError nil)
+      (if ($fs/exists? $"${home}/ready.data") ($fs/remove $"${home}/ready.data")))
+  ensure (claim .close))
+  0)

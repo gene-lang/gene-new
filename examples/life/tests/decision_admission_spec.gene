@@ -1,0 +1,78 @@
+(import $test [describe it assert_equal])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+(import * : code ^from "../code")
+(import * : organization ^from "../organization")
+
+(describe "Life decision admission"
+  (it "checks declared ownership dependencies without invalidating a decision for unrelated ownership changes" []
+    (for changed in ["other" "focus"]
+      (let name (p/id "ownership-basis"))
+      (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+        ^decisions [(brain/response "Quiet" "nil")]))
+      (runtime/settle host)
+      (let tx (p/begin host/store "ownership-policy"))
+      (for id in ["focus" "other"]
+        (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "owner" {^id id}))
+      (let revision (code/module_bundle tx "ownership policy" {^main.gene
+        "(mod dependencies)
+         (fn bind [api] {})
+         (fn ownership [api basis] [(api/life .inspect_owner \"focus\")])"} "main.gene"))
+      (organization/request tx {^id "ownership@1" ^module revision ^code [revision] ^roots ["state/"]
+        ^ownership true ^documentation "Only the focus owner's generation is relevant."} "nil" "invalidate" false)
+      (p/commit tx)
+      (runtime/settle host)
+      (let release ($cell false))
+      (let started ($cell false))
+      (let calls ($cell 0))
+      (set host/brain (fn [snapshot]
+        (calls .set (+ (calls .get) 1))
+        (if_yes (== (calls .get) 1)
+          (started .set true)
+          (while (! (release .get)) ($sleep 5))
+          (return (brain/response "Act on the retained basis" "(state .put \"effect\" true)")))
+        (brain/response "Reconsider the changed basis" "nil")))
+      (body/receive host "Start thought")
+      (let deadline (+ ($os/monotonic_ms) 5000))
+      (while (! (started .get))
+        (runtime/heartbeat host) ($sleep 5)
+        (if (> ($os/monotonic_ms) deadline) (p/problem "Inference did not start")))
+      (let thought (host/thought .get))
+      (let change (p/begin host/store "ownership-change"))
+      (body/apply_operation host change {^id "fixture" ^organization "ownership@1"} "cancel_owner" {^id changed})
+      (p/commit change)
+      (release .set true)
+      (try
+        (runtime/settle host)
+        (let old (p/get host/store $"cycle/${thought/cycle/id}"))
+        (assert_equal old/ownership [{^id "focus" ^generation 0}])
+        (assert_equal old/status (if (== changed "focus") "invalidated" "succeeded"))
+        (assert_equal (p/get host/store "state/effect") (if (== changed "focus") nil true))
+        ensure (release .set true) (runtime/close_life host))))
+
+  (it "provides framing failure observations to a bounded correction without creating a think-write loop" []
+    (let name (p/id "correction"))
+    (let calls ($cell 0))
+    (let saw_error ($cell false))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+      ^brain (fn [snapshot]
+        (calls .set (+ (calls .get) 1))
+        (if (== (calls .get) 1) (return "not a fenced response"))
+        (for event in snapshot/observations
+          (if_yes (== event/kind "decision_error")
+            (assert_equal event/data/status "rejected")
+            ($assert ($str/contains? event/data/error "Expected"))
+            (saw_error .set true)))
+        (brain/response "Corrected response" "nil"))))
+    (try
+      (runtime/settle host)
+      (assert_equal (calls .get) 2)
+      (assert_equal (saw_error .get) true)
+      (runtime/heartbeat host)
+      (runtime/heartbeat host)
+      (assert_equal (calls .get) 2)
+      (let cycles (p/values host/store "cycle/"))
+      (assert_equal cycles/.size 2)
+      ensure (runtime/close_life host))))

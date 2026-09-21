@@ -1,0 +1,56 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : p ^from "../persistence")
+(import * : code ^from "../code")
+(import * : runtime ^from "../runtime")
+(import * : brain ^from "../brain")
+
+(describe "Life immutable module code"
+  (it "loads normal modules and pinned imports in a fresh process after restart" []
+    (let name (p/id "modules"))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)))
+    (let tx (p/begin host/store "module-fixture"))
+    (let revision (code/module_bundle tx "math" {
+      ^main.gene "(mod saved) (import [double] ^from \"./helper\") (fn answer [x] (+ (double x) 1))"
+      ^helper.gene "(mod helper) (fn double [x] (* x 2))"} "main.gene"))
+    (p/commit tx)
+    # Format strings as Gene data; a digest is an inert string, not a symbol.
+    (let literal ($json/stringify revision))
+    ((host/decisions .get) .push (brain/response "Use a saved module"
+      $"(do (let library (code .load ${literal})) (state .put \"answer\" (library/answer 20)))"))
+    (runtime/settle host)
+    (let cycles (p/values host/store "cycle/"))
+    (assert_equal cycles/0/status "succeeded" cycles/0/result)
+    (assert_equal (p/get host/store "state/answer") 41)
+    (let home host/store/home)
+    (runtime/close_life host)
+    (let restored (runtime/open_life home ^clock (fn [] 1000)
+      ^decisions [(brain/response "Use the same module after restart"
+        $"(do (let library (code .load ${literal})) (state .put \"answer\" (library/answer 21)))")]))
+    (try
+      (runtime/settle restored)
+      (assert_equal (p/get restored/store "state/answer") 43)
+      (let saved (code/read restored/store revision))
+      (assert_equal saved/revision revision)
+      ensure (runtime/close_life restored)))
+
+  (it "rejects module paths that escape their bundle" []
+    (assert_equal (code/safe_path? "../escape.gene") false)
+    (assert_equal (code/safe_path? "/absolute.gene") false)
+    (assert_equal (code/safe_path? "nested/helper.gene") true))
+
+  (it "retains symbols and quoted Gene data without evaluating memory contents" []
+    (let name (p/id "gene-data"))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+      ^decisions [(brain/response "Retain ordinary Gene data"
+        "(do
+          (store .put \"custom/datum\" {^kind (quote observation) ^source (quote (state .put \"executed\" true))})
+          (store .put \"custom/copy\" (store .get \"custom/datum\")) nil)")]))
+    (try
+      (runtime/settle host)
+      (let cycles (p/values host/store "cycle/"))
+      (assert_equal cycles/0/status "succeeded" cycles/0/result)
+      (assert_equal (p/get host/store "custom/datum")
+        {^kind (quote observation) ^source (quote (state .put "executed" true))})
+      (assert_equal (p/get host/store "custom/copy") (p/get host/store "custom/datum"))
+      (assert_equal (p/get host/store "state/executed") nil)
+      ensure (runtime/close_life host))))

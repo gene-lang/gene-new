@@ -1,0 +1,144 @@
+(mod persistence)
+(import $db/sqlite [open Db])
+(import $serde [write_data read_data])
+
+(type LifeError ^props {^message Str} ^impl [Error])
+(impl Error for LifeError)
+(fn problem [message] (fail (LifeError ^message message)))
+(fn copy [value] (read_data (write_data value)))
+(fn id [prefix] $"${prefix}-${($crypto/random_hex 12)}")
+
+(type DurableStore
+  ^props {^db Any ^claim Any ^home Str ^records Cell ^closed Cell ^fail_next Cell ^fault Cell})
+(type Transaction
+  ^props {^store DurableStore ^base Any ^reads Any ^writes Any ^cause Str ^closed Cell})
+
+(fn open_store [home, ^create create = false]
+  (if create ($fs/make_dir home)
+    (if_not ($fs/exists? home) (problem "Life does not exist; create it explicitly")))
+  (let claim ($fs/try_lock $"${home}/writer.lock"))
+  (if ($absent? claim) (problem "Life already has an active writer"))
+  (try
+    (let path $"${home}/life.sqlite")
+    (if (== create ($fs/exists? path))
+      (problem (if create "Life already exists" "Missing Life database")))
+    (let db (open path))
+    (try
+      (if_yes create
+        (db .Db:exec "BEGIN; CREATE TABLE records (revision INTEGER PRIMARY KEY AUTOINCREMENT,
+          key TEXT NOT NULL, value TEXT NOT NULL, cause TEXT NOT NULL);
+          CREATE TABLE heads (key TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+          PRAGMA user_version=1; COMMIT;"))
+      (let version (db .Db:query "PRAGMA user_version"))
+      (if_not (== version/0/user_version 1) (problem "Unsupported storage version"))
+      (let health (db .Db:query "PRAGMA quick_check"))
+      (if_not (== health/0/quick_check "ok") (problem "Life database failed integrity validation"))
+      (let missing (db .Db:query "SELECT count(*) AS missing FROM heads h LEFT JOIN records r ON h.revision=r.revision WHERE r.revision IS NULL OR h.key != r.key"))
+      (if_not (== missing/0/missing 0) (problem "Life database contains missing or mismatched head revisions"))
+      (let records {})
+      (for row in (db .Db:query "SELECT r.key,r.revision,r.value FROM heads h JOIN records r ON h.revision=r.revision")
+        (records .put row/key {^revision row/revision ^value (read_data row/value)}))
+      (DurableStore ^db db ^claim claim ^home home ^records ($cell records)
+        ^closed ($cell false) ^fail_next ($cell false) ^fault ($cell nil))
+      catch Any
+        (db .Db:close)
+        (fail $err))
+    catch Any
+      (claim .close)
+      (fail $err)))
+
+(fn read [store, key]
+  (if (store/closed .get) (problem "Store is closed"))
+  (copy (?? ((store/records .get) .get key) {^revision nil ^value nil})))
+(fn get [store, key] (let row (read store key)) row/value)
+(fn keys [store, prefix = ""]
+  (let result [])
+  (for pair in (store/records .get)
+    (if_yes ($str/starts_with? ($to_str pair/0) prefix) (result .push ($to_str pair/0))))
+  result)
+(fn values [store, prefix = ""]
+  (let result [])
+  (for key in (keys store prefix) (result .push (get store key)))
+  result)
+(fn require_writable [store]
+  (if (store/closed .get) (problem "Store is closed"))
+  (if_not ($absent? (store/fault .get))
+    (problem $"Store requires recovery after a persistent write failure: ${(store/fault .get)}")))
+(fn begin [store, cause]
+  (require_writable store)
+  (Transaction ^store store ^cause cause ^base (copy (store/records .get))
+    ^reads {} ^writes {} ^closed ($cell false)))
+(fn tx_get [tx, key]
+  (if (tx/closed .get) (problem "Transaction handle is no longer active"))
+  (let record (?? (tx/base .get key) {^revision nil ^value nil}))
+  (tx/reads .put key record/revision)
+  (copy (if (!= (tx/writes .get key) void) (tx/writes .get key) record/value)))
+(fn tx_put [tx, key, value]
+  (tx_get tx key)
+  (tx/writes .put key (copy value))
+  (copy value))
+(fn tx_keys [tx, prefix = ""]
+  (let all {})
+  (for pair in tx/base (all .put pair/0 true))
+  (for pair in tx/writes (all .put pair/0 true))
+  (let result [])
+  (for pair in all (if_yes ($str/starts_with? ($to_str pair/0) prefix) (result .push ($to_str pair/0))))
+  result)
+(fn abort [tx] (tx/closed .set true))
+(fn commit [tx]
+  (if (tx/closed .get) (problem "Transaction handle is no longer active"))
+  (tx/closed .set true)
+  (require_writable tx/store)
+  (for pair in tx/reads
+    (let current (read tx/store pair/0))
+    (if_not (== current/revision pair/1)
+      (problem $"Revision conflict: ${pair/0}")))
+  (let db tx/store/db)
+  (let next (copy (tx/store/records .get)))
+  (let revisions {})
+  (try
+    (db .Db:exec "BEGIN")
+    (if_yes (tx/store/fail_next .get)
+      (tx/store/fail_next .set false)
+      (problem "Injected persistent write failure"))
+    (for pair in tx/writes
+      (db .Db:execute "INSERT INTO records(key,value,cause) VALUES(?,?,?)" ($to_str pair/0) (write_data pair/1) tx/cause)
+      (let row (db .Db:query "SELECT last_insert_rowid() AS revision"))
+      (let revision row/0/revision)
+      (db .Db:execute "INSERT OR REPLACE INTO heads(key,revision) VALUES(?,?)" ($to_str pair/0) revision)
+      (next .put pair/0 {^revision revision ^value (copy pair/1)})
+      (revisions .put pair/0 revision))
+    # Publish the commit's identity and exact write revisions in the same image.
+    # An interrupted caller can inspect this receipt without replaying its code.
+    (let commit_id (id "commit"))
+    (let commit_key $"commit/${commit_id}")
+    (let receipt {^id commit_id ^cause tx/cause ^writes (copy revisions)})
+    (db .Db:execute "INSERT INTO records(key,value,cause) VALUES(?,?,?)" commit_key (write_data receipt) tx/cause)
+    (let receipt_row (db .Db:query "SELECT last_insert_rowid() AS revision"))
+    (db .Db:execute "INSERT INTO heads(key,revision) VALUES(?,?)" commit_key receipt_row/0/revision)
+    (next .put commit_key {^revision receipt_row/0/revision ^value (copy receipt)})
+    # Gene's SQLite backend atomically publishes its file on COMMIT.
+    (db .Db:exec "COMMIT")
+    (tx/store/records .set next)
+    revisions
+    catch Any
+      (let failure $err)
+      (tx/store/fault .set failure/message)
+      (try (db .Db:exec "ROLLBACK") catch Any nil)
+      # A failed publication can leave the backend's connection-local image
+      # ahead of its file. Never reuse it, even if a later write could succeed.
+      (fail failure)))
+(fn put [store, key, value, cause = "host"]
+  (let tx (begin store cause))
+  (tx_put tx key value)
+  (commit tx))
+(fn revision [store, number]
+  (require_writable store)
+  (let rows (store/db .Db:query "SELECT key,value,cause FROM records WHERE revision=?" number))
+  (if (== rows/.size 0) (problem "Missing immutable revision"))
+  {^key rows/0/key ^value (read_data rows/0/value) ^cause rows/0/cause})
+(fn close_store [store]
+  (if_not (store/closed .get)
+    (store/db .Db:close)
+    (store/claim .close)
+    (store/closed .set true)))

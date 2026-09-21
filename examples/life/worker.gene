@@ -1,0 +1,71 @@
+# One ordinary Gene evaluation per supervised process. RPC requests are atomic
+# files because stdout is buffered when Gene is connected to a pipe.
+(mod worker)
+(import [bindings configure load_module] ^from "./api")
+(import $parse [read_all])
+(import * : program ^from "./program")
+
+(fn invoke_routine [saved, handler, exposed, input, root]
+  (if_yes (== saved/kind "module")
+    (let module (load_module saved))
+    (return (module/%handler exposed input)))
+  (let callback (program/evaluate root saved/source exposed))
+  (callback exposed input))
+
+(fn build_context [selected, exposed, request]
+  (let original request/context)
+  (let all_ids [])
+  (for observation in original/observations (all_ids .push observation/id))
+  (let ids (if request/attention (selected/attention exposed original) all_ids))
+  (if_not (== ($head ids) List) (panic "Attention must return a list of selected event IDs"))
+  (let checked [])
+  (let observations [])
+  (var focus nil)
+  (for event_id in ids
+    (if (|| (! (all_ids .contains? event_id)) (checked .contains? event_id))
+      (panic "Attention selected a duplicate or unavailable event"))
+    (checked .push event_id)
+    (for observation in original/observations
+      (if_yes (== observation/id event_id)
+        (observations .push observation)
+        (if_not ($absent? observation/reply_to)
+          (set focus {^event_id event_id ^reply_to observation/reply_to})))))
+  (let basis ($serde/read_data ($serde/write_data original)))
+  (basis .put "observations" observations)
+  (basis .put "focus" focus)
+  (let view (if request/custom_context (selected/context exposed basis) basis))
+  (let ownership (if request/ownership (selected/ownership exposed basis) []))
+  (if_not (== ($head ownership) List) (panic "Ownership policy must return a list of tokens"))
+  (for token in ownership
+    (if_not (&& (== ($head token/id) Str) (== ($head token/generation) Int) (>= token/generation 0))
+      (panic "Ownership dependencies require an id and generation")))
+  {^view view ^event_ids ids ^ownership ownership})
+
+(fn main [args]
+  (let request ($serde/read_data ($fs/read_text args/0)))
+  (configure request/rpc_path request/root)
+  (let forms (read_all request/program))
+  (let parsed (forms .next))
+  (if_yes (forms .has_next) (panic "Expected one complete Gene program"))
+  (let base (bindings request/context request/input))
+  # Validate the candidate's module graph before a migration can stage writes.
+  (if_not ($absent? request/candidate_module)
+    (let candidate (load_module request/candidate_module))
+    (candidate/bind base))
+  (let selected (if ($absent? request/module) nil (load_module request/module)))
+  (let exposed ($thaw ($freeze base)))
+  (if_not ($absent? selected)
+    (for pair in (selected/bind base) (exposed .put pair/0 pair/1)))
+  # The complete program compiles as an ordinary module function. Validation
+  # prepares that function without calling it or interpreting action syntax.
+  (let result (if (== request/mode "validate")
+    (do
+      (program/compile_program request/root request/program exposed)
+      "validated")
+    (if (== request/mode "context") (build_context selected exposed request)
+      (if (== request/mode "routine") (invoke_routine request/callback request/handler exposed request/input request/root)
+        (program/evaluate request/root request/program exposed)))))
+  (let data (try ($serde/read_data ($serde/write_data result)) catch Any nil))
+  ($fs/write_text_atomic request/result_path
+    ($serde/write_data {^value ($to_str result) ^data data}))
+  nil)

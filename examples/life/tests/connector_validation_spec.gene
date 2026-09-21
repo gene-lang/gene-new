@@ -1,0 +1,304 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : connector ^from "../connector")
+(import * : runtime ^from "../runtime")
+(import * : chat ^from "../chat")
+(import * : code ^from "../code")
+(import * : p ^from "../persistence")
+(import * : mailbox ^from "./mailbox_support")
+(import * : support ^from "./connector_crash_fixture")
+
+(fn reject_page [host, page]
+  (let cursor (support/cursor host))
+  (let records (p/copy (host/store/records .get)))
+  (let image ($fs/read_bytes $"${host/store/home}/life.sqlite"))
+  (assert_raises (fn [] (connector/accept_poll host {^connector "mailbox" ^cursor cursor} page)) p/LifeError)
+  (assert_equal (support/cursor host) cursor)
+  (assert_equal (host/store/records .get) records)
+  (assert_equal ($fs/read_bytes $"${host/store/home}/life.sqlite") image))
+
+(fn assert_gap [host, original]
+  (let gaps (p/values host/store "history_gap/"))
+  (assert_equal gaps/.size 1)
+  (assert_equal gaps/0/from 1)
+  (assert_equal gaps/0/to 3)
+  (assert_equal gaps/0/connector "mailbox")
+  (assert_equal gaps/0/peer_id "test-peer")
+  (let gap_events [])
+  (for item in (p/values host/store "event/")
+    (if_yes (== item/kind "history_gap") (gap_events .push item)))
+  (assert_equal gap_events/.size 1)
+  (assert_equal gap_events/0/id gaps/0/id)
+  (assert_equal gap_events/0/data gaps/0)
+  (assert_equal gap_events/0/visibility ["mailbox"])
+  (let incoming (support/observations host))
+  (assert_equal incoming/.size 3)
+  (for item in incoming
+    ($assert (["crash-input" "available-1" "available-2"] .contains? item/data/external_id)))
+  (assert_equal (support/incoming host "crash-input") original)
+  (let transcript (support/transcript host original/reply_to))
+  (assert_equal transcript/messages/.size 3)
+  (assert_equal transcript/pending/.size 3)
+  (for message in transcript/messages
+    ($assert (["crash-input" "available-1" "available-2"] .contains? message/external_id))))
+
+(describe "Life mailbox protocol validation"
+  (it "accepts a complete page atomically" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (try
+        (support/inject fixture "one" "Alice" "main")
+        (let page (mailbox/call fixture "/poll" {^peer_id "test-peer" ^cursor 0 ^limit 32}))
+        (connector/accept_poll host {^connector "mailbox" ^cursor 0} page)
+        (assert_equal (support/cursor host) 1)
+        (assert_equal ((support/observations host) .size) 1)
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "rejects malformed pages without committing any prefix, gap, event, transcript, or cursor" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (try
+        (let first {^id "first" ^cursor 1 ^speaker "Alice" ^text "First" ^conversation "garden" ^thread "main"})
+        (let second {^id "second" ^cursor 2 ^speaker "Bob" ^text "Second" ^conversation "garden" ^thread "main"})
+        (reject_page host {^peer_id "test-peer" ^cursor 3 ^messages [first second]})
+        (reject_page host {^peer_id "test-peer" ^cursor -1 ^messages []})
+        (reject_page host {^peer_id "test-peer" ^cursor "2" ^messages [first second]})
+        (reject_page host {^peer_id "other-peer" ^cursor 2 ^messages [first second]})
+        (reject_page host {^peer_id "test-peer" ^cursor 2 ^messages [second]})
+        (for field in ["peer_id" "cursor" "messages"]
+          (let incomplete {^peer_id "test-peer" ^cursor 2 ^messages [first second]})
+          (incomplete .delete field)
+          (reject_page host incomplete))
+        # The valid first message has already staged writes when the second fails.
+        (for field in ["id" "cursor" "speaker" "text" "conversation" "thread"]
+          (let incomplete_message (p/copy second))
+          (incomplete_message .delete field)
+          (reject_page host {^peer_id "test-peer" ^cursor 2 ^messages [first incomplete_message]}))
+        (for gap in [{^from 1 ^to 3} {^from 0 ^to 0} {^from 0 ^to -1}
+                     {^from 0 ^to "3"} {^from 0} {^to 3}]
+          (reject_page host {^peer_id "test-peer" ^cursor 3 ^messages [] ^gap gap}))
+        # A valid gap and message must also roll back on a bad final cursor.
+        (let after_gap {^id "after-gap" ^cursor 4 ^speaker "Alice" ^text "Available"
+          ^conversation "garden" ^thread "main"})
+        (reject_page host {^peer_id "test-peer" ^cursor 5 ^messages [after_gap] ^gap {^from 0 ^to 3}})
+        (assert_equal (p/values host/store "history_gap/") [])
+        (assert_equal (support/observations host) [])
+        (assert_equal (p/values host/store "conversation/") [])
+        (connector/accept_poll host {^connector "mailbox" ^cursor 0}
+          {^peer_id "test-peer" ^cursor 1 ^messages [first]})
+        (for field in ["text" "speaker"]
+          (let reused (p/copy first))
+          (reused .put "cursor" 3)
+          (reused .put field "Different content")
+          (reject_page host {^peer_id "test-peer" ^cursor 3 ^messages [second reused]}))
+        (assert_equal ((support/observations host) .size) 1)
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "records one real HTTP history gap across offline retention, duplicate polls, and restart" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (let home host/store/home)
+      (var original nil)
+      (try
+        (set original (support/seed host fixture))
+        (assert_equal (support/cursor host) 1)
+      ensure (support/close_host host))
+      (support/inject fixture "missing-1" "Lost Alice" "watering" ^text "Unavailable one")
+      (support/inject fixture "missing-2" "Lost Bob" "watering" ^text "Unavailable two")
+      (support/inject fixture "available-1" "Bob" "watering" ^text "Retained one")
+      (support/inject fixture "available-2" "Carol" "watering" ^text "Retained two")
+      (mailbox/call fixture "/configure" {^floor 3})
+      (let restored (runtime/open_life home ^clock (fn [] 1000)))
+      (try
+        (assert_equal (support/cursor restored) 1)
+        (support/wait_cursor restored 5)
+        (assert_gap restored original)
+        (let available (support/incoming restored "available-1"))
+        (assert_equal available/data/text "Retained one")
+        (let later (support/incoming restored "available-2"))
+        (assert_equal later/data/text "Retained two")
+        (support/inject fixture "available-1" "Bob" "watering" ^text "Retained one")
+        (support/wait_cursor restored 6)
+        (let before_poll (mailbox/call fixture "/inspect" {}))
+        (support/wait_for restored (fn [] (let inspected (mailbox/call fixture "/inspect" {}))
+          (>= inspected/polls (+ before_poll/polls 2))) "duplicate gap-free polls")
+        (assert_gap restored original)
+      ensure (support/close_host restored))
+      (let restarted (runtime/open_life home ^clock (fn [] 1000)))
+      (try
+        (assert_equal (support/cursor restarted) 6)
+        (let before_restart_poll (mailbox/call fixture "/inspect" {}))
+        (support/wait_for restarted (fn [] (let inspected_again (mailbox/call fixture "/inspect" {}))
+          (>= inspected_again/polls (+ before_restart_poll/polls 2))) "polls after second restart")
+        (assert_equal (support/cursor restarted) 6)
+        (assert_gap restarted original)
+      ensure (support/close_host restarted))
+    ensure (mailbox/stop fixture)))
+
+  (it "makes explicit operation IDs deterministic and rejects conflicting preparations without duplicates" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (try
+        (let observation (support/seed host fixture))
+        (let record {^id "prepare-test" ^events [observation/id] ^owner nil})
+        (let data {^operation_id "deterministic-reply" ^destination observation/reply_to
+          ^text "Exactly one reply" ^in_reply_to [observation/id]})
+        (let tx (p/begin host/store "prepare-once"))
+        (let prepared (chat/prepare host tx record data))
+        (let writes (p/copy tx/writes))
+        (assert_equal (chat/prepare host tx record data) prepared)
+        (assert_equal tx/writes writes)
+        (p/commit tx)
+        (let repeated (p/begin host/store "prepare-again"))
+        (assert_equal (chat/prepare host repeated record data) prepared)
+        (assert_equal repeated/writes {})
+        (p/abort repeated)
+        (let changed_destination (p/copy observation/reply_to))
+        (changed_destination .put "thread" "another-thread")
+        (for change in [{^field "text" ^value "Conflicting reply"}
+                        {^field "destination" ^value changed_destination}
+                        {^field "in_reply_to" ^value []}]
+          (let changed (p/copy data))
+          (changed .put change/field change/value)
+          (let before (p/copy (host/store/records .get)))
+          (let before_image ($fs/read_bytes $"${host/store/home}/life.sqlite"))
+          (let conflict (p/begin host/store "prepare-conflict"))
+          (try
+            (assert_raises (fn [] (chat/prepare host conflict record changed)) p/LifeError)
+            (assert_equal conflict/writes {})
+          ensure (p/abort conflict))
+          (assert_equal (host/store/records .get) before)
+          (assert_equal ($fs/read_bytes $"${host/store/home}/life.sqlite") before_image))
+        (assert_equal ((p/values host/store "delivery/") .size) 1)
+        (let confirmed (support/wait_delivered host prepared/id))
+        (assert_equal confirmed/payload prepared/payload)
+        (assert_equal confirmed/digest prepared/digest)
+        (let delivered_again (p/begin host/store "prepare-delivered"))
+        (assert_equal (chat/prepare host delivered_again record data) confirmed)
+        (assert_equal delivered_again/writes {})
+        (p/abort delivered_again)
+        (support/pump host)
+        (let remote (mailbox/call fixture "/inspect" {}))
+        (assert_equal remote/sends 1)
+        (assert_equal remote/effects 1)
+        (assert_equal remote/sent/0/operation_id prepared/id)
+        (let transcript (support/transcript host observation/reply_to))
+        (assert_equal transcript/messages/.size 2)
+        (assert_equal transcript/messages/1/id prepared/id)
+        (assert_equal transcript/messages/1/visibility confirmed/visibility)
+        (assert_equal transcript/pending [])
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "filters history by thread and preserves conversation visibility and pagination" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (try
+        (support/inject fixture "water-1" "Alice" "watering")
+        (support/inject fixture "prune-1" "Bob" "pruning")
+        (support/inject fixture "water-2" "Alice" "watering")
+        (support/inject fixture "library-1" "Carol" "watering" ^conversation "library")
+        (support/wait_cursor host 4)
+        (let local (chat/receive host "Local only" ^conversation "garden" ^thread "watering"))
+        (let alice (support/incoming host "water-1"))
+        (let second (support/incoming host "water-2"))
+        (let bob (support/incoming host "prune-1"))
+        (let carol (support/incoming host "library-1"))
+        (let tx (p/begin host/store "history-test"))
+        (try
+          (let latest (chat/history tx alice/reply_to 1 nil))
+          (assert_equal latest/messages/.size 1)
+          (assert_equal latest/messages/0/id second/id)
+          (assert_equal latest/before 1)
+          (assert_equal latest/more true)
+          (let earlier (chat/history tx alice/reply_to 1 latest/before))
+          (assert_equal earlier/messages/0/id alice/id)
+          (assert_equal earlier/before 0)
+          (assert_equal earlier/more false)
+          (let empty (chat/history tx alice/reply_to 1 0))
+          (assert_equal empty/messages [])
+          (for observation in [alice bob carol local]
+            (let history (chat/history tx observation/reply_to 100 nil))
+            (let conversation (chat/conversation_id observation/reply_to))
+            (assert_equal history/conversation conversation)
+            (assert_equal history/thread observation/reply_to/thread)
+            (assert_equal history/visibility [conversation])
+            (assert_equal observation/visibility [conversation])
+            (assert_equal history/messages/.size (if (== observation/id alice/id) 2 1))
+            (for message in history/messages
+              (assert_equal message/thread observation/reply_to/thread)
+              (assert_equal message/visibility [conversation])))
+          (assert_equal tx/writes {})
+        ensure (p/abort tx))
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "rejects credential and query-token endpoint syntax before registration or network activity" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (try
+        (let before (p/copy (host/store/records .get)))
+        (let image ($fs/read_bytes $"${host/store/home}/life.sqlite"))
+        (for endpoint in ["https://placeholder-user:placeholder-password@mailbox.invalid"
+                          "https://placeholder-user@mailbox.invalid"
+                          "https://mailbox.invalid?token=placeholder-token"
+                          "https://mailbox.invalid?access_token=placeholder-token"
+                          "https://mailbox.invalid#placeholder-token"]
+          (assert_raises (fn [] (connector/register host "rejected" endpoint "test-peer")) p/LifeError)
+          (assert_equal (p/get host/store "connector/rejected") nil)
+          (assert_equal (host/store/records .get) before)
+          (assert_equal ($fs/read_bytes $"${host/store/home}/life.sqlite") image))
+        (let network (host/network .get))
+        (assert_equal network/requests {})
+        (let remote (mailbox/call fixture "/inspect" {}))
+        (assert_equal remote/sends 0)
+        (assert_equal remote/polls 0)
+        (assert_equal remote/receipts 0)
+      ensure (support/close_host host))
+    ensure (mailbox/stop fixture)))
+
+  (it "fails recovery for a valid but incompatible retained adapter before sending pending work" []
+    (let fixture (mailbox/start))
+    (try
+      (let host (support/open_host fixture))
+      (let home host/store/home)
+      (try
+        (let observation (support/seed host fixture))
+        (let staged (support/stage host observation "incompatible-pending"))
+        (let tx (p/begin host/store "incompatible-adapter-fixture"))
+        (let source ($fs/read_text "examples/life/mailbox.gene"))
+        (let files {^mailbox.gene $"${source}\n# Test-only incompatible revision\n"})
+        (let revision (code/module_bundle tx "unsupported-mailbox" files "mailbox.gene"))
+        (let registration (p/tx_get tx "connector/mailbox"))
+        ($assert (!= revision registration/adapter_revision))
+        (registration .put "adapter_revision" revision)
+        (p/tx_put tx "connector/mailbox" registration)
+        (let retained (p/tx_get tx $"delivery/${staged/id}"))
+        (retained .put "adapter_revision" revision)
+        (p/tx_put tx $"delivery/${staged/id}" retained)
+        (p/commit tx)
+      ensure (support/close_host host))
+      (let before_recovery (mailbox/call fixture "/inspect" {}))
+      (let image ($fs/read_bytes $"${home}/life.sqlite"))
+      # Repeat to prove a failed open also releases its writer lock.
+      (for attempt in [1 2]
+        (assert_raises (fn []
+          (let unexpected (runtime/open_life home ^clock (fn [] 1000)))
+          (support/close_host unexpected)) p/LifeError)
+        (assert_equal ($fs/read_bytes $"${home}/life.sqlite") image)
+        (let claim ($fs/try_lock $"${home}/writer.lock"))
+        ($assert (! ($absent? claim)) "Failed recovery must release the writer lock")
+        (claim .close))
+      (let after_recovery (mailbox/call fixture "/inspect" {}))
+      (assert_equal after_recovery/sends 0)
+      (assert_equal after_recovery/effects 0)
+      (assert_equal after_recovery/polls before_recovery/polls)
+      (assert_equal after_recovery/receipts before_recovery/receipts)
+    ensure (mailbox/stop fixture))))

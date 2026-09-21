@@ -1,0 +1,99 @@
+(import $test [describe it assert_equal])
+(import * : runtime ^from "../runtime")
+(import * : p ^from "../persistence")
+(import * : body ^from "../body")
+
+(fn crash [phase]
+  (let name (p/id "crash"))
+  (let home $"examples/life/tmp/${name}")
+  (let result ($os/exec ^cmd ($os/executable_path)
+    ^args ["run" "examples/life/tests/crash_fixture.gene" home phase] ^timeout_ms 10000))
+  ($assert (!= result/status 0) "Fixture must exit unexpectedly")
+  ($assert ($fs/exists? home) result/stderr)
+  (runtime/open_life home ^clock (fn [] 3601000)))
+
+(describe "Gene Life process recovery"
+  (it "recovers committed world and conversations without a shutdown hook or brain call" []
+    (let host (crash "walking"))
+    (try
+      (assert_equal (host/calls .get) 0)
+      (assert_equal (p/get host/store "state/preference") "shade")
+      (let world (p/get host/store "world"))
+      (assert_equal world/position 4.0)
+      (assert_equal world/held "watering-can")
+      (let jobs (p/values host/store "job/"))
+      (assert_equal jobs/0/position 4.0)
+      (let chat (p/get host/store "conversation/garden"))
+      (assert_equal chat/cursor "cursor-1")
+      (body/receive host "pending" ^external_id "e1" ^cursor "cursor-1")
+      (let deduplicated (p/get host/store "conversation/garden"))
+      (assert_equal deduplicated/messages/.size 1)
+      (let schedules (p/values host/store "schedule/"))
+      (assert_equal schedules/.size 1)
+      (for event in (p/values host/store "event/")
+        (if_yes (== event/kind "restart") (assert_equal event/data/clean false)))
+      ensure (runtime/close_life host)))
+
+  (it "publishes neither side when killed after staging a walk or before commit" []
+    (for phase in ["staged_walk" "before_commit"]
+      (let host (crash phase))
+      (try
+        (assert_equal (p/values host/store "job/") [])
+        (assert_equal (p/get host/store "state/activity") nil)
+        ensure (runtime/close_life host))))
+
+  (it "recovers both sides when killed after commit but before dispatch" []
+    (let host (crash "after_commit"))
+    (try
+      (let jobs (p/values host/store "job/"))
+      (assert_equal jobs/.size 1)
+      (assert_equal (p/get host/store "state/activity") jobs/0/id)
+      (assert_equal jobs/0/steps 0)
+      (var receipt_found false)
+      (for receipt in (p/values host/store "commit/")
+        (if_yes (&& (== receipt/cause jobs/0/cause)
+                     (! ($absent? (receipt/writes .get "state/activity")))
+                     (! ($absent? (receipt/writes .get $"job/${jobs/0/id}"))))
+          (set receipt_found true)))
+      ($assert receipt_found "The grouped publication must have one retained commit receipt")
+      (let world (p/get host/store "world"))
+      (assert_equal world/position 0)
+      (body/tick host 1000)
+      (let resumed (p/values host/store "job/"))
+      (assert_equal resumed/0/id jobs/0/id)
+      (assert_equal resumed/0/position 1.0)
+      ensure (runtime/close_life host)))
+
+  (it "restores the complete old organization when killed during migration or before selection commit" []
+    (for phase in ["migration_staged" "selection_before_commit"]
+      (let host (crash phase))
+      (try
+        (let meta (p/get host/store "meta"))
+        (assert_equal meta/organization "starter@1")
+        (assert_equal (p/get host/store "mind/visitor") nil)
+        (assert_equal (p/get host/store "mind/working") nil)
+        (assert_equal (p/get host/store "state/preference") "shade")
+        (assert_equal (p/get host/store "selection/pending") nil)
+        (let chat (p/get host/store "conversation/garden"))
+        (assert_equal chat/messages/.size 1)
+        (assert_equal (host/calls .get) 0)
+        ensure (runtime/close_life host))))
+
+  (it "restores the complete new code and data when killed immediately after selection commit" []
+    (let host (crash "selection_after_commit"))
+    (try
+      (let meta (p/get host/store "meta"))
+      (assert_equal meta/organization "visitors@2")
+      (let visitor (p/get host/store "mind/visitor"))
+      (assert_equal visitor/preference "shade")
+      (let work (p/get host/store "mind/working"))
+      (assert_equal work/status "unfinished")
+      (assert_equal (host/calls .get) 0)
+      (runtime/settle host)
+      (var succeeded false)
+      (for cycle in (p/values host/store "cycle/")
+        (if_yes (&& (== cycle/organization "visitors@2") (== cycle/status "succeeded"))
+          (assert_equal cycle/context/visitor/preference "shade")
+          (set succeeded true)))
+      ($assert succeeded)
+      ensure (runtime/close_life host))))

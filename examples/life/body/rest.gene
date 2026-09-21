@@ -1,0 +1,74 @@
+# Optional cognitive/body model. No host field or scheduler branch knows about
+# energy, sleep, or these record layouts. All handlers are ordinary Gene code.
+(mod rest)
+
+(fn initial []
+  {^energy 24.0 ^capacity 100.0 ^mode "awake" ^recovery_per_sim_minute 2.0
+   ^wake_at_energy 70.0 ^last_accounted_sim_ms 0 ^sleep_activity nil ^charged_events []})
+
+(fn enter_tx [api, revision, tx, model]
+  (if (== model/mode "sleeping") (return model/sleep_activity))
+  (let world (api/body/world .observe "debug" ^tx tx))
+  (model .put "mode" "sleeping")
+  (model .put "last_accounted_sim_ms" world/sim_ms)
+  (model .put "sleep_activity" {^id $"sleep:${world/sim_ms}" ^status "running"
+    ^registration "rest/recovery" ^controller revision})
+  (api/routines .register "rest/recovery" revision ^handler "recover" ^clock "simulation"
+    ^every_ms 60000 ^bindings {^key "model/rest"} ^recovery "checkpointed" ^tx tx)
+  (api/store .put "model/rest" model ^tx tx)
+  model/sleep_activity)
+
+(fn enter [api, revision]
+  (api/store .commit (fn [tx]
+    (let model (?? (api/store .get "model/rest" ^tx tx) (initial)))
+    (enter_tx api revision tx model))))
+
+(fn recover [api, input]
+  (api/store .commit (fn [tx]
+    (let model (api/store .get input/bindings/key ^tx tx))
+    (if (|| (!= model/mode "sleeping") (<= input/now model/last_accounted_sim_ms)) (return nil))
+    ($assert (>= model/recovery_per_sim_minute 0))
+    (let minutes (/ (- input/now model/last_accounted_sim_ms) 60000.0))
+    (model .put "energy" ($math/min model/capacity
+      (+ model/energy (* minutes model/recovery_per_sim_minute))))
+    (model .put "last_accounted_sim_ms" input/now)
+    (if_yes (>= model/energy model/wake_at_energy)
+      (model .put "mode" "awake")
+      (model/sleep_activity .put "status" "completed")
+      (api/routines .cancel "rest/recovery" ^tx tx)
+      (let wake (api/scheduler .wake_after 0 "The selected rest model completed sleep" ^tx tx))
+      (model .put "wake_request" wake))
+    (api/store .put input/bindings/key model ^tx tx)
+    {^energy model/energy ^at model/last_accounted_sim_ms ^mode model/mode})))
+
+(fn charge [api, input]
+  (api/store .commit (fn [tx]
+    (let model (?? (api/store .get "model/rest" ^tx tx) (initial)))
+    (for event in input/events
+      (if_not (model/charged_events .contains? event/id)
+        (model/charged_events .push event/id)
+        (if_yes (== model/mode "awake")
+          (model .put "energy" ($math/max 0.0 (- model/energy 8.0))))))
+    (api/store .put "model/rest" model ^tx tx)
+    (if_yes (&& (== model/mode "awake") (<= model/energy 24.0))
+      (enter_tx api input/bindings/controller tx model)))))
+
+(fn install_costs [api, revision]
+  (api/routines .register "rest/activity-costs" revision ^handler "charge" ^clock "events"
+    ^events ["job_outcome"] ^bindings {^controller revision} ^recovery "checkpointed"))
+
+(type Rest
+  ^props {^api Any}
+  (message sleep [revision] (enter self/api revision))
+  (message account_for_activities [revision] (install_costs self/api revision)))
+
+(fn bind [api] {^rest (Rest ^api api)})
+
+(fn attention [api, basis]
+  (let model (api/store .get "model/rest"))
+  (let selected [])
+  (for event in basis/observations
+    (if_yes (|| ($absent? model) (!= model/mode "sleeping") (== event/kind "routine_failed")
+                 (&& (== event/kind "chat") ($str/contains? event/data/text "!urgent")))
+      (selected .push event/id)))
+  selected)

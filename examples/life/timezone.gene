@@ -1,0 +1,110 @@
+# The platform timezone adapter imports zdump's documented interval format.
+# Scheduling itself uses only the retained transition table, not live OS calls.
+(mod timezone)
+(import * : p ^from "./persistence")
+(import * : calendar ^from "./calendar")
+
+(fn safe_name? [name]
+  (if (|| (!= ($head name) Str) (== name "") (> ($str/byte_size name) 128) ($str/starts_with? name "/")) (return false))
+  (for part in ($str/split name "/")
+    (if (== part "") (return false))
+    (let bytes ($binary/from_str part))
+    (var index 0)
+    (while (< index ($binary/size bytes))
+      (let byte ($binary/get bytes index))
+      (if_not (|| (&& (>= byte 65) (<= byte 90)) (&& (>= byte 97) (<= byte 122))
+                   (&& (>= byte 48) (<= byte 57)) ([43 45 95] .contains? byte)) (return false))
+      (set index (+ index 1))))
+  true)
+(fn offset_seconds [text]
+  (if (|| (< ($str/byte_size text) 3) (== text "-00")) (p/problem "Unknown timezone offset"))
+  (let sign ($str/slice_bytes text 0 1))
+  (if_not (["+" "-"] .contains? sign) (p/problem "Timezone offset needs a sign"))
+  (let value ($str/slice_bytes text 1 ($str/byte_size text)))
+  (if_not ([2 4 6] .contains? ($str/byte_size value)) (p/problem "Unsupported timezone offset"))
+  (let seconds (+ (* (calendar/decimal ($str/slice_bytes value 0 2)) 3600)
+    (if (>= ($str/byte_size value) 4) (* (calendar/decimal ($str/slice_bytes value 2 2)) 60) 0)
+    (if (== ($str/byte_size value) 6) (calendar/decimal ($str/slice_bytes value 4 2)) 0)))
+  (if (== sign "-") (- 0 seconds) seconds))
+
+(fn parse_intervals [name, text, through_year]
+  (let transitions [])
+  (let offsets [])
+  (var initial nil)
+  (var prior -1)
+  (for line in ($str/split text "\n")
+    (if (|| (== ($str/trim line) "") ($str/starts_with? line "TZ=")) (continue))
+    (let fields ($str/split line "\t"))
+    (if (< fields/.size 3) (p/problem "Invalid timezone interval output"))
+    (let offset (offset_seconds fields/2))
+    (if_not (offsets .contains? offset) (offsets .push offset))
+    (if (== fields/0 "-")
+      (then (set initial offset))
+      (else
+        (let at (- (calendar/local_seconds fields/0 fields/1) offset))
+        (if (<= at prior) (p/problem "Timezone transitions must be strictly ordered"))
+        (transitions .push [at offset])
+        (set prior at))))
+  (if ($absent? initial) (p/problem "Timezone has no initial interval"))
+  {^name name ^from 0 ^until (* (calendar/day_number (+ through_year 1) 1 1) 86400)
+   ^initial initial ^offsets offsets ^transitions transitions ^format "zdump-intervals@1"})
+
+(fn system_rules [name, through_year]
+  (if_not (safe_name? name) (p/problem "Expected an IANA timezone name"))
+  (if (|| (!= ($head through_year) Int) (< through_year 2038) (> through_year 2500))
+    (p/problem "Timezone horizon must be between 2038 and 2500"))
+  (if (== name "UTC") (return (parse_intervals name "-\t-\t+00\n" through_year)))
+  (let exists ($os/exec ^cmd "/bin/test" ^args ["-f" $"/usr/share/zoneinfo/${name}"] ^timeout_ms 1000))
+  (if_not (== exists/status 0) (p/problem $"Unknown installed timezone: ${name}"))
+  (let range $"1970,${(+ through_year 1)}")
+  (var text nil)
+  (for executable in ["/usr/sbin/zdump" "/usr/bin/zdump"]
+    (let response (try ($os/exec ^cmd executable ^args ["-i" "-c" range name]
+      ^timeout_ms 2000 ^max_bytes 262144) catch Any nil))
+    (if_yes (&& (! ($absent? response)) (== response/status 0) (! response/timed_out))
+      (set text response/stdout)
+      (break)))
+  (if ($absent? text) (p/problem "The timezone adapter requires zdump with interval output"))
+  (parse_intervals name text through_year))
+
+(fn check [saved, revision]
+  (if (|| ($absent? saved) (!= ($crypto/sha256 ($serde/write_data saved/rules)) revision))
+    (p/problem "Missing or corrupt retained timezone revision"))
+  saved/rules)
+(fn prepare [tx, name, ^through_year through_year = 2100, ^refresh refresh = false, ^allow_import allow_import = true]
+  (if_not (safe_name? name) (p/problem "Expected an IANA timezone name"))
+  (let key $"timezone_selection/${name}")
+  (let existing (p/tx_get tx key))
+  (if_yes (&& (! refresh) (! ($absent? existing)))
+    (check (p/tx_get tx $"timezone/${existing}") existing)
+    (return {^name name ^revision existing}))
+  (if_not allow_import (p/problem "Import the timezone outside the grouped callback first"))
+  (let rules (system_rules name through_year))
+  (let revision ($crypto/sha256 ($serde/write_data rules)))
+  (if ($absent? (p/tx_get tx $"timezone/${revision}"))
+    (p/tx_put tx $"timezone/${revision}" {^revision revision ^rules rules}))
+  (p/tx_put tx key revision)
+  {^name name ^revision revision})
+(fn read [tx, revision] (check (p/tx_get tx $"timezone/${revision}") revision))
+
+(fn offset_at [rules, second]
+  (if (|| (< second rules/from) (>= second rules/until)) (p/problem "Timestamp exceeds the retained timezone horizon"))
+  (var low 0)
+  (var high rules/transitions/.size)
+  (while (< low high)
+    (let middle (calendar/floor_div (+ low high) 2))
+    (let transition rules/transitions/%middle)
+    (if (<= transition/0 second) (set low (+ middle 1)) (set high middle)))
+  (if (== low 0) (return rules/initial))
+  (let index (- low 1))
+  rules/transitions/%index/1)
+
+(fn first_instant [rules, local]
+  # Skip gaps; choose only the earlier instant when a civil minute repeats.
+  (var found nil)
+  (for offset in rules/offsets
+    (let candidate (- local offset))
+    (if_yes (&& (>= candidate rules/from) (< candidate rules/until))
+      (if_yes (== (offset_at rules candidate) offset)
+        (if (|| ($absent? found) (< candidate found)) (set found candidate)))))
+  found)

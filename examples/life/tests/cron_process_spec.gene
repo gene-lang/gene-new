@@ -1,0 +1,50 @@
+(import $test [describe it assert_equal])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+
+(fn crash [kind, now]
+  (let name (p/id "cron-crash"))
+  (let home $"examples/life/tmp/${name}")
+  (let child ($os/exec ^cmd ($os/executable_path)
+    ^args ["run" "examples/life/tests/cron_crash_fixture.gene" home kind] ^timeout_ms 10000 ^max_bytes 16384))
+  ($assert (!= child/status 0))
+  ($assert ($fs/exists? home) child/stderr)
+  (runtime/open_life home ^clock (fn [] (now .get))))
+
+(describe "Cron process recovery"
+  (it "dispatches a committed queued occurrence once under its original identity" []
+    (let now ($cell 61000))
+    (let host (crash "queued" now))
+    (try
+      (let schedules (p/values host/store "schedule/"))
+      (let pending schedules/0/pending)
+      (assert_equal schedules/0/due 120000)
+      (assert_equal (p/get host/store "state/attempts") nil)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 1)
+      (let after (p/values host/store "schedule/"))
+      (assert_equal after/0/status "queued")
+      (assert_equal after/0/last_outcome/execution_id pending)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 1)
+      ensure (runtime/close_life host)))
+
+  (it "does not replay an interrupted occurrence and continues only with a distinct later occurrence" []
+    (let now ($cell 61000))
+    (let host (crash "running" now))
+    (try
+      (let schedules (p/values host/store "schedule/"))
+      (assert_equal schedules/0/status "queued")
+      (assert_equal schedules/0/last_outcome/status "interrupted")
+      (let prior schedules/0/last_outcome/execution_id)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 1)
+      (now .set 120000)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 2)
+      (let after (p/values host/store "schedule/"))
+      (assert_equal after/0/last_outcome/status "succeeded")
+      ($assert (!= after/0/last_outcome/execution_id prior))
+      (let old (p/get host/store $"execution/${prior}"))
+      (assert_equal old/status "interrupted")
+      ensure (runtime/close_life host))))

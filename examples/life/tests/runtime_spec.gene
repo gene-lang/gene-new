@@ -1,0 +1,272 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : runtime ^from "../runtime")
+(import * : p ^from "../persistence")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+
+(fn fresh [decisions = nil]
+  (let name (p/id "life"))
+  (runtime/open_life $"examples/life/tmp/${name}" ^create true
+    ^clock (fn [] 1000) ^decisions (?? decisions [])))
+(fn decide [host, source, note = "Test decision"]
+  ((host/decisions .get) .push (brain/response note source))
+  (let observation (body/receive host "Please consider"))
+  (runtime/settle host)
+  (for cycle in (p/values host/store "cycle/")
+    (if_yes (&& (cycle/events .contains? observation/id) (== cycle/note note)) (return cycle)))
+  (p/problem "No accepted test decision"))
+(fn quiet []
+  (let host (fresh [(brain/response "Quiet first start" "nil")]))
+  (runtime/settle host)
+  host)
+
+(describe "Life world clock"
+  (it "rejects a negative simulation step without changing the checkpoint" []
+    (let host (quiet))
+    (try
+      (let before (p/get host/store "world"))
+      (assert_raises (fn [] (body/tick host -1)) p/LifeError)
+      (assert_equal (p/get host/store "world") before)
+      ensure (runtime/close_life host))))
+
+(describe "Gene Life"
+  (it "starts, thinks, executes ordinary Gene, and retains silence" []
+    (let host (fresh))
+    (try
+      (runtime/settle host)
+      (let cycles (p/values host/store "cycle/"))
+      (assert_equal cycles/0/status "succeeded" cycles/0/result)
+      (assert_equal cycles/.size 1)
+      (let memories (p/values host/store "memory/"))
+      (assert_equal memories/.size 1)
+      (assert_equal (p/values host/store "delivery/") [])
+      ensure (runtime/close_life host)))
+
+  (it "executes functions and loops, saves and reuses a Gene helper" []
+    (let host (quiet))
+    (try
+      (let cycle (decide host "(do
+        (let revision (code .save \"double\" (quote (fn [x] (* x 2)))))
+        (let double (code .load revision))
+        (var values [])
+        (for x in [1 2 3] (values .push (double x)))
+        (state .put \"values\" values)
+        (state .put \"helper\" revision) values)"))
+      (assert_equal cycle/status "succeeded" cycle/result)
+      (assert_equal (p/get host/store "state/values") [2 4 6])
+      (let later (decide host "(state .put \"later\" ((code .load (state .get \"helper\")) 7))"))
+      (assert_equal later/status "succeeded" later/result)
+      (assert_equal (p/get host/store "state/later") 14)
+      ensure (runtime/close_life host)))
+
+  (it "considers silence once and preserves the pending conversation" []
+    (let host (quiet))
+    (try
+      (decide host "nil" "Choosing silence")
+      (let calls (host/calls .get))
+      (runtime/heartbeat host)
+      (runtime/heartbeat host)
+      (assert_equal (host/calls .get) calls)
+      (let chat (p/get host/store "conversation/garden"))
+      (assert_equal chat/messages/.size 1)
+      (assert_equal chat/pending/.size 1)
+      (assert_equal (p/values host/store "delivery/") [])
+      ensure (runtime/close_life host)))
+
+  (it "rejects compile errors before effects and bounds corrections" []
+    (let broken (brain/response "Broken" "(do (state .put \"bad\" 1) (break))"))
+    (let host (fresh [broken broken broken]))
+    (try
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/bad") nil)
+      (let cycles (p/values host/store "cycle/"))
+      (assert_equal cycles/.size 2)
+      (for cycle in cycles
+        (assert_equal cycle/status "rejected")
+        ($assert ($absent? cycle/note)))
+      ensure (runtime/close_life host)))
+
+  (it "retains partial delivery and the failed note without replay" []
+    (let host (quiet))
+    (try
+      (let cycle (decide host "(do
+        (body/chat .send context/focus/reply_to \"Hello once\")
+        (panic \"after send\"))"))
+      (assert_equal cycle/status "failed")
+      (let deliveries (p/values host/store "delivery/"))
+      (assert_equal deliveries/.size 1)
+      (let snapshot (runtime/context host []))
+      (var found false)
+      (for note in snapshot/recent_decisions
+        (if_yes (== note/id cycle/id) (assert_equal note/status "failed") (set found true)))
+      ($assert found)
+      ensure (runtime/close_life host)))
+
+  (it "publishes walking and cognitive state together, rejects a missing tx" []
+    (let host (quiet))
+    (try
+      (let cycle (decide host "(store .commit (fn [tx]
+        (let job (body/world .start_walk \"garden\" ^tx tx))
+        (state .put \"activity\" job/id ^tx tx) job/id))"))
+      (assert_equal cycle/status "succeeded" cycle/result)
+      (let jobs (p/values host/store "job/"))
+      (assert_equal jobs/.size 1)
+      (assert_equal (p/get host/store "state/activity") jobs/0/id)
+      (assert_equal jobs/0/steps 0)
+      (let failed (decide host "(do
+        (fn helper [] (state .put \"escaped\" true))
+        (store .commit (fn [tx]
+          (state .put \"staged\" true ^tx tx) (helper))))"))
+      (assert_equal failed/status "failed")
+      (assert_equal (p/get host/store "state/escaped") nil)
+      (assert_equal (p/get host/store "state/staged") nil)
+      ensure (runtime/close_life host)))
+
+  (it "recovers identity, preference, position, inventory, chat, activity and wake before inference" []
+    (let host (quiet))
+    (let cycle (decide host "(do
+      (memory .remember {^preference \"shade\" ^source \"visitor\"})
+      (state .put \"commitment\" {^status \"unfinished\"})
+      (body/world .take \"watering-can\")
+      (store .commit (fn [tx]
+        (let job (body/world .start_walk \"garden\" ^tx tx))
+        (state .put \"activity\" job/id ^tx tx)))
+      (scheduler .wake_after 50000 \"Return to visitor\"))"))
+    (assert_equal cycle/status "succeeded" cycle/result)
+    (body/tick host 3000)
+    (let before {})
+    (for prefix in ["world" "memory/" "state/" "job/" "conversation/" "schedule/"]
+      (for key in (p/keys host/store prefix) (before .put key (p/get host/store key))))
+    (let meta (p/get host/store "meta"))
+    (let home host/store/home)
+    (runtime/close_life host)
+    (let restored (runtime/open_life home ^clock (fn [] 3601000)))
+    (try
+      (let restored_meta (p/get restored/store "meta"))
+      (assert_equal restored_meta/id meta/id)
+      (assert_equal (restored/calls .get) 0)
+      (for pair in before (assert_equal (p/get restored/store pair/0) pair/1 ($to_str pair/0)))
+      (body/tick restored 7000)
+      (let world (p/get restored/store "world"))
+      (assert_equal world/position 10.0)
+      (let jobs (p/values restored/store "job/"))
+      (assert_equal jobs/0/status "succeeded")
+      ensure (runtime/close_life restored)))
+
+  (it "keeps a new arrival while a controllable brain is thinking" []
+    (let started ($cell false))
+    (let release ($cell false))
+    (let name (p/id "controlled"))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+      ^brain (fn [snapshot]
+        (started .set true)
+        (while (! (release .get)) ($sleep 5))
+        (brain/response "Earlier events only" "nil"))))
+    (try
+      (let first (body/receive host "first"))
+      (runtime/heartbeat host)
+      (while (! (started .get)) ($sleep 5))
+      (let later (body/receive host "later"))
+      (release .set true)
+      (loop
+        (runtime/heartbeat host)
+        ($sleep 5)
+        (let observation (p/get host/store $"event/${first/id}"))
+        (if_not ($absent? observation/considered_by) (break)))
+      (let pending (p/get host/store $"event/${later/id}"))
+      ($assert ($absent? pending/considered_by))
+      ensure (runtime/close_life host)))
+
+  (it "retains receipt and settles pause during a runaway Gene program" []
+    (let host (quiet))
+    ((host/decisions .get) .push (brain/response "Runaway" "(loop nil)"))
+    (body/receive host "start")
+    (try
+      (loop
+        (runtime/heartbeat host)
+        ($sleep 1)
+        (let active (host/active .get))
+        (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break)))
+      (let during (body/receive host "during runaway"))
+      (let started ($os/monotonic_ms))
+      (runtime/pause host)
+      ($assert (< (- ($os/monotonic_ms) started) 1000))
+      (let meta (p/get host/store "meta"))
+      (assert_equal meta/mode "paused")
+      (let receipt (p/get host/store $"event/${during/id}"))
+      (assert_equal receipt/data/text "during runaway")
+      ($assert ($absent? (host/active .get)))
+      ensure (runtime/close_life host)))
+
+  (it "rejects malformed framing without guessing executable fragments" []
+    (let valid "```text\nI will wait.\n```\n```gene\nnil\n```")
+    (let result (brain/decode valid))
+    (assert_equal result/program "nil")
+    (for bad in ["nil" $"${valid}prose" $"${valid}${valid}" "```text\nNote\n```"]
+      (assert_raises (fn [] (brain/decode bad)) p/LifeError)))
+
+  (it "sends delayed code to its saved conversation, cancels owned work, and expires late code" []
+    (let now ($cell 1000))
+    (let name (p/id "scheduled"))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true
+      ^clock (fn [] (now .get)) ^decisions [(brain/response "Quiet" "nil")]))
+    (try
+      (runtime/settle host)
+      (let cycle (decide host "(do
+        (let owner (life .owner \"garden-plan\"))
+        (scheduler .after 5000
+          ^code (quote (body/chat .send input/destination input/text))
+          ^bindings {^destination context/focus/reply_to ^text \"Later\"}
+          ^missed {^run_within_ms 1000 ^otherwise \"expire\"})
+        (scheduler .after 5000 ^code (quote (state .put \"cancelled\" true))
+          ^owner owner ^missed {^run_within_ms 1000 ^otherwise \"expire\"})
+        (scheduler .after 1 ^code (quote (state .put \"too_late\" true))
+          ^missed {^run_within_ms 1 ^otherwise \"expire\"})
+        (life .cancel_owner \"garden-plan\"))"))
+      (assert_equal cycle/status "succeeded" cycle/result)
+      (body/receive host "Different conversation" ^conversation "elsewhere")
+      (runtime/settle host)
+      (now .set 6000)
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/cancelled") nil)
+      (assert_equal (p/get host/store "state/too_late") nil)
+      (let deliveries (p/values host/store "delivery/"))
+      (assert_equal deliveries/.size 1)
+      (assert_equal deliveries/0/destination/conversation "garden")
+      (let count (host/calls .get))
+      (runtime/heartbeat host)
+      (assert_equal (host/calls .get) count)
+      ensure (runtime/close_life host)))
+
+  (it "keeps operator controls responsive while a Gene adapter waits" []
+    (let host (quiet))
+    ((host/decisions .get) .push (brain/response "Waiting adapter"
+      "(do (fn wait_for_adapter [] ($sleep 60000)) (wait_for_adapter))"))
+    (body/receive host "start waiting")
+    (try
+      (loop
+        (runtime/heartbeat host)
+        ($sleep 1)
+        (let active (host/active .get))
+        (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break)))
+      (body/receive host "still receiving")
+      (let started ($os/monotonic_ms))
+      (runtime/pause host)
+      ($assert (< (- ($os/monotonic_ms) started) 1000))
+      (let chat (p/get host/store "conversation/garden"))
+      (assert_equal chat/messages/.size 2)
+      (let meta (p/get host/store "meta"))
+      (assert_equal meta/mode "paused")
+      ensure (runtime/close_life host)))
+
+  (it "does not replace an existing Life when required state is missing" []
+    (let host (quiet))
+    (let home host/store/home)
+    (p/put host/store "world" nil)
+    (runtime/close_life host)
+    (assert_raises (fn [] (runtime/open_life home)) p/LifeError)
+    (let store (p/open_store home))
+    (try
+      (assert_equal (p/get store "world") nil)
+      ($assert (! ($absent? (p/get store "meta"))))
+      ensure (p/close_store store))))

@@ -1,0 +1,114 @@
+(mod execution)
+(import * : p ^from "./persistence")
+(import * : body ^from "./body")
+(import * : code ^from "./code")
+(import * : routines ^from "./routines")
+(import * : scheduler ^from "./scheduler")
+
+(fn launch [host, record, mode = "run"]
+  (let name (p/id "execution"))
+  (let directory $"${host/store/home}/work/${name}")
+  ($fs/make_dir directory)
+  (let root ($fs/real_path directory))
+  (let rpc $"${root}/rpc.data")
+  (let result $"${root}/result.data")
+  (let request $"${root}/request.data")
+  (let selected (p/get host/store $"organization/${record/organization}"))
+  (let module (if (|| (== mode "migration") ($absent? selected/module)) nil
+    (code/materialize (code/read host/store selected/module) root)))
+  (let candidate (if ($absent? record/candidate_module) nil
+    (code/materialize (code/read host/store record/candidate_module) root)))
+  (let callback (if ($absent? record/routine_id) nil
+    (code/materialize (code/read host/store record/code_revision) root)))
+  ($fs/write_text_atomic request ($serde/write_data {^program record/program
+    ^context (?? record/context {}) ^input (?? record/input {}) ^mode mode
+    ^module module ^candidate_module candidate ^callback callback ^handler (?? record/handler "run")
+    ^custom_context (== selected/context true) ^attention (== selected/attention true)
+    ^ownership (== selected/ownership true)
+    ^root root ^rpc_path rpc ^result_path result}))
+  (let task ($os/exec_async ^cmd ($os/executable_path)
+    ^args ["run" host/worker request] ^dir root
+    ^timeout_ms 3000 ^max_bytes 16384))
+  (let done ($cell nil))
+  (let monitor (spawn ^lane root (done .set (task .join))))
+  {^record record ^mode mode ^task task ^monitor monitor ^done done ^rpc rpc ^result result ^root root
+   ^tx ($cell nil) ^tx_id ($cell nil) ^cancelled ($cell false)
+   ^read_view (if (== mode "context") (p/begin host/store record/id) nil)})
+
+(fn operation [host, execution, request]
+  (if (== execution/mode "validate") (p/problem "Validation cannot perform application operations"))
+  (let meta (p/get host/store "meta"))
+  (let recovery (&& (== execution/mode "migration") (== execution/selection/recovery true)))
+  (if (|| (execution/cancelled .get) (&& (!= meta/mode "running") (! recovery)))
+    (p/problem "Execution is no longer admitted"))
+  (let admission (p/begin host/store "operation-admission"))
+  (if (|| (! (body/valid_basis admission execution/record))
+          (!= execution/record/organization meta/organization) (! (routines/admitted? admission execution/record)))
+    (p/problem "Execution ownership or organization is no longer valid"))
+  (if_not ($absent? (scheduler/inadmissible admission execution/record (host/clock)))
+    (p/problem "Scheduled execution was cancelled or replaced"))
+  (let op request/op)
+  (if_yes (== execution/mode "migration")
+    (if_not (["get" "put" "keys" "roots" "revision" "load_code" "new_id" "register_routine" "cancel_routine" "get_schedule" "get_owner" "chat_history"] .contains? op)
+      (p/problem "Migration permits only participating local data operations")))
+  (if_yes (== execution/mode "context")
+    (if_not (["get" "keys" "roots" "revision" "load_code" "observe" "get_schedule" "get_owner" "chat_history"] .contains? op)
+      (p/problem "Context construction is read-only")))
+  (if (== op "begin")
+    (then
+      (if_not ($absent? (execution/tx .get)) (p/problem "Nested groups are not supported"))
+      (execution/tx .set (p/begin host/store execution/record/id))
+      (execution/tx_id .set (p/id "tx"))
+      (return (execution/tx_id .get))))
+  (let grouped (! ($absent? (execution/tx .get))))
+  (if grouped
+    (if_not (== request/tx (execution/tx_id .get)) (p/problem "An operation inside a group must forward tx"))
+    (if_not ($absent? request/tx) (p/problem "Expired or foreign transaction handle")))
+  (let tx (if grouped (execution/tx .get)
+    (if (== execution/mode "context") execution/read_view (p/begin host/store execution/record/id))))
+  (if (["commit" "abort"] .contains? op)
+    (then
+      (if_not grouped (p/problem "No active group"))
+      (if_yes (&& (== op "commit") (! ($absent? host/fault))) (host/fault "before_commit"))
+      (let value (if (== op "commit") (p/commit tx) (p/abort tx)))
+      (if_yes (&& (== op "commit") (! ($absent? host/fault))) (host/fault "after_commit"))
+      (execution/tx .set nil)
+      (execution/tx_id .set nil)
+      (return value)))
+  (let value (body/apply_operation host tx execution/record op (?? request/data {})))
+  (if_yes (&& (== execution/mode "migration") (== op "put") (! ($absent? host/fault)))
+    (host/fault "migration_staged"))
+  (if_yes (&& grouped (== op "start_walk") (! ($absent? host/fault))) (host/fault "staged_walk"))
+  (if_yes (&& (! grouped) (!= execution/mode "context"))
+    (if (!= tx/writes {}) (p/commit tx) (p/abort tx)))
+  (if (== op "load_code") (return (code/materialize value execution/root)))
+  value)
+
+(fn poll [host, execution]
+  (if_yes (&& (! (execution/cancelled .get)) ($fs/exists? execution/rpc))
+    (let request ($serde/read_data ($fs/read_text execution/rpc)))
+    ($fs/remove execution/rpc)
+    (let reply (try {^ok true ^value (operation host execution request)}
+      catch Any {^ok false ^error $err/message}))
+    ($fs/write_text_atomic $"${execution/rpc}.reply" ($serde/write_data reply)))
+  (let done (execution/done .get))
+  (if ($absent? done) (return nil))
+  (if_yes (&& (!= execution/mode "migration") (! ($absent? (execution/tx .get))))
+    (p/abort (execution/tx .get)))
+  (if (execution/cancelled .get)
+    (return {^status (?? execution/cancel_status "interrupted") ^result "Execution cancelled"}))
+  (match done
+    (when (TaskOutcome/ok result)
+      (if (&& (== result/status 0) ($fs/exists? execution/result))
+        (then
+          (let value ($serde/read_data ($fs/read_text execution/result)))
+          {^status "succeeded" ^result value/value ^data value/data
+           ^read_revisions (if ($absent? execution/read_view) {} (p/copy execution/read_view/reads))})
+        (else {^status "failed" ^result $"${result/stderr}${result/stdout}"})))
+    (when (TaskOutcome/error error) {^status "failed" ^result ($to_str error)})
+    (when (TaskOutcome/panic message) {^status "failed" ^result message})
+    (when TaskOutcome/cancelled {^status "interrupted" ^result "Execution cancelled"})))
+
+(fn cancel [execution]
+  (execution/cancelled .set true)
+  (execution/task .cancel))

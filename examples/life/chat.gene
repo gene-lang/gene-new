@@ -1,0 +1,130 @@
+(mod chat)
+(import * : p ^from "./persistence")
+(import [event] ^from "./events")
+
+(fn require_text [value, label, maximum, ^empty empty = false]
+  (if (|| (!= ($head value) Str) (> ($str/byte_size value) maximum)
+          (&& (! empty) (== value ""))) (p/problem $"Invalid ${label}")))
+(fn conversation_id [destination]
+  (require_text destination/conversation "conversation" 256)
+  (require_text destination/thread "thread" 256)
+  (if (== destination/adapter "local") (return destination/conversation))
+  (if_not (== destination/adapter "http") (p/problem "Unknown chat adapter"))
+  (require_text destination/connector "connector" 128)
+  (let digest ($crypto/sha256 destination/conversation))
+  $"http:${destination/connector}:${digest}")
+
+(fn accept [host, tx, text, speaker, destination, external_id, cursor]
+  (require_text text "message text" 8192 ^empty true)
+  (require_text speaker "speaker" 256)
+  (let conversation (conversation_id destination))
+  (let identity [destination/adapter (?? destination/connector nil) destination/conversation destination/thread external_id])
+  (let event_id (if ($absent? external_id) (p/id "chat") $"chat:${($crypto/sha256 ($serde/write_data identity))}"))
+  (var previous (p/tx_get tx $"event/${event_id}"))
+  # Existing local homes retain their previously accepted external identities.
+  (if_yes (&& ($absent? previous) (== destination/adapter "local") (! ($absent? external_id)))
+    (let legacy (p/tx_get tx $"event/chat:${destination/conversation}:${external_id}"))
+    (if_yes (&& (! ($absent? legacy)) (== legacy/reply_to/thread destination/thread)) (set previous legacy)))
+  (let key $"conversation/${conversation}")
+  (let chat (?? (p/tx_get tx key) {^id conversation ^messages [] ^participants [] ^pending [] ^cursor nil
+    ^destination destination ^visibility [conversation]}))
+  (if_not ($absent? previous)
+    (if_not (&& (== previous/data/text text) (== previous/data/speaker speaker))
+      (p/problem "An accepted external message ID was reused with different content"))
+    (if_yes (&& (! ($absent? cursor)) (!= cursor chat/cursor))
+      (chat .put "cursor" cursor)
+      (p/tx_put tx key chat))
+    (return previous))
+  (let received (event host tx "chat" {^text text ^speaker speaker ^source destination/adapter
+    ^external_id external_id ^conversation conversation ^thread destination/thread}
+    ^event_id event_id ^reply_to destination ^visibility [conversation]))
+  (if_not (chat/participants .contains? speaker) (chat/participants .push speaker))
+  (chat/messages .push {^id event_id ^speaker speaker ^text text ^thread destination/thread
+    ^external_id external_id ^visibility [conversation]})
+  (chat/pending .push event_id)
+  (chat .put "cursor" (?? cursor event_id))
+  (p/tx_put tx key chat)
+  received)
+
+(fn receive [host, text, ^speaker speaker = "visitor", ^conversation conversation = "garden",
+             ^thread thread = "main", ^external_id external_id = nil, ^cursor cursor = nil]
+  (let tx (p/begin host/store "chat-receipt"))
+  (let value (accept host tx text speaker {^adapter "local" ^conversation conversation ^thread thread} external_id cursor))
+  (if (!= tx/writes {}) (p/commit tx) (p/abort tx))
+  value)
+
+(fn delivered [tx, delivery, receipt]
+  (if (== delivery/status "delivered") (return delivery))
+  (let conversation (conversation_id delivery/destination))
+  (let key $"conversation/${conversation}")
+  (let chat (p/tx_get tx key))
+  (if ($absent? chat) (p/problem "Conversation no longer exists"))
+  (var found false)
+  (for message in chat/messages (if_yes (== message/id delivery/id) (set found true)))
+  (if_not found
+    (chat/messages .push {^id delivery/id ^speaker "life" ^text delivery/text
+      ^thread delivery/destination/thread ^visibility [conversation]}))
+  (let pending [])
+  (for id in chat/pending
+    (var answered false)
+    (if_yes ((?? delivery/in_reply_to []) .contains? id)
+      (for message in chat/messages
+        (if_yes (&& (== message/id id) (== message/thread delivery/destination/thread)) (set answered true))))
+    (if_not answered (pending .push id)))
+  (chat .put "pending" pending)
+  (delivery .put "status" "delivered")
+  (delivery .put "receipt" receipt)
+  (delivery .put "needs_reconciliation" false)
+  (p/tx_put tx key chat)
+  (p/tx_put tx $"delivery/${delivery/id}" delivery)
+  delivery)
+
+(fn prepare [host, tx, record, data]
+  (require_text data/text "outgoing text" 8192 ^empty true)
+  (let destination data/destination)
+  (let conversation (conversation_id destination))
+  (if ($absent? (p/tx_get tx $"conversation/${conversation}")) (p/problem "Conversation no longer exists"))
+  (let owner (?? data/owner nil))
+  (if_yes (! ($absent? owner))
+    (if_not (== (p/tx_get tx $"owner/${owner/id}") owner) (p/problem "Delivery owner has been retired")))
+  (let id (?? data/operation_id (p/id "delivery")))
+  (require_text id "operation ID" 128)
+  (let previous (p/tx_get tx $"delivery/${id}"))
+  (if_not ($absent? previous)
+    (if_not (&& (== previous/destination destination) (== previous/text data/text)
+                 (== previous/owner owner) (== previous/in_reply_to (?? data/in_reply_to (?? record/events []))))
+      (p/problem "Delivery operation ID reused with different content"))
+    (return previous))
+  (let delivery {^id id ^destination destination ^text data/text ^status "pending"
+    ^receipt nil ^cause record/id ^owner owner ^attempts 0 ^needs_reconciliation false
+    ^in_reply_to (?? data/in_reply_to (?? record/events [])) ^visibility [conversation]})
+  (if (== destination/adapter "local") (return (delivered tx delivery (p/id "receipt"))))
+  (let connector (p/tx_get tx $"connector/${destination/connector}"))
+  (if (|| ($absent? connector) (!= connector/status "active") ($absent? connector/peer_id))
+    (p/problem "HTTP conversation has no ready connector"))
+  (let meta (p/tx_get tx "meta"))
+  (let payload {^operation_id delivery/id ^life_id meta/id ^peer_id connector/peer_id
+    ^conversation destination/conversation ^thread destination/thread ^text data/text})
+  (let serialized ($json/stringify payload))
+  (delivery .put "payload" serialized)
+  (delivery .put "digest" ($crypto/sha256 serialized))
+  (delivery .put "peer_id" connector/peer_id)
+  (delivery .put "endpoint" connector/endpoint)
+  (delivery .put "adapter_revision" connector/adapter_revision)
+  (p/tx_put tx $"delivery/${delivery/id}" delivery)
+  delivery)
+
+(fn history [tx, destination, limit, before]
+  (if (|| (!= ($head limit) Int) (< limit 1) (> limit 100)) (p/problem "History limit must be between 1 and 100"))
+  (let id (conversation_id destination))
+  (let chat (p/tx_get tx $"conversation/${id}"))
+  (if ($absent? chat) (p/problem "Conversation no longer exists"))
+  (let matching [])
+  (for message in chat/messages (if_yes (== message/thread destination/thread) (matching .push message)))
+  (let end ($math/min matching/.size (?? before matching/.size)))
+  (let start ($math/max 0 (- end limit)))
+  (let messages [])
+  (var index start)
+  (while (< index end) (messages .push matching/%index) (set index (+ index 1)))
+  {^conversation id ^thread destination/thread ^messages messages ^before start ^more (> start 0)
+   ^participants chat/participants ^pending chat/pending ^visibility [id]})

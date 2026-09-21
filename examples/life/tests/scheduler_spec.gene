@@ -1,0 +1,247 @@
+(import $test [describe it assert_equal])
+(import * : p ^from "../persistence")
+(import * : runtime ^from "../runtime")
+(import * : body ^from "../body")
+(import * : brain ^from "../brain")
+(import * : calendar ^from "../calendar")
+(import * : timezone ^from "../timezone")
+(import * : operator ^from "../main")
+
+(fn at [date, time] (* (calendar/local_seconds date time) 1000))
+(fn fixture [now]
+  (let name (p/id "scheduler"))
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] (now .get))
+    ^decisions [(brain/response "Quiet" "nil")]))
+  (runtime/settle host)
+  host)
+(fn decide [host, source]
+  ((host/decisions .get) .push (brain/response "Scheduling fixture" source))
+  (let observation (body/receive host "Choose future behavior"))
+  (runtime/settle host)
+  (for cycle in (p/values host/store "cycle/")
+    (if_yes (&& (cycle/events .contains? observation/id) (== cycle/note "Scheduling fixture"))
+      (return cycle))))
+
+(describe "Life durable recurring schedules"
+  (it "coalesces downtime into one code invocation and one cognitive wake with pinned timezone rules" []
+    (let now ($cell (at "2026-03-07" "12")))
+    (let host (fixture now))
+    (let result (decide host "(do
+      (state .put \"code-schedule\" (scheduler .cron \"0 9 * * *\" \"America/New_York\"
+        ^code (quote (state .put \"ticks\" (+ 1 (?? (state .get \"ticks\") 0)))) ^missed \"coalesce_once\"))
+      (state .put \"wake-schedule\" (scheduler .cron \"0 9 * * *\" \"America/New_York\"
+        ^reason \"Review retained interests\" ^missed \"coalesce_once\")))"))
+    (assert_equal result/status "succeeded" result/result)
+    (let id (p/get host/store "state/code-schedule"))
+    (let before (p/get host/store $"schedule/${id}"))
+    (assert_equal before/due (at "2026-03-07" "14"))
+    (let home host/store/home)
+    (runtime/close_life host)
+    (now .set (at "2026-03-10" "13:05"))
+    (let restored (runtime/open_life home ^clock (fn [] (now .get))))
+    (try
+      (assert_equal (restored/calls .get) 0)
+      (let raw (p/get restored/store $"schedule/${id}"))
+      (assert_equal raw/timezone/revision before/timezone/revision)
+      (runtime/settle restored)
+      (assert_equal (p/get restored/store "state/ticks") 1)
+      (let after (p/get restored/store $"schedule/${id}"))
+      (assert_equal after/status "queued")
+      (assert_equal after/last_occurrence (at "2026-03-10" "13"))
+      (assert_equal after/due (at "2026-03-11" "13"))
+      (assert_equal after/coalesced_from before/due)
+      (var wakes 0)
+      (for event in (p/values restored/store "event/") (if_yes (== event/kind "wake") (set wakes (+ wakes 1))))
+      (assert_equal wakes 1)
+      (assert_equal (restored/calls .get) 1)
+      (runtime/settle restored)
+      (assert_equal (p/get restored/store "state/ticks") 1)
+      (now .set (at "2026-03-11" "13"))
+      (runtime/settle restored)
+      (assert_equal (p/get restored/store "state/ticks") 2)
+      ensure (runtime/close_life restored)))
+
+  (it "expires a late occurrence after pause and keeps the next recurrence eligible" []
+    (let now ($cell (at "2026-01-01" "00")))
+    (let host (fixture now))
+    (let result (decide host "(state .put \"schedule\" (scheduler .cron \"0 9 * * *\" \"UTC\"
+      ^code (quote (state .put \"ticks\" (+ 1 (?? (state .get \"ticks\") 0))))
+      ^missed {^run_within_ms 60000 ^otherwise \"expire\"}))"))
+    (assert_equal result/status "succeeded" result/result)
+    (runtime/pause host)
+    (now .set (at "2026-01-02" "12"))
+    (runtime/heartbeat host)
+    (assert_equal (p/get host/store "state/ticks") nil)
+    (runtime/resume host)
+    (try
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/ticks") nil)
+      (let id (p/get host/store "state/schedule"))
+      (let skipped (p/get host/store $"schedule/${id}"))
+      (assert_equal skipped/last_outcome/status "expired")
+      (assert_equal skipped/due (at "2026-01-03" "09"))
+      (now .set (at "2026-01-03" "09:00:30"))
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/ticks") 1)
+      ensure (runtime/close_life host)))
+
+  (it "cancels and replaces already queued programs using schedule generations" []
+    (let now ($cell 1000))
+    (let host (fixture now))
+    (try
+      (for action in ["cancel" "replace"]
+        (let tx (p/begin host/store "queue-fixture"))
+        (let id (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "after"
+          {^delay 0 ^source "(state .put \"old-program\" true)" ^missed {^run_within_ms 1000 ^otherwise "expire"}}))
+        (p/commit tx)
+        (body/due host)
+        (let change (p/begin host/store "change"))
+        (if (== action "cancel")
+          (body/apply_operation host change {^id "change" ^organization "starter@1"} "cancel" {^id id})
+          (body/apply_operation host change {^id "change" ^organization "starter@1"} "after"
+            {^id id ^delay 0 ^source "(state .put \"new-program\" true)" ^missed {^run_within_ms 1000 ^otherwise "expire"}}))
+        (p/commit change)
+        (runtime/settle host)
+        (assert_equal (p/get host/store "state/old-program") nil))
+      (assert_equal (p/get host/store "state/new-program") true)
+      ensure (runtime/close_life host)))
+
+  (it "rechecks lateness at dispatch rather than merely when code entered the queue" []
+    (let now ($cell 1000))
+    (let host (fixture now))
+    (let tx (p/begin host/store "queued-window"))
+    (let id (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "after"
+      {^delay 0 ^source "(state .put \"too-late\" true)" ^missed {^run_within_ms 100 ^otherwise "expire"}}))
+    (p/commit tx)
+    (body/due host)
+    (now .set 2000)
+    (try
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/too-late") nil)
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "expired")
+      (assert_equal item/last_outcome/status "expired")
+      ensure (runtime/close_life host)))
+
+  (it "bounds repeated recurring failures without replaying a completed partial effect" []
+    (let now ($cell (at "2026-01-01" "00")))
+    (let host (fixture now))
+    (let result (decide host "(state .put \"schedule\" (scheduler .cron \"* * * * *\" \"UTC\"
+      ^code (quote (do (state .put \"attempts\" (+ 1 (?? (state .get \"attempts\") 0))) (panic \"failed occurrence\")))
+      ^missed \"coalesce_once\"))"))
+    (assert_equal result/status "succeeded" result/result)
+    (try
+      (now .set (+ (now .get) 60000))
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 1)
+      (now .set (+ (now .get) 60000))
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 2)
+      (let id (p/get host/store "state/schedule"))
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "suspended")
+      (now .set (+ (now .get) 3600000))
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/attempts") 2)
+      ensure (runtime/close_life host)))
+
+  (it "groups cron publication with cognitive state after importing a timezone and retains explicit rule revisions" []
+    (let now ($cell (at "2026-01-01" "00")))
+    (let host (fixture now))
+    (let result (decide host "(do
+      (let zone (scheduler .timezone \"UTC\"))
+      (store .commit (fn [tx]
+        (let id (scheduler .cron \"0 9 * * *\" zone ^reason \"Review\" ^missed \"coalesce_once\" ^tx tx))
+        (state .put \"schedule\" id ^tx tx))))"))
+    (assert_equal result/status "succeeded" result/result)
+    (let id (p/get host/store "state/schedule"))
+    (let initial (p/get host/store $"schedule/${id}"))
+    (try
+      (decide host "(scheduler .timezone \"UTC\" ^refresh true ^through_year 2110)")
+      (let head (p/get host/store "timezone_selection/UTC"))
+      ($assert (!= head initial/timezone/revision))
+      (let retained (p/get host/store $"schedule/${id}"))
+      (assert_equal retained/timezone/revision initial/timezone/revision)
+      (let failed (decide host "(store .commit (fn [tx]
+        (state .put \"staged\" true ^tx tx)
+        (scheduler .cron \"0 9 * * *\" \"Pacific/Apia\" ^missed \"coalesce_once\" ^tx tx)))"))
+      (assert_equal failed/status "failed")
+      (assert_equal (p/get host/store "state/staged") nil)
+      (assert_equal (p/get host/store "timezone_selection/Pacific/Apia") nil)
+      ensure (runtime/close_life host)))
+
+  (it "stops an active scheduled program when the operator cancels its schedule" []
+    (let now ($cell 1000))
+    (let host (fixture now))
+    (let tx (p/begin host/store "active-cancellation"))
+    (let id (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "after"
+      {^delay 0 ^source "(do (state .put \"started\" true) ($sleep 60000) (state .put \"late-effect\" true))"
+       ^missed {^run_within_ms 1000 ^otherwise "expire"}}))
+    (p/commit tx)
+    (let deadline (+ ($os/monotonic_ms) 5000))
+    (while (!= (p/get host/store "state/started") true)
+      (runtime/heartbeat host) ($sleep 5)
+      (if (> ($os/monotonic_ms) deadline) (p/problem "Scheduled execution did not start")))
+    (operator/command host {^op "cancel-schedule" ^id id})
+    (try
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/late-effect") nil)
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "cancelled")
+      (assert_equal item/last_outcome/status "cancelled")
+      ensure (runtime/close_life host)))
+
+  (it "suspends a recurrence at its explicit timezone horizon without stopping the body" []
+    (let now ($cell (at "2026-01-01" "00")))
+    (let host (fixture now))
+    (let result (decide host "(do
+      (let zone (scheduler .timezone \"UTC\" ^refresh true ^through_year 2038))
+      (state .put \"schedule\" (scheduler .cron \"0 9 * * *\" zone ^missed \"coalesce_once\")))"))
+    (assert_equal result/status "succeeded" result/result)
+    (now .set (at "2039-01-01" "12"))
+    (try
+      (runtime/settle host)
+      (let id (p/get host/store "state/schedule"))
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "suspended")
+      ($assert ($str/contains? item/reason "horizon"))
+      (let event (body/receive host "The body is still receiving observations"))
+      ($assert (! ($absent? (p/get host/store $"event/${event/id}"))))
+      ensure (runtime/close_life host)))
+
+  (it "delivers the last known occurrence even when the following one exceeds the retained timezone horizon" []
+    (let now ($cell (at "2096-01-01" "00")))
+    (let host (fixture now))
+    (let result (decide host "(state .put \"schedule\" (scheduler .cron \"0 0 29 feb *\" \"UTC\"
+      ^code (quote (state .put \"leap-occurrence\" true)) ^missed \"coalesce_once\"))"))
+    (assert_equal result/status "succeeded" result/result)
+    (now .set (at "2096-02-29" "00"))
+    (try
+      (runtime/settle host)
+      (assert_equal (p/get host/store "state/leap-occurrence") true)
+      (let id (p/get host/store "state/schedule"))
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "suspended")
+      (assert_equal item/last_outcome/status "succeeded")
+      ($assert ($str/contains? item/next_error "horizon"))
+      ensure (runtime/close_life host)))
+
+  (it "does not treat expired queue windows as failed recurring programs" []
+    (let now ($cell 1000))
+    (let host (fixture now))
+    (let result (decide host "(state .put \"schedule\" (scheduler .cron \"* * * * *\" \"UTC\"
+      ^code (quote (state .put \"must-not-run\" true))
+      ^missed {^run_within_ms 1 ^otherwise \"expire\"}))"))
+    (assert_equal result/status "succeeded" result/result)
+    (try
+      (for due in [60000 120000]
+        (now .set due)
+        (body/due host)
+        (now .set (+ due 100))
+        (runtime/settle host))
+      (let id (p/get host/store "state/schedule"))
+      (let item (p/get host/store $"schedule/${id}"))
+      (assert_equal item/status "queued")
+      (assert_equal item/consecutive_failures 0)
+      (assert_equal (p/get host/store "state/must-not-run") nil)
+      ensure (runtime/close_life host))))

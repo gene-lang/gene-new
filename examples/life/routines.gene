@@ -1,0 +1,130 @@
+(mod routines)
+(import * : p ^from "./persistence")
+(import * : code ^from "./code")
+
+(fn now [host, tx, clock]
+  (if_yes (== clock "simulation") (let world (p/tx_get tx "world")) (return world/sim_ms))
+  (host/clock))
+(fn valid_owner [tx, owner]
+  (if ($absent? owner) true (== (p/tx_get tx $"owner/${owner/id}") owner)))
+
+(fn register [host, tx, record, data]
+  (if (|| (!= ($head data/id) Str) (== data/id "")) (p/problem "A routine needs a stable registration id"))
+  (let revision (code/tx_read tx data/revision))
+  (let clock (?? data/clock "simulation"))
+  (if_not (["simulation" "wall" "events"] .contains? clock) (p/problem "Unknown routine clock"))
+  (let interval (?? data/every_ms 1000))
+  (let recovery (?? data/recovery "interrupt"))
+  (if_not (["interrupt" "checkpointed"] .contains? recovery) (p/problem "Unknown routine recovery contract"))
+  (if_yes (!= clock "events")
+    (if (|| (!= ($head interval) Int) (< interval 100)) (p/problem "Routine intervals must be at least 100 milliseconds")))
+  (if_yes (&& (== clock "events") (|| (!= ($head data/events) List) (== data/events [])))
+    (p/problem "Event subscriptions must name at least one event kind"))
+  (if_not (valid_owner tx data/owner) (p/problem "Routine owner has been retired"))
+  (let key $"routine/${data/id}")
+  (let previous (p/tx_get tx key))
+  (let spec {^revision data/revision ^handler (?? data/handler "run") ^clock clock
+    ^every_ms interval ^events (?? data/events []) ^bindings (?? data/bindings {})
+    ^owner (?? data/owner nil) ^recovery recovery ^organization (?? record/target_organization record/organization)})
+  (if_yes (&& (! ($absent? previous)) (== previous/spec spec) (== previous/status "active"))
+    (return previous/id))
+  (var count 0)
+  (for routine_key in (p/tx_keys tx "routine/")
+    (let other (p/tx_get tx routine_key))
+    (if_yes (== other/status "active") (set count (+ count 1))))
+  (if (&& ($absent? previous) (>= count 64)) (p/problem "Routine registration limit reached"))
+  (let at (now host tx clock))
+  (let generation (if ($absent? previous) 1 (+ previous/generation 1)))
+  (let registration {^id data/id ^status "active" ^spec spec ^generation generation
+    ^code_revision data/revision ^organization spec/organization ^owner spec/owner
+    ^cause record/id ^registered_at at ^last_dispatched at ^next_due (+ at interval)
+    ^pending nil ^seen_events [] ^dispatches 0 ^last_outcome nil})
+  (p/tx_put tx key registration)
+  data/id)
+
+(fn cancel [tx, id]
+  (let key $"routine/${id}")
+  (let registration (p/tx_get tx key))
+  (if ($absent? registration) (p/problem "Unknown routine registration"))
+  (registration .put "status" "retired")
+  (registration .put "generation" (+ registration/generation 1))
+  (p/tx_put tx key registration)
+  id)
+
+(fn admitted? [tx, record]
+  (if ($absent? record/routine_id) (return true))
+  (let registration (p/tx_get tx $"routine/${record/routine_id}"))
+  (&& (! ($absent? registration)) (== registration/status "active")
+      (== registration/generation record/routine_generation)
+      (== registration/organization record/organization)
+      (valid_owner tx registration/owner)))
+
+(fn due [host]
+  (let tx (p/begin host/store "routine-delivery"))
+  (let meta (p/tx_get tx "meta"))
+  (for key in (p/tx_keys tx "routine/")
+    (let registration (p/tx_get tx key))
+    (if_not (&& (== registration/status "active") ($absent? registration/pending)) (continue))
+    (if_not (&& (== registration/organization meta/organization) (valid_owner tx registration/owner))
+      (registration .put "status" "invalidated")
+      (registration .put "reason" "Organization or owner changed")
+      (p/tx_put tx key registration)
+      (continue))
+    (let spec registration/spec)
+    (let at (now host tx spec/clock))
+    (let events [])
+    (if (== spec/clock "events")
+      (then
+        (for event_key in (p/tx_keys tx "event/")
+          (let event (p/tx_get tx event_key))
+          (if_yes (&& (spec/events .contains? event/kind) (! (registration/seen_events .contains? event/id))
+                       (< events/.size 32))
+            (events .push event)
+            (registration/seen_events .push event/id)))
+        (if (== events/.size 0) (continue)))
+      (else (if (< at registration/next_due) (continue))))
+    (let execution_id (p/id "execution"))
+    (let run {^id execution_id ^status "queued" ^program "nil" ^kind "routine"
+      ^routine_id registration/id ^routine_generation registration/generation
+      ^code_revision registration/code_revision ^handler spec/handler
+      ^organization registration/organization ^owner registration/owner ^cause registration/cause
+      ^input {^registration registration/id ^generation registration/generation ^delivery_id execution_id
+              ^clock spec/clock ^now at ^elapsed_ms (- at registration/last_dispatched)
+              ^events events ^bindings spec/bindings}})
+    (registration .put "last_dispatched" at)
+    (registration .put "next_due" (+ at spec/every_ms))
+    (registration .put "pending" execution_id)
+    (registration .put "dispatches" (+ registration/dispatches 1))
+    (p/tx_put tx key registration)
+    (p/tx_put tx $"execution/${execution_id}" run))
+  (if (!= tx/writes {}) (p/commit tx) (p/abort tx)))
+
+(fn finish [tx, record, status, result]
+  (if ($absent? record/routine_id) (return false))
+  (let key $"routine/${record/routine_id}")
+  (let registration (p/tx_get tx key))
+  (if ($absent? registration) (return false))
+  (if_not (== registration/pending record/id) (return false))
+  (registration .put "pending" nil)
+  (registration .put "last_outcome" {^execution_id record/id ^status status ^result result})
+  (let failed (&& (!= status "succeeded") (== registration/status "active")))
+  (if_yes failed
+    (registration .put "status" "suspended")
+    (registration .put "reason" "Handler failed or was interrupted; inspect partial effects before repair"))
+  (p/tx_put tx key registration)
+  failed)
+
+(fn restore [tx]
+  (for key in (p/tx_keys tx "routine/")
+    (let registration (p/tx_get tx key))
+    (code/tx_read tx registration/code_revision)
+    (if_not ($absent? registration/pending)
+      (let run (p/tx_get tx $"execution/${registration/pending}"))
+      (if (|| ($absent? run) (!= run/status "queued"))
+        (then
+          (registration .put "status" (if (== registration/status "active") "suspended" registration/status))
+          (registration .put "reason" "Interrupted invocation is not automatically replayed")
+          (registration .put "last_outcome" {^execution_id registration/pending ^status "interrupted"
+            ^result (if ($absent? run) "Missing invocation record" (?? run/result "Interrupted invocation"))})
+          (registration .put "pending" nil)
+          (p/tx_put tx key registration))))))

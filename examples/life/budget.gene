@@ -1,0 +1,28 @@
+# Host resource limits are separate from any invented energy/rest model.
+(mod budget)
+(import * : p ^from "./persistence")
+(import * : calendar ^from "./calendar")
+
+(fn state [host]
+  (let meta (p/get host/store "meta"))
+  (let limit (?? meta/model_calls_per_hour 100))
+  (let now (host/clock))
+  (let prior (p/get host/store "budget/model"))
+  (let current (if (|| ($absent? prior) (>= now (+ prior/window_start 3600000)))
+    {^window_start (* (calendar/floor_div now 3600000) 3600000) ^admitted 0} prior))
+  {^window_start current/window_start ^admitted current/admitted ^limit limit
+   ^available (< current/admitted limit)})
+(fn available? [host] (let current (state host)) current/available)
+(fn reserve [host, tx, cycle_id]
+  (let current (state host))
+  (if_not current/available (p/problem "Model admission budget exhausted"))
+  (p/tx_put tx "budget/model" {^window_start current/window_start ^admitted (+ current/admitted 1)
+    ^last_cycle cycle_id})
+  {^window_start current/window_start ^number (+ current/admitted 1) ^limit current/limit})
+(fn configure [host, limit]
+  (if (|| (!= ($head limit) Int) (< limit 0) (> limit 10000))
+    (p/problem "Model calls per hour must be an integer between 0 and 10000"))
+  (let meta (p/get host/store "meta"))
+  (meta .put "model_calls_per_hour" limit)
+  (p/put host/store "meta" meta "operator-budget")
+  (state host))

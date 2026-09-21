@@ -1,0 +1,110 @@
+(mod connector_crash_fixture)
+# Shared setup is also imported by the specs; main runs only in the crash child.
+(import * : runtime ^from "../runtime")
+(import * : connector ^from "../connector")
+(import * : chat ^from "../chat")
+(import * : p ^from "../persistence")
+(import * : mailbox ^from "./mailbox_support")
+
+(fn open_host [fixture, ^home home = nil, ^clock clock = (fn [] 1000), ^fault fault = nil]
+  (let name (p/id "connector"))
+  (let directory (?? home $"examples/life/tmp/${name}"))
+  (let host (runtime/open_life directory ^create true ^clock clock ^fault fault))
+  (try
+    (let meta (p/get host/store "meta"))
+    (meta .put "model_calls_per_hour" 0)
+    (p/put host/store "meta" meta)
+    (connector/register host "mailbox" fixture/endpoint "test-peer" ^poll_ms 10 ^retry_ms 10)
+    host
+  catch Any
+    (runtime/abandon host)
+    (fail $err)))
+
+(fn close_host [host]
+  (if_not (host/store/closed .get) (runtime/close_life host)))
+(fn wait_for [host, predicate, label, ^timeout_ms timeout_ms = 10000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (while (! (predicate))
+    (if (>= ($os/monotonic_ms) deadline) (p/problem $"Timed out waiting for ${label}"))
+    (runtime/heartbeat host)
+    ($sleep 5)))
+(fn pump [host, milliseconds = 150]
+  (let deadline (+ ($os/monotonic_ms) milliseconds))
+  (while (< ($os/monotonic_ms) deadline) (runtime/heartbeat host) ($sleep 5)))
+(fn cursor [host] (let item (p/get host/store "connector/mailbox")) item/cursor)
+(fn wait_cursor [host, expected]
+  (wait_for host (fn [] (== (cursor host) expected)) $"mailbox cursor ${expected}"))
+(fn inject [fixture, id, speaker, thread, ^conversation conversation = "garden", ^text text = "Hello"]
+  (mailbox/call fixture "/inject"
+    {^id id ^speaker speaker ^conversation conversation ^thread thread ^text text}))
+(fn observations [host]
+  (let result [])
+  (for item in (p/values host/store "event/")
+    (if_yes (== item/kind "chat") (result .push item)))
+  result)
+(fn incoming [host, external_id]
+  (for item in (observations host)
+    (if_yes (== item/data/external_id external_id) (return item)))
+  (p/problem $"Missing incoming message ${external_id}"))
+(fn transcript [host, destination]
+  (p/get host/store $"conversation/${(chat/conversation_id destination)}"))
+(fn delivery [host, id] (p/get host/store $"delivery/${id}"))
+(fn stage [host, observation, operation]
+  (let tx (p/begin host/store "test-send"))
+  (let result (chat/prepare host tx {^id "test" ^events [observation/id] ^owner nil}
+    {^destination observation/reply_to ^text "A durable reply" ^in_reply_to [observation/id]
+     ^operation_id operation}))
+  (p/commit tx)
+  result)
+(fn wait_delivered [host, id]
+  (wait_for host (fn [] (let item (delivery host id)) (== item/status "delivered")) "confirmed delivery")
+  (delivery host id))
+(fn seed [host, fixture]
+  (inject fixture "crash-input" "Alice" "watering" ^text "Please water later")
+  (wait_cursor host 1)
+  (incoming host "crash-input"))
+
+(fn die [home, phase]
+  # The parent checks both this marker and status 137; an ordinary Gene error
+  # or a timeout must never masquerade as a successful crash-window test.
+  ($fs/write_text_atomic $"${home}/crash-point.data" phase)
+  ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))])
+  (p/problem "SIGKILL unexpectedly returned"))
+
+(fn main [args]
+  (let home args/0)
+  (let phase args/1)
+  (let fixture {^endpoint args/2})
+  (let armed ($cell false))
+  (let host (open_host fixture ^home home
+    ^fault (fn [at] (if_yes (&& (armed .get) (== at phase)) (die home phase)))))
+  (if_yes (["connector_before_commit" "connector_after_commit"] .contains? phase)
+    (armed .set true)
+    (seed host fixture)
+    (p/problem "Poll commit crash hook was not reached"))
+  (let observation (seed host fixture))
+  (if_yes (== phase "remote_sent_lost_response")
+    # A 503 is returned only after the remote effect is durable. Unknown
+    # receipts hold reconciliation open until the parent explicitly releases it.
+    (mailbox/call fixture "/configure" {^drop_send_response true ^unknown_receipts true}))
+  (let operation $"crash:${phase}")
+  (let tx (p/begin host/store "crash-pending"))
+  (let staged (chat/prepare host tx {^id "test" ^events [observation/id] ^owner nil}
+    {^destination observation/reply_to ^text "A durable reply" ^in_reply_to [observation/id]
+     ^operation_id operation}))
+  (p/tx_put tx "state/crash" {^delivery_id staged/id ^operation_id operation
+    ^event_id observation/id ^destination observation/reply_to})
+  (p/commit tx)
+  (if (== phase "pending") (die home phase))
+  (armed .set true)
+  (if_yes (== phase "remote_sent_lost_response")
+    (wait_for host (fn [] (let item (delivery host staged/id))
+      (== item/status "needs_reconciliation")) "lost send response")
+    # Do not kill immediately on request launch: that does not prove a remote
+    # effect. Inspect it after the lost response, without another host tick.
+    (let remote (mailbox/call fixture "/inspect" {}))
+    ($assert (== remote/effects 1) "The remote effect must precede the kill")
+    ($assert (== remote/sends 1) "The uncertain send must not already have retried")
+    (die home phase))
+  (wait_for host (fn [] false) $"crash hook ${phase}")
+  (p/problem "Expected injected process exit"))
