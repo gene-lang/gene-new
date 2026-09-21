@@ -1,5 +1,5 @@
 (mod scheduler)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 (import * : cron ^from "./cron")
 (import * : timezone ^from "./timezone")
 

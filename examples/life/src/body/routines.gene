@@ -1,6 +1,6 @@
 (mod routines)
-(import * : p ^from "./persistence")
-(import * : code ^from "./code")
+(import * : p ^from "../host/persistence")
+(import * : code ^from "../code/code")
 
 (fn now [host, tx, clock]
   (if_yes (== clock "simulation") (let world (p/tx_get tx "world")) (return world/sim_ms))

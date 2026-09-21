@@ -1,8 +1,8 @@
 (import $test [describe it assert_equal assert_raises])
-(import * : p ^from "../persistence")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
 (import $db/sqlite [Db])
 
 (fn fixture [clock = nil]

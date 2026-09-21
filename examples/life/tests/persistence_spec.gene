@@ -1,5 +1,5 @@
 (import $test [describe it assert_equal assert_raises])
-(import * : p ^from "../persistence")
+(import * : p ^from "../src/host/persistence")
 
 (describe "Life durable storage"
   (it "commits snapshots and retains immutable revisions" []

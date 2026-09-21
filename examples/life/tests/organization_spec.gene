@@ -1,10 +1,10 @@
 (import $test [describe it assert_equal])
-(import * : p ^from "../persistence")
-(import * : code ^from "../code")
-(import * : organization ^from "../organization")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
+(import * : p ^from "../src/host/persistence")
+(import * : code ^from "../src/code/code")
+(import * : organization ^from "../src/code/organization")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
 
 (fn fixture [^provider provider = nil]
   (let name (p/id "organization"))
@@ -12,7 +12,7 @@
     ^decisions [(brain/response "Quiet first start" "nil")] ^brain provider))
 (fn candidate [host, name = "visitors@2"]
   (let tx (p/begin host/store "candidate"))
-  (let source ($fs/read_text "examples/life/body/visitor_memory.gene"))
+  (let source ($fs/read_text "examples/life/src/organizations/visitor_memory.gene"))
   (let revision (code/module_bundle tx "visitor memory" {^main.gene source} "main.gene"))
   (p/commit tx)
   {^id name ^module revision ^code [revision] ^roots ["mind/"] ^context true

@@ -1,7 +1,7 @@
 # Host resource limits are separate from any invented energy/rest model.
 (mod budget)
 (import * : p ^from "./persistence")
-(import * : calendar ^from "./calendar")
+(import * : calendar ^from "../schedule/calendar")
 
 (fn state [host]
   (let meta (p/get host/store "meta"))

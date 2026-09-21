@@ -1,7 +1,7 @@
 # The platform timezone adapter imports zdump's documented interval format.
 # Scheduling itself uses only the retained transition table, not live OS calls.
 (mod timezone)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 (import * : calendar ^from "./calendar")
 
 (fn safe_name? [name]

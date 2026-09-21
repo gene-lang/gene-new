@@ -1,15 +1,15 @@
 (mod runtime)
 (import * : p ^from "./persistence")
-(import * : body ^from "./body")
-(import * : brain ^from "./brain")
+(import * : body ^from "../body/body")
+(import * : brain ^from "../brain")
 (import * : execution ^from "./execution")
-(import * : code ^from "./code")
-(import * : organization ^from "./organization")
-(import * : routines ^from "./routines")
+(import * : code ^from "../code/code")
+(import * : organization ^from "../code/organization")
+(import * : routines ^from "../body/routines")
 (import * : recovery ^from "./recovery")
-(import * : scheduler ^from "./scheduler")
+(import * : scheduler ^from "../schedule/scheduler")
 (import * : budget ^from "./budget")
-(import * : connector ^from "./connector")
+(import * : connector ^from "../body/connector")
 (import [wall_ms] ^from "./clock")
 
 (type Host
@@ -83,7 +83,7 @@
 
 (fn open_life [home, ^create create = false, ^clock clock = wall_ms,
                ^brain provider = nil, ^decisions decisions = nil,
-               ^worker worker = "examples/life/worker.gene", ^fault fault = nil]
+               ^worker worker = "examples/life/src/worker/worker.gene", ^fault fault = nil]
   (let store (p/open_store home ^create create))
   (let host (Host ^store store ^clock clock ^worker ($fs/real_path worker)
     ^brain provider ^decisions ($cell (?? decisions [])) ^active ($cell nil) ^thought ($cell nil) ^late ($cell [])
@@ -123,7 +123,7 @@
    ^policy_revisions {^organization meta/organization} ^focus focus ^observations selected
    ^recent_decisions notes ^pending_work pending ^state state
    ^memory_excerpt (take_last (p/values host/store "memory/") 12)
-   ^api_documentation "Gene bindings: store, state, memory, body/world, body/chat, scheduler, code, life. See api.gene."})
+   ^api_documentation "Gene bindings: store, state, memory, body/world, body/chat, scheduler, code, life. See src/worker/api.gene."})
 
 (fn finish [host, record, prefix, status, result]
   (let tx (p/begin host/store record/id))

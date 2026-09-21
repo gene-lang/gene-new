@@ -2,7 +2,7 @@
  ^name "genex/life"
  ^description "A persistent individual with a replaceable brain and evolving Gene behavior"
  ^version "0.1.0"
- ^library {^entry "runtime.gene"}
- ^applications [(application "life" ^entry "main.gene")
-                (application "life_demo" ^entry "demo.gene")]
+ ^library {^entry "src/host/runtime.gene"}
+ ^applications [(application "life" ^entry "src/main.gene")
+                (application "life_demo" ^entry "src/demo.gene")]
  ^dependencies {}}

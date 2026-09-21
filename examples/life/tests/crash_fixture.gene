@@ -1,10 +1,10 @@
 # Launched by process_spec.gene in a separate Gene process.
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : p ^from "../persistence")
-(import * : code ^from "../code")
-(import * : organization ^from "../organization")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : p ^from "../src/host/persistence")
+(import * : code ^from "../src/code/code")
+(import * : organization ^from "../src/code/organization")
 
 (fn die []
   ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
@@ -19,7 +19,7 @@
     (p/put selected_host/store "state/preference" "shade")
     (body/receive selected_host "Retain the conversation across migration")
     (let tx (p/begin selected_host/store "selection-fixture"))
-    (let source ($fs/read_text "examples/life/body/visitor_memory.gene"))
+    (let source ($fs/read_text "examples/life/src/organizations/visitor_memory.gene"))
     (let revision (code/module_bundle tx "visitor memory" {^main.gene source} "main.gene"))
     (organization/request tx {^id "visitors@2" ^module revision ^code [revision] ^roots ["mind/"]
       ^context true ^documentation "Visitor document with retained provenance"}

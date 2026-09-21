@@ -1,5 +1,5 @@
 (mod brain)
-(import * : p ^from "./persistence")
+(import * : p ^from "./host/persistence")
 
 (fn response [note, program] {^note note ^program program})
 (fn decode [value]

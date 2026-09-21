@@ -63,7 +63,7 @@ decision. Changing a declared owner invalidates stale work and supplies a
 non-waking error observation for bounded reconsideration. This metadata remains
 separate from the brain's chosen intention and commitment layouts.
 
-For example, `body/visitor_memory.gene` exports a new `memory`, a new `state`,
+For example, `src/organizations/visitor_memory.gene` exports a new `memory`, a new `state`,
 and a context builder. The host has no `visitor`, `energy`, or commitment-layout
 field. These remain ordinary stored Gene data interpreted by the selected code.
 

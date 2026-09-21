@@ -1,11 +1,11 @@
 # Repeatable garden continuity and rest demonstration, entirely in Gene.
 (mod demo)
-(import * : p ^from "./persistence")
-(import * : runtime ^from "./runtime")
-(import * : body ^from "./body")
+(import * : p ^from "./host/persistence")
+(import * : runtime ^from "./host/runtime")
+(import * : body ^from "./body/body")
 (import * : brain ^from "./brain")
-(import * : code ^from "./code")
-(import * : organization ^from "./organization")
+(import * : code ^from "./code/code")
+(import * : organization ^from "./code/organization")
 
 (fn decide [host, text, note, source]
   ((host/decisions .get) .push (brain/response note source))
@@ -62,7 +62,7 @@
   (show walking "garden observed, request revised")
 
   (let tx (p/begin walking/store "rest-experiment"))
-  (let source ($fs/read_text "examples/life/body/rest.gene"))
+  (let source ($fs/read_text "examples/life/src/organizations/rest.gene"))
   (let revision (code/module_bundle tx "rest experiment" {^main.gene source} "main.gene"))
   (organization/request tx {^id "rest@1" ^module revision ^code [revision]
     ^roots ["model/" "state/" "memory/"] ^attention true
@@ -95,6 +95,6 @@
     ($assert (== awake/mode "awake"))
     ($assert (== (resting/calls .get) 1))
     (show resting "awake after one cognitive wake")
-    ($println $"Inspect the retained experiment with: bin/gene run examples/life/main.gene inspect ${home}")
+    ($println $"Inspect the retained experiment with: bin/gene run examples/life/src/main.gene inspect ${home}")
     ensure (runtime/close_life resting))
   nil)

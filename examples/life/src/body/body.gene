@@ -1,11 +1,11 @@
 (mod body)
-(import * : p ^from "./persistence")
-(import * : code ^from "./code")
-(import * : organization ^from "./organization")
+(import * : p ^from "../host/persistence")
+(import * : code ^from "../code/code")
+(import * : organization ^from "../code/organization")
 (import * : routines ^from "./routines")
-(import * : scheduler ^from "./scheduler")
-(import * : timezone ^from "./timezone")
-(import * : events ^from "./events")
+(import * : scheduler ^from "../schedule/scheduler")
+(import * : timezone ^from "../schedule/timezone")
+(import * : events ^from "../host/events")
 (import * : chat ^from "./chat")
 
 (fn event [host, tx, kind, data, ^event_id event_id = nil, ^cause cause = nil, ^reply_to reply_to = nil]

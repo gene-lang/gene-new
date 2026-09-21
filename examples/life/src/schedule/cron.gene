@@ -1,5 +1,5 @@
 (mod cron)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 (import * : calendar ^from "./calendar")
 (import * : timezone ^from "./timezone")
 

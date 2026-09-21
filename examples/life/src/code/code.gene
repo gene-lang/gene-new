@@ -1,5 +1,5 @@
 (mod code)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 
 (fn expression [tx, name, source]
   (let revision ($crypto/sha256 source))

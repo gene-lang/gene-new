@@ -1,8 +1,8 @@
 # Validate stable host and adapter contracts, never the brain's cognitive schema.
 (mod recovery)
 (import * : p ^from "./persistence")
-(import * : scheduler ^from "./scheduler")
-(import * : timezone ^from "./timezone")
+(import * : scheduler ^from "../schedule/scheduler")
+(import * : timezone ^from "../schedule/timezone")
 
 (fn require [condition, message]
   (if_not condition (p/problem $"Recovery failure: ${message}")))

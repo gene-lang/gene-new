@@ -80,7 +80,7 @@ newer conversations or cognitive data.
 
 ## Energy and sleep example
 
-[`body/rest.gene`](body/rest.gene) invents the `model/rest` record and its meaning.
+[`src/organizations/rest.gene`](../src/organizations/rest.gene) invents the `model/rest` record and its meaning.
 `rest.sleep(revision)` atomically stores sleeping mode, an activity reference,
 the current simulation checkpoint, and one recovery registration. Its controller
 restores two modeled energy units per simulation minute, starting at 24 and

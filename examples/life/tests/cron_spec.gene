@@ -1,8 +1,8 @@
 (import $test [describe it assert_equal assert_raises])
-(import * : p ^from "../persistence")
-(import * : calendar ^from "../calendar")
-(import * : timezone ^from "../timezone")
-(import * : cron ^from "../cron")
+(import * : p ^from "../src/host/persistence")
+(import * : calendar ^from "../src/schedule/calendar")
+(import * : timezone ^from "../src/schedule/timezone")
+(import * : cron ^from "../src/schedule/cron")
 
 (fn at [date, time] (* (calendar/local_seconds date time) 1000))
 

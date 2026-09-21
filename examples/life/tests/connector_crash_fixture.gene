@@ -1,9 +1,9 @@
 (mod connector_crash_fixture)
 # Shared setup is also imported by the specs; main runs only in the crash child.
-(import * : runtime ^from "../runtime")
-(import * : connector ^from "../connector")
-(import * : chat ^from "../chat")
-(import * : p ^from "../persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : connector ^from "../src/body/connector")
+(import * : chat ^from "../src/body/chat")
+(import * : p ^from "../src/host/persistence")
 (import * : mailbox ^from "./mailbox_support")
 
 (fn open_host [fixture, ^home home = nil, ^clock clock = (fn [] 1000), ^fault fault = nil]

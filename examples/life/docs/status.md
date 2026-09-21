@@ -75,7 +75,7 @@ in Gene. This is a progress record, not a reduction of that scope.
 
 The CLI create/run/send/inspect/stop path has also been exercised with two live
 Gene processes. Stop acknowledges only after committing its continuation point.
-`bin/gene run examples/life/demo.gene` also runs the full garden continuity,
+`bin/gene run examples/life/src/demo.gene` also runs the full garden continuity,
 withdrawn-request cancellation, and sleep/restart/wake demonstration headlessly.
 
 ## Required work remaining

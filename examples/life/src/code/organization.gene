@@ -1,5 +1,5 @@
 (mod organization)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 (import * : code ^from "./code")
 
 (fn definition [tx, value]

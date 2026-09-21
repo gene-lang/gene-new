@@ -6,12 +6,12 @@ are written in Gene. This package is independent of Gene Harness and Cordis.
 
 Implementation of [the Life proposal](../../docs/proposals/life.md) is in
 progress. Durable continuity, code evolution, and body routines work; remaining milestones
-are tracked in [STATUS.md](STATUS.md).
+are tracked in [docs/status.md](docs/status.md).
 
 Run these commands from the repository root using the built `bin/gene`:
 
 ```sh
-bin/gene run examples/life/demo.gene
+bin/gene run examples/life/src/demo.gene
 ```
 
 The repeatable fake-brain demo remembers a visitor's preference, restarts partway
@@ -23,18 +23,18 @@ experiment available for inspection. An optional path argument chooses a new hom
 To run the long-lived body and local chat directly:
 
 ```sh
-bin/gene run examples/life/main.gene create examples/life/tmp/garden
-bin/gene run examples/life/main.gene run examples/life/tmp/garden
+bin/gene run examples/life/src/main.gene create examples/life/tmp/garden
+bin/gene run examples/life/src/main.gene run examples/life/tmp/garden
 ```
 
 In another terminal:
 
 ```sh
-bin/gene run examples/life/main.gene send examples/life/tmp/garden 'I prefer shade.'
-bin/gene run examples/life/main.gene command examples/life/tmp/garden '{"op":"inspect","prefix":"conversation/"}'
-bin/gene run examples/life/main.gene command examples/life/tmp/garden '{"op":"pause"}'
-bin/gene run examples/life/main.gene command examples/life/tmp/garden '{"op":"resume"}'
-bin/gene run examples/life/main.gene command examples/life/tmp/garden '{"op":"stop"}'
+bin/gene run examples/life/src/main.gene send examples/life/tmp/garden 'I prefer shade.'
+bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"inspect","prefix":"conversation/"}'
+bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"pause"}'
+bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"resume"}'
+bin/gene run examples/life/src/main.gene command examples/life/tmp/garden '{"op":"stop"}'
 ```
 
 `create` never overwrites an existing Life. `run` restores it before invoking
@@ -74,7 +74,7 @@ second. The world pauses during process downtime. Wall schedules use explicit
 lateness policies; cancelled owners invalidate their work.
 `scheduler.cron` adds timezone-aware recurrence with explicit missed-run policies,
 pinned timezone revisions, and occurrence identities. See
-[SCHEDULING.md](SCHEDULING.md) for recurrence, cancellation, and inference budgets.
+[docs/scheduling.md](docs/scheduling.md) for recurrence, cancellation, and inference budgets.
 
 The host uses Gene's SQLite adapter and an exclusive filesystem claim. It
 retains immutable record revisions, context snapshots, accepted notes, programs,
@@ -85,7 +85,7 @@ external transport or model credentials are needed.
 A persistent write failure stops dependent work and makes the current store
 connection unusable for further writes. Restore storage access, then reopen the
 same Life. A failed final checkpoint is never reported as a clean stop. See
-[PERSISTENCE.md](PERSISTENCE.md) for the recovery and transaction contracts.
+[docs/persistence.md](docs/persistence.md) for the recovery and transaction contracts.
 
 Each complete program is validated and compiled as an ordinary Gene module
 function in a fresh supervised Gene process. Functions, loops, and saved
@@ -104,17 +104,17 @@ serializes request ownership so replies cannot reach the wrong caller.
 An organization can select a saved module that exports `bind(api)` and,
 optionally, `context(api, basis)`. These functions supply replacement cognitive
 bindings and a bounded context view. The example in
-[`body/visitor_memory.gene`](body/visitor_memory.gene) replaces the starter memory
+[`src/organizations/visitor_memory.gene`](src/organizations/visitor_memory.gene) replaces the starter memory
 and state layouts with a visitor document and a shared working document.
 
 Replacement waits for current affected work to settle, then commits migration
 writes, selected code/data roots, and queued-work dispositions together. An
 explicitly invalidated late brain response remains inspectable without executing.
-See [ORGANIZATION.md](ORGANIZATION.md) for the API, migration contract, and host
+See [docs/organization.md](docs/organization.md) for the API, migration contract, and host
 repair controls.
 
 Persistent timer and event handlers use the same foreground queue and store.
-See [ROUTINES.md](ROUTINES.md) for registration, recovery, and the optional
+See [docs/routines.md](docs/routines.md) for registration, recovery, and the optional
 energy/rest controller. Its attention policy defers ordinary observations while
 sleeping; the host still receives messages and responds to operator controls.
 

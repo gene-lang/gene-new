@@ -1,6 +1,6 @@
 (mod chat)
-(import * : p ^from "./persistence")
-(import [event] ^from "./events")
+(import * : p ^from "../host/persistence")
+(import [event] ^from "../host/events")
 
 (fn require_text [value, label, maximum, ^empty empty = false]
   (if (|| (!= ($head value) Str) (> ($str/byte_size value) maximum)

@@ -1,8 +1,8 @@
-(import * : p ^from "../persistence")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : timezone ^from "../timezone")
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : timezone ^from "../src/schedule/timezone")
 (fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
 (fn main [args]
   (let now ($cell 1000))

@@ -1,7 +1,7 @@
 (import $test [describe it assert_equal])
-(import * : p ^from "../persistence")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
 
 (fn crash [stage, point]
   (let name (p/id "rest-crash"))

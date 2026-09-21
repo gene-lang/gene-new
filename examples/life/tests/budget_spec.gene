@@ -1,9 +1,9 @@
 (import $test [describe it assert_equal])
-(import * : runtime ^from "../runtime")
-(import * : p ^from "../persistence")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : budget ^from "../budget")
+(import * : runtime ^from "../src/host/runtime")
+(import * : p ^from "../src/host/persistence")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : budget ^from "../src/host/budget")
 
 (describe "Life host inference budget"
   (it "retains events and maintenance after the budget is used, and admits fresh context after restart in a new window" []

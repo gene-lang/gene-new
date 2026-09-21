@@ -1,5 +1,5 @@
 (mod calendar)
-(import * : p ^from "./persistence")
+(import * : p ^from "../host/persistence")
 (fn floor_div [value, divisor]
   (let truncated ($to_int (/ value divisor)))
   (if (< (* truncated divisor) value) truncated

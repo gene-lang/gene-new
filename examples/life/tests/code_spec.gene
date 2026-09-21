@@ -1,8 +1,8 @@
 (import $test [describe it assert_equal assert_raises])
-(import * : p ^from "../persistence")
-(import * : code ^from "../code")
-(import * : runtime ^from "../runtime")
-(import * : brain ^from "../brain")
+(import * : p ^from "../src/host/persistence")
+(import * : code ^from "../src/code/code")
+(import * : runtime ^from "../src/host/runtime")
+(import * : brain ^from "../src/brain")
 
 (describe "Life immutable module code"
   (it "loads normal modules and pinned imports in a fresh process after restart" []

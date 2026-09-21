@@ -30,7 +30,7 @@ and repairing its cognitive reference without creating another walk.
 
 Generated source and saved expressions compile through the normal Gene module
 loader, using application bindings and no direct I/O namespace grants. Complete
-source is compiled before execution. `program.gene` generates the lexical binding
+source is compiled before execution. `src/worker/program.gene` generates the lexical binding
 wrapper; it does not dispatch or interpret an action language.
 
 The grouped callback enters Gene's existing synchronous native callback contract

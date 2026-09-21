@@ -1,10 +1,10 @@
 (import $test [describe it assert_equal])
-(import * : p ^from "../persistence")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : code ^from "../code")
-(import * : organization ^from "../organization")
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : code ^from "../src/code/code")
+(import * : organization ^from "../src/code/organization")
 
 (describe "Life decision admission"
   (it "checks declared ownership dependencies without invalidating a decision for unrelated ownership changes" []

@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [wall_ms] ^from "../clock")
+(import [wall_ms] ^from "../src/host/clock")
 
 (describe "Life wall clock"
   (it "matches Unix time for the current local timezone" []

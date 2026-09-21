@@ -1,8 +1,8 @@
 (import $test [describe it assert_equal assert_raises])
-(import * : runtime ^from "../runtime")
-(import * : p ^from "../persistence")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
+(import * : runtime ^from "../src/host/runtime")
+(import * : p ^from "../src/host/persistence")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
 
 (fn fresh [decisions = nil]
   (let name (p/id "life"))

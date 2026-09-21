@@ -1,9 +1,9 @@
 (mod execution)
 (import * : p ^from "./persistence")
-(import * : body ^from "./body")
-(import * : code ^from "./code")
-(import * : routines ^from "./routines")
-(import * : scheduler ^from "./scheduler")
+(import * : body ^from "../body/body")
+(import * : code ^from "../code/code")
+(import * : routines ^from "../body/routines")
+(import * : scheduler ^from "../schedule/scheduler")
 
 (fn launch [host, record, mode = "run"]
   (let name (p/id "execution"))

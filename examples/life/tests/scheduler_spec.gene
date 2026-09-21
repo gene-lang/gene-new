@@ -1,11 +1,11 @@
 (import $test [describe it assert_equal])
-(import * : p ^from "../persistence")
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : calendar ^from "../calendar")
-(import * : timezone ^from "../timezone")
-(import * : operator ^from "../main")
+(import * : p ^from "../src/host/persistence")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : calendar ^from "../src/schedule/calendar")
+(import * : timezone ^from "../src/schedule/timezone")
+(import * : operator ^from "../src/main")
 
 (fn at [date, time] (* (calendar/local_seconds date time) 1000))
 (fn fixture [now]

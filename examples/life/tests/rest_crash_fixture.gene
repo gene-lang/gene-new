@@ -1,9 +1,9 @@
-(import * : runtime ^from "../runtime")
-(import * : body ^from "../body")
-(import * : brain ^from "../brain")
-(import * : p ^from "../persistence")
-(import * : code ^from "../code")
-(import * : organization ^from "../organization")
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : brain ^from "../src/brain")
+(import * : p ^from "../src/host/persistence")
+(import * : code ^from "../src/code/code")
+(import * : organization ^from "../src/code/organization")
 
 (fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
 (fn main [args]
@@ -16,7 +16,7 @@
     ^fault (fn [phase] (if_yes (&& (armed .get) (== phase point)) (die)))))
   (runtime/settle host)
   (let tx (p/begin host/store "rest-candidate"))
-  (let source ($fs/read_text "examples/life/body/rest.gene"))
+  (let source ($fs/read_text "examples/life/src/organizations/rest.gene"))
   (let revision (code/module_bundle tx "rest" {^main.gene source} "main.gene"))
   (organization/request tx {^id "rest@1" ^module revision ^code [revision] ^roots ["model/"]
     ^attention true ^documentation "Rest crash fixture"} "nil" "invalidate" false)
