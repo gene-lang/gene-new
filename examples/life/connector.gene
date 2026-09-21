@@ -145,7 +145,10 @@
         (registration .put "status" "error")
         (registration .put "last_error" "Mailbox poll failed; cursor retained")
         (p/put host/store $"connector/${registration/id}" registration "connector-error")))
-    (else (uncertain host (p/get host/store $"delivery/${request/id}") "Delivery not confirmed; query receipt before retry"))))
+    (else (uncertain host (p/get host/store $"delivery/${request/id}")
+      (if (== request/cancelled true)
+        "Send cancelled after launch; its remote effect is unknown until a receipt arrives"
+        "Delivery not confirmed; query receipt before retry")))))
 
 (fn start_request [host, key, registration, kind, payload, ^id id = nil]
   (let request (mailbox/launch registration/endpoint $"/${kind}" payload))
@@ -160,6 +163,16 @@
   (p/require_writable host/store)
   (if (host/stopped .get) (return nil))
   (let network (host/network .get))
+  # A send whose owner was retired stops waiting on its HTTP handle. Cancelling
+  # the local task cannot retract a launched remote effect, so the delivery
+  # completes as an ordinary failure and stays uncertain until a receipt arrives.
+  (for pair in network/requests
+    (let request pair/1)
+    (if_yes (&& (== request/kind "send") (!= request/cancelled true))
+      (let delivery (p/get host/store $"delivery/${request/id}"))
+      (if_yes (== delivery/cancellation_requested true)
+        (request .put "cancelled" true)
+        (request/task .cancel))))
   (let completed [])
   (for pair in network/requests
     (if_not ($absent? (pair/1/done .get)) (completed .push ($to_str pair/0))))
@@ -192,17 +205,26 @@
     (let send_key $"delivery:${registration/id}")
     (if_yes (|| (! ($absent? (network/requests .get send_key))) (< now (?? (network/next .get send_key) 0))) (continue))
     (let meta (p/get host/store "meta"))
-    (var candidate nil)
-    (var oldest nil)
+    # The send lane holds pending deliveries; the receipt lane holds operations
+    # awaiting reconciliation. Each lane serves its least recently attempted item.
+    (var send_candidate nil)
+    (var receipt_candidate nil)
     (for delivery in (p/values host/store "delivery/")
-      (if_not (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id)
-        (["pending" "needs_reconciliation"] .contains? delivery/status)) (continue))
-      (if_yes (&& (== delivery/status "pending") (!= meta/mode "running")) (continue))
+      (if_not (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id)) (continue))
       (let dispatched (?? (network/next .get $"attempt:${delivery/id}") 0))
-      (if_yes (|| ($absent? oldest) (< dispatched oldest))
-        (set oldest dispatched)
-        (set candidate delivery)))
-    (if ($absent? candidate) (continue))
+      (if_yes (&& (== delivery/status "pending") (== meta/mode "running")
+                  (|| ($absent? send_candidate) (< dispatched send_candidate/dispatched)))
+        (set send_candidate {^dispatched dispatched ^delivery delivery}))
+      (if_yes (&& (== delivery/status "needs_reconciliation")
+                  (|| ($absent? receipt_candidate) (< dispatched receipt_candidate/dispatched)))
+        (set receipt_candidate {^dispatched dispatched ^delivery delivery})))
+    # Alternate lanes while both have work: a stream of new sends cannot starve
+    # reconciliation, and an unresolved receipt cannot block later sends.
+    (let chosen (if ($absent? receipt_candidate) send_candidate
+      (if ($absent? send_candidate) receipt_candidate
+        (if (== (network/lanes .get registration/id) "receipt") send_candidate receipt_candidate))))
+    (if ($absent? chosen) (continue))
+    (let candidate chosen/delivery)
     (for delivery in [candidate]
       (let reconciling (== delivery/status "needs_reconciliation"))
       (let tx (p/begin host/store "delivery-attempt"))
@@ -221,6 +243,7 @@
           (p/tx_put tx $"delivery/${delivery/id}" delivery)
           (p/commit tx)))
       (network/next .put $"attempt:${delivery/id}" now)
+      (network/lanes .put registration/id (if reconciling "receipt" "send"))
       (if_not reconciling (fault host "delivery_before_send"))
       (try
         (start_request host send_key registration (if reconciling "receipt" "send")
@@ -235,4 +258,4 @@
 (fn stop [host]
   (let network (host/network .get))
   (for pair in network/requests (mailbox/stop pair/1))
-  (host/network .set {^requests {} ^next {}}))
+  (host/network .set {^requests {} ^next {} ^lanes {}}))

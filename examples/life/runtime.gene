@@ -88,7 +88,7 @@
   (let host (Host ^store store ^clock clock ^worker ($fs/real_path worker)
     ^brain provider ^decisions ($cell (?? decisions [])) ^active ($cell nil) ^thought ($cell nil) ^late ($cell [])
     ^stopped ($cell false) ^calls ($cell 0) ^fault fault ^background_dispatches ($cell 0)
-    ^network ($cell {^requests {} ^next {}})))
+    ^network ($cell {^requests {} ^next {} ^lanes {}})))
   (try
     (if create (initialize host) (restore host))
     host
