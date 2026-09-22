@@ -2,15 +2,15 @@
 
 **Status:** Experimental design proposal, not an implementation report.  
 **Date:** 2026-09-21.  
-**Revision:** 2 — human browser players, shared actor control, and a human-like neighborhood.  
+**Revision:** 4 — selectively copy and adapt Miclone code; no Miclone build, runtime, or test dependency. Retain revision 3’s durability and browser-first rollout decisions.  
 **Companion:** The latest reviewed `life.md` (uploaded as `life(2).md`, updated 2026-09-20).  
-**Decision:** One authoritative world process, one separate process per AI Life, and a browser player client for humans. Human and AI controllers use the same world-action contracts over WebSocket. Keep HTTP for pages/assets and explicit application-level receipts, replay, and reconnection for live interaction.
+**Decision:** One authoritative world process, one separate process per AI Life, and a browser player client for humans. Human and AI controllers use the same world-action contracts over WebSocket. Keep HTTP for pages/assets and explicit application-level receipts, replay, and reconnection for live interaction. Miclone is a source reference for copied code, not a required package, engine, or service.
 
 > One shared reality for human players and independent AI Lives. Humans act through a browser; each Life acts through Gene code in its own process. Places, possessions, conversations, and consequences persist as the world grows.
 
 ## 1. Purpose and scope
 
-Gene World is a shared, persistent environment in which human players and independent Gene Lives can observe, act, meet, create, and change. The first environment is **The Commons**: a small human-like neighborhood with homes, a shared kitchen/gathering place, a workshop, a garden, and surrounding landscape. Aim for four Lives whose starting inclinations differ slightly—not permanently assigned professions—and human visitors who control their own persistent avatars in a browser. Prove the playable path first with one human and two fake-brain Lives.
+Gene World is a shared, persistent environment in which human players and independent Gene Lives can observe, act, meet, create, and change. The first environment is **The Commons**: a small human-like neighborhood with homes, a shared kitchen/gathering place, a workshop, a garden, and surrounding landscape. Aim for four Lives whose starting inclinations differ slightly—not permanently assigned professions—and human visitors who control their own persistent avatars in a browser. Prove browser play against the world first, then attach independent fake-brain Lives, then a real brain.
 
 The experiment asks whether independent Lives develop coherent ways of living through experience, including encounters with people who actually inhabit and change the same place. Humans are participants, not merely observers or sources of chat prompts. The world supplies opportunities, constraints, and actual outcomes. It does not prescribe stories, maintain everyone's beliefs, force AI replies, or require activity on every heartbeat.
 
@@ -28,7 +28,7 @@ Expansion must preserve existing identities, meaningful state, operation receipt
 
 Keep the Life design's independent identity, replaceable brain, decision note plus executable Gene program, flexible memory organization, and explicit persistence. Life remains independent of Gene Harness. Neither Harness nor Cordis is a mandatory dependency of this world.
 
-This document deliberately changes the earlier single-process deployment option. Its multi-process world is an **independently running environment** from each Life's perspective. In particular:
+This document adds a **networked world profile** alongside Life's existing local-world implementation. It does not replace that local adapter, its demo, or its regression suite. The shared world is an **independently running environment** from each connected Life's perspective. In particular:
 
 | Earlier local-world option in `life.md` | This multi-process profile |
 | --- | --- |
@@ -38,7 +38,7 @@ This document deliberately changes the earlier single-process deployment option.
 | A Life restart restores a local world snapshot. | The world restores its state; the Life reconnects and reconciles its last observed view. |
 | `water` may complete an immediate local operation. | A networked action distinguishes local submission, world acceptance, and completed effect. |
 
-These are explicit deployment changes, not claims that the older local transaction crosses a socket. The companion's sections on independent environments, explicit checkpoints, and uncertain effects remain applicable. [L1]
+These are explicit profile differences, not claims that the older local transaction crosses a socket. Select `local` or `network` behind `body/world`; keep local behavior as the default for existing Life tests and demos. A network adapter has explicit submission/result semantics rather than pretending a remote effect completed synchronously. The companion's independent-environment and checkpoint rules remain applicable. This profile additionally allows a labeled provisional motion tail between world checkpoints (§6.1); confirmed gameplay effects remain durable. [L1, D2]
 
 ### 1.2 Non-goals for the first implementation
 
@@ -60,6 +60,46 @@ Start locally with separate operating-system processes. Tests may use in-memory 
 | Extending content, rules, and regions | 13–14 |
 | Human play, observer/operator modes, and initial deployment | 15–16 |
 | Implementation milestones and acceptance tests | 17–18 |
+
+### 1.4 Implementation decision: copy and adapt, then develop independently
+
+**Selectively copy useful code from Miclone into the Commons and adapt it to this design. Do not make the Commons depend on Miclone.** The Commons is its own application, not a Miclone profile, mod, thin wrapper, or deployment that must start Miclone underneath it. It owns its source, build scripts, tests, assets, protocol, content, and saves.
+
+The previously reviewed Miclone sources provide useful transport wiring, portable world code, a browser shell, and persistence examples. Use them to avoid rewriting suitable foundations, not to inherit every assumption of the voxel game. Their documented behavior is source evidence, not a fresh execution of their smoke tests or proof that an adapted copy works. [R1]
+
+| Source to consider copying | Commons-owned adaptation |
+| --- | --- |
+| Server `$net/http` WebSocket integration and `serve` tick hook | Copy the useful loop and transport wiring into the Commons server; add its sessions, command admission, receipts, and filtered observations. |
+| Gene web-profile browser, WebGL2 renderer, camera, picking, meshing, and input | Copy the needed shell, helpers, shader/asset recipes, and build steps. Add click-to-move and interaction controls locally; simplify or replace rendering assumptions as the neighborhood evolves. |
+| Portable geometry, inventory, entity, and content helpers | Copy the useful functions and required dependencies, then reshape their APIs and data for the Commons. Do not preserve an unsuitable voxel representation merely to minimize the diff. |
+| Server-selected content and recipe-driven presentation | Adapt the data-only appearance and interaction machinery. Do not import the whole mod framework or the removed Gene capability machinery as prerequisites. |
+| SQLite world integration and batched publication | Copy relevant adapter code and fixtures, then implement §6.1 and §12.8. Reusing source does not make whole-image commits inexpensive. |
+| Native WebSocket integration example | Copy useful application-level connection/polling code. Depend directly on the independent Gene `genex/websocket` library and its documented prerequisites, not on Miclone's native client or launcher. [R2] |
+| Client-simulated player motion | **Replace this authority model.** Commons walking, collision, speed, possession, and action preconditions remain server-owned for both humans and Lives. |
+| Byte-oriented game protocol and codec helpers | Copy helpers only where they fit. Commons owns its versioned envelope and has no compatibility obligation to Miclone clients, messages, or saves. |
+| Build scripts, tests, probes, and fixtures | Copy and adapt the relevant pieces into the Commons tree. Tests run against Commons code and fixtures; they do not invoke the Miclone test suite or reuse its generated output. |
+
+#### Independence and maintenance rules
+
+- **Copy the necessary dependency closure, not the entire project by default.** Resolve copied code's imports, assets, fixtures, and script paths locally. There must be no imports into `examples/miclone`, Miclone package dependency, required Miclone executable, symlink/submodule back to its source, or reliance on its `dist` files, caches, working directory, or running server. A build must not fetch or recopy Miclone automatically.
+- **Make the copies ordinary Commons source.** Organize them by their current responsibility, rename and simplify them where helpful, and maintain them under Commons' own tests. This is not an unmodified vendor snapshot that must preserve an upstream API or layout. Sharing a repository with Miclone does not create a dependency between the applications.
+- **Keep lightweight provenance.** A short `world/SOURCES.md` records original paths, source commit, local destinations, and any source/asset notices. Retain the original notices with the copied material. The source commit identifies where a copy came from; it is not a live dependency version that must be installed to build the Commons.
+- **Upstream changes are optional inputs.** Review and manually port useful fixes or features, recording their origin and testing the adapted result. There is no automatic synchronization or requirement to keep the projects compatible. In exchange for independence, Commons maintainers own the copied code and the decision to incorporate later fixes.
+- **Leave Miclone unchanged.** It remains a separate experiment. Its tests can be an optional source-comparison aid during the initial copying, but its availability and test status are not Commons build or release gates. Do not start a shared-engine extraction project just to avoid deliberate duplication; consider a separately versioned shared library only after a concrete need emerges.
+
+The independence requirement concerns the **Miclone application**, not all external software. Normal, explicitly declared dependencies on Gene, its standard APIs, `genex/websocket`, libcurl, and the selected browser/graphics interfaces remain appropriate. They must be selected directly rather than acquired transitively by importing or launching Miclone.
+
+**Acceptance criterion:** with `examples/miclone` and its generated outputs unavailable, a clean Commons checkout/package plus its declared platform dependencies can build the browser and server, run its own smoke tests, and support the browser/world interaction. Documentation and provenance may still name Miclone; executable paths must not require it.
+
+This policy preserves source reuse while allowing the two applications to diverge. Persistent participants, receipt-backed interactions, actor-scoped views, and server-owned walking remain Commons implementation work. Existing Miclone renderer measurements are not Commons performance results.
+
+### 1.5 Evidence and feasibility baseline
+
+Revision 3 combined the prior world proposal, the supplied implementation review [D2], and a focused read of Miclone and native-WebSocket sources at `228d3304b872927aa1d82b5a46934e8ec8c479fe`. Revision 4 clarifies the project owner’s choice of selective copying and independent maintenance (§1.4); it does not claim another repository audit or that source has already been copied. [D1, R1, R2, R3]
+
+The review reports a 3-second Life program limit, worker-process execution, a 100-call/hour default, an HTTP mailbox connector with crash tests, no real brain adapter in that reviewed implementation, and 110 existing Life tests. Those Life implementation details and the reported 128 ms → 1.24 s cycle timings over 200 cycles were **not independently reproduced here**. Record the actual Life checkout/revision and rerun its baseline before integration; do not turn these reported numbers into achieved targets or a permanent test-count promise.
+
+The design below deliberately accommodates those constraints: short event-driven code, explicit real-brain work, bounded active storage, and preservation of the local adapter. It does not assert that a proposed API is already implemented merely because the design names it.
 
 ## 2. The initial environment: The Commons
 
@@ -119,7 +159,7 @@ Operations are supplied by world modules and exposed through ordinary Gene clien
 | Communication | Speak locally, read/write a noticeboard, inspect an accessible thread |
 | Household additions | Use storage and seating, prepare a recipe, serve a meal, clean or repair when their feature modules are installed |
 
-The first working slice needs browser-controlled movement, one unique shared object, local speech, and persistent observation alongside two independent fake-brain Lives. A drop-and-pick-up exchange can demonstrate shared reality before a dedicated offer/accept system exists. Cooking, garden, furnishing, and construction follow that path; they are not all prerequisites.
+The first playable slice needs one browser-controlled actor, server-owned walking, one unique object, and receipt-backed interaction. Local speech and independent fake-brain Lives join in the next slice. A drop-and-pick-up exchange can demonstrate shared reality before a dedicated offer/accept system exists. Cooking, garden, furnishing, and construction are later additions, not prerequisites.
 
 New operations should not require changing the brain response format. They do require a world implementation with actual rules, documentation, and versioned input/output contracts.
 
@@ -176,6 +216,14 @@ All four may garden, cook, investigate, build, learn procedures, socialize, or w
 Record the common prompt revision, individual seed, creation world revision, initial position, model configuration, and initial body-code revision. Give each Life a distinct stable ID independent of its display name.
 
 A controlled restart preserves that ID. An experimental clone is an explicit new Life with a new store and identity; it does not silently attach as a second controller of the original avatar.
+
+### 3.5 Immutable seed, editable current disposition
+
+Store `creation_seed` once as provenance and initialize a separate `current_disposition` in the Life's selected cognitive data. Stable execution/API instructions may appear in every context. The original personality seed must not be continually reimposed as an instruction that overrides the current disposition.
+
+The supplied review reports that the present Life context builder injects its protected seed on every call. Changing that is explicit integration work, not an assumed existing feature. Preserve that record, initialize the editable disposition without resetting other memories, and change context construction to use the selected current disposition. Historical seed text may be retrieved as labeled history, not as a competing command. A future brain-defined representation may replace this starter field without a new world schema. [D2]
+
+Acceptance: edit the current disposition, make another decision, restart, and verify that the changed disposition is used while original creation provenance remains unchanged. Do not require a disposition edit to alter physical abilities or world permissions.
 
 ## 4. Process architecture and ownership
 
@@ -238,12 +286,12 @@ Equivalent actions by equivalent actors obey the same proximity, possession, tim
 | Life identity, private memory, notes, cognitive code/data | That Life process |
 | Life intentions, schedules, local jobs, outbound requests | That Life process |
 | Life's last observed world state | That Life process; explicitly a view, not authority |
-| Browser pending-command journal, installed view, unsent drafts | Browser local storage/cache under its documented recovery limits |
+| Browser in-flight command map, installed view, unsent drafts | Browser memory; transient in version 1, not required persistent storage |
 | Render interpolation, camera, selection, temporary input | Browser; transient, not authoritative world state |
 
 Use one transactional world store and a separate private transactional store for each Life. Only the owner opens its store for mutation. No browser or Life reads or writes the world database directly. SQLite can supply local transactions; it does not turn these stores into a transaction across a socket. [T3]
 
-Browser storage is not the sole durable home of human inventory, accepted speech, or completed actions. Clearing a cache must not delete the participant's avatar or cause a completed exchange to run again. Section 10.7 defines the pending-command journal; section 11.4 distinguishes human history retention from a browser acknowledgment.
+The server is the durable home of human inventory, accepted speech, and completed actions. Version 1 requires no IndexedDB pending journal or persistent browser event cursor. A refresh recovers server-known actions/receipts/history; unsent or unrecorded client intent can be lost and is never guessed or automatically resent. Section 10.7 defines the recovery boundary; §11.4 separates human history retention from browser acknowledgments.
 
 ### 4.4 Identity, attachment, and control ownership
 
@@ -313,7 +361,7 @@ A world module can supply operation handlers, tick handlers, component validatio
 
 Define a deterministic system order in the selected world manifest. If two systems modify the same component, their ordering or explicit combination rule must be declared. Loading modules in a different incidental order must not change the rules.
 
-Commit authoritative state, action progress, simulation time, relevant random-generator state, and resulting durable events together. Recovery applies recorded state changes; it does not rerun historical Gene action programs to reconstruct their effects.
+Maintain one server-owned live simulation and one durable frontier. At an action boundary or periodic checkpoint, commit the pending logical state, action progress, simulation time, relevant random-generator state, and resulting durable events together (§6.1). Intermediate render samples may be provisional. Recovery applies committed data changes; it does not rerun historical Gene action programs.
 
 ## 6. Simulation, time, actions, and disconnects
 
@@ -321,17 +369,31 @@ Commit authoritative state, action progress, simulation time, relevant random-ge
 
 | Clock | Owner | Meaning |
 | --- | --- | --- |
-| Simulation time | World | Movement, growth, day/night, and world activity progress |
-| Wall/monotonic operational time | Each process | Network health, timeouts, resource limits, and reconnect delays |
-| Cognitive schedules | Each Life | When that Life decides to think or run its own code |
+| Simulation time | World | Movement, growth, day/night, and physical activity progress |
+| Wall/monotonic operational time | Each process | Liveness, timeouts, resource budgets, and reconnect delays |
+| Cognitive schedules | Each Life | When that Life elects to think or execute a short routine |
 
-Start with fixed logical world steps, for example 100 simulation milliseconds, and near-real-time progression for human play. Render interpolation is independent; model inference has no fixed per-tick requirement. Persist a logical step before exposing it as authoritative. Accelerated experiment time is an explicit world setting visible to all clients, not a private speed multiplier for one Life.
+Use fixed logical steps, initially 100 simulation milliseconds, and near-real-time progression for human play. **A step is not a database commit.** Rendering, logical stepping, and durable publication are separate rates. Accelerated simulation is an explicit shared setting, not a private speed multiplier.
 
-Simulation advances while the world is running even when every brain is idle. It pauses during world process downtime in version 1; no implicit fast-forward after restart. If overloaded, reduce effective simulation speed and expose the lag rather than silently skipping causal updates. A later fast-forward policy must define what it preserves.
+**Selected version-1 persistence policy: action-boundary commits plus periodic checkpoints.** Start with a proposed one-second checkpoint interval and a maximum five-second dirty simulation horizon. These are adjustable prototype settings, not measured guarantees. A paused/idle world with no changes need not rewrite its image. If storage cannot keep the dirty horizon within the configured bound, stop advancing it and report storage lag; do not silently accumulate unlimited recoverable loss.
 
-A Life-owned routine using this world's simulation clock may see elapsed simulation time while that Life was offline. Its selected controller must explicitly choose bounded catch-up or rebasing its checkpoint without retroactive credit. For example, a sleep routine cannot silently assume the world clock paused with its own process. Qualify retained clock checkpoints with world/history identity; a world branch is not another elapsed interval on the same clock.
+| Change | Publication requirement |
+| --- | --- |
+| Admission/rejection of a logical command; control-generation acquisition | Durable before returning a receipt or admitting the controlling session. |
+| Pickup, transfer, placement, crafting, accepted speech, persistent notes | Commit effect, receipt, causally necessary world state, and recipient events before confirming success. |
+| Activity completion, failure, suspension, cancellation | Commit physical progress and outcome together before a durable status/event. |
+| Intermediate movement, animation, and reversible simulation progression | May advance in server memory and be shown as **provisional** until the next boundary/checkpoint. |
+| Periodic checkpoint; clean pause/stop; feature selection | Publish a complete consistent frontier; pause/stop is settled only after its required commit succeeds. |
 
-Slowing or pausing the world is a world operation. Pausing one Life is not.
+The world remains the authority while running; provisional means **not yet crash-durable**, not client-authoritative. Track a committed `world_revision`/`committed_sim_time_ms` and separate `server_epoch`, `live_seq`, and live simulation time. Telemetry includes `server_epoch`, `live_seq`, `base_world_revision`, live `sim_time_ms`, `committed_sim_time_ms`, and `provisional`; mark it provisional whenever it goes beyond the durable base. It receives no durable event sequence or success receipt merely because it was sent.
+
+For simplicity, flush **all pending logical world changes** into the same frontier when a durable operation depends on live state. If a participant walks beyond its last checkpoint and then picks up an item or speaks to a nearby audience, commit that position and the relevant simulation state together with the interaction. Never retain the pickup while rolling back the movement or audience facts that made it valid. Feature code must use this publication path rather than invent independent durability domains.
+
+A world crash restores the last durable frontier; only the advertised provisional tail may disappear. Send a new server epoch and snapshot so clients replace, rather than append to, that tail. Previously confirmed speech, transfers, receipts, and terminal activity results cannot disappear. This is a deliberate relaxation of revision 2's per-tick durability requirement, not a claim that periodic checkpointing preserves every displayed frame.
+
+Perception snapshots and Life routines use the committed clock/view by default. Optional live inspection is explicitly labeled with its epoch and provisional status; it must not drive durable elapsed-time accounting as though that clock cannot rewind. Reconnect synchronization captures a durable baseline and separately resumes live telemetry. When a fresh live observation must become durable evidence, publish a frontier first under a bounded query policy.
+
+Simulation pauses during world-process downtime; there is no implicit wall-time fast-forward. It continues while brains are idle and while an individual Life is offline. Life-owned routines using the committed world clock select explicit catch-up or rebasing rules and retain world/history identity with checkpoints. Pausing one Life is not pausing the world.
 
 ### 6.2 World-owned physical activities
 
@@ -339,11 +401,11 @@ A walk is a world activity with a destination, stable action ID, rules revision,
 
 For version 1, permit one locomotion activity per avatar. A new walk while another is active is rejected as busy unless the caller explicitly cancels/suspends or uses an operation whose documented replacement semantics cover both actions. Do not make a new command silently discard an earlier commitment.
 
-A path may be recomputed when geometry changes. No route produces a recorded blocked/failed outcome rather than an endless hidden retry loop. Changes to physical progress and its outcome are committed by the world, not by the Life's cognitive database.
+A path may be recomputed when geometry changes. No route produces a recorded blocked/failed outcome rather than an endless hidden retry loop. The world owns intermediate live motion, checkpointed progress, and terminal outcomes. Life stores only its local tracking record and confirmed observations; it does not persist every motion sample. Completion is published only at a durable boundary.
 
 ### 6.3 Connection loss is not death or immediate certainty
 
-The world detects an orderly close or an unresponsive controller through its configured liveness policy. Until detection, already admitted work can make additional committed progress. A disconnected browser or Life must not assume its actor stopped at the last position that client received. Do not rely on a page-unload callback as the only stop mechanism.
+The world detects an orderly close or an unresponsive controller through its configured liveness policy. Until detection, admitted work can advance beyond the client's last observation, provisionally and through later checkpoints. Suspending after disconnect publishes a consistent frontier. A disconnected controller must reconcile actual state rather than assume an immediate stop at its last received position; page-unload is not the sole stop mechanism.
 
 Initial policy:
 
@@ -413,6 +475,26 @@ A noticeboard artifact may contain text, a sketch, a procedure, or Gene source w
 
 A Life may explicitly inspect, test, adapt, and select that code locally. A browser displays an artifact as inert text or a supported declarative representation; it does not execute embedded Gene, HTML, or JavaScript. Humans may contribute notes or procedures through the same artifact operations, but submitting source does not install it on the world or in another participant. This makes procedure exchange possible without turning messaging into remote program execution.
 
+### 7.5 Conversation latency, budgets, and honest availability
+
+A human's input does not force a Life to answer. Separate transport receipt, attention admission, model inference, Gene worker execution, and delivered speech in measurements and UI. The reported Life path includes a model invocation and worker-process startup; include both, plus durable writes, rather than quoting model latency alone. [D2]
+
+Initial **engineering targets**, to validate on a recorded machine with four Lives and up to two browser players:
+
+| Stage | Proposed target / behavior |
+| --- | --- |
+| Browser feedback after input | Show a local pending marker within 100 ms; this is not server acceptance. |
+| Small world operation receipt on loopback | p95 within 250 ms under the declared sustained load; never acknowledge before durability to meet the target. |
+| Automatic delivery/availability status | Within one second of a change reaching the adapter; no model-authored response is implied. |
+| A reply the Life elects to produce, with an available budget and healthy configured model | Aim for p95 within 30 seconds of deliberation admission, including model and worker cost. Measure queue wait separately and record end-to-end input-to-reply latency. This is not a promise that every message will be answered. |
+| Work that will not meet the interactive target | Preserve the message and expose delayed/unavailable status; human play continues. Never manufacture a conversational answer or repeatedly spawn workers to animate a status indicator. |
+
+Keep the reported default ceiling of 100 model calls per rolling hour per Life as a configurable compatibility limit, **not** a target consumption rate. Add explicit input/output token ceilings and a configured per-Life daily spend ceiling before enabling a paid adapter. A candidate local experiment budget is USD 5 per Life per day; this is an operator-chosen budget, not a provider-price assertion. Use configured model rates or authoritative usage for accounting, reserve worst-case cost for admitted calls, count repair/retry calls, and retain the budget window across restarts. Unknown pricing or exhausted accounting uses conservative limits; restarting must not reset the allowance.
+
+The connector may publish coarse status such as `thinking`, `delayed`, `budget_exhausted`, `provider_unavailable`, or `offline`, with an expiry. The UI labels this as operational status, not speech or access to private thoughts. Publish `thinking` only while a real admitted request is active. Show **Received; this Life is currently unavailable** when appropriate, not an endless typing indicator. No exact reset-time promise is needed unless the controller knows it.
+
+Budget exhaustion stops new inference, not the body, network receipt, existing admitted world actions, or inexpensive event routines. Coalesce pending conversational attention and reconsider relevance when budget returns; do not automatically answer an old backlog one message at a time. A provider may remain unavailable; begin with a fake brain and implement one real provider explicitly in milestone 4.
+
 ## 8. Gene code stays the brain–body interface
 
 ### 8.1 Different decision interfaces, one action contract
@@ -436,21 +518,22 @@ The world never evaluates arbitrary Gene source on its normal action channel. Wo
 
 ### 8.2 Suggested client-library surface
 
-These method names are illustrative application APIs, not current Gene runtime promises.
+The network adapter is a **second implementation behind `body/world`**, alongside the existing local world. Keep common operations familiar, but document asynchronous remote submission rather than faking synchronous success. Existing local tests and demos must continue to run unchanged unless an intentional shared API migration is separately agreed. [D2]
 
-| Operation | Proposed behavior |
+| Operation | Network-profile behavior |
 | --- | --- |
-| `world.observe(selector)` | Return a local synchronized observation snapshot with view revision and freshness information; no network wait. |
-| `world.refresh(selector)` | Asynchronously request a fresh filtered view; never block a local transaction. |
-| `world.start_walk(destination, tx?)` | Create a durable local job and outbound request; return the local job descriptor after local commit. |
-| `world.water(plant, options, tx?)` | Create an action request; return an action reference, not a fabricated successful watering result. |
-| `world.say(text, options, tx?)` | Queue an explicit local-speech request with a durable operation identity. |
-| `world.result(action_ref)` | Read the most recent durably recorded status. |
-| `world.await_result(action_ref)` | Return an awaitable for settlement; allowed outside `store.commit`. |
-| `world.cancel(action_ref)` | Record a cancellation request; completion/cancellation races are reported honestly. |
-| `world.describe()` | Return compact known interfaces, operation versions, and module documentation. |
+| `world.observe(selector)` | Return a cached committed observation with its revision/freshness; it may lag current physical motion. No network wait. Optional live telemetry is a separately labeled view. |
+| `world.refresh(selector)` | Queue a filtered refresh; receive a later event, without blocking a brain-produced program. |
+| `world.start_walk(destination, tx?)` | Prepare a local tracking job and durable outbound request; return after local publication. The world owns the physical activity. |
+| `world.water(...)`, `world.say(...)`, or a generic world operation | Prepare an outbound operation and return a serializable reference, not fabricated effect completion. |
+| `world.result(action_ref)` | Read the latest locally recorded status immediately. Pending or unknown stays pending or unknown. |
+| `world.on_result(action_ref, code_revision, inputs, tx?)` | Convenience over a durable event-subscribed routine. Schedule short code for a recorded outcome; no waiting stack or implicit model call. |
+| `world.cancel(action_ref)` | Record cancellation through the normal delivery kernel and report the eventual race outcome. |
+| `world.describe()` | Read current supported interfaces and documentation from the cached catalogue. |
 
-Remote operations must not hide indefinite network blocking inside a method documented as immediate. An `await_result` timeout leaves the action pending/uncertain; it is not evidence that the world cancelled it.
+Names are proposed wrappers to map to the actual Life implementation. In version 1, omit `world.await_result` from the supported brain-program surface. The review reports a 3-second execution limit and no generic long-running arbitrary-code job. Keep programs bounded and use event routines instead of raising that limit so a walk can finish. The native transport is polled by the body's normal loop independently of model inference and worker-process execution; a generated program must not monopolize that loop. [D2]
+
+No new mini-language or fixed brain tool envelope is introduced. Functions, loops, conditionals, stored code, and generated helpers remain ordinary Gene; the libraries expose submission and subsequent observation as separate operations.
 
 ### 8.3 Preserve the grouped-update example, with an explicit new boundary
 
@@ -481,11 +564,32 @@ No single commit covers these two stores. Correlation IDs and deduplication conn
 
 ### 8.4 Behavior without another model call
 
-A Life may store a procedure that starts a walk, waits through an ordinary supervised activity controller, inspects the observed destination, and requests another action. The controller can run without continuous inference.
+Use event-driven continuation: **submit, retain the next step, return; run short Gene code when the outcome arrives**. A world walk may last minutes without keeping a Life program, worker, or model request alive.
 
-Only activity code with an explicit persisted continuation contract resumes automatically after restart. A generic foreground program that had performed half its calls remains interrupted; recover its known outcomes and let ordinary recovery code or the brain decide the remainder.
+Conceptually:
 
-Wire handles, socket callbacks, tasks, and remote action references are not interchangeable. An action reference is serializable identity; a task waiting for it is transient execution.
+```text
+One Life-local commit:
+    prepare walking request O and local tracking record
+    register a one-shot outcome routine for O with selected code/input
+    publish related cognitive references and the outbox entry
+Return immediately.
+
+Later:
+    persist world outcome for O and enqueue its subscribed routine
+    execute a bounded Gene handler
+    inspect the outcome; update state and/or prepare the next request
+```
+
+Reuse Life's event-subscription/routine machinery rather than introducing a new general job engine. `world.on_result` may be a convenience wrapper; its stored inputs and selected code revision are ordinary data. No live closure environment or stack is serialized.
+
+Registering a result routine and the outbound request can share one local commit, preventing a fast reply from arriving before the continuation exists. If registration occurs later, atomically inspect retained outcome state as part of registering: an already completed operation triggers the routine once rather than becoming a missed event. Duplicate receipts/events must not enqueue duplicate logical triggers. Retain a trigger ID, source operation/event, current routine revision, and execution status.
+
+For a handler that produces another world request, group the continuation's state change, consumed-trigger marker, and new outbound request in one local commit, using a stable operation identity. External dispatch occurs afterward. Arbitrary nonparticipating effects remain outside that guarantee; a handler interrupted after such work is reconciled, not automatically rerun as if nothing happened.
+
+Cancellation/ownership generations and code-organization changes apply to pending routines as well as pending requests. An old-layout continuation is explicitly preserved as compatible, migrated, invalidated for reconsideration, or blocks selection. Do not silently execute it with a new memory layout.
+
+The local-world `start_walk` implementation remains available for current tests. Networked walking is a world-owned activity with a **local record and event continuation**, not an implementation promise that Life can suspend arbitrary code across minutes or process restarts.
 
 ### 8.5 Discoverable interactions for both controllers
 
@@ -509,6 +613,14 @@ The browser maps supported form primitives to ordinary controls. A Life receives
 
 Begin with labels, confirmation, bounded text/numbers, choices, and visible-object selection. Treat remote descriptions as data; they contain no executable UI code. Unknown appearance can use a placeholder. An unsupported input form is visibly unavailable until the client understands it, not silently guessed. New features must update discovery for both humans and Lives; a generic control can precede custom graphics.
 
+### 8.6 Generalize the existing delivery connector
+
+Use Life's existing `connector.gene` delivery machinery as the starting point. The supplied review reports stable operation IDs and semantic digests, receipt queries distinguishing `not_found` from `unknown`, durable cursors and history gaps, cancellation, lane fairness, and process-kill tests. Preserve those contracts while adding a world transport adapter; do not implement a second unrelated outbox and recovery algorithm. Its exact public extraction points must be checked against the local Life revision. [D2]
+
+Extract only the necessary transport-independent responsibilities: outbox state transitions, semantic identity, acknowledgment persistence, cursor/gap handling, retry/cancel scheduling, and receipt reconciliation. Keep HTTP mailbox and WebSocket framing/authentication in their respective adapters. World-specific activity, view-baseline, controller-generation, and rules-version fields belong to the world adapter, not the generic mailbox model.
+
+Use one conformance suite with HTTP and WebSocket fixtures, plus world-only tests. An existing mailbox test pass is evidence for the reused mechanism, not proof of WebSocket integration. Keep its kill/restart tests and the local-world regression suite running throughout extraction. WebSocket remains the selected world transport; a transport-independent core is not permission to silently fall back to HTTP when native setup fails.
+
 ## 9. WebSocket as transport
 
 ### 9.1 Why use it here
@@ -523,7 +635,7 @@ WebSocket does **not** define this application's durable receipt, replay, dedupl
 
 ### 9.2 Encoding and protocol version
 
-Use one complete UTF-8 JSON object per WebSocket application message. JSON is the initial interprocess representation; it does not replace Gene as the language of the brains or body libraries. [T4]
+Use one complete UTF-8 JSON object per WebSocket application message. Accept it in text or binary messages under the same bounded decoder; the current native client queues binary byte messages, so requiring text-only sends would need extra binding work. A binary payload here contains UTF-8 JSON, not an alternative executable format. Reassemble before decoding; reject invalid UTF-8 and invalid JSON identically. Browser and server adapters must support the chosen framing in the first interoperability test. JSON does not replace Gene as the language of brains or body libraries. [R2, T4]
 
 Proposed endpoint and subprotocol:
 
@@ -553,11 +665,12 @@ Use strings for IDs, large revisions, event sequences, and simulation timestamps
 | `operation_id` | A durable logical mutation request, stable across resend and reconnect |
 | `request_id` | Correlation for a query/transport exchange; not proof of a world effect |
 | `stream_id` / `event_seq` | A participant's filtered durable observation stream and position; not render telemetry |
-| `world_revision` | Committed authoritative state revision, not a blanket precondition on every action |
+| `world_revision` | Last committed world frontier, not a blanket precondition on every action |
+| `live_seq` / `committed_sim_time_ms` | Epoch-local live sample ordering / last durable simulation time; distinguish provisional motion from committed evidence |
 | `rules_revision` | Selected world behavior/configuration revision; changes only when those semantics change |
 | `owner_id` / `owner_generation` | Optional controller-local work ownership; interpreted within the authenticated participant, not a global goal schema |
 
-Ordinary ticks can change `world_revision` without changing `rules_revision`. Do not invalidate every pending thought because another avatar moved. Use explicit target preconditions and relevant operation/rule compatibility.
+Logical ticks advance live simulation state; checkpoints or action commits advance `world_revision`. Neither automatically changes `rules_revision`. Do not invalidate every pending thought because another avatar moved. Use explicit target preconditions and operation/rule compatibility. A new `server_epoch` invalidates old live samples, not durable operation identities.
 
 ### 9.4 Connection lifecycle and browser attachment
 
@@ -622,7 +735,7 @@ The welcome also supplies limits, simulation time/status, and the operation cata
 | `ack` | Participant → world | Highest consecutively installed/persisted event under the client's retention contract, not proof of reading or cognition |
 | `sync_begin`, `snapshot`, `sync_end` | World → participant | Consistent baseline and replay boundaries |
 | `resync_required`, `history_gap` | World → participant | Explicit recovery from missing/incompatible view or history |
-| `telemetry` | World → browser / opted-in client | Replaceable presentation samples based on committed state; separate sample sequence and baseline |
+| `telemetry` | World → browser / opted-in client | Replaceable server-owned samples; include epoch, live sequence, committed base, and explicit provisional status |
 | `heartbeat` | Both | Application liveness/lease progress; no brain call implied |
 | `error` | Both | Structured protocol, input, or compatibility problem |
 
@@ -672,6 +785,23 @@ An accepted long activity returns:
 
 Query responses and status updates identify their observation revision. An action can change after a status query returns; its response is evidence at that revision, not a reservation.
 
+### 9.7 Concrete transport/build baseline
+
+Use Commons-owned copies/adaptations of the server-side `$net/http` WebSocket wiring and Gene web-profile `$ws/*` browser path illustrated by Miclone. Import the underlying Gene APIs directly. Keep the host's `serve` tick loop free of model calls and unbounded client work. Verify Commons session/Origin handling and subprotocol selection against the actual server API; copied handshake code is a starting point, not an implementation of this protocol by itself. No transport setup step launches Miclone or reads its generated files. [R1]
+
+For Life processes, use `src/genex/websocket`. Its documented prerequisites are **libcurl >= 8.11 built with WebSocket support**, Nim, a C compiler, and `pkg-config`. On macOS use a WebSocket-enabled Homebrew curl rather than assuming the system curl satisfies the library. This version requirement belongs to the Gene binding; it is not a claim about when WebSocket was first standardized or added to curl. [R2]
+
+Repository-documented build path:
+
+```sh
+brew install curl pkg-config
+python3 src/genex/websocket/tools/build.py   --pkg-config-path "$(brew --prefix curl)/lib/pkgconfig"
+```
+
+On Linux, supply the equivalent development library and verify its WebSocket support. Do not require SDL2/SDL_ttf for a headless Life client merely because Miclone's optional native graphical shell uses them. Check library loading, `ws`/`wss`, complete-message reassembly, polling, and shutdown with an independent peer before admitting the Life connection. Pin the actual build in experiment metadata. [R1, R2]
+
+The current native API documents queued sends and `receive` polling that also advances writes; nil means no complete message, not a disconnected peer or an empty frame. Poll it outside generated foreground programs, under a small bounded work budget, including while the brain is idle or unavailable. Keep all accesses on the owning thread; do not busy-loop or spawn a model call to pump transport. Close can discard queued bytes, so durable receipts—not send return values—remain the recovery basis. Native hard message limits are ceilings; Commons' smaller configured limits still apply. [R2, T6]
+
 ## 10. Delivery, local outboxes, and operation identity
 
 ### 10.1 Life-side publication
@@ -701,7 +831,7 @@ Different semantic request → operation_id_conflict; never execute it.
 
 Do not rerun the operation to discover its result. For a previously rejected request, return the same rejection; trying again under changed circumstances is an explicit new operation.
 
-The first prototype keeps deduplication receipts or exact rejection/cancellation tombstones for the lifetime of the world history. Do not prune them with ordinary view telemetry. Future retention work must preserve anti-replay information; removing a receipt and then interpreting its ID as a new command is not allowed.
+Retain an exact anti-replay record for every admitted/rejected/cancelled operation throughout the supported history. This does **not** require full receipts, transcripts, or every event to stay in a repeatedly rewritten hot database image. Archive cold detail under §12.8 while retaining addressable proof of its result/identity. Until archival or an incremental store is implemented and measured, cap the experiment and pause admission before exhausting its storage budget. Deleting an old ID and accepting it as new is never an acceptable performance optimization.
 
 ### 10.3 Atomic world application
 
@@ -709,15 +839,16 @@ For a validated, previously unseen human or Life command, the world performs the
 
 ```text
 Validate controller generation and compatible operation contract.
-Check current physical preconditions.
+Check current physical preconditions in the server-owned live state.
 Prepare changes, recipient observations, and the result.
+Include pending simulation changes in the same consistent frontier.
 Commit receipt + physical changes/action record + durable recipient events.
 Only then expose the receipt and publish notifications.
 ```
 
 A normal precondition or domain rejection can itself be retained as the command's immutable rejected result. Invalid framing/authentication or unavailable transport is not a committed operation and carries no false receipt. A persistence failure prevents publication and puts dependent processing into a visible recovery/failure state.
 
-For a long action, admission commits the action record first. Each later logical step commits action progress and physical changes together. Action statuses are `queued`, `running`, `suspended`, `completed`, `failed`, or `cancelled`; terminal statuses do not revert. An independent admission field distinguishes a rejected request from a failed previously admitted activity.
+For a long action, admission commits the action record first. Intermediate movement may remain provisional; periodic/action-boundary checkpoints commit its progress with the physical state (§6.1). A terminal or suspension status is committed before its receipt/event is published. Statuses are `queued`, `running`, `suspended`, `completed`, `failed`, or `cancelled`; durable terminal statuses do not revert. Admission distinguishes rejection from failure of an already admitted activity.
 
 This yields one logical application of a known command under an intact durable world history. It is not a promise of exactly-once effects in arbitrary external systems.
 
@@ -759,15 +890,34 @@ When an invariant genuinely needs atomicity—such as moving an object from one 
 
 ### 10.7 Browser pending commands and refresh recovery
 
-A human action uses `operation_id`, not the transient query `request_id`, as its logical identity. Before sending a mutation, write its exact semantic payload and identity to a small persistent browser journal (for example, IndexedDB behind a browser-storage adapter). Do not send before that local write succeeds. Mark it locally queued, awaiting receipt, accepted/running, or terminal based on observed facts. Browser journal persistence is a proposed client contract to implement and test, not a substitute for the world store.
+**Do not require a persistent browser journal or IndexedDB in version 1.** Keep a small in-memory pending map, stable operation IDs, and the server's existing receipt/action history. Browser caches and drafts may disappear on refresh; accepted world effects and participant identity do not.
 
-After refresh/reconnect, recover the same participant, synchronize, and query uncertain operation IDs. Resend an unresolved request only with the same ID and semantic payload under the current connection generation. A missing reply or spinner timeout must not create a second gift, pickup, post, or recipe. Distinguish a deliberate new user action from a retry of the previous one. An outbox entry never sent before disconnect is not automatically current intent: show it as unsent, recheck its assumptions, and require confirmation or cancellation before first transmission after reconnect.
+Within one page session, allocate one unpredictable operation ID per deliberate action before sending. Retain its exact semantic payload in memory until settled. Retransmission after a transient socket reconnect uses that same ID and payload. A spinner timeout is not permission to create another gift, pickup, or message. The initial UI admits one ordinary command at a time, separately tracking already accepted long activities.
 
-If browser storage is cleared or unavailable, reconnect to the same server-owned avatar and inspect retained operations/history; do not replay a guessed action sequence. Unsaved drafts may be lost, which the UI should state. If journaling fails before a new mutation, report the failure and do not silently downgrade to an unsafe send. Pending journals contain no model or connection credentials.
+After a **page refresh or lost client state**:
 
-The server's current action list and recent operation receipts are available to the authenticated owner, allowing a new tab or device to see work that its own cache did not create. A rejection is terminal for that operation ID. Changed input, a new target, or a revised rules assumption is a new user decision with a new ID—not a rewritten retry.
+1. Reattach the same participant and acquire a new control generation. Fence the old controller and its unadmitted queue before declaring this client ready. An old connection must not admit an action after the new recovery barrier.
+2. Synchronize the avatar/current view and retrieve current actions plus paged owner receipts and eligible conversation history. Include work admitted before the fencing barrier and catch up later durable status events. The server identifies coverage/truncation; an arbitrary recent-list limit is not proof that nothing happened.
+3. Show the actual recorded outcomes and suspended activities. Never reconstruct and automatically resend old input gestures, text, or operations from the new view.
+4. Requests whose ID/payload were lost and never became server records are not recoverable client intent. Tell the player that unconfirmed input or drafts may have been lost. A deliberate new action is allowed only after synchronization and review of current state; it is not labeled a retry of an unknown prior operation.
 
-Apply the same handling to chat messages and object transfers. UI **accepted** is not the same as **completed**, and **sent to the socket** is neither. The browser never alters authoritative inventory or declares a successful action solely from optimistic rendering.
+For receipt history that is unavailable or incomplete, display uncertainty and require explicit human judgment; do not automatically reissue an apparently missing action with a fresh ID. Stable-ID deduplication prevents repeated application of a **known logical operation**, not duplicate human intent authored under new IDs. Dropping the journal is therefore a scoped simplification, not a claim that all refresh ambiguity disappears.
+
+The server supplies the owner-only current action list and receipt/history queries to new tabs or devices. No browser-local write must succeed before play. If IndexedDB is unavailable, normal play still works. A later optional draft/pending cache can improve convenience without becoming the authority for inventory, transcripts, or receipts.
+
+Apply this rule to chat and object transfers. **Accepted** differs from **completed**; **sent to a socket** establishes neither. Do not use optimistic UI animation as an execution record.
+
+### 10.8 Receipt queries: absence is not uncertainty
+
+Reuse the connector's explicit result classes instead of mapping every unsuccessful lookup to “not sent”:
+
+| Query outcome | Meaning / permitted response |
+| --- | --- |
+| `found` | Return the recorded semantic request, receipt, and latest committed activity status. Do not execute again. |
+| `not_found` | The healthy server has authoritative coverage for this participant/history/ID and no receipt or tombstone exists at the query boundary. A client retaining the exact request may resend **the same ID**, subject to current admission rules. |
+| `unknown` | Required history, archived detail, or a reliable store read is unavailable. Do not generate a new ID, infer nonexecution, or automatically repeat the effect. Reconcile or expose uncertainty. |
+
+A negative query alone does not cancel an in-flight command. Same-ID resend is safe through deduplication; cancelling uses a durable tombstone. After browser refresh, old controller generations are fenced before recovery is declared complete. Query results and recovery summaries carry a coverage boundary or explicit truncation/gap, not merely a short “recent results” list presented as exhaustive. [D2]
 
 ## 11. Events, snapshots, reconnection, and backpressure
 
@@ -775,9 +925,9 @@ Apply the same handling to chat messages and object transfers. UI **accepted** i
 
 The world owns an ordered durable observation stream for each participant, human or Life. Audience is determined at the event's committed moment. Recipient-local sequences keep filtering from creating unexplained holes or revealing another participant's unseen events. Observer telemetry is a separate subscription, not the actor's authoritative inbox.
 
-Durable events include admitted action outcomes, eligible conversation messages, important environmental observations, visibility changes, and rule/history changes. Fine-grained interpolated transforms for the browser can use a separate replaceable telemetry stream.
+Durable events include admitted action outcomes, eligible conversation messages, meaningful committed environmental observations, and rule/history changes. Frequent transforms and transient visibility baselines use a separate coalescible presentation stream. A Life does not commit each browser-rate sample to its history. Any fact represented as a durable event comes from a committed frontier; provisional visibility or motion is explicitly labeled and is not retrospectively rewritten as confirmed history.
 
-No Life needs an event for every millimeter of another avatar's movement. The perception module may sample or coalesce position observations before assigning durable event IDs. Once an event is committed to a recipient stream, it is not silently replaced with unrelated content under the same sequence.
+Sample or coalesce before assigning durable event IDs. Commit network intake in bounded batches with one cursor transition, not one full-store publication per render frame. Keep the synchronized current view separate from the retained event history, and replace stale telemetry in memory. A committed event is never changed under the same sequence.
 
 ### 11.2 Event example
 
@@ -803,7 +953,7 @@ No Life needs an event for every millimeter of another avatar's movement. The pe
 }
 ```
 
-A Life persists the event before acknowledging its durable cursor. Storing it does not mean the brain considered it or completed a commitment. A browser acknowledges only after installing the ordered batch under its client-storage contract; that acknowledgment does not mean a person read it and never authorizes deletion of the sole retained human transcript. Section 11.4 defines the difference.
+A Life persists the event before acknowledging its durable cursor. Storing it does not mean the brain considered it or completed a commitment. A browser acknowledges only after installing the ordered batch in its current session; it is a flow-control acknowledgment, not evidence of persistent browser storage, human reading, or permission to delete the sole retained human transcript. Section 11.4 defines the difference.
 
 Deduplicate by stream identity and sequence/event ID, and correlate direct receipts with events by operation/action identity. Receiving both must not create two completed jobs or two copies of the same speech.
 
@@ -815,12 +965,12 @@ Use this sequence:
 
 1. Authenticate and establish the new control generation, but do not yet admit new ordinary mutations.
 2. Read the participant client's last valid event cursor A; a browser without usable local history requests retained server history and a fresh baseline instead of claiming it has all prior events.
-3. At a serialized world boundary, capture a filtered snapshot at world revision R and recipient stream cut C. Pin the required replay range while synchronization proceeds.
+3. At a serialized boundary, capture the latest **durable** filtered snapshot at world revision R and recipient stream cut C. Do not fold an uncommitted motion tail into that durable baseline. Pin the required replay range while synchronization proceeds.
 4. Send `sync_begin`, then the retained events after A through C in ordered, bounded pages. Persist these as observations even when a newer snapshot supersedes their old view-state changes.
 5. Send the complete snapshot associated with R/C, including current visible entities, own avatar/inventory, relevant actions, world/rules metadata, and view-generation identity.
 6. The client atomically installs the complete snapshot and sync metadata after the required preceding events have been stored/installed under its contract. A Life makes this a local durable commit. A browser publishes the complete view to its UI only after the baseline is complete. Neither reapplies older positional deltas on top of it.
-7. Deliver subsequent events after C. Their view deltas name the expected baseline/entity revisions; a mismatch triggers resynchronization.
-8. Reconcile outstanding operations, acknowledge the persisted cursor, and enter ready state.
+7. Deliver durable events after C and separately resume epoch-tagged provisional telemetry. Their baselines/order are distinct; a mismatch resets the affected view rather than duplicating historical effects.
+8. Reconcile outstanding operations or browser owner-receipt coverage; acknowledge under the Life-durable or browser-session contract and enter ready state.
 
 The world continues serving other participants and ticking during this process. Capture the cut consistently, but do not hold an open world transaction while sending pages over a slow socket. Bound the pinned range/snapshot lifetime; if it expires, restart synchronization explicitly.
 
@@ -828,11 +978,11 @@ On a required event gap, do not advance the acknowledgment past it. A client may
 
 ### 11.4 Retention and gaps
 
-Retain unacknowledged essential recipient events in the initial experiment. Keep operation receipts/tombstones under their separate history-lifetime anti-replay rule. A world snapshot does not replace a conversation or proof of an exchange.
+Retain unacknowledged essential recipient events in retrievable storage, but not necessarily in the active image or memory. Limit queued bytes/events per participant and apply the storage policy in §12.8. At the limit, suspend affected ordinary production/admission or enter visible maintenance; do not silently drop promised events. Keep exact operation anti-replay information separately. A snapshot does not replace a conversation or proof of an exchange.
 
 For a native Life, an acknowledged event may later be pruned under a documented policy once its relevant history is durably retained in that Life's store. For a human player, browser caches are not the permanent transcript: retain accepted in-world messages and the participant's eligible conversation/history records on the world server under an explicit retention policy independent of browser ACKs. An operator or secondary read-only tab cannot acknowledge away another controller's essential history.
 
-If an explicit maintenance action or later bounded-retention policy removes required history, send `history_gap` with the missing range and a current snapshot. Record/show the gap rather than inventing lost dialogue. A human reconnecting from a new device can retrieve retained eligible history even without the old browser's cursor. Do not replay the entire world's conversation to compensate for a missing cursor.
+If an explicitly selected retention/deletion policy removes history, retain the coverage/gap metadata and send `history_gap` with the missing range and a current snapshot. Record/show the gap rather than inventing lost dialogue. A human reconnecting from a new device can retrieve retained eligible history even without the old browser's cursor. Do not replay the entire world's conversation to compensate for a missing cursor.
 
 Disk pressure produces a visible maintenance/failure state, not silent deletion of undelivered essentials. A client cursor ahead of its world stream is a consistency/history error. A new `server_epoch` does not reset durable sequences or turn old actions into new requests.
 
@@ -891,8 +1041,8 @@ Before accepting controllers or advancing simulation:
 ```text
 Acquire exclusive world-store ownership.
 Validate format, selected code/assets, and recovery state.
-Restore the latest committed world state and activity progress.
-Create a new server epoch; invalidate old connection leases.
+Restore the latest durable frontier and activity progress; discard any provisional tail.
+Create a new server epoch; invalidate old leases and all prior live telemetry.
 Preserve world/history IDs, entity IDs, operation records, and event cursors.
 Expose suspended/reconciling motor activities and ready snapshots to returning human and Life controllers.
 Resume simulation from committed time, without downtime fast-forward.
@@ -939,20 +1089,58 @@ A consistency-preserving experiment backup can pause all mutating controllers, r
 | World exits before its operation transaction commits | Restore no partial effect; retry the same operation ID. |
 | World commits, reply is lost | Return retained receipt on status query/resend; do not repeat the effect. |
 | Life persists an event, ACK is lost | Replay may duplicate delivery; local deduplication suppresses duplicate state updates. |
-| World exits during movement | Restore the last committed position/progress pair; suspend until controller reconciliation. |
+| World exits during movement | Restore the last checkpointed position/progress/time; discard provisional samples and suspend until controller reconciliation. |
 | Life exits while other Lives act | Others continue; reconnecting Life sees current world and its retained history. |
 | Controller takeover while old commands are queued | Fence the old generation before admission; retained accepted work follows suspension/recovery policy. |
-| Browser refresh after sending, before receiving a receipt | Restore the pending ID and query/resend that same request; do not apply the human action twice. |
+| Browser refresh after sending, before receiving a receipt | Fence the old generation, recover server-known receipts/actions, and do not auto-resend lost intent under a new ID. |
 | Browser storage is cleared | Restore the registered actor and retained server history; unsent drafts may be lost, accepted world effects are not. |
 | Old world snapshot is restored intentionally | New history branch; never transparently replay old-history commands. |
 
 ### 12.7 Browser reconnect, refresh, and logout
 
-Refresh and network reconnection attach to the same human participant. Restore identity from the server-issued session, resolve any writer conflict, install the current filtered snapshot, recover eligible history, and reconcile the pending-command journal before fresh mutations. Never restore old browser positions, inventories, or predicted states into the world.
+Refresh attaches to the same human participant through its server-issued session. Resolve writer ownership, fence the prior generation, install a durable filtered baseline, recover owner receipts and eligible history, and then resume live telemetry. A same-page reconnect can reconcile retained in-memory operation IDs; a refreshed page does not reconstruct a journal. Never upload old browser positions, inventories, or predictions as world authority.
 
 Show **Connecting**, **Synchronizing**, **Connected**, **Controlled elsewhere**, or **Disconnected** based on actual protocol state. Disable mutating controls until ready; retain editable unsent text separately. When a saved activity is suspended, show its target and actual progress and offer Resume/Cancel rather than silently continuing it. Closing the browser does not abandon a Life's commitments or stop other actors.
 
 Logout ends only the human application session and requests orderly detach; when the socket cannot deliver that request, liveness expiry settles control under the same disconnect rule. The world retains the player registration, avatar, possessions, and accepted history for a later login. Ending a session is not deletion of a participant. Model-driven takeover of a disconnected human is not part of version 1.
+
+### 12.8 Storage feasibility, retention, and growth gates
+
+**Do not assume Gene's current SQLite binding behaves like a conventional incremental on-disk SQLite connection.** Miclone's storage source explicitly describes publishing a connection image through Gene's filesystem layer, batching that publication with transactions, and not controlling it through WAL/synchronous pragmas. The supplied review additionally reports whole-file rewrite/fsync per commit. That explains why committing every 100 ms is not the chosen design. This is a binding-specific constraint, not a property of SQLite generally. [R3, D2, T3]
+
+For the first bounded browser demo, reuse that binding behind `WorldStore`, with §6.1's action commits and periodic checkpoints, actual batched transactions, and a deliberately small world. There must be only one image publication for one logical batch. A flag that accepts `WAL` is not evidence of a different I/O path.
+
+**Before sustained multi-Life operation**, benchmark the actual backend with retained records and action load. If action commits/checkpoints block transport or grow beyond the declared targets, replace the storage adapter with a genuine incremental disk-backed SQLite connection or another proven incremental transactional implementation. Preserve the application transaction/receipt contract. This is a targeted storage integration, not permission to weaken confirmed-effect durability, build a new database, or assume a different backend already exists.
+
+#### Bound the active data path, not the Life's identity
+
+Separate current operational state from cold history. Current world/entities, active jobs, pending outboxes, live registrations, selected code/data roots, unresolved deliveries, cursor positions, and cancellation generations remain directly available. Context snapshots, settled decision diagnostics, acknowledged event detail, and old transcripts can move to immutable, queryable cold segments after retention checks. Do not load or serialize all retained history on every cycle.
+
+For Life, bounding history is an explicit pre-soak task. Keep cognitive memories/current roots selected by the Life; do not arbitrarily delete preferences or commitments to meet a cycle benchmark. Bound the **hot operational tail** and context inputs, archive settled detail, and retain evidence links or explicit deletion markers. Pinned work includes unresolved requests, unconsumed result triggers, pending subscriptions, active/recoverable jobs, selected code/decoder versions, and references still needed to reconstruct retained contexts. A receipt needed to resolve uncertainty cannot expire just because it is old.
+
+Proposed starting limits, to tune from measurements:
+
+| Item | Initial bounded experiment policy |
+| --- | --- |
+| Life hot settled cycle records | Keep the latest 200 plus pinned records; archive older settled detail after its references are preserved. |
+| Life hot settled event detail | At most 2,000 entries or 8 MiB, whichever is reached first, excluding pinned operational state; archive/compact before widening the window. |
+| Browser recent-history page | 100 records/page with explicit coverage and pagination; not an exhaustive absence proof. |
+| Essential unacknowledged delivery backlog | 5,000 events or 16 MiB per recipient as an admission/maintenance threshold, not a drop-oldest queue. |
+| World hot store / rewritten image | Initial 32 MiB warning and 64 MiB admission-stop thresholds until an incremental or archival path passes measurement. |
+
+These are **new proposed defaults**, not measured limits or a fixed cognitive schema. If pinned state or a needed exact index exceeds a bound, stop new affected work visibly or migrate storage; never erase it to force a count down. Indefinite life/history retention is not achieved merely by selecting a number.
+
+Archive publication must be crash-safe: write and durably validate a cold segment first; commit its manifest/reference and safe removal from the hot set afterward. A crash may leave an unused segment, never a selected missing segment. Keep metadata sufficient to locate exact operation IDs and retained history. If that index itself becomes too large for the image-rewrite backend, use incremental storage rather than scan every archive or keep expanding a monolithic map.
+
+Deduplication proofs and cancellation tombstones survive archival. An unavailable archive yields `unknown`, not `not_found`, and blocks unsafe replay. Human transcripts remain server-owned and subject to explicit retention, independent of browser ACKs. Document archival/deletion behavior and preserve privacy and source visibility in derived summaries.
+
+#### Measure before widening the experiment
+
+The supplied 128 ms → 1.24 s Life-cycle measurement is a reported warning, not a reproduced benchmark. Record the Life/Gene commit, machine, retained bytes/rows, fake or real brain, and workload before making comparisons. [D2]
+
+Use a deterministic fake-brain workload at 200, 2,000, and 10,000 accumulated cycles with increasing world events. Record p50/p95 cycle cost excluding model time, worker startup, commit latency, bytes written per commit, hot-store size, retained object count, archive growth, and reconnect time. The target is that per-cycle hot-path cost does not grow linearly with **cold history** after compaction; current state growth still has real cost. Run four independent Lives plus browsers only after the bounded path and crash tests pass.
+
+Test retention and restart together: archive during pending operations, interrupt archive publication, replay a duplicate after archival, and reconnect a human from a fresh browser. Keeping a short prompt alone does not bound the storage engine's cost. No achieved throughput or test pass is claimed by this design.
 
 ## 13. Expansion through versioned Gene world modules
 
@@ -1061,7 +1249,7 @@ Do not drop unknown authoritative data merely because the running code cannot in
 
 The initial garden supports carrying water and watering individual plants. A later irrigation module adds channel components, connection/disconnection operations, a transfer system, and flow observations.
 
-Its contract must say how much water can move in one logical step, which containers are connected, what happens on blockage, and how resource quantities remain nonnegative and conserved according to the simulation rules. State updates and flow outcomes commit together. It declares whether plant growth reads moisture before or after irrigation during a tick.
+Its contract must say how much water can move in one logical step, which containers are connected, what happens on blockage, and how resource quantities remain nonnegative and conserved according to the simulation rules. Water/moisture updates and their related progress remain in the same live simulation frontier and are checkpointed together. Any durable flow outcome or material-changing user interaction publishes its causal frontier before confirmation (§6.1). Declare whether growth reads moisture before or after irrigation during a tick; no feature may make confirmed events depend on subsequently discarded provisional state.
 
 A possible observed development is:
 
@@ -1126,7 +1314,7 @@ A first-time human should be able to arrive, approach a Life, speak, place/pick 
 Pointer, keyboard, or chat input
 → current client selection and discovered interaction
 → validated command data with one stable operation ID
-→ browser pending journal
+→ in-memory pending map (no IndexedDB prerequisite)
 → WebSocket submission
 → shared authoritative world handler and transaction
 → receipt / activity events / updated visible state
@@ -1141,7 +1329,7 @@ Show a pending placement marker or requested destination separately from confirm
 
 Click-to-move starts a server-owned walk, the same as an AI request. Start with a third-person/isometric camera, orbit/zoom, and a readable world. Camera input is local presentation; physical movement remains a world operation. A later direct-keyboard mode follows section 6.5 rather than trusting client positions or relying on key-up delivery.
 
-Render with interpolation between timestamped committed samples. Use the world's view-generation and entity revisions to discard stale samples after resync, teleport, migration, or history change. Interpolation is never fed back into Life context or world storage as a confirmed action. Prediction can be added later, with correction and replay rules, but is not needed for click-to-move.
+Render timestamped server samples smoothly, keeping the durable baseline separate from explicitly provisional live motion (§6.1). Use server epoch, view generation, live sequence, and entity revision to discard stale data after restart/resync or migration. A crash can correct only the provisional tail. Neither interpolation nor provisional telemetry confirms inventory changes, activity completion, or durable Life observations. Client prediction is not required for click-to-move.
 
 For ordinary human sessions, world time is near real time. Brains deliberate asynchronously, and world updates do not wait for them. An AI can finish a previously started walk while thinking, and a human can work or converse while awaiting its reply. Menus, backgrounded rendering, and an idle player do not pause the world.
 
@@ -1171,7 +1359,7 @@ Appearance uses versioned/declarative asset IDs, labels, primitive shapes, meshe
 
 Custom renderer behavior, if needed, ships as an explicit client release—not executable code embedded in an object. A feature that needs an unsupported input or schema reports that requirement. Refresh discovery and baselines after a rules change without losing pending command identities or corrupting retained history.
 
-The implementation may use Gene's supported browser output with a graphics library behind a narrow adapter. No engine or current Gene build compatibility is assumed here; verify the chosen build/runtime path. Rendering and UI can evolve independently of the world/Life process boundaries.
+Start with Commons-owned source copied and adapted from Miclone's Gene web-profile/WebGL2 browser path (§1.4). Bring the required picking, camera, recipe-driven appearance, shader/assets, and relevant build/smoke code into the Commons tree. Build from those local sources, with no imports, asset URLs, script calls, or generated artifacts from `examples/miclone`. Add the player interaction panel and server-owned motion; freely change the copied interfaces and presentation where this design needs it. Miclone performance is not a Commons benchmark, and client-authoritative physics must not survive as a compatibility shortcut. [R1]
 
 ## 16. Configuration, package layout, and running processes
 
@@ -1179,6 +1367,7 @@ The implementation may use Gene's supported browser output with a graphics libra
 
 ```text
 world/
+  SOURCES.md                copied-source paths/revisions/notices; not a dependency manifest
   main.gene                 explicit create/open/run, operator control
   runtime.gene              authoritative queue and logical ticks
   protocol.gene             wire schema, version checks, encoding
@@ -1195,15 +1384,19 @@ world/
   content/commons.gene       initial regions and objects
   client/
     main.gene                browser entry and player/observer mode selection
-    session.gene             attach, reconnect, pending journal, receipt recovery
+    session.gene             attach, fencing, in-memory pending state, server receipt recovery
     input.gene               click-to-move, selection, chat, interaction forms
     view.gene                filtered state, renderer, inventory and progress
     operator.gene            explicitly separate experiment controls
-  tests/                     fake-clock, crash, network, invariant fixtures
+  assets/                    Commons-owned selected/adapted assets and their notices
+  tools/                     local build/smoke scripts; no Miclone path dependencies
+  tests/                     copied/adapted tests plus Commons crash/network/invariant fixtures
 
 life/
   ...                        independent Life implementation from life.md
-  body/world_client.gene     Gene-facing world adapter, outbox, observed view
+  body/world_client.gene     second world adapter: short calls, result routines, observed view
+  delivery/                  extracted connector state machine; retain HTTP mailbox adapter
+  transport/world_ws.gene    genex/websocket polling and Commons protocol adaptation
   config/                    common settings and individual seed definitions
 
 experiment/
@@ -1211,7 +1404,7 @@ experiment/
   launch                     optional script, not a new runtime framework
 ```
 
-Shared protocol codecs or immutable library source can live in a separate package. Each process instantiates its own runtime objects. Never use a file-level global in a shared library as if it were a cross-process object.
+This layout names responsibilities, not a request to write all code from scratch. Populate the relevant `world/` modules with selected copies from Miclone, bring over their necessary assets/tests/build inputs, rewrite references to Commons-owned paths, and adapt them in place. The original Miclone tree is not part of the Commons dependency graph. Start Life networking by generalizing its existing connector and adding an adapter beside the local world; that Life-internal refactoring is separate from Miclone reuse. No new shared engine package is required. Each process still owns its runtime objects; a file-level global is not a cross-process object.
 
 ### 16.2 Physical storage layout
 
@@ -1225,7 +1418,7 @@ experiment-data/
   artifacts/                 optional immutable code/asset cache
 ```
 
-A store path belongs to its owner. Lifetimes, flushes, migrations, and backups follow that owner's contract. Do not let the browser or Life processes open `world.sqlite` directly. Human profiles, accepted world history, inventory, and operation receipts are owned by the world store; the browser has only its local pending journal, cache, and drafts. No `lives/human/life.sqlite` is required.
+A store path belongs to its owner. Lifetimes, flushes, migrations, and backups follow that owner's contract. Do not let the browser or Life processes open `world.sqlite` directly. Human profiles, accepted world history, inventory, and operation receipts are owned by the world store; the browser initially has only an in-memory pending map, installed view, and drafts. No `lives/human/life.sqlite` is required.
 
 Code may reside in versioned files or the proposed Gene code database. Database-backed module loading is optional; availability of the selected code/dependency revisions at restart is not.
 
@@ -1245,7 +1438,7 @@ gene run life/main.gene -- --config experiment/dara.gene
 
 World and Life creation are separate explicit operations. Opening a missing or incompatible store must not seed a replacement silently. A Life started before the world becomes ready retries connection without discarding its existing state or generating a new entity.
 
-The world configuration selects storage, world/history identity, bind address, modules, simulation settings, initial content, and player-session/Origin settings. Each Life configuration selects its own store, identity, world binding, brain adapter, and seed reference only for creation. Model credentials stay with the Life; neither the world nor browser needs them.
+The world configuration selects storage, world/history identity, bind address, modules, simulation settings, initial content, and player-session/Origin settings. Each Life configuration selects its own store, identity, `local` or `network` world adapter, brain adapter, retention/budget policy, and seed reference only for creation. Model credentials stay with the Life; neither the world nor browser needs them.
 
 Once the HTTP/WS host is ready, the human opens the configured player URL, for example `http://127.0.0.1:8096/`, signs into its locally provisioned player session, and joins. That is an application route to implement, not a new Gene CLI command. Creating a player is explicit; refresh/relogin resumes the existing one. A launcher may open the page, but closing it must not signal global shutdown.
 
@@ -1257,37 +1450,61 @@ Keep failures linked to operation, action, event, cycle, and revision IDs. A log
 
 Use per-process memory/execution limits, a bounded brain-call budget, rate-limited participant queues, and reliable operator controls. These are application/deployment choices. Do not reintroduce the removed Gene capability system or make JIT or a production distributed scheduler a prerequisite for this experiment.
 
+### 16.5 Preflight and measured deployment profile
+
+Before connecting a Life, record the Commons, Gene, and Life revisions, WebSocket native-library build, curl version/features, storage adapter, and selected world manifest. Run Commons' own browser/server fixtures, the independent native WebSocket library's peer test, and Life's local-world/mailbox suites. Useful Miclone tests are copied and adapted under Commons ownership; the original Miclone suite is not required. Include a clean build/test with its source and outputs unavailable. The review's 110-test count is a reported Life baseline; record the actual suite and results rather than freezing the number. [R1, R2, D2]
+
+Model-provider configuration is separate from the native execution worker limit. A remote inference request may take longer than three seconds without turning a generated program into an unbounded worker. Keep inference cancelable and asynchronous with respect to the body, and keep returned code within the selected short-execution policy. Implement one real adapter, its framing parser, timeout/retry rules, usage accounting, and failure observations before calling a milestone “real Lives.” A protocol-shaped fake brain does not complete that work.
+
+Specify and measure the action/interaction targets in §7.5 and the storage-growth gates in §12.8. Report delayed replies, budget exhaustion, storage lag, worker failure, and provider unavailability distinctly. Do not classify an idle Life as broken merely because it chooses not to speak.
+
 ## 17. Implementation milestones
 
-### Milestone 1: real processes and a minimal playable browser
+### Milestone 0: make a self-contained source starting point
 
-Run one world process and two fake-brain Life processes, each with its own store. Add a minimal browser player with a separately registered avatar. Use real local WebSockets. Inspect a scene, speak, select an object, and make human and AI requests contend for the same item through one handler. A simple placeholder scene is enough; this milestone is not conditional on polished graphics.
+Select the useful Miclone files at a recorded source commit and copy them, their necessary dependencies, relevant tests, and selected assets/build steps into the Commons tree. Remove cross-project imports and paths, adapt package/entrypoint names, and establish a clean Commons build with `examples/miclone` and its outputs unavailable. Record provenance and baseline results. An original Miclone build can help diagnose a copy but is not a permanent prerequisite. Establish the actual storage-publication behavior on the copied/adapted path.
 
-Complete participant binding, writer-generation checks, operation receipts, browser pending-command journaling, and recipient synchronization on this path. A single-process in-memory demo remains a unit test, not completion.
+Native curl setup and Life tests are **not prerequisites for the browser-only milestone**: pin the actual Life checkout, run its local demo/mailbox regressions, and run the independent native WebSocket peer test before milestone 2. This is a selective copying/integration step, not a new engine project or shared-library extraction; leave original Miclone and local Life behavior unchanged.
 
-### Milestone 2: durable walking and independent recovery
+### Milestone 1: one browser player and the world
 
-Implement server-owned walking and browser click-to-move. Keep Life-local grouped commits local; the server commits position and world-action progress. Test reply loss, browser refresh, browser cache loss, Life crash, world crash, and same-player tab takeover. No duplicate exchange or avatar, no rewinding another participant, and no unexplained resumed movement.
+Build the independent Commons application from its locally copied/adapted source. Run one Commons server and one browser actor, with no Miclone process, Life process, or model provider required. Use and adapt the Commons-owned renderer/socket host. Implement server-owned click-to-move, a small scene, one unique object, participant binding, minimum session/Origin checks, control-generation fencing, durable action receipts, and owner current-action queries. Use an initial full snapshot plus bounded live updates; the mature recipient replay protocol need not block the first walking loop.
 
-### Milestone 3: one human and two real Lives
+Use action-boundary commits and periodic checkpoints from the start. Show provisional motion separately from confirmed interactions. Refresh, fence the old page, and recover server-known results without IndexedDB. Prove a confirmed pickup survives a server crash and an uncheckpointed motion tail is corrected honestly. Full inventory/crafting/UI catalog polish, four brains, and Life inbox persistence are not milestone-1 dependencies.
 
-Connect the real brain adapter for two Lives, each with its own context. The human visits the garden, speaks, drops/offers an object through implemented interactions, observes a Life using it, refreshes, and returns to the same world. A delayed AI reply must not freeze the human interface. A browser-only player can complete this without a model credential or native Gene installation.
+### Milestone 2: attach one Life, then two, using the existing connector
 
-### Milestone 4: four seeded Lives and the neighborhood
+Keep the local world/demo intact. Add the network adapter and generalize connector delivery state rather than rewriting it. Run one fake-brain Life in its own process/store through `genex/websocket`; implement the durable outbox, `found/not_found/unknown`, recipient cursor, snapshot/replay, and world-result subscriptions. Then add a second fake-brain Life and make human and Life requests contend through the same operation handler.
 
-Create Aster, Brin, Cove, and Dara from the recorded common prompt and small variations. Add homes, a noticeboard, simple garden behavior, and polished enough 3D presentation for readable human interaction. Then add a shared kitchen or workshop activity with real inputs/outcomes. All four seeds keep the same basic action vocabulary; no assigned occupations.
+Express walk-then-act through a stored event routine, not `await_result` or a long-lived worker. Persist its subscription with the outbound request and verify fast completion, duplicate delivery, and cancellation. All network code remains outside short brain-program execution. Complete the real process boundary and filtered recipient recovery here.
 
-### Milestone 5: prove expansion with an active player
+### Milestone 3: durability, bounded storage, and independent recovery
 
-Add a region using existing schemas, then irrigation or a household behavior module. Demonstrate new interaction discovery in the browser and Life client, generic fallback, retained object/actor IDs, and a restart during migration. Test an open old browser, a queued human command, a suspended AI action, and an offline Life. Publishing a feature name alone does not demonstrate extensibility.
+Test Life exit before/after send, lost world reply, browser refresh/takeover, world crash during movement, cancellation before arrival, and replay after archive/compaction. Restore committed state without duplicate effects or rewinding another participant's confirmed history. Prove the network profile's checkpoint behavior separately from the stricter co-located local-world fixture.
 
-### Milestone 6: private body evolution in the shared world
+Implement bounded active Life history and world event delivery before long runs. Run §12.8's growing-history benchmarks and hot/cold retention tests. Replace the whole-image backend with an incremental adapter if it cannot sustain §7.5's goals at the agreed retained size. Merely reducing the number of database commits does not close the growth issue. Passing this milestone is the prerequisite for sustained multi-Life sessions.
 
-Let one Life select a learned procedure or new memory/attention organization while the human and other Lives continue. The world does not need to understand its private schema. Reconcile incompatible queued actions explicitly. New procedures can exploit existing world rules; they do not silently replace those rules.
+### Milestone 4: one human and two real Lives
+
+Implement and test **one real brain adapter** as explicit work. Handle the note/program response, model failure, cancellation, usage, and worker execution separately. Split immutable creation seeds from editable dispositions in context construction. Run first with one real Life, then two independent contexts and stores.
+
+Measure response latency, worker overhead, token/cost consumption, and fairness under human conversation. Exercise exhausted call/token/spend budgets: the UI shows coarse availability, the body keeps receiving events, and the world remains playable. A delayed or declined AI reply is not a server failure. No human player needs model credentials.
+
+### Milestone 5: four individuals and a useful neighborhood
+
+Create Aster, Brin, Cove, and Dara with the same basic abilities and short seed differences. Retain immutable creation records and evolving current dispositions. Add homes, a noticeboard, simple garden behavior, and one useful workshop/kitchen activity. Improve the Commons-owned renderer's presentation; this is polish and domain content, not the first introduction of a browser engine. Changes need not remain compatible with the Miclone source from which it began.
+
+Run the human–AI continuity demonstration with measured storage and inference budgets. Do not turn seed labels into permanent occupations.
+
+### Milestone 6: prove world expansion, then private Life evolution
+
+Add a region using existing schemas, then irrigation or one household behavior module. Preserve IDs, current state, receipt history, and compatible activities; test a queued command, old browser, offline Life, and crash during migration. Expose the new operation through the browser catalogue and Gene documentation.
+
+Separately let one Life change a learned procedure or cognitive organization while the others continue. Account for queued event routines and pending requests using old data. World expansion and private memory evolution remain independent changes.
 
 ### Integration checks before claiming support
 
-Verify Gene's selected native WebSocket client/server and browser build interfaces, cancellation/limits, store durability, renderer codec, session/Origin behavior, and repeated generated-code lifetimes. Where an API is missing, add a small adapter rather than a second evaluator or collapsing the processes. No implementation or browser test success is claimed by this document.
+For each milestone publish the actual revisions, declared build dependencies, test commands/results, and measured workload. Copied Miclone code and generalized Life connector code reduce implementation scope but do not prove new authentication, server motion, Commons persistence, or WebSocket recovery correct. Commons build, test, and release commands must not depend on the original Miclone tree or its test status. No benchmark or passing test is claimed by this proposal.
 
 ## 18. Acceptance tests and experimental evaluation
 
@@ -1304,7 +1521,7 @@ Verify Gene's selected native WebSocket client/server and browser build interfac
 | W1 | A human and a Life pick up the same unique item | At most one succeeds through the same handler; no optimistic UI duplication. |
 | W2 | An object moves/disappears after perception | Operation uses current preconditions and returns the actual outcome. |
 | W3 | Run many movement requests in one program | Physical movement still consumes simulation time; no teleport by call count. |
-| W4 | Commit a movement step | Position, action checkpoint, simulation time, and related events agree. |
+| W4 | Publish a movement checkpoint/action boundary | Position, progress, simulation clock, and durable outcomes agree; intervening telemetry is labeled provisional. |
 | W5 | A browser or Life floods commands or stalls reads | Bounded per-participant queues do not stall other actors or grow without limit. |
 | D1 | Abort Life group before request commit | Neither local job publication nor world dispatch occurs. |
 | D2 | Exit after local commit before send | Recover the same pending operation, not a new ID. |
@@ -1312,7 +1529,7 @@ Verify Gene's selected native WebSocket client/server and browser build interfac
 | D4 | Reuse operation ID with changed input | Reject conflict without effects. |
 | D5 | Cancel arrives before original request | Tombstone prevents later original admission. |
 | D6 | Cancel arrives after completion | Report completion/too-late, not fictitious rollback. |
-| D7 | World commit fails | No success reply or uncommitted effect is exposed. |
+| D7 | World commit fails | No durable success is exposed; freeze/recover dependent work and invalidate any provisional tail without losing earlier receipts. |
 | D8 | Life cannot persist an incoming result | Do not acknowledge it or proceed as though the local update succeeded. |
 | E1 | ACK is lost | Event can replay; receiver deduplicates it. |
 | E2 | Snapshot races live events | Use one consistent cut and baseline; no gap or double application. |
@@ -1339,11 +1556,11 @@ Verify Gene's selected native WebSocket client/server and browser build interfac
 | C3 | One Life changes its private memory schema | Others' stores and the world's rules are unchanged. |
 | C4 | A Life receives no relevant event | Body and world remain operational without compulsory model calls. |
 | H1 | Human clicks and a Life calls the equivalent helper | Same operation contract, physical checks, and server outcome semantics. |
-| H2 | Human refreshes after world commit but before receiving the receipt | Recover/query the same operation ID; no second pickup, speech, or exchange. |
+| H2 | Refresh after world commit before receipt, with no local journal | Fence the old controller, recover its server-known receipt/action, and do not automatically create a second operation. |
 | H3 | Clear browser cache and log in again | Same avatar/possessions and retained eligible server history; lost unsent drafts are not invented or resent. |
 | H4 | Open two tabs as one human | One mutating controller; explicit takeover fences old queued commands and leaves read-only observation possible. |
 | H5 | Use another participant ID or hidden object ID in input | Connection binding and filtered query/action checks prevent redirected control or private-field disclosure. |
-| H6 | Browser journal fails before send | No mutation sent; UI exposes the failure rather than silently losing its retry identity. |
+| H6 | Browser has no IndexedDB or persistent application storage | Normal play works; in-session retries retain IDs, refresh recovers server facts, and unrecorded intent is not guessed. |
 | H7 | Click-to-move returns accepted | Show progress, not arrival; completion follows the authoritative action event. |
 | H8 | Stop/Cancel races with action completion | Display the real terminal outcome; no false rollback or duplicate replacement walk. |
 | H9 | Browser disconnects during an activity | Shared world continues; that motor activity suspends under the documented detection policy and waits for explicit resume. |
@@ -1359,6 +1576,36 @@ Verify Gene's selected native WebSocket client/server and browser build interfac
 | H19 | Later keyboard mode loses key-up, hides the tab, or reconnects | Server expires old input and clears it across generations; no replay from the durable outbox. |
 | H20 | Browser ACKs then loses its storage | World retention preserves the human transcript/receipt contract independently of that ACK. |
 
+Additional feasibility and regression cases:
+
+| ID | Scenario | Required result |
+| --- | --- | --- |
+| F1 | Establish the copied-source starting point | Selected browser/transport/renderer code, necessary assets, and relevant tests live in the Commons tree with source provenance; original Miclone files remain unchanged. |
+| F2 | Browser sends a client-computed position | Never accepted as authoritative movement; server walking/physics governs both controller types. |
+| F3 | Ten logical ticks with no durable action | No requirement for ten whole-image commits; periodic checkpoint cadence and dirty-horizon limits are honored. |
+| F4 | Crash after live movement but before checkpoint | Restore durable position/time; new epoch discards provisional samples; no confirmed outcome is undone. |
+| F5 | Pickup/speech depends on an uncheckpointed position | Commit the causal position/frontier with the effect/audience before success; crash cannot retain an impossible interaction. |
+| F6 | Dirty horizon or hot-store limit is reached | Slow/pause admission and report maintenance; do not silently drop receipts, promise durability, or enlarge the loss window. |
+| F7 | World activity exceeds the Life program limit | Short submitting program returns; event routine continues after the actual result with no held worker/model call. |
+| F8 | Completion races result subscription | Atomic registration/current-result handling produces one logical trigger; none is missed or duplicated. |
+| F9 | Duplicate result arrives while follow-up is prepared | Trigger consumption, local state, and next outbox request are atomic or reconciled; no new-ID duplicate follow-up. |
+| F10 | Existing local-world demo and HTTP connector tests | Remain valid after adding the network profile and extracting delivery logic. Record actual test inventory, not an assumed fixed count. |
+| F11 | Missing curl WebSocket support or native library | Preflight fails clearly; no silent transport downgrade or unbounded reconnect loop. |
+| F12 | Native send has queued data but no inbound application events | Normal host polling advances writes; no busy wait or brain call is needed to pump the connection. |
+| F13 | Receipt lookup is `unknown` versus `not_found` | Unknown never causes an automatic new-ID repeat; definitive absence is scoped to covered history, and known requests retain their IDs. |
+| F14 | Edit disposition and restart | Current context uses the editable state while the creation seed remains immutable provenance. |
+| F15 | Model/worker/budget failure during human chat | Show accurate coarse status, preserve receipt/history, and keep world controls and body receipt active. |
+| F16 | 200 → 2,000 → 10,000 fake cycles with growing events | Measure hot-path/commit costs and verify bounded active history; cold-history growth is not copied into every decision. |
+| F17 | Archive publication interrupted | Retained records remain locatable; orphan segments are tolerable, selected missing segments are not. |
+| F18 | Replay an old operation after archival | Exact deduplication/result or explicit unknown; never execute because the hot receipt was removed. |
+| F19 | Refresh loses an unsent command | No client journal is required; server facts are restored and the UI discloses lost unconfirmed input rather than inventing a resend. |
+| F20 | Old socket and refreshed page overlap | Fencing and the recovery barrier account for already admitted work and prevent late old-generation admission. |
+| F21 | Cold receipt pages are truncated or unavailable | Report coverage/uncertainty; absence from a recent list is not proof of nonexecution. |
+| F22 | Event routine is queued during a cognitive-schema replacement | Preserve compatibility, migrate, invalidate visibly, or defer; never run an old-layout continuation against new-layout data. |
+| F23 | Native binary JSON and browser text/binary JSON interoperate | One complete bounded UTF-8 JSON decoder and the same semantic validation; no codec-induced identity changes. |
+| F24 | Clean build and smoke test with `examples/miclone` and its generated outputs unavailable | Commons builds its browser/server from its own files and declared platform dependencies; no source import, asset fetch, script, fixture, or launched process requires Miclone. |
+| F25 | Original Miclone changes after copying | Commons remains on its own selected code; no build-time recopy or automatic update occurs. Any adopted fix is an explicit local change tested against Commons behavior. |
+
 Test network faults with real separate processes: close sockets at selected points, delay receipt delivery, replay an old command, kill one process, and verify durable records after reopening. Assertions must inspect the actual item location, action count, receipt identity, and recipient inbox—not only returned status text.
 
 ### 18.2 Behavioral comparisons
@@ -1367,7 +1614,7 @@ Record common/individual seed revisions, initial placements, world rules/content
 
 Look for continuity of interests, preference recall, revision after contradictory evidence, chosen places, learned procedures, information exchanged between Lives, useful restraint, and reactions to changed circumstances. Allow both divergence and convergence. Distinct writing styles alone do not demonstrate distinct persistent behavior.
 
-World replay can reproduce recorded physical transitions under the recorded rule versions and action order. Reissuing model calls is a new behavioral run, not deterministic replay. Keep the two modes distinct.
+Recovery reconstructs durable frontiers and recorded action outcomes. It does not promise to reproduce discarded provisional frames. Optional diagnostic traces may record those separately. Reissuing model calls is a new behavioral run, not deterministic replay; keep that distinction visible.
 
 ### 18.3 A first public demonstration
 
@@ -1383,42 +1630,68 @@ The following are selected design choices, not unresolved hidden defaults:
 | --- | --- |
 | Deployment | Separate world process and process per AI Life; human controllers run in browsers, not extra Life processes |
 | World consistency | One authoritative writer; no world sharding or replicated writers |
-| Storage | Separate transactional world and Life stores; no distributed `store.commit` |
-| Transport | WebSocket for commands/events; HTTP for assets; application-owned durability |
-| Brain interface | Ordinary Gene code plus a short decision note, unchanged from `life.md` |
+| Storage | Separate owners; action-boundary commits plus periodic world checkpoints; bounded hot history and a measured incremental-storage gate; no distributed `store.commit` |
+| Source reuse | Selective Miclone source copies maintained as Commons code; no Miclone package/build/runtime/test dependency or automatic synchronization |
+| Transport | Commons-owned HTTP/WS and browser code using Gene APIs directly; genex/websocket for Life; shared Life connector delivery state; HTTP assets |
+| Brain interface | Ordinary Gene code plus a short note; bounded programs and event-subscribed continuation, not long waits |
 | World requests | Versioned inert data, not remote execution of brain programs |
-| Initial population | Target four lightly seeded Lives and human players; first playable test uses one human and two fake-brain Lives |
+| Initial population | Browser/world first; one then two fake-brain Life processes; real adapter and budgets before four lightly seeded Lives |
 | Perception | Actor-filtered views for play and AI observations; private minds; separately admitted observer/operator view |
 | Reconnect | Durable receipts, recipient replay, consistent snapshot, reconciliation before fresh effects |
 | Duplicate commands | Same durable operation ID returns the retained result; changed payload conflicts |
 | Disconnect | Human/Life avatar remains; motor actions suspend when loss is detected; reconcile before explicit resume |
-| World downtime | Simulation pauses; wall-clock schedules use their explicit policies |
+| World downtime | Restore last durable frontier and discard only provisional tail; no wall-time fast-forward; world receipts survive |
 | Upgrade | Controlled quiescent selection; explicit schema/activity compatibility |
 | Expansion | New content, regions, components, operations, and systems through versioned Gene modules |
 | First experiment | Human-scale neighborhood activities; no mandatory survival economy or assigned AI professions |
 | Human control | Own persistent avatar, click-to-move first, shared world operation contracts |
-| Browser recovery | Pending-operation journal plus authoritative server receipts/history; refresh is not a new action |
+| Browser recovery | In-memory pending IDs only in v1; fenced server reconciliation after refresh; no automatic resend of lost intent |
 | Language permissions | No dependency on the removed Gene capability system; normal world/session validation remains |
 | Extensible UI | Data-only interaction discovery and appearance fallback, not executable scripts in world packets |
 
-Some implementation selections still need to be made: the exact Gene transport/store APIs, supported local OS process-lock primitive, rendering library, model adapter, detailed physical constants, and deployment limits. They should implement the contracts above rather than silently redefine them. They do not require additional core Gene syntax.
+The renderer/server source origins and independent native transport dependency are selected (§1.4, §9.7); Miclone itself is not an installed dependency. Remaining implementation work includes exact adapter signatures, Commons session integration, an incremental storage option if the measured image path fails, retention/archive mechanics, one real brain provider, physical constants, and recorded deployment limits. These are explicit gates, not assumptions of existing support. No new core Gene syntax is required.
 
 ## 20. Basis and references
 
-**[D1] World-design discussion, 2026-09-21.** This revision adopts the project owner's removal of Gene capabilities; the request for a human-like expandable world; and browser-controlled human participants using WebSocket alongside separate AI Life processes. It extends the earlier world proposal rather than reporting implemented features. The neighborhood, interaction catalogue, browser pending journal, and milestones are proposed design choices.
+**[D1] World-design discussion, 2026-09-21.** The project owner requested an expandable human-like world, separate world and Life processes, WebSocket interaction, and human browser players; removed Gene capabilities; and requested incorporation of a second agent's implementation review. The subsequent clarification selects copying and adapting useful Miclone code without depending on Miclone. Revision 4 applies that decision to source ownership, builds, tests, maintenance, and milestones; the other product decisions remain unchanged.
 
-**[L1] User-supplied Gene Life proposal.** Latest reviewed attachment `life(2).md`, updated 2026-09-20; intended companion filename `life.md`. This world design preserves its code-first brain interface, private cognitive organization, explicit state continuity, activity checkpoints, and independent-environment semantics. It explicitly supersedes its optional shared-store/local-world deployment for this multi-process experiment. Relevant sections: 1–4, 6–10, and 12–15. Source attachment SHA-256: `a3d9750da0d0f974fb646b157ae10c5ec3afb787478e3da248dd554a76bc6b43`.
+**[D2] User-supplied feasibility review.** Its six points concern Miclone reuse, whole-image storage costs, Life execution/brain/seed limitations, connector reuse and native curl requirements, browser-first sequencing, and removing the mandatory browser journal. It reports Life cycle time rising from 128 ms to 1.24 s over 200 cycles, a 3-second program limit, a 100-call/hour default, and 110 tests. These measurements/counts and the Life implementation details were supplied by the reviewer, not independently reproduced in this document update. They motivate explicit integration/performance gates. Locate and pin the current Life implementation before extraction; no missing component is claimed to have been implemented by editing this file.
 
-**[T1] IETF RFC 6455, The WebSocket Protocol.** Basis for bidirectional framed communication, subprotocol negotiation, close/ping/pong, and secure WebSocket transport. Application receipts and world recovery rules in this document are proposed above that transport, not guarantees borrowed from it. Source: <https://www.rfc-editor.org/rfc/rfc6455.html>.
+**[L1] User-supplied Gene Life proposal.** Latest reviewed attachment `life(2).md`, updated 2026-09-20; intended companion `life.md`. It supplies the code-first brain interface, private cognitive organization, local grouped commits, and checkpoint-based continuation. This proposal adds a network adapter profile; it does not delete the local-world implementation or imply a distributed transaction. The world-specific checkpoint/provisional-motion policy is explicit in §6.1. Source attachment SHA-256: `a3d9750da0d0f974fb646b157ae10c5ec3afb787478e3da248dd554a76bc6b43`.
 
-**[T2] MDN, WebSocket and bufferedAmount.** Basis for the browser API's buffering/backpressure limitations. Queue policies and replay limits here are proposed application rules. Sources: <https://developer.mozilla.org/en-US/docs/Web/API/WebSocket> and <https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/bufferedAmount>.
+Repository sources below were read for revision 3 at **`gene-lang/gene-new@228d3304b872927aa1d82b5a46934e8ec8c479fe`**. They remain provenance and technical references, not dependencies to resolve when building the Commons. Source and README inspection is not an execution or benchmark report; some historical comments describe older milestones.
 
-**[T3] SQLite, Atomic Commit In SQLite.** Basis for local transactional publication, subject to the chosen storage/durability configuration; not a claim of atomicity across independent databases and network messages. Source: <https://www.sqlite.org/atomiccommit.html>.
+**[R1] Miclone source reference for selective copying.** `examples/miclone/README.md`, `examples/miclone/server/main.gene`, and `examples/miclone/server/storage.gene`. Source reference for copying and adapting the Gene browser/renderer, WebSocket integration, portable helpers, content recipes, and world-store interface; not a runtime, build, or test dependency. The Commons' server-owned motion, protocol receipts, participant recovery, and browser session policy remain adaptation work. Sources: <https://github.com/gene-lang/gene-new/blob/228d3304b872927aa1d82b5a46934e8ec8c479fe/examples/miclone/README.md>, <https://github.com/gene-lang/gene-new/blob/228d3304b872927aa1d82b5a46934e8ec8c479fe/examples/miclone/server/main.gene>.
 
-**[T4] IETF RFC 8259, The JavaScript Object Notation (JSON) Data Interchange Format.** Basis for the proposed text interchange format and interoperable numeric considerations. This document adds stricter bounded schemas, duplicate-key rejection, and string encoding for large identity/revision values. Source: <https://www.rfc-editor.org/rfc/rfc8259.html>.
+**[R2] Gene native WebSocket library.** `src/genex/websocket/README.md`: documented libcurl >= 8.11 with WebSocket support, C/Nim/pkg-config build, macOS curl selection, binary queued sends, bounded polling, message limits, owning-thread behavior, and close semantics. Source: <https://github.com/gene-lang/gene-new/blob/228d3304b872927aa1d82b5a46934e8ec8c479fe/src/genex/websocket/README.md>.
 
-**[T5] WHATWG WebSockets Standard.** Browser API, HTTP/session integration in the handshake, and non-exposure of protocol ping/pong frames to script. The session, Origin, reconnect, and actor-control policies in this document are application design choices, not automatic WebSocket guarantees. Source: <https://websockets.spec.whatwg.org/>.
+**[R3] Miclone storage binding caveat.** `examples/miclone/server/storage.gene` describes provider-backed connection-image publication and transaction batching, and warns that WAL/synchronous pragmas do not configure that path. The additional per-commit rewrite/fsync claim is from [D2]; no write-amplification benchmark was run here. Source: <https://github.com/gene-lang/gene-new/blob/228d3304b872927aa1d82b5a46934e8ec8c479fe/examples/miclone/server/storage.gene>.
 
-RFC 6455, MDN WebSocket/bufferedAmount, and the WHATWG browser interface were consulted for this revision; the SQLite and JSON references are retained technical bases from the earlier draft. No Gene implementation, network integration, renderer, or test suite was executed. API names, message shapes, sample values, layout, authentication flows, and seed prompts specify proposed behavior, not existing support.
+**[T1] IETF RFC 6455.** Bidirectional framed transport and protocol-level control; it does not provide this application's receipts/recovery. <https://www.rfc-editor.org/rfc/rfc6455.html>.
 
-**A world people can enter, independent Lives that continue, and shared places that keep growing.**
+**[T2] MDN WebSocket / bufferedAmount.** Browser buffering and backpressure considerations retained from the prior revision. <https://developer.mozilla.org/en-US/docs/Web/API/WebSocket>; <https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/bufferedAmount>.
+
+**[T3] SQLite, Atomic Commit In SQLite.** Local transactional publication and storage assumptions; not a statement that Gene's connection-image layer provides native incremental file behavior. <https://www.sqlite.org/atomiccommit.html>.
+
+**[T4] IETF RFC 8259.** JSON interchange and numeric considerations. The protocol imposes its own stricter bounded validation. <https://www.rfc-editor.org/rfc/rfc8259.html>.
+
+**[T5] WHATWG WebSockets Standard.** Browser constructor/session behavior and non-exposure of protocol ping/pong, retained as the browser protocol basis. <https://websockets.spec.whatwg.org/>.
+
+**[T6] libcurl WebSocket interface overview.** Native send/receive integration and the need to drive the connection through the selected API. <https://curl.se/libcurl/c/libcurl-ws.html>.
+
+The curl and SQLite references and repository baseline above were checked for revision 3. Revision 4 updates the copy-and-adapt policy from the project owner’s clarification without another repository audit. Protocol references remain technical bases, not newly performed compatibility tests. Editing this proposal has not copied application source or run a Gene build, browser execution, Life test suite, independence test, or latency/storage benchmark. All new defaults, tests, and milestones are proposed targets.
+
+### Review disposition
+
+| Supplied comment | Decision |
+| --- | --- |
+| Build on Miclone or justify not | Accepted as source reuse, clarified by the owner: selectively copy and adapt useful code into an independent Commons app, not a Miclone dependency. Server movement and persistence semantics remain deliberate adaptations. |
+| Copy and adapt without depending on Miclone | Selected: Commons-owned source/assets/build/tests, lightweight origin records, optional manual fix ports, and a clean build/run test with the original Miclone tree unavailable. |
+| Per-tick commits and unbounded retained data are impractical | Accepted: action-boundary durability plus provisional motion/checkpoints; bounded active Life/world storage and a measured incremental-backend gate before sustained use. |
+| Life cannot await long world activities; brain/seed/budget work is missing | Accepted: event-subscribed short continuations, real adapter as an explicit milestone, editable disposition separate from immutable seed, measured latency/cost and availability UI. |
+| Reuse connector delivery and name native requirements | Accepted: shared transport-independent delivery semantics, preserved HTTP/local regressions, explicit genex/libcurl prerequisites. |
+| Milestone 1 is too large | Accepted: browser/world/movement first, then fake Life processes, durability/growth testing, then real brains. |
+| Drop required IndexedDB journal | Accepted with a qualification: same-ID retry and server fencing/recovery preserve known effects; lost browser intent is not recreated, and a fresh ID is not deduplicated merely because the human meant the same thing. |
+
+**Copy useful foundations; own the result. Commit what matters. Let humans play first, then let independent Lives join and evolve.**
+
