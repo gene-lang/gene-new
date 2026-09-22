@@ -1,0 +1,635 @@
+# The client — design.md §D6.1's render spike, grown into M5's loaded world.
+#
+# M0 asked one question: can the web profile hold a 3D frame budget? It answered
+# yes at 121 fps over a fly-through that generated each chunk, meshed it, and
+# threw the nodes away. M5 needs a world that stays — a player stands on it,
+# digs it, and puts nodes back — so the nodes are kept, once, in one array
+# (`core/loaded.gene`), and everything downstream reads that array instead of a
+# per-chunk copy of part of it.
+#
+# The build is three passes over the same storage rather than one pass per
+# chunk, and that ordering is the point:
+#
+#   1. generate every block into the array          (§3)
+#   2. light the whole array in one call            (§4)
+#   3. mesh each chunk out of the array             (§5)
+#
+# Lighting between 1 and 3 rather than inside the per-chunk loop is what fixes
+# M3's recorded limitation: a flood that runs over the whole loaded world
+# carries light across block borders, so a cave that breaks the surface is lit
+# down its shaft instead of going dark at the first boundary.
+#
+# Everything lives inside `main` because the profile rejects top-level `var`:
+# a module has no mutable state, so the frame loop is a closure over `main`'s
+# locals. The archived `new_world` example was built the same way, for the
+# same reason.
+
+(mod main ^profile web)
+
+(import [generate_block] ^from "../core/mapgen.gene")
+(import [count_faces build_mesh] ^from "../core/mesh.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
+(import [id_of registered_count] ^from "../core/registry.gene")
+(import [Game] ^from "../core/api.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [World new_world store_block block_base open_sky
+         world_dx world_dy world_dz world_stride_z world_nodes]
+        ^from "../core/loaded.gene")
+(import [build_program init_state upload_atlas new_vertex_array new_buffer
+         upload_chunk begin_frame set_view_projection draw_chunk]
+        ^from "./render.gene")
+(import [paint] ^from "./atlas.gene")
+(import [new_sound play_dig play_place play_craft] ^from "./sound.gene")
+(import [FormRegistry form_named form_title form_cols form_rows form_first
+         form_len element_kind element_x element_y element_w element_h
+         element_text el_label el_item el_box]
+        ^from "../core/formspec.gene")
+(import [forward_x forward_y forward_z] ^from "../core/vec.gene")
+(import [new_player step player_x player_y player_z player_eye_y
+         on_ground? in_liquid? box_overlaps_node? find_spawn]
+        ^from "../core/physics.gene")
+(import [node_at] ^from "../core/loaded.gene")
+(import [solid? name_of] ^from "../core/registry.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
+        ^from "../core/raycast.gene")
+(import [new_bounds apply_node diggable? placeable?
+         bounds_min_x bounds_min_y bounds_min_z
+         bounds_max_x bounds_max_y bounds_max_z]
+        ^from "../core/edit.gene")
+(import [new_inventory add take slot_item slot_count slot_empty?]
+        ^from "../core/inventory.gene")
+(import [drop_item drop_count] ^from "../core/drops.gene")
+(import [CraftRegistry first_craftable apply_craft] ^from "../core/craft.gene")
+(import [ItemRegistry item_name item_node placeable_item? no_item]
+        ^from "../core/item.gene")
+
+(let seed 1337.0)
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+
+# §D6.1's stated view: 12 x 4 x 12 blocks, 576 in all, ~2.4M nodes.
+(let span_x 12.0)
+(let span_y 4.0)
+(let span_z 12.0)
+
+# **Where the world stands, and why it is not the origin.**
+#
+# §3 gives biomes a noise scale of one unit per ~555 nodes, which is upstream's
+# order (its default biome `spread` is 1000) and the right order for a game: a
+# player should walk for a while to leave a biome. This world is 192 nodes
+# across — a third of one biome cell — so wherever it stands it shows one or two
+# biomes, and at the origin it happens to stand in the cold quadrant and is
+# uniformly snow.
+#
+# That is the world being right and the window being small, so the window moves
+# rather than the world. This site was found by scanning ±4,000 nodes for the
+# view containing the most distinct biomes with a coastline in it; it has all
+# six and 23% water. Nothing about the generator is tuned for it — change the
+# seed and it is an ordinary place again.
+#
+# In blocks, because that is what the loaded box is measured in: node -1440 is
+# block -90 and node 3168 is block 198.
+(let origin_bx -90.0)
+(let origin_by 0.0)
+(let origin_bz 198.0)
+
+(let look_speed 0.0022)
+(let pitch_limit 1.5533)           # just under pi/2; see `forward_*`
+(let fog_far 260.0)
+
+# Noon. §4's two channels are mixed by this at render time, so a day/night cycle
+# is this one number moving rather than a remesh (see `client/render.gene`).
+(let time_of_day 1.0)
+
+# A frame longer than this is stepped as if it were this long. A tab that was
+# in the background for a minute must not hand the physics a minute: §7's step
+# substeps to stay under a node, so a huge `dt` is not a tunnelling risk, but it
+# is a player who reappears somewhere they did not walk to.
+(let max_dt 0.05)
+
+(let floats_per_vertex 7.0)
+(let indices_per_face 6.0)
+
+# How far a player can reach to dig or place. Upstream's hand is 4 nodes; this
+# is a creative-ish loop with no tools in it yet (§D8's M5), so it is the
+# slightly longer reach a creative mode usually gets.
+(let reach 5.0)
+
+# A click is a mouse-up that did not travel far from its mouse-down. There is no
+# pointer-lock binding in the web profile, so looking is a drag and digging is a
+# click on the same button, and the only thing that separates them is this.
+(let click_slop 4.0)
+
+# Eight slots, which is what fits across the bottom of a screen as readable text
+# and what a number row addresses without modifiers. §13's real inventory is a
+# formspec and is M8's.
+(let hotbar_slots 8.0)
+
+(fn abs_pixels [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+(fn main [] : Nil
+  (var stage ($dom/element "stage"))
+  (var gl ($gl/context stage))
+  (var prog (build_program gl))
+  (init_state gl)
+
+  # The atlas is drawn into an offscreen canvas and handed straight to WebGL,
+  # so there is no image to fetch and no load event to wait for.
+  # §9's game, before anything reads a content id — which is everything below.
+  (var game (load_mods))
+
+  (var sfx (new_sound))
+  # §13's form, rendered as DOM over the canvas. Built once — a form is a
+  # layout and does not change — and shown or hidden with a key.
+  (var forms game/forms)
+  (var panel_open false)
+  (var atlas_canvas ($dom/create_element "canvas"))
+  ($canvas/set_size atlas_canvas 128.0 128.0)
+  (paint ($canvas/context atlas_canvas) game/tiles)
+  (upload_atlas gl atlas_canvas)
+
+  # --- content ---------------------------------------------------------------
+  #
+  # M2: the generator and the mesher both read these rather than hardcoded ids
+  # (§2, §3). The server loads the same mods and gets the same ids, which is
+  # what keeps the two sides generating one world (§D3).
+  (var reg game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
+  (var decors game/decors)
+  # §2's server half. In-process singleplayer holds both halves; M6 is where
+  # this stops being something the client can reach (see `core/drops.gene`).
+  (var drops game/drops)
+  (var items game/items)
+  (var crafts game/crafts)
+  (var air (id_of reg "air"))
+  (var water (id_of reg "commons:water"))
+  (var registered (registered_count reg))
+
+  # --- pass 1: generate ------------------------------------------------------
+  #
+  # One 16³ scratch block, reused: `generate_block` fills §1's storage unit and
+  # `store_block` copies it into its place in the world array. The `sky` it also
+  # fills is the per-block boundary M3's per-block lighting needed and this no
+  # longer does — the world's own ceiling is the boundary now (see pass 2) — so
+  # it is written and dropped.
+
+  (var world (new_world origin_bx origin_by origin_bz
+                        span_x span_y span_z))
+  (var wdx (world_dx world))
+  (var wdy (world_dy world))
+  (var wdz (world_dz world))
+  (var wsz (world_stride_z world))
+
+  (var t_start ($time/now))
+  (var block ($buffer F32 block_nodes))
+  (var block_sky ($buffer F32 (* block_dim block_dim)))
+  (var cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (var bx (+ origin_bx cx))
+        (var by (+ origin_by cy))
+        (var bz (+ origin_bz cz))
+        (generate_block block block_sky
+                        (* bx block_dim) (* by block_dim) (* bz block_dim)
+                        biomes ores decors seed air water)
+        (store_block world bx by bz block)
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+  (var t_gen ($time/now))
+
+  # --- pass 2: light ---------------------------------------------------------
+  #
+  # One call over 194 x 66 x 194. The queue is sized to the contract in §4 —
+  # the region plus the ring's header — and is kept afterwards because §7.1's
+  # incremental relight needs one and allocating 10 MB on the first dig is not
+  # something to do inside a click handler.
+
+  (var sky ($buffer F32 (* wdx wdz)))
+  (open_sky world sky)
+  (var lq ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  # The unspread pass fills a second queue while draining the first (§4), so an
+  # edit needs both. Allocated here rather than on the first dig: 10 MB inside a
+  # click handler is a visible pause.
+  (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  (light_region world/light world/content wdx wdy wdz reg sky lq registered)
+  (var t_light ($time/now))
+
+  # --- pass 3: mesh ----------------------------------------------------------
+  #
+  # A vertex array per chunk, whether or not it has geometry: an edit can give
+  # an empty chunk faces, so a slot that exists from the start is one less thing
+  # for a dig to have to allocate. `counts` is the index count and doubles as
+  # the "is there anything to draw" flag — most of a column is fully interior or
+  # fully air, and skipping those is most of the world.
+
+  (var chunks (* span_x (* span_y span_z)))
+  (var vaos : (List Gl/VertexArray) [])
+  (var vbos : (List Gl/Buffer) [])
+  (var ebos : (List Gl/Buffer) [])
+  (var counts ($buffer F32 chunks))
+  (var faces_total 0.0)
+
+  # Mesh one chunk out of the world array and upload it into the slot it
+  # already owns. Used once per chunk to build the world and again per chunk
+  # per edit, which is the reason it is a binding rather than the body of the
+  # loop below.
+  (var mesh_chunk : (Fn [F64 F64 F64] Void) (fn [a : F64 b : F64 c : F64] : Void void))
+  (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
+    (var slot (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
+    (var k slot)
+    (var bx (+ origin_bx cx))
+    (var by (+ origin_by cy))
+    (var bz (+ origin_bz cz))
+    (var base (block_base world bx by bz))
+    (var faces (count_faces reg world/content base wdx wsz))
+    # `faces_total` is the HUD's, and an edit changes it either way — a dug
+    # node usually adds faces and a placed one usually hides some.
+    (set faces_total (+ (- faces_total (/ (counts .get k) indices_per_face))
+                        faces))
+    (counts .set k (* faces indices_per_face))
+    (if_yes (> faces 0.0)
+      (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
+      (var idx ($buffer U32 (* faces indices_per_face)))
+      (build_mesh reg world/content world/light verts idx base wdx wsz
+                  (* bx block_dim) (* by block_dim) (* bz block_dim))
+      (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
+
+  (set cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (vaos .push (new_vertex_array gl))
+        (vbos .push (new_buffer gl))
+        (ebos .push (new_buffer gl))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+
+  (set cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (mesh_chunk cx cy cz)
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+  (var t_mesh ($time/now))
+
+  ($console/log
+    $"commons: ${chunks} chunks, $($math/round faces_total) faces · generate $($math/round (- t_gen t_start)) ms · light $($math/round (- t_light t_gen)) ms · mesh $($math/round (- t_mesh t_light)) ms")
+
+  # --- the player ------------------------------------------------------------
+  #
+  # The scan lives in `core/physics.gene`. It has been written wrong three
+  # times across this project — twice by stopping at the first *drawn* node
+  # (water is drawn), once by treating "not blocked" as standable (water does
+  # not block) — so there is one definition and every shell calls it.
+  (var spawn_at ($buffer F64 3.0))
+  (find_spawn world reg
+              (* (+ origin_bx (/ span_x 2.0)) block_dim)
+              (* (+ origin_bz (/ span_z 2.0)) block_dim)
+              (* (+ origin_by span_y) block_dim)
+              96.0 spawn_at)
+  (var player (new_player (spawn_at .get 0.0) (spawn_at .get 1.0)
+                          (spawn_at .get 2.0)))
+
+  (var yaw 0.6)
+  (var pitch -0.25)
+  (var fwd 0.0)
+  (var strafe 0.0)
+  (var jump false)
+  (var sneak false)
+  (var flying false)
+  (var dragging false)
+  (var drag_from_x 0.0)
+  (var drag_from_y 0.0)
+
+  # --- digging and placing (§7.1) --------------------------------------------
+  #
+  # In-process singleplayer, so §7.1's three-step dance collapses: there is no
+  # round trip to hide, the edit is the prediction, and reconciliation always
+  # agrees on the same frame. What survives from §7.1 is step 1 — the client
+  # answers "is there anything there", "may I build here", "is it in reach" by
+  # itself — and that is exactly what `core/edit.gene` exports.
+
+  (var hit (new_hit))
+  (var bounds (new_bounds))
+  (var edit_ms 0.0)
+  (var edit_chunks 0.0)
+
+  # The hotbar is the inventory, for now: eight slots, one selected, and no
+  # second container to move things into. §13's formspec is where a real
+  # inventory screen belongs and it is M8's.
+  (var inv (new_inventory hotbar_slots))
+  (var selected 0.0)
+  (var hotbar_dirty true)
+
+  # Rebuild every chunk the last edit's region touched. The region comes from
+  # `apply_node` and is the part of the world whose light or content it could
+  # have changed — see §7.1, and note that it is much larger than the node: a
+  # dig in daylight sends light fifteen nodes in every direction and down the
+  # shaft it opened.
+  (var remesh_region : (Fn [] Void) (fn [] : Void void))
+  (set remesh_region (fn [] : Void
+    (var lo_x ($math/max 0.0 ($math/floor (/ (- (bounds_min_x bounds)
+                                                (* origin_bx block_dim))
+                                             block_dim))))
+    (var hi_x ($math/min (- span_x 1.0)
+                         ($math/floor (/ (- (bounds_max_x bounds)
+                                            (* origin_bx block_dim))
+                                         block_dim))))
+    (var lo_y ($math/max 0.0 ($math/floor (/ (- (bounds_min_y bounds)
+                                                (* origin_by block_dim))
+                                             block_dim))))
+    (var hi_y ($math/min (- span_y 1.0)
+                         ($math/floor (/ (- (bounds_max_y bounds)
+                                            (* origin_by block_dim))
+                                         block_dim))))
+    (var lo_z ($math/max 0.0 ($math/floor (/ (- (bounds_min_z bounds)
+                                                (* origin_bz block_dim))
+                                             block_dim))))
+    (var hi_z ($math/min (- span_z 1.0)
+                         ($math/floor (/ (- (bounds_max_z bounds)
+                                            (* origin_bz block_dim))
+                                         block_dim))))
+    # `rx`/`ry`/`rz` rather than `cx`/`cy`/`cz`: the profile rejects a binding
+    # that shadows one already in scope, and `main` is one scope.
+    (set edit_chunks 0.0)
+    (var rz lo_z)
+    (while (<= rz hi_z)
+      (var ry lo_y)
+      (while (<= ry hi_y)
+        (var rx lo_x)
+        (while (<= rx hi_x)
+          (mesh_chunk rx ry rz)
+          (set edit_chunks (+ edit_chunks 1.0))
+          (set rx (+ rx 1.0)))
+        (set ry (+ ry 1.0)))
+      (set rz (+ rz 1.0)))))
+
+  (var apply_edit : (Fn [F64 F64 F64 F64] Void)
+       (fn [a : F64 b : F64 c : F64 d : F64] : Void void))
+  (set apply_edit (fn [nx : F64 ny : F64 nz : F64 id : F64] : Void
+    (var t0 ($time/now))
+    (apply_node world reg nx ny nz id sky lq lq_seed bounds)
+    (remesh_region)
+    (set edit_ms (- ($time/now) t0))))
+
+  (var dig : (Fn [] Void) (fn [] : Void void))
+  (set dig (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      (if_yes (diggable? world reg (hit_x hit) (hit_y hit) (hit_z hit))
+        (var dug (node_at world (hit_x hit) (hit_y hit) (hit_z hit)))
+        (apply_edit (hit_x hit) (hit_y hit) (hit_z hit) air)
+        # §7.1 step 3 keeps drops off the prediction path. In-process there is
+        # nothing to predict: the edit and its drop are the same call. What is
+        # dropped and does not fit is lost, which is what a game with no
+        # dropped-item entities can do — those are M8's.
+        (var yield_id (drop_item drops items dug))
+        (var yield_n (drop_count drops items dug))
+        (play_dig sfx)
+        (if_yes (> yield_n 0.0)
+          (add inv items yield_id yield_n)
+          (set hotbar_dirty true))))))
+
+  (var place : (Fn [] Void) (fn [] : Void void))
+  (set place (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      (var nx (before_x hit))
+      (var ny (before_y hit))
+      (var nz (before_z hit))
+      # The last two rejections §7.1 leaves to the client: an empty hand, and a
+      # node placed where the player is standing — legal by every other test,
+      # and it leaves them inside it.
+      # §2's split shows up here: a held *item* is not necessarily a node. A
+      # pickaxe passes every test above and still places nothing, so the
+      # placeable check is now about the item as well as the position.
+      (var held_item (slot_item inv selected))
+      (if_yes (&& (! (slot_empty? inv selected))
+                  (&& (placeable_item? items held_item)
+                      (&& (placeable? world reg nx ny nz)
+                          (! (box_overlaps_node? player nx ny nz)))))
+        (take inv selected 1.0)
+        (play_place sfx)
+        (set hotbar_dirty true)
+        (apply_edit nx ny nz (item_node items held_item))))))
+
+  # The hotbar as text, rebuilt only when it changes: eight slots is a short
+  # string, and building it every frame would be the only allocation in the
+  # frame loop.
+  (var draw_hotbar : (Fn [] Void) (fn [] : Void void))
+  (set draw_hotbar (fn [] : Void
+    (var parts : (List Str) [])
+    (var i 0.0)
+    (while (< i hotbar_slots)
+      (var label
+        (if (slot_empty? inv i) "—"
+          $"$(item_name items (slot_item inv i)) x$($to_int (slot_count inv i))"))
+      (var marked (if (== i selected) $"[${label}]" $" ${label} "))
+      (parts .push marked)
+      (set i (+ i 1.0)))
+    ($dom/set_text ($dom/element "hotbar") ($str/join parts " "))))
+
+  (var proj ($buffer F32 16.0))
+  (var view ($buffer F32 16.0))
+  (var vp ($buffer F32 16.0))
+
+  (var last_ms 0.0)
+  (var frames 0.0)
+  (var fps_since 0.0)
+
+  ($dom/add_event_listener ($dom/window) "keydown" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (== k "w") (set fwd 1.0))
+    (if_yes (== k "s") (set fwd -1.0))
+    (if_yes (== k "a") (set strafe -1.0))
+    (if_yes (== k "d") (set strafe 1.0))
+    (if_yes (== k " ") (set jump true))
+    (if_yes (== k "Shift") (set sneak true))
+    # The number row selects a hotbar slot, spelled out because `$event/key`
+    # gives the character and the portable web stdlib has no `str/index_of` to
+    # turn it back into a position.
+    (var picked -1.0)
+    (if_yes (== k "1") (set picked 0.0))
+    (if_yes (== k "2") (set picked 1.0))
+    (if_yes (== k "3") (set picked 2.0))
+    (if_yes (== k "4") (set picked 3.0))
+    (if_yes (== k "5") (set picked 4.0))
+    (if_yes (== k "6") (set picked 5.0))
+    (if_yes (== k "7") (set picked 6.0))
+    (if_yes (== k "8") (set picked 7.0))
+    (if_yes (>= picked 0.0)
+      (set selected picked)
+      (set hotbar_dirty true))
+    # Fly is a toggle rather than a held key, because it is a mode: §7's step
+    # takes it as an input and changes what gravity means, and a mode you have
+    # to hold down is one you cannot look around in.
+    (if_yes (== k "f") (set flying (! flying)))
+    # §13's panel. One key, and the form it draws is the mod's (`setup_forms`)
+    # rather than anything this client knows the shape of.
+    (if_yes (== k "e")
+      (set panel_open (! panel_open))
+      ($dom/set_text ($dom/element "panel")
+        (if panel_open (render_form forms "commons:crafting") "")))))
+
+  ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (|| (== k "w") (== k "s")) (set fwd 0.0))
+    (if_yes (|| (== k "a") (== k "d")) (set strafe 0.0))
+    (if_yes (== k " ") (set jump false))
+    (if_yes (== k "Shift") (set sneak false))))
+
+  # Look and act share a button, because the web profile has no pointer-lock
+  # binding: a drag turns the view and a click that went nowhere is a dig or a
+  # place. `click_slop` is the whole of the distinction, and it is in pixels
+  # because that is what the mouse reports.
+  ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
+    (set dragging true)
+    (set drag_from_x ($event/client_x ev))
+    (set drag_from_y ($event/client_y ev))))
+  ($dom/add_event_listener ($dom/window) "mouseup" (fn [ev : Any] : Void
+    (if_yes dragging
+      (var moved (+ (abs_pixels (- ($event/client_x ev) drag_from_x))
+                    (abs_pixels (- ($event/client_y ev) drag_from_y))))
+      (if_yes (< moved click_slop)
+        (if (== ($event/button ev) 2.0) (then (place)) (else (dig)))))
+    (set dragging false)))
+  # Otherwise the right button opens a menu over the world instead of building.
+  ($dom/add_event_listener stage "contextmenu" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)))
+
+  ($dom/add_event_listener stage "wheel" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)
+    (var next (+ selected (if (> ($event/delta_y ev) 0.0) 1.0 -1.0)))
+    (set selected (if (< next 0.0) (- hotbar_slots 1.0)
+                    (if (>= next hotbar_slots) 0.0 next)))
+    (set hotbar_dirty true)))
+  ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
+    (if_yes dragging
+      (set yaw (+ yaw (* ($event/movement_x ev) look_speed)))
+      (set pitch ($math/clamp (- pitch (* ($event/movement_y ev) look_speed))
+                              (- 0.0 pitch_limit) pitch_limit)))))
+
+  # --- frame -----------------------------------------------------------------
+
+  # Declared before it is defined so the body can schedule itself. A nested
+  # `fn` declaration is not a form the profile has; a `var` holding a closure
+  # is, and the placeholder is what lets the real one refer to the binding.
+  (var frame : (Fn [F64] Void) (fn [now : F64] : Void void))
+  (set frame (fn [now : F64] : Void
+    (var dt (if (> last_ms 0.0) ($math/min max_dt (/ (- now last_ms) 1000.0)) 0.0))
+    (set last_ms now)
+
+    (var dx (forward_x yaw pitch))
+    (var dy (forward_y yaw pitch))
+    (var dz (forward_z yaw pitch))
+
+    # The wish direction is horizontal and unit length, which is what §7's step
+    # takes: the camera's pitch belongs to looking, not to walking, and a
+    # diagonal must not be faster than a straight line. Strafe is the
+    # horizontal perpendicular of the view direction.
+    (var fx (forward_x yaw 0.0))
+    (var fz (forward_z yaw 0.0))
+    (var rx (forward_x (+ yaw 1.5708) 0.0))
+    (var rz (forward_z (+ yaw 1.5708) 0.0))
+    (var wish_x (+ (* fx fwd) (* rx strafe)))
+    (var wish_z (+ (* fz fwd) (* rz strafe)))
+    (var wish_len ($math/sqrt (+ (* wish_x wish_x) (* wish_z wish_z))))
+    (if_yes (> wish_len 0.0)
+      (set wish_x (/ wish_x wish_len))
+      (set wish_z (/ wish_z wish_len)))
+
+    (if_yes (> dt 0.0)
+      (step player world reg wish_x wish_z jump sneak flying dt))
+
+    (var eye_x (player_x player))
+    (var eye_y (player_eye_y player))
+    (var eye_z (player_z player))
+
+    (var w ($canvas/width stage))
+    (var h ($canvas/height stage))
+    (begin_frame gl prog w h)
+    (set_view_projection gl prog proj view vp w h
+                         eye_x eye_y eye_z dx dy dz fog_far time_of_day)
+
+    (var drawn 0.0)
+    (var i 0.0)
+    (while (< i chunks)
+      (var n (counts .get i))
+      (if_yes (> n 0.0)
+        (var k i)
+        (draw_chunk gl vaos/%k n)
+        (set drawn (+ drawn 1.0)))
+      (set i (+ i 1.0)))
+
+    # Frame rate over a one-second window, which is what §D6.1 measures.
+    (set frames (+ frames 1.0))
+    (if_yes (> (- now fps_since) 1000.0)
+      # The mode is bound first because a string literal inside `$(...)` closes
+      # the string it is embedded in — the interpolation cannot hold one.
+      (var mode
+        (if flying "flying"
+          (if (in_liquid? player) "swimming"
+            (if (on_ground? player) "walking" "falling"))))
+      ($dom/set_text ($dom/element "hud")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player)) · last edit $($math/round edit_ms) ms over $($math/round edit_chunks) chunks")
+      (set frames 0.0)
+      (set fps_since now))
+
+    (if_yes hotbar_dirty
+      (draw_hotbar)
+      (set hotbar_dirty false))
+    ($frame/request frame)))
+
+  ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
+  ($frame/request frame))
+
+# A form as text, which is what a DOM overlay of a character grid amounts to at
+# this size. §13 says "rendered by the client as DOM overlaying the canvas"; a
+# grid of positioned divs is the same walk with more style attributes, and the
+# walk is the part that proves the form is data — this client has never seen
+# the mod that declared it.
+(fn render_form [f : FormRegistry name : Str] : Str
+  (var id (form_named f name))
+  (if (< id 0.0) ""
+    (do
+      (var cols (form_cols f id))
+      (var rows (form_rows f id))
+      (var out : (List Str) [])
+      (out .push (form_title f id))
+      # One line per grid row, elements placed into it by column. Text rather
+      # than absolute positioning keeps this readable in a HUD that is already
+      # a `<div>` of text.
+      (var r 0.0)
+      (while (< r rows)
+        (var line "")
+        (var e (form_first f id))
+        (var last (+ e (form_len f id)))
+        (while (< e last)
+          (if_yes (&& (== (element_y f e) r) (!= (element_kind f e) el_box))
+            (var pad "")
+            (var c 0.0)
+            (while (< c (element_x f e))
+              (set pad $"${pad}  ")
+              (set c (+ c 1.0)))
+            (set line $"${line}${pad}$(element_text f e)"))
+          (set e (+ e 1.0)))
+        (if_yes (!= line "") (out .push line))
+        (set r (+ r 1.0)))
+      ($str/join out "\n"))))

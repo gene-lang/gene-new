@@ -1,0 +1,142 @@
+# Exact F64 arithmetic — the toolkit for design.md §D3.1's *exact half*.
+#
+# The rule that half lives under: only operations IEEE-754 requires to be
+# correctly rounded may appear, which means `+ - * /`, `sqrt`, comparisons, and
+# `floor`. No `sin`, `cos`, `pow`, `exp`, `log`, or `atan2` — two conforming
+# runtimes are entitled to disagree in the last place on all of those, and this
+# code has to agree bit-for-bit on the VM and in V8 forever.
+#
+# Everything here therefore does integer arithmetic *inside* F64 rather than in
+# `Int`. Two reasons, and the second is the one that made the choice:
+#
+#   - F64 represents every integer below 2^53 exactly, and `+ - *` on such
+#     values are exact whenever the true result is also below 2^53. So an
+#     integer pipeline written this way is not "approximately" reproducible; it
+#     is bit-identical by the standard.
+#   - `Int` lowers to `bigint` in the web profile (transpile.md §4.5). That is
+#     equally exact but roughly an order of magnitude slower, and this code sits
+#     under every node of every generated chunk.
+#
+# The discipline that keeps it exact is a bound, and it is worth stating once
+# because every function below obeys it: **wrap to 32 bits before multiplying,
+# and multiply only by constants under 2^21.** Then the widest intermediate is
+# 2^32 * 2^21 = 2^53, which is the last product F64 counts exactly.
+
+(mod exact ^profile web)
+
+(let two32 4294967296.0)
+(let two52 4503599627370496.0)
+
+# --- 32-bit integer arithmetic in F64 ----------------------------------------
+
+# Reduce to [0, 2^32). Every step is exact: dividing and multiplying by a power
+# of two only moves the exponent, `floor` is exact by definition, and the final
+# subtraction produces an integer below 2^32, which is representable — so it is
+# exact rather than merely well-rounded.
+#
+# Negative inputs wrap the way two's complement does: -1 becomes 2^32 - 1.
+(fn wrap32 [v : F64] : F64
+  (- v (* ($math/floor (/ v two32)) two32)))
+
+# One LCG round (Numerical Recipes constants). The multiplier is 1664525 <
+# 2^21, so `h * 1664525` for `h < 2^32` stays under 2^53 and the product is
+# exact. Callers must pass an already-wrapped `h`; every caller here does.
+(fn mix32 [h : F64] : F64
+  (wrap32 (+ (* h 1664525.0) 1013904223.0)))
+
+# Fold a value into an accumulator without leaving the exact range: both
+# operands are below 2^32, so the sum is below 2^33 and exact before wrapping.
+(fn fold32 [h : F64 v : F64] : F64
+  (mix32 (wrap32 (+ h (wrap32 v)))))
+
+# --- hashing -----------------------------------------------------------------
+#
+# An LCG's low bits are famously weak and its high bits are good, which is the
+# opposite of what a bit-extracting hash wants — so nothing here extracts bits.
+# `hash_unit` divides the whole word by 2^32, which keeps exactly the high-bit
+# ordering the LCG is good at, and the extra rounds below do the mixing that one
+# round would not.
+
+(fn hash1 [x : F64 seed : F64] : F64
+  (var h (mix32 (wrap32 seed)))
+  (set h (fold32 h x))
+  (mix32 h))
+
+(fn hash2 [x : F64 y : F64 seed : F64] : F64
+  (var h (mix32 (wrap32 seed)))
+  (set h (fold32 h x))
+  (set h (fold32 h y))
+  (mix32 h))
+
+(fn hash3 [x : F64 y : F64 z : F64 seed : F64] : F64
+  (var h (mix32 (wrap32 seed)))
+  (set h (fold32 h x))
+  (set h (fold32 h y))
+  (set h (fold32 h z))
+  (mix32 h))
+
+# [0, 1). Division by 2^32 is exact, so this is a relabelling of the hash rather
+# than a computation on it.
+(fn hash_unit1 [x : F64 seed : F64] : F64
+  (/ (hash1 x seed) two32))
+
+(fn hash_unit2 [x : F64 y : F64 seed : F64] : F64
+  (/ (hash2 x y seed) two32))
+
+(fn hash_unit3 [x : F64 y : F64 z : F64 seed : F64] : F64
+  (/ (hash3 x y z seed) two32))
+
+# --- bit-exact float comparison ----------------------------------------------
+#
+# Two runtimes print floats differently even when the values agree: the VM
+# prints 1e-7 as `0.0000001` and V8 prints `1e-7`. Both are shortest
+# round-trip, so text comparison would report a difference that does not exist,
+# and — worse — could hide one that does behind a shared rounding of the
+# printed form.
+#
+# These decompose a float into the three integers IEEE-754 says it is. They use
+# only exact operations, so the decomposition itself cannot introduce a
+# difference, and integers print identically on both backends.
+#
+# Subnormals and zero are handled by the exponent floor at -1074; infinities and
+# NaN are out of scope, because a probe that produces either has already failed.
+
+(fn f64_sign [v : F64] : F64
+  (if (< v 0.0) 1.0 0.0))
+
+(fn abs_exact [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+# Scale |v| into [1, 2) and report how many powers of two that took. Halving and
+# doubling are exact, so the loop is a pure exponent walk.
+(fn f64_exponent [v : F64] : F64
+  (var a (abs_exact v))
+  (if (== a 0.0)
+    (then -1074.0)
+    (else
+      (var e 0.0)
+      (while (>= a 2.0)
+        (set a (/ a 2.0))
+        (set e (+ e 1.0)))
+      (while (< a 1.0)
+        (set a (* a 2.0))
+        (set e (- e 1.0)))
+      e)))
+
+# The 52-bit significand fraction, as an exact integer. `(- a 1.0)` for `a` in
+# [1, 2) is exact by Sterbenz's lemma, and scaling by 2^52 only moves the
+# exponent.
+(fn f64_mantissa [v : F64] : F64
+  (var a (abs_exact v))
+  (if (== a 0.0)
+    (then 0.0)
+    (else
+      (while (>= a 2.0) (set a (/ a 2.0)))
+      (while (< a 1.0) (set a (* a 2.0)))
+      (* (- a 1.0) two52))))
+
+# The canonical form a cross-backend fixture compares. Three integers, printed
+# identically by every backend, and equal exactly when the two floats are the
+# same bits.
+(fn f64_key [v : F64] : Str
+  $"$($to_int (f64_sign v)):$($to_int (f64_exponent v)):$($to_int (f64_mantissa v))")

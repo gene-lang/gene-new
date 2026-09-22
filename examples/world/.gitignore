@@ -1,0 +1,5 @@
+# Generated web output — never edited by hand.
+/dist/
+
+# Project build views and sandboxes (gene clean).
+/.gene/

@@ -1,0 +1,566 @@
+# The mod API — design.md §9, and §D8's M7.
+#
+# **This is the surface a mod is written against, and nothing else is.** A mod
+# imports this module and no other: it never reaches `core/registry.gene`,
+# `core/biome.gene`, `core/ore.gene`, `core/tiles.gene` or `core/drops.gene`
+# directly, and the test of whether the API is right is §D8's — if M8's game
+# needs an engine change, the API is wrong, not the game.
+#
+# ## Why this is named arguments and the layer below is not
+#
+# `core/registry.gene`'s `register` takes ten positional parameters and says in
+# its own comment that "§9's mod-facing `register_node` is where the named-
+# argument ergonomics belong". This is that. A registration is a *definition*,
+# it is read far more often than written, and ten positions is a shape only its
+# author can read.
+#
+# It cost a compiler change to have it: `^name : T` was a VM-only parameter form
+# and this module compiles for both backends, so the web profile learned named
+# parameters (see `docs/workflows.md`). That was the right way round. The
+# alternative was a positional API — no better than the layer it wraps — or a
+# VM-only one, which would have retired the in-tab client.
+#
+# ## Optional means `: T?`
+#
+# An omitted named argument binds nil, and every default in this file is applied
+# here rather than at the call site. That is what makes a definition read as the
+# things it *says*: `(register_node game "commons:stone" ^tiles ["…"])` is
+# a solid opaque node because that is what a node is unless it says otherwise.
+#
+# ## Ids are the engine's
+#
+# Every register returns the id it assigned and a mod may keep it, but §2's rule
+# holds: a mod names content and the engine numbers it. Nothing in a mod may
+# compare an id to a literal.
+
+(mod api ^profile web)
+
+# Registration and its public vocabulary share this facade on both backends.
+# Only these explicit selections are re-exported; implementation helpers stay
+# private imports. A mod can use one API module, and the sandbox needs to share
+# that one module rather than expose each registry's implementation surface.
+(import [draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
+         draw_liquid] ^from "./registry.gene" ^export true)
+(import [tile_solid tile_ore tile_overlay] ^from "./tiles.gene" ^export true)
+(import [shape_scatter shape_sheet shape_blob] ^from "./ore.gene" ^export true)
+(import [abm_on_change abm_sampled] ^from "./abm.gene" ^export true)
+(import [World] ^from "./loaded.gene" ^export true)
+
+(import [Registry new_registry register id_of] ^from "./registry.gene")
+(import [content_unknown world_limit] ^from "./world.gene")
+(import [TileRegistry new_tiles add_tile tile_id] ^from "./tiles.gene")
+(import [BiomeRegistry register_biome] ^from "./biome.gene")
+(import [OreRegistry register_ore]
+        ^from "./ore.gene")
+(import [DropTable new_drop_table register_drop] ^from "./drops.gene")
+(import [AbmRegistry new_abms add_abm queue_node]
+        ^from "./abm.gene")
+(import [DecorRegistry new_decors add_decor] ^from "./decor.gene")
+(import [CraftRegistry new_crafts add_recipe] ^from "./craft.gene")
+(import [EntityRegistry new_entities add_entity_def entity_x entity_y entity_z
+         move_entity despawn entity_alive? no_step no_activate]
+        ^from "./entity.gene")
+(import [FormRegistry new_forms add_form add_element form_count
+         el_label el_item el_box el_button]
+        ^from "./formspec.gene")
+(import [ContainerStore new_containers] ^from "./container.gene")
+(import [node_at] ^from "./loaded.gene")
+(import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
+        ^from "./groups.gene")
+(import [ItemRegistry new_items add_item add_tool_cap item_named item_of_node
+         no_item no_node default_stack_max]
+        ^from "./item.gene")
+
+# --- the game a mod registers into --------------------------------------------
+#
+# The node registry arrives with §1's three reserved ids already installed, so
+# a mod's first node is id 3 and `air` means what §1 says it means whether or
+# not a mod remembered to declare it.
+
+(type Game
+  ^props {^nodes  Registry
+          ^tiles  TileRegistry
+          ^items  ItemRegistry
+          ^groups GroupRegistry
+          ^drops  DropTable
+          ^abms   AbmRegistry
+          ^decors DecorRegistry
+          ^crafts CraftRegistry
+          ^entities EntityRegistry
+          ^forms  FormRegistry
+          # §13's node inventories. Not a registry — the others hold what a mod
+          # *declared* and this holds what a player *did*, which is the first
+          # per-position state in the engine. It rides on `Game` anyway, because
+          # a chest is reached from the same place every other mod-facing thing
+          # is.
+          ^containers ContainerStore
+          ^biomes BiomeRegistry
+          ^ores   OreRegistry}
+
+  (ctor []
+    (set self/nodes (new_registry))
+    (set self/tiles (new_tiles))
+    (set self/items (new_items))
+    (set self/groups (new_groups))
+    (set self/drops (new_drop_table))
+    (set self/abms (new_abms))
+    (set self/decors (new_decors))
+    (set self/crafts (new_crafts))
+    (set self/entities (new_entities))
+    (set self/forms (new_forms))
+    (set self/containers (new_containers))
+    (set self/biomes (new BiomeRegistry))
+    (set self/ores (new OreRegistry))))
+
+(fn new_game [] : Game
+  (new Game))
+
+# --- errors ------------------------------------------------------------------
+
+(type UnknownTile
+  ^props {^message Str}
+  (ctor [message : Str] (set self/message message)))
+
+(impl Error for UnknownTile)
+
+(fn resolve_tile [game : Game name : Str for_node : Str] : F64
+  (var id (tile_id game/tiles name))
+  (if_yes (< id 0.0)
+    # Named rather than defaulted to tile 0: a node that silently draws as stone
+    # is the failure a placeholder content set is least likely to notice, and
+    # §9's third promise is that a wrong definition fails at registration with a
+    # position rather than at the first dig.
+    (fail (new UnknownTile
+               $"node ${for_node} names tile ${name}, which is not registered")))
+  id)
+
+# --- tiles -------------------------------------------------------------------
+#
+# Registered before the nodes that name them, because a node's `^tiles` is
+# resolved at registration.
+#
+# The defaults are the ones a flat tile wants; `ore` and `overlay` need their
+# second colour, and a kind that does not use a column simply leaves it at zero.
+# `^density` is a percentage (62, not 0.62) — see `core/tiles.gene` for why the
+# columns are whole numbers.
+
+(fn register_tile [game : Game name : Str
+                   ^kind : F64
+                   ^red : F64 ^green : F64 ^blue : F64
+                   ^spread : F64?
+                   ^seed : F64?
+                   ^base_red : F64? ^base_green : F64? ^base_blue : F64?
+                   ^base_spread : F64? ^base_seed : F64?
+                   ^density : F64?] : F64
+  (add_tile game/tiles name kind red green blue
+            (?? spread 20.0) (?? seed 0.0)
+            (?? base_red 0.0) (?? base_green 0.0) (?? base_blue 0.0)
+            (?? base_spread 20.0) (?? base_seed 0.0)
+            (?? density 50.0)))
+
+# --- nodes -------------------------------------------------------------------
+#
+# §2's client half. `^tiles` is one, two, or three tile names: one is every
+# face, two is top-and-bottom then sides, three is top, sides, bottom — the
+# order `core/registry.gene`'s columns are in and the order upstream's
+# `tiles = {top, bottom, side}` is not, because the mesher reads top/side/bottom
+# and matching it removes a permutation nobody can see.
+#
+# Everything else is what a node is unless it says otherwise: drawn as a cube,
+# blocking, hiding what is behind it, dark, and stopping light.
+
+# `xs/%i` needs a lexical index, so the three positions come through one
+# accessor rather than three float literals in selector position.
+(fn nth_tile [names : (List Str) i : F64] : Str
+  names/%i)
+
+(fn register_node [game : Game name : Str
+                   ^tiles : (List Str)
+                   ^description : Str?
+                   ^drawtype : F64?
+                   ^solid : Bool?
+                   ^opaque : Bool?
+                   ^propagates_light : Bool?
+                   # "Do not draw a face against another node of my own kind."
+                   # For anything see-through that grows in clumps — leaves,
+                   # and later glass in a pane — where the internal faces of the
+                   # clump are most of what gets meshed and none of it is
+                   # visible. Off by default: it is wrong for anything opaque
+                   # (which culls already) and wrong for a node whose faces a
+                   # player can get between.
+                   ^merges_same : Bool?
+                   # §13: right-clicking this node opens the named form instead
+                   # of placing against it. A mod names one of its own forms;
+                   # the engine hands the name back on `msg_open_form` and never
+                   # interprets it.
+                   ^opens_form : Str?
+                   ^light_source : F64?
+                   ^is_item : Bool?
+                   ^stack_max : F64?] : F64
+  (var given ($to_float tiles/.size))
+  (if_yes (|| (< given 1.0) (> given 3.0))
+    (fail (new UnknownTile
+               $"node ${name} names $($to_int given) tiles; it takes one, two, or three")))
+  (var top (resolve_tile game (nth_tile tiles 0.0) name))
+  (var side (if (> given 1.0) (resolve_tile game (nth_tile tiles 1.0) name) top))
+  (var bottom
+    (if (> given 2.0) (resolve_tile game (nth_tile tiles 2.0) name)
+      (if (> given 1.0) top side)))
+  (var id (register game/nodes name (?? drawtype draw_normal)
+                    (?? solid true) (?? opaque true)
+                    (?? propagates_light false)
+                    (?? merges_same false)
+                    (?? light_source 0.0)
+                    top side bottom (?? opens_form "")))
+  # §2: "A node is automatically an item unless it says otherwise." The item
+  # shares the node's name — which is what lets a drop rule, a craft recipe and
+  # a hotbar all say `commons:dirt` and mean the thing the player is holding,
+  # without anyone writing the mapping down.
+  (if_yes (?? is_item true)
+    (add_item game/items name (?? description name) id
+              (?? stack_max default_stack_max)))
+  id)
+
+# --- groups ------------------------------------------------------------------
+#
+# Both a named single-group registration and a property-map registration use
+# the same validation path. Maps retain insertion order on both backends, so
+# a declaration such as {^crumbly 2 ^falling_node 1} is portable.
+#
+# A group name is interned on first use rather than declared, because a group
+# has no definition — only a name two mods happen to agree on (`core/groups.gene`).
+
+(fn register_group [game : Game node : Str
+                    ^group : Str
+                    ^rating : F64?] : Nil
+  (set_rating game/groups (node_id game node)
+              (intern_group game/groups group)
+              (?? rating 3.0)))
+
+# A property map keeps multi-group declarations readable. Registration order
+# is the map's insertion order, so assigned group IDs remain deterministic.
+(fn register_groups [game : Game node : Str groups : PropMap] : Nil
+  (for [group rating] in groups
+    (register_group game node ^group $"${group}" ^rating ($to_float rating))))
+
+# --- items -------------------------------------------------------------------
+#
+# For the items a node does not give you for free: a lump of coal, a pickaxe,
+# anything a player holds that is not a block. `^places` names the node this
+# item puts into the world, and omitting it is what makes an item unplaceable —
+# §7.1's place never reaches the server for a pickaxe.
+
+(fn register_item [game : Game name : Str
+                   ^description : Str?
+                   ^places : Str?
+                   ^stack_max : F64?] : F64
+  # `(== places nil)` does not compile — the profile requires both sides of `==`
+  # to be one type, and `places` is `Str?`. Coalescing to a sentinel first is the
+  # portable nil test, and `""` is safe because it is not a legal node name.
+  (var target (?? places ""))
+  (var node (if (== target "") no_node (node_id game target)))
+  (add_item game/items name (?? description name) node
+            (?? stack_max default_stack_max)))
+
+# What a tool digs and how fast. `^time_ms` is for a group rated 3, the softest
+# standard; harder ratings scale it (`core/item.gene`). `^level` is permission
+# rather than speed — the highest `level` group rating this tool may break at
+# all, and it defaults to 0, which is what a hand reaches.
+(fn register_tool_cap [game : Game item : Str
+                       ^group : Str
+                       ^time_ms : F64
+                       ^level : F64?] : Nil
+  (var id (item_named game/items item))
+  (if_yes (== id no_item)
+    (fail (new UnknownNode $"${item} is not a registered item")))
+  (add_tool_cap game/items id (intern_group game/groups group)
+                time_ms (?? level 0.0)))
+
+# --- drops -------------------------------------------------------------------
+#
+# §2's server half, and a table of exceptions rather than of entries: a node
+# drops itself unless something here says otherwise. `^count 0` is a node that
+# drops nothing, which is a real thing to want (upstream's leaves), and is why
+# it is a declaration rather than an inference from a missing entry.
+
+(fn register_drop_rule [game : Game node : Str
+                        ^item : Str
+                        ^count : F64?] : Nil
+  # `^item` names an *item* now rather than a node, which is the whole point of
+  # §2's split: a dug stone can yield a lump of coal, and a lump of coal is not
+  # a node anyone can place.
+  (var yielded (item_named game/items item))
+  (if_yes (== yielded no_item)
+    (fail (new UnknownNode $"drop rule for ${node} names ${item}, which is not a registered item")))
+  (register_drop game/drops (node_id game node) yielded (?? count 1.0)))
+
+# A mod names content and the engine numbers it, so a drop rule that names an
+# unregistered node is a mod bug with a position rather than a drop of `unknown`
+# discovered at the first dig.
+(type UnknownNode
+  ^props {^message Str}
+  (ctor [message : Str] (set self/message message)))
+
+(impl Error for UnknownNode)
+
+(fn node_id [game : Game name : Str] : F64
+  (var id (id_of game/nodes name))
+  (if_yes (== id content_unknown)
+    (fail (new UnknownNode $"${name} is not a registered node")))
+  id)
+
+# --- forms -------------------------------------------------------------------
+#
+# §13's UI, as data. `register_form` opens one and `add_*` fill it; elements go
+# to the form most recently registered, which keeps a mod writing a block
+# without the API needing a builder object.
+#
+# The grid is in character cells. A mod says its form is 8x6 and puts a label at
+# (1,1); the client multiplies by whatever a cell is on its display, because
+# pixels in a mod are a mod deciding the player's font size.
+
+(fn register_form [game : Game name : Str
+                   ^title : Str
+                   ^cols : F64
+                   ^rows : F64] : F64
+  (add_form game/forms name title cols rows))
+
+(fn form_label [game : Game
+                ^at : (List F64)
+                ^text : Str
+                ^width : F64?] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_label
+               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0 text ""))
+
+(fn form_box [game : Game ^at : (List F64) ^size : (List F64)] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_box
+               (nth_num at 0.0) (nth_num at 1.0)
+               (nth_num size 0.0) (nth_num size 1.0) "" ""))
+
+# An item slot. `^shows` names an item so the client can draw its icon; the
+# *count* is runtime state and is not here — a form is a layout, and what is in
+# a slot changes without the layout changing.
+(fn form_item [game : Game ^at : (List F64) ^shows : Str] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_item
+               (nth_num at 0.0) (nth_num at 1.0) 1.0 1.0 shows ""))
+
+# §13's input. `^action` is a string the mod chooses and the engine never reads:
+# it comes back verbatim in `msg_form_action` when a player presses the button,
+# and what it means is the mod's business. That is what keeps the element
+# vocabulary closed while leaving the behaviour open — a mod adds a control by
+# naming an action, not by teaching the client a new kind of element.
+#
+# It is required rather than optional, and registration refuses a button
+# without one: a control that sends nothing is a form's version of §9's
+# "a wrong definition fails at registration", and finding it out by clicking is
+# what a string DSL makes you do.
+(fn form_button [game : Game
+                 ^at : (List F64)
+                 ^text : Str
+                 ^action : Str
+                 ^width : F64?] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_button
+               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0
+               text action))
+
+# --- crafting ----------------------------------------------------------------
+#
+# §9's `register_craft`. Shapeless — `^from` is what it takes and order does not
+# matter — for `core/craft.gene`'s reason: a shaped recipe needs a grid to
+# arrange items in and a grid needs §13's formspec.
+#
+# `^from` is up to four `["item" count]` pairs, flattened here into the parallel
+# columns the registry stores, which is what keeps a mod writing a list.
+
+(fn nth_str [xs : (List Str) i : F64] : Str xs/%i)
+(fn nth_num [xs : (List F64) i : F64] : F64 xs/%i)
+
+(fn ingredient_id [game : Game names : (List Str) i : F64] : F64
+  (if (> ($to_float names/.size) i) (item_id game (nth_str names i)) no_item))
+
+(fn ingredient_n [counts : (List F64) i : F64] : F64
+  (if (> ($to_float counts/.size) i) (nth_num counts i) 0.0))
+
+(fn item_id [game : Game name : Str] : F64
+  (var id (item_named game/items name))
+  (if_yes (== id no_item)
+    (fail (new UnknownNode $"${name} is not a registered item")))
+  id)
+
+(fn register_craft [game : Game
+                    ^makes : Str
+                    ^from : (List Str)
+                    ^counts : (List F64)
+                    ^yield : F64?] : F64
+  (if_yes (> from/.size 4)
+    (fail (new UnknownNode
+               $"recipe for ${makes} names $($to_int from/.size) ingredients; four is the ceiling")))
+  (add_recipe game/crafts (item_id game makes) (?? yield 1.0)
+              (ingredient_id game from 0.0) (ingredient_n counts 0.0)
+              (ingredient_id game from 1.0) (ingredient_n counts 1.0)
+              (ingredient_id game from 2.0) (ingredient_n counts 2.0)
+              (ingredient_id game from 3.0) (ingredient_n counts 3.0)))
+
+# --- decorations -------------------------------------------------------------
+#
+# §3 stage 5. `^on` is the surface node a decoration roots on, which is how a
+# forest stays out of the desert without naming a biome: a mod that wants
+# cactuses says `^on "commons:sand"`.
+#
+# `^chance` is per column, so a value near 0.02 is a scattering and 0.2 is a
+# thicket. Trunk height is picked per tree between `^min_height` and
+# `^max_height`, or every tree in the world is the same tree.
+
+(fn register_decoration [game : Game name : Str
+                         ^on : Str
+                         ^trunk : Str
+                         ^leaf : Str
+                         ^chance : F64
+                         ^min_height : F64?
+                         ^max_height : F64?] : F64
+  (var lo (?? min_height 4.0))
+  (add_decor game/decors name (node_id game on)
+             (node_id game trunk) (node_id game leaf)
+             lo (?? max_height (+ lo 2.0)) chance))
+
+# --- ABMs --------------------------------------------------------------------
+#
+# §12's "this node should change on its own", and the first thing in the engine
+# that runs without a player asking — which is why §12.1 said the server tick
+# would arrive with it.
+#
+# `^interval_ms` is how often this ABM gets a pass and `^chance` is 1-in-N per
+# sampled position; together they are how fast the behaviour reads. `^group` is
+# what it applies to, which is §2's whole point — an ABM says `falling_node` and
+# gets every node any mod ever put in that group.
+#
+# **`^action` is the mod's own code**, which is §9's shape and what this call
+# stopped short of until the `Callback` spelling was measured rather than
+# believed (§D7.17). It is required rather than optional: an ABM with no action
+# is an interval that costs a pass and does nothing, which is a mistake worth a
+# missing-argument error instead of silence.
+#
+# The action is handed the world and the position that matched, and it captures
+# whatever else it needs — `game` above all. That is why it does not take one:
+# `Game` is declared in this module and `core/abm.gene`, which holds the
+# signature, is imported *by* this module.
+#
+# `^trigger` is which of §12's two mechanisms looks at it, and the default is
+# `abm_on_change` because that is the one a mod reaching for an ABM usually
+# means. The distinction is not cosmetic — see `core/abm.gene` for the six
+# minutes of measurement that made it two mechanisms rather than one.
+
+(fn register_abm [game : Game
+                  ^label : Str
+                  ^group : Str
+                  ^action : (Fn [World F64 F64 F64 F64] Nil)
+                  ^trigger : F64?
+                  ^interval_ms : F64?
+                  ^chance : F64?] : F64
+  (add_abm game/abms label (?? trigger abm_on_change)
+           (intern_group game/groups group)
+           (?? interval_ms 200.0) (?? chance 1.0) action))
+
+# What an ABM action calls. It *queues* the change rather than performing it —
+# see `core/abm.gene` for why, and note the shape it buys: a mod's reach into
+# the world is "name a position and a node", which is a sentence §D5's
+# capability model can eventually police. Writing directly would mean holding
+# the lighting scratch and the bounds tracker, which is engine working state.
+(fn set_node [game : Game x : F64 y : F64 z : F64 node : Str] : Bool
+  (queue_node game/abms x y z (node_id game node)))
+
+# The same, for a node an action already has in hand. Moving a node — which is
+# what falling is — reads an id and writes it back one position down, and making
+# that round-trip through a name would be a lookup in each direction to express
+# "this, but there".
+(fn set_node_id [game : Game x : F64 y : F64 z : F64 node : F64] : Bool
+  (queue_node game/abms x y z node))
+
+# And what it reads. `node_at` is the loaded world's own accessor; this is the
+# mod-facing name for it, so a mod never imports `core/loaded.gene`.
+(fn get_node [game : Game world : World x : F64 y : F64 z : F64] : F64
+  (node_at world x y z))
+
+(fn node_is? [game : Game world : World x : F64 y : F64 z : F64
+              name : Str] : Bool
+  (== (node_at world x y z) (node_id game name)))
+
+# --- entities ----------------------------------------------------------------
+#
+# §8's definitions, which are to entities what `register_node` is to nodes: the
+# mod names a kind and supplies its behaviour, and the engine assigns the
+# number. Two of §8's four callbacks are here and `core/entity.gene` says which
+# two and why the other two would be fields nothing could call.
+#
+# **`"item"` is a reserved name**, the way §1 reserves `air`. The engine spawns
+# a dropped item from §7.1's overflow path before any mod has run, so a
+# definition for it exists from construction with callbacks that do nothing;
+# registering that name replaces them. That is how `mods/default` gives dropped
+# items the physics §8.1 listed as missing — without an engine change, which is
+# the test §D8 sets for whether this API is right.
+#
+# `^on_step` runs once a server tick per live entity and is handed the world,
+# the slot, and the step in seconds. `^on_activate` runs once, when the slot is
+# filled. Both default to doing nothing, so a definition may supply either.
+
+# `(? T)` rather than `T?` on these two: the postfix marker attaches to a
+# symbol, and a parenthesized type needs the prefix form or the `?` reads as a
+# positional parameter of its own.
+(fn register_entity [game : Game name : Str
+                     ^on_step : (? (Fn [World F64 F64] Nil))
+                     ^on_activate : (? (Fn [World F64] Nil))] : F64
+  (add_entity_def game/entities name
+                  (?? on_step no_step) (?? on_activate no_activate)))
+
+# What an `on_step` reads and writes. A slot, not an id — see `core/entity.gene`
+# for why the callback is given the one the accessors take.
+(fn entity_pos_x [game : Game slot : F64] : F64 (entity_x game/entities slot))
+(fn entity_pos_y [game : Game slot : F64] : F64 (entity_y game/entities slot))
+(fn entity_pos_z [game : Game slot : F64] : F64 (entity_z game/entities slot))
+
+(fn entity_here? [game : Game slot : F64] : Bool
+  (entity_alive? game/entities slot))
+
+(fn move_entity_to [game : Game slot : F64 x : F64 y : F64 z : F64] : Nil
+  (move_entity game/entities slot x y z))
+
+# A step may end its own entity. The server notices between steps and tells the
+# clients, which is the same route a pickup takes — an `on_step` that removed
+# and broadcast itself would be holding the connection list, and that is engine
+# state for the reason `core/abm.gene` gives about the lighting scratch.
+(fn remove_entity [game : Game slot : F64] : Nil
+  (despawn game/entities slot))
+
+# --- biomes ------------------------------------------------------------------
+#
+# §3's nearest-point rule over (heat, humidity). `^y_min`/`^y_max` default to
+# §1's world limit rather than to a large number, so a biome that means
+# "everywhere" says so in the same units a bounded one would.
+
+(fn register_biome_def [game : Game name : Str
+                        ^heat : F64 ^humidity : F64
+                        ^top : Str ^depth_top : F64
+                        ^filler : Str ^depth_filler : F64
+                        ^stone : Str ^underwater : Str
+                        ^y_min : F64? ^y_max : F64?] : F64
+  (register_biome game/biomes name heat humidity
+                  (?? y_min (- 0.0 world_limit)) (?? y_max world_limit)
+                  (node_id game top) depth_top
+                  (node_id game filler) depth_filler
+                  (node_id game stone) (node_id game underwater)))
+
+# --- ores --------------------------------------------------------------------
+#
+# §3's three distributions. `^chance` is per cell of 16³ and `^wherein` is the
+# only node an ore may replace, which is what keeps a vein from eating the dirt
+# above it.
+
+(fn register_ore_def [game : Game name : Str
+                      ^node : Str ^wherein : Str
+                      ^shape : F64
+                      ^y_min : F64 ^y_max : F64
+                      ^chance : F64
+                      ^size : F64
+                      ^amount : F64?] : F64
+  (register_ore game/ores name (node_id game node) (node_id game wherein) shape
+                y_min y_max chance size (?? amount 0.0)))

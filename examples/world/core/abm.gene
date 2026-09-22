@@ -1,0 +1,335 @@
+# Active Block Modifiers — design.md §12, and §9's `register_abm`.
+#
+# An ABM is a mod's answer to "this node should change on its own": grass
+# spreads onto dirt, sand falls, a furnace burns down. §12 names them and M8 is
+# where they arrive, because they are the first thing in this engine that
+# **changes without being asked** — which §12.1 named as the trigger for the
+# server tick, and is why that tick exists as of this milestone.
+#
+# ## Two mechanisms, because sampling cannot do falling
+#
+# §12 lists "run node timers, run due ABMs" as separate steps and the first
+# version of this file collapsed them into one. It did not work, and the number
+# says why: sampling 900 positions a pass out of 2.4M nodes takes about six
+# minutes to visit one *particular* node, so a column of sand whose support was
+# just dug stands there for minutes. A probe measured exactly that — the tick
+# ran, and nothing fell.
+#
+# So there are two:
+#
+# - **The check queue** is targeted. An edit pushes the positions around it, the
+#   tick drains them, and a node that falls pushes its own neighbours — which is
+#   what makes a column cascade rather than settle one node per pass. This is
+#   what upstream does for falling nodes and it is a *neighbour update*, not an
+#   ABM.
+# - **Sampling** is ambient, and is right for what it was designed for: grass
+#   spreading onto a dirt block nobody touched. Nothing uses it yet, and it is
+#   kept because it is §12's stated mechanism and the second ABM will want it.
+#
+# The lesson is worth keeping: "run it on random positions" and "run it where
+# something just happened" look like the same feature and are not.
+#
+# ## Sampled, not exhaustive
+#
+# §12: "ABMs are sampled, not exhaustive — a block picks a random subset of
+# positions per interval. This is upstream's approach and it is what keeps
+# 'grass spreads' from being O(loaded world) every tick."
+#
+# This world is 2.4M nodes. At 5 Hz an exhaustive pass would be 12M node reads a
+# second before any ABM did anything, which is not a budget question but a
+# category error — the whole design is that a *few* positions get looked at
+# often enough that the behaviour reads as continuous.
+#
+# So each pass samples `positions_per_pass` node positions, and an ABM fires on
+# one when its group matches and its chance roll passes. A player watching sand
+# fall sees it happen within a few hundred milliseconds; nobody can tell that
+# the engine did not check every grain.
+#
+# ## The behaviour is the mod's, and the trigger is the engine's
+#
+# `register_abm` takes `^action (fn [world x y z node] …)`, which is §9's shape.
+# It used to name one of a fixed set of engine behaviours instead, and the
+# reason recorded for that — §D7.17, "the VM rejects a nominal type inside a
+# `Callback` annotation" — turned out to be a misreading. The VM rejects
+# **every** `Callback`, including one carrying only primitives, and it does it
+# at the call rather than the declaration; and it has had the capability all
+# along under the name `Fn`, which takes nominal types without complaint. The
+# annotation was spelled with the profile-only synonym. §D7.17 carries the
+# measurement.
+#
+# So what an ABM declares is *when* it is looked at, and what it does when it is
+# looked at belongs to the mod:
+#
+# - `abm_on_change` drains the check queue — positions where something just
+#   happened. Falling is this.
+# - `abm_sampled` walks the ambient sample. Grass growing on dirt nobody touched
+#   is this.
+#
+# That split is the one thing the engine keeps, because it is the measurement
+# above rather than a preference: the two mechanisms have different reach and a
+# mod choosing the wrong one gets a behaviour that appears not to work.
+#
+# ## An action asks, it does not write
+#
+# An ABM action receives the world and a position and calls `queue_node`, which
+# records the change rather than performing it. The server drains the queue
+# after the pass and applies each one through §7.1's `apply_node` — the same
+# path a player's dig takes, so lighting is recomputed and a delta reaches every
+# client by the route that already works.
+#
+# **That indirection is the point rather than an inconvenience.** An action that
+# wrote directly would have to be handed the lighting scratch buffers and the
+# bounds tracker, which is the engine's working state and is exactly what §D5
+# says mod code should not hold. Queueing keeps a mod's reach to "name a
+# position and a node", which is a sentence the capability model can eventually
+# police.
+
+(mod abm ^profile web)
+
+# The world an action reads. This is the only import here and it is what keeps
+# the action signature out of `core/api.gene`: a mod's action needs `Game` too —
+# to name a node, to queue a change — and `Game` is defined in `api.gene`, which
+# imports *this* module. Naming `World` and letting the action **capture**
+# `game` from the registration site breaks that cycle, and it is the better
+# shape anyway: what the engine hands an action is the state that changes per
+# call, and what the mod closes over is the state that does not.
+(import [World] ^from "./loaded.gene")
+
+(let max_abms 64.0)
+# One pass's worth of queued changes. A falling column enqueues two per node it
+# moves, and a pass that filled this would be an ABM misbehaving rather than a
+# world being busy — so it is a ceiling that says so instead of a buffer that
+# grows.
+(let max_queued 512.0)
+
+# When an ABM is looked at. Not what it does — that is `^action`.
+(let abm_on_change 0.0)   # drained from the check queue, where an edit landed
+(let abm_sampled   1.0)   # walked from the ambient sample, where nothing did
+
+(type AbmRegistry
+  ^props {^labels    (List Str)
+          # What the mod supplies: the world to read, the position that matched,
+          # and the node that was standing there. A `(List (Fn …))` prop, a
+          # closure stored in it, and calling one back out all work on both
+          # backends — measured before this was designed, not assumed.
+          ^actions   (List (Fn [World F64 F64 F64 F64] Nil))
+          ^trigger   (Buffer F32)   # abm_on_change or abm_sampled
+          ^group     (Buffer F32)   # the group a node must be in to match
+          ^interval  (Buffer F32)   # milliseconds between passes for this ABM
+          ^chance    (Buffer F32)   # 1 in N per sampled position
+          ^due       (Buffer F32)   # monotonic ms when this ABM next runs
+          # The queue an action writes into: position and the node to become.
+          ^queue_x   (Buffer F32)
+          ^queue_y   (Buffer F32)
+          ^queue_z   (Buffer F32)
+          ^queue_id  (Buffer F32)
+          # Positions to look at next tick, seeded by whatever just changed.
+          ^check_x   (Buffer F32)
+          ^check_y   (Buffer F32)
+          ^check_z   (Buffer F32)
+          ^counts    (Buffer F32)}  # abms, queued edits, pending checks
+
+  (ctor []
+    (set self/labels [])
+    (set self/actions [])
+    (set self/trigger ($buffer F32 max_abms))
+    (set self/group ($buffer F32 max_abms))
+    (set self/interval ($buffer F32 max_abms))
+    (set self/chance ($buffer F32 max_abms))
+    (set self/due ($buffer F32 max_abms))
+    (set self/queue_x ($buffer F32 max_queued))
+    (set self/queue_y ($buffer F32 max_queued))
+    (set self/queue_z ($buffer F32 max_queued))
+    (set self/queue_id ($buffer F32 max_queued))
+    (set self/check_x ($buffer F32 max_queued))
+    (set self/check_y ($buffer F32 max_queued))
+    (set self/check_z ($buffer F32 max_queued))
+    (set self/counts ($buffer F32 3.0))))
+
+(let count_abms 0.0)
+(let count_queued 1.0)
+(let count_checks 2.0)
+
+(fn new_abms [] : AbmRegistry
+  (new AbmRegistry))
+
+(fn abm_count [a : AbmRegistry] : F64 (a/counts .get count_abms))
+(fn queued_count [a : AbmRegistry] : F64 (a/counts .get count_queued))
+
+(type AbmRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set self/message message)))
+
+(impl Error for AbmRegistryFull)
+
+# --- registration ------------------------------------------------------------
+
+(fn add_abm [a : AbmRegistry label : Str trigger : F64 group : F64
+             interval_ms : F64 chance : F64
+             action : (Fn [World F64 F64 F64 F64] Nil)] : F64
+  (var id (abm_count a))
+  (if_yes (>= id max_abms)
+    (fail (new AbmRegistryFull $"abm registry is full at ${max_abms} entries")))
+  (a/labels .push label)
+  (a/actions .push action)
+  (a/trigger .set id trigger)
+  (a/group .set id group)
+  (a/interval .set id interval_ms)
+  (a/chance .set id chance)
+  (a/due .set id 0.0)
+  (a/counts .set count_abms (+ id 1.0))
+  id)
+
+(fn abm_label [a : AbmRegistry id : F64] : Str
+  (var l a/labels)
+  (var i id)
+  l/%i)
+
+(fn abm_trigger [a : AbmRegistry id : F64] : F64 (a/trigger .get id))
+
+# The mod's code, handed back to the server that will run it. Indexed by the
+# same id as every column above, which is what keeps the action and its
+# interval, group and chance from drifting apart.
+(fn abm_action [a : AbmRegistry id : F64] : (Fn [World F64 F64 F64 F64] Nil)
+  (var acts a/actions)
+  (var i id)
+  acts/%i)
+
+(fn abm_group [a : AbmRegistry id : F64] : F64 (a/group .get id))
+(fn abm_interval [a : AbmRegistry id : F64] : F64 (a/interval .get id))
+(fn abm_chance [a : AbmRegistry id : F64] : F64 (a/chance .get id))
+(fn abm_due [a : AbmRegistry id : F64] : F64 (a/due .get id))
+(fn set_abm_due [a : AbmRegistry id : F64 at : F64] : Nil
+  (a/due .set id at))
+
+# --- the queue ---------------------------------------------------------------
+#
+# What an action calls. Silently dropping past the ceiling would make a busy
+# world quietly lose changes, so a full queue is a refusal the caller can see —
+# `queue_node` answers whether it took the change.
+
+(fn queue_node [a : AbmRegistry x : F64 y : F64 z : F64 id : F64] : Bool
+  (var n (queued_count a))
+  (if (>= n max_queued) false
+    (do
+      (a/queue_x .set n x)
+      (a/queue_y .set n y)
+      (a/queue_z .set n z)
+      (a/queue_id .set n id)
+      (a/counts .set count_queued (+ n 1.0))
+      true)))
+
+(fn queued_x [a : AbmRegistry i : F64] : F64 (a/queue_x .get i))
+(fn queued_y [a : AbmRegistry i : F64] : F64 (a/queue_y .get i))
+(fn queued_z [a : AbmRegistry i : F64] : F64 (a/queue_z .get i))
+(fn queued_id [a : AbmRegistry i : F64] : F64 (a/queue_id .get i))
+
+(fn clear_queue [a : AbmRegistry] : Nil
+  (a/counts .set count_queued 0.0))
+
+# --- the check queue ---------------------------------------------------------
+#
+# What an edit seeds and the tick drains. Bounded like the edit queue, and for
+# the same reason: a cascade that filled it is a runaway rather than a busy
+# world, and dropping the overflow makes it settle instead of grow.
+
+(fn check_count [a : AbmRegistry] : F64 (a/counts .get count_checks))
+
+(fn queue_check [a : AbmRegistry x : F64 y : F64 z : F64] : Bool
+  (var n (check_count a))
+  (if (>= n max_queued) false
+    (do
+      (a/check_x .set n x)
+      (a/check_y .set n y)
+      (a/check_z .set n z)
+      (a/counts .set count_checks (+ n 1.0))
+      true)))
+
+(fn check_x_at [a : AbmRegistry i : F64] : F64 (a/check_x .get i))
+(fn check_y_at [a : AbmRegistry i : F64] : F64 (a/check_y .get i))
+(fn check_z_at [a : AbmRegistry i : F64] : F64 (a/check_z .get i))
+
+(fn clear_checks [a : AbmRegistry] : Nil
+  (a/counts .set count_checks 0.0))
+
+# --- sampling ----------------------------------------------------------------
+#
+# A deterministic walk rather than a random one, and the reason is §D3.1's
+# discipline rather than reproducibility for its own sake: a spec that runs on
+# two backends cannot share a generator, and an ABM that fired on different
+# positions per backend could not be tested at all. The walk visits positions
+# far apart in all three axes so consecutive samples are unrelated, which is the
+# only property randomness was buying here.
+#
+# ## The first version of this walked a line, and nothing could see it
+#
+# It took three strides against the same counter — `x = 97t mod nx`,
+# `y = 43t mod ny`, `z = 61t mod nz` — and said in its own comment that the
+# multipliers were "coprime with the world extent so the walk does not close
+# into a short cycle". The cycle in `t` is indeed long. The **image** is not:
+# three coordinates driven by one counter trace a one-dimensional curve through
+# a three-dimensional space, and it closes after `max(nx, ny, nz)` steps.
+# Measured on this engine's own shapes: **192 distinct positions out of
+# 7,077,888**, and 384 out of 56,623,104. Ambient sampling could not reach
+# 99.997% of the world, ever, at any rate.
+#
+# It survived M8 because the sampled branch ended in a literal `void` — the
+# arithmetic ran, the group was tested, and there was nothing at the end of it
+# that could have come out wrong. Giving a mod's `^action` to that branch is
+# what made the bug observable, and the first thing the action did was not fire.
+#
+# ## What replaced it
+#
+# One stride over the **flat** index, then decomposed. `walk_stride` picks a
+# step near `total × φ` — the low-discrepancy choice — and walks down until it
+# is coprime with the node count, which makes the walk a *permutation*: every
+# node is visited exactly once per cycle, and no node is ever unreachable.
+# Consecutive samples stay far apart as a consequence rather than a hope; on the
+# four shapes this engine builds, no two consecutive samples land within 113
+# nodes of each other, and 500,000 consecutive samples contain no repeat.
+#
+# **The bound worth stating**: `sample_index` forms `i × stride`, both under
+# `total`, so this stays exact while `total² < 2^53` — a world of 94M nodes.
+# This one is 2.4M and the largest shape here reaches 2.0e15 against 9.0e15.
+# Past that the products stop being exact and the walk stops being a
+# permutation, silently, which is the failure this comment exists to preempt.
+
+(fn gcd [a : F64 b : F64] : F64
+  (var x a)
+  (var y b)
+  (while (> y 0.0)
+    (var t y)
+    (set y (- x (* y ($math/floor (/ x y)))))
+    (set x t))
+  x)
+
+# Once per pass, not once per sample — a handful of gcd iterations against 900
+# node reads is not a cost worth caching against the world's lifetime.
+(fn walk_stride [total : F64] : F64
+  (var s ($math/floor (* total 0.6180339887498949)))
+  (if (< s 2.0) 1.0
+    (do
+      (while (&& (> s 1.0) (!= (gcd s total) 1.0))
+        (set s (- s 1.0)))
+      s)))
+
+(fn sample_index [step : F64 total : F64 stride : F64] : F64
+  (var i (- step (* total ($math/floor (/ step total)))))
+  (var v (* i stride))
+  (- v (* total ($math/floor (/ v total)))))
+
+(fn sample_x [idx : F64 nx : F64] : F64
+  (- idx (* nx ($math/floor (/ idx nx)))))
+
+(fn sample_y [idx : F64 nx : F64 ny : F64] : F64
+  (var r ($math/floor (/ idx nx)))
+  (- r (* ny ($math/floor (/ r ny)))))
+
+(fn sample_z [idx : F64 nx : F64 ny : F64] : F64
+  ($math/floor (/ idx (* nx ny))))
+
+# 1-in-`chance`, from the same walk. `chance` of 1 always fires, which is what a
+# falling node wants — sand does not hesitate.
+(fn chance_passes? [step : F64 chance : F64] : Bool
+  (if (<= chance 1.0) true
+    (== 0.0 (- (/ step chance) ($math/floor (/ step chance))))))

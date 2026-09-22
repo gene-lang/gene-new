@@ -1,0 +1,9 @@
+# Browser canvas adapter for the shared atlas painter.
+(mod atlas ^profile web)
+(import [TileRegistry] ^from "../core/tiles.gene")
+(import [paint : paint_pixels] ^from "../core/texture.gene")
+
+(fn paint [ctx : Canvas2D tiles : TileRegistry] : Nil
+  (paint_pixels (fn [x : F64 y : F64 r : F64 g : F64 b : F64] : Nil
+    ($canvas/set_fill ctx $"rgb(${r},${g},${b})")
+    ($canvas/fill_rect ctx x y 1.0 1.0)) tiles))

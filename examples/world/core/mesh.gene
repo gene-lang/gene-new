@@ -1,0 +1,381 @@
+# Face-culled chunk meshing — design.md §5.
+#
+# The hot loop of the whole engine (§D6.1, §D10), and the one piece that cannot
+# move off the runtime it runs on: the client meshes, and the client is V8.
+#
+# Input is **a 16³ chunk somewhere inside a larger node array**, addressed by
+# the array index of its `(0,0,0)` and the array's two strides. A face is
+# emitted when its neighbour is transparent, so the shell of nodes one step
+# outside the chunk has to be readable or every chunk border would grow a wall
+# of faces against its neighbour (§5). Whoever owns the array guarantees that
+# shell exists; this module never bounds-checks and never looks further than one
+# node out.
+#
+# M3 took an 18³ padded neighbourhood instead, which is the same thing with the
+# shell pressed right up against the chunk — `chunk_base 1 1 1 18 324` is exactly
+# that call, and `tools/mesh_bench.mjs` still makes it. What the general form
+# buys is M5: once a player can dig, the client keeps its whole loaded region in
+# one array (`core/loaded.gene`) and meshes chunks straight out of it, so an edit
+# is one write rather than a write into every padded copy of the node that has
+# one. §3's "generating the margin is cheaper than asking for it" was true while
+# the world was pristine and stops being true the moment it is edited: a
+# regenerated margin does not know about the hole the player just dug.
+#
+# The strides also removed six index computations per node. The padded form
+# recomputed `pad_index` for the owner and all six neighbours; this computes the
+# owner's index once and reaches its neighbours by `±1`, `±sy`, `±sz`.
+#
+# Output is written into caller-supplied buffers in the exact layout WebGL
+# wants, so there is no copy and no conversion between meshing and upload —
+# which is why `(Buffer T)` had to reach the web profile before this could be
+# written at all (§D7.1).
+
+(mod mesh ^profile web)
+
+(import [Registry draw_airlike] ^from "./registry.gene")
+
+# --- geometry constants ------------------------------------------------------
+
+(let chunk_dim 16.0)
+
+# Position, texture coordinate, the packed light byte, and the face's shading
+# factor. §5 asks for "position, normal, UV, and a per-vertex light value; no
+# per-vertex color" — the normal is not sent because nothing downstream needs
+# it: the only thing §6's shader did with a normal is the directional shading,
+# and that is one float rather than three.
+(let floats_per_vertex 7.0)
+(let vertices_per_face 4.0)
+(let indices_per_face 6.0)
+
+# The atlas is a 4x4 grid of tiles, so a tile index maps to a corner by
+# `(tile mod 4, tile / 4)` scaled by the tile size. Keeping the grid square and
+# power-of-two means the shader needs no atlas metadata beyond this constant.
+# 8x8 since M8's trees took the seventeenth slot (§6, `core/tiles.gene`). A
+# power of two keeps `atlas_step` an exact binary fraction, which matters
+# because §D3.1 puts the mesher in the exact half.
+(let atlas_cols 8.0)
+(let atlas_step 0.125)             # 1 / atlas_cols
+
+# Per-face shading, which is now a *factor on* §4's light rather than a
+# substitute for it. Upstream shades faces the same way and for the same reason:
+# with one light value per node and no normals in the shader, a cube lit
+# uniformly on all six faces reads as a flat silhouette, and the edges of the
+# world disappear. §4 supplies how much light reaches the face; this supplies
+# how much of it the face shows.
+(let shade_top 1.0)
+(let shade_side_z 0.86)
+(let shade_side_x 0.72)
+(let shade_bottom 0.55)
+
+# --- node classification -----------------------------------------------------
+#
+# Ids are `F64`, like everything geometric here — see `core/world.gene`. This is
+# the loop that made that rule pay: it reads node content seven times per node,
+# and as `Int` each of those reads allocated a `BigInt` and then converted it
+# back to index a registry column.
+#
+# **The classification lives in the registry, not here.** This file used to
+# carry a hardcoded `opaque?` over ids 0 and 5 and a `tile_for` table over ids
+# 1 to 4, which was right for the four nodes §D6.1's spike generated and is
+# wrong for anything a mod registers — the ids are assigned at load and mean
+# nothing to a mesher (§2). §2 puts drawtype, transparency, and tiles in the
+# client half of the registry precisely so the mesher can ask.
+#
+# Two questions, not one: a face exists when its owner is **drawn** and its
+# neighbour is not **opaque**. Collapsing them was survivable while the node set
+# had no glass in it; it is what makes glass either invisible or solid-looking
+# the moment one exists.
+
+# --- addressing a chunk inside an array ---------------------------------------
+#
+# `sy` is the array's y stride and `sz` its z stride; `base` is the array index
+# of the chunk's own `(0,0,0)`. Everything below then walks by index, so the
+# only coordinate arithmetic per node is one row offset.
+#
+# Exported because a caller has to produce `base` from wherever its chunk sits:
+# `(chunk_base 1.0 1.0 1.0 18.0 324.0)` for M3's padded 18³ neighbourhood,
+# `core/loaded.gene`'s array coordinates for a loaded world.
+(fn chunk_base [ax : F64 ay : F64 az : F64 sy : F64 sz : F64] : F64
+  (+ ax (+ (* ay sy) (* az sz))))
+
+# A face exists when the neighbour it faces does not hide it, and there are two
+# ways to be hidden.
+#
+# The first is opacity, which is a property of the neighbour alone. The second
+# is **sameness**, which is the only question in this file that needs both sides
+# of a face: a node whose `merges_same` column is set does not draw against
+# another node of its own kind. That is what makes a canopy affordable — leaves
+# are see-through, so they are not opaque, so before this every internal face of
+# every tree was meshed. M8's trees took the world from 62,395 faces to 208,608
+# and the overwhelming majority of the difference was leaves facing leaves.
+#
+# It is per-**id**, not per-drawtype, and that matters: two different mods'
+# leaves are different ids and their faces against each other are still drawn,
+# which is right, because they do not look alike. Upstream reaches the same
+# place from the other direction — `leaves_style = opaque` makes leaves solid,
+# which culls the internal faces *and* wrongly hides whatever is behind them.
+#
+# Both traversals below hoist the columns they need out of the registry once per
+# chunk and index them directly, rather than calling `opaque?` and `drawn?` per
+# neighbour. The registry is still the source of truth — these are its columns,
+# not a copy — but the lookup happens 28,672 times per chunk, and at that count
+# the cross-module call and the property load off `reg` cost more than the array
+# read they wrap.
+#
+# `mine` is the id of the node that owns the face, passed rather than re-read:
+# the caller already has it, and the alternative is a second indexed load per
+# neighbour on the hottest loop in the renderer.
+(fn face_visible? [opaque_col : (Buffer F32) merges_col : (Buffer F32)
+                   content : (Buffer F32) i : F64 mine : F64] : Bool
+  (var theirs (content .get i))
+  (if (== (opaque_col .get theirs) 1.0) false
+    (! (&& (== theirs mine) (== (merges_col .get mine) 1.0)))))
+
+# --- pass one: count ---------------------------------------------------------
+#
+# Two passes, so the caller can allocate exactly. The alternative — a
+# worst-case scratch buffer — is 2.4 MB per chunk and would need a way to
+# upload a sub-range, which is a binding that does not exist. Counting costs one
+# extra traversal of 4,096 nodes and buys exactly-sized buffers.
+
+(fn count_faces [reg : Registry content : (Buffer F32)
+                 base : F64 sy : F64 sz : F64] : F64
+  (var opaque_col reg/opaque)
+  (var merges_col reg/merges_same)
+  (var drawtype_col reg/drawtype)
+  (var faces 0.0)
+  (var z 0.0)
+  (while (< z chunk_dim)
+    (var y 0.0)
+    (while (< y chunk_dim)
+      (var row (+ base (+ (* y sy) (* z sz))))
+      (var x 0.0)
+      (while (< x chunk_dim)
+        (var i (+ row x))
+        (var id (content .get i))
+        (if_yes (!= (drawtype_col .get id) draw_airlike)
+          (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sy) id)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i sy) id)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sz) id)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i sz) id)
+            (set faces (+ faces 1.0))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  faces)
+
+# --- pass two: emit ----------------------------------------------------------
+
+# One vertex: position, atlas coordinate, light. `at` is a vertex index, not a
+# float offset, so callers never do the stride arithmetic themselves.
+(fn put_vertex [verts : (Buffer F32) at : F64
+                px : F64 py : F64 pz : F64
+                u : F64 v : F64 light : F64 shade : F64] : Nil
+  (var o (* at floats_per_vertex))
+  (verts .set o px)
+  (verts .set (+ o 1.0) py)
+  (verts .set (+ o 2.0) pz)
+  (verts .set (+ o 3.0) u)
+  (verts .set (+ o 4.0) v)
+  (verts .set (+ o 5.0) light)
+  (verts .set (+ o 6.0) shade))
+
+# Two triangles over the four corners just written, in the order that makes the
+# quad front-facing from outside.
+#
+# `idx` stays `(Buffer U32)` while everything else here moved to floats: it is
+# written six times per face and never read by Gene code — WebGL reads it — and
+# its element type has to be what `drawElements` expects. The `$to_int` per
+# write is the whole cost, against seven reads per *node* on the other side.
+#
+# Winding is what `cull_face "back"` reads, and getting it wrong does not draw
+# the face inside-out — it does not draw it at all. The two Z faces were
+# reversed in the first version of this file, and the symptom was pale
+# rectangles scattered over the terrain: not mis-shaded geometry but *holes*,
+# showing the fog through walls that were being culled. Nothing errors, so the
+# check is arithmetic: for corners a, b, c the cross product (b-a) x (c-b) must
+# point out of the block, away from the node the face belongs to.
+(fn put_face_indices [idx : (Buffer U32) face : F64 base : F64] : Nil
+  (var o (* face indices_per_face))
+  (idx .set o ($to_int base))
+  (idx .set (+ o 1.0) ($to_int (+ base 1.0)))
+  (idx .set (+ o 2.0) ($to_int (+ base 2.0)))
+  (idx .set (+ o 3.0) ($to_int base))
+  (idx .set (+ o 4.0) ($to_int (+ base 2.0)))
+  (idx .set (+ o 5.0) ($to_int (+ base 3.0))))
+
+# Emit one quad. The four corners arrive already in winding order; this only
+# adds the atlas offset and the shared light and shading values.
+#
+# **The light is the *neighbour's*, not the node's.** A face shows how lit the
+# air in front of it is, and the node behind the face is solid and therefore
+# dark — reading the node's own `param1` would draw every surface black. That
+# neighbour is the node `face_visible?` already tested, so the value is free.
+# Flat per-face rather than smooth per-vertex: smooth lighting averages the four
+# nodes around each corner, which is four more reads per vertex and a
+# visible-but-not-structural improvement, so §5's "not in M0" logic applies.
+(fn put_quad [verts : (Buffer F32) idx : (Buffer U32) face : F64 tile : F64
+              light : F64 shade : F64
+              ax : F64 ay : F64 az : F64  bx : F64 by : F64 bz : F64
+              cx : F64 cy : F64 cz : F64  dx : F64 dy : F64 dz : F64] : Nil
+  (var base (* face vertices_per_face))
+  (var col (- (/ tile atlas_cols) ($math/floor (/ tile atlas_cols))))
+  (var tu (* col atlas_cols))
+  (var u0 (* tu atlas_step))
+  (var v0 (* ($math/floor (/ tile atlas_cols)) atlas_step))
+  (var u1 (+ u0 atlas_step))
+  (var v1 (+ v0 atlas_step))
+  (put_vertex verts base ax ay az u0 v1 light shade)
+  (put_vertex verts (+ base 1.0) bx by bz u1 v1 light shade)
+  (put_vertex verts (+ base 2.0) cx cy cz u1 v0 light shade)
+  (put_vertex verts (+ base 3.0) dx dy dz u0 v0 light shade)
+  (put_face_indices idx face base))
+
+# Fill `verts` and `idx` from the chunk at `base`, offset into world space by
+# `(ox, oy, oz)`. Returns the face count, which is what the caller needs for its
+# draw call — index count is `faces * 6`.
+#
+# `lit` is indexed the same way as `content` and must therefore be the same
+# shape: §4 keeps the two as parallel arrays over one region (§1), so this is
+# the same index used twice rather than two addressing schemes to keep in step.
+(fn build_mesh [reg : Registry content : (Buffer F32) lit : (Buffer F32)
+                verts : (Buffer F32) idx : (Buffer U32)
+                base : F64 sy : F64 sz : F64
+                ox : F64 oy : F64 oz : F64] : F64
+  (var opaque_col reg/opaque)
+  (var merges_col reg/merges_same)
+  (var drawtype_col reg/drawtype)
+  (var top_col reg/tile_top)
+  (var side_col reg/tile_side)
+  (var bottom_col reg/tile_bottom)
+  (var face 0.0)
+  (var z 0.0)
+  (while (< z chunk_dim)
+    (var y 0.0)
+    (while (< y chunk_dim)
+      (var row (+ base (+ (* y sy) (* z sz))))
+      (var x 0.0)
+      (while (< x chunk_dim)
+        (var i (+ row x))
+        (var id (content .get i))
+        (if_yes (!= (drawtype_col .get id) draw_airlike)
+          (var wx (+ ox x))
+          (var wy (+ oy y))
+          (var wz (+ oz z))
+          (var x1 (+ wx 1.0))
+          (var y1 (+ wy 1.0))
+          (var z1 (+ wz 1.0))
+          (var side (side_col .get id))
+          (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
+            (put_quad verts idx face side
+                      (lit .get (+ i 1.0)) shade_side_x
+                      x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
+            (put_quad verts idx face side
+                      (lit .get (- i 1.0)) shade_side_x
+                      wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sy) id)
+            (put_quad verts idx face (top_col .get id)
+                      (lit .get (+ i sy)) shade_top
+                      wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i sy) id)
+            (put_quad verts idx face (bottom_col .get id)
+                      (lit .get (- i sy)) shade_bottom
+                      wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sz) id)
+            (put_quad verts idx face side
+                      (lit .get (+ i sz)) shade_side_z
+                      wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? opaque_col merges_col content (- i sz) id)
+            (put_quad verts idx face side
+                      (lit .get (- i sz)) shade_side_z
+                      x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
+            (set face (+ face 1.0))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  face)
+
+# --- entities ------------------------------------------------------------------
+#
+# §8's dropped items, drawn. §8.1 recorded this as blocked — "drawing an item
+# needs a billboard or a scaled cube, which is §6 work and a vertex format this
+# renderer does not have" — and half of that is wrong in a useful way. A
+# **billboard** would need a new format: it has to face the camera, so it needs
+# either the view vector in the shader or a per-frame rebuild that knows where
+# the player is looking. A **scaled cube** needs exactly the format that is
+# already here: position, atlas coordinate, light, shade. So it reuses
+# `put_quad`, the chunk shader, and the chunk draw path unchanged, and the only
+# thing this adds is where the corners go.
+#
+# A cube also happens to be the right *look*. Upstream draws a dropped item as
+# a flat sprite; a small cube of the node's own texture reads as "the block you
+# just dug, lying there", which is what it is.
+#
+# **Every entity in one buffer, rebuilt per frame.** A chunk mesh is uploaded
+# once and redrawn for as long as nothing in it changes; entities move every
+# tick, so caching per entity would be a VAO per item and an upload each time
+# one falls. There are at most a few dozen on screen — 24 vertices each — and
+# one buffer refilled per frame is cheaper than tracking which of them moved.
+
+(let entity_faces_per_cube 6.0)
+
+# Half-width of a dropped item, in nodes. A quarter of a block: small enough to
+# read as an item rather than a block someone placed badly, large enough to spot
+# in grass from a few nodes away.
+(let item_half 0.14)
+
+# One cube, centred on `(cx, cy, cz)`. `light` is the packed §4 byte at the node
+# the entity is standing in — an item in a cave should be as dark as the cave —
+# and the caller reads it, because this module has no world.
+#
+# Returns the face count written, so a caller filling one buffer with many
+# entities can advance its own cursor without knowing what a cube costs.
+(fn put_cube [verts : (Buffer F32) idx : (Buffer U32) first_face : F64
+              tile : F64 light : F64 half : F64
+              cx : F64 cy : F64 cz : F64] : F64
+  (var x0 (- cx half))
+  (var x1 (+ cx half))
+  (var y0 (- cy half))
+  (var y1 (+ cy half))
+  (var z0 (- cz half))
+  (var z1 (+ cz half))
+  (var f first_face)
+  # Same winding as `build_mesh`, which is what keeps back-face culling working
+  # for these without a second render state (§6). `tools/mesh_bench.mjs` checks
+  # the chunk case; an entity cube that disagreed would be invisible from
+  # outside and visible from inside, which is the one bug this ordering exists
+  # to prevent.
+  (put_quad verts idx f tile light shade_side_x
+            x1 y0 z1  x1 y0 z0  x1 y1 z0  x1 y1 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_x
+            x0 y0 z0  x0 y0 z1  x0 y1 z1  x0 y1 z0)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_top
+            x0 y1 z1  x1 y1 z1  x1 y1 z0  x0 y1 z0)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_bottom
+            x0 y0 z0  x1 y0 z0  x1 y0 z1  x0 y0 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_z
+            x0 y0 z1  x1 y0 z1  x1 y1 z1  x0 y1 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_z
+            x1 y0 z0  x0 y0 z0  x0 y1 z0  x1 y1 z0)
+  (+ f 1.0))
+
+(fn item_cube_half [] : F64 item_half)
+(fn faces_per_cube [] : F64 entity_faces_per_cube)

@@ -1,0 +1,156 @@
+# The WebGL2 renderer — design.md §6, at the scale §D6.1's spike needs.
+#
+# One program, one atlas, one draw call per chunk. No occlusion culling and no
+# greedy meshing: §5 says both stay out until something needs them, and the
+# point of the spike is to find out whether anything does.
+
+(mod render ^profile web)
+
+(import [mat4_identity mat4_perspective mat4_view mat4_multiply]
+        ^from "../core/vec.gene")
+
+# --- shaders -----------------------------------------------------------------
+#
+# Vertex layout matches `core/mesh.gene`'s `put_vertex`: position, atlas
+# coordinate, the packed light byte, and the face's shading factor. Light is one
+# float rather than a colour because §4's model is one value per node and the
+# shader is what turns it into shading.
+#
+# **The two light channels are unpacked here, not in the mesher.** `param1` is
+# day in the high nibble and night in the low (§4), and mixing them by the time
+# of day is a per-frame decision — baking it into the vertex buffer would mean
+# remeshing the world at every sunrise. So the byte travels as-is and
+# `u_time_of_day` does the mixing per fragment, which is what makes a day/night
+# cycle free.
+
+(import [vertex_source : shared_vertex fragment_source : shared_fragment]
+        ^from "../core/shaders.gene")
+
+(fn vertex_source [] : Str
+  (shared_vertex "#version 300 es\nprecision highp float;"))
+(fn fragment_source [] : Str
+  (shared_fragment "#version 300 es\nprecision highp float;"))
+
+# --- program construction ----------------------------------------------------
+
+# Takes an already-created shader rather than a stage name, because a WebGL
+# enum argument must be a *literal* — that is what lets the compiler resolve it
+# to a constant and reject a typo (§D7.1). So the stage cannot be threaded
+# through a parameter, and `create_shader` stays at the call site. The trade is
+# deliberate and cheap: a shader stage is always statically known.
+(fn compile_stage [gl : Gl sh : Gl/Shader source : Str] : Gl/Shader
+  ($gl/shader_source gl sh source)
+  ($gl/compile_shader gl sh)
+  (if_not ($gl/shader_compiled? gl sh)
+    ($console/error ($gl/shader_log gl sh)))
+  sh)
+
+(fn build_program [gl : Gl] : Gl/Program
+  (var prog ($gl/create_program gl))
+  ($gl/attach_shader gl prog
+    (compile_stage gl ($gl/create_shader gl "vertex") (vertex_source)))
+  ($gl/attach_shader gl prog
+    (compile_stage gl ($gl/create_shader gl "fragment") (fragment_source)))
+  ($gl/link_program gl prog)
+  (if_not ($gl/program_linked? gl prog)
+    ($console/error ($gl/program_log gl prog)))
+  prog)
+
+(fn init_state [gl : Gl] : Nil
+  ($gl/enable gl "depth_test")
+  ($gl/depth_func gl "lequal")
+  ($gl/enable gl "cull_face")
+  ($gl/cull_face gl "back")
+  ($gl/clear_color gl 0.62 0.76 0.94 1.0))
+
+# --- texture -----------------------------------------------------------------
+#
+# Nearest filtering, and no mipmaps. A voxel atlas wants hard texel edges, and
+# mipmapping an atlas bleeds neighbouring tiles into each other at distance
+# unless every tile is padded — which §6 notes is an atlas-build decision, not
+# something to paper over in the sampler.
+
+(fn upload_atlas [gl : Gl image : EventTarget] : Gl/Texture
+  (var tex ($gl/create_texture gl))
+  ($gl/bind_texture gl "texture_2d" tex)
+  ($gl/tex_image_2d gl "texture_2d" image)
+  ($gl/tex_parameter gl "texture_2d" "min_filter" "nearest")
+  ($gl/tex_parameter gl "texture_2d" "mag_filter" "nearest")
+  ($gl/tex_parameter gl "texture_2d" "wrap_s" "clamp_to_edge")
+  ($gl/tex_parameter gl "texture_2d" "wrap_t" "clamp_to_edge")
+  tex)
+
+# --- chunk upload ------------------------------------------------------------
+#
+# A vertex array per chunk, holding its own buffers and attribute layout, so
+# drawing a chunk is one `bindVertexArray` and one `drawElements` rather than
+# five state calls per chunk per frame.
+#
+# **The three handles are the caller's, not ours.** M3 created them inside the
+# upload and returned only the vertex array, which is right exactly once: a
+# chunk uploaded once and never touched again. M5 digs, and a dug chunk has to
+# be re-uploaded — so the caller keeps the buffers and hands them back, and the
+# re-upload replaces the data store of the buffers already wired into the vertex
+# array instead of building a second one and orphaning the first. There is no
+# `deleteBuffer` in the bindings (§D7.1), so leaking one per edit is not a small
+# leak; it is the whole world's geometry again every few hundred digs.
+
+(let stride 28.0)                  # 7 floats * 4 bytes
+
+(fn new_vertex_array [gl : Gl] : Gl/VertexArray
+  ($gl/create_vertex_array gl))
+
+(fn new_buffer [gl : Gl] : Gl/Buffer
+  ($gl/create_buffer gl))
+
+# Fill (or refill) one chunk's buffers and bind its attribute layout.
+#
+# The vertex array is bound first and stays bound for both uploads, which is not
+# tidiness: the element-array binding is part of vertex-array state, so binding
+# the index buffer with the wrong array bound would rewire whichever chunk was
+# bound last.
+(fn upload_chunk [gl : Gl vao : Gl/VertexArray
+                  vbo : Gl/Buffer ebo : Gl/Buffer
+                  verts : (Buffer F32) idx : (Buffer U32)] : Nil
+  ($gl/bind_vertex_array gl vao)
+
+  ($gl/bind_buffer gl "array" vbo)
+  ($gl/buffer_data gl "array" verts "static")
+  ($gl/enable_attrib gl 0.0)
+  ($gl/attrib_pointer gl 0.0 3.0 "f32" false stride 0.0)
+  ($gl/enable_attrib gl 1.0)
+  ($gl/attrib_pointer gl 1.0 2.0 "f32" false stride 12.0)
+  ($gl/enable_attrib gl 2.0)
+  ($gl/attrib_pointer gl 2.0 1.0 "f32" false stride 20.0)
+  ($gl/enable_attrib gl 3.0)
+  ($gl/attrib_pointer gl 3.0 1.0 "f32" false stride 24.0)
+
+  ($gl/bind_buffer gl "element_array" ebo)
+  ($gl/buffer_data gl "element_array" idx "static"))
+
+# --- frame -------------------------------------------------------------------
+
+(fn set_view_projection [gl : Gl prog : Gl/Program
+                         proj : (Buffer F32) view : (Buffer F32)
+                         vp : (Buffer F32)
+                         width : F64 height : F64
+                         eye_x : F64 eye_y : F64 eye_z : F64
+                         dir_x : F64 dir_y : F64 dir_z : F64
+                         fog_far : F64 time_of_day : F64] : Nil
+  (mat4_perspective proj 1.15 (/ width height) 0.1 fog_far)
+  (mat4_view view eye_x eye_y eye_z dir_x dir_y dir_z)
+  (mat4_multiply vp proj view)
+  ($gl/uniform_matrix4 gl ($gl/uniform_location gl prog "u_view_projection") vp)
+  ($gl/uniform_3f gl ($gl/uniform_location gl prog "u_fog") 0.62 0.76 0.94)
+  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_fog_far") fog_far)
+  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_time_of_day") time_of_day))
+
+(fn begin_frame [gl : Gl prog : Gl/Program width : F64 height : F64] : Nil
+  ($gl/viewport gl 0.0 0.0 width height)
+  ($gl/clear gl)
+  ($gl/use_program gl prog)
+  ($gl/uniform_i gl ($gl/uniform_location gl prog "u_atlas") 0.0))
+
+(fn draw_chunk [gl : Gl vao : Gl/VertexArray index_count : F64] : Nil
+  ($gl/bind_vertex_array gl vao)
+  ($gl/draw_elements gl "triangles" index_count "u32" 0.0))
