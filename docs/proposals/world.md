@@ -2,8 +2,9 @@
 
 **Status:** Experimental design proposal, not an implementation report.  
 **Date:** 2026-09-21.  
-**Revision:** 4 — selectively copy and adapt Miclone code; no Miclone build, runtime, or test dependency. Retain revision 3’s durability and browser-first rollout decisions.  
-**Companion:** The latest reviewed `life.md` (uploaded as `life(2).md`, updated 2026-09-20).  
+**Updated:** 2026-09-22.  
+**Revision:** 5 — one world-result dispatcher with data continuations; physical revision/receipt retention; incremental disk-backed storage in milestones 1–3. Preserve the copy-and-adapt policy and browser-first rollout.  
+**Companion:** The latest reviewed `life.md`
 **Decision:** One authoritative world process, one separate process per AI Life, and a browser player client for humans. Human and AI controllers use the same world-action contracts over WebSocket. Keep HTTP for pages/assets and explicit application-level receipts, replay, and reconnection for live interaction. Miclone is a source reference for copied code, not a required package, engine, or service.
 
 > One shared reality for human players and independent AI Lives. Humans act through a browser; each Life acts through Gene code in its own process. Places, possessions, conversations, and consequences persist as the world grows.
@@ -73,7 +74,7 @@ The previously reviewed Miclone sources provide useful transport wiring, portabl
 | Gene web-profile browser, WebGL2 renderer, camera, picking, meshing, and input | Copy the needed shell, helpers, shader/asset recipes, and build steps. Add click-to-move and interaction controls locally; simplify or replace rendering assumptions as the neighborhood evolves. |
 | Portable geometry, inventory, entity, and content helpers | Copy the useful functions and required dependencies, then reshape their APIs and data for the Commons. Do not preserve an unsuitable voxel representation merely to minimize the diff. |
 | Server-selected content and recipe-driven presentation | Adapt the data-only appearance and interaction machinery. Do not import the whole mod framework or the removed Gene capability machinery as prerequisites. |
-| SQLite world integration and batched publication | Copy relevant adapter code and fixtures, then implement §6.1 and §12.8. Reusing source does not make whole-image commits inexpensive. |
+| SQLite world integration and batched publication | Copy useful interfaces and fixtures, not the whole-image write path as the target backend. Plan the incremental disk-backed connection in milestones 1–3; retain §6.1’s publication contract. |
 | Native WebSocket integration example | Copy useful application-level connection/polling code. Depend directly on the independent Gene `genex/websocket` library and its documented prerequisites, not on Miclone's native client or launcher. [R2] |
 | Client-simulated player motion | **Replace this authority model.** Commons walking, collision, speed, possession, and action preconditions remain server-owned for both humans and Lives. |
 | Byte-oriented game protocol and codec helpers | Copy helpers only where they fit. Commons owns its versioned envelope and has no compatibility obligation to Miclone clients, messages, or saves. |
@@ -95,11 +96,13 @@ This policy preserves source reuse while allowing the two applications to diverg
 
 ### 1.5 Evidence and feasibility baseline
 
-Revision 3 combined the prior world proposal, the supplied implementation review [D2], and a focused read of Miclone and native-WebSocket sources at `228d3304b872927aa1d82b5a46934e8ec8c479fe`. Revision 4 clarifies the project owner’s choice of selective copying and independent maintenance (§1.4); it does not claim another repository audit or that source has already been copied. [D1, R1, R2, R3]
+Revision 3 combined the prior world proposal, the supplied implementation review [D2], and a focused read of Miclone and native-WebSocket sources at `228d3304b872927aa1d82b5a46934e8ec8c479fe`. Revision 4 clarified selective copying and independent maintenance (§1.4). Revision 5 incorporates the approved follow-up review of continuation registrations and physical storage growth (§8.4, §12.8). These revisions do not claim another repository audit or that source has already been copied or changed. [D1, D3, R1, R2, R3]
 
 The review reports a 3-second Life program limit, worker-process execution, a 100-call/hour default, an HTTP mailbox connector with crash tests, no real brain adapter in that reviewed implementation, and 110 existing Life tests. Those Life implementation details and the reported 128 ms → 1.24 s cycle timings over 200 cycles were **not independently reproduced here**. Record the actual Life checkout/revision and rerun its baseline before integration; do not turn these reported numbers into achieved targets or a permanent test-count promise.
 
-The design below deliberately accommodates those constraints: short event-driven code, explicit real-brain work, bounded active storage, and preservation of the local adapter. It does not assert that a proposed API is already implemented merely because the design names it.
+The follow-up review reports routine-registration limits, unbounded per-subscription `seen_events`, and append-only record revisions and commit receipts in the Life store. Those source findings are attributed to that review rather than independently verified here. They motivate a standing dispatcher, data continuations, sequence-based delivery tracking, and physical history maintenance—not merely larger limits or shorter prompts. [D3]
+
+The design accommodates these constraints while retaining short ordinary Gene programs, explicit real-brain work, the existing local-world adapter, and separate private stores. Proposed API names and acceptance tests are not claims of implemented support.
 
 ## 2. The initial environment: The Commons
 
@@ -375,7 +378,7 @@ Maintain one server-owned live simulation and one durable frontier. At an action
 
 Use fixed logical steps, initially 100 simulation milliseconds, and near-real-time progression for human play. **A step is not a database commit.** Rendering, logical stepping, and durable publication are separate rates. Accelerated simulation is an explicit shared setting, not a private speed multiplier.
 
-**Selected version-1 persistence policy: action-boundary commits plus periodic checkpoints.** Start with a proposed one-second checkpoint interval and a maximum five-second dirty simulation horizon. These are adjustable prototype settings, not measured guarantees. A paused/idle world with no changes need not rewrite its image. If storage cannot keep the dirty horizon within the configured bound, stop advancing it and report storage lag; do not silently accumulate unlimited recoverable loss.
+**Selected version-1 persistence policy: action-boundary commits plus periodic checkpoints.** Start with a proposed one-second checkpoint interval and a maximum five-second dirty simulation horizon. These are adjustable prototype settings, not measured guarantees. A paused/idle world with no changes needs no state checkpoint write. Incremental disk-backed storage is the planned backend (§12.8); the checkpoint policy still separates logical steps from durable publication. If storage cannot keep the dirty horizon within the configured bound, stop advancing it and report storage lag; do not silently accumulate unlimited recoverable loss.
 
 | Change | Publication requirement |
 | --- | --- |
@@ -484,7 +487,7 @@ Initial **engineering targets**, to validate on a recorded machine with four Liv
 | Stage | Proposed target / behavior |
 | --- | --- |
 | Browser feedback after input | Show a local pending marker within 100 ms; this is not server acceptance. |
-| Small world operation receipt on loopback | p95 within 250 ms under the declared sustained load; never acknowledge before durability to meet the target. |
+| Small world operation receipt on loopback | End-to-end p95 within 250 ms under the declared sustained load, including queueing, validation, commit, and response delivery. Calibrate storage/admission limits using §12.8; never acknowledge before durability to meet the target. |
 | Automatic delivery/availability status | Within one second of a change reaching the adapter; no model-authored response is implied. |
 | A reply the Life elects to produce, with an available budget and healthy configured model | Aim for p95 within 30 seconds of deliberation admission, including model and worker cost. Measure queue wait separately and record end-to-end input-to-reply latency. This is not a promise that every message will be answered. |
 | Work that will not meet the interactive target | Preserve the message and expose delayed/unavailable status; human play continues. Never manufacture a conversational answer or repeatedly spawn workers to animate a status indicator. |
@@ -527,11 +530,11 @@ The network adapter is a **second implementation behind `body/world`**, alongsid
 | `world.start_walk(destination, tx?)` | Prepare a local tracking job and durable outbound request; return after local publication. The world owns the physical activity. |
 | `world.water(...)`, `world.say(...)`, or a generic world operation | Prepare an outbound operation and return a serializable reference, not fabricated effect completion. |
 | `world.result(action_ref)` | Read the latest locally recorded status immediately. Pending or unknown stays pending or unknown. |
-| `world.on_result(action_ref, code_revision, inputs, tx?)` | Convenience over a durable event-subscribed routine. Schedule short code for a recorded outcome; no waiting stack or implicit model call. |
+| `world.on_result(action_ref, code_revision, inputs, tx?)` | Store a continuation record keyed by `operation_id` within its world/history/participant identity. One standing dispatcher makes it ready for a terminal result; no routine registration per action, waiting stack, or implicit model call. |
 | `world.cancel(action_ref)` | Record cancellation through the normal delivery kernel and report the eventual race outcome. |
 | `world.describe()` | Read current supported interfaces and documentation from the cached catalogue. |
 
-Names are proposed wrappers to map to the actual Life implementation. In version 1, omit `world.await_result` from the supported brain-program surface. The review reports a 3-second execution limit and no generic long-running arbitrary-code job. Keep programs bounded and use event routines instead of raising that limit so a walk can finish. The native transport is polled by the body's normal loop independently of model inference and worker-process execution; a generated program must not monopolize that loop. [D2]
+Names are proposed wrappers to map to the actual Life implementation. In version 1, omit `world.await_result` from the supported brain-program surface. The review reports a 3-second execution limit and no generic long-running arbitrary-code job. Keep programs bounded and use data continuations dispatched by short handlers instead of raising that limit so a walk can finish. The native transport is polled by the body's normal loop independently of model inference and worker-process execution; a generated program must not monopolize that loop. [D2]
 
 No new mini-language or fixed brain tool envelope is introduced. Functions, loops, conditionals, stored code, and generated helpers remain ordinary Gene; the libraries expose submission and subsequent observation as separate operations.
 
@@ -566,30 +569,113 @@ No single commit covers these two stores. Correlation IDs and deduplication conn
 
 Use event-driven continuation: **submit, retain the next step, return; run short Gene code when the outcome arrives**. A world walk may last minutes without keeping a Life program, worker, or model request alive.
 
-Conceptually:
+**A continuation is a data record, not a body-routine registration.** Keep one standing world-result dispatcher per Life, subscribed to normalized world-result notifications, with separate source cursors where required. Use Life's existing bounded foreground execution path for ready continuation programs. Do not allocate a subscription, timer, or permanent worker for each outstanding operation, and do not increase the routine-registration limit as the fix. The reported registration, batch, and `seen_events` constraints are implementation findings from the supplied review. [D3]
+
+#### Continuation records and the public API
+
+`world.on_result(action_ref, code_revision, inputs, tx?)` stores the next step under the logical operation key:
+
+```text
+(world_id, history_id, participant_id, operation_id)
+```
+
+The private Life store supplies the owning Life identity. Retain a stable continuation ID/revision, selected Gene code and dependency revisions, explicit serializable inputs, relevant cognitive-organization revision, optional owner ID/generation, and execution status. These fields are operational metadata, not a prescribed cognitive schema. No live closure environment or stack is serialized.
+
+Version 1 permits one default completion continuation per operation. Repeating the same registration with identical code, inputs, and ownership returns the existing record; conflicting replacement is explicit rather than silently creating another callback. A completed or cancelled record cannot be rearmed by a duplicate registration. Independent observers can still read the result; multiple named callbacks are not required for the initial contract.
+
+`on_result` means a **terminal outcome**: admission rejection, completion, failure, or cancellation. Admission acceptance, progress, and temporary suspension update status but do not consume this continuation. An unknown delivery outcome is not a terminal failure; preserve it for reconciliation. The handler receives the actual outcome and decides which branch to take.
+
+An illustrative ordinary Gene program, with `continuation_revision` and `continuation_inputs` already selected by its caller:
+
+```gene
+(store .commit
+  (fn [tx]
+    (let job (body/world .start_walk "garden" ^tx tx))
+    (body/world .on_result job continuation_revision continuation_inputs ^tx tx)
+    (state .put "activity" {^kind "walking" ^job_id job/id} ^tx tx)
+    job/id))
+```
+
+This commits the local tracking record, outbound operation, continuation, and cognitive link together. Dispatch to the world starts only afterward. The example changes the library bookkeeping, not the brain's response format; the selected continuation is ordinary Gene code.
+
+#### One dispatcher, not one registration per operation
 
 ```text
 One Life-local commit:
-    prepare walking request O and local tracking record
-    register a one-shot outcome routine for O with selected code/input
+    prepare world request O and its local tracking record
+    store continuation C for O, with code revision and explicit inputs
     publish related cognitive references and the outbox entry
 Return immediately.
 
-Later:
-    persist world outcome for O and enqueue its subscribed routine
-    execute a bounded Gene handler
-    inspect the outcome; update state and/or prepare the next request
+On a receipt, status-query result, or world event:
+    durably normalize the observed result under O's identity
+    retain a pending-routing marker with that result
+    advance the receipt cursor only for durably received ordered events
+    notify the one standing world-result dispatcher
+
+A bounded dispatcher pass:
+    look up continuations for pending results
+    atomically mark matching waiting continuations ready
+    commit routing progress and its dispatch cursor/markers
+    return without running arbitrary continuation programs inline
+
+The existing foreground executor:
+    claim a ready continuation under its stable identity
+    execute its bounded Gene program with the retained inputs and result
+    publish deliberately grouped local changes/follow-up work with its completion marker
 ```
 
-Reuse Life's event-subscription/routine machinery rather than introducing a new general job engine. `world.on_result` may be a convenience wrapper; its stored inputs and selected code revision are ordinary data. No live closure environment or stack is serialized.
+Keep canonical operation results independent of their delivery channel. A direct receipt, query response, and later stream event can all describe the same terminal outcome; they update the same result and cannot create three logical triggers. An older observation cannot regress a terminal result to running/pending. Retain the exact terminal outcome reference needed by a ready continuation. A conflicting terminal result is a consistency error, not a reason to run the continuation again.
 
-Registering a result routine and the outbound request can share one local commit, preventing a fast reply from arriving before the continuation exists. If registration occurs later, atomically inspect retained outcome state as part of registering: an already completed operation triggers the routine once rather than becoming a missed event. Duplicate receipts/events must not enqueue duplicate logical triggers. Retain a trigger ID, source operation/event, current routine revision, and execution status.
+The standing subscription is a wakeup for durable routing work, not the sole copy of that work. A coalesced wakeup or one pending invocation must not lose later arrivals. After a pass settles, check for more eligible routing/ready records and schedule another bounded pass; startup performs the same check. A result without a continuation is retained according to its result-retention policy, so a late registration can inspect it.
 
-For a handler that produces another world request, group the continuation's state change, consumed-trigger marker, and new outbound request in one local commit, using a stable operation identity. External dispatch occurs afterward. Arbitrary nonparticipating effects remain outside that guarantee; a handler interrupted after such work is reconciled, not automatically rerun as if nothing happened.
+#### Close both registration/result orderings atomically
 
-Cancellation/ownership generations and code-organization changes apply to pending routines as well as pending requests. An old-layout continuation is explicitly preserved as compatible, migrated, invalidated for reconsideration, or blocks selection. Do not silently execute it with a new memory layout.
+Use the same idempotent readiness transition in these two local transactions:
 
-The local-world `start_walk` implementation remains available for current tests. Networked walking is a world-owned activity with a **local record and event continuation**, not an implementation promise that Life can suspend arbitrary code across minutes or process restarts.
+```text
+Register C:
+    store C
+    look up the already-stored result for O
+    if terminal and C is still waiting, mark C ready
+    commit together
+
+Route a result for O:
+    read/validate the durably stored result
+    look up C
+    if terminal and C is still waiting, mark C ready
+    commit readiness and routing progress together
+```
+
+If registration commits first, later routing makes it ready. If the result commits first, registration finds it; routing may also attempt the same transition harmlessly. A result-routing marker survives a crash between receiving and dispatching. A unique ready identity derived from C prevents duplicate queue entries. A cancelled, running, completed, failed, or interrupted continuation is not reset to ready by replaying its source result.
+
+#### Bounded routing and execution
+
+A dispatcher invocation processes a bounded number of records, with the reported 32-event batch size as an integration limit to verify—not a reason to run 32 user programs inside one callback. Ready continuations are separate work items for the existing foreground executor; they do not each become a routine registration. Preserve fair scheduling with brain programs and other body handlers. One failing continuation does not block routing unrelated outcomes or receiving new events.
+
+Bound outstanding continuation records, ready work, and routing backlog by configured counts/bytes independently of the standing-registration cap. A grouped submission that exceeds admission capacity fails before either its new continuation or outbox request is published. Already committed work is never dropped to satisfy a smaller bound; pause new affected admission and expose backlog when necessary. Prefer indexed operation/result lookups and ready-state scans over scanning all historical continuations each time.
+
+For a handler that prepares another world operation, group its relevant local state change, consumed-trigger/completion marker, and next immutable outbox request in one local commit. Keep the next operation ID stable across recovery. External sending follows durable publication. This supplies replay-safe local publication, not exactly-once execution of arbitrary Gene or external I/O. A started handler interrupted after nonparticipating effects retains partial outcomes and is reconciled, not blindly rerun. Ready work that never started can be admitted normally; interrupted work needs its explicit recovery decision.
+
+Cancellation and ownership checks occur before dispatch and before final local publication. Cognitive-organization changes account for waiting, ready, and interrupted continuation records, their code dependencies, and their inputs. Preserve compatibility, migrate, invalidate visibly for reconsideration, or defer selection; never run old-layout code against newly organized data.
+
+#### Ordered delivery uses cursors, not an ever-growing seen list
+
+For world subscriptions, replace the reported per-registration `seen_events` accumulation with persisted sequence progress scoped to `(world_id, history_id, stream_id)`. Keep these three meanings separate:
+
+| Record | Meaning |
+| --- | --- |
+| Receipt cursor | Highest contiguous source prefix durably received locally; it controls network ACK/replay. |
+| Dispatcher cursor | Source prefix whose routing decisions and any resulting ready-work records have committed. It may lag receipt. |
+| Continuation status | Whether a particular follow-up is waiting, ready, running, completed, failed, cancelled, or interrupted. Routing is not execution. |
+
+A routing cursor advances only over a fully examined prefix. Scans include non-result events or an explicit covered-through watermark for intentionally filtered records; gaps between matching event kinds alone are not evidence of missing input. Conversely, the maximum sequence received is not proof of a contiguous prefix. A real gap or unknown required schema blocks advancement until the existing gap/reconciliation contract resolves it. Network ACKs never imply that the continuation ran or that the brain considered the event.
+
+Direct receipts and query responses have no invented world `event_seq`. Their canonical result's durable pending-routing marker makes them discoverable independently of source-cursor advancement; they use the same operation/continuation identities. Unordered non-world sources require their own bounded deduplication contract rather than copying this cursor rule without a sequence guarantee.
+
+Pin unexamined routing data or keep it retrievable when archiving. Once a ready continuation and its outcome reference are durable, execution can outlive the routed event's active-storage residence. Cursor migration from existing `seen_events` must establish a covered prefix from durable evidence; do not use the largest old ID or discard the list before recovery is safe. Keep the local-world and HTTP-mailbox behavior compatible while adding this ordered-world path.
+
+The local-world `start_walk` implementation remains available for current tests. Networked walking is a world-owned activity with **local tracking plus data continuations**, not a promise that Life can suspend arbitrary code across minutes or process restarts.
 
 ### 8.5 Discoverable interactions for both controllers
 
@@ -617,7 +703,7 @@ Begin with labels, confirmation, bounded text/numbers, choices, and visible-obje
 
 Use Life's existing `connector.gene` delivery machinery as the starting point. The supplied review reports stable operation IDs and semantic digests, receipt queries distinguishing `not_found` from `unknown`, durable cursors and history gaps, cancellation, lane fairness, and process-kill tests. Preserve those contracts while adding a world transport adapter; do not implement a second unrelated outbox and recovery algorithm. Its exact public extraction points must be checked against the local Life revision. [D2]
 
-Extract only the necessary transport-independent responsibilities: outbox state transitions, semantic identity, acknowledgment persistence, cursor/gap handling, retry/cancel scheduling, and receipt reconciliation. Keep HTTP mailbox and WebSocket framing/authentication in their respective adapters. World-specific activity, view-baseline, controller-generation, and rules-version fields belong to the world adapter, not the generic mailbox model.
+Extract only the necessary transport-independent responsibilities: outbox state transitions, semantic identity, acknowledgment persistence, cursor/gap handling, retry/cancel scheduling, and receipt reconciliation. Keep HTTP mailbox and WebSocket framing/authentication in their respective adapters. World-specific activity, continuation records, view-baseline, controller-generation, and rules-version fields belong to the world adapter, not the generic mailbox model. Share the ordered receive/replay mechanics where their contracts fit, but keep receipt progress, result routing, and continuation execution distinct as in §8.4. Do not inherit unbounded per-subscription event-ID lists into the world path.
 
 Use one conformance suite with HTTP and WebSocket fixtures, plus world-only tests. An existing mailbox test pass is evidence for the reused mechanism, not proof of WebSocket integration. Keep its kill/restart tests and the local-world regression suite running throughout extraction. WebSocket remains the selected world transport; a transport-independent core is not permission to silently fall back to HTTP when native setup fails.
 
@@ -831,7 +917,7 @@ Different semantic request → operation_id_conflict; never execute it.
 
 Do not rerun the operation to discover its result. For a previously rejected request, return the same rejection; trying again under changed circumstances is an explicit new operation.
 
-Retain an exact anti-replay record for every admitted/rejected/cancelled operation throughout the supported history. This does **not** require full receipts, transcripts, or every event to stay in a repeatedly rewritten hot database image. Archive cold detail under §12.8 while retaining addressable proof of its result/identity. Until archival or an incremental store is implemented and measured, cap the experiment and pause admission before exhausting its storage budget. Deleting an old ID and accepting it as new is never an acceptable performance optimization.
+Retain an exact anti-replay record for every admitted/rejected/cancelled operation throughout the supported history. This does **not** require full receipts, transcripts, or every event to stay in a repeatedly rewritten hot database image. Archive cold detail under §12.8 while retaining addressable proof of its result/identity. Incremental disk-backed storage is planned in milestones 1–2, with physical-history maintenance and load validation completed in milestone 3 (§12.8). A temporary whole-image development fixture must remain within its measured small-workload envelope; never use logical hot-record counts as proof that its rewritten file is bounded. Deleting an old ID and accepting it as new is never an acceptable performance optimization.
 
 ### 10.3 Atomic world application
 
@@ -955,7 +1041,7 @@ Sample or coalesce before assigning durable event IDs. Commit network intake in 
 
 A Life persists the event before acknowledging its durable cursor. Storing it does not mean the brain considered it or completed a commitment. A browser acknowledges only after installing the ordered batch in its current session; it is a flow-control acknowledgment, not evidence of persistent browser storage, human reading, or permission to delete the sole retained human transcript. Section 11.4 defines the difference.
 
-Deduplicate by stream identity and sequence/event ID, and correlate direct receipts with events by operation/action identity. Receiving both must not create two completed jobs or two copies of the same speech.
+Deduplicate the ordered source using its scoped contiguous receipt cursor and durable records for the not-yet-consumed range; do not retain an unbounded list of every delivered event ID on a routine. Correlate direct receipts with events by operation/action identity. Receiving both must not create two completed jobs, two copies of speech, or two ready continuations. Result-routing progress uses the separate dispatcher cursor/markers in §8.4; receipt ACK is not a completion marker.
 
 ### 11.3 A consistent reconnect sequence
 
@@ -1032,7 +1118,7 @@ A possible logical schema is:
 
 These are responsibilities, not a required table count. A small transactional store can combine collections; retained conversation history may be an indexed projection of the event log rather than a second authoritative log. Keep the world journal as committed data changes, not a list of programs to execute again.
 
-Each Life store continues to preserve the information in `life.md`, plus its world binding, durable outbox, operation/action links, event cursor, and last synchronized observed view. Its own cognitive schema remains freely replaceable.
+Each Life store continues to preserve the information in `life.md`, plus its world binding, durable outbox, operation/action links, canonical results, continuation records, standing dispatcher identity, receipt/dispatcher cursors, pending-routing and ready-work markers, and last synchronized observed view. These are operational records; its cognitive schema remains freely replaceable. Historical immutable revisions and local commit receipts participate in exact hot/cold lookup and physical maintenance under §12.8.
 
 ### 12.2 World restart
 
@@ -1052,7 +1138,7 @@ A missing required module or corrupt store is a recovery failure, not permission
 
 ### 12.3 Life restart
 
-The Life first restores its own identity, cognitive organization, pending requests, and observations. It then reconnects to the configured world/history, replays retained events, obtains current authoritative avatar state, and reconciles every uncertain outbound action.
+The Life first restores its identity, cognitive organization, pending requests, canonical results, continuations, and distinct receipt/dispatcher progress. It reconstructs the one standing dispatcher without allocating a registration per operation; durable pending-routing and ready records survive a lost wakeup. It then reconnects to the configured world/history, replays retained events, obtains current authoritative avatar state, and reconciles every uncertain outbound action. Resume ready never-started work only after its normal checks; do not automatically rerun interrupted arbitrary handlers.
 
 While disconnected, its old world view is labeled last observed. It may inspect private memory or think about unrelated work, but must not claim to know its current physical location or complete a new world action without synchronization. The default first implementation waits for world synchronization before world-focused deliberation and action dispatch.
 
@@ -1104,43 +1190,111 @@ Show **Connecting**, **Synchronizing**, **Connected**, **Controlled elsewhere**,
 
 Logout ends only the human application session and requests orderly detach; when the socket cannot deliver that request, liveness expiry settles control under the same disconnect rule. The world retains the player registration, avatar, possessions, and accepted history for a later login. Ending a session is not deletion of a participant. Model-driven takeover of a disconnected human is not part of version 1.
 
-### 12.8 Storage feasibility, retention, and growth gates
+### 12.8 Incremental storage, physical retention, and measured limits
 
-**Do not assume Gene's current SQLite binding behaves like a conventional incremental on-disk SQLite connection.** Miclone's storage source explicitly describes publishing a connection image through Gene's filesystem layer, batching that publication with transactions, and not controlling it through WAL/synchronous pragmas. The supplied review additionally reports whole-file rewrite/fsync per commit. That explains why committing every 100 ms is not the chosen design. This is a binding-specific constraint, not a property of SQLite generally. [R3, D2, T3]
+**Plan a genuine incremental disk-backed SQLite connection in milestones 1–2; complete its retention and load validation in milestone 3.** This is the selected execution backend, not an optional fallback after the world becomes slow. Keep `WorldStore` and Life's record/commit interfaces; adapt a narrow binding to the existing database rather than build a new database engine. Sharing that low-level implementation is appropriate, but the world and each Life retain separate files, connections, schemas, transactions, and writer ownership.
 
-For the first bounded browser demo, reuse that binding behind `WorldStore`, with §6.1's action commits and periodic checkpoints, actual batched transactions, and a deliberately small world. There must be only one image publication for one logical batch. A flag that accepts `WAL` is not evidence of a different I/O path.
+The reason is specific to the reviewed Gene path. Miclone's storage source describes connection-image publication through Gene's filesystem layer. The supplied reviews report serializing and synchronously fsyncing the whole database per commit; the follow-up also reports that Life appends a revision row on every record write and a receipt on every commit without deleting historical rows. These are attributed findings, not new measurements or a claim about all SQLite connections. [R3, D2, D3]
 
-**Before sustained multi-Life operation**, benchmark the actual backend with retained records and action load. If action commits/checkpoints block transport or grow beyond the declared targets, replace the storage adapter with a genuine incremental disk-backed SQLite connection or another proven incremental transactional implementation. Preserve the application transaction/receipt contract. This is a targeted storage integration, not permission to weaken confirmed-effect durability, build a new database, or assume a different backend already exists.
+A tiny whole-image fixture may temporarily unblock milestone-1 browser work behind the same interface. It is explicitly a development backend with a recorded small-data/load limit. Do not complete the networked-Life integration or advertise sustained human–AI sessions on the assumption that a shorter prompt, fewer current records, or less frequent checkpoints has fixed its physical write amplification. Select the incremental world path by milestone 2; apply the low-level path to the networked Life store before sustained-use qualification in milestone 3. Preserve the existing local-world adapter and its regressions through explicit backend selection/migration, not silent replacement of its behavior.
 
-#### Bound the active data path, not the Life's identity
+#### Incremental connection and publication contract
 
-Separate current operational state from cold history. Current world/entities, active jobs, pending outboxes, live registrations, selected code/data roots, unresolved deliveries, cursor positions, and cancellation generations remain directly available. Context snapshots, settled decision diagnostics, acknowledged event detail, and old transcripts can move to immutable, queryable cold segments after retention checks. Do not load or serialize all retained history on every cycle.
+Open the selected on-disk file as a real transactional database. Ordinary commits must not serialize the entire accumulated database into a buffer and replace the file. Record the actual binding, journal mode, synchronous/durability settings, checkpoint policy, transaction boundaries, busy/lock behavior, and close/recovery rules. A flag that accepts `WAL` is not evidence that the binding uses an incremental file path. SQLite's WAL documentation supplies a reference for changed-page logging and checkpoint behavior; it is not a Gene integration test. [T7]
 
-For Life, bounding history is an explicit pre-soak task. Keep cognitive memories/current roots selected by the Life; do not arbitrarily delete preferences or commitments to meet a cycle benchmark. Bound the **hot operational tail** and context inputs, archive settled detail, and retain evidence links or explicit deletion markers. Pinned work includes unresolved requests, unconsumed result triggers, pending subscriptions, active/recoverable jobs, selected code/decoder versions, and references still needed to reconstruct retained contexts. A receipt needed to resolve uncertainty cannot expire just because it is old.
+Preserve §6.1's action-boundary commits and periodic checkpoints. An incremental store does not make every logical tick a required commit. Conversely, no optimization may acknowledge a receipt, publish a terminal outcome, or advance a durable cursor before its complete transaction commits. A database commit includes its associated local receipt; a lost return is resolved by that receipt rather than rerunning the callback.
 
-Proposed starting limits, to tune from measurements:
+Measure stalls on the actual world polling thread. Incremental writes and WAL checkpoints still perform I/O; do not infer responsiveness from the mode name. Keep physical work and maintenance bounded. If the selected synchronous binding exceeds the measured event-loop budget, use a supported host I/O mechanism with a bounded queue while retaining one serialized transaction/publication owner. Only immutable prepared data crosses that boundary; do not share live Gene mutable state or an unsafely shared connection. Publication still waits for the matching commit result, and failure leaves dependent work visibly stopped. Moving I/O off the loop is an implementation choice to validate, not a second world writer or distributed transaction.
+
+#### Three different quantities need bounds
+
+| Quantity | What its bound controls | What it does not prove |
+| --- | --- | --- |
+| Context/query working set | Material loaded into a thought, a foreground scan, or a result-routing pass. | A short context does not bound the bytes in historical revision rows. |
+| Physical active store and write path | Revision/receipt rows, indexes, allocated pages, journal/WAL, serialized image if temporarily used, and bytes written per commit. | A small number of live logical keys does not make this small. |
+| Total retained history | Active plus cold revisions, outcomes, receipts, conversations, and archive indexes under retention policy. | Indefinite history does not fit in a fixed-size store without growth, archival, or explicit deletion. |
+
+Repeatedly overwriting one logical record is an essential benchmark: its current-key count stays one while its immutable revision and commit-receipt counts grow. Updating a current-record index, marking data archived, or appending another revision that hides it does not physically remove the earlier rows. Ordinary application writes may stay logically append-only; explicit host storage maintenance can relocate retained immutable history without changing its logical identity.
+
+Keep current state, selected cognitive roots, pending outboxes, unresolved operations, standing subscriptions, cursors, waiting/ready/interrupted continuations, and required code/decoder revisions directly accessible. Do not delete preferences or commitments to make a benchmark pass. Bound routing and execution working sets without assuming that records hidden from those sets have left the database.
+
+#### Exact historical revision and receipt lookup
+
+Archival covers **superseded record revisions and settled local commit receipts**, not just event payloads and transcripts. It also covers retained context dependencies, settled execution/result records, completed continuations, and acknowledged event detail when eligible. Preserve the records needed for unresolved delivery, pending work, retained contexts, selected code/data roots, and recovery; age alone does not make them disposable.
+
+The lookup contract stays independent of storage location:
+
+```text
+read_revision(record_id, revision_id)
+    -> the exact retained value, from active storage or a cold segment
+
+read_commit_receipt(commit_id)
+    -> the exact retained commit outcome, from active storage or a cold segment
+```
+
+Preserve stable IDs, revisions, schema/decoder references, causal links, visibility, and next-ID/allocation metadata. Do not reuse an ID after moving its old record out of the active file. A retained context must still resolve its original revisions; substituting the current value or an approximate summary is not reconstruction. Explicit deletion records that the evidence is unavailable; a missing required segment is a recovery/storage error. Neither condition permits fabricating a value. This preserves the companion's immutable-context contract in its section 10. [L1]
+
+Distinguish Life-local commit receipts from world-operation receipts. The former resolve whether a local transaction published; the latter resolve remote application. Both may need exact historical lookup. Moving either to cold storage must not turn a previously executed operation or committed callback into an apparently new one. For operation reconciliation, an unavailable archive yields `unknown`, never `not_found`. Local commit uncertainty likewise blocks blind callback replay.
+
+Use indexed active and cold lookup or bounded indexed segment selection. Do not scan every historical segment or load all revision mappings into each decision. A retained-reference pin means the exact data remains reachable; old immutable data may live in a validated cold segment when its reader supports that path. Operationally unresolved work remains easy to inspect and resume.
+
+#### Archival must actually remove the old active rows
+
+Publish an archive under a defined maintenance boundary:
+
+1. Select an eligible immutable revision/receipt range from a stable view, preserving current roots, unresolved work, unexamined routing input, and reader pins. Record its exact identities and coverage.
+2. Write the segment and its lookup information; durably finalize and validate them before selecting them. Do not hold an ordinary world transaction while doing an unbounded archive copy.
+3. Revalidate the source selection and pins. In one active-store transaction, publish the segment manifest/lookup coverage and **delete or relocate the archived physical revision/receipt rows** from the active tables. Merely removing logical current-record references is insufficient. Retain any required exact anti-replay index and current projections.
+4. Reclaim or reuse freed space under the backend's documented maintenance policy. If a temporary whole-image backend is used, its serialized image must actually become bounded through compaction/rebuilding; logical SQL deletion alone is not proof that the next image publication is smaller. SQLite documents that deletion ordinarily leaves free pages unless a space-reclamation policy is applied. [T8]
+5. Verify exact lookups, current state, receipt reconciliation, and post-maintenance physical/write metrics. Release superseded files only after committed manifests and retained readers no longer depend on them.
+
+A crash before selection may leave an unused archive segment; a crash after selection must not leave a referenced segment missing. Both hot/cold copies may coexist temporarily with identical content. Compaction of an active file must preserve a valid previous or new generation, handle journal/WAL state according to the chosen backend, and never replace a database underneath live uncoordinated connections. A simple controlled maintenance pause is sufficient initially; a concurrent compactor is not required.
+
+Archival and physical shrinking are related but distinct. With the incremental backend, reusable free pages can keep later writes from extending the file; continuous shrinking is not a requirement. With a whole-image writer, unused allocated pages can still affect serialization, so measure actual image size and bytes published. Maintenance must not create an endless new-receipt history in the active file; its own bookkeeping follows a bounded retention/lookup policy.
+
+Do not build a complicated archive system solely to keep a whole-image writer viable. The incremental connection removes that write-path dependency; archival serves deliberate retention, bounded active access, and storage management. Total current state and total retained history can still grow and have real costs.
+
+#### Working-set and backlog policies
+
+The following remain tunable working-set defaults, **not physical-database performance guarantees**:
 
 | Item | Initial bounded experiment policy |
 | --- | --- |
-| Life hot settled cycle records | Keep the latest 200 plus pinned records; archive older settled detail after its references are preserved. |
-| Life hot settled event detail | At most 2,000 entries or 8 MiB, whichever is reached first, excluding pinned operational state; archive/compact before widening the window. |
+| Life hot settled cycle detail | Latest 200 plus required pins; older retained detail and its historical revisions use indexed cold lookup. |
+| Life hot settled event detail | At most 2,000 entries or 8 MiB before maintenance, excluding protected operational work. |
+| Pending continuations and ready work | Explicit count/byte admission limits independent of routine-registration limits; reject an over-limit grouped submission atomically. |
 | Browser recent-history page | 100 records/page with explicit coverage and pagination; not an exhaustive absence proof. |
 | Essential unacknowledged delivery backlog | 5,000 events or 16 MiB per recipient as an admission/maintenance threshold, not a drop-oldest queue. |
-| World hot store / rewritten image | Initial 32 MiB warning and 64 MiB admission-stop thresholds until an incremental or archival path passes measurement. |
+| Physical store, journal/WAL, and commit load | Limits from the measured deployment envelope below, plus separate disk-space reserves. No universal MiB latency threshold. |
 
-These are **new proposed defaults**, not measured limits or a fixed cognitive schema. If pinned state or a needed exact index exceeds a bound, stop new affected work visibly or migrate storage; never erase it to force a count down. Indefinite life/history retention is not achieved merely by selecting a number.
+The earlier 32 MiB warning and 64 MiB stop values are withdrawn as performance thresholds. They were not derived from the receipt-latency target. Disk-capacity limits may still be configured, but they do not establish responsiveness. If pins, exact indexes, or pending work exceed a bound, pause new affected work or expand/migrate storage explicitly; do not erase evidence to satisfy a count.
 
-Archive publication must be crash-safe: write and durably validate a cold segment first; commit its manifest/reference and safe removal from the hot set afterward. A crash may leave an unused segment, never a selected missing segment. Keep metadata sufficient to locate exact operation IDs and retained history. If that index itself becomes too large for the image-rewrite backend, use incremental storage rather than scan every archive or keep expanding a monolithic map.
+Unacknowledged essential events remain retrievable. After routing commits a ready record with a resolvable outcome reference, the raw event may move out of the active set under retention policy; receiving it alone is not proof of completed routing. Human transcripts remain server-owned, independent of browser ACKs. Preserve privacy and visibility in archived records, summaries, and indexes.
 
-Deduplication proofs and cancellation tombstones survive archival. An unavailable archive yields `unknown`, not `not_found`, and blocks unsafe replay. Human transcripts remain server-owned and subject to explicit retention, independent of browser ACKs. Document archival/deletion behavior and preserve privacy and source visibility in derived summaries.
+#### Derive deployment limits from measured latency and load
 
-#### Measure before widening the experiment
+The receipt target in §7.5 applies to the **whole observed path**:
 
-The supplied 128 ms → 1.24 s Life-cycle measurement is a reported warning, not a reproduced benchmark. Record the Life/Gene commit, machine, retained bytes/rows, fake or real brain, and workload before making comparisons. [D2]
+```text
+receipt latency = queue wait + validation/transition preparation
+                + durable commit + publication/response delivery
+```
 
-Use a deterministic fake-brain workload at 200, 2,000, and 10,000 accumulated cycles with increasing world events. Record p50/p95 cycle cost excluding model time, worker startup, commit latency, bytes written per commit, hot-store size, retained object count, archive growth, and reconnect time. The target is that per-cycle hot-path cost does not grow linearly with **cold history** after compaction; current state growth still has real cost. Run four independent Lives plus browsers only after the bounded path and crash tests pass.
+Measure the complete duration for each request. Component percentiles help diagnose cost; adding their p95 values does not establish an end-to-end p95. A commit cannot consume the whole 250 ms target without leaving room for queueing and the rest of the path. A synchronous stall also delays unrelated sockets and ticks.
 
-Test retention and restart together: archive during pending operations, interrupt archive publication, replay a duplicate after archival, and reconnect a human from a fresh browser. Keeping a short prompt alone does not bound the storage engine's cost. No achieved throughput or test pass is claimed by this design.
+Benchmark the chosen connection at increasing **physical** retained sizes and operation rates, including chat that flushes the frontier, movement checkpoints, mixed human/Life commands, reconnect replay, and maintenance. Record hardware/filesystem, backend and versions, durability settings, actor count, sustained and burst arrival rates, transaction sizes, and retained revision/receipt counts. Include at least the intended four Lives and up to two browsers before claiming that deployment profile.
+
+Record p50/p95/p99 commit and end-to-end receipt latency, event-loop stall and tick lag, queue depth and oldest queued age, busy/lock delays, bytes written per commit, main-file allocated size, WAL/journal size, free pages, and maintenance duration. Exercise checkpoints and archival, not only an empty-database steady state. A WAL checkpoint can add committing-thread work; the journal mode alone is not a latency result. [T7]
+
+Select a workload/size envelope that meets the 250 ms p95 receipt target and the documented tick/socket stall budgets **with headroom**. Configure warning before the calibrated limit and stop new affected mutation admission when latency, queue growth, dirty horizon, or storage capacity exceeds its bound. Continue feasible liveness/status/recovery handling; never acknowledge uncommitted work to hide overload. An unmeasured whole-image fixture has no supported sustained-use envelope. Recalibrate when the backend, storage device, workload, or durability policy changes. This is a benchmark plus explicit configuration, not a required self-tuning controller.
+
+#### Life growth and migration qualification
+
+Use a deterministic fake-brain workload at 200, 2,000, and 10,000 accumulated cycles with increasing world events. Also repeatedly update a small fixed set of keys so immutable revisions and commit receipts grow while the logical current-record count does not. Record cycle cost excluding model time, worker startup, result-routing/continuation latency, physical revision/receipt counts, bytes written per commit, and exact cold-lookup/reconnect cost. The supplied 128 ms → 1.24 s timings remain an attributed warning, not an independently reproduced benchmark. [D2, D3]
+
+Demonstrate that an ordinary incremental commit does not serialize all cold history, and that the bounded active-query path does not perform whole-history scans. After archive maintenance, show that the selected physical rows have left the active database and the expected space-reuse/reclamation policy actually applies. Both the old and new backend must reconstruct the same retained contexts, commit receipts, and current roots when testing migration; do not rerun saved Gene programs to migrate their effects.
+
+Test process exit before and after archive selection, duplicate receipts after compaction, source-cursor gaps, outstanding continuations referencing old revisions, and a restart after a locally committed continuation whose return was lost. Complete the incremental world integration in milestone 2, the networked-Life storage integration and physical retention qualification by milestone 3, and the mixed-load/crash tests before sustained or paid multi-Life sessions. No achieved throughput, latency, or passing test is claimed here.
 
 ## 13. Expansion through versioned Gene world modules
 
@@ -1372,7 +1526,7 @@ world/
   runtime.gene              authoritative queue and logical ticks
   protocol.gene             wire schema, version checks, encoding
   server.gene               WebSocket and HTTP adapters
-  persistence.gene          transactions, receipts, snapshots, recovery
+  persistence.gene          incremental on-disk transactions, receipts, snapshots, recovery
   observations.gene         recipient views and replay
   participants.gene         human/Life registrations, sessions, controller ownership
   modules/
@@ -1394,7 +1548,8 @@ world/
 
 life/
   ...                        independent Life implementation from life.md
-  body/world_client.gene     second world adapter: short calls, result routines, observed view
+  body/world_client.gene     second world adapter: short calls, data continuations, observed view
+  body/world_results.gene    one dispatcher, result routing, ready records, sequence progress
   delivery/                  extracted connector state machine; retain HTTP mailbox adapter
   transport/world_ws.gene    genex/websocket polling and Commons protocol adaptation
   config/                    common settings and individual seed definitions
@@ -1404,21 +1559,26 @@ experiment/
   launch                     optional script, not a new runtime framework
 ```
 
-This layout names responsibilities, not a request to write all code from scratch. Populate the relevant `world/` modules with selected copies from Miclone, bring over their necessary assets/tests/build inputs, rewrite references to Commons-owned paths, and adapt them in place. The original Miclone tree is not part of the Commons dependency graph. Start Life networking by generalizing its existing connector and adding an adapter beside the local world; that Life-internal refactoring is separate from Miclone reuse. No new shared engine package is required. Each process still owns its runtime objects; a file-level global is not a cross-process object.
+This layout names responsibilities, not a request to write all code from scratch. Populate the relevant `world/` modules with selected copies from Miclone, bring over their necessary assets/tests/build inputs, rewrite references to Commons-owned paths, and adapt them in place. The original Miclone tree is not part of the Commons dependency graph. Start Life networking by generalizing its existing connector and adding an adapter beside the local world; that Life-internal refactoring is separate from Miclone reuse. No new shared engine package is required. A narrow disk-backed SQLite binding can be used directly by both applications; their stores, schemas, connection owners, and transactions stay separate. Life persistence adds exact revision/commit-receipt location and maintenance support without changing its cognitive schema. Each process still owns its runtime objects; a file-level global is not a cross-process object.
 
 ### 16.2 Physical storage layout
 
 ```text
 experiment-data/
   world/world.sqlite
+  world/history/             immutable segments and lookup data selected by world manifests
   lives/aster/life.sqlite
+  lives/aster/history/        private revision/receipt/event archives
   lives/brin/life.sqlite
+  lives/brin/history/
   lives/cove/life.sqlite
+  lives/cove/history/
   lives/dara/life.sqlite
+  lives/dara/history/
   artifacts/                 optional immutable code/asset cache
 ```
 
-A store path belongs to its owner. Lifetimes, flushes, migrations, and backups follow that owner's contract. Do not let the browser or Life processes open `world.sqlite` directly. Human profiles, accepted world history, inventory, and operation receipts are owned by the world store; the browser initially has only an in-memory pending map, installed view, and drafts. No `lives/human/life.sqlite` is required.
+A store path belongs to its owner. Lifetimes, flushes, migrations, and backups follow that owner's contract. Do not let the browser or Life processes open `world.sqlite` directly. Human profiles, accepted world history, inventory, and operation receipts are owned by the world store; the browser initially has only an in-memory pending map, installed view, and drafts. Cold-history paths above are illustrative and belong to the same owner as their active store. Backups include all selected segments and lookup manifests, not only the active `.sqlite` file. No `lives/human/life.sqlite` is required.
 
 Code may reside in versioned files or the proposed Gene code database. Database-backed module loading is optional; availability of the selected code/dependency revisions at restart is not.
 
@@ -1444,7 +1604,7 @@ Once the HTTP/WS host is ready, the human opens the configured player URL, for e
 
 ### 16.4 Process health and practical controls
 
-Expose simple process-level status: ready/recovering/paused, current world/history, selected code revisions, connected controller count, queue depth, simulation lag, pending outbox count, oldest unacknowledged event, and unresolved operations.
+Expose simple process-level status: ready/recovering/paused, current world/history, selected code revisions, connected controller count, queue depth, simulation lag, pending outbox count, oldest unacknowledged event, and unresolved operations. Include result-routing lag, ready/interrupted continuation counts, physical revision/receipt counts, commit latency, event-loop stalls, main-file/WAL sizes, and current maintenance/admission status. Keep this operational inspection separate from private cognitive content.
 
 Keep failures linked to operation, action, event, cycle, and revision IDs. A log line saying “sent” must not be used as a durable execution result. Avoid dumping every private model context into a global world log.
 
@@ -1456,13 +1616,13 @@ Before connecting a Life, record the Commons, Gene, and Life revisions, WebSocke
 
 Model-provider configuration is separate from the native execution worker limit. A remote inference request may take longer than three seconds without turning a generated program into an unbounded worker. Keep inference cancelable and asynchronous with respect to the body, and keep returned code within the selected short-execution policy. Implement one real adapter, its framing parser, timeout/retry rules, usage accounting, and failure observations before calling a milestone “real Lives.” A protocol-shaped fake brain does not complete that work.
 
-Specify and measure the action/interaction targets in §7.5 and the storage-growth gates in §12.8. Report delayed replies, budget exhaustion, storage lag, worker failure, and provider unavailability distinctly. Do not classify an idle Life as broken merely because it chooses not to speak.
+Specify and measure the action/interaction targets in §7.5 and the physical-storage/load qualification in §12.8. Record incremental backend selection, exact revision/commit-receipt lookup coverage, and the separate receipt/dispatcher cursors; counting live logical records is not a storage qualification. Report delayed replies, budget exhaustion, storage lag, worker failure, and provider unavailability distinctly. Do not classify an idle Life as broken merely because it chooses not to speak.
 
 ## 17. Implementation milestones
 
 ### Milestone 0: make a self-contained source starting point
 
-Select the useful Miclone files at a recorded source commit and copy them, their necessary dependencies, relevant tests, and selected assets/build steps into the Commons tree. Remove cross-project imports and paths, adapt package/entrypoint names, and establish a clean Commons build with `examples/miclone` and its outputs unavailable. Record provenance and baseline results. An original Miclone build can help diagnose a copy but is not a permanent prerequisite. Establish the actual storage-publication behavior on the copied/adapted path.
+Select the useful Miclone files at a recorded source commit and copy them, their necessary dependencies, relevant tests, and selected assets/build steps into the Commons tree. Remove cross-project imports and paths, adapt package/entrypoint names, and establish a clean Commons build with `examples/miclone` and its outputs unavailable. Record provenance and baseline results. An original Miclone build can help diagnose a copy but is not a permanent prerequisite. Establish the actual storage-publication behavior on the copied/adapted path and identify the narrow direct on-disk SQLite integration to implement; do not treat accepting a pragma as a backend change.
 
 Native curl setup and Life tests are **not prerequisites for the browser-only milestone**: pin the actual Life checkout, run its local demo/mailbox regressions, and run the independent native WebSocket peer test before milestone 2. This is a selective copying/integration step, not a new engine project or shared-library extraction; leave original Miclone and local Life behavior unchanged.
 
@@ -1470,19 +1630,23 @@ Native curl setup and Life tests are **not prerequisites for the browser-only mi
 
 Build the independent Commons application from its locally copied/adapted source. Run one Commons server and one browser actor, with no Miclone process, Life process, or model provider required. Use and adapt the Commons-owned renderer/socket host. Implement server-owned click-to-move, a small scene, one unique object, participant binding, minimum session/Origin checks, control-generation fencing, durable action receipts, and owner current-action queries. Use an initial full snapshot plus bounded live updates; the mature recipient replay protocol need not block the first walking loop.
 
+Establish the `WorldStore` transaction boundary and begin the incremental disk-backed connection as planned milestone-1 work, with open/commit/rollback/reopen checks and the chosen durability settings. A tiny whole-image fixture may temporarily support browser development, but record that limitation and the work carried into milestone 2; it is not the long-running backend.
+
 Use action-boundary commits and periodic checkpoints from the start. Show provisional motion separately from confirmed interactions. Refresh, fence the old page, and recover server-known results without IndexedDB. Prove a confirmed pickup survives a server crash and an uncheckpointed motion tail is corrected honestly. Full inventory/crafting/UI catalog polish, four brains, and Life inbox persistence are not milestone-1 dependencies.
 
 ### Milestone 2: attach one Life, then two, using the existing connector
 
-Keep the local world/demo intact. Add the network adapter and generalize connector delivery state rather than rewriting it. Run one fake-brain Life in its own process/store through `genex/websocket`; implement the durable outbox, `found/not_found/unknown`, recipient cursor, snapshot/replay, and world-result subscriptions. Then add a second fake-brain Life and make human and Life requests contend through the same operation handler.
+Keep the local world/demo intact. Complete the incremental world-store integration begun in milestone 1; exercise confirmed effects and receipt lookup against the real disk-backed file. Add the network adapter and generalize connector delivery state rather than rewriting it. Run one fake-brain Life in its own process/store through `genex/websocket`; implement the durable outbox, `found/not_found/unknown`, recipient cursor, snapshot/replay, and one standing result dispatcher. Then add a second fake-brain Life and make human and Life requests contend through the same handler. Integrate the same narrow database binding behind Life’s persistence interface where practical; preserve private stores and the existing local profile.
 
-Express walk-then-act through a stored event routine, not `await_result` or a long-lived worker. Persist its subscription with the outbound request and verify fast completion, duplicate delivery, and cancellation. All network code remains outside short brain-program execution. Complete the real process boundary and filtered recipient recovery here.
+Express walk-then-act through a continuation data record, not a per-operation routine registration, `await_result`, or a long-lived worker. Commit it with the outbox request; test both result/registration orderings and normalize direct receipts, query results, and events into the same operation outcome. Use scoped receipt/dispatcher cursors instead of an unbounded `seen_events` list for ordered world subscriptions. Route bounded batches, then execute ready programs separately through the existing foreground path. Test more than 64 outstanding continuation records with one standing registration and several 32-event routing batches; do not require 64 simultaneous locomotion activities. All network code remains outside short brain-program execution.
 
-### Milestone 3: durability, bounded storage, and independent recovery
+### Milestone 3: physical history, measured responsiveness, and independent recovery
 
 Test Life exit before/after send, lost world reply, browser refresh/takeover, world crash during movement, cancellation before arrival, and replay after archive/compaction. Restore committed state without duplicate effects or rewinding another participant's confirmed history. Prove the network profile's checkpoint behavior separately from the stricter co-located local-world fixture.
 
-Implement bounded active Life history and world event delivery before long runs. Run §12.8's growing-history benchmarks and hot/cold retention tests. Replace the whole-image backend with an incremental adapter if it cannot sustain §7.5's goals at the agreed retained size. Merely reducing the number of database commits does not close the growth issue. Passing this milestone is the prerequisite for sustained multi-Life sessions.
+Finish the incremental storage path for the networked Life profile and qualify it alongside the world backend. Archive eligible **physical immutable revision rows and local commit receipts**, retain exact cold lookup for contexts/recovery, and demonstrate actual active-space reuse or reclamation. Keep unresolved operations, continuations, and routing input pinned or retrievable. A hot-record count alone does not complete this work.
+
+Run §12.8’s fixed-key revision-growth and mixed world-action benchmarks, including checkpoints, archive selection, maintenance, and restarts. Calibrate limits from end-to-end receipt latency, commit latency, event-loop stalls, physical bytes, and queue growth; remove the unmeasured MiB-only performance gate. Do not enlarge this milestone into a new storage engine or continuous online compactor. Passing the incremental-backend, exact-history, continuation, and crash/load checks is the prerequisite for sustained multi-Life sessions.
 
 ### Milestone 4: one human and two real Lives
 
@@ -1500,7 +1664,7 @@ Run the human–AI continuity demonstration with measured storage and inference 
 
 Add a region using existing schemas, then irrigation or one household behavior module. Preserve IDs, current state, receipt history, and compatible activities; test a queued command, old browser, offline Life, and crash during migration. Expose the new operation through the browser catalogue and Gene documentation.
 
-Separately let one Life change a learned procedure or cognitive organization while the others continue. Account for queued event routines and pending requests using old data. World expansion and private memory evolution remain independent changes.
+Separately let one Life change a learned procedure or cognitive organization while the others continue. Account for waiting/ready/interrupted continuation records, queued body routines, and pending requests using old data. World expansion and private memory evolution remain independent changes.
 
 ### Integration checks before claiming support
 
@@ -1585,26 +1749,38 @@ Additional feasibility and regression cases:
 | F3 | Ten logical ticks with no durable action | No requirement for ten whole-image commits; periodic checkpoint cadence and dirty-horizon limits are honored. |
 | F4 | Crash after live movement but before checkpoint | Restore durable position/time; new epoch discards provisional samples; no confirmed outcome is undone. |
 | F5 | Pickup/speech depends on an uncheckpointed position | Commit the causal position/frontier with the effect/audience before success; crash cannot retain an impossible interaction. |
-| F6 | Dirty horizon or hot-store limit is reached | Slow/pause admission and report maintenance; do not silently drop receipts, promise durability, or enlarge the loss window. |
-| F7 | World activity exceeds the Life program limit | Short submitting program returns; event routine continues after the actual result with no held worker/model call. |
-| F8 | Completion races result subscription | Atomic registration/current-result handling produces one logical trigger; none is missed or duplicated. |
-| F9 | Duplicate result arrives while follow-up is prepared | Trigger consumption, local state, and next outbox request are atomic or reconciled; no new-ID duplicate follow-up. |
+| F6 | Dirty horizon, calibrated latency/load limit, or physical-storage reserve is reached | Slow/pause affected admission and report maintenance; no early acknowledgment, lost receipts, or enlarged provisional-loss window. |
+| F7 | World activity exceeds the Life program limit | Short submitting program returns; a data continuation runs after the terminal result, using one standing dispatcher and no held worker/model call. |
+| F8 | Completion races continuation registration | Both orderings commit one waiting-to-ready transition; late registration finds the retained result, and a crash cannot lose the pending routing/ready record. |
+| F9 | Duplicate result arrives while follow-up is prepared | Continuation completion/trigger consumption, local state, and the next stable-ID outbox request commit together or are reconciled; replay does not rearm the continuation. |
 | F10 | Existing local-world demo and HTTP connector tests | Remain valid after adding the network profile and extracting delivery logic. Record actual test inventory, not an assumed fixed count. |
 | F11 | Missing curl WebSocket support or native library | Preflight fails clearly; no silent transport downgrade or unbounded reconnect loop. |
 | F12 | Native send has queued data but no inbound application events | Normal host polling advances writes; no busy wait or brain call is needed to pump the connection. |
 | F13 | Receipt lookup is `unknown` versus `not_found` | Unknown never causes an automatic new-ID repeat; definitive absence is scoped to covered history, and known requests retain their IDs. |
 | F14 | Edit disposition and restart | Current context uses the editable state while the creation seed remains immutable provenance. |
 | F15 | Model/worker/budget failure during human chat | Show accurate coarse status, preserve receipt/history, and keep world controls and body receipt active. |
-| F16 | 200 → 2,000 → 10,000 fake cycles with growing events | Measure hot-path/commit costs and verify bounded active history; cold-history growth is not copied into every decision. |
-| F17 | Archive publication interrupted | Retained records remain locatable; orphan segments are tolerable, selected missing segments are not. |
+| F16 | 200 → 2,000 → 10,000 fake cycles plus repeated writes to fixed logical keys | Measure physical revision/receipt growth, bytes written, routing and commit cost; bounded contexts are not mistaken for bounded storage. |
+| F17 | Exit before/after revision-and-receipt archive selection or physical compaction | Exact history/current roots remain recoverable; orphan segments are tolerable, selected missing segments and partial active-file replacement are not. |
 | F18 | Replay an old operation after archival | Exact deduplication/result or explicit unknown; never execute because the hot receipt was removed. |
 | F19 | Refresh loses an unsent command | No client journal is required; server facts are restored and the UI discloses lost unconfirmed input rather than inventing a resend. |
 | F20 | Old socket and refreshed page overlap | Fencing and the recovery barrier account for already admitted work and prevent late old-generation admission. |
 | F21 | Cold receipt pages are truncated or unavailable | Report coverage/uncertainty; absence from a recent list is not proof of nonexecution. |
-| F22 | Event routine is queued during a cognitive-schema replacement | Preserve compatibility, migrate, invalidate visibly, or defer; never run an old-layout continuation against new-layout data. |
+| F22 | Waiting/ready/interrupted continuation exists during cognitive-schema replacement | Preserve compatibility, migrate, invalidate visibly, or defer; never use new-layout data with its retained old code/inputs. |
 | F23 | Native binary JSON and browser text/binary JSON interoperate | One complete bounded UTF-8 JSON decoder and the same semantic validation; no codec-induced identity changes. |
 | F24 | Clean build and smoke test with `examples/miclone` and its generated outputs unavailable | Commons builds its browser/server from its own files and declared platform dependencies; no source import, asset fetch, script, fixture, or launched process requires Miclone. |
 | F25 | Original Miclone changes after copying | Commons remains on its own selected code; no build-time recopy or automatic update occurs. Any adopted fix is an explicit local change tested against Commons behavior. |
+| F26 | More than 64 pending operation continuations within the configured data limit | One standing result registration; no per-operation registration churn. Reject over-limit new submissions atomically without dropping committed work. |
+| F27 | More than 32 results arrive, one continuation fails, and dispatcher wakes coalesce | Routing drains in bounded passes; each ready program uses the normal executor, unrelated work proceeds, and durable pending records prevent lost wakeups. |
+| F28 | Direct receipt, status response, and stream event describe the same terminal result | One canonical result and logical ready identity; acceptance/progress/suspension do not consume a completion continuation. |
+| F29 | Receipt cursor advances before routing or execution, then Life crashes | Restore each stage independently. An unexamined gap is not skipped; routed ready work remains runnable without rerouting every old event. |
+| F30 | Non-result events separate result sequences; an unordered source is also present | Covered-prefix scanning handles intentional filters without inventing gaps. Actual gaps block advancement; no unbounded `seen_events` or invented cross-source sequence. |
+| F31 | Archive old revisions and commit receipts while current-key count stays fixed | Their physical active rows are removed; measure actual pages/image/write bytes and retain exact original revision/receipt lookup from cold storage. |
+| F32 | Reconstruct a retained context or resolve a local commit whose return was lost after archival | Obtain exact original values and outcome; never substitute latest revisions or rerun a callback merely because its receipt left hot storage. |
+| F33 | A pending continuation references archived code/input/result revisions | Exact lookup remains available across restart and selection; missing required history becomes a visible failure, not new work. |
+| F34 | Normal commits on the selected runtime backend with large retained history | Real incremental file writes; no whole-database serialize/replace path. World and each Life still have independent connections and transactions. |
+| F35 | Human chat plus Life actions run through checkpoints and archive maintenance | End-to-end p95 receipt meets the declared 250 ms target within the calibrated load envelope; measure tail stalls and queue stability rather than infer performance from MiB or WAL. |
+| F36 | A slow commit, lock, or checkpoint exceeds the calibrated loop/admission budget | Preserve commit order and durability, expose lag/backpressure, and stop new affected work before unbounded queues; never publish a false success. |
+| F37 | A continuation worker exits after local follow-up publication but before reporting completion | Resolve its local commit receipt and stable next operation; do not replay already committed follow-up effects or arbitrary uncertain code. |
 
 Test network faults with real separate processes: close sockets at selected points, delay receipt delivery, replay an old command, kill one process, and verify durable records after reopening. Assertions must inspect the actual item location, action count, receipt identity, and recipient inbox—not only returned status text.
 
@@ -1630,10 +1806,14 @@ The following are selected design choices, not unresolved hidden defaults:
 | --- | --- |
 | Deployment | Separate world process and process per AI Life; human controllers run in browsers, not extra Life processes |
 | World consistency | One authoritative writer; no world sharding or replicated writers |
-| Storage | Separate owners; action-boundary commits plus periodic world checkpoints; bounded hot history and a measured incremental-storage gate; no distributed `store.commit` |
+| Storage | Separate owners and transactions; planned incremental disk-backed SQLite integration in milestones 1–2, networked-Life/physical-history qualification by milestone 3; action-boundary commits plus periodic checkpoints |
+| Continuations | Per-operation data records and one standing result dispatcher per Life; bounded ready programs, no routine registration per action |
+| Delivery progress | Scoped contiguous receipt and dispatcher cursors plus independent continuation status; no unbounded world-subscription `seen_events` |
+| Retained history | Exact active/cold revision and local/world receipt lookup; archive physical rows and verify space/write behavior, not only logical current-record counts |
+| Performance limits | Calibrated commit/loop/load envelope supporting the 250 ms p95 receipt target; disk capacity and working-set counts remain separate limits |
 | Source reuse | Selective Miclone source copies maintained as Commons code; no Miclone package/build/runtime/test dependency or automatic synchronization |
 | Transport | Commons-owned HTTP/WS and browser code using Gene APIs directly; genex/websocket for Life; shared Life connector delivery state; HTTP assets |
-| Brain interface | Ordinary Gene code plus a short note; bounded programs and event-subscribed continuation, not long waits |
+| Brain interface | Ordinary Gene code plus a short note; bounded programs and data continuations driven by world results, not long waits |
 | World requests | Versioned inert data, not remote execution of brain programs |
 | Initial population | Browser/world first; one then two fake-brain Life processes; real adapter and budgets before four lightly seeded Lives |
 | Perception | Actor-filtered views for play and AI observations; private minds; separately admitted observer/operator view |
@@ -1649,13 +1829,15 @@ The following are selected design choices, not unresolved hidden defaults:
 | Language permissions | No dependency on the removed Gene capability system; normal world/session validation remains |
 | Extensible UI | Data-only interaction discovery and appearance fallback, not executable scripts in world packets |
 
-The renderer/server source origins and independent native transport dependency are selected (§1.4, §9.7); Miclone itself is not an installed dependency. Remaining implementation work includes exact adapter signatures, Commons session integration, an incremental storage option if the measured image path fails, retention/archive mechanics, one real brain provider, physical constants, and recorded deployment limits. These are explicit gates, not assumptions of existing support. No new core Gene syntax is required.
+The renderer/server source origins and independent native transport dependency are selected (§1.4, §9.7); Miclone itself is not an installed dependency. Remaining implementation work includes exact adapter signatures, Commons session integration, the planned incremental disk-backed connection, the standing dispatcher and cursor integration, physical revision/receipt archival with exact lookup, one real brain provider, physical constants, and calibrated deployment limits. These are explicit gates, not assumptions of existing support. No new core Gene syntax is required.
 
 ## 20. Basis and references
 
-**[D1] World-design discussion, 2026-09-21.** The project owner requested an expandable human-like world, separate world and Life processes, WebSocket interaction, and human browser players; removed Gene capabilities; and requested incorporation of a second agent's implementation review. The subsequent clarification selects copying and adapting useful Miclone code without depending on Miclone. Revision 4 applies that decision to source ownership, builds, tests, maintenance, and milestones; the other product decisions remain unchanged.
+**[D1] World-design discussion, 2026-09-21.** The project owner requested an expandable human-like world, separate world and Life processes, WebSocket interaction, and human browser players; removed Gene capabilities; and requested incorporation of a second agent's implementation review. The subsequent clarification selects copying and adapting useful Miclone code without depending on Miclone. Revision 4 applies that decision to source ownership, builds, tests, maintenance, and milestones. Revision 5 incorporates the subsequently approved continuation/storage corrections; the other product decisions remain unchanged.
 
 **[D2] User-supplied feasibility review.** Its six points concern Miclone reuse, whole-image storage costs, Life execution/brain/seed limitations, connector reuse and native curl requirements, browser-first sequencing, and removing the mandatory browser journal. It reports Life cycle time rising from 128 ms to 1.24 s over 200 cycles, a 3-second program limit, a 100-call/hour default, and 110 tests. These measurements/counts and the Life implementation details were supplied by the reviewer, not independently reproduced in this document update. They motivate explicit integration/performance gates. Locate and pin the current Life implementation before extraction; no missing component is claimed to have been implemented by editing this file.
+
+**[D3] User-supplied follow-up review, incorporated 2026-09-22.** The reviewer identifies `src/body/routines.gene` as permitting at most 64 registrations, one pending invocation per registration, kind-matched batches of up to 32, and an unbounded `seen_events` list. It identifies `src/host/persistence.gene` as appending immutable revision and local commit-receipt rows without deletion, with whole-image commit costs. These source findings were not independently audited or benchmarked for this revision. The owner approved data continuations under one dispatcher, sequence-based tracking, archival of physical revision/receipt history with exact lookup, latency-derived limits, and incremental storage as early planned work. Sections 8.4, 12.8, and milestones 1–3 specify the resulting target, not completed implementation.
 
 **[L1] User-supplied Gene Life proposal.** Latest reviewed attachment `life(2).md`, updated 2026-09-20; intended companion `life.md`. It supplies the code-first brain interface, private cognitive organization, local grouped commits, and checkpoint-based continuation. This proposal adds a network adapter profile; it does not delete the local-world implementation or imply a distributed transaction. The world-specific checkpoint/provisional-motion policy is explicit in §6.1. Source attachment SHA-256: `a3d9750da0d0f974fb646b157ae10c5ec3afb787478e3da248dd554a76bc6b43`.
 
@@ -1679,7 +1861,11 @@ Repository sources below were read for revision 3 at **`gene-lang/gene-new@228d3
 
 **[T6] libcurl WebSocket interface overview.** Native send/receive integration and the need to drive the connection through the selected API. <https://curl.se/libcurl/c/libcurl-ws.html>.
 
-The curl and SQLite references and repository baseline above were checked for revision 3. Revision 4 updates the copy-and-adapt policy from the project owner’s clarification without another repository audit. Protocol references remain technical bases, not newly performed compatibility tests. Editing this proposal has not copied application source or run a Gene build, browser execution, Life test suite, independence test, or latency/storage benchmark. All new defaults, tests, and milestones are proposed targets.
+**[T7] SQLite, Write-Ahead Logging.** Technical reference discussed with the follow-up review: changed-page logging, commit/checkpoint work, and durability tradeoffs. It does not establish that a Gene binding is incremental or nonblocking. <https://www.sqlite.org/wal.html>.
+
+**[T8] SQLite, VACUUM.** Technical reference discussed with the follow-up review: deletion, free pages, and reclaiming database space are distinct. Exact maintenance and file-selection behavior must be tested for the chosen binding. <https://www.sqlite.org/lang_vacuum.html>.
+
+The curl/SQLite references and repository baseline were checked for revision 3; revisions 4–5 apply the owner’s clarifications and approved review without a new repository audit. T7–T8 record the technical references used in the preceding review discussion. No application source was copied or implemented, and no Gene build, browser execution, Life suite, independence test, or latency/storage benchmark was run for this document edit. All new APIs, tests, limits, and milestones are proposed targets.
 
 ### Review disposition
 
@@ -1687,11 +1873,13 @@ The curl and SQLite references and repository baseline above were checked for re
 | --- | --- |
 | Build on Miclone or justify not | Accepted as source reuse, clarified by the owner: selectively copy and adapt useful code into an independent Commons app, not a Miclone dependency. Server movement and persistence semantics remain deliberate adaptations. |
 | Copy and adapt without depending on Miclone | Selected: Commons-owned source/assets/build/tests, lightweight origin records, optional manual fix ports, and a clean build/run test with the original Miclone tree unavailable. |
-| Per-tick commits and unbounded retained data are impractical | Accepted: action-boundary durability plus provisional motion/checkpoints; bounded active Life/world storage and a measured incremental-backend gate before sustained use. |
-| Life cannot await long world activities; brain/seed/budget work is missing | Accepted: event-subscribed short continuations, real adapter as an explicit milestone, editable disposition separate from immutable seed, measured latency/cost and availability UI. |
+| Per-tick commits and unbounded retained data are impractical | Accepted: action-boundary durability plus provisional motion/checkpoints, planned incremental storage early, and physical-history/latency qualification before sustained use. |
+| Life cannot await long world activities; brain/seed/budget work is missing | Accepted: short code and continuation records under one standing dispatcher; real adapter as explicit work, editable disposition separate from seed, and measured latency/cost with availability UI. |
 | Reuse connector delivery and name native requirements | Accepted: shared transport-independent delivery semantics, preserved HTTP/local regressions, explicit genex/libcurl prerequisites. |
 | Milestone 1 is too large | Accepted: browser/world/movement first, then fake Life processes, durability/growth testing, then real brains. |
 | Drop required IndexedDB journal | Accepted with a qualification: same-ID retry and server fencing/recovery preserve known effects; lost browser intent is not recreated, and a fresh ID is not deduplicated merely because the human meant the same thing. |
+| One routine registration per result does not scale | Accepted: one standing dispatcher, operation-keyed data continuations, atomic late-result matching, distinct receive/routing/execution progress, and bounded cursor-based dispatch. |
+| Hot-record bounds miss physical revision and receipt growth | Accepted: exact revision/receipt archival and physical row removal/reclamation, incremental on-disk storage planned in milestones 1–3, and workload/latency-derived thresholds instead of unmeasured MiB limits. |
 
 **Copy useful foundations; own the result. Commit what matters. Let humans play first, then let independent Lives join and evolve.**
 
