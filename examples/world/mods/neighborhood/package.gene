@@ -1,0 +1,13 @@
+{
+  # The Commons' neighborhood content: the building materials the initial scene
+  # is made of, and the appearance tiles of the things that live in it — the
+  # avatars, the watering can, and the markers the browser draws for a pending
+  # destination and a last-saved position. Registered after `commons/default`
+  # by `core/mods.gene`, so every content id `commons/default` assigns stays
+  # where it was (docs/proposals/world.md §5.3: saved references keep meaning).
+  ^format 1
+  ^name "commons/neighborhood"
+  ^description "Building materials and appearance tiles for the Commons neighborhood"
+  ^version "0.1.0"
+  ^library {^entry "src/neighborhood.gene"}
+}

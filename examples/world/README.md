@@ -7,29 +7,15 @@ Expandable Human–AI Commons"). This tree is the Commons' source of record,
 started by the proposal's Milestone 0 as a copy-and-adapt of the Miclone voxel
 engine. It is self-contained, with no dependency on `examples/miclone`.
 
-## Status: Milestone 0
+## Status: Milestone 1
 
-The tree is the **copied starting point**: Miclone's world server, browser
-client, portable `core/` modules and their whole test suite, renamed for the
-Commons. Two Miclone pieces the design rules out were removed after copying:
-
-- the in-tab singleplayer client, which generated its own world;
-- the runtime mod sandbox with manifest `^grants`.
-
-Content is now compiled in, and the server owns the world.
-
-Milestone 1 reshapes the tree into the Commons application:
-
-- the §9 JSON envelope protocol
-- server-owned click-to-move
-- participant sessions and control fencing
-- durable action receipts
-- entities with stable ids
-- the incremental on-disk store
-
-[`SOURCES.md`](SOURCES.md) has the provenance, the adaptations, the current
-storage behavior and its measured limits, the per-part disposition, and the
-baseline results.
+One browser player and the world: a Commons world process that owns the
+neighborhood, its unique watering can, server-owned click-to-move, durable
+receipts, control-generation fencing, and an incremental on-disk store; and a
+browser player page it serves itself. [`MILESTONES.md`](MILESTONES.md) maps
+every Milestone 1 requirement to its implementation and evidence and lists what
+carries into Milestone 2; [`SOURCES.md`](SOURCES.md) is the Milestone 0
+provenance record.
 
 **Reading copied comments.** Most comments are Miclone's own history. In them:
 
@@ -71,14 +57,15 @@ If linking fails on macOS, point `SDKROOT` at an installed SDK, e.g.
 Then, from `examples/world/`:
 
 ```sh
-tools/build_web.sh                # the portable modules and the client, into dist/
-gene run server                   # world at /tmp/gene_world_server; GENE_WORLD_ROOT picks another
-python3 -m http.server 8000       # then open http://localhost:8000/
+gene run world create                     # once; --root DIR (default data/world)
+gene run world player add ada "Ada"       # prints a one-time login code
+gene run world run                        # http://127.0.0.1:8096/ — sign in with that code
 ```
 
-A fresh world takes about a minute to generate; the server is ready when port
-8790 is listening. Its stdout is block-buffered when piped, so don't wait on
-the log.
+The world process serves the page, its compiled client and the
+`/world/v1` WebSocket; there is no separate static server or build step for
+playing. Click the ground to walk, click the watering can to select it, drag
+to orbit, wheel to zoom. Provisioning needs the world stopped (one writer).
 
 ## Test
 
@@ -104,42 +91,15 @@ gene run divergence | diff - <(node tools/web_spec.mjs web_divergence)
 gene run persistence create && gene run persistence verify   # fresh process; /tmp/gene_world_probe
 ```
 
-### Client smoke: real server, real WebSocket, stubbed DOM
+### The world process
 
 ```sh
-node tools/net_client_smoke.mjs                          # boots its own server
-WORLD_SMOKE_RECOVERY=1 node tools/net_client_smoke.mjs   # partial store: recover missing blocks, keep the edited one
+node tools/commons_smoke.mjs     # protocol, receipts, fencing, kill -9 recovery (37 checks)
+tools/build_web.sh && node tools/client_smoke.mjs   # the real client, stubbed DOM (13 checks)
 ```
 
-The smoke keeps its world at `/tmp/gene_world_smoke` between runs:
-
-- `WORLD_SMOKE_WORLD` moves it.
-- `WORLD_SMOKE_FRESH=1` regenerates it.
-- A failed run discards it.
-
-It refuses an occupied port 8790, so it never runs against another server's
-world.
-
-### Network probes: peers that check the server is right
-
-```sh
-node tools/web_spec.mjs web_net_probe       # handshake, transfer, dig, place, a refused lie
-node tools/web_spec.mjs web_tick_probe      # digs under sand, then stops talking
-node tools/web_spec.mjs web_entity_probe    # hangs an item in mid-air, then stops talking
-node tools/web_spec.mjs web_chest_probe     # crafts, places, opens, fills, empties a chest
-node tools/web_spec.mjs web_players_probe   # two peers: the only check that needs two
-```
-
-Each probe connects to a server that is already running. **Every probe needs
-its own fresh world.** A probe digs, crafts and places, and a second probe in
-the same world fails for reasons that are not its own. Before each probe:
-
-1. Stop the previous server and wait for port 8790 to close.
-2. Start one on an empty directory, or on a copy of a world no client has
-   connected to.
-3. Wait for the port.
-
-`check.sh` does this for you.
+Each creates a throwaway world and starts its own `gene run world run` (ports
+8097 and 8098), and refuses a port that is already serving.
 
 ### Budgets and benches
 

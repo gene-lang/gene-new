@@ -346,12 +346,16 @@
 (fn put_cube [verts : (Buffer F32) idx : (Buffer U32) first_face : F64
               tile : F64 light : F64 half : F64
               cx : F64 cy : F64 cz : F64] : F64
-  (var x0 (- cx half))
-  (var x1 (+ cx half))
-  (var y0 (- cy half))
-  (var y1 (+ cy half))
-  (var z0 (- cz half))
-  (var z1 (+ cz half))
+  (put_box verts idx first_face tile light
+           (- cx half) (- cy half) (- cz half)
+           (+ cx half) (+ cy half) (+ cz half)))
+
+# An axis-aligned box from corner (x0, y0, z0) to (x1, y1, z1): six faces, the
+# same six `put_cube` writes. The Commons draws avatars and objects as boxes
+# of their own proportions rather than as cubes. Answers the next free face.
+(fn put_box [verts : (Buffer F32) idx : (Buffer U32) first_face : F64
+             tile : F64 light : F64
+             x0 : F64 y0 : F64 z0 : F64 x1 : F64 y1 : F64 z1 : F64] : F64
   (var f first_face)
   # Same winding as `build_mesh`, which is what keeps back-face culling working
   # for these without a second render state (§6). `tools/mesh_bench.mjs` checks

@@ -20,7 +20,8 @@ Import names when you use them repeatedly. These recipes show the common path;
 ```
 
 JSON supports objects, arrays, scalars, and escapes. Invalid input raises
-JsonError. Unsupported values, cycles, and non-finite floats are rejected.
+JsonError. For input from an untrusted peer, `(parse text ^strict true
+^max_depth 16)` also rejects a repeated object key and bounds nesting. Unsupported values, cycles, and non-finite floats are rejected.
 Use explicit conversion when crossing the web backend's Int/bigint boundary.
 
 ## Files
@@ -65,7 +66,12 @@ Save this as `server.gene` and run it with `gene run server.gene`:
 ```
 
 The server supports request tasks, routing, admission limits, timeouts,
-access/error hooks, actor-pool dispatch, and WebSockets. A sleeping request
+access/error hooks, actor-pool dispatch, and WebSockets. `ws_accept` takes
+`^subprotocol` to select one the client offered (browsers fail a handshake
+that offered one and got none), and `ws_queued` reports how many bytes a peer
+has not yet accepted, so a sender can stop producing replaceable data before
+the bounded outbound queue drops anything. In the web profile,
+`$ws/connect_protocol url protocol` offers that subprotocol. A sleeping request
 handler can suspend without blocking the other requests. TLS and broader
 production hardening remain future work.
 
@@ -116,6 +122,23 @@ committed prefix if a later statement fails or starts another transaction.
 Closing a connection discards unfinished transactions and does not rewrite
 its image. Existing connections keep their snapshots, so reopen to observe
 another connection's commits.
+
+That whole-image path rewrites the entire file on every commit, so its cost
+grows with the database. For a long-lived store, `open_file` opens the file
+itself: SQLite's pager and journal persist each commit by writing only the
+pages it changed, and nothing is republished.
+
+```gene
+(import $db/sqlite [open_file Db])
+(let db (open_file "world.sqlite" ^create true ^busy_timeout_ms 5000))
+(db .Db:query_one "PRAGMA journal_mode=WAL")   # durability settings are yours
+(db .Db:exec "PRAGMA synchronous=FULL")
+```
+
+A missing file is an error unless `^create true`; a created file (and its WAL
+and journal sidecars) is owner-only. Connections share the same `Db` protocol
+and report `db/storage` as `"file"`. The Commons world store
+(`examples/world/server/persistence.gene`) is the worked example.
 
 Postgres is available through `$db/postgres` with the same Db operations and
 its backend-specific connection and placeholder syntax. Do not interpolate

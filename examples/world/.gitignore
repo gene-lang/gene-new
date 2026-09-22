@@ -3,3 +3,6 @@
 
 # Project build views and sandboxes (gene clean).
 /.gene/
+
+# The default world directory of `gene run world` (--root data/world).
+/data/

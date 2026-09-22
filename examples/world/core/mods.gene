@@ -23,6 +23,8 @@
 
 (import [Game new_game] ^from "./api.gene")
 (import [register_all] ^from "../mods/default/src/default.gene")
+(import [register_all : register_neighborhood]
+        ^from "../mods/neighborhood/src/neighborhood.gene")
 
 # The game, registered. Called once per process, before anything reads a
 # content id — which is every caller's first line, because §2 assigns ids at
@@ -35,4 +37,6 @@
 (fn load_mods [] : Game
   (var game (new_game))
   (register_all game)
+  # After the default set, so every id it assigns keeps its value.
+  (register_neighborhood game)
   game)

@@ -3565,6 +3565,15 @@ proc biOsMonotonicMs(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     raise newException(GeneError, "os/monotonic_ms takes no arguments")
   newInt(getMonoTime().ticks div 1_000_000)
 
+proc biOsWallMs(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Wall-clock time as Unix epoch milliseconds. Unlike `monotonic_ms` it
+  ## means the same thing in another process or after a restart — what a
+  ## stored expiry needs — and unlike it, it can jump when the clock is set.
+  if args.len != 0:
+    raise newException(GeneError, "os/wall_ms takes no arguments")
+  let t = getTime()
+  newInt(t.toUnix * 1000 + int64(t.nanosecond div 1_000_000))
+
 proc biOsProcessId(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/process_id takes no arguments")
@@ -4200,6 +4209,10 @@ type JsonParser = object
   input: string
   pos: int
   scope: Scope
+  # `^strict true` rejects a repeated object key instead of keeping the last
+  # one: a peer's message then means exactly one thing to every parser.
+  strict: bool
+  maxDepth: int
 
 proc raiseJsonError(p: var JsonParser, message: string) =
   var props = initPropTable()
@@ -4305,7 +4318,7 @@ proc jsonLiteral(p: var JsonParser, word: string, value: Value): Value =
     NIL
 
 proc parseJsonValue(p: var JsonParser, depth: int): Value =
-  if depth > jsonMaxDepth:
+  if depth > p.maxDepth:
     raiseJsonError(p, "nesting too deep")
   jsonSkipWs(p)
   if p.pos >= p.input.len:
@@ -4328,6 +4341,8 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
       if p.pos >= p.input.len or p.input[p.pos] != ':':
         raiseJsonError(p, "expected ':' after object key")
       inc p.pos
+      if p.strict and entries.hasKey(key):
+        raiseJsonError(p, "duplicate object key " & key)
       entries[key] = parseJsonValue(p, depth + 1)
       jsonSkipWs(p)
       if p.pos >= p.input.len:
@@ -4375,10 +4390,31 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
     NIL
 
 proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (json/parse text ^strict false ^max_depth 200). `^strict true` rejects
+  ## duplicate object keys; `^max_depth` lowers the nesting limit for input
+  ## from an untrusted peer.
   requireOne("json/parse", args)
   requireStr("json/parse", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
-  var p = JsonParser(input: args[0].strVal, pos: 0, scope: scope)
+  var p = JsonParser(input: args[0].strVal, pos: 0, scope: scope,
+                     maxDepth: jsonMaxDepth)
+  if call != nil:
+    for i, name in call[].namedNames:
+      let value = call[].namedValues[i]
+      case name
+      of "strict":
+        if value.kind != vkBool:
+          raise newException(GeneError, "json/parse ^strict expects a Bool")
+        p.strict = value.boolVal
+      of "max_depth":
+        let depth = requireInt64("json/parse ^max_depth", value)
+        if depth < 1 or depth > jsonMaxDepth:
+          raise newException(GeneError,
+            "json/parse ^max_depth must be between 1 and " & $jsonMaxDepth)
+        p.maxDepth = int(depth)
+      else:
+        raise newException(GeneError,
+          "json/parse got unexpected named argument: " & name)
   result = parseJsonValue(p, 0)
   jsonSkipWs(p)
   if p.pos != p.input.len:
@@ -6200,6 +6236,9 @@ type SqliteApi = object
   lib: LibHandle
   closeAddr: pointer      # sqlite3_close_v2, used as the owned-ptr release
   open: proc(filename: cstring, db: ptr pointer): cint {.cdecl.}
+  openV2: proc(filename: cstring, db: ptr pointer, flags: cint,
+               vfs: cstring): cint {.cdecl.}
+  busyTimeout: proc(db: pointer, ms: cint): cint {.cdecl.}
   exec: proc(db: pointer, sql: cstring, callback: SqliteRowCallback,
              context: pointer, message: ptr cstring): cint {.cdecl.}
   errmsg: proc(db: pointer): cstring {.cdecl.}
@@ -6257,6 +6296,8 @@ proc loadSqliteApi(scope: Scope) =
       address
   var api: SqliteApi
   api.open = cast[typeof(api.open)](sym"sqlite3_open")
+  api.openV2 = cast[typeof(api.openV2)](sym"sqlite3_open_v2")
+  api.busyTimeout = cast[typeof(api.busyTimeout)](sym"sqlite3_busy_timeout")
   api.exec = cast[typeof(api.exec)](sym"sqlite3_exec")
   api.closeAddr = sym"sqlite3_close_v2"
   api.errmsg = cast[typeof(api.errmsg)](sym"sqlite3_errmsg")
@@ -6446,10 +6487,17 @@ proc sqliteExecScript(db: pointer, sql: string, where: string,
           afterStatement(mutated)
     remaining = rest
 
+proc sqliteFileBacked(conn: Value): bool =
+  ## A connection from `sqlite/open_file`: SQLite's own pager and journal make
+  ## each commit durable on disk, so there is no image to publish.
+  let storage = conn.props.getOrDefault("storage", VOID)
+  storage.kind == vkString and storage.strVal == "file"
+
 proc sqlitePersist(conn: Value, db: pointer, call: ptr NativeCall,
                    scope: Scope) =
   let path = conn.props.getOrDefault("path", VOID)
-  if path.kind != vkString or path.strVal == ":memory:":
+  if path.kind != vkString or path.strVal == ":memory:" or
+      sqliteFileBacked(conn):
     return
   var size: int64
   let data = gSqliteApi.serialize(db, "main".cstring, addr size, 0)
@@ -6514,6 +6562,93 @@ proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
      "backend": newStr("sqlite"),
      "path": newStr(databasePath)})
   connection
+
+const sqliteOpenReadWrite = 0x00000002'i32
+const sqliteOpenCreate = 0x00000004'i32
+
+proc sqliteCreateOwnerOnly(path: string) =
+  ## Create an empty database file readable only by its owner, before SQLite
+  ## writes a byte. SQLite gives its journal and WAL files the database file's
+  ## mode, so this also keeps them private. `O_EXCL` means a file that appeared
+  ## since the caller looked is left alone rather than truncated.
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let fd = posix.open(path.cstring, O_WRONLY or O_CREAT or O_EXCL,
+                        Mode(0o600))
+    if fd < 0:
+      if osLastError() == OSErrorCode(EEXIST):
+        return
+      raiseOSError(osLastError())
+    discard posix.close(fd)
+  else:
+    if not fileExists(path):
+      var file = open(path, fmWrite)
+      file.close()
+      setFilePermissions(path, {fpUserRead, fpUserWrite})
+
+proc biSqliteOpenFile(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (sqlite/open_file path ^create false ^busy_timeout_ms 5000) — an
+  ## incremental, disk-backed connection. `sqlite/open` loads the file into
+  ## memory and republishes the whole image on every commit; this opens the
+  ## file itself, so a commit writes only its changed pages through SQLite's
+  ## journal (or WAL, if the caller selects it) and nothing is republished.
+  ## Durability pragmas are the caller's choice and record.
+  requireOne("sqlite/open_file", args)
+  requireStr("sqlite/open_file path", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var create = false
+  var busyMs = 5000'i64
+  if call != nil:
+    for i, name in call[].namedNames:
+      let value = call[].namedValues[i]
+      case name
+      of "create":
+        if value.kind != vkBool:
+          raiseDbError("sqlite/open_file ^create expects a Bool", scope)
+        create = value.boolVal
+      of "busy_timeout_ms":
+        busyMs = requireInt64("sqlite/open_file ^busy_timeout_ms", value)
+        if busyMs < 0 or busyMs > int64(high(int32)):
+          raiseDbError("sqlite/open_file ^busy_timeout_ms is out of range", scope)
+      else:
+        raiseDbError("sqlite/open_file got unexpected named argument: " & name,
+                     scope)
+  let requested = args[0].strVal
+  if requested.len == 0 or requested == ":memory:" or
+      requested.startsWith("file:"):
+    raiseDbError("sqlite/open_file needs a file path; use sqlite/open for " &
+                 "an in-memory database", scope)
+  let databasePath = normalizedPath(absolutePath(requested))
+  let directory = parentDir(databasePath)
+  if not dirExists(directory):
+    raiseDbError("sqlite/open_file: no directory " & directory, scope)
+  if dirExists(databasePath):
+    raiseDbError("sqlite/open_file: " & databasePath & " is a directory", scope)
+  if not fileExists(databasePath):
+    if not create:
+      raiseDbError("sqlite/open_file: no database at " & databasePath &
+                   " (pass ^create true to make one)", scope)
+    try:
+      sqliteCreateOwnerOnly(databasePath)
+    except CatchableError as error:
+      raiseDbError("sqlite/open_file: could not create " & databasePath &
+                   ": " & error.msg, scope)
+  loadSqliteApi(scope)
+  var db: pointer
+  let flags = sqliteOpenReadWrite or (if create: sqliteOpenCreate else: 0'i32)
+  if gSqliteApi.openV2(databasePath.cstring, addr db, cint(flags), nil) !=
+      SQLITE_OK:
+    let msg = if db == nil: "unknown sqlite error" else: $gSqliteApi.errmsg(db)
+    if db != nil:
+      type CloseProc = proc(p: pointer): cint {.cdecl.}
+      discard cast[CloseProc](gSqliteApi.closeAddr)(db)
+    raiseDbError("sqlite/open_file: " & msg, scope)
+  discard gSqliteApi.busyTimeout(db, cint(busyMs))
+  newNativeWrapper(builtInTypeHead(scope, "SqliteDb"),
+    {"handle": newCForeignOwnedPtr(db, gSqliteApi.closeAddr,
+                                   targetType = newSym("sqlite3")),
+     "backend": newStr("sqlite"),
+     "path": newStr(databasePath),
+     "storage": newStr("file")})
 
 proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -8343,6 +8478,9 @@ proc registerStdlibNamespaces(root: Scope) =
                                               acceptsNamed = false))
   httpScope.define("ws_close", builtinNativeCallFn("http/ws_close", biHttpWsClose,
                                                acceptsNamed = false))
+  httpScope.define("ws_queued", builtinNativeCallFn("http/ws_queued",
+                                                biHttpWsQueued,
+                                                acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
   let httpClientScope = newScope(root)
   httpClientScope.define("request",
@@ -8389,6 +8527,9 @@ proc registerStdlibNamespaces(root: Scope) =
       TypeField(name: "backend", optional: false, typeExpr: newSym("Str"),
                 scope: root),
       TypeField(name: "path", optional: false, typeExpr: newSym("Str"),
+                scope: root),
+      # "file" for an `open_file` connection; absent for the whole-image one.
+      TypeField(name: "storage", optional: true, typeExpr: newSym("Str"),
                 scope: root)],
     @[dbProtocol], root, repr = trNativeWrapper)
   root.define("SqliteDb", sqliteDbType)
@@ -8403,6 +8544,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let dbSqliteScope = newScope(root)
   dbSqliteScope.define("open", builtinNativeCallFn("sqlite/open", biSqliteOpen,
                                                acceptsNamed = false))
+  dbSqliteScope.define("open_file", builtinNativeCallFn("sqlite/open_file",
+                                                    biSqliteOpenFile))
   dbSqliteScope.define("visit_text_rows",
     builtinNativeCallFn("sqlite/visit_text_rows", biSqliteVisitTextRows, acceptsNamed = false))
   dbSqliteScope.define("SqliteDb", sqliteDbType)
@@ -8615,6 +8758,9 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("monotonic_ms",
                  builtinNativeCallFn("os/monotonic_ms", biOsMonotonicMs,
                                  acceptsNamed = false))
+  osScope.define("wall_ms",
+                 builtinNativeCallFn("os/wall_ms", biOsWallMs,
+                                 acceptsNamed = false))
   osScope.define("process_id",
                  builtinNativeCallFn("os/process_id", biOsProcessId,
                                  acceptsNamed = false))
@@ -8767,8 +8913,7 @@ proc registerStdlibNamespaces(root: Scope) =
 
   # json: parse/stringify over Gene value kinds (docs/stdlib.md "Module Layout").
   let jsonScope = newScope(root)
-  jsonScope.define("parse", builtinNativeCallFn("json/parse", biJsonParse,
-                                            acceptsNamed = false))
+  jsonScope.define("parse", builtinNativeCallFn("json/parse", biJsonParse))
   jsonScope.define("stringify", builtinNativeCallFn("json/stringify",
                                                 biJsonStringify,
                                                 acceptsNamed = false))

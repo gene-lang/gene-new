@@ -1,0 +1,1046 @@
+# The authoritative Commons world — docs/proposals/world.md §4–§6, §9–§12.
+#
+# One process, one writer, one live simulation and one durable frontier.
+#
+# ## Live state and the durable frontier (§6.1)
+#
+# `entities` is the live world: what the simulation has advanced to. `committed`
+# is a copy of each entity as of the last commit — the durable frontier. The
+# two differ only while something is moving; that difference is the
+# **provisional tail**, and telemetry labels it as such.
+#
+# Every commit goes through `commit_frontier`, which writes, in one transaction:
+# every entity changed since the last commit (all pending logical changes, not
+# just the ones an operation touched — §6.1 "flush all pending logical world
+# changes into the same frontier"), changed actions and participants, the
+# committed simulation time, the operation's semantic record and receipt, and
+# its recipient events. Only after it returns does anything get published.
+#
+# Commits happen at action boundaries (an admitted operation, an arrival, a
+# suspension, a control-generation change) and at a periodic checkpoint every
+# `checkpoint_interval_ms` of simulation time while anything is dirty. An idle
+# world writes nothing.
+#
+# A failed commit puts the world into `storage_failed`: simulation stops, no
+# new operation is admitted, nothing is confirmed. Restarting restores the last
+# durable frontier (§10.3, §12.2).
+#
+# ## Time (§6.1)
+#
+# Simulation time advances in fixed 100 ms logical steps, one per server tick,
+# and pauses while the process is down: a restart resumes from the committed
+# simulation time with no wall-clock fast-forward.
+#
+# ## Operations (§10)
+#
+# A command's durable key is (participant, operation id). A resent command with
+# the same semantic payload gets its retained receipt; a different payload
+# under a used id is `operation_id_conflict` and never executes; a cancellation
+# that arrives first leaves a tombstone the original cannot start past.
+
+(mod runtime)
+
+(import [WorldStore create_store open_store close_store in_transaction
+         meta_put meta_all region_put regions_all entity_put entities_all
+         participant_put participants_all action_put actions_open action_get
+         operation_find operation_put operations_page operations_latest
+         event_put events_after events_oldest_seq durability_settings]
+        ^from "./persistence.gene")
+(import [load_mods] ^from "../core/mods.gene")
+(import [layout region_record region_nodes solid_lookup initial_entities
+         size_x size_y size_z floor_y]
+        ^from "./scene.gene")
+(import [NavGrid build_nav find_path advance walkable? cell_of_mm
+         walk_speed_mm_per_s remaining_mm]
+        ^from "./navigation.gene")
+(import [message error_message canonical_json plain_data? valid_token?
+         content_data ProtocolError]
+        ^from "./protocol.gene")
+
+(let rules_revision "commons-rules-1")
+(let content_revision "commons/default@0.1.0+commons/neighborhood@0.1.0")
+(let step_ms 100)
+(let checkpoint_interval_ms 1000)
+(let heartbeat_expiry_ms 45000)
+# Replaceable telemetry stops above this many queued bytes; a peer that falls
+# past the control limit is closed with a resync reason rather than letting the
+# transport's drop-oldest bound reach a receipt (§11.5).
+(let telemetry_queue_limit 65536)
+(let control_queue_limit 1048576)
+(let replay_page_limit 100)
+(let receipts_page_limit 100)
+(let snapshot_receipts 20)
+(let commands_per_second 10)
+(let pickup_reach_mm 1500)
+(let max_held 4)
+
+(let features
+  {^core {^version 1} ^movement {^version 1} ^objects {^version 1}})
+
+(let catalogue
+  [{^operation "movement.walk_to" ^contract_version 1 ^label "Walk here"
+    ^input {^cell {^x "Int" ^z "Int"}}
+    ^doc "Start a server-owned walk to a navigation cell. One walk at a time."}
+   {^operation "movement.resume" ^contract_version 1 ^label "Resume"
+    ^input {^action_id "Str"}
+    ^doc "Continue a suspended walk from its committed progress."}
+   {^operation "core.cancel" ^contract_version 1 ^label "Cancel"
+    ^input {^operation_id "Str" ^fingerprint "Str?"}
+    ^doc "Cancel an operation: stop its activity, or tombstone it if it has not arrived."}
+   {^operation "object.pick_up" ^contract_version 1 ^label "Pick up"
+    ^input {^object_id "Str"}
+    ^doc "Pick up a portable object within reach."}
+   {^operation "object.put_down" ^contract_version 1 ^label "Put down"
+    ^input {^object_id "Str"}
+    ^doc "Put a held object down where you stand."}])
+
+(type WorldFault ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for WorldFault)
+
+(fn fault [code : Str text : Str] (fail (WorldFault ^code code ^message text)))
+
+# --- small helpers -------------------------------------------------------------
+
+(fn copy [value] ($json/parse ($json/stringify value)))
+(fn present? [value] : Bool (! ($absent? value)))
+(fn str_of_int [n : Int] : Str $"${n}")
+
+(fn component [entity : Map name : Str]
+  ((entity .get "components") .get name))
+
+(fn put_component [entity : Map name : Str value : Map]
+  ((entity .get "components") .put name value))
+
+(fn drop_component [entity : Map name : Str]
+  ((entity .get "components") .delete name))
+
+(fn counter [w : Map name : Str] : Int (w .get name))
+(fn bump [w : Map name : Str] : Int
+  (let next (+ (w .get name) 1))
+  (w .put name next)
+  next)
+
+# --- create / open ---------------------------------------------------------------
+
+# The explicit create step (§12.2, §16.3). Refuses an existing world.
+(fn create_world [root : Str] : Map
+  (let store (create_store root))
+  (try
+    (let game (load_mods))
+    (let region (region_record game/nodes (layout game/nodes)))
+    (let world_id $"commons-$($crypto/random_hex 4)")
+    (let history_id $"history-$($crypto/random_hex 4)")
+    (in_transaction store (fn []
+      (meta_put store "world_id" world_id)
+      (meta_put store "history_id" history_id)
+      (meta_put store "rules_revision" rules_revision)
+      (meta_put store "content_revision" content_revision)
+      (meta_put store "world_revision" 1)
+      (meta_put store "committed_sim_time_ms" 0)
+      (meta_put store "next_action" 1)
+      (meta_put store "created_wall_ms" ($os/wall_ms))
+      (region_put store region)
+      (for entity in (initial_entities) (entity_put store entity))))
+    {^world_id world_id ^history_id history_id ^root root}
+    ensure (close_store store)))
+
+# Open a world for serving: restore the durable frontier, discard nothing but
+# the provisional tail (which a crash already lost), start a new server epoch,
+# and suspend every walk that was running (§6.3, §12.2).
+(fn open_world [root : Str] : Map
+  (let store (open_store root))
+  (try
+    (let meta (meta_all store))
+    (if_not (== meta/rules_revision rules_revision)
+      (fault "rules_mismatch"
+        $"The world was created under rules ${meta/rules_revision}; this build runs ${rules_revision}."))
+    (let game (load_mods))
+    (let regions (regions_all store))
+    (if (== regions/.size 0) (fault "no_region" "The world store has no region."))
+    (let region regions/0)
+    (let nodes (region_nodes game/nodes region))
+    (let nav (build_nav size_x size_y size_z floor_y (solid_lookup game/nodes nodes)))
+    (let entities {})
+    (let committed {})
+    (for entity in (entities_all store)
+      (entities .put entity/id entity)
+      (committed .put entity/id (copy entity)))
+    (let participants {})
+    (for p in (participants_all store) (participants .put p/participant_id p))
+    (let actions {})
+    (for action in (actions_open store) (actions .put action/action_id action))
+    (let w {^store store ^root root ^world_id meta/world_id ^history_id meta/history_id
+            ^rules_revision meta/rules_revision
+            ^region region ^nodes nodes ^nav nav
+            ^content (content_data game/nodes game/tiles)
+            ^entities entities ^committed committed
+            ^dirty {} ^dirty_actions {} ^dirty_participants {}
+            ^participants participants ^actions actions
+            ^connections {} ^controller_of {}
+            ^world_revision meta/world_revision
+            ^committed_sim_time_ms meta/committed_sim_time_ms
+            ^sim_time_ms meta/committed_sim_time_ms
+            ^last_checkpoint_sim_ms meta/committed_sim_time_ms
+            ^next_action meta/next_action
+            ^server_epoch $"boot-$($crypto/random_hex 4)"
+            ^live_seq 0 ^status "running" ^moved false
+            ^commit_count 0 ^commit_ms_total 0 ^commit_ms_max 0})
+    # Restart policy: a walk that was running when the process stopped is
+    # suspended until its controller reconciles (§6.3).
+    (let events [])
+    (for pair in actions
+      (let action pair/1)
+      (if_yes (== action/status "running")
+        (action .put "status" "suspended")
+        (action .put "suspended_reason" "world_restarted")
+        (mark_action w action)
+        (events .push (owner_event w action "movement.suspended"
+                        {^action_id action/action_id ^reason "world_restarted"
+                         ^progress (progress_of w action)}))))
+    (if_yes (> events/.size 0)
+      (commit_frontier w ^events events))
+    w
+    catch Any
+      (close_store store)
+      (fail $err)))
+
+(fn close_world [w : Map]
+  (close_store w/store))
+
+# --- marking changes ----------------------------------------------------------
+
+(fn mark_entity [w : Map entity : Map]
+  (w/dirty .put entity/id true))
+
+(fn mark_action [w : Map action : Map]
+  (w/dirty_actions .put action/action_id true))
+
+(fn mark_participant [w : Map participant : Map]
+  (w/dirty_participants .put participant/participant_id true))
+
+(fn dirty? [w : Map] : Bool
+  (let d w/dirty)
+  (let a w/dirty_actions)
+  (var any false)
+  (for pair in d (set any true))
+  (for pair in a (set any true))
+  any)
+
+# --- the durable frontier (§6.1, §10.3) -----------------------------------------
+
+# Commit every pending change, plus an optional operation record and events,
+# as one frontier. Events are [participant_id event] pairs; each gets its
+# recipient sequence number inside the transaction. Answers the delivered
+# events as [participant_id event] with sequence numbers filled in.
+(fn commit_frontier [w : Map ^operation op = nil ^events events = []] : List
+  (if (!= w/status "running")
+    (fault "storage_failed" "The world store failed; the world is not accepting changes."))
+  (let revision (+ w/world_revision 1))
+  (let sim w/sim_time_ms)
+  (let store w/store)
+  # Sequence numbers are assigned on copies and applied only after COMMIT.
+  (let next_seq {})
+  (let delivered [])
+  (for pair in events
+    (let pid ($to_str pair/0))
+    (let participant (w/participants .get pid))
+    (var seq (next_seq .get pid))
+    (if_yes (== seq void) (set seq participant/next_event_seq))
+    (let event (copy pair/1))
+    (event .put "event_seq" (str_of_int seq))
+    (event .put "world_revision" (str_of_int revision))
+    (event .put "sim_time_ms" (str_of_int sim))
+    (event .put "stream_id" $"events-${pid}")
+    (delivered .push [pid event])
+    (next_seq .put pid (+ seq 1)))
+  (let entity_revisions {})
+  (for pair in w/dirty
+    (let entity (w/entities .get ($to_str pair/0)))
+    (entity_revisions .put ($to_str pair/0) (+ entity/revision 1)))
+  (let started ($os/monotonic_ms))
+  (try
+    (in_transaction store (fn []
+      (for pair in w/dirty
+        (let entity (copy (w/entities .get ($to_str pair/0))))
+        (entity .put "revision" (entity_revisions .get ($to_str pair/0)))
+        (entity_put store entity))
+      (for pair in w/dirty_actions
+        (action_put store (w/actions .get ($to_str pair/0))))
+      (for pair in next_seq
+        (let participant (copy (w/participants .get ($to_str pair/0))))
+        (participant .put "next_event_seq" pair/1)
+        (participant_put store participant))
+      (for pair in w/dirty_participants
+        (if_yes (== (next_seq .get ($to_str pair/0)) void)
+          (participant_put store (w/participants .get ($to_str pair/0)))))
+      (for pair in delivered
+        (event_put store ($to_str pair/0) ($parse/parse_int (pair/1 .get "event_seq"))
+                   revision pair/1))
+      (if_yes (present? op)
+        (operation_put store op/participant_id op/operation_id op/seq
+                       op/operation op/semantic op/receipt revision))
+      (meta_put store "world_revision" revision)
+      (meta_put store "committed_sim_time_ms" sim)
+      (meta_put store "next_action" w/next_action)))
+    catch Any
+      (w .put "status" "storage_failed")
+      ($println $"world: commit failed, world stopped: ${$err/message}")
+      (fault "storage_failed" "The world store failed to commit; nothing was confirmed."))
+  # Published: now the in-memory frontier moves.
+  (let took (- ($os/monotonic_ms) started))
+  (w .put "commit_count" (+ w/commit_count 1))
+  (w .put "commit_ms_total" (+ w/commit_ms_total took))
+  (if_yes (> took w/commit_ms_max) (w .put "commit_ms_max" took))
+  (w .put "world_revision" revision)
+  (w .put "committed_sim_time_ms" sim)
+  (w .put "last_checkpoint_sim_ms" sim)
+  (for pair in w/dirty
+    (let entity (w/entities .get ($to_str pair/0)))
+    (entity .put "revision" (entity_revisions .get ($to_str pair/0)))
+    (w/committed .put ($to_str pair/0) (copy entity)))
+  (for pair in next_seq
+    ((w/participants .get ($to_str pair/0)) .put "next_event_seq" pair/1))
+  # Terminal actions leave memory once their final state is durable.
+  (for pair in w/dirty_actions
+    (let action (w/actions .get ($to_str pair/0)))
+    (if_yes (terminal? action/status) (w/actions .delete ($to_str pair/0))))
+  (w .put "dirty" {})
+  (w .put "dirty_actions" {})
+  (w .put "dirty_participants" {})
+  delivered)
+
+(fn terminal? [status : Str] : Bool
+  (|| (== status "completed") (|| (== status "failed") (== status "cancelled"))))
+
+# --- events ------------------------------------------------------------------------
+
+(fn owner_event [w : Map action : Map type : Str payload : Map] : List
+  [action/participant_id
+   {^world_id w/world_id ^history_id w/history_id ^type type ^schema_version 1
+    ^required true ^operation_id action/operation_id ^payload payload}])
+
+# An observation everyone currently attached can see, plus the actor.
+(fn audience_events [w : Map actor_pid : Str type : Str operation_id payload : Map] : List
+  (let out [])
+  (let seen {})
+  (let pids [actor_pid])
+  (for pair in w/connections
+    (let conn pair/1)
+    (if_yes (&& conn/ready (present? conn/participant_id))
+      (pids .push conn/participant_id)))
+  (for pid in pids
+    (if_yes (== (seen .get pid) void)
+      (seen .put pid true)
+      (out .push [pid {^world_id w/world_id ^history_id w/history_id ^type type
+                       ^schema_version 1 ^required true
+                       ^operation_id operation_id ^payload payload}])))
+  out)
+
+# Send committed events to every ready connection of their recipients.
+(fn publish_events [w : Map delivered : List]
+  (for pair in delivered
+    (let pid ($to_str pair/0))
+    (let fields pair/1)
+    (for cpair in w/connections
+      (let conn cpair/1)
+      (if_yes (&& conn/ready (== conn/participant_id pid))
+        (send w conn (message "event" fields))
+        (conn .put "last_event_seq" ($parse/parse_int fields/event_seq))))))
+
+# --- actions ----------------------------------------------------------------------
+
+(fn action_view [w : Map action : Map] : Map
+  {^action_id action/action_id ^operation_id action/operation_id
+   ^kind action/kind ^status action/status
+   ^destination action/destination ^entity_id action/entity_id
+   ^suspended_reason (?? action/suspended_reason nil)
+   ^progress (progress_of w action)})
+
+(fn progress_of [w : Map action : Map] : Map
+  (let entity (w/entities .get action/entity_id))
+  (let transform (component entity "core/transform"))
+  (let left (if (present? transform)
+              (remaining_mm transform/x_mm transform/z_mm action/waypoints action/next_waypoint)
+              0))
+  {^total_mm action/total_mm ^remaining_mm left})
+
+(fn open_actions_of [w : Map participant_id : Str] : List
+  (let out [])
+  (for pair in w/actions
+    (let action pair/1)
+    (if_yes (&& (== action/participant_id participant_id) (! (terminal? action/status)))
+      (out .push (action_view w action))))
+  out)
+
+(fn active_walk_of [w : Map entity_id : Str]
+  (var found nil)
+  (for pair in w/actions
+    (let action pair/1)
+    (if_yes (&& (== action/entity_id entity_id)
+                (&& (== action/kind "movement.walk") (! (terminal? action/status))))
+      (set found action)))
+  found)
+
+# --- the simulation ---------------------------------------------------------------
+
+# One logical step. Answers true when something moved (telemetry is due).
+(fn step [w : Map] : Bool
+  (if (!= w/status "running") (return false))
+  (w .put "sim_time_ms" (+ w/sim_time_ms step_ms))
+  (let budget ($to_int (/ ($to_float (* walk_speed_mm_per_s step_ms)) 1000.0)))
+  (var moved false)
+  (let arrivals [])
+  (for pair in w/actions
+    (let action pair/1)
+    (if_yes (&& (== action/kind "movement.walk") (== action/status "running"))
+      (let entity (w/entities .get action/entity_id))
+      (let transform (component entity "core/transform"))
+      (let result (advance transform/x_mm transform/z_mm action/waypoints
+                           action/next_waypoint budget))
+      (put_component entity "core/transform"
+        {^schema 1 ^x_mm result/0 ^y_mm transform/y_mm ^z_mm result/1})
+      (action .put "next_waypoint" result/2)
+      (mark_entity w entity)
+      (mark_action w action)
+      (set moved true)
+      (if_yes result/3 (arrivals .push action))))
+  (if_yes (> arrivals/.size 0)
+    # Arrival is an action boundary: completion is published only once it is
+    # durable, together with everything else that moved.
+    (let events [])
+    (for action in arrivals
+      (action .put "status" "completed")
+      (action .put "completed_sim_time_ms" w/sim_time_ms)
+      (events .push (owner_event w action "movement.completed"
+                      {^action_id action/action_id ^entity_id action/entity_id
+                       ^destination action/destination})))
+    (publish_events w (commit_frontier w ^events events)))
+  (if_yes (&& (dirty? w)
+              (>= (- w/sim_time_ms w/last_checkpoint_sim_ms) checkpoint_interval_ms))
+    (commit_frontier w)
+    (set moved true))
+  moved)
+
+# --- connections ------------------------------------------------------------------
+
+(fn send [w : Map conn : Map text : Str]
+  (let queued ((conn .get "queued")))
+  (if_yes (> queued control_queue_limit)
+    # The peer cannot keep up with messages that must not be dropped: close it
+    # with a reason and let it resynchronize (§11.5).
+    (if_not conn/closing
+      (conn .put "closing" true)
+      ((conn .get "send") (error_message "resync_required"
+                            "This connection fell too far behind; reconnect to resynchronize." {}))
+      ((conn .get "close")))
+    (return nil))
+  ((conn .get "send") text))
+
+# Register a freshly upgraded socket. `conn` carries ^id ^participant_id and the
+# host's ^send/^close/^queued functions.
+(fn connection_opened [w : Map conn : Map]
+  (conn .put "role" "pending")
+  (conn .put "ready" false)
+  (conn .put "generation" 0)
+  (conn .put "replaced" false)
+  (conn .put "closing" false)
+  (conn .put "last_seen_ms" ($os/monotonic_ms))
+  (conn .put "window_start_ms" ($os/monotonic_ms))
+  (conn .put "window_count" 0)
+  (conn .put "last_event_seq" 0)
+  (w/connections .put conn/id conn))
+
+# A socket closed. Only the connection that currently holds control can detach
+# its participant; an old socket closing after takeover changes nothing (§4.4).
+(fn connection_closed [w : Map conn_id : Str]
+  (let conn (w/connections .get conn_id))
+  (if (== conn void) (return nil))
+  (w/connections .delete conn_id)
+  (if_yes (&& (== conn/role "controller") (! conn/replaced)
+              (== (w/controller_of .get conn/participant_id) conn_id))
+    (w/controller_of .delete conn/participant_id)
+    (detach_participant w conn/participant_id "controller_detached")))
+
+# Suspend the participant's running walk at a committed step (§6.3).
+(fn detach_participant [w : Map participant_id : Str reason : Str]
+  (if (!= w/status "running") (return nil))
+  (let participant (w/participants .get participant_id))
+  (let action (active_walk_of w participant/entity_id))
+  (if_yes (&& (present? action) (== action/status "running"))
+    (action .put "status" "suspended")
+    (action .put "suspended_reason" reason)
+    (mark_action w action)
+    (publish_events w (commit_frontier w ^events
+      [(owner_event w action "movement.suspended"
+         {^action_id action/action_id ^reason reason ^progress (progress_of w action)})]))))
+
+# Close controllers that stopped proving they are alive (§11.5).
+(fn expire_idle [w : Map]
+  (let now ($os/monotonic_ms))
+  (for pair in w/connections
+    (let conn pair/1)
+    (if_yes (&& (! conn/closing) (> (- now conn/last_seen_ms) heartbeat_expiry_ms))
+      (conn .put "closing" true)
+      ((conn .get "send") (error_message "liveness_expired"
+                            "No heartbeat for 45 seconds; this connection is closed." {}))
+      ((conn .get "close")))))
+
+# --- inbound dispatch ---------------------------------------------------------------
+
+(fn handle_message [w : Map conn_id : Str msg : Map]
+  (let conn (w/connections .get conn_id))
+  (if (== conn void) (return nil))
+  (conn .put "last_seen_ms" ($os/monotonic_ms))
+  (let kind msg/kind)
+  (if (== kind "heartbeat")
+    (return (send w conn (message "heartbeat"
+      {^server_epoch w/server_epoch ^sim_time_ms (str_of_int w/sim_time_ms)
+       ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)}))))
+  (if (== kind "ack") (return nil))
+  (if (== kind "hello") (return (handle_hello w conn msg)))
+  (if (== kind "query") (return (handle_query w conn msg)))
+  (if (== kind "command") (return (handle_command w conn msg))))
+
+# --- hello, welcome, synchronization (§9.4, §11.3) -------------------------------------
+
+(fn handle_hello [w : Map conn : Map msg : Map]
+  (if (!= conn/role "pending")
+    (return (send w conn (error_message "already_attached"
+                           "This connection has already said hello." {}))))
+  (let role (?? msg/role "controller"))
+  (if_not (|| (== role "controller") (== role "observer"))
+    (return (send w conn (error_message "invalid_field" "`role` is controller or observer." {}))))
+  (let pid conn/participant_id)
+  (let participant (w/participants .get pid))
+  (if_yes (== role "controller")
+    (let holder_id (w/controller_of .get pid))
+    (if_yes (!= holder_id void)
+      (if_not (== msg/takeover true)
+        # Never steal control by loading a page: say who holds it, and let the
+        # person observe or explicitly take over (§4.4, §9.4).
+        (return (send w conn (error_message "controlled_elsewhere"
+                               "This avatar is already controlled from another tab or device."
+                               {^can_take_over true ^can_observe true}))))
+      # Explicit takeover: fence the old controller before this one is ready.
+      (let holder (w/connections .get holder_id))
+      (if_yes (!= holder void)
+        (holder .put "replaced" true)
+        (holder .put "ready" false)
+        (holder .put "closing" true)
+        ((holder .get "send") (error_message "controller_replaced"
+                                "Another tab took over this avatar." {}))
+        ((holder .get "close")))
+      (w/controller_of .delete pid))
+    # A new control generation is durable before this controller is admitted
+    # (§6.1). Every older generation's commands are refused from here on.
+    (participant .put "control_generation" (+ participant/control_generation 1))
+    (mark_participant w participant)
+    (try (commit_frontier w)
+      catch WorldFault
+        (return (send w conn (error_message $err/code $err/message {}))))
+    (conn .put "generation" participant/control_generation)
+    (w/controller_of .put pid conn/id))
+  (conn .put "role" role)
+  (send w conn (message "welcome"
+    {^world_id w/world_id ^history_id w/history_id ^server_epoch w/server_epoch
+     ^participant_id pid ^participant_kind participant/kind
+     ^player_id participant/player_id ^display_name participant/display_name
+     ^role role ^entity_id participant/entity_id
+     ^control_generation (if (== role "controller")
+                           (str_of_int participant/control_generation) nil)
+     ^stream_id $"events-${pid}" ^rules_revision w/rules_revision
+     ^features features ^catalogue catalogue
+     ^limits {^max_message_bytes 262144 ^replay_page replay_page_limit
+              ^receipts_page receipts_page_limit ^commands_per_second commands_per_second
+              ^heartbeat_ms 15000 ^expiry_ms heartbeat_expiry_ms}
+     ^sim {^status w/status ^step_ms step_ms ^sim_time_ms (str_of_int w/sim_time_ms)
+           ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)}
+     ^sync_required true}))
+  (synchronize w conn (?? msg/resume nil))
+  (conn .put "ready" true)
+  (send w conn (message "ready"
+    {^role role ^control_generation (if (== role "controller")
+                                       (str_of_int participant/control_generation) nil)})))
+
+# Replay retained events after the client's cursor, then one consistent
+# durable snapshot (§11.3). The browser without history asks for none and gets
+# the snapshot plus its recent receipts.
+(fn synchronize [w : Map conn : Map resume]
+  (let pid conn/participant_id)
+  (let participant (w/participants .get pid))
+  (let cut (- participant/next_event_seq 1))
+  (let snapshot_id $"snapshot-${w/server_epoch}-$($crypto/random_hex 3)")
+  (var after -1)
+  (if_yes (&& (present? resume) (present? resume/after_event_seq))
+    (set after (try ($parse/parse_int resume/after_event_seq) catch Any -1)))
+  (send w conn (message "sync_begin"
+    {^snapshot_id snapshot_id ^world_revision (str_of_int w/world_revision)
+     ^stream_cut (str_of_int cut) ^replay_after (if (>= after 0) (str_of_int after) nil)}))
+  (if_yes (>= after 0)
+    (let oldest (events_oldest_seq w/store pid))
+    (if (&& (> (+ after 1) 0) (&& (> oldest 0) (< (+ after 1) oldest)))
+      (send w conn (message "history_gap"
+        {^stream_id $"events-${pid}" ^missing_after (str_of_int after)
+         ^available_from (str_of_int oldest)}))
+      (do
+        (var from after)
+        (var more true)
+        (while more
+          (let page (events_after w/store pid from cut replay_page_limit))
+          (for event in page (send w conn (message "event" event)))
+          (if (< page/.size replay_page_limit)
+            (set more false)
+            (do
+              (let last_at (- page/.size 1))
+              (let last_event page/%last_at)
+              (set from ($parse/parse_int (last_event .get "event_seq")))))))))
+  (send w conn (message "snapshot" (snapshot_of w participant snapshot_id cut)))
+  (conn .put "last_event_seq" cut)
+  (send w conn (message "sync_end" {^snapshot_id snapshot_id})))
+
+(fn snapshot_of [w : Map participant : Map snapshot_id : Str cut : Int] : Map
+  (let entities [])
+  (for pair in w/committed (entities .push pair/1))
+  (let latest (operations_latest w/store participant/participant_id snapshot_receipts))
+  (let top (- participant/next_operation_seq 1))
+  (let oldest (if (> latest/.size 0) latest/0/seq (+ top 1)))
+  {^snapshot_id snapshot_id ^server_epoch w/server_epoch
+   ^world_revision (str_of_int w/world_revision)
+   ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)
+   ^stream_cut (str_of_int cut)
+   ^region w/region ^content w/content
+   ^entities entities
+   ^self {^entity_id participant/entity_id
+          ^inventory (inventory_of w participant/entity_id ^committed true)}
+   ^actions (open_actions_of w participant/participant_id)
+   ^receipts {^items latest ^through_seq (str_of_int top)
+              ^from_seq (str_of_int oldest) ^complete (<= top snapshot_receipts)}})
+
+(fn inventory_of [w : Map entity_id : Str ^committed use_committed = false] : List
+  (let out [])
+  (let source (if use_committed w/committed w/entities))
+  (for pair in source
+    (let held (component pair/1 "core/contained_in"))
+    (if_yes (&& (present? held) (== held/entity_id entity_id))
+      (out .push ($to_str pair/0))))
+  out)
+
+# --- telemetry (§6.1, §11.1) ------------------------------------------------------------
+
+(fn send_telemetry [w : Map]
+  (let samples [])
+  (for pair in w/entities
+    (let entity pair/1)
+    (let live (component entity "core/transform"))
+    (if_yes (present? live)
+      (let saved_entity (w/committed .get ($to_str pair/0)))
+      (let saved (if (== saved_entity void) nil (component saved_entity "core/transform")))
+      (let provisional (|| ($absent? saved)
+                           (|| (!= saved/x_mm live/x_mm) (!= saved/z_mm live/z_mm))))
+      (let walk (active_walk_of w ($to_str pair/0)))
+      (if_yes (|| provisional (present? walk))
+        (samples .push
+          {^entity_id ($to_str pair/0) ^x_mm live/x_mm ^y_mm live/y_mm ^z_mm live/z_mm
+           ^provisional provisional
+           ^saved (if (present? saved) {^x_mm saved/x_mm ^y_mm saved/y_mm ^z_mm saved/z_mm} nil)
+           ^action (if (present? walk)
+                     {^action_id walk/action_id ^status walk/status
+                      ^progress (progress_of w walk)}
+                     nil)}))))
+  (w .put "live_seq" (+ w/live_seq 1))
+  (let text (message "telemetry"
+    {^server_epoch w/server_epoch ^live_seq (str_of_int w/live_seq)
+     ^base_world_revision (str_of_int w/world_revision)
+     ^sim_time_ms (str_of_int w/sim_time_ms)
+     ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)
+     ^provisional (> w/sim_time_ms w/committed_sim_time_ms)
+     ^entities samples}))
+  (for pair in w/connections
+    (let conn pair/1)
+    # Replaceable: skipped, never queued behind, for a peer that is behind.
+    (if_yes (&& conn/ready (<= ((conn .get "queued")) telemetry_queue_limit))
+      ((conn .get "send") text))))
+
+# One server tick: advance the simulation, publish telemetry when something
+# moved, and enforce liveness.
+(fn tick [w : Map]
+  (let moved (try (step w) catch WorldFault false))
+  # One more sample after motion stops, so a client sees the final committed,
+  # non-provisional position.
+  (if_yes (|| moved w/moved) (send_telemetry w))
+  (w .put "moved" moved)
+  (expire_idle w))
+
+# --- queries (§8.5, §10.8) --------------------------------------------------------------
+
+(fn handle_query [w : Map conn : Map msg : Map]
+  (let request_id (?? msg/request_id ""))
+  (if_not (valid_token? request_id 64)
+    (return (send w conn (error_message "invalid_field" "`request_id` is required." {}))))
+  (if (== conn/role "pending")
+    (return (send w conn (error_message "not_attached" "Say hello first." {^request_id request_id}))))
+  (let query msg/query)
+  (let args (?? msg/args {}))
+  (let pid conn/participant_id)
+  (let result
+    (try
+      (if (== query "actions.current")
+        {^actions (open_actions_of w pid) ^world_revision (str_of_int w/world_revision)}
+        (if (== query "operation.status") (operation_status w pid args)
+          (if (== query "receipts.page") (receipts_page w pid args)
+            (if (== query "interactions") (interactions_for w pid args)
+              (if (== query "catalogue") {^operations catalogue}
+                (fault "unknown_query" "This world does not answer that query."))))))
+      catch WorldFault
+        (return (send w conn (error_message $err/code $err/message {^request_id request_id})))))
+  (send w conn (message "query_result"
+    {^request_id request_id ^query query ^world_revision (str_of_int w/world_revision)
+     ^result result})))
+
+# §10.8: found / not_found / unknown. `unknown` is never turned into absence.
+(fn operation_status [w : Map pid : Str args : Map] : Map
+  (let op_id args/operation_id)
+  (if_not (valid_token? op_id 64) (fault "invalid_field" "`operation_id` is required."))
+  (let record (try (operation_find w/store pid op_id)
+                catch Any (return {^status "unknown" ^operation_id op_id
+                                   ^reason "The receipt store could not be read."})))
+  (if ($absent? record)
+    (do
+      (let owner (w/participants .get pid))
+      (return {^status "not_found" ^operation_id op_id
+               ^coverage {^through_seq (str_of_int (- owner/next_operation_seq 1))}})))
+  {^status "found" ^operation_id op_id ^receipt (current_receipt w record/receipt)})
+
+(fn receipts_page [w : Map pid : Str args : Map] : Map
+  (let after (try ($parse/parse_int (?? args/after_seq "0")) catch Any 0))
+  (var limit (?? args/limit receipts_page_limit))
+  (if (|| (!= ($head limit) Int) (|| (< limit 1) (> limit receipts_page_limit)))
+    (set limit receipts_page_limit))
+  (let items (operations_page w/store pid after limit))
+  (let owner (w/participants .get pid))
+  (let top (- owner/next_operation_seq 1))
+  (let last_at (- items/.size 1))
+  (let last (if (> items/.size 0) (do (let item items/%last_at) item/seq) after))
+  {^items items ^after_seq (str_of_int after) ^next_after (str_of_int last)
+   ^through_seq (str_of_int top) ^complete (>= last top)})
+
+(fn interactions_for [w : Map pid : Str args : Map] : Map
+  (let object_id args/object_id)
+  (let entity (w/entities .get object_id))
+  (if (|| (== entity void) ($absent? (component entity "core/portable")))
+    (fault "not_found" "There is no such object here."))
+  (let participant (w/participants .get pid))
+  (let check_take (pickup_problem w participant/entity_id entity))
+  (let check_drop (put_down_problem w participant/entity_id entity))
+  {^object_id object_id ^world_revision (str_of_int w/world_revision)
+   ^interactions
+     [{^interaction_id "take" ^label "Pick up" ^operation "object.pick_up"
+       ^contract_version 1 ^target {^object_id object_id} ^form {^kind "confirm"}
+       ^availability (if ($absent? check_take) {^enabled true}
+                       {^enabled false ^reason check_take})}
+      {^interaction_id "put_down" ^label "Put down" ^operation "object.put_down"
+       ^contract_version 1 ^target {^object_id object_id} ^form {^kind "confirm"}
+       ^availability (if ($absent? check_drop) {^enabled true}
+                       {^enabled false ^reason check_drop})}]})
+
+# --- commands (§10.2, §10.3) -----------------------------------------------------------
+
+(fn handle_command [w : Map conn : Map msg : Map]
+  (let op_id (?? msg/operation_id ""))
+  (if_not (valid_token? op_id 64)
+    (return (send w conn (error_message "invalid_field"
+                           "`operation_id` must be 1-64 token characters." {}))))
+  (let reply (fn [code text] (send w conn (error_message code text {^operation_id op_id}))))
+  (if_not (== conn/role "controller")
+    (return (reply "not_controller" "Only the controlling connection can act.")))
+  (if (|| conn/replaced (! conn/ready))
+    (return (reply "not_ready" "This connection is not ready for commands.")))
+  # Commands carry the generation they were issued under; an older one is
+  # fenced even if it arrives on a live socket (§4.4).
+  (if (!= msg/control_generation (str_of_int conn/generation))
+    (return (reply "stale_control_generation"
+                   "This command belongs to an older controller and was not admitted.")))
+  (if (|| (!= msg/world_id w/world_id) (!= msg/history_id w/history_id))
+    (return (reply "wrong_world" "This command names a different world or history.")))
+  # A bounded admission rate per connection (§6.4, W5).
+  (let now ($os/monotonic_ms))
+  (if_yes (> (- now conn/window_start_ms) 1000)
+    (conn .put "window_start_ms" now)
+    (conn .put "window_count" 0))
+  (conn .put "window_count" (+ conn/window_count 1))
+  (if (> conn/window_count commands_per_second)
+    (return (reply "rate_limited" "Too many commands; slow down and try again.")))
+  (if (!= w/status "running")
+    (return (reply "storage_failed" "The world is not accepting changes right now.")))
+  (let operation msg/operation)
+  (let input (?? msg/input {}))
+  (let preconditions (?? msg/preconditions []))
+  (if_not (&& (== ($head operation) Str)
+              (&& (== ($head input) Map) (&& (== ($head preconditions) List)
+                                             (plain_data? input 0))))
+    (return (reply "invalid_command" "A command needs an operation name, an input object and a preconditions list.")))
+  (let semantic (canonical_json {^operation operation ^contract_version msg/contract_version
+                                 ^input input ^preconditions preconditions}))
+  # The fingerprint a cancellation may name (§10.5): SHA-256 of the canonical
+  # semantic payload.
+  (let fingerprint ($crypto/sha256 semantic))
+  (let pid conn/participant_id)
+  (let existing (operation_find w/store pid op_id))
+  (if_yes (present? existing)
+    (if (== existing/semantic semantic)
+      (return (send w conn (message "receipt" (current_receipt w existing/receipt))))
+      (if (&& (== existing/operation "core.cancel_tombstone")
+              (|| ($absent? existing/semantic) (== existing/semantic fingerprint)))
+        (return (send w conn (message "receipt" (current_receipt w existing/receipt))))
+        (return (reply "operation_id_conflict"
+                       "That operation id was already used for a different request; it was not executed.")))))
+  (let participant (w/participants .get pid))
+  (let outcome
+    (if (!= msg/rules_revision w/rules_revision)
+      {^admission "rejected" ^reason "rules_revision_mismatch"
+       ^detail $"This world runs ${w/rules_revision}."}
+      (if (!= msg/contract_version 1)
+        {^admission "rejected" ^reason "unsupported_contract_version"}
+        (if (== operation "movement.walk_to") (walk_to w participant op_id input)
+          (if (== operation "movement.resume") (resume_walk w participant input)
+            (if (== operation "core.cancel") (cancel_operation w participant op_id input)
+              (if (== operation "object.pick_up") (pick_up w participant op_id input)
+                (if (== operation "object.put_down") (put_down w participant op_id input)
+                  {^admission "rejected" ^reason "unknown_operation"}))))))))
+  (let seq participant/next_operation_seq)
+  (participant .put "next_operation_seq" (+ seq 1))
+  (mark_participant w participant)
+  (let receipt {^world_id w/world_id ^history_id w/history_id
+                ^operation_id op_id ^operation operation
+                ^admission outcome/admission
+                ^action_id (?? outcome/action_id nil)
+                ^action_status (?? outcome/action_status nil)
+                ^result (?? outcome/result nil)
+                ^reason (?? outcome/reason nil)
+                ^detail (?? outcome/detail nil)
+                ^world_revision (str_of_int (+ w/world_revision 1))
+                ^rules_revision w/rules_revision
+                ^sim_time_ms (str_of_int w/sim_time_ms)
+                ^receipt_seq (str_of_int seq)})
+  (let extra_ops (?? outcome/tombstone nil))
+  (let delivered
+    (try
+      (commit_frontier w
+        ^operation {^participant_id pid ^operation_id op_id ^seq seq ^operation operation
+                    ^semantic semantic ^receipt receipt}
+        ^events (?? outcome/events []))
+      catch WorldFault
+        (return (reply $err/code $err/message))))
+  (if_yes (present? extra_ops)
+    # A tombstone for an operation that has not arrived: its own record,
+    # committed right after the cancellation that reserved it.
+    (try (commit_tombstone w pid extra_ops) catch WorldFault nil))
+  (send w conn (message "receipt" receipt))
+  (publish_events w delivered))
+
+# A retained receipt, with the current status of its action if it has one.
+(fn current_receipt [w : Map receipt : Map] : Map
+  (let out (copy receipt))
+  (out .put "retained" true)
+  (if_yes (present? receipt/action_id)
+    (let live (w/actions .get receipt/action_id))
+    (let action (if (== live void) (action_get w/store receipt/action_id) live))
+    (if_yes (present? action)
+      (out .put "action_status" action/status)
+      (out .put "action" (action_view w action))))
+  out)
+
+(fn commit_tombstone [w : Map pid : Str tomb : Map]
+  (let participant (w/participants .get pid))
+  (let seq participant/next_operation_seq)
+  (participant .put "next_operation_seq" (+ seq 1))
+  (mark_participant w participant)
+  (commit_frontier w ^operation
+    {^participant_id pid ^operation_id tomb/operation_id ^seq seq
+     ^operation "core.cancel_tombstone" ^semantic tomb/fingerprint
+     ^receipt {^world_id w/world_id ^history_id w/history_id
+               ^operation_id tomb/operation_id ^operation "unknown"
+               ^admission "cancelled" ^reason "cancelled_before_admission"
+               ^cancelled_by tomb/cancelled_by
+               ^world_revision (str_of_int (+ w/world_revision 1))
+               ^rules_revision w/rules_revision ^receipt_seq (str_of_int seq)}}))
+
+# --- operation handlers ------------------------------------------------------------------
+
+(fn walk_to [w : Map participant : Map op_id : Str input : Map] : Map
+  (let cell input/cell)
+  (if (|| ($absent? cell) (|| (!= ($head cell/x) Int) (!= ($head cell/z) Int)))
+    (return {^admission "rejected" ^reason "invalid_input" ^detail "`cell` needs integer x and z."}))
+  (let active (active_walk_of w participant/entity_id))
+  (if (present? active)
+    (return {^admission "rejected" ^reason "busy"
+             ^detail "This avatar already has a walk; cancel or resume it first."
+             ^result {^active_action_id active/action_id ^active_status active/status}}))
+  (if_not (walkable? w/nav cell/x cell/z)
+    (return {^admission "rejected" ^reason "not_walkable"
+             ^detail "That place is not somewhere to stand."}))
+  (let entity (w/entities .get participant/entity_id))
+  (let at (component entity "core/transform"))
+  (if ($absent? at)
+    (return {^admission "rejected" ^reason "not_in_world"}))
+  (let waypoints (find_path w/nav at/x_mm at/z_mm cell/x cell/z))
+  (if ($absent? waypoints)
+    (return {^admission "rejected" ^reason "no_route" ^detail "There is no way to walk there."}))
+  (let n w/next_action)
+  (w .put "next_action" (+ n 1))
+  (let action {^action_id $"action-${n}" ^kind "movement.walk" ^status "running"
+               ^participant_id participant/participant_id
+               ^entity_id participant/entity_id ^operation_id op_id
+               ^destination {^cell {^x cell/x ^z cell/z}}
+               ^waypoints waypoints ^next_waypoint 0
+               ^total_mm (remaining_mm at/x_mm at/z_mm waypoints 0)
+               ^rules_revision w/rules_revision
+               ^started_sim_time_ms w/sim_time_ms})
+  (w/actions .put action/action_id action)
+  (mark_action w action)
+  {^admission "accepted" ^action_id action/action_id ^action_status "running"
+   ^result {^destination action/destination ^total_mm action/total_mm}})
+
+(fn resume_walk [w : Map participant : Map input : Map] : Map
+  (let action (w/actions .get (?? input/action_id "")))
+  (if (|| (== action void) (!= action/participant_id participant/participant_id))
+    (return {^admission "rejected" ^reason "not_found" ^detail "You have no such activity."}))
+  (if (!= action/status "suspended")
+    (return {^admission "rejected" ^reason "not_suspended" ^result {^status action/status}}))
+  (let entity (w/entities .get action/entity_id))
+  (let at (component entity "core/transform"))
+  (let dest action/destination/cell)
+  # The route is recomputed from where the avatar actually is (§6.2).
+  (let waypoints (find_path w/nav at/x_mm at/z_mm dest/x dest/z))
+  (if ($absent? waypoints)
+    (do
+      (action .put "status" "failed")
+      (action .put "failure" "no_route")
+      (mark_action w action)
+      (return {^admission "accepted" ^action_id action/action_id ^action_status "failed"
+               ^reason "no_route"
+               ^events [(owner_event w action "movement.failed"
+                          {^action_id action/action_id ^reason "no_route"})]})))
+  (action .put "status" "running")
+  (action .put "waypoints" waypoints)
+  (action .put "next_waypoint" 0)
+  (action .put "suspended_reason" nil)
+  (mark_action w action)
+  {^admission "accepted" ^action_id action/action_id ^action_status "running"})
+
+(fn cancel_operation [w : Map participant : Map op_id : Str input : Map] : Map
+  (let target (?? input/operation_id ""))
+  (if_not (valid_token? target 64)
+    (return {^admission "rejected" ^reason "invalid_input"}))
+  (let pid participant/participant_id)
+  (let record (operation_find w/store pid target))
+  (if ($absent? record)
+    # Not admitted yet: reserve the id so the original can never start (§10.5).
+    (return {^admission "accepted" ^action_status "completed"
+             ^result {^target_operation_id target ^outcome "tombstoned"}
+             ^tombstone {^operation_id target ^fingerprint (?? input/fingerprint nil)
+                         ^cancelled_by op_id}}))
+  (let receipt record/receipt)
+  (if (== receipt/admission "cancelled")
+    (return {^admission "accepted" ^action_status "completed"
+             ^result {^target_operation_id target ^outcome "already_cancelled"}}))
+  (if (!= receipt/admission "accepted")
+    (return {^admission "accepted" ^action_status "completed"
+             ^result {^target_operation_id target ^outcome "not_admitted"
+                      ^target_admission receipt/admission}}))
+  (let action_id receipt/action_id)
+  (let action (if ($absent? action_id) nil (w/actions .get action_id)))
+  (if (|| ($absent? action) (terminal? action/status))
+    # Completed or failed already: cancellation is too late to undo it.
+    (do
+      (let stored (if ($absent? action_id) nil (action_get w/store action_id)))
+      (return {^admission "accepted" ^action_status "completed"
+               ^result {^target_operation_id target ^outcome "too_late"
+                        ^target_status (if ($absent? stored) "completed" stored/status)}})))
+  # Active or suspended: stop at this committed step, keeping real progress.
+  (action .put "status" "cancelled")
+  (action .put "cancelled_by" op_id)
+  (mark_action w action)
+  {^admission "accepted" ^action_status "completed"
+   ^result {^target_operation_id target ^outcome "cancelled" ^action_id action/action_id}
+   ^events [(owner_event w action "movement.cancelled"
+              {^action_id action/action_id ^cancelled_by op_id
+               ^progress (progress_of w action)})]})
+
+(fn distance_mm [a : Map b : Map] : F64
+  (let dx ($to_float (- a/x_mm b/x_mm)))
+  (let dz ($to_float (- a/z_mm b/z_mm)))
+  ($math/sqrt (+ (* dx dx) (* dz dz))))
+
+# Why this avatar cannot pick the object up right now, or nil.
+(fn pickup_problem [w : Map entity_id : Str object : Map]
+  (let holder (component object "core/contained_in"))
+  (if (present? holder)
+    (return (if (== holder/entity_id entity_id) "already_held" "held_by_someone_else")))
+  (let at (component object "core/transform"))
+  (let me (component (w/entities .get entity_id) "core/transform"))
+  (if (|| ($absent? at) ($absent? me)) (return "not_in_world"))
+  (if (> (distance_mm at me) ($to_float pickup_reach_mm)) (return "too_far"))
+  (let held (inventory_of w entity_id))
+  (if (>= held/.size max_held) (return "hands_full"))
+  nil)
+
+(fn put_down_problem [w : Map entity_id : Str object : Map]
+  (let holder (component object "core/contained_in"))
+  (if (|| ($absent? holder) (!= holder/entity_id entity_id)) (return "not_held"))
+  nil)
+
+(fn pick_up [w : Map participant : Map op_id : Str input : Map] : Map
+  (let object_id (?? input/object_id ""))
+  (let object (w/entities .get object_id))
+  (if (|| (== object void) ($absent? (component object "core/portable")))
+    (return {^admission "rejected" ^reason "not_found" ^detail "There is no such object here."}))
+  # Checked against the live world at application, not the client's view (§5.2).
+  (let problem (pickup_problem w participant/entity_id object))
+  (if (present? problem)
+    (return {^admission "rejected" ^reason problem}))
+  # One location at a time: on the ground *or* held, never both (§5.2).
+  (drop_component object "core/transform")
+  (put_component object "core/contained_in" {^schema 1 ^entity_id participant/entity_id})
+  (mark_entity w object)
+  {^admission "accepted" ^action_status "completed"
+   ^result {^object_id object_id ^held_by participant/entity_id}
+   ^events (audience_events w participant/participant_id "object.picked_up" op_id
+             {^object_id object_id ^by_entity_id participant/entity_id})})
+
+(fn put_down [w : Map participant : Map op_id : Str input : Map] : Map
+  (let object_id (?? input/object_id ""))
+  (let object (w/entities .get object_id))
+  (if (== object void)
+    (return {^admission "rejected" ^reason "not_found"}))
+  (let problem (put_down_problem w participant/entity_id object))
+  (if (present? problem)
+    (return {^admission "rejected" ^reason problem}))
+  (let me (component (w/entities .get participant/entity_id) "core/transform"))
+  (drop_component object "core/contained_in")
+  (put_component object "core/transform"
+    {^schema 1 ^x_mm me/x_mm ^y_mm me/y_mm ^z_mm me/z_mm})
+  (mark_entity w object)
+  {^admission "accepted" ^action_status "completed"
+   ^result {^object_id object_id ^x_mm me/x_mm ^y_mm me/y_mm ^z_mm me/z_mm}
+   ^events (audience_events w participant/participant_id "object.put_down" op_id
+             {^object_id object_id ^by_entity_id participant/entity_id
+              ^x_mm me/x_mm ^y_mm me/y_mm ^z_mm me/z_mm})})
+
+# --- operator status (§16.4) ---------------------------------------------------------------
+
+(fn status_of [w : Map] : Map
+  (var controllers 0)
+  (var ready 0)
+  (for pair in w/connections
+    (if_yes pair/1/ready (set ready (+ ready 1)))
+    (if_yes (== pair/1/role "controller") (set controllers (+ controllers 1))))
+  {^status w/status ^world_id w/world_id ^history_id w/history_id
+   ^server_epoch w/server_epoch ^rules_revision w/rules_revision
+   ^world_revision w/world_revision ^sim_time_ms w/sim_time_ms
+   ^committed_sim_time_ms w/committed_sim_time_ms
+   ^dirty_horizon_ms (- w/sim_time_ms w/committed_sim_time_ms)
+   ^connections ready ^controllers controllers
+   ^open_actions (do (var n 0) (for pair in w/actions (set n (+ n 1))) n)
+   ^commits {^count w/commit_count ^total_ms w/commit_ms_total ^max_ms w/commit_ms_max}
+   ^durability (durability_settings)})

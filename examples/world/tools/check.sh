@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Commons' whole suite, as one command.
 #
-#   tools/check.sh           # everything, about 10 minutes on an idle machine
+#   tools/check.sh           # everything, about two minutes
 #   tools/check.sh --fast    # no server: VM + web specs and their diffs
 #
 # Every step prints `ok` or `FAIL`, and the script exits non-zero if any step
@@ -18,17 +18,11 @@
 # A cross-backend spec passes only if the VM and web-profile reports are also
 # byte-identical — every `core/` module must behave the same on both.
 #
-# ## Servers
+# ## The world process
 #
-# Each network probe needs its own server on a world no other probe has played
-# in: a probe digs, crafts and places, and a second probe in the same world
-# fails for reasons that are not its own. Generating a world takes about a
-# minute, so this generates one **pristine** world once, stops that server
-# before any client connects, and gives each probe a fresh copy of it.
-#
-# Readiness is the port, never the log: the server's stdout is block-buffered
-# into a file. A port that is already taken is refused rather than waited on —
-# it would be another server's world.
+# `tools/commons_smoke.mjs` creates a throwaway world, starts `gene run world
+# run` itself, and plays it over HTTP sign-in and the `gene.world.v1`
+# WebSocket, including a `kill -9` and restart.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -47,19 +41,9 @@ fi
 FAST=0
 [ "${1:-}" = "--fast" ] && FAST=1
 
-PORT=8790                        # server/main.gene and net_main.gene's literal
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/gene_world_check.XXXXXX")
 passed=0
 failed=0
-server_pid=""
-
-cleanup() {
-  if [ -n "$server_pid" ]; then
-    kill "$server_pid" 2>/dev/null
-    wait "$server_pid" 2>/dev/null
-  fi
-}
-trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 ok()   { passed=$((passed + 1)); echo "  ok    $1"; }
@@ -74,53 +58,6 @@ verdict() {
   fi
 }
 
-listening() {
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -tnP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1
-  else
-    nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1
-  fi
-}
-
-# start_server ROOT LOG — boot `gene run server` on ROOT and wait for its port.
-# The budget is wall-clock seconds: generation takes about a minute on an idle
-# machine and several times that under load, and a poll loop's iteration count
-# stretches with the load it is meant to measure.
-START_BUDGET=${START_BUDGET:-600}
-start_server() {
-  if listening; then
-    echo "  port $PORT is already taken; refusing to test another server's world" >&2
-    return 1
-  fi
-  GENE_WORLD_ROOT="$1" "$GENE_EXE" run server >"$2" 2>&1 &
-  server_pid=$!
-  started=$(date +%s)
-  until listening; do
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-      wait "$server_pid" 2>/dev/null
-      server_pid=""
-      return 1
-    fi
-    if [ $(( $(date +%s) - started )) -ge "$START_BUDGET" ]; then
-      echo "  server not listening after ${START_BUDGET}s" >&2
-      stop_server
-      return 1
-    fi
-    sleep 1
-  done
-}
-
-stop_server() {
-  [ -n "$server_pid" ] || return 0
-  kill "$server_pid" 2>/dev/null
-  wait "$server_pid" 2>/dev/null
-  server_pid=""
-  stopped=$(date +%s)
-  while listening && [ $(( $(date +%s) - stopped )) -lt 30 ]; do
-    sleep 1
-  done
-}
-
 echo "gene/world check — logs in $WORK"
 
 # --- VM ---------------------------------------------------------------------
@@ -130,11 +67,6 @@ for s in $SPECS; do
   "$GENE_EXE" run "${s}_spec" >"$WORK/vm_$s.log" 2>&1
   verdict "${s}_spec" "$WORK/vm_$s.log" $?
 done
-
-"$GENE_EXE" run persistence create "$WORK/persistence" >"$WORK/persist_create.log" 2>&1
-st=$?
-"$GENE_EXE" run persistence verify "$WORK/persistence" >"$WORK/persist_verify.log" 2>&1
-verdict "persistence create → verify (fresh process)" "$WORK/persist_verify.log" $((st + $?))
 
 "$GENE_EXE" run divergence >"$WORK/vm_divergence.log" 2>&1
 if [ $? -eq 0 ]; then ok "divergence"; else fail "divergence" "$WORK/vm_divergence.log"; fi
@@ -175,32 +107,13 @@ if [ "$FAST" -eq 0 ]; then
   "$GENE_EXE" run wire_bench >"$WORK/wire_bench.log" 2>&1
   if [ $? -eq 0 ]; then ok "wire_bench runs"; else fail "wire_bench" "$WORK/wire_bench.log"; fi
 
-  echo "client smoke (real server, real WebSocket)"
-  WORLD_SMOKE_WORLD="$WORK/smoke" WORLD_SMOKE_FRESH=1 \
-    node tools/net_client_smoke.mjs >"$WORK/smoke.log" 2>&1
-  if [ $? -eq 0 ]; then ok "net_client_smoke, fresh world"; else fail "net_client_smoke, fresh world" "$WORK/smoke.log"; fi
-  WORLD_SMOKE_WORLD="$WORK/smoke" WORLD_SMOKE_RECOVERY=1 \
-    node tools/net_client_smoke.mjs >"$WORK/smoke_recovery.log" 2>&1
-  if [ $? -eq 0 ]; then ok "net_client_smoke, recovering a partial world"; else fail "net_client_smoke, recovering a partial world" "$WORK/smoke_recovery.log"; fi
-
-  echo "network probes (one server per probe)"
-  mkdir -p "$WORK/pristine"
-  if start_server "$WORK/pristine" "$WORK/server_pristine.log"; then
-    stop_server
-    for p in web_net_probe web_tick_probe web_entity_probe web_chest_probe web_players_probe; do
-      rm -rf "$WORK/world_$p"
-      cp -R "$WORK/pristine" "$WORK/world_$p"
-      if start_server "$WORK/world_$p" "$WORK/server_$p.log"; then
-        node tools/web_spec.mjs "$p" >"$WORK/$p.log" 2>&1
-        verdict "$p" "$WORK/$p.log" $?
-        stop_server
-      else
-        fail "$p: server did not start" "$WORK/server_$p.log"
-      fi
-    done
-  else
-    fail "generate the pristine probe world" "$WORK/server_pristine.log"
-  fi
+  echo "the Commons world process (Milestone 1)"
+  COMMONS_SMOKE_PORT=${COMMONS_SMOKE_PORT:-8097} \
+    node tools/commons_smoke.mjs >"$WORK/commons_smoke.log" 2>&1
+  if [ $? -eq 0 ]; then ok "commons_smoke: $(grep -c '^  ok' "$WORK/commons_smoke.log") checks"; else fail "commons_smoke" "$WORK/commons_smoke.log"; fi
+  CLIENT_SMOKE_PORT=${CLIENT_SMOKE_PORT:-8098} \
+    node tools/client_smoke.mjs >"$WORK/client_smoke.log" 2>&1
+  if [ $? -eq 0 ]; then ok "client_smoke: $(grep -c '^  ok' "$WORK/client_smoke.log") checks"; else fail "client_smoke" "$WORK/client_smoke.log"; fi
 fi
 
 echo

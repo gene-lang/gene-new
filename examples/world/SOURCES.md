@@ -22,6 +22,13 @@ copy-and-adapt table:
 This tree lives at `examples/world/`, which fills §16.1's `world/`
 responsibilities, beside its copy source and `examples/life`.
 
+> **Milestone 1 update.** The copied voxel server (`server/main.gene`,
+> `storage.gene`, `blockfmt.gene`), its byte-protocol browser client
+> (`client/net_main.gene`, `index.html`) and the probes and smokes that targeted
+> it were replaced by the Commons world process and player — see
+> [`MILESTONES.md`](MILESTONES.md). The "Disposition" table below is the
+> Milestone 0 view; its client/server/storage rows are now done.
+
 ## Source and commits
 
 - **Copy source:** `examples/miclone` (the Miclone voxel engine), left unchanged.

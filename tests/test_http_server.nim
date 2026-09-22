@@ -531,6 +531,50 @@ suite "net/http server e2e":
     check "on_tick raised" in output
     check "boom_in_tick" in output
 
+  test "ws_accept ^subprotocol selects an offered subprotocol; ws_queued reports backlog":
+    # A browser that offers a subprotocol fails the handshake unless the
+    # answer names it, so the selection has to reach the 101 response. A name
+    # the client never offered is refused before any upgrade happens.
+    let p = startHttpServer("ws-protocol.gene", """
+(import $net/http [Server serve listen ws_accept ws_send ws_queued text])
+(serve (listen ^host "127.0.0.1" ^port 8185)
+  (fn [req]
+    (ws_accept req ^subprotocol "gene.world.v1"
+      ^on_open (fn [conn]
+        (var idle (ws_queued conn))
+        (ws_send conn "first")
+        (ws_send conn $"idle=${idle} queued=$(ws_queued conn)")))))
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8185)
+    defer: s.close()
+    s.send("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n" &
+           "Upgrade: websocket\r\nConnection: Upgrade\r\n" &
+           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" &
+           "Sec-WebSocket-Protocol: other.v0, gene.world.v1\r\n" &
+           "Sec-WebSocket-Version: 13\r\n\r\n")
+    var head = ""
+    while "\r\n\r\n" notin head:
+      var ch: char
+      if s.recv(addr ch, 1, 3000) != 1: break
+      head.add ch
+    check "101" in head.split("\r\n")[0]
+    check "Sec-WebSocket-Protocol: gene.world.v1\r\n" in head
+    check wsReadFrame(s).payload == "first"
+    # Nothing was queued before the first send; afterwards the frame (payload
+    # plus its two header bytes) is waiting on the socket.
+    check wsReadFrame(s).payload == "idle=0 queued=7"
+
+    let refused = httpConnect(8185)
+    defer: refused.close()
+    refused.send("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n" &
+                 "Upgrade: websocket\r\nConnection: Upgrade\r\n" &
+                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" &
+                 "Sec-WebSocket-Protocol: other.v0\r\n" &
+                 "Sec-WebSocket-Version: 13\r\n\r\n")
+    let answer = readAllHttp(refused, 5000)
+    check "101" notin statusLine(answer)
+
   test "a failing ws handler is reported rather than swallowed":
     # WebSocket callbacks run as fibers and nothing waits on the result, so an
     # exception inside one used to vanish completely: no delivery, no error,

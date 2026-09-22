@@ -32,7 +32,7 @@ core/api core/mods core/mapgen core/light core/mesh core/loaded
 core/physics core/raycast core/edit core/inventory core/drops
 core/vec core/container core/wire core/protocol core/client_world
 mods/default/src/default
-client/atlas client/render client/sound client/net_main
+client/atlas client/render client/sound client/main
 probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec
 probes/loaded_spec probes/physics_spec probes/edit_spec probes/inventory_spec
 probes/wire_spec probes/protocol_spec probes/abm_spec
@@ -40,8 +40,7 @@ core/seen
 probes/web_world_spec probes/web_mapgen_spec probes/web_light_spec
 probes/web_loaded_spec probes/web_physics_spec probes/web_edit_spec
 probes/web_inventory_spec probes/web_wire_spec probes/web_protocol_spec
-probes/web_divergence probes/web_abm_spec probes/web_players_probe probes/web_tick_probe
-probes/web_entity_probe probes/web_net_probe probes/web_chest_probe
+probes/web_divergence probes/web_abm_spec
 "
 
 for m in $MODULES; do

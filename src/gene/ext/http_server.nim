@@ -234,6 +234,10 @@ type
     wsOpen: Table[int, bool]
     wsOutbound: Table[int, seq[string]]
     wsCloseRequested: Table[int, bool]
+    # Bytes already moved onto a socket's write buffer and not yet accepted by
+    # the kernel. With the frames still in `wsOutbound`, this is what
+    # `ws_queued` reports: how far a peer has fallen behind.
+    wsPending: Table[int, int]
 
 var gHttpServerRegistry = initTable[int, HttpServerRuntime]()
 var gHttpServerNextId = 0
@@ -967,7 +971,7 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   props["ws_accept"] = newStr(wsAcceptKey(key.strVal))
   if call != nil:
     for name in call[].namedNames:
-      if name notin ["on_open", "on_message", "on_close"]:
+      if name notin ["on_open", "on_message", "on_close", "subprotocol"]:
         raise newException(GeneError,
           "ws_accept got unexpected named argument: " & name)
     template named(name: string) =
@@ -978,6 +982,27 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     named("on_open")
     named("on_message")
     named("on_close")
+    # ^subprotocol selects one the client offered (RFC 6455 §4.2.2). (Not
+    # `^protocol`: that name is call metadata for direct protocol dispatch.)
+    # A browser that offered protocols fails the handshake when the answer
+    # names none, and one it did not offer is a protocol error, so selecting
+    # an unoffered name is refused here rather than on the wire.
+    let protocolIndex = nativeNamedIndex(call, "subprotocol")
+    if protocolIndex >= 0:
+      let protocol = call[].namedValues[protocolIndex]
+      if protocol.kind != vkString or protocol.strVal.len == 0:
+        raiseHttpError("ws_accept ^subprotocol expects a non-empty Str", scope)
+      var offered = false
+      let header = headers.mapEntries.getOrDefault("sec-websocket-protocol",
+                                                   VOID)
+      if header.kind == vkString:
+        for item in header.strVal.split(','):
+          if item.strip() == protocol.strVal:
+            offered = true
+      if not offered:
+        raiseHttpError("ws_accept: the client did not offer subprotocol " &
+                       protocol.strVal, scope)
+      props["protocol"] = protocol
   newNode(newSym("WsUpgrade"), props = props)
 
 proc biHttpWsSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1010,6 +1035,21 @@ proc biHttpWsSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     inc dropped
   rt.wsOutbound[fd] = queue
   newInt(dropped)
+
+proc biHttpWsQueued(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (ws_queued conn) -> Int: bytes handed to ws_send that the peer has not
+  ## yet accepted — frames still queued plus frames on the socket's write
+  ## buffer — or -1 when the connection is closed. A sender uses it to stop
+  ## producing replaceable data (telemetry) before the queue's drop-oldest
+  ## bound can reach data that must not be dropped.
+  requireOne("http/ws_queued", args)
+  let (rt, fd) = wsRuntimeForConnValue(args[0])
+  if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
+    return newInt(-1)
+  var total = rt.wsPending.getOrDefault(fd, 0)
+  for frame in rt.wsOutbound.getOrDefault(fd, @[]):
+    total += frame.len
+  newInt(total)
 
 proc biHttpWsClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (ws_close conn) — queue a close frame; the loop drops the socket after
@@ -1235,6 +1275,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         rt.wsOpen.del(conn.fd)
         rt.wsOutbound.del(conn.fd)
         rt.wsCloseRequested.del(conn.fd)
+        rt.wsPending.del(conn.fd)
         if conn.wsOnClose.kind != vkNil:
           try:
             wsWatch("on_close", dispatchWsHandler(conn.wsOnClose,
@@ -1544,6 +1585,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
     proc wsFlushConn(conn: HttpConn) =
       if tryFlush(conn):
+        rt.wsPending[conn.fd] = max(0, conn.writeBuf.len - conn.writePos)
         if conn.writePos >= conn.writeBuf.len:
           conn.writeBuf = ""
           conn.writePos = 0
@@ -1568,6 +1610,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         conn.writeBuf = conn.writeBuf[conn.writePos .. ^1]
         conn.writePos = 0
       conn.writeBuf.add frame
+      if conn.phase == hcpWebSocket:
+        rt.wsPending[conn.fd] = conn.writeBuf.len
 
     proc handleWsReadable(conn: HttpConn) =
       var chunk = newString(httpReadChunkBytes)
@@ -1750,10 +1794,15 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       props["server_id"] = newInt(rt.id)
       props["fd"] = newInt(conn.fd)
       conn.wsValue = newNode(newSym("WsConn"), props = props)
+      let protocol = marker.props.getOrDefault("protocol", NIL)
+      let protocolLine =
+        if protocol.kind == vkString:
+          "Sec-WebSocket-Protocol: " & protocol.strVal & "\r\n"
+        else: ""
       startWrite(conn,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" &
         "Connection: Upgrade\r\nSec-WebSocket-Accept: " &
-        marker.props["ws_accept"].strVal & "\r\n\r\n")
+        marker.props["ws_accept"].strVal & "\r\n" & protocolLine & "\r\n")
 
     proc harvest() =
       ## Settle finished handler tasks into responses; time out overdue ones.

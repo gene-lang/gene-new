@@ -8597,7 +8597,55 @@ suite "spec — store persistence protocol":
     for suffix in ["-wal", "-shm", "-journal"]:
       check not fileExists(path & suffix)
 
-  test "sqlite explicit commits persist before close through every SQL entry":
+  test "sqlite open_file commits incrementally, rolls back, and reopens":
+    # The disk-backed connection: SQLite's pager owns the file, so a commit
+    # changes pages in place (the inode survives) instead of publishing a new
+    # image, a rollback leaves nothing behind, and a second process sees the
+    # committed rows. Files, including WAL sidecars, stay owner-only.
+    let path = getTempDir() / "gene-sqlite-open-file-spec.sqlite"
+    for suffix in ["", "-wal", "-shm", "-journal"]:
+      if fileExists(path & suffix): removeFile(path & suffix)
+    defer:
+      for suffix in ["", "-wal", "-shm", "-journal"]:
+        if fileExists(path & suffix): removeFile(path & suffix)
+    check_eval_at("(import $db/sqlite [open_file DbError]) " &
+                  "(try (open_file " & geneString(path) & ") " &
+                  "catch DbError \"refused\")",
+                  "\"refused\"", parentDir(path))
+    check not fileExists(path)
+    check_eval_at("""
+      (import $db/sqlite [open_file Db])
+      (let db (open_file """ & geneString(path) & """ ^create true))
+      (let mode (db .Db:query_one "pragma journal_mode=wal"))
+      (db .Db:exec "pragma synchronous=full")
+      (db .Db:exec "create table t (x integer)")
+      (db .Db:exec "begin")
+      (db .Db:execute "insert into t values (?)" 7)
+      (db .Db:exec "commit")
+      (db .Db:exec "begin")
+      (db .Db:execute "insert into t values (?)" 8)
+      (db .Db:exec "rollback")
+      (db .Db:transaction (fn [tx] (tx .Db:execute "insert into t values (?)" 9)))
+      (let rows (db .Db:query "select x from t order by x"))
+      [mode/journal_mode db/storage rows/.size rows/0/x rows/1/x]
+    """, "[\"wal\" \"file\" 2 7 9]", parentDir(path))
+    when defined(posix):
+      check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+      for suffix in ["-wal", "-shm"]:
+        if fileExists(path & suffix):
+          check getFilePermissions(path & suffix) == {fpUserRead, fpUserWrite}
+    let inodeBefore = getFileInfo(path).id.file
+    check_eval_at("""
+      (import $db/sqlite [open_file Db])
+      (let db (open_file """ & geneString(path) & """))
+      (db .Db:execute "insert into t values (?)" 10)
+      (let n (db .Db:query_one "select count(*) as n from t"))
+      (db .Db:close)
+      n/n
+    """, "3", parentDir(path))
+    check getFileInfo(path).id.file == inodeBefore
+
+
     # Miclone commits its block batch through a separate Db:exec call and then
     # stays alive serving clients. Closing the writer would hide a lost commit.
     for entry in ["exec", "execute", "query", "query_one"]:
@@ -9225,6 +9273,23 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $json [parse JsonError]) " &
                "(try (parse \"[1] extra\") catch JsonError \"e2\")",
                "\"e2\"")
+
+  test "json/parse ^strict rejects duplicate keys and ^max_depth bounds nesting":
+    check_eval("(import $json [parse]) " &
+               "(var m (parse \"{\\\"a\\\":1,\\\"a\\\":2}\")) m/a",
+               "2")
+    check_eval("(import $json [parse JsonError]) " &
+               "(try (parse \"{\\\"a\\\":1,\\\"a\\\":2}\" ^strict true) " &
+               "catch JsonError \"duplicate\")",
+               "\"duplicate\"")
+    check_eval("(import $json [parse]) " &
+               "(var m (parse \"{\\\"a\\\":{\\\"a\\\":1}}\" ^strict true)) m/a/a",
+               "1")
+    check_eval("(import $json [parse JsonError]) " &
+               "(try (parse \"[[[1]]]\" ^max_depth 2) catch JsonError \"deep\")",
+               "\"deep\"")
+    check_eval("(import $json [parse]) (parse \"[[1]]\" ^max_depth 2)",
+               "[[1]]")
 
   test "json/stringify raises JsonError for unsupported values":
     check_eval("(import $json [stringify JsonError]) " &

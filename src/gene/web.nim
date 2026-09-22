@@ -3031,6 +3031,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # buffer.
         paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkDomTarget)
+      of "ws/connect_protocol":
+        # `new WebSocket(url, protocol)`: the socket offers one subprotocol and
+        # the browser fails the handshake unless the server selects it — the
+        # server's `ws_accept ^subprotocol`. Same `binaryType` rule as above.
+        paramTypes = @[webType(wtkStr), webType(wtkStr)]
+        returnType = webType(wtkDomTarget)
       of "ws/on_open", "ws/on_close":
         let onEvent = webType(wtkCallback)
         onEvent.params = @[]
@@ -5741,6 +5747,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "$gene_image_load(" & arguments[0] & ", " & arguments[1] & ")"
     # --- WebSocket ---
     of "ws/connect": "$gene_ws_connect(" & arguments[0] & ")"
+    of "ws/connect_protocol":
+      "$gene_ws_connect_protocol(" & arguments[0] & ", " & arguments[1] & ")"
     of "ws/on_open":
       "$gene_ws_on(" & arguments[0] & ", \"open\", " & arguments[1] & ")"
     of "ws/on_close":
@@ -8284,6 +8292,13 @@ proc emitModule(module: WebModule, typescript: bool,
     # at runtime, with no error, on the first binary frame.
     emitter.line("function $gene_ws_connect(" & connParams & ")" &
       targetReturn & " { const socket = new WebSocket(url); " &
+      "socket.binaryType = \"arraybuffer\"; return socket; }")
+  if moduleUsesBuiltin(module, ["ws/connect_protocol"]):
+    let connParams = if typescript: "url: string, protocol: string"
+                     else: "url, protocol"
+    let targetReturn = if typescript: ": EventTarget" else: ""
+    emitter.line("function $gene_ws_connect_protocol(" & connParams & ")" &
+      targetReturn & " { const socket = new WebSocket(url, protocol); " &
       "socket.binaryType = \"arraybuffer\"; return socket; }")
   if moduleUsesBuiltin(module, ["ws/on_open", "ws/on_close"]):
     let onParams = if typescript: "socket: EventTarget, kind: string, handler: () => void"

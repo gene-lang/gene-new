@@ -1,0 +1,226 @@
+# Walking — docs/proposals/world.md §5.3, §6.2, §6.5.
+#
+# The world owns movement. A walk is resolved here on a one-metre navigation
+# grid laid over the region's nodes, then advanced by the simulation a fixed
+# step at a time; nothing a client says about its own position is used.
+#
+# ## The grid
+#
+# One cell per metre in x and z. A cell is walkable when the node an avatar
+# would stand on is solid and the two nodes above it — body and head — are
+# not (`clearance_nodes`). The Commons' first region is one level: everyone
+# stands at `floor_y`.
+#
+# ## Paths
+#
+# A breadth-first search over the eight-connected grid (a diagonal step only
+# when both orthogonal neighbours are walkable, so a walk never cuts a wall's
+# corner), then string-pulled: consecutive waypoints are skipped while the
+# straight segment between them keeps the avatar's whole footprint on walkable
+# cells. What comes back is a short list of cell-centre waypoints in
+# millimetres.
+#
+# No route is a factual rejection, never a hidden retry loop (§6.2).
+
+(mod navigation)
+
+# Horizontal speed of a walking avatar, and the half-width of its footprint.
+(let walk_speed_mm_per_s 1400)
+(let body_half_mm 280)
+(let clearance_nodes 2)
+
+(type NavGrid
+  ^props {^sx Int ^sz Int ^floor_y Int ^walkable (Buffer F32)})
+
+(fn cell_index [nav : NavGrid x : Int z : Int] : Int
+  (+ x (* nav/sx z)))
+
+(fn in_grid? [nav : NavGrid x : Int z : Int] : Bool
+  (&& (&& (>= x 0) (< x nav/sx)) (&& (>= z 0) (< z nav/sz))))
+
+(fn walkable? [nav : NavGrid x : Int z : Int] : Bool
+  (if (in_grid? nav x z)
+    (== (nav/walkable .get (cell_index nav x z)) 1.0)
+    false))
+
+# Build the grid from a region: `solid_at` answers whether the node at
+# (x, y, z) blocks movement.
+(fn build_nav [sx : Int sy : Int sz : Int floor_y : Int solid_at] : NavGrid
+  (let cells ($buffer F32 (* sx sz)))
+  (var z 0)
+  (while (< z sz)
+    (var x 0)
+    (while (< x sx)
+      (var ok (solid_at x (- floor_y 1) z))
+      (var h 0)
+      (while (< h clearance_nodes)
+        (let y (+ floor_y h))
+        (if_yes (&& (< y sy) (solid_at x y z)) (set ok false))
+        (set h (+ h 1)))
+      (cells .set (+ x (* sx z)) (if ok 1.0 0.0))
+      (set x (+ x 1)))
+    (set z (+ z 1)))
+  (NavGrid ^sx sx ^sz sz ^floor_y floor_y ^walkable cells))
+
+(fn cell_of_mm [mm : Int] : Int
+  ($to_int ($math/floor (/ ($to_float mm) 1000.0))))
+
+(fn centre_mm [cell : Int] : Int
+  (+ (* cell 1000) 500))
+
+# --- clearance ---------------------------------------------------------------
+
+# Does an avatar standing at (x_mm, z_mm) have all four corners of its footprint
+# on walkable cells?
+(fn footprint_clear? [nav : NavGrid x_mm : Int z_mm : Int] : Bool
+  (&& (&& (walkable? nav (cell_of_mm (- x_mm body_half_mm))
+                         (cell_of_mm (- z_mm body_half_mm)))
+          (walkable? nav (cell_of_mm (+ x_mm body_half_mm))
+                         (cell_of_mm (- z_mm body_half_mm))))
+      (&& (walkable? nav (cell_of_mm (- x_mm body_half_mm))
+                         (cell_of_mm (+ z_mm body_half_mm)))
+          (walkable? nav (cell_of_mm (+ x_mm body_half_mm))
+                         (cell_of_mm (+ z_mm body_half_mm))))))
+
+# Is the straight segment from a to b clear for the whole footprint? Sampled
+# every 100 mm, which is finer than any gap a 560 mm body could pass through.
+(fn segment_clear? [nav : NavGrid ax : Int az : Int bx : Int bz : Int] : Bool
+  (let dx (- bx ax))
+  (let dz (- bz az))
+  (let length ($math/sqrt ($to_float (+ (* dx dx) (* dz dz)))))
+  (let steps ($to_int ($math/ceil (/ length 100.0))))
+  (if (== steps 0) (return (footprint_clear? nav ax az)))
+  (var i 0)
+  (while (<= i steps)
+    (let t (/ ($to_float i) ($to_float steps)))
+    (let px ($to_int ($math/round (+ ($to_float ax) (* t ($to_float dx))))))
+    (let pz ($to_int ($math/round (+ ($to_float az) (* t ($to_float dz))))))
+    (if_not (footprint_clear? nav px pz) (return false))
+    (set i (+ i 1)))
+  true)
+
+# --- search ------------------------------------------------------------------
+
+# Waypoints from (from_x_mm, from_z_mm) to the centre of cell (to_x, to_z), as
+# a list of [x_mm z_mm] pairs ending at the destination, or nil when there is
+# no route. The start cell is where the avatar stands now.
+(fn find_path [nav : NavGrid from_x_mm : Int from_z_mm : Int
+               to_x : Int to_z : Int]
+  (if_not (walkable? nav to_x to_z) (return nil))
+  (let sx (cell_of_mm from_x_mm))
+  (let sz (cell_of_mm from_z_mm))
+  (if_not (walkable? nav sx sz) (return nil))
+  (let n (* nav/sx nav/sz))
+  (let came ($buffer F64 n))
+  (came .fill -1.0)
+  (let start (cell_index nav sx sz))
+  (let goal (cell_index nav to_x to_z))
+  (came .set start ($to_float start))
+  (let queue [start])
+  (var head 0)
+  (var found (== start goal))
+  (let offsets [[1 0] [-1 0] [0 1] [0 -1] [1 1] [1 -1] [-1 1] [-1 -1]])
+  (while (&& (! found) (< head queue/.size))
+    (let current queue/%head)
+    (set head (+ head 1))
+    (let cx (- current (* nav/sx ($to_int ($math/floor (/ ($to_float current) ($to_float nav/sx)))))))
+    (let cz ($to_int ($math/floor (/ ($to_float current) ($to_float nav/sx)))))
+    (for offset in offsets
+      (let ox offset/0)
+      (let oz offset/1)
+      (let nx (+ cx ox))
+      (let nz (+ cz oz))
+      (var ok (walkable? nav nx nz))
+      # A diagonal step needs both orthogonal neighbours: no corner cutting.
+      (if_yes (&& ok (&& (!= ox 0) (!= oz 0)))
+        (set ok (&& (walkable? nav (+ cx ox) cz) (walkable? nav cx (+ cz oz)))))
+      (if_yes ok
+        (let next (cell_index nav nx nz))
+        (if_yes (< (came .get next) 0.0)
+          (came .set next ($to_float current))
+          (queue .push next)
+          (if_yes (== next goal) (set found true))))))
+  (if_not found (return nil))
+  # Walk back from the goal to the start, then reverse into cell centres.
+  (let cells [])
+  (var at goal)
+  (while (!= at start)
+    (cells .push at)
+    (set at ($to_int (came .get at))))
+  (let points [])
+  (var i (- cells/.size 1))
+  (while (>= i 0)
+    (let c cells/%i)
+    (let x (- c (* nav/sx ($to_int ($math/floor (/ ($to_float c) ($to_float nav/sx)))))))
+    (let z ($to_int ($math/floor (/ ($to_float c) ($to_float nav/sx)))))
+    (points .push [(centre_mm x) (centre_mm z)])
+    (set i (- i 1)))
+  (if (== points/.size 0)
+    (points .push [(centre_mm to_x) (centre_mm to_z)]))
+  (string_pull nav from_x_mm from_z_mm points))
+
+# Skip waypoints while the straight line to a later one stays clear.
+(fn string_pull [nav : NavGrid from_x_mm : Int from_z_mm : Int points : List] : List
+  (let out [])
+  (var ax from_x_mm)
+  (var az from_z_mm)
+  (var i 0)
+  (let n points/.size)
+  (while (< i n)
+    # The furthest waypoint reachable in a straight line from (ax, az).
+    (var best i)
+    (var j (+ i 1))
+    (while (< j n)
+      (let p points/%j)
+      (if (segment_clear? nav ax az p/0 p/1)
+        (then (set best j) (set j (+ j 1)))
+        (else (set j n))))
+    (let chosen points/%best)
+    (out .push chosen)
+    (set ax chosen/0)
+    (set az chosen/1)
+    (set i (+ best 1)))
+  out)
+
+# Remaining straight-line length of a walk along `waypoints` from index `next`,
+# starting at (x_mm, z_mm).
+(fn remaining_mm [x_mm : Int z_mm : Int waypoints : List next : Int] : Int
+  (var total 0.0)
+  (var px ($to_float x_mm))
+  (var pz ($to_float z_mm))
+  (var i next)
+  (while (< i waypoints/.size)
+    (let w waypoints/%i)
+    (let dx (- ($to_float w/0) px))
+    (let dz (- ($to_float w/1) pz))
+    (set total (+ total ($math/sqrt (+ (* dx dx) (* dz dz)))))
+    (set px ($to_float w/0))
+    (set pz ($to_float w/1))
+    (set i (+ i 1)))
+  ($to_int ($math/round total)))
+
+# --- stepping ----------------------------------------------------------------
+
+# Advance a walker by `budget_mm` along its waypoints. Answers
+# [x_mm z_mm next_index arrived?].
+(fn advance [x_mm : Int z_mm : Int waypoints : List next : Int budget_mm : Int] : List
+  (var x ($to_float x_mm))
+  (var z ($to_float z_mm))
+  (var i next)
+  (var left ($to_float budget_mm))
+  (while (&& (> left 0.0) (< i waypoints/.size))
+    (let w waypoints/%i)
+    (let dx (- ($to_float w/0) x))
+    (let dz (- ($to_float w/1) z))
+    (let d ($math/sqrt (+ (* dx dx) (* dz dz))))
+    (if (<= d left)
+      (then
+        (set x ($to_float w/0))
+        (set z ($to_float w/1))
+        (set left (- left d))
+        (set i (+ i 1)))
+      (else
+        (set x (+ x (* dx (/ left d))))
+        (set z (+ z (* dz (/ left d))))
+        (set left 0.0))))
+  [($to_int ($math/round x)) ($to_int ($math/round z)) i (>= i waypoints/.size)])

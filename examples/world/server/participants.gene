@@ -1,0 +1,106 @@
+# Participants, logins and sessions — docs/proposals/world.md §4.4, §9.4, §12.7.
+#
+# The local operator provisions a human player: a stable `player_id`, a
+# server-owned `participant_id`, and one avatar entity that belongs to that
+# participant for the life of this world history. Provisioning is idempotent
+# per player and never creates a second avatar.
+#
+# The player signs in through the HTTP host with a one-time login code the
+# operator hands over. Only the code's SHA-256 is stored. A successful sign-in
+# creates an application session: a random token in an HttpOnly, SameSite=Strict
+# cookie, stored as its SHA-256 with an expiry. The WebSocket attach reads that
+# session — never a player name the client claims — to decide who is connecting
+# (§4.4: "The server derives participant and acting entity from the admitted
+# connection").
+#
+# Credentials never go in URLs, logs, or public assets. The login code is
+# printed once, to the operator's own terminal, by the provisioning command.
+
+(mod participants)
+
+(import [WorldStore in_transaction participant_put participants_all entity_put
+         login_put login_hash session_put session_find session_revoke]
+        ^from "./persistence.gene")
+(import [avatar_entity] ^from "./scene.gene")
+(import [valid_token?] ^from "./protocol.gene")
+
+(let session_ttl_ms (* 7 (* 24 (* 3600 1000))))
+
+(type ParticipantError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ParticipantError)
+
+(fn participant_problem [code : Str message : Str]
+  (fail (ParticipantError ^code code ^message message)))
+
+(fn participant_id_for [player_id : Str] : Str $"participant-${player_id}")
+(fn entity_id_for [player_id : Str] : Str $"avatar-${player_id}")
+
+(fn hash_secret [secret : Str] : Str ($crypto/sha256 secret))
+
+# Provision a human player and their avatar, or re-issue the login code of an
+# existing one. Answers {^participant_id ^entity_id ^code ^created}.
+(fn provision_player [store : WorldStore player_id : Str display_name : Str] : Map
+  (if_not (valid_token? player_id 32)
+    (participant_problem "invalid_player_id"
+      "A player id is 1-32 characters of letters, digits, '.', '_', ':' or '-'."))
+  (let name ($str/trim display_name))
+  (if (|| (== name "") (> ($str/byte_size name) 64))
+    (participant_problem "invalid_display_name" "A display name is 1-64 bytes."))
+  (let existing (find_by_player store player_id))
+  (let code ($crypto/random_hex 8))
+  (let now ($os/wall_ms))
+  (if_not ($absent? existing)
+    (do
+      (in_transaction store (fn [] (login_put store player_id (hash_secret code) now)))
+      (return {^participant_id existing/participant_id ^entity_id existing/entity_id
+               ^code code ^created false})))
+  (let participant_id (participant_id_for player_id))
+  (let entity_id (entity_id_for player_id))
+  (let everyone (participants_all store))
+  (let count everyone/.size)
+  (let participant {^participant_id participant_id ^kind "human"
+                    ^player_id player_id ^display_name name
+                    ^entity_id entity_id ^control_generation 0
+                    ^next_event_seq 1 ^next_operation_seq 1})
+  (in_transaction store (fn []
+    (participant_put store participant)
+    (entity_put store (avatar_entity entity_id participant_id name count))
+    (login_put store player_id (hash_secret code) now)))
+  {^participant_id participant_id ^entity_id entity_id ^code code ^created true})
+
+(fn find_by_player [store : WorldStore player_id : Str]
+  (var found nil)
+  (for participant in (participants_all store)
+    (if_yes (== participant/player_id player_id) (set found participant)))
+  found)
+
+# Check a login code; on success create a session and answer its token.
+(fn sign_in [store : WorldStore player_id : Str code : Str] : Map
+  (if (|| (! (valid_token? player_id 32)) (> ($str/byte_size code) 64))
+    (participant_problem "sign_in_failed" "That player id and code do not match."))
+  (let stored (login_hash store player_id))
+  (let participant (find_by_player store player_id))
+  (if (|| ($absent? stored) ($absent? participant))
+    (participant_problem "sign_in_failed" "That player id and code do not match."))
+  (if_not ($crypto/secure_equal? stored (hash_secret code))
+    (participant_problem "sign_in_failed" "That player id and code do not match."))
+  (let token ($crypto/random_hex 32))
+  (let now ($os/wall_ms))
+  (in_transaction store (fn []
+    (session_put store (hash_secret token) participant/participant_id now
+                 (+ now session_ttl_ms))))
+  {^token token ^participant_id participant/participant_id
+   ^max_age_s ($to_int (/ ($to_float session_ttl_ms) 1000.0))})
+
+# The participant a session token belongs to, or nil when it is unknown,
+# expired or revoked.
+(fn session_participant [store : WorldStore token : Str]
+  (if (|| (== token "") (> ($str/byte_size token) 128)) (return nil))
+  (let row (session_find store (hash_secret token)))
+  (if ($absent? row) (return nil))
+  (if (|| (!= row/revoked 0) (< row/expires_ms ($os/wall_ms))) (return nil))
+  row/participant_id)
+
+(fn sign_out [store : WorldStore token : Str]
+  (if (!= token "")
+    (in_transaction store (fn [] (session_revoke store (hash_secret token))))))

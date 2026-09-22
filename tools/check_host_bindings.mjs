@@ -125,6 +125,7 @@ const contract = [
   // promise, so a handler reading a message synchronously gets no buffer and
   // no error.
   ["ws/connect (binaryType)", "WebSocket", "binaryType", "assign"],
+  ["ws/connect_protocol (binaryType)", "WebSocket", "binaryType", "assign"],
   ["ws/send", "WebSocket", "send", "call", 1],
   ["ws/close", "WebSocket", "close", "call", 0],
   ["ws/open?", "WebSocket", "readyState", "read"],

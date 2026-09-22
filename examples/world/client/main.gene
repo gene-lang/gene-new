@@ -1,0 +1,860 @@
+# The Commons browser player — docs/proposals/world.md /15, /10.7, /11.3.
+#
+# A player client, not a copy of the simulation. It renders the region and the
+# entities the world describes, and every change it wants is a versioned
+# command the world validates: click the ground and the world plans and walks
+# the route (/6.5); click an object and the world says what can be done with it
+# (/8.5). Nothing here moves an avatar or fills a hand on its own say-so.
+#
+# ## What the page shows, and how it knows
+#
+# - **Connection state** from the protocol: Connecting, Synchronizing,
+#   Connected, Controlled elsewhere, Observing, Disconnected (/12.7).
+# - **Positions** from telemetry: live samples that may be ahead of the last
+#   checkpoint are *provisional* and drawn with a marker at the last saved
+#   position (/6.1, /15.3). After a server restart the snapshot's saved
+#   position replaces what was shown, and the page says how far it moved.
+# - **Outcomes** only from receipts and events: an object is shown held after
+#   the world confirms it, never on click (/15.2).
+#
+# ## Pending commands (/10.7)
+#
+# Each deliberate action gets one unpredictable operation id, kept with its
+# exact payload in memory until its receipt arrives. After a same-page
+# reconnect the payload is resent under the same id, so the world answers with
+# the retained receipt instead of doing it twice. After a refresh the map is
+# gone: the page recovers what the world recorded (current actions and recent
+# receipts in the snapshot) and never re-issues lost input.
+
+(mod main ^profile web)
+
+(import [count_faces build_mesh put_box] ^from "../core/mesh.gene")
+(import [Registry register registered_count solid? tile_top_of]
+        ^from "../core/registry.gene")
+(import [World new_world set_node block_base light_at node_at
+         world_dx world_dy world_dz world_stride_z world_nodes open_sky]
+        ^from "../core/loaded.gene")
+(import [light_region queue_overhead] ^from "../core/light.gene")
+(import [build_program init_state upload_atlas new_vertex_array new_buffer
+         upload_chunk begin_frame set_view_projection draw_chunk]
+        ^from "./render.gene")
+(import [paint] ^from "./atlas.gene")
+(import [TileRegistry new_tiles add_tile tile_id] ^from "../core/tiles.gene")
+(import [forward_x forward_y forward_z] ^from "../core/vec.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
+        ^from "../core/raycast.gene")
+
+(let block_dim 16.0)
+(let span_x 3.0)
+(let span_y 1.0)
+(let span_z 3.0)
+(let region_x 48.0)
+(let region_y 16.0)
+(let region_z 48.0)
+(let floats_per_vertex 7.0)
+(let indices_per_face 6.0)
+(let faces_per_box 6.0)
+(let fov 1.15)
+(let fog_far 160.0)
+(let click_slop 5.0)
+(let orbit_speed 0.006)
+(let heartbeat_ms 15000.0)
+(let subprotocol "gene.world.v1")
+
+(fn abs_f [v : F64] : F64 (if (< v 0.0) (- 0.0 v) v))
+
+(fn mm [value : Any] : F64 (/ ($to_float value) 1000.0))
+
+# A mutable string-keyed record. The web profile's Map literal is read-only,
+# and a parsed JSON object is a plain one the path forms can set.
+(fn fresh_object [] : Any ($json/parse "{}"))
+
+(fn num [value : Any] : F64
+  (if ($absent? value) 0.0 ($to_float value)))
+
+(fn flag [value : Any] : Bool
+  (if ($absent? value) false (do (var b : Bool value) b)))
+
+# A decimal string the world sent (ids, revisions and sequences travel as
+# strings, §9.2) as a number.
+(fn int_text [value : Any] : F64
+  (if ($absent? value) 0.0 ($to_float ($json/parse (text_of value)))))
+
+(fn as_list [value : Any] : (List Any)
+  (var items : (List Any) value)
+  items)
+
+(fn text_of [value : Any] : Str
+  (if ($absent? value) "" (do (var s : Str ($json/stringify value))
+                              (if ($str/starts_with? s "\"") ($json/parse s) s))))
+
+(fn main [root : EventTarget] : Void
+  (var stage ($dom/element "stage"))
+  (var gl ($gl/context stage))
+  (var prog (build_program gl))
+  (init_state gl)
+  (var atlas_canvas ($dom/create_element "canvas"))
+  ($canvas/set_size atlas_canvas 128.0 128.0)
+
+  # --- DOM -------------------------------------------------------------------------
+  (var el_state ($dom/element "conn_state"))
+  (var el_who ($dom/element "who"))
+  (var el_hud ($dom/element "hud"))
+  (var el_action ($dom/element "action_text"))
+  (var btn_stop ($dom/element "action_stop"))
+  (var btn_resume ($dom/element "action_resume"))
+  (var btn_cancel ($dom/element "action_cancel"))
+  (var el_selection ($dom/element "selection_text"))
+  (var btn_pick ($dom/element "sel_pick_up"))
+  (var btn_put ($dom/element "sel_put_down"))
+  (var el_inventory ($dom/element "inventory_list"))
+  (var el_notice ($dom/element "notice"))
+  (var el_history ($dom/element "history_list"))
+  (var panel_takeover ($dom/element "takeover_panel"))
+  (var btn_take_over ($dom/element "take_over"))
+  (var btn_observe ($dom/element "observe"))
+
+  # --- world state the protocol fills ----------------------------------------------
+  (var reg (new Registry))
+  (var tiles (new_tiles))
+  (var world (new_world 0.0 0.0 0.0 span_x span_y span_z))
+  (var wdx (world_dx world))
+  (var wsz (world_stride_z world))
+  (var chunks (* span_x (* span_y span_z)))
+  (var vaos : (List Gl/VertexArray) [])
+  (var vbos : (List Gl/Buffer) [])
+  (var ebos : (List Gl/Buffer) [])
+  (var counts ($buffer F32 chunks))
+  (var k0 0.0)
+  (while (< k0 chunks)
+    (vaos .push (new_vertex_array gl))
+    (vbos .push (new_buffer gl))
+    (ebos .push (new_buffer gl))
+    (set k0 (+ k0 1.0)))
+  (var ent_vao (new_vertex_array gl))
+  (var ent_vbo (new_buffer gl))
+  (var ent_ebo (new_buffer gl))
+  (var ent_faces 0.0)
+  (var ent_dirty true)
+  (var meshed false)
+
+  # Entities: id -> record; `ent_order` keeps a stable draw order.
+  (var ents (fresh_object))
+  (var ent_order : (List Str) [])
+  # The protocol's identities for this attachment.
+  (var world_id "")
+  (var history_id "")
+  (var epoch "")
+  (var entity_id "")
+  (var generation "")
+  (var rules_revision "")
+  (var role "controller")
+  (var ready false)
+  (var last_live_seq 0.0)
+  (var last_event_seq "")
+  (var world_revision "")
+  (var sim_ms 0.0)
+  (var saved_sim_ms 0.0)
+  (var state "connecting")
+  (var reconnect_delay 1000.0)
+  (var stop_reconnecting false)
+  # Pending commands: operation id -> exact JSON payload (without the
+  # connection's control generation, which is filled in at send time).
+  (var pending (fresh_object))
+  (var pending_order : (List Str) [])
+  (var pending_labels (fresh_object))
+  (var admission_waiting "")
+  # The current walk, as the world reported it.
+  (var action_id "")
+  (var action_status "")
+  (var action_operation "")
+  (var action_total 0.0)
+  (var action_left 0.0)
+  (var marker_x -1.0)
+  (var marker_z -1.0)
+  (var selected "")
+  (var inventory : (List Str) [])
+  (var history_lines : (List Str) [])
+  (var shown_x -1.0)
+  (var shown_z -1.0)
+
+  # --- small UI helpers --------------------------------------------------------------
+  (var set_state : (Fn [Str Str] Void) (fn [a : Str b : Str] : Void void))
+  (set set_state (fn [next : Str label : Str] : Void
+    (set state next)
+    ($dom/set_text el_state label)
+    (for cls in ["connected" "synchronizing" "connecting" "disconnected"
+                 "controlled_elsewhere" "observing"]
+      ($dom/set_class el_state cls (== cls next)))))
+
+  (var notice : (Fn [Str] Void) (fn [a : Str] : Void void))
+  (set notice (fn [text : Str] : Void ($dom/set_text el_notice text)))
+
+  (var add_history : (Fn [Str] Void) (fn [a : Str] : Void void))
+  (set add_history (fn [line : Str] : Void
+    (history_lines .push line)
+    ($dom/clear el_history)
+    (var i (- ($to_float history_lines/.size) 1.0))
+    (var shown 0.0)
+    (while (&& (>= i 0.0) (< shown 30.0))
+      (var row ($dom/create_element "div"))
+      ($dom/set_text row history_lines/%i)
+      ($dom/append el_history row)
+      (set shown (+ shown 1.0))
+      (set i (- i 1.0)))))
+
+  (var label_of : (Fn [Str] Str) (fn [a : Str] : Str ""))
+  (set label_of (fn [id : Str] : Str
+    (var e ents/%id)
+    (if ($absent? e) id (text_of e/label))))
+
+  (var draw_inventory : (Fn [] Void) (fn [] : Void void))
+  (set draw_inventory (fn [] : Void
+    ($dom/clear el_inventory)
+    (if (== ($to_float inventory/.size) 0.0)
+      (then ($dom/set_text el_inventory "Nothing."))
+      (else
+        (for id in inventory
+          (var row ($dom/create_element "div"))
+          ($dom/set_text row (label_of id))
+          ($dom/append el_inventory row))))))
+
+  (var draw_action : (Fn [] Void) (fn [] : Void void))
+  (set draw_action (fn [] : Void
+    (var text "Click the ground to walk there.")
+    (if_yes (!= admission_waiting "")
+      (set text $"Sent: $(text_of pending_labels/%admission_waiting) — waiting for the world to accept it."))
+    (if_yes (&& (== admission_waiting "") (!= action_id ""))
+      (set text
+        (if (== action_status "running")
+          $"Walking (${action_id}): $($math/round action_left) mm to go of $($math/round action_total) mm."
+          (if (== action_status "suspended")
+            $"Walk ${action_id} is suspended at its last saved point. Resume or cancel it."
+            $"Walk ${action_id}: ${action_status}."))))
+    ($dom/set_text el_action text)
+    (var busy (!= admission_waiting ""))
+    ($dom/set_class btn_stop "hidden" (|| busy (!= action_status "running")))
+    ($dom/set_class btn_resume "hidden" (|| busy (!= action_status "suspended")))
+    ($dom/set_class btn_cancel "hidden" (|| busy (!= action_status "suspended")))))
+
+  (var draw_selection : (Fn [] Void) (fn [] : Void void))
+  (set draw_selection (fn [] : Void
+    (if (== selected "")
+      (then
+        ($dom/set_text el_selection "Nothing selected. Click an object to inspect it.")
+        ($dom/set_class btn_pick "hidden" true)
+        ($dom/set_class btn_put "hidden" true))
+      (else
+        (var e ents/%selected)
+        (var held (text_of e/held_by))
+        ($dom/set_text el_selection
+          (if (== held "") $"$(label_of selected): on the ground."
+            (if (== held entity_id) $"$(label_of selected): you are holding it."
+              $"$(label_of selected): held by $(label_of held).")))
+        ($dom/set_class btn_pick "hidden" (!= held ""))
+        ($dom/set_class btn_put "hidden" (!= held entity_id))))))
+
+  # --- content and region -------------------------------------------------------------
+  (var install_content : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set install_content (fn [content : Any] : Void
+    (set reg (new Registry))
+    (set tiles (new_tiles))
+    (for t in (as_list content/tiles)
+      (add_tile tiles t/name ($to_float t/kind)
+                ($to_float t/rgb/0) ($to_float t/rgb/1) ($to_float t/rgb/2)
+                ($to_float t/spread) ($to_float t/seed)
+                ($to_float t/base_rgb/0) ($to_float t/base_rgb/1) ($to_float t/base_rgb/2)
+                ($to_float t/base_spread) ($to_float t/base_seed) ($to_float t/density)))
+    (for n in (as_list content/nodes)
+      (register reg n/name ($to_float n/drawtype) n/solid n/opaque n/propagates
+                n/merges_same ($to_float n/light_source)
+                ($to_float n/tiles/0) ($to_float n/tiles/1) ($to_float n/tiles/2) ""))
+    (paint ($canvas/context atlas_canvas) tiles)
+    (upload_atlas gl atlas_canvas)))
+
+  (var mesh_chunk : (Fn [F64 F64 F64] Void) (fn [a : F64 b : F64 c : F64] : Void void))
+  (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
+    (var k (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
+    (var base (block_base world cx cy cz))
+    (var faces (count_faces reg world/content base wdx wsz))
+    (counts .set k (* faces indices_per_face))
+    (if_yes (> faces 0.0)
+      (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
+      (var idx ($buffer U32 (* faces indices_per_face)))
+      (build_mesh reg world/content world/light verts idx base wdx wsz
+                  (* cx block_dim) (* cy block_dim) (* cz block_dim))
+      (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
+
+  (var install_region : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set install_region (fn [region : Any] : Void
+    (set world (new_world 0.0 0.0 0.0 span_x span_y span_z))
+    (set wdx (world_dx world))
+    (set wsz (world_stride_z world))
+    (var names (as_list region/names))
+    (var ids ($buffer F32 ($to_float names/.size)))
+    (var i 0.0)
+    (for name in names
+      (var found 1.0)
+      (var j 0.0)
+      (while (< j (registered_count reg))
+        (if_yes (== reg/names/%j name) (set found j))
+        (set j (+ j 1.0)))
+      (ids .set i found)
+      (set i (+ i 1.0)))
+    (var at 0.0)
+    (var r 0.0)
+    (var runs (as_list region/runs))
+    (while (< r ($to_float runs/.size))
+      (var slot ($to_float runs/%r))
+      (var next (+ r 1.0))
+      (var count ($to_float runs/%next))
+      (var id (ids .get slot))
+      (var c 0.0)
+      (while (< c count)
+        (var x (- at (* region_x ($math/floor (/ at region_x)))))
+        (var rest ($math/floor (/ at region_x)))
+        (var y (- rest (* region_y ($math/floor (/ rest region_y)))))
+        (var z ($math/floor (/ rest region_y)))
+        (set_node world x y z id)
+        (set at (+ at 1.0))
+        (set c (+ c 1.0)))
+      (set r (+ r 2.0)))
+    # Light the whole region once (/4.2): the world sends content, the client
+    # derives light, as the copied Miclone client did from blocks.
+    (var sky ($buffer F32 (* (world_dx world) (world_dz world))))
+    (open_sky world sky)
+    (var q ($buffer F32 (+ (world_nodes world) queue_overhead)))
+    (light_region world/light world/content (world_dx world) (world_dy world)
+                  (world_dz world) reg sky q (registered_count reg))
+    (var mz 0.0)
+    (while (< mz span_z)
+      (var mx 0.0)
+      (while (< mx span_x)
+        (mesh_chunk mx 0.0 mz)
+        (set mx (+ mx 1.0)))
+      (set mz (+ mz 1.0)))
+    (set meshed true)))
+
+  # --- entities -----------------------------------------------------------------------
+  (var install_entity : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set install_entity (fn [record : Any] : Void
+    (var id : Str record/id)
+    (var comps record/components)
+    (var k_look "core/appearance")
+    (var k_place "core/transform")
+    (var k_held "core/contained_in")
+    (var k_label "core/label")
+    (var k_portable "core/portable")
+    (var look comps/%k_look)
+    (var place comps/%k_place)
+    (var held comps/%k_held)
+    (var label comps/%k_label)
+    (var e (fresh_object))
+    (set e/id id)
+    (set e/tile (if ($absent? look) "commons:unknown" (text_of look/tile)))
+    (set e/w (if ($absent? look) 0.4 (mm look/size_mm/0)))
+    (set e/h (if ($absent? look) 0.4 (mm look/size_mm/1)))
+    (set e/d (if ($absent? look) 0.4 (mm look/size_mm/2)))
+    (set e/label (if ($absent? label) id (text_of label/text)))
+    (set e/held_by (if ($absent? held) "" (text_of held/entity_id)))
+    (set e/portable (! ($absent? comps/%k_portable)))
+    (set e/provisional false)
+    (var px 0.0) (var py 0.0) (var pz 0.0)
+    (if_yes (! ($absent? place))
+      (set px (mm place/x_mm)) (set py (mm place/y_mm)) (set pz (mm place/z_mm)))
+    (set e/x px) (set e/y py) (set e/z pz)
+    (set e/sx px) (set e/sy py) (set e/sz pz)
+    (if_yes ($absent? ents/%id) (ent_order .push id))
+    (set ents/%id e)
+    (set ent_dirty true)))
+
+  (var rebuild_entities : (Fn [] Void) (fn [] : Void void))
+  (set rebuild_entities (fn [] : Void
+    (var n (+ (* ($to_float ent_order/.size) 2.0) 2.0))
+    (var verts ($buffer F32 (* n (* faces_per_box (* 4.0 floats_per_vertex)))))
+    (var idx ($buffer U32 (* n (* faces_per_box indices_per_face))))
+    (var face 0.0)
+    (var boxes 0.0)
+    (for id in ent_order
+      (var e ents/%id)
+      (var tile (tile_id tiles (text_of e/tile)))
+      (if_yes (< tile 0.0) (set tile (tile_id tiles "commons:unknown")))
+      (var w2 (/ (num e/w) 2.0))
+      (var d2 (/ (num e/d) 2.0))
+      (var x (num e/x))
+      (var y (num e/y))
+      (var z (num e/z))
+      (var held (text_of e/held_by))
+      (if_yes (!= held "")
+        # A held object is drawn over its holder's head, so everyone can see
+        # who has it.
+        (var holder ents/%held)
+        (if_yes (! ($absent? holder))
+          (set x (num holder/x))
+          (set y (+ (num holder/y) (+ (num holder/h) 0.15)))
+          (set z (num holder/z))))
+      (var light (light_at world ($math/floor x) ($math/floor (+ y 0.5)) ($math/floor z)))
+      (set face (put_box verts idx face tile light
+                         (- x w2) y (- z d2) (+ x w2) (+ y (num e/h)) (+ z d2)))
+      (set boxes (+ boxes 1.0))
+      # The last saved position, when the live one is ahead of it (/6.1).
+      (if_yes (&& (flag e/provisional) (== held ""))
+        (var saved_tile (tile_id tiles "commons:marker_saved"))
+        (set face (put_box verts idx face saved_tile light
+                           (- (num e/sx) 0.3) (num e/sy) (- (num e/sz) 0.3) (+ (num e/sx) 0.3) (+ (num e/sy) 0.05) (+ (num e/sz) 0.3)))
+        (set boxes (+ boxes 1.0)))
+      (if_yes (== id selected)
+        (var sel_tile (tile_id tiles "commons:marker_selected"))
+        (set face (put_box verts idx face sel_tile light
+                           (- x 0.08) (+ y (+ (num e/h) 0.25)) (- z 0.08)
+                           (+ x 0.08) (+ y (+ (num e/h) 0.45)) (+ z 0.08)))
+        (set boxes (+ boxes 1.0))))
+    # The pending destination marker: requested, not reached (/6.5).
+    (if_yes (>= marker_x 0.0)
+      (var pending_tile (tile_id tiles "commons:marker_pending"))
+      (set face (put_box verts idx face pending_tile 255.0
+                         (+ marker_x 0.35) 1.0 (+ marker_z 0.35)
+                         (+ marker_x 0.65) 1.12 (+ marker_z 0.65)))
+      (set boxes (+ boxes 1.0)))
+    (set ent_faces face)
+    (if_yes (> face 0.0)
+      (upload_chunk gl ent_vao ent_vbo ent_ebo verts idx))))
+
+  # --- the socket ----------------------------------------------------------------------
+  (var origin ($browser/origin))
+  (var origin_parts ($str/split origin "://"))
+  (var scheme (if (== origin_parts/0 "https") "wss" "ws"))
+  (var ws_url $"${scheme}://${origin_parts/1}/world/v1")
+  (var sock ($ws/connect_protocol ws_url subprotocol))
+
+  (var send_json : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set send_json (fn [value : Any] : Void
+    ($ws/send sock ($json/stringify value))))
+
+  (var send_pending : (Fn [Str] Void) (fn [a : Str] : Void void))
+  (set send_pending (fn [op_id : Str] : Void
+    (var payload pending/%op_id)
+    (if_yes (&& ready (! ($absent? payload)))
+      (set payload/control_generation generation)
+      (send_json payload))))
+
+  # One deliberate action -> one operation id, kept with its payload until the
+  # world answers (/10.7). Ordinary commands wait for the previous admission.
+  (var command : (Fn [Str Any Str] Void) (fn [a : Str b : Any c : Str] : Void void))
+  (set command (fn [operation : Str input : Any label : Str] : Void
+    (if (!= role "controller")
+      (then (notice "Observing: you cannot act from this tab."))
+      (else
+        (if (&& (!= admission_waiting "") (!= operation "core.cancel"))
+          (then (notice "Waiting for the world to accept your previous action."))
+          (else
+            (var op_id $"op-$($browser/request_id)")
+            (set pending/%op_id {^v 1 ^kind "command" ^world_id world_id ^history_id history_id
+                                 ^control_generation generation ^operation_id op_id
+                                 ^operation operation ^contract_version 1
+                                 ^rules_revision rules_revision ^input input ^preconditions ($json/parse "[]")})
+            (pending_order .push op_id)
+            (set pending_labels/%op_id label)
+            (if_yes (!= operation "core.cancel") (set admission_waiting op_id))
+            (add_history $"… ${label} (sent)")
+            (draw_action)
+            (send_pending op_id)))))))
+
+  (var hello : (Fn [Bool Str] Void) (fn [a : Bool b : Str] : Void void))
+  (set hello (fn [takeover : Bool as_role : Str] : Void
+    (set_state "synchronizing" "Synchronizing")
+    (send_json {^v 1 ^kind "hello" ^role as_role ^takeover takeover ^client "browser"
+                ^resume (if (== last_event_seq "") nil {^after_event_seq last_event_seq})})))
+
+  (var on_snapshot : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set on_snapshot (fn [snap : Any] : Void
+    (var restarted (&& (!= shown_x -1.0) (!= epoch snap/server_epoch)))
+    (var before_x shown_x)
+    (var before_z shown_z)
+    (install_content snap/content)
+    (install_region snap/region)
+    (set ents (fresh_object))
+    (set ent_order [])
+    (for record in (as_list snap/entities) (install_entity record))
+    (set inventory [])
+    (for id in (as_list snap/self/inventory) (inventory .push (text_of id)))
+    (set world_revision snap/world_revision)
+    (set saved_sim_ms (int_text snap/committed_sim_time_ms))
+    (set action_id "")
+    (set action_status "")
+    (for a in (as_list snap/actions)
+      (set action_id a/action_id)
+      (set action_status a/status)
+      (set action_operation a/operation_id)
+      (set action_total ($to_float a/progress/total_mm))
+      (set action_left ($to_float a/progress/remaining_mm)))
+    (if_yes (== action_id "") (set marker_x -1.0))
+    (for item in (as_list snap/receipts/items)
+      (var r item/receipt)
+      (var why (if ($absent? r/reason) "" $" ($(text_of r/reason))"))
+      (add_history $"#$(text_of item/seq) $(text_of r/operation): $(text_of r/admission)${why}"))
+    # /12.7//6.1: after a restart only the provisional tail can have moved,
+    # and the page says so instead of silently snapping back.
+    (var me ents/%entity_id)
+    (if_yes (&& restarted (! ($absent? me)))
+      (var dx (- (num me/x) before_x))
+      (var dz (- (num me/z) before_z))
+      (var moved ($math/sqrt (+ (* dx dx) (* dz dz))))
+      (if_yes (> moved 0.05)
+        (notice $"The world restarted. Your avatar is at its last saved position, $($math/round (* moved 10.0)) dm from where it was shown; the unsaved part of the walk was not kept.")))
+    (if_yes (&& restarted (== action_status "suspended"))
+      (add_history "The world restarted; your walk is suspended until you resume or cancel it."))
+    (set epoch snap/server_epoch)
+    (draw_inventory)
+    (draw_action)
+    (draw_selection)
+    (set ent_dirty true)))
+
+  (var on_receipt : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set on_receipt (fn [r : Any] : Void
+    (var op_id : Str r/operation_id)
+    (var label (text_of pending_labels/%op_id))
+    (if_yes (== label "") (set label (text_of r/operation)))
+    (set pending/%op_id nil)
+    (if_yes (== admission_waiting op_id) (set admission_waiting ""))
+    (var reason (if ($absent? r/reason) "" $" ($(text_of r/reason))"))
+    (add_history $"${label}: $(text_of r/admission)${reason}$(if (flag r/retained) \" — already recorded\" \"\")")
+    (if_yes (&& (== (text_of r/operation) "movement.walk_to") (== (text_of r/admission) "accepted"))
+      (set action_id r/action_id)
+      (set action_status (if ($absent? r/action_status) "running" (text_of r/action_status)))
+      (set action_operation op_id)
+      (set action_total (num r/result/total_mm))
+      (set action_left action_total))
+    (if_yes (&& (== (text_of r/operation) "movement.walk_to") (!= (text_of r/admission) "accepted"))
+      (set marker_x -1.0)
+      (notice $"The world did not start that walk${reason}."))
+    (if_yes (&& (== (text_of r/operation) "movement.resume") (== (text_of r/admission) "accepted"))
+      (set action_status (if ($absent? r/action_status) "running" (text_of r/action_status))))
+    (if_yes (&& (== (text_of r/operation) "object.pick_up") (!= (text_of r/admission) "accepted"))
+      (notice $"Could not pick that up${reason}."))
+    (if_yes (&& (== (text_of r/operation) "object.put_down") (!= (text_of r/admission) "accepted"))
+      (notice $"Could not put that down${reason}."))
+    (draw_action)
+    (set ent_dirty true)))
+
+  (var on_event : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set on_event (fn [ev : Any] : Void
+    (set last_event_seq ev/event_seq)
+    (set world_revision ev/world_revision)
+    (var p ev/payload)
+    (var type : Str ev/type)
+    (if_yes (== type "movement.completed")
+      (add_history $"Arrived ($(text_of p/action_id))")
+      (if_yes (== (text_of p/action_id) action_id)
+        (set action_status "completed")
+        (set marker_x -1.0)))
+    (if_yes (== type "movement.suspended")
+      (add_history $"Walk suspended: $(text_of p/reason)")
+      (if_yes (== (text_of p/action_id) action_id) (set action_status "suspended")))
+    (if_yes (== type "movement.cancelled")
+      (add_history "Walk cancelled.")
+      (if_yes (== (text_of p/action_id) action_id) (set action_status "cancelled") (set marker_x -1.0)))
+    (if_yes (== type "movement.failed")
+      (add_history $"Walk failed: $(text_of p/reason)")
+      (if_yes (== (text_of p/action_id) action_id) (set action_status "failed") (set marker_x -1.0)))
+    (if_yes (== type "object.picked_up")
+      (var e (do (var key_462 (text_of p/object_id)) ents/%key_462))
+      (if_yes (! ($absent? e)) (set e/held_by p/by_entity_id))
+      (if_yes (== (text_of p/by_entity_id) entity_id)
+        (inventory .push p/object_id)
+        (add_history $"You picked up $(label_of p/object_id)."))
+      (if_yes (!= (text_of p/by_entity_id) entity_id)
+        (add_history $"$(label_of p/by_entity_id) picked up $(label_of p/object_id).")))
+    (if_yes (== type "object.put_down")
+      (var e (do (var key_462 (text_of p/object_id)) ents/%key_462))
+      (if_yes (! ($absent? e))
+        (set e/held_by "")
+        (set e/x (mm p/x_mm)) (set e/y (mm p/y_mm)) (set e/z (mm p/z_mm))
+        (set e/sx (mm p/x_mm)) (set e/sy (mm p/y_mm)) (set e/sz (mm p/z_mm)))
+      (if_yes (== (text_of p/by_entity_id) entity_id)
+        (var kept : (List Str) [])
+        (for id in inventory (if_yes (!= id p/object_id) (kept .push id)))
+        (set inventory kept)
+        (add_history $"You put down $(label_of p/object_id).")))
+    (draw_inventory)
+    (draw_action)
+    (draw_selection)
+    (set ent_dirty true)))
+
+  (var on_telemetry : (Fn [Any] Void) (fn [a : Any] : Void void))
+  (set on_telemetry (fn [t : Any] : Void
+    (if_yes (== (text_of t/server_epoch) epoch)
+      (var seq (int_text t/live_seq))
+      (if_yes (> seq last_live_seq)
+        (set last_live_seq seq)
+        (set sim_ms (int_text t/sim_time_ms))
+        (set saved_sim_ms (int_text t/committed_sim_time_ms))
+        (for s in (as_list t/entities)
+          (var e (do (var key_348 (text_of s/entity_id)) ents/%key_348))
+          (if_yes (! ($absent? e))
+            (set e/x (mm s/x_mm)) (set e/y (mm s/y_mm)) (set e/z (mm s/z_mm))
+            (set e/provisional s/provisional)
+            (if_yes (! ($absent? s/saved))
+              (set e/sx (mm s/saved/x_mm)) (set e/sy (mm s/saved/y_mm))
+              (set e/sz (mm s/saved/z_mm)))
+            (if_yes (&& (== (text_of s/entity_id) entity_id) (! ($absent? s/action)))
+              (if_yes (== (text_of s/action/action_id) action_id)
+                (set action_total ($to_float s/action/progress/total_mm))
+                (set action_left ($to_float s/action/progress/remaining_mm))))))
+        (draw_action)
+        (set ent_dirty true)))))
+
+  (var open_socket : (Fn [] Void) (fn [] : Void void))
+  (set open_socket (fn [] : Void
+    (set sock ($ws/connect_protocol ws_url subprotocol))
+    ($ws/on_open sock (fn [] : Void
+      (set reconnect_delay 1000.0)
+      (hello false "controller")))
+
+    ($ws/on_close sock (fn [] : Void
+      (set ready false)
+      (if_yes (! stop_reconnecting)
+        (set_state "disconnected" "Disconnected — reconnecting")
+        # Same-page reconnect (§10.7, §11.3): a new socket, a hello that resumes
+        # after the last event this page installed, and every unanswered command
+        # resent under its original id once the world says ready.
+        ($time/after reconnect_delay (fn [] : Void (open_socket)))
+        (set reconnect_delay ($math/min 10000.0 (* reconnect_delay 2.0))))))
+
+    ($ws/on_text sock (fn [text : Str] : Void
+      (var msg ($json/parse text))
+      (var kind : Str msg/kind)
+      (if_yes (== kind "welcome")
+        (set world_id msg/world_id)
+        (set history_id msg/history_id)
+        (set entity_id msg/entity_id)
+        (set role msg/role)
+        (set rules_revision msg/rules_revision)
+        (set generation (if ($absent? msg/control_generation) "" (text_of msg/control_generation)))
+        (set last_live_seq 0.0)
+        ($dom/set_text el_who $"$(text_of msg/display_name) ($(text_of msg/player_id))")
+        ($dom/set_class panel_takeover "hidden" true))
+      (if_yes (== kind "snapshot") (on_snapshot msg))
+      (if_yes (== kind "event") (on_event msg))
+      (if_yes (== kind "ready")
+        (set ready true)
+        (if (== role "controller")
+          (then (set_state "connected" "Connected"))
+          (else (set_state "observing" "Observing")))
+        # Same-page reconnect: resend what the world has not answered yet, under
+        # the same ids (/10.7). A refreshed page has nothing here to resend.
+        (for op_id in pending_order (send_pending op_id)))
+      (if_yes (== kind "receipt") (on_receipt msg))
+      (if_yes (== kind "telemetry") (on_telemetry msg))
+      (if_yes (== kind "error")
+        (var code : Str msg/code)
+        (if_yes (== code "controlled_elsewhere")
+          (set_state "controlled_elsewhere" "Controlled elsewhere")
+          ($dom/set_class panel_takeover "hidden" false))
+        (if_yes (== code "controller_replaced")
+          (set stop_reconnecting true)
+          (set ready false)
+          (set_state "controlled_elsewhere" "Controlled elsewhere")
+          (notice "Another tab took over this avatar. Reload this page to take it back."))
+        (if_yes (&& (!= code "controlled_elsewhere") (!= code "controller_replaced"))
+          (notice $"The world said: $(text_of msg/message)")
+          (if_yes (! ($absent? msg/operation_id))
+            (if_yes (== admission_waiting msg/operation_id) (set admission_waiting ""))
+            (var failed_op (text_of msg/operation_id))
+            (set pending/%failed_op nil)
+            (draw_action))))))))
+  (open_socket)
+
+  ($dom/add_event_listener btn_take_over "click" (fn [ev : Any] : Void (hello true "controller")))
+  ($dom/add_event_listener btn_observe "click" (fn [ev : Any] : Void (hello false "observer")))
+  ($dom/add_event_listener btn_stop "click" (fn [ev : Any] : Void
+    (command "core.cancel" {^operation_id action_operation} "Stop walking")))
+  ($dom/add_event_listener btn_cancel "click" (fn [ev : Any] : Void
+    (command "core.cancel" {^operation_id action_operation} "Cancel the walk")))
+  ($dom/add_event_listener btn_resume "click" (fn [ev : Any] : Void
+    (command "movement.resume" {^action_id action_id} "Resume walking")))
+  ($dom/add_event_listener btn_pick "click" (fn [ev : Any] : Void
+    (if_yes (!= selected "")
+      (command "object.pick_up" {^object_id selected} $"Pick up $(label_of selected)"))))
+  ($dom/add_event_listener btn_put "click" (fn [ev : Any] : Void
+    (if_yes (!= selected "")
+      (command "object.put_down" {^object_id selected} $"Put down $(label_of selected)"))))
+
+  # --- camera and picking --------------------------------------------------------------
+  (var yaw 0.8)
+  (var pitch -0.55)
+  (var distance 12.0)
+  (var dragging false)
+  (var drag_x 0.0)
+  (var drag_y 0.0)
+  (var drag_moved 0.0)
+  (var hit (new_hit))
+  (var eye_x 0.0)
+  (var eye_y 0.0)
+  (var eye_z 0.0)
+
+  # The ray under a pointer position, in world coordinates.
+  (var ray ($buffer F64 3.0))
+  (var ray_at : (Fn [F64 F64] Void) (fn [a : F64 b : F64] : Void void))
+  (set ray_at (fn [px : F64 py : F64] : Void
+    (var w ($canvas/width stage))
+    (var h ($canvas/height stage))
+    (var nx (- (* 2.0 (/ px w)) 1.0))
+    (var ny (- 1.0 (* 2.0 (/ py h))))
+    (var t ($math/tan (/ fov 2.0)))
+    (var fx (forward_x yaw pitch))
+    (var fy (forward_y yaw pitch))
+    (var fz (forward_z yaw pitch))
+    (var rx (forward_x (+ yaw 1.5708) 0.0))
+    (var rz (forward_z (+ yaw 1.5708) 0.0))
+    # up = right x forward
+    (var ux (- 0.0 (* rz fy)))
+    (var uy (- (* rz fx) (* rx fz)))
+    (var uz (* rx fy))
+    (var aspect (/ w h))
+    (var dx (+ fx (+ (* rx (* nx (* t aspect))) (* ux (* ny t)))))
+    (var dy (+ fy (* uy (* ny t))))
+    (var dz (+ fz (+ (* rz (* nx (* t aspect))) (* uz (* ny t)))))
+    (var len ($math/sqrt (+ (* dx dx) (+ (* dy dy) (* dz dz)))))
+    (ray .set 0.0 (/ dx len))
+    (ray .set 1.0 (/ dy len))
+    (ray .set 2.0 (/ dz len))))
+
+  # Nearest portable object on the ray (slab test), or "".
+  (var pick_object : (Fn [] Str) (fn [] : Str ""))
+  (set pick_object (fn [] : Str
+    (var best "")
+    (var best_t 1000.0)
+    (for id in ent_order
+      (var e (do (var key_559 (text_of id)) ents/%key_559))
+      (if_yes (&& (flag e/portable) (== (text_of e/held_by) ""))
+        (var pad 0.15)
+        (var lo_x (- (num e/x) (+ (/ (num e/w) 2.0) pad)))
+        (var hi_x (+ (num e/x) (+ (/ (num e/w) 2.0) pad)))
+        (var lo_y (- (num e/y) pad))
+        (var hi_y (+ (num e/y) (+ (num e/h) pad)))
+        (var lo_z (- (num e/z) (+ (/ (num e/d) 2.0) pad)))
+        (var hi_z (+ (num e/z) (+ (/ (num e/d) 2.0) pad)))
+        (var tmin 0.0)
+        (var tmax 1000.0)
+        (var ok true)
+        (var axis 0.0)
+        (while (< axis 3.0)
+          (var o (if (== axis 0.0) eye_x (if (== axis 1.0) eye_y eye_z)))
+          (var d (ray .get axis))
+          (var lo (if (== axis 0.0) lo_x (if (== axis 1.0) lo_y lo_z)))
+          (var hi (if (== axis 0.0) hi_x (if (== axis 1.0) hi_y hi_z)))
+          (if (< (abs_f d) 0.000001)
+            (then (if_yes (|| (< o lo) (> o hi)) (set ok false)))
+            (else
+              (var t1 (/ (- lo o) d))
+              (var t2 (/ (- hi o) d))
+              (set tmin ($math/max tmin ($math/min t1 t2)))
+              (set tmax ($math/min tmax ($math/max t1 t2)))))
+          (set axis (+ axis 1.0)))
+        (if_yes (&& ok (&& (<= tmin tmax) (< tmin best_t)))
+          (set best_t tmin)
+          (set best id))))
+    best))
+
+  (var click : (Fn [F64 F64] Void) (fn [a : F64 b : F64] : Void void))
+  (set click (fn [px : F64 py : F64] : Void
+    (if_yes (&& meshed ready)
+      (ray_at px py)
+      (var object (pick_object))
+      (if (!= object "")
+        (then
+          (set selected object)
+          (draw_selection)
+          (set ent_dirty true))
+        (else
+          (cast world reg hit eye_x eye_y eye_z (ray .get 0.0) (ray .get 1.0) (ray .get 2.0) 120.0)
+          (if_yes (hit? hit)
+            (var cx (hit_x hit))
+            (var cz (hit_z hit))
+            (if_yes (== (before_y hit) (+ (hit_y hit) 1.0))
+              (set cx (before_x hit))
+              (set cz (before_z hit)))
+            (if_yes (!= (before_y hit) (+ (hit_y hit) 1.0))
+              (set cx (before_x hit))
+              (set cz (before_z hit)))
+            (set marker_x cx)
+            (set marker_z cz)
+            (set ent_dirty true)
+            (command "movement.walk_to" {^cell {^x ($to_int cx) ^z ($to_int cz)}}
+                     $"Walk to ($($math/round cx), $($math/round cz))")))))))
+
+  ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
+    (set dragging true)
+    (set drag_moved 0.0)
+    (set drag_x ($event/client_x ev))
+    (set drag_y ($event/client_y ev))))
+  ($dom/add_event_listener ($dom/window) "mouseup" (fn [ev : Any] : Void
+    (if_yes (&& dragging (< drag_moved click_slop))
+      (click ($event/client_x ev) ($event/client_y ev)))
+    (set dragging false)))
+  ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
+    (if_yes dragging
+      (var mx ($event/movement_x ev))
+      (var my ($event/movement_y ev))
+      (set drag_moved (+ drag_moved (+ (abs_f mx) (abs_f my))))
+      (set yaw (+ yaw (* mx orbit_speed)))
+      (set pitch ($math/clamp (- pitch (* my orbit_speed)) -1.45 -0.12)))))
+  ($dom/add_event_listener stage "wheel" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)
+    (set distance ($math/clamp (+ distance (if (> ($event/delta_y ev) 0.0) 1.0 -1.0)) 4.0 40.0))))
+  ($dom/add_event_listener stage "contextmenu" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)))
+
+  # --- frame -----------------------------------------------------------------------------
+  (var proj ($buffer F32 16.0))
+  (var view ($buffer F32 16.0))
+  (var vp ($buffer F32 16.0))
+  (var last_heartbeat 0.0)
+  (var last_hud 0.0)
+
+  (var frame : (Fn [F64] Void) (fn [now : F64] : Void void))
+  (set frame (fn [now : F64] : Void
+    (var me ents/%entity_id)
+    (var tx 24.0)
+    (var ty 1.0)
+    (var tz 12.0)
+    (if_yes (! ($absent? me))
+      (set tx (num me/x)) (set ty (num me/y)) (set tz (num me/z))
+      (set shown_x (num me/x)) (set shown_z (num me/z)))
+    (var fx (forward_x yaw pitch))
+    (var fy (forward_y yaw pitch))
+    (var fz (forward_z yaw pitch))
+    (set eye_x (- tx (* fx distance)))
+    (set eye_y (- (+ ty 1.2) (* fy distance)))
+    (set eye_z (- tz (* fz distance)))
+    (var w ($canvas/width stage))
+    (var h ($canvas/height stage))
+    (begin_frame gl prog w h)
+    (set_view_projection gl prog proj view vp w h eye_x eye_y eye_z fx fy fz fog_far 1.0)
+    (if_yes meshed
+      (var i 0.0)
+      (while (< i chunks)
+        (var n (counts .get i))
+        (if_yes (> n 0.0) (draw_chunk gl vaos/%i n))
+        (set i (+ i 1.0)))
+      (if_yes ent_dirty
+        (rebuild_entities)
+        (set ent_dirty false))
+      (if_yes (> ent_faces 0.0)
+        (draw_chunk gl ent_vao (* ent_faces indices_per_face))))
+    (if_yes (&& ready (> (- now last_heartbeat) heartbeat_ms))
+      (set last_heartbeat now)
+      (send_json {^v 1 ^kind "heartbeat"}))
+    (if_yes (> (- now last_hud) 250.0)
+      (set last_hud now)
+      (var where (if ($absent? me) "—"
+                   $"$($math/round (* (num me/x) 10.0)) , $($math/round (* (num me/z) 10.0)) dm"))
+      (var tail (- sim_ms saved_sim_ms))
+      ($dom/set_text el_hud
+        $"position ${where}$(if (&& (! ($absent? me)) (flag me/provisional)) \"  (provisional)\" \"\")\nsim $($math/round (/ sim_ms 1000.0)) s · saved $($math/round (/ saved_sim_ms 1000.0)) s$(if (> tail 0.0) $\" (+$($math/round tail) ms unsaved)\" \"\")\nrevision ${world_revision} · epoch ${epoch}"))
+    ($frame/request frame)))
+
+  ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
+  (set_state "connecting" "Connecting")
+  ($frame/request frame))

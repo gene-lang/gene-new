@@ -1,0 +1,204 @@
+# The Commons' first scene — docs/proposals/world.md §2.1, §5.3, §12.1.
+#
+# A small neighborhood on one 48 x 16 x 48 metre region: two homes, a shared
+# kitchen/gathering hall, a workshop, a garden with a pond, paths, and trees.
+# It is generated once, by `create`, and **stored**: the region record keeps its
+# own node-name table and generator identity, so later content changes cannot
+# make the same coordinate spontaneously become a different place (§5.3).
+#
+# ## Coordinates (§5.3)
+#
+# X east, Y up, Z north. One node is one metre; node (x, y, z) occupies
+# [x, x+1) metres. Authoritative positions are integer millimetres. The ground
+# is the node layer y = 0, so a standing avatar's feet are at y = 1000 mm
+# (`floor_y` = 1 in nodes).
+#
+# ## Initial entities
+#
+# One unique movable object: the watering can, lying in the garden. Avatars are
+# added when the operator provisions a player (`add_avatar`), each at the next
+# free spawn cell on the main street.
+
+(mod scene)
+
+(import [Registry id_of name_of solid? registered?] ^from "../core/registry.gene")
+
+(let region_id "region-commons-1")
+(let generator "commons/neighborhood-layout")
+(let generator_revision "1")
+(let size_x 48)
+(let size_y 16)
+(let size_z 48)
+(let floor_y 1)
+
+(let spawn_cells [[23 3] [24 3] [23 5] [24 5] [23 7] [24 7] [23 9] [24 9]])
+(let avatar_tiles ["commons:avatar_amber" "commons:avatar_teal" "commons:avatar_violet"])
+
+(fn node_index [x : Int y : Int z : Int] : Int
+  (+ x (* size_x (+ y (* size_y z)))))
+
+(fn wrap_index [i : Int n : Int] : Int
+  (- i (* n ($to_int ($math/floor (/ ($to_float i) ($to_float n)))))))
+
+# --- layout ------------------------------------------------------------------
+
+(fn fill [nodes : (Buffer F32) id : F64 x0 : Int y0 : Int z0 : Int
+          x1 : Int y1 : Int z1 : Int] : Nil
+  # Inclusive box.
+  (var z z0)
+  (while (<= z z1)
+    (var y y0)
+    (while (<= y y1)
+      (var x x0)
+      (while (<= x x1)
+        (nodes .set (node_index x y z) id)
+        (set x (+ x 1)))
+      (set y (+ y 1)))
+    (set z (+ z 1))))
+
+# A house: plank walls three nodes high around an open floor, a roof slab, and
+# a two-node-high doorway on the given side.
+(fn house [nodes : (Buffer F32) reg : Registry x0 : Int z0 : Int x1 : Int z1 : Int
+           door_side : Str door_at : Int] : Nil
+  (let plank (id_of reg "commons:plank"))
+  (let roof (id_of reg "commons:roof"))
+  (let air (id_of reg "air"))
+  (fill nodes plank x0 1 z0 x1 3 z0)
+  (fill nodes plank x0 1 z1 x1 3 z1)
+  (fill nodes plank x0 1 z0 x0 3 z1)
+  (fill nodes plank x1 1 z0 x1 3 z1)
+  (fill nodes roof x0 4 z0 x1 4 z1)
+  (if_yes (== door_side "east") (fill nodes air x1 1 door_at x1 2 (+ door_at 1)))
+  (if_yes (== door_side "west") (fill nodes air x0 1 door_at x0 2 (+ door_at 1)))
+  (if_yes (== door_side "south") (fill nodes air door_at 1 z0 (+ door_at 1) 2 z0))
+  (if_yes (== door_side "north") (fill nodes air door_at 1 z1 (+ door_at 1) 2 z1)))
+
+(fn tree [nodes : (Buffer F32) reg : Registry x : Int z : Int] : Nil
+  (fill nodes (id_of reg "commons:tree") x 1 z x 4 z)
+  (fill nodes (id_of reg "commons:leaves") (- x 1) 5 (- z 1) (+ x 1) 6 (+ z 1)))
+
+# The region's nodes, as content ids of `reg`.
+(fn layout [reg : Registry] : (Buffer F32)
+  (let nodes ($buffer F32 (* size_x (* size_y size_z))))
+  (nodes .fill (id_of reg "air"))
+  (let grass (id_of reg "commons:grass"))
+  (let path (id_of reg "commons:path"))
+  (fill nodes grass 0 0 0 (- size_x 1) 0 (- size_z 1))
+  # The main street runs north-south; a lane crosses it east-west.
+  (fill nodes path 22 0 0 25 0 (- size_z 1))
+  (fill nodes path 0 0 22 (- size_x 1) 0 25)
+  # Homes on the west side, doors facing the street.
+  (house nodes reg 4 4 12 12 "east" 7)
+  (house nodes reg 4 34 12 42 "east" 37)
+  # The shared kitchen and gathering hall, north-east.
+  (house nodes reg 32 32 44 44 "west" 37)
+  # The workshop, south-east, door onto the lane.
+  (house nodes reg 34 14 42 20 "north" 37)
+  # The garden: soil beds by the street, and a pond beside them.
+  (fill nodes (id_of reg "commons:garden_soil") 30 0 4 33 0 10)
+  (fill nodes (id_of reg "commons:water") 36 0 5 40 0 9)
+  (fill nodes (id_of reg "commons:sand") 35 0 4 41 0 4)
+  (fill nodes (id_of reg "commons:sand") 35 0 10 41 0 10)
+  (tree nodes reg 16 16)
+  (tree nodes reg 29 30)
+  (tree nodes reg 17 30)
+  (fill nodes (id_of reg "commons:lamp") 21 1 21 21 1 21)
+  (fill nodes (id_of reg "commons:lamp") 26 1 26 26 1 26)
+  nodes)
+
+# --- storage form -------------------------------------------------------------
+
+# The stored region: its own name table plus run-length-encoded name indices
+# in `node_index` order. Names, not content ids, so the record means the same
+# thing whatever ids a later content set assigns.
+(fn region_record [reg : Registry nodes : (Buffer F32)] : Map
+  (let names [])
+  (let index_of {})
+  (let runs [])
+  (let n (* size_x (* size_y size_z)))
+  (var i 0)
+  (var current -1)
+  (var count 0)
+  (while (< i n)
+    (let name (name_of reg (nodes .get i)))
+    (var slot (index_of .get name))
+    (if_yes (== slot void)
+      (set slot names/.size)
+      (names .push name)
+      (index_of .put name slot))
+    (if (== slot current)
+      (then (set count (+ count 1)))
+      (else
+        (if_yes (> count 0) (runs .push current) (runs .push count))
+        (set current slot)
+        (set count 1)))
+    (set i (+ i 1)))
+  (if_yes (> count 0) (runs .push current) (runs .push count))
+  {^region_id region_id ^origin [0 0 0] ^size [size_x size_y size_z]
+   ^order "x+48*(y+16*z)" ^floor_y floor_y
+   ^generator generator ^generator_revision generator_revision
+   ^names names ^runs runs})
+
+# Decode a stored region into content ids of `reg`. A name the current content
+# does not define is a recovery failure: the world cannot silently reinterpret
+# a place (§12.2).
+(fn region_nodes [reg : Registry record : Map] : (Buffer F32)
+  (let n (* size_x (* size_y size_z)))
+  (let nodes ($buffer F32 n))
+  (let ids [])
+  (for name in record/names
+    (if_not (registered? reg name)
+      (fail $"Stored region ${record/region_id} uses node `${name}`, which the selected content does not define."))
+    (ids .push (id_of reg name)))
+  (var at 0)
+  (var r 0)
+  (let runs record/runs)
+  (while (< r runs/.size)
+    (let slot runs/%r)
+    (let next (+ r 1))
+    (let count runs/%next)
+    (let id ids/%slot)
+    (var k 0)
+    (while (< k count)
+      (nodes .set at id)
+      (set at (+ at 1))
+      (set k (+ k 1)))
+    (set r (+ r 2)))
+  (if_not (== at n)
+    (fail $"Stored region ${record/region_id} has ${at} nodes; expected ${n}."))
+  nodes)
+
+(fn solid_lookup [reg : Registry nodes : (Buffer F32)]
+  (fn [x : Int y : Int z : Int] : Bool
+    (if (|| (|| (< x 0) (>= x size_x))
+            (|| (|| (< y 0) (>= y size_y)) (|| (< z 0) (>= z size_z))))
+      false
+      (solid? reg (nodes .get (node_index x y z))))))
+
+# --- entities ----------------------------------------------------------------
+
+(let watering_can_id "object-watering-can")
+
+(fn initial_entities [] : List
+  [{^id watering_can_id ^kind "object/watering_can" ^revision 1
+    ^components
+      {^core/transform {^schema 1 ^x_mm 31500 ^y_mm 1000 ^z_mm 11500}
+       ^core/appearance {^schema 1 ^shape "box" ^tile "commons:watering_can"
+                         ^size_mm [320 300 320]}
+       ^core/portable {^schema 1 ^unique true}
+       ^core/label {^schema 1 ^text "Watering can"}}}])
+
+(fn avatar_entity [entity_id : Str participant_id : Str display_name : Str
+                   index : Int] : Map
+  (let spawn_at (wrap_index index spawn_cells/.size))
+  (let tile_at (wrap_index index avatar_tiles/.size))
+  (let cell spawn_cells/%spawn_at)
+  (let tile avatar_tiles/%tile_at)
+  {^id entity_id ^kind "actor/human" ^revision 1
+   ^components
+     {^core/transform {^schema 1 ^x_mm (+ (* cell/0 1000) 500) ^y_mm 1000
+                       ^z_mm (+ (* cell/1 1000) 500)}
+      ^core/appearance {^schema 1 ^shape "box" ^tile tile ^size_mm [600 1700 600]}
+      ^core/actor {^schema 1 ^participant_id participant_id}
+      ^core/capacity {^schema 1 ^slots 4}
+      ^core/label {^schema 1 ^text display_name}}})

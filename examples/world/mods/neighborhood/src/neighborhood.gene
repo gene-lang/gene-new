@@ -1,0 +1,59 @@
+# The Commons' neighborhood content (docs/proposals/world.md §2.1): what the
+# first scene's homes, paths and roofs are made of, and what its inhabitants
+# and objects look like.
+#
+# Everything here is data a client receives rather than code it runs (§15.6):
+# a node's tiles and flags, and appearance tiles an entity names in its
+# `core/appearance` component. The scene itself — where the houses stand — is
+# world content, laid out by `server/scene.gene` and stored with the world.
+
+(mod neighborhood ^profile web)
+
+(import [Game register_tile register_node tile_solid tile_overlay]
+        ^from "../../../core/api.gene")
+
+(fn register_all [game : Game] : Nil
+  (setup_tiles game)
+  (setup_nodes game))
+
+(fn setup_tiles [game : Game] : Nil
+  # Building materials.
+  (register_tile game "commons:plank" ^kind tile_solid
+                 ^red 176.0 ^green 134.0 ^blue 86.0 ^spread 18.0 ^seed 221.0)
+  (register_tile game "commons:roof" ^kind tile_solid
+                 ^red 140.0 ^green 64.0 ^blue 52.0 ^spread 20.0 ^seed 223.0)
+  (register_tile game "commons:path" ^kind tile_solid
+                 ^red 190.0 ^green 176.0 ^blue 150.0 ^spread 24.0 ^seed 225.0)
+  (register_tile game "commons:garden_soil" ^kind tile_solid
+                 ^red 92.0 ^green 64.0 ^blue 42.0 ^spread 26.0 ^seed 227.0)
+  # Appearance tiles for entities. An avatar is a person-sized box of its own
+  # colour; the watering can is the one unique movable object of Milestone 1.
+  (register_tile game "commons:avatar_amber" ^kind tile_solid
+                 ^red 222.0 ^green 142.0 ^blue 70.0 ^spread 12.0 ^seed 229.0)
+  (register_tile game "commons:avatar_teal" ^kind tile_solid
+                 ^red 58.0 ^green 150.0 ^blue 150.0 ^spread 12.0 ^seed 231.0)
+  (register_tile game "commons:avatar_violet" ^kind tile_solid
+                 ^red 132.0 ^green 96.0 ^blue 184.0 ^spread 12.0 ^seed 233.0)
+  (register_tile game "commons:watering_can" ^kind tile_solid
+                 ^red 70.0 ^green 130.0 ^blue 196.0 ^spread 10.0 ^seed 235.0)
+  # Browser markers (§6.5, §15.3). The pending destination is not arrival, and
+  # the last-saved position is not the live one; each has its own look.
+  (register_tile game "commons:marker_pending" ^kind tile_solid
+                 ^red 250.0 ^green 250.0 ^blue 120.0 ^spread 4.0 ^seed 237.0)
+  (register_tile game "commons:marker_saved" ^kind tile_solid
+                 ^red 235.0 ^green 235.0 ^blue 235.0 ^spread 4.0 ^seed 239.0)
+  (register_tile game "commons:marker_selected" ^kind tile_solid
+                 ^red 255.0 ^green 96.0 ^blue 96.0 ^spread 4.0 ^seed 241.0)
+  # The fallback for an appearance this client does not know (§15.6).
+  (register_tile game "commons:unknown" ^kind tile_solid
+                 ^red 255.0 ^green 0.0 ^blue 255.0 ^spread 30.0 ^seed 243.0))
+
+(fn setup_nodes [game : Game] : Nil
+  (register_node game "commons:plank" ^description "Wooden planks"
+                 ^tiles ["commons:plank"])
+  (register_node game "commons:roof" ^description "Roof tiles"
+                 ^tiles ["commons:roof"])
+  (register_node game "commons:path" ^description "Packed path"
+                 ^tiles ["commons:path"])
+  (register_node game "commons:garden_soil" ^description "Garden soil"
+                 ^tiles ["commons:garden_soil"]))

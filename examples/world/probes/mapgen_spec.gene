@@ -440,7 +440,9 @@
   # rather than a change to what the world generates — §14's rule, and the same
   # shape M8.2's trees used from the other side (one checksum changed, three did
   # not, so the change was decorations).
-  (check_f out "content set size" (registered_count r) 20.0)
+  # 20 from commons/default, plus the Commons neighborhood's four building
+  # materials (plank, roof, path, garden soil) — checksums unchanged again.
+  (check_f out "content set size" (registered_count r) 24.0)
   (check_f out "air is still 0" (id_of r "air") 0.0)
   # Ids are assigned at load, so this pins the order rather than the numbers.
   (check_f out "stone follows the reserved ids" (id_of r "commons:stone") 3.0)

@@ -1,0 +1,229 @@
+# The Commons wire protocol, server half — docs/proposals/world.md §9.
+#
+# One complete UTF-8 JSON object per WebSocket message (§9.2). This module owns
+# what "a valid message" means on the way in and how every message is built on
+# the way out; the WebSocket adapter (`server/host.gene`) only moves strings,
+# and the runtime (`server/runtime.gene`) only sees validated maps.
+#
+# ## Inbound rules (§9.2)
+#
+# - At most `max_message_bytes` (256 KiB) of JSON.
+# - Parsed strictly: a repeated object key is an error, not "last one wins".
+# - Nesting at most `max_depth`.
+# - `v` must be 1 and `kind` must be a known message kind.
+# - Numbers are bounded safe integers; a float anywhere in an operation's input
+#   is rejected. IDs, revisions and sequences travel as strings.
+#
+# Invalid framing is answered with an `error`; it is never a committed
+# operation and never gets a receipt (§10.3).
+#
+# ## Semantic identity (§10.2)
+#
+# An operation's semantic payload is its operation name, contract version,
+# input and preconditions — not its connection fields, so a reconnect can resend
+# the same operation under a new control generation. `canonical_json` renders
+# it with object keys sorted at every level, which is the specified canonical
+# representation the stored comparison uses; property order on the wire never
+# matters.
+
+(mod protocol)
+
+(import [Registry registered_count name_of drawtype_of solid? opaque?
+         propagates_light? merges_same? light_source_of
+         tile_top_of tile_side_of tile_bottom_of]
+        ^from "../core/registry.gene")
+(import [TileRegistry tile_count tile_name tile_kind tile_r tile_g tile_b
+         tile_spread tile_seed tile_base_r tile_base_g tile_base_b
+         tile_base_spread tile_base_seed tile_density]
+        ^from "../core/tiles.gene")
+
+(let protocol_version 1)
+(let subprotocol "gene.world.v1")
+(let max_message_bytes 262144)
+(let max_depth 16)
+(let max_safe_integer 9007199254740991)
+
+(let inbound_kinds ["hello" "command" "query" "heartbeat" "ack"])
+
+(type ProtocolError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for ProtocolError)
+
+(fn protocol_problem [code : Str message : Str]
+  (fail (ProtocolError ^code code ^message message)))
+
+# --- inbound -----------------------------------------------------------------
+
+# Parse and check one inbound application message. Answers the message map or
+# fails with a ProtocolError whose code the host sends back in an `error`.
+(fn decode_inbound [payload] : Map
+  (let text (if (== ($head payload) Str) payload ($binary/to_str payload)))
+  (if (> ($str/byte_size text) max_message_bytes)
+    (protocol_problem "message_too_large"
+      $"Messages are limited to ${max_message_bytes} bytes."))
+  (let message
+    (try ($json/parse text ^strict true ^max_depth max_depth)
+      catch Any (protocol_problem "invalid_json" "The message is not one valid JSON object.")))
+  (if_not (== ($head message) Map)
+    (protocol_problem "invalid_message" "A message must be a JSON object."))
+  (if_not (== message/v protocol_version)
+    (protocol_problem "unsupported_version"
+      $"This world speaks protocol version ${protocol_version}."))
+  (let kind message/kind)
+  (if_not (&& (== ($head kind) Str) (contains_str? inbound_kinds kind))
+    (protocol_problem "unknown_kind" "The message kind is not one this world accepts."))
+  message)
+
+(fn contains_str? [items : List value : Str] : Bool
+  (var found false)
+  (for item in items
+    (if_yes (== item value) (set found true)))
+  found)
+
+# An identifier the client chose: 1..max_len bytes of [A-Za-z0-9._:-].
+(let token_bytes "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
+
+(fn valid_token? [value max_len : Int] : Bool
+  (if_not (== ($head value) Str) (return false))
+  (let n ($str/byte_size value))
+  (if (|| (== n 0) (> n max_len)) (return false))
+  (var i 0)
+  (while (< i n)
+    (if_not ($str/contains? token_bytes ($str/slice_bytes value i 1))
+      (return false))
+    (set i (+ i 1)))
+  true)
+
+(fn require_token [message field : Str max_len : Int] : Str
+  (let value (message .get field))
+  (if_not (valid_token? value max_len)
+    (protocol_problem "invalid_field"
+      $"`${field}` must be 1-${max_len} characters of letters, digits, '.', '_', ':' or '-'."))
+  value)
+
+(fn safe_int? [value] : Bool
+  (&& (== ($head value) Int)
+      (&& (<= value max_safe_integer) (>= value (- 0 max_safe_integer)))))
+
+# Accept only JSON the operation schemas can describe: maps with string keys,
+# lists, strings, booleans, null and safe integers. A float, or anything else,
+# is outside every version-1 operation schema (§9.2).
+(fn plain_data? [value depth : Int] : Bool
+  (if (> depth max_depth) (return false))
+  (let head ($head value))
+  (if (|| (== head Str) (|| (== head Bool) (== value nil))) (return true))
+  (if (== head Int) (return (safe_int? value)))
+  (if (== head List)
+    (do
+      (for item in value
+        (if_not (plain_data? item (+ depth 1)) (return false)))
+      (return true)))
+  (if (== head Map)
+    (do
+      (for pair in value
+        (if_not (plain_data? pair/1 (+ depth 1)) (return false)))
+      (return true)))
+  false)
+
+# --- canonical JSON (§10.2) ---------------------------------------------------
+
+# Byte-wise (UTF-8) ordering of two strings: the order JSON object keys are
+# sorted in, which is also code-point order.
+(fn str_before? [a : Str b : Str] : Bool
+  (let x ($str/to_utf8 a))
+  (let y ($str/to_utf8 b))
+  (let nx (x .len))
+  (let ny (y .len))
+  (var i 0)
+  (while (&& (< i nx) (< i ny))
+    (let bx (x .get i))
+    (let by (y .get i))
+    (if (< bx by) (return true))
+    (if (> bx by) (return false))
+    (set i (+ i 1)))
+  (< nx ny))
+
+(fn sorted_strings [items : List] : List
+  # Insertion sort: semantic payloads have a handful of keys per object.
+  (let out [])
+  (for item in items
+    (var i out/.size)
+    (out .push item)
+    (var moving true)
+    (while (&& moving (> i 0))
+      (var j (- i 1))
+      (if (str_before? item out/%j)
+        (then
+          (out .set i out/%j)
+          (set i j))
+        (else (set moving false))))
+    (out .set i item))
+  out)
+
+(fn canonical_json [value] : Str
+  (let head ($head value))
+  (if (== head Map)
+    (do
+      (let keys [])
+      (for pair in value (keys .push ($to_str pair/0)))
+      (let parts [])
+      (for key in (sorted_strings keys)
+        (parts .push $"$($json/stringify key):$(canonical_json (value .get key))"))
+      (let joined ($str/join parts ","))
+      (return $"{${joined}}")))
+  (if (== head List)
+    (do
+      (let parts [])
+      (for item in value (parts .push (canonical_json item)))
+      (let joined ($str/join parts ","))
+      (return $"[${joined}]")))
+  ($json/stringify value))
+
+# --- outbound ----------------------------------------------------------------
+
+# Every outbound message: version, kind, then the caller's fields.
+(fn message [kind : Str fields : Map] : Str
+  (let out {^v protocol_version ^kind kind})
+  (for pair in fields (out .put pair/0 pair/1))
+  ($json/stringify out))
+
+(fn error_message [code : Str text : Str extra : Map] : Str
+  (let fields {^code code ^message text})
+  (for pair in extra (fields .put pair/0 pair/1))
+  (message "error" fields))
+
+# --- content (§15.6: appearance is data) --------------------------------------
+
+# The node and tile registries as data, in id order. A client rebuilds its own
+# registries by registering these in the same order, so a node's tile indices
+# and a region's node ids mean the same thing on both sides.
+(fn content_data [reg : Registry tiles : TileRegistry] : Map
+  (let nodes [])
+  (var id 0.0)
+  (let n (registered_count reg))
+  (while (< id n)
+    (nodes .push {^id ($to_int id) ^name (name_of reg id)
+                  ^drawtype ($to_int (drawtype_of reg id))
+                  ^solid (solid? reg id) ^opaque (opaque? reg id)
+                  ^propagates (propagates_light? reg id)
+                  ^merges_same (merges_same? reg id)
+                  ^light_source ($to_int (light_source_of reg id))
+                  ^tiles [($to_int (tile_top_of reg id))
+                          ($to_int (tile_side_of reg id))
+                          ($to_int (tile_bottom_of reg id))]})
+    (set id (+ id 1.0)))
+  (let tile_list [])
+  (var t 0.0)
+  (let tn (tile_count tiles))
+  (while (< t tn)
+    (tile_list .push
+      {^name (tile_name tiles t) ^kind ($to_int (tile_kind tiles t))
+       ^rgb [($to_int (tile_r tiles t)) ($to_int (tile_g tiles t))
+             ($to_int (tile_b tiles t))]
+       ^spread ($to_int (tile_spread tiles t)) ^seed ($to_int (tile_seed tiles t))
+       ^base_rgb [($to_int (tile_base_r tiles t)) ($to_int (tile_base_g tiles t))
+                  ($to_int (tile_base_b tiles t))]
+       ^base_spread ($to_int (tile_base_spread tiles t))
+       ^base_seed ($to_int (tile_base_seed tiles t))
+       ^density ($to_int (tile_density tiles t))})
+    (set t (+ t 1.0)))
+  {^nodes nodes ^tiles tile_list})

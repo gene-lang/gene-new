@@ -1,0 +1,382 @@
+# The Commons world store — docs/proposals/world.md §12.1, §12.2, §12.8.
+#
+# One SQLite file, `world.sqlite`, owned by the world process. It is opened with
+# `$db/sqlite/open_file`: SQLite's own pager and write-ahead log make each
+# commit durable by writing the pages it changed. Nothing serializes or
+# republishes the database image — the whole-image path Miclone used, whose
+# per-commit cost grows with the database (SOURCES.md, "Storage-publication
+# finding").
+#
+# ## Durability settings (§12.8: record them)
+#
+#   journal_mode        WAL      — a commit appends its pages to the log
+#   synchronous         FULL     — the log is synced before COMMIT returns
+#   fullfsync           ON       — macOS F_FULLFSYNC for that sync
+#   checkpoint_fullfsync ON      — and for checkpoints back into the main file
+#   wal_autocheckpoint  1000 pages (SQLite's default), on the committing thread
+#   busy_timeout        5000 ms  — only readers such as operator tools contend
+#
+# `durability_settings` is the record the world reports and tests read back.
+#
+# ## Ownership
+#
+# `world.lock` is held with `$fs/try_lock` for as long as the store is open:
+# one writer per world directory (§12.2 "Acquire exclusive world-store
+# ownership"). Opening a missing store is an error, never a silent create
+# (§12.2, §16.3): `create_store` is the explicit create.
+#
+# ## Transactions
+#
+# `in_transaction` runs a function inside BEGIN … COMMIT and rolls back if it
+# fails, so a frontier — entities, actions, operation receipts, recipient
+# events, meta — lands whole or not at all (§6.1, §10.3). Every write below is
+# expected to run inside one; the runtime never writes in autocommit.
+
+(mod persistence)
+
+(import $db/sqlite [open_file Db])
+
+(let store_format 1)
+(let database_name "world.sqlite")
+(let lock_name "world.lock")
+
+(type WorldStoreError ^props {^message Str} ^impl [Error])
+(impl Error for WorldStoreError)
+
+(fn store_problem [message : Str]
+  (fail (WorldStoreError ^message message)))
+
+(type WorldStore
+  ^props {^db Any ^claim Any ^root Str ^open Cell})
+
+(let schema_sql "
+  CREATE TABLE world_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL);
+  CREATE TABLE world_regions (
+    region_id TEXT PRIMARY KEY,
+    record TEXT NOT NULL);
+  CREATE TABLE world_entities (
+    entity_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    record TEXT NOT NULL);
+  CREATE TABLE world_participants (
+    participant_id TEXT PRIMARY KEY,
+    player_id TEXT UNIQUE,
+    record TEXT NOT NULL);
+  CREATE TABLE world_player_logins (
+    player_id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    issued_ms INTEGER NOT NULL);
+  CREATE TABLE world_player_sessions (
+    session_hash TEXT PRIMARY KEY,
+    participant_id TEXT NOT NULL,
+    created_ms INTEGER NOT NULL,
+    expires_ms INTEGER NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE world_actions (
+    action_id TEXT PRIMARY KEY,
+    participant_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    record TEXT NOT NULL);
+  CREATE TABLE world_operations (
+    participant_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    operation TEXT NOT NULL,
+    semantic TEXT,
+    receipt TEXT NOT NULL,
+    world_revision INTEGER NOT NULL,
+    PRIMARY KEY (participant_id, operation_id));
+  CREATE UNIQUE INDEX world_operations_by_seq
+    ON world_operations (participant_id, seq);
+  CREATE TABLE world_events (
+    participant_id TEXT NOT NULL,
+    event_seq INTEGER NOT NULL,
+    world_revision INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    PRIMARY KEY (participant_id, event_seq));")
+
+# --- opening -----------------------------------------------------------------
+
+(fn durability_settings [] : Map
+  {^journal_mode "wal" ^synchronous "full" ^fullfsync "on"
+   ^checkpoint_fullfsync "on" ^wal_autocheckpoint_pages 1000
+   ^busy_timeout_ms 5000 ^backend "sqlite/open_file"})
+
+(fn apply_durability [db] : Nil
+  (let mode (db .Db:query_one "PRAGMA journal_mode=WAL"))
+  (if_not (== mode/journal_mode "wal")
+    (store_problem $"The world store could not enter WAL mode (got ${mode/journal_mode})."))
+  (db .Db:exec "PRAGMA synchronous=FULL")
+  (db .Db:exec "PRAGMA fullfsync=ON")
+  (db .Db:exec "PRAGMA checkpoint_fullfsync=ON")
+  (db .Db:exec "PRAGMA wal_autocheckpoint=1000"))
+
+(fn acquire_claim [root : Str]
+  (let claim ($fs/try_lock $"${root}/${lock_name}"))
+  (if ($absent? claim)
+    (store_problem $"Another process owns the world at ${root}."))
+  claim)
+
+(fn store_exists? [root : Str] : Bool
+  ($fs/exists? $"${root}/${database_name}"))
+
+# Create a new, empty world store. The caller fills it inside a transaction.
+(fn create_store [root : Str] : WorldStore
+  (if (store_exists? root)
+    (store_problem $"A world already exists at ${root}; creating one is an explicit, one-time step."))
+  (if_not ($fs/exists? root) ($fs/make_dir root))
+  (let claim (acquire_claim root))
+  (try
+    (let db (open_file $"${root}/${database_name}" ^create true ^busy_timeout_ms 5000))
+    (try
+      (apply_durability db)
+      (db .Db:transaction (fn [tx]
+        (tx .Db:exec schema_sql)
+        (tx .Db:exec $"PRAGMA user_version=${store_format}")))
+      (WorldStore ^db db ^claim claim ^root root ^open ($cell true))
+      catch Any
+        (db .Db:close)
+        (fail $err))
+    catch Any
+      (claim .close)
+      (fail $err)))
+
+# Open an existing store. A missing or incompatible store is a failure, not a
+# reason to start a fresh world in the same directory (§12.2).
+(fn open_store [root : Str] : WorldStore
+  (if_not (store_exists? root)
+    (store_problem $"No world at ${root}. Create one with `gene run world create`."))
+  (let claim (acquire_claim root))
+  (try
+    (let db (open_file $"${root}/${database_name}" ^busy_timeout_ms 5000))
+    (try
+      (apply_durability db)
+      (let version (db .Db:query_one "PRAGMA user_version"))
+      (if_not (== version/user_version store_format)
+        (store_problem $"Unsupported world store format ${version/user_version}; this build reads ${store_format}."))
+      (let health (db .Db:query_one "PRAGMA quick_check"))
+      (if_not (== health/quick_check "ok")
+        (store_problem "The world store failed its integrity check."))
+      (WorldStore ^db db ^claim claim ^root root ^open ($cell true))
+      catch Any
+        (db .Db:close)
+        (fail $err))
+    catch Any
+      (claim .close)
+      (fail $err)))
+
+(fn close_store [store : WorldStore] : Nil
+  (if_yes (store/open .get)
+    (store/open .set false)
+    (store/db .Db:close)
+    (store/claim .close)))
+
+# Run `body` inside one transaction. A failure rolls everything back and
+# propagates; nothing the body wrote is visible afterwards.
+(fn in_transaction [store : WorldStore body]
+  (if_not (store/open .get) (store_problem "The world store is closed."))
+  (store/db .Db:transaction (fn [tx] (body))))
+
+(fn encode [value] : Str ($json/stringify value))
+(fn decode [text : Str] ($json/parse text ^strict true))
+
+# --- meta --------------------------------------------------------------------
+
+(fn meta_put [store : WorldStore key : Str value] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_meta (key, value) VALUES (?, ?)"
+    key (encode value)))
+
+(fn meta_all [store : WorldStore] : Map
+  (let result {})
+  (for row in (store/db .Db:query "SELECT key, value FROM world_meta")
+    (result .put row/key (decode row/value)))
+  result)
+
+# --- regions -----------------------------------------------------------------
+
+(fn region_put [store : WorldStore region : Map] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_regions (region_id, record) VALUES (?, ?)"
+    region/region_id (encode region)))
+
+(fn regions_all [store : WorldStore] : List
+  (let result [])
+  (for row in (store/db .Db:query "SELECT record FROM world_regions ORDER BY region_id")
+    (result .push (decode row/record)))
+  result)
+
+# --- entities ----------------------------------------------------------------
+
+(fn entity_put [store : WorldStore entity : Map] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_entities (entity_id, kind, revision, deleted, record)
+     VALUES (?, ?, ?, ?, ?)"
+    entity/id entity/kind entity/revision (if (== entity/deleted true) 1 0)
+    (encode entity)))
+
+(fn entities_all [store : WorldStore] : List
+  (let result [])
+  (for row in (store/db .Db:query
+                "SELECT record FROM world_entities WHERE deleted = 0 ORDER BY entity_id")
+    (result .push (decode row/record)))
+  result)
+
+# --- participants, logins, sessions -------------------------------------------
+
+(fn participant_put [store : WorldStore participant : Map] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_participants (participant_id, player_id, record)
+     VALUES (?, ?, ?)"
+    participant/participant_id participant/player_id (encode participant)))
+
+(fn participants_all [store : WorldStore] : List
+  (let result [])
+  (for row in (store/db .Db:query
+                "SELECT record FROM world_participants ORDER BY participant_id")
+    (result .push (decode row/record)))
+  result)
+
+(fn login_put [store : WorldStore player_id : Str code_hash : Str issued_ms : Int] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_player_logins (player_id, code_hash, issued_ms)
+     VALUES (?, ?, ?)"
+    player_id code_hash issued_ms))
+
+(fn login_hash [store : WorldStore player_id : Str]
+  (let rows (store/db .Db:query
+              "SELECT code_hash FROM world_player_logins WHERE player_id = ?"
+              player_id))
+  (if (== rows/.size 0) nil rows/0/code_hash))
+
+(fn session_put [store : WorldStore session_hash : Str participant_id : Str
+                 created_ms : Int expires_ms : Int] : Nil
+  (store/db .Db:execute
+    "INSERT INTO world_player_sessions
+       (session_hash, participant_id, created_ms, expires_ms, revoked)
+     VALUES (?, ?, ?, ?, 0)"
+    session_hash participant_id created_ms expires_ms))
+
+(fn session_find [store : WorldStore session_hash : Str]
+  (let rows (store/db .Db:query
+              "SELECT participant_id, expires_ms, revoked
+               FROM world_player_sessions WHERE session_hash = ?"
+              session_hash))
+  (if (== rows/.size 0) nil rows/0))
+
+(fn session_revoke [store : WorldStore session_hash : Str] : Nil
+  (store/db .Db:execute
+    "UPDATE world_player_sessions SET revoked = 1 WHERE session_hash = ?"
+    session_hash))
+
+# --- actions -----------------------------------------------------------------
+
+(fn action_put [store : WorldStore action : Map] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_actions (action_id, participant_id, status, record)
+     VALUES (?, ?, ?, ?)"
+    action/action_id action/participant_id action/status (encode action)))
+
+# Unfinished actions only: terminal ones stay in the table as history but the
+# live world never needs them in memory.
+(fn actions_open [store : WorldStore] : List
+  (let result [])
+  (for row in (store/db .Db:query
+                "SELECT record FROM world_actions
+                 WHERE status IN ('queued', 'running', 'suspended')
+                 ORDER BY action_id")
+    (result .push (decode row/record)))
+  result)
+
+(fn action_get [store : WorldStore action_id : Str]
+  (let rows (store/db .Db:query
+              "SELECT record FROM world_actions WHERE action_id = ?" action_id))
+  (if (== rows/.size 0) nil (decode rows/0/record)))
+
+# --- operations and receipts (§10.2, §10.8) -----------------------------------
+
+(fn operation_find [store : WorldStore participant_id : Str operation_id : Str]
+  (let rows (store/db .Db:query
+              "SELECT seq, operation, semantic, receipt, world_revision
+               FROM world_operations WHERE participant_id = ? AND operation_id = ?"
+              participant_id operation_id))
+  (if (== rows/.size 0)
+    nil
+    {^seq rows/0/seq ^operation rows/0/operation ^semantic rows/0/semantic
+     ^receipt (decode rows/0/receipt) ^world_revision rows/0/world_revision}))
+
+(fn operation_put [store : WorldStore participant_id : Str operation_id : Str
+                   seq : Int operation : Str semantic receipt : Map
+                   world_revision : Int] : Nil
+  (store/db .Db:execute
+    "INSERT OR REPLACE INTO world_operations
+       (participant_id, operation_id, seq, operation, semantic, receipt, world_revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?)"
+    participant_id operation_id seq operation semantic (encode receipt)
+    world_revision))
+
+(fn operation_count [store : WorldStore participant_id : Str] : Int
+  (let row (store/db .Db:query_one
+             "SELECT count(*) AS n, coalesce(max(seq), 0) AS top
+              FROM world_operations WHERE participant_id = ?"
+             participant_id))
+  row/top)
+
+# One page of a participant's receipts, oldest first, strictly after `after_seq`.
+(fn operations_page [store : WorldStore participant_id : Str after_seq : Int
+                     limit : Int] : List
+  (let result [])
+  (for row in (store/db .Db:query
+                "SELECT seq, operation_id, receipt FROM world_operations
+                 WHERE participant_id = ? AND seq > ?
+                 ORDER BY seq LIMIT ?"
+                participant_id after_seq limit)
+    (result .push {^seq row/seq ^operation_id row/operation_id
+                   ^receipt (decode row/receipt)}))
+  result)
+
+# The newest `limit` receipts, returned oldest first.
+(fn operations_latest [store : WorldStore participant_id : Str limit : Int] : List
+  (let rows (store/db .Db:query
+              "SELECT seq, operation_id, receipt FROM world_operations
+               WHERE participant_id = ? ORDER BY seq DESC LIMIT ?"
+              participant_id limit))
+  (let result [])
+  (var i (- rows/.size 1))
+  (while (>= i 0)
+    (let row rows/%i)
+    (result .push {^seq row/seq ^operation_id row/operation_id
+                   ^receipt (decode row/receipt)})
+    (set i (- i 1)))
+  result)
+
+# --- recipient events (§11) ---------------------------------------------------
+
+(fn event_put [store : WorldStore participant_id : Str event_seq : Int
+               world_revision : Int event : Map] : Nil
+  (store/db .Db:execute
+    "INSERT INTO world_events (participant_id, event_seq, world_revision, event)
+     VALUES (?, ?, ?, ?)"
+    participant_id event_seq world_revision (encode event)))
+
+(fn events_after [store : WorldStore participant_id : Str after_seq : Int
+                  through_seq : Int limit : Int] : List
+  (let result [])
+  (for row in (store/db .Db:query
+                "SELECT event FROM world_events
+                 WHERE participant_id = ? AND event_seq > ? AND event_seq <= ?
+                 ORDER BY event_seq LIMIT ?"
+                participant_id after_seq through_seq limit)
+    (result .push (decode row/event)))
+  result)
+
+(fn events_oldest_seq [store : WorldStore participant_id : Str] : Int
+  (let row (store/db .Db:query_one
+             "SELECT coalesce(min(event_seq), 0) AS oldest
+              FROM world_events WHERE participant_id = ?"
+             participant_id))
+  row/oldest)

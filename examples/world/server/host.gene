@@ -1,0 +1,230 @@
+# The Commons HTTP/WebSocket host — docs/proposals/world.md §9.1, §9.4, §16.3.
+#
+# Same-origin hosting on loopback: the player page, its compiled client, the
+# sign-in form and the WebSocket endpoint are all served by the world process
+# (`http://127.0.0.1:8096/`). Pages and assets travel over HTTP; the client
+# itself is compiled from `client/main.gene` by `$web/load` and served at a
+# content-addressed URL, so a browser fetches it by digest (§9.1, §15.6).
+#
+# ## Admission (§9.4)
+#
+# - `Host` must name this server's loopback authority (DNS-rebinding guard).
+# - Every state-changing HTTP request and every WebSocket upgrade must carry
+#   this server's `Origin`.
+# - The WebSocket must offer the `gene.world.v1` subprotocol, and the server
+#   selects it; any other offer is refused before the upgrade.
+# - The participant comes from the HttpOnly session cookie, never from
+#   anything the client says in a message.
+#
+# A successful upgrade is not permission to act: the runtime still requires a
+# `hello`, a control generation, and readiness before admitting commands.
+
+(mod host)
+
+(import $net/http [listen serve html json redirect text ws_accept ws_send ws_close
+                   ws_queued])
+(import $html [render])
+(import $web [script stylesheet])
+(import [open_world close_world connection_opened connection_closed
+         handle_message tick status_of]
+        ^from "./runtime.gene")
+(import [sign_in session_participant sign_out ParticipantError]
+        ^from "./participants.gene")
+(import [decode_inbound error_message subprotocol ProtocolError]
+        ^from "./protocol.gene")
+(import [page_styles] ^from "./page_style.gene")
+
+(let cookie_name "commons_session")
+
+(fn package_dir [path : Str] : Str
+  # This module lives in <package>/server/host.gene.
+  (let parts ($str/split path "/"))
+  (let keep [])
+  (var i 0)
+  (while (< i (- parts/.size 2))
+    (keep .push parts/%i)
+    (set i (+ i 1)))
+  ($str/join keep "/"))
+
+(var client_asset ($web/load $"$(package_dir this_mod/.path)/client/main.gene"))
+(var client_styles (stylesheet "commons" page_styles))
+
+(fn cookie_value [header : Str name : Str] : Str
+  (for part in ($str/split header ";")
+    (let pair ($str/split ($str/trim part) "="))
+    (if_yes (&& (== pair/.size 2) (== pair/0 name)) (return pair/1)))
+  "")
+
+(fn secure [result]
+  (if_not ($absent? result/headers)
+    (result/headers .put "cache-control" "no-store")
+    (result/headers .put "x-content-type-options" "nosniff")
+    # Not `no-referrer`: under it a browser sends `Origin: null` on a
+    # same-origin form POST (Fetch "serialize a request origin"), and the Origin
+    # check below would refuse every sign-in. `same-origin` keeps the real
+    # origin on our own requests and sends no referrer anywhere else.
+    (result/headers .put "referrer-policy" "same-origin")
+    (result/headers .put "content-security-policy"
+      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))
+  result)
+
+# --- pages -------------------------------------------------------------------------
+
+(fn game_page [] : Str
+  ($ "<!doctype html>"
+    (render
+      `(html ^lang "en"
+         (head (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+           (title "The Commons")
+           %client_styles)
+         (body
+           (div ^id "commons_root"
+             (canvas ^id "stage")
+             (header ^id "topbar"
+               (strong "The Commons")
+               (span ^id "who" "")
+               (span ^id "conn_state" ^class "state" "Connecting")
+               (form ^method "post" ^action "/logout" ^class "logout"
+                 (button ^type "submit" "Sign out")))
+             (div ^id "hud" "")
+             (aside ^id "panel"
+               (section ^id "takeover_panel" ^class "hidden"
+                 (p "This avatar is already controlled from another tab or device.")
+                 (button ^id "take_over" ^type "button" "Take over here")
+                 (button ^id "observe" ^type "button" "Just watch"))
+               (section ^id "action_panel"
+                 (h2 "Activity")
+                 (div ^id "action_text" "Click the ground to walk there.")
+                 (div ^class "buttons"
+                   (button ^id "action_stop" ^type "button" ^class "hidden" "Stop")
+                   (button ^id "action_resume" ^type "button" ^class "hidden" "Resume")
+                   (button ^id "action_cancel" ^type "button" ^class "hidden" "Cancel")))
+               (section ^id "selection_panel"
+                 (h2 "Selected")
+                 (div ^id "selection_text" "Nothing selected. Click an object to inspect it.")
+                 (div ^class "buttons"
+                   (button ^id "sel_pick_up" ^type "button" ^class "hidden" "Pick up")
+                   (button ^id "sel_put_down" ^type "button" ^class "hidden" "Put down")))
+               (section ^id "inventory_panel"
+                 (h2 "Holding")
+                 (div ^id "inventory_list" "Nothing."))
+               (div ^id "notice" ^role "status" ^aria-live "polite" "")
+               (section ^id "history_panel"
+                 (h2 "History")
+                 (div ^id "history_list" ""))))
+           %(script client_asset ^mount "commons_root"))))))
+
+(fn login_page [message : Str] : Str
+  ($ "<!doctype html>"
+    (render
+      `(html ^lang "en"
+         (head (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+           (title "The Commons — sign in")
+           %client_styles)
+         (body ^class "login"
+           (main ^class "login_card"
+             (h1 "The Commons")
+             (p "Sign in with the player id and code your operator gave you.")
+             (form ^method "post" ^action "/login"
+               (label "Player id" (input ^name "player_id" ^autocomplete "username" ^required "required"))
+               (label "Code" (input ^name "code" ^type "password" ^autocomplete "current-password" ^required "required"))
+               (button ^type "submit" "Sign in"))
+             (p ^class "login_message" %message)))))))
+
+# --- serving -------------------------------------------------------------------------
+
+(fn serve_world [root : Str port : Int]
+  (let w (open_world root))
+  (let origin $"http://127.0.0.1:${port}")
+  (let origins [origin $"http://localhost:${port}"])
+  (let authorities [$"127.0.0.1:${port}" $"localhost:${port}"])
+  (let next_conn ($cell 0))
+  (let store w/store)
+
+  (fn allowed? [value : Str items : List] : Bool
+    (var ok false)
+    (for item in items (if_yes (== item value) (set ok true)))
+    ok)
+
+  (fn session_of [request]
+    (let token (cookie_value (?? request/headers/cookie "") cookie_name))
+    (if (== token "") nil (session_participant store token)))
+
+  (fn handle [request]
+    (if_not (allowed? (?? request/headers/host "") authorities)
+      (return (text 403 "Use the loopback address this world was started on.")))
+    (let request_origin (?? request/headers/origin ""))
+    (if_yes (&& (!= request/method "GET") (! (allowed? request_origin origins)))
+      (return (text 403 "A same-origin request is required.")))
+    (let path request/path)
+    (if_yes (&& (== request/method "GET") (== path "/"))
+      (return (if ($absent? (session_of request))
+                (redirect 303 "/login")
+                (html (game_page)))))
+    (if_yes (&& (== request/method "GET") (== path "/login"))
+      (return (html (login_page ""))))
+    (if_yes (&& (== request/method "POST") (== path "/login"))
+      (let form ($url/parse_query request/body))
+      (return
+        (try
+          (let session (sign_in store (?? form/player_id "") (?? form/code "")))
+          (let result (redirect 303 "/"))
+          (result/headers .put "set-cookie"
+            $"${cookie_name}=${session/token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${session/max_age_s}")
+          result
+          catch ParticipantError
+            (html 401 (login_page $err/message)))))
+    (if_yes (&& (== request/method "POST") (== path "/logout"))
+      (sign_out store (cookie_value (?? request/headers/cookie "") cookie_name))
+      (let result (redirect 303 "/login"))
+      (result/headers .put "set-cookie"
+        $"${cookie_name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+      (return result))
+    (if_yes (&& (== request/method "GET") (== path "/health"))
+      (return (json 200 ($json/stringify (status_of w)))))
+    (if_yes (&& (== request/method "GET") (== path "/world/v1"))
+      # Browsers always send Origin on a WebSocket handshake; a missing or
+      # foreign one is refused before anything is upgraded.
+      (if_not (allowed? request_origin origins)
+        (return (text 403 "A same-origin socket is required.")))
+      (let pid (session_of request))
+      (if ($absent? pid)
+        (return (text 401 "Sign in first.")))
+      (var offered false)
+      (for item in ($str/split (?? request/headers/sec-websocket-protocol "") ",")
+        (if_yes (== ($str/trim item) subprotocol) (set offered true)))
+      (if_not offered
+        (return (text 400 $"This endpoint speaks the ${subprotocol} subprotocol.")))
+      (next_conn .set (+ (next_conn .get) 1))
+      (let conn_id $"conn-$(next_conn .get)")
+      (return (ws_accept request ^subprotocol subprotocol
+        ^on_open (fn [ws]
+          (connection_opened w
+            {^id conn_id ^participant_id pid
+             ^send (fn [payload] (ws_send ws payload))
+             ^close (fn [] (ws_close ws))
+             ^queued (fn [] (ws_queued ws))}))
+        ^on_message (fn [ws payload]
+          (try
+            (handle_message w conn_id (decode_inbound payload))
+            catch ProtocolError
+              (ws_send ws (error_message $err/code $err/message {}))))
+        ^on_close (fn [ws] (connection_closed w conn_id)))))
+    (text 404 "Not found."))
+
+  (fn safe_handle [request]
+    (secure
+      (try (handle request)
+        catch Any
+          ($println $"world host: ${request/method} ${request/path} failed: ${$err/message}")
+          (text 500 "The world could not complete this request."))))
+
+  (let server (listen ^host "127.0.0.1" ^port port))
+  ($println $"world: serving ${w/world_id} (${w/history_id}) at ${origin}/  epoch ${w/server_epoch}  revision ${w/world_revision}")
+  (try
+    (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
+      ^max_body_bytes 16384 ^request_timeout_ms 10000
+      ^tick_ms 100 ^on_tick (fn [] (tick w)))
+    ensure (close_world w)))

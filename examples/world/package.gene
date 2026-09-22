@@ -8,8 +8,8 @@
   ^version "0.1.0"
   ^library {^entry "core/world.gene"}
   ^applications [
-    # The world process. Miclone §D8's M6: the server half, as its own process.
-    (application "server" ^entry "server/main.gene")
+    # The Commons world process (docs/proposals/world.md §16.3).
+    (application "world" ^entry "server/main.gene")
 
     # Cross-backend specs: each prints the same report on the VM as its
     # `probes/web_*_spec.gene` twin does in the web profile (§14 layer 2).
@@ -40,8 +40,6 @@
     # against `web_divergence`, and the server's generation budget.
     (application "divergence" ^entry "probes/run_divergence.gene")
     (application "worldgen" ^entry "probes/run_worldgen.gene")
-    # §D8's M4 deliverable, run twice: `create` then `verify`.
-    (application "persistence" ^entry "probes/run_persistence.gene")
     # §10.1 — what the protocol costs on the VM, which is where the server
     # encodes it.
     (application "wire_bench" ^entry "probes/wire_bench.gene")
