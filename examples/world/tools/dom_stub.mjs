@@ -1,8 +1,7 @@
-// The DOM the world clients use, as about eighty lines of stub.
+// The DOM the browser client uses, as about eighty lines of stub.
 //
-// Shared by `client_smoke.mjs` (the local client) and `net_client_smoke.mjs`
-// (the networked one), because both drive a real `main()` and neither has a
-// browser. Importing this module installs `document`, `window` and
+// Used by `net_client_smoke.mjs`, which drives the client's real `main()`
+// without a browser. Importing this module installs `document`, `window` and
 // `requestAnimationFrame` on `globalThis`; import it *before* the dynamic
 // `import()` of the client under test — which is what module evaluation order
 // already guarantees, since a static import is evaluated first.
@@ -29,7 +28,7 @@ export const texts = new Map();    // element id -> textContent
 // way to remove a node or set a style. So a stub element carries a class set, a
 // child list, and a rectangle derived from those classes.
 //
-// **The geometry below repeats `net.html`'s CSS**, and that is the honest cost
+// **The geometry below repeats `index.html`'s CSS**, and that is the honest cost
 // of hit-testing without a browser: the numbers are the cell size and origin the
 // stylesheet uses, and a change to one wants a change to the other. What this
 // still checks is the part the client owns — which element a click lands on, and

@@ -1,40 +1,23 @@
-# The mod loader — design.md §9's load step, and §D8's M7.
+# The content list — Miclone design.md §9's load step.
 #
-# **One list, and this is it.** Everything that needs the game — the server, both
-# clients, and every probe that generates terrain — calls `load_mods` and reads
-# the registries off the `Game` it gets back. Before M7 each of those seven call
-# sites imported `core/content.gene` and called four `setup_*` functions in the
-# right order; the order is now the mod's own business and the list of mods is
-# one line here.
+# **One list, and this is it.** Everything that needs the game — the server and
+# every probe that generates terrain — calls `load_mods` and reads the
+# registries off the `Game` it gets back. The browser client does not: it is
+# handed the registries over the wire (server-selected content).
 #
-# ## The mods are compiled in, and that is M7's honest half
+# ## The content is compiled in
 #
-# §D5 says "a mod is code loaded at runtime", and this loads no code at runtime:
 # `mods/default` is imported like any other module and its `register_all` is
-# called. So what M7 has is §9's *API* — a mod is a package, it registers
-# through a surface rather than reaching into the engine, its definitions are
-# data, and adding a node is a mod change — and not yet §9's *loading*.
+# called. That is the Commons' loading model — a selected module list and
+# normal Gene loading (docs/proposals/world.md §13.1). Miclone also had a
+# runtime loader that read `mods/` off disk into a sandbox with manifest
+# `^grants`; the Commons dropped it, because the proposal asks for neither
+# grants (§1.2) nor the mod framework as a prerequisite (§1.4). Content here is
+# trusted code in this package.
 #
-# That is the right half to do first, and the split is not arbitrary. Runtime
-# module loading exists inside the VM (`loadFileModule`) and is not reachable
-# from Gene, so exposing it is engine work with a capability model attached
-# (§D5: a mod is handed exactly the authorities its manifest declares). Doing it
-# before the API existed would have been a loader with nothing worth loading.
-#
-# **What the split costs today is nothing a user can see, and one thing a
-# reviewer should:** the capability model is not enforced, because a compiled-in
-# module is not sandboxed by anything. `mods/default` is trusted code in this
-# repository. §D5's promise — "a mod that never receives `$fs/WriteDir` cannot
-# write a file" — is a claim about the loader that does not exist yet, and this
-# file is where it will be true or not.
-#
-# ## Portable, though the runtime loader will not be
-#
-# This is `core/` rather than `server/` (where Appendix B put it) because the
-# in-tab client generates its own world and therefore needs the same game the
-# server has. When runtime loading lands it is a VM capability the web profile
-# does not have, and this file splits: a portable list of compiled-in mods, and
-# a server-side loader that reads `mods/` off disk.
+# `^profile web` keeps the module portable, so the web-profile specs and
+# `tools/mesh_bench.mjs`/`tools/world_build.mjs` generate the same game the
+# server does.
 
 (mod mods ^profile web)
 

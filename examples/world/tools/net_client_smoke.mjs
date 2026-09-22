@@ -3,9 +3,8 @@
 //   gene build --target web client/net_main.gene --out-dir dist   (and friends)
 //   node tools/net_client_smoke.mjs
 //
-// `client_smoke.mjs` drives `client/main.gene`, which generates its world in
-// the tab. This drives `client/net_main.gene`, which is *handed* one — so the
-// thing under test is the half that file adds: the handshake, the version and
+// `client/net_main.gene` is *handed* its world by the server, so the thing
+// under test is the client's half of the split: the handshake, the version and
 // extent check, the flow-controlled request loop, and §7.1's rule that the
 // hotbar fills because the server said so rather than because the client
 // predicted it.
@@ -13,8 +12,7 @@
 // **Nothing about the transport is stubbed.** The harness boots `gene run
 // server` as its own process, and the client reaches it through the platform's
 // own `WebSocket` — real TCP, real frames, real ordering. What is stubbed is
-// the DOM, for the reasons `tools/dom_stub.mjs` gives, and that is the same
-// stub the local client's smoke test uses.
+// the DOM, for the reasons `tools/dom_stub.mjs` gives.
 //
 // ## How this differs from `probes/web_net_probe.gene`
 //
@@ -31,7 +29,7 @@
 //   "listening on 8790" to appear hangs forever while the server is happily
 //   serving. The readiness signal is the port, so that is what is polled.
 // - **A world costs 64 s to generate and 28 s to load.** So the world is kept
-//   between runs at `WORLD_SMOKE_WORLD` (default `/tmp/world_smoke_world`)
+//   between runs at `WORLD_SMOKE_WORLD` (default `/tmp/gene_world_smoke`)
 //   and a second run is ~38 s; `WORLD_SMOKE_FRESH=1` deletes it first.
 //   `WORLD_SMOKE_RECOVERY=1` resets it to metadata and one edited block,
 //   modeling an incomplete world store. Both modes check the saved block
@@ -50,7 +48,7 @@ import { hud, hotbar, fire, tick, key, click, lookDown, glDraws,
 const D = new URL("../dist/", import.meta.url).pathname;
 const PKG_ROOT = new URL("../", import.meta.url).pathname;
 const GENE = process.env.GENE ?? new URL("../../../bin/gene", import.meta.url).pathname;
-const WORLD = process.env.WORLD_SMOKE_WORLD ?? "/tmp/world_smoke_world";
+const WORLD = process.env.WORLD_SMOKE_WORLD ?? "/tmp/gene_world_smoke";
 const PORT = 8790;                 // `net_main.gene` dials this literally
 
 const { new_cursor } = await import(D + "wire.mjs");
@@ -142,8 +140,7 @@ async function bootServer() {
     (recovery ? " — recovering an interrupted first start" :
       fresh ? " — generating a world, about a minute" : " — loading, about 30 s"));
 
-  // The CLI grants filesystem access explicitly outside the package. Create
-  // and grant only this harness's world directory, not the surrounding /tmp.
+  // Create only this harness's world directory, not the surrounding /tmp.
   await mkdir(WORLD, { recursive: true });
   if (recovery)
     execFileSync(GENE,

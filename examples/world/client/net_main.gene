@@ -1,23 +1,13 @@
-# The networked client — design.md §D8's M6, browser half.
+# The browser client — Miclone design.md §D8's M6, browser half.
 #
-# `client/main.gene` generates the world in the tab. This one is handed the
-# world by `server/main.gene` over a WebSocket, and is otherwise the same game:
-# same physics, same mesher, same raycast, same hotbar, because all of them are
-# `core/` and neither side has its own copy.
-#
-# ## Why this is a second file rather than a flag
-#
-# §10 says singleplayer should run a server in-process over "an in-memory
-# channel that presents the same interface as the socket", so that there is one
-# code path. That channel does not exist yet: the profile's `ws/*` bindings talk
-# to a real socket and nothing else, and inventing an in-memory transport that
-# fakes them is the kind of scaffolding that outlives its purpose.
-#
-# So there are two entry points and they share everything below the transport.
-# What is duplicated is `main`'s setup — GL, atlas, camera, input, frame loop —
-# about 120 lines. **The fix is the in-memory channel, not a flag**, and when it
-# lands this file becomes the only client and `main.gene` becomes the
-# in-process server's caller.
+# The Commons' only client (`index.html` loads it). It is handed the world by
+# `server/main.gene` over a WebSocket and shares the server's physics, mesher
+# and raycast, because all of them are `core/` and neither side has its own
+# copy. Miclone also had an in-tab client that generated its own world; the
+# Commons did not keep it, because the world process owns the world
+# (docs/proposals/world.md §1.4, §4.3). Walking is still simulated here and
+# reported to the server — the authority model Milestone 1 replaces with
+# server-owned click-to-move (see SOURCES.md).
 #
 # ## The extent is checked, not received
 #

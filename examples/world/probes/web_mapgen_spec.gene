@@ -13,7 +13,7 @@
 # under test, which is one language fewer for a file whose job is to add nothing
 # to what it prints. The work is in `main` because the web profile has no
 # top-level statements — a module exports an entry and the host calls it, the way
-# `net.html` calls the client's.
+# `index.html` calls the client's.
 
 (mod web_mapgen_spec ^profile web)
 

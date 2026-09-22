@@ -29,9 +29,9 @@
 #   real client no use for it: a player who wants a *named* recipe presses the
 #   crafting panel's button, which is `msg_form_action` and is the other half of
 #   what this probe tests.
-# - **The coupling it creates fails red.** The probe's compiled-in `load_mods`
-#   must assign the same recipe ids as the server's `load_mods_from_disk`. If it
-#   ever stopped doing so, `craft(CHEST_RECIPE)` would name a recipe the
+# - **The coupling it creates fails red.** The probe's `load_mods` must assign
+#   the same recipe ids as the server's (both call `core/mods.gene`, so today
+#   they cannot differ). If it ever stopped doing so, `craft(CHEST_RECIPE)` would name a recipe the
 #   inventory cannot afford, or a different one — and `held(CHEST) >= 1` is
 #   false either way. The index is pinned by assertions that already exist
 #   rather than by a comment saying it should hold, and the plank craft is

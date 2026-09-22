@@ -56,7 +56,7 @@ import {
 
 const SEED = 1337;
 const BLOCK = 16;
-// client/main.gene's extent and site, restated: the web profile exports
+// server/main.gene's extent and site, restated: the web profile exports
 // functions rather than `let` constants.
 const ORIGIN_BX = -90, ORIGIN_BY = 0, ORIGIN_BZ = 198;
 const SPAN_X = 12, SPAN_Y = 4, SPAN_Z = 12;
@@ -279,7 +279,7 @@ for (const [ex, ey, ez, id] of edits) {
   const t = performance.now();
   apply_node(world, reg, ex, ey, ez, id, sky, editQueue, editSeed, bounds);
   const ms = performance.now() - t;
-  // The chunks the caller would have to remesh, counted the way client/main
+  // The chunks the caller would have to remesh, counted the way the client
   // counts them.
   const cLo = (v, o) => Math.max(0, Math.floor((v - o * BLOCK) / BLOCK));
   const cHi = (v, o, span) =>

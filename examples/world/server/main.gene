@@ -1,3 +1,10 @@
+# The world server — the Commons' world process, copied from Miclone's
+# `server/main.gene` (SOURCES.md). Below this preface the comments are
+# Miclone's own history of the file: their `§N`/`§DN` and M0–M8 refer to
+# Miclone's design.md, not to docs/proposals/world.md. Milestone 1 replaces
+# the byte protocol, the client-reported position, the per-connection inventory
+# and the whole-image store (SOURCES.md, "Disposition").
+#
 # The server — design.md §10, §12, and §7.1's authoritative half.
 #
 # Owns the world, accepts WebSocket connections, and answers them. VM-only:
@@ -42,7 +49,7 @@
         ^from "../core/registry.gene")
 (import [Game] ^from "../core/api.gene")
 (import [TileRegistry] ^from "../core/tiles.gene")
-(import [load_mods_from_disk] ^from "./mods_runtime.gene")
+(import [load_mods] ^from "../core/mods.gene")
 (import [generate_block] ^from "../core/mapgen.gene")
 (import [World new_world store_block store_light extract_block block_base
          open_sky node_at
@@ -127,7 +134,7 @@
 # §11's world, on disk. `GENE_WORLD_ROOT` overrides it, which is what makes a
 # throwaway world easy to ask for — and M7 will want that constantly, since a
 # mod that changes worldgen wants a world it can discard.
-(let default_world_root "/tmp/world_server_world")
+(let default_world_root "/tmp/gene_world_server")
 
 # --- the world ---------------------------------------------------------------
 
@@ -708,20 +715,13 @@
 (fn main [args] : Nil
   # §9's game. Every id below is one a mod caused to exist.
   #
-  # **Read off disk and sandboxed**, not compiled in — `load_mods_from_disk`
-  # rather than `core/mods.gene`'s `load_mods`. The two produce the identical
-  # game and `probes/run_loader.gene` is what checks that, node for node and id
-  # for id. The difference is the one §D5 exists for: this way `mods/default`
-  # gets exactly the authorities its manifest declares, and today that is none.
-  # A boundary nothing loads through protects nothing.
-  #
-  # The in-tab client keeps `load_mods`, and must: the web profile has no runtime
-  # module loading, which is the whole reason §9.3 puts mods on the server and
-  # hands a client data.
-  #
-  # One new failure mode, stated rather than discovered: the server now needs
-  # `mods/` present under its package root at startup and stops if it is missing.
-  (var game (load_mods_from_disk))
+  # Compiled in through `core/mods.gene`, the same list every probe loads.
+  # Miclone's server read `mods/` off disk into a `$runtime/load_sandboxed`
+  # sandbox governed by manifest `^grants`; the Commons loads its selected
+  # modules by normal Gene import instead (docs/proposals/world.md §1.2, §1.4,
+  # §13.1), so the game is the same and startup no longer depends on the mod
+  # framework. The client is still handed data, not code.
+  (var game (load_mods))
   (var reg game/nodes)
   (var drops game/drops)
   (var items game/items)
@@ -998,6 +998,22 @@
               (if_yes (diggable? world reg nx ny nz)
                 (var was (node_at world nx ny nz))
                 (apply_node world reg nx ny nz air sky lq lq_seed bounds)
+                # §11's promise — "quit and come back to the same world" — is
+                # only true if an edit reaches the disk. One block per edit:
+                # the *lighting* an edit changes can reach far (§7.1), but the
+                # node itself is in one block, and a neighbour whose light
+                # changed will be re-flooded from its own nodes on the next
+                # load (§4.2 lights the whole world in one pass).
+                #
+                # **Written before anything is queued to a client.** `ws_send`
+                # only queues, so on success the order is invisible; it matters
+                # when the write throws. The handler's error is logged and the
+                # loop carries on, so a delta queued first would still go out
+                # and confirm an edit that never reached the disk
+                # (docs/proposals/world.md §6.1: commit before confirming).
+                (persist_block store reg world
+                               (block_of nx) (block_of ny) (block_of nz)
+                               save_c save_l save_p2)
                 # The drop is the server's alone (§2, §7.1 step 3).
                 (var yield_n (drop_count drops items was))
                 (if_yes (> yield_n 0.0)
@@ -1024,16 +1040,7 @@
                                  (world/light .get
                                    (block_index_of world nx ny nz)))
                 # §12: whatever was resting on it may now fall.
-                (note_change game nx ny nz)
-                # §11's promise — "quit and come back to the same world" — is
-                # only true if an edit reaches the disk. One block per edit:
-                # the *lighting* an edit changes can reach far (§7.1), but the
-                # node itself is in one block, and a neighbour whose light
-                # changed will be re-flooded from its own nodes on the next
-                # load (§4.2 lights the whole world in one pass).
-                (persist_block store reg world
-                               (block_of nx) (block_of ny) (block_of nz)
-                               save_c save_l save_p2)))
+                (note_change game nx ny nz)))
 
             (else
               (if (== kind msg_place)
@@ -1083,13 +1090,14 @@
                                   (placeable? world reg nx ny nz)))
                     (take inv slot 1.0)
                     (apply_node world reg nx ny nz as_node sky lq lq_seed bounds)
+                    # Persisted before it is confirmed, as the dig is.
+                    (persist_block store reg world
+                                   (block_of nx) (block_of ny) (block_of nz)
+                                   save_c save_l save_p2)
                     (send_inventory conn inv)
                     (send_node_delta conn nx ny nz as_node
                                      (world/light .get
-                                       (block_index_of world nx ny nz)))
-                    (persist_block store reg world
-                                   (block_of nx) (block_of ny) (block_of nz)
-                                   save_c save_l save_p2)))
+                                       (block_index_of world nx ny nz)))))
 
                 # §10's input message, and M8 is where it stops being decoded
                 # and dropped. §8's pickup needs to know where a player is

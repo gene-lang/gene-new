@@ -11,7 +11,7 @@
 
 (import [create_world verify_report] ^from "./persistence.gene")
 
-(let default_root "/tmp/world_probe")
+(let default_root "/tmp/gene_world_probe")
 
 (fn main [args] : Nil
   # `args` is a Node: `(args ^raw "create /tmp/w" "create" "/tmp/w")`. The

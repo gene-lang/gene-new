@@ -3,7 +3,7 @@
 //   node tools/web_spec.mjs web_world_spec
 //
 // A web-profile module exports an entry and the host calls it — there are no
-// top-level statements in the profile, which is why `net.html` ends in
+// top-level statements in the profile, which is why `index.html` ends in
 // `import { main } from "./dist/net_main.mjs"; main();`. This is that, made
 // generic, and it replaced eleven hand-written shells of seventeen lines each.
 // Everything those shells did is now `probes/web_*.gene`, in the language under

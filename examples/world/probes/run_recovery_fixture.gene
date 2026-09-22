@@ -5,7 +5,7 @@
         ^from "../server/storage.gene")
 (import [put_block] ^from "../server/storage.gene")
 (import [encode_block] ^from "../server/blockfmt.gene")
-(import [load_mods_from_disk] ^from "../server/mods_runtime.gene")
+(import [load_mods] ^from "../core/mods.gene")
 (import [id_of] ^from "../core/registry.gene")
 (import [seed origin_bx origin_by origin_bz] ^from "../server/main.gene")
 
@@ -18,7 +18,7 @@
   (var store (open_world root))
   (try
     (write_meta store seed "commons")
-    (var game (load_mods_from_disk))
+    (var game (load_mods))
     (var content ($buffer F32 4096.0))
     (content .set 0.0 (id_of game/nodes "commons:lamp"))
     (var light ($buffer F32 4096.0))

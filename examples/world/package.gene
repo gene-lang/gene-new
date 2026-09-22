@@ -1,43 +1,49 @@
 {
+  # The Commons (docs/proposals/world.md). Section numbers in the comments below
+  # (§N, §DN) and milestones M0–M8 are Miclone design.md's, where each target
+  # came from — not the Commons' milestones. SOURCES.md has the provenance.
   ^format 1
   ^name "gene/world"
   ^description "The Commons — a shared persistent human–AI world (Gene World)"
   ^version "0.1.0"
   ^library {^entry "core/world.gene"}
   ^applications [
-    # design.md §D6 — the three M0 probes. Each one is allowed to kill or
-    # reshape the design, so each is its own runnable target.
-    (application "divergence" ^entry "probes/run_divergence.gene")
-    (application "worldgen" ^entry "probes/run_worldgen.gene")
+    # The world process. Miclone §D8's M6: the server half, as its own process.
+    (application "server" ^entry "server/main.gene")
+
+    # Cross-backend specs: each prints the same report on the VM as its
+    # `probes/web_*_spec.gene` twin does in the web profile (§14 layer 2).
     (application "world_spec" ^entry "probes/run_world_spec.gene")
-    # design.md §14 layers 2 and 3 for M2's mapgen pipeline.
+    # §14 layers 2 and 3 for Miclone M2's mapgen pipeline.
     (application "mapgen_spec" ^entry "probes/run_mapgen_spec.gene")
-    # design.md §4 — lighting, with the hand-derived fixture worlds §4 asks for.
+    # §4 — lighting, with the hand-derived fixture worlds §4 asks for.
     (application "light_spec" ^entry "probes/run_light_spec.gene")
-    # design.md §1 and §5 — M5's loaded world: addressing, the shell, and
+    # §1 and §5 — Miclone M5's loaded world: addressing, the shell, and
     # daylight crossing a block boundary.
     (application "loaded_spec" ^entry "probes/run_loaded_spec.gene")
-    # design.md §7 — the collision step, as fixtures and as one invariant.
+    # §7 — the collision step, as fixtures and as one invariant.
     (application "physics_spec" ^entry "probes/run_physics_spec.gene")
-    # design.md §7 and §7.1 — node selection, and what one edit invalidates.
+    # §7 and §7.1 — node selection, and what one edit invalidates.
     (application "edit_spec" ^entry "probes/run_edit_spec.gene")
-    # design.md §10 — the wire codec both backends encode messages through.
+    # §10 — the wire codec both backends encode messages through.
     (application "wire_spec" ^entry "probes/run_wire_spec.gene")
-    # design.md §10 — every message, encoded and decoded.
+    # §10 — every message, encoded and decoded.
     (application "protocol_spec" ^entry "probes/run_protocol_spec.gene")
-    # design.md §2 and §7.1 — stacks, and what a dug node yields.
+    # §2 and §7.1 — stacks, and what a dug node yields.
     (application "inventory_spec" ^entry "probes/run_inventory_spec.gene")
-    # design.md §12 and §9's `^action` — a mod's own function in the registry,
-    # and the sample walk that has to be a permutation for the ambient trigger
-    # to reach anything at all.
+    # §12 and §9's `^action` — a mod's own function in the registry, and the
+    # sample walk that has to be a permutation for the ambient trigger to reach
+    # anything at all.
     (application "abm_spec" ^entry "probes/run_abm_spec.gene")
-    # design.md §10.1 — what the protocol costs on the VM, which is where the
-    # server encodes it.
-    (application "wire_bench" ^entry "probes/wire_bench.gene")
-    # design.md §D8's M6: the server half, as its own process.
-    (application "server" ^entry "server/main.gene")
-    # design.md §D8's M4 deliverable, run twice: `create` then `verify`.
+
+    # §D6's probes, carried from Miclone M0: generation checksums to diff
+    # against `web_divergence`, and the server's generation budget.
+    (application "divergence" ^entry "probes/run_divergence.gene")
+    (application "worldgen" ^entry "probes/run_worldgen.gene")
+    # §D8's M4 deliverable, run twice: `create` then `verify`.
     (application "persistence" ^entry "probes/run_persistence.gene")
-    (application "loader" ^entry "probes/run_loader.gene")
+    # §10.1 — what the protocol costs on the VM, which is where the server
+    # encodes it.
+    (application "wire_bench" ^entry "probes/wire_bench.gene")
   ]
 }

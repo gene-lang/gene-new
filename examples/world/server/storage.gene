@@ -1,4 +1,7 @@
-# The world store — design.md §11.
+# The world store — Miclone design.md §11, copied as the Commons' starting
+# store. It is the whole-image development backend docs/proposals/world.md
+# §12.8 allows for early Milestone 1 work, not the incremental on-disk store
+# the Commons plans; SOURCES.md records its behavior, limits and replacement.
 #
 # A world is a directory:
 #
@@ -139,9 +142,13 @@
 #
 # The batch is a transaction rather than a queue, because that is what makes the
 # write durable *as a unit*: a crash halfway through leaves the world as it was
-# rather than with a third of a region saved. It is also what makes it fast —
-# SQLite commits once instead of per row, which is the difference between one
-# fsync and one per block.
+# rather than with a third of a region saved. It is also what makes it fast:
+# `$db/sqlite` publishes on commit by serializing the **whole** database and
+# atomically replacing the file (see "opening" above), so a batch pays for one
+# whole-image write where autocommit would pay one per block. Every edit outside
+# a batch — `persist_block` per dig or place — still pays one whole-image write
+# each; SOURCES.md records the measured cost and the on-disk integration that
+# replaces it.
 
 (fn begin_batch [w : WorldStore] : Nil
   (var db w/db)
