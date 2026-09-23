@@ -1,50 +1,91 @@
 # Package Publication and Application Distribution
 
-**Status:** Proposed design; format-1 workspaces, locking, immutable source stores, and pure-Gene builds are implemented.  
-**Purpose:** Make a Gene library or application installable and runnable outside its source checkout, including declared resources and native dependencies.  
-**Relationship:** This extends the current package/build graph. It does not replace the loader or the separate [code-persistence proposal](code-persistence.md).
+**Status:** Implementation proposal; source baseline `3b2bde9`.
 
-## Package identity and manifest evolution
+**Stages:** PKG-1 (resources/offline install), PKG-2 (native recipes), PKG-3 (hosted publication).
 
-Keep `<owner>/<name>@version` plus origin/content digest as the package identity. A released version is immutable. Retain format-1 manifests unchanged; introduce `^format 2` only for new resource/native distribution fields. Unknown fields continue to fail. The manifest stays one data value, never executable code. `^resources` lists package-relative immutable files; `^native` lists target-specific binary inputs or a declarative native build recipe with exact source/dependency inputs. A recipe cannot run arbitrary Gene as part of dependency resolution. Build execution is a separate explicit step.
+**Depends on:** Current package/build system. PKG-1/2 do not require retained native callbacks or a hosted registry.
 
-A minimal format-2 package with one platform binary uses existing Gene data syntax:
+## Reuse the existing model
+
+`package.nim` already has format-1 `files`, `build`, target `uses`, `system_dependencies`, source-tree capture, canonicalGeneData/canonicalDigest, registry adapters, locks, and vendor stores. `build.nim` explicitly rejects unavailable target recipes. Implement that reserved recipe path. Do not add format 2, parallel resources/native top-level fields, a second solver, or a new signature serialization.
+
+Keep current package/source identities, tree digests, and lock semantics unchanged. Publication provenance and build-artifact digests are separate records. Extend closed schemas with versioned recipe nodes and structured unsupported-recipe errors; old runtimes already reject recipe-dependent targets. Selecting a package for the wrong runtime must produce an early compatibility error.
+
+## PKG-1: resources and local distribution
+
+Add a data-only `resources` recipe in the existing build List:
 
 ```gene
-{^format 2
+{^format 1
  ^name "acme/report"
  ^version "1.0.0"
- ^applications [(application "report" ^entry "src/main.gene")]
- ^resources ["data/schema.json"]
- ^native [(native ^name "codec"
-                  ^target "aarch64-apple-darwin"
-                  ^file "lib/libcodec.dylib"
-                  ^sha256 "<64 lowercase hex digits>")]}
+ ^applications [(application "report"
+                   ^entry "src/main.gene"
+                   ^uses ["assets"])]
+ ^files {^include ["package.gene" "src/**" "data/**"]}
+ ^build [(resources "assets" ^files ["data/schema.json"])]}
 ```
 
-The `native` data node and fields are proposed manifest schema, not executable declarations. A target mismatch rejects the package before application startup. The first recipe kind is `c`: source files, include files, declared system libraries, compiler family/version constraint, and literal argument lists. Shell scripts and environment-dependent discovery are outside this first reproducible recipe; a package may instead publish a prebuilt target binary with its digest.
+This is a proposed recipe inside current manifest syntax. Its positional name is unique among recipes. files is a List of exact package-relative regular-file paths selected by the existing files policy; no new glob or destination-remapping language in v1. Reject missing files, symlink escape, duplicate normalized paths, case/Unicode collisions under the existing tree rules, and executable resources. Only selected target recipes are built.
 
-Package-relative resource reads use the pinned package revision, not `this_mod`'s physical source path. Provide `$pkg/read_bytes` and `$pkg/read_text` with a logical resource path and optional package reference. Mutable configuration, logs, and user files are outside this API. A native library that needs a file path uses explicit verified materialization into a private content-addressed cache, matching §11.3 of [code persistence](code-persistence.md).
+Record resource path, size, digest, and owning package identity in the build artifact. Reads resolve from that pinned package/release, consistent with [code persistence §11.3](code-persistence.md#113-package-relative-resources):
 
-## Hosted publication and trust
+| API | Contract |
+| --- | --- |
+| `($pkg/read_bytes package path ^max_bytes 16777216)` | Read a declared logical resource from the supplied Package, with a byte limit; no cwd lookup. |
+| `($pkg/read_text package path ^max_bytes 16777216)` | Same, strict UTF-8. |
+| `($pkg/dependency this_pkg "alias")` | Return the selected Package for a declared direct dependency; never resolve/fetch. |
+| `($pkg/materialize package path)` | Verified private cache lease with a physical path and idempotent direct close; pinned lease prevents eviction. |
 
-Add `gene pkg publish` for a complete source release. The client validates the manifest, lock-relevant dependencies, resources, license/provenance metadata, and digest before upload. The hosted registry authenticates the publisher's right to the `<owner>` namespace; it rejects a second payload for an existing owner/name/version. Index metadata points to immutable digests, and `pkg resolve` records the selected origin and digest in the lock as it does for other sources. `pkg sync` verifies every fetched payload before it enters the immutable store. Offline and vendor modes consume verified locked objects without contacting the registry.
+The Package argument is explicit, normally this_pkg, so a helper cannot accidentally read resources from its own package when the caller intended another. Missing/corrupt resources raise PackageResourceError. Mutable configuration and user output remain ordinary filesystem data. Resource reading does not require the SQLite code-store proposal to be implemented; both later share the same provider seam.
 
-Hosted release manifests are signed with an owner-controlled Ed25519 public key. The signature covers a versioned release index containing the canonical manifest digest and sorted source/resource/native-artifact path-and-digest pairs. Canonicalization uses a specified UTF-8 encoding and ordering, not the incidental printer output of a Gene map; the published index bytes themselves are immutable and hashed. The registry publishes a versioned owner-key record; applications may pin trusted keys, and key rotation requires signatures by the old and new keys rather than silently accepting a new signer for a locked release. HTTPS protects transport, while digest/signature verification protects the cached object independently of transport. Registry authorization and signing are separate checks.
+## Install transaction
 
-The first index encoding is byte-defined: ASCII `GENE-RELEASE-1` plus newline; the package identity as decimal UTF-8 byte length, colon, bytes, and newline; one 64-character lowercase manifest SHA-256 plus newline; a decimal entry count plus newline; then entries sorted by normalized relative path's UTF-8 bytes. Each entry is a decimal byte length, colon, path bytes, one space, a 64-character lowercase SHA-256, and newline. Path normalization rejects absolute paths, `..`, empty components, and duplicate normalized paths. The signer signs exactly these bytes; the verifier hashes and checks exactly these bytes before reading objects. A future encoding gets a new header rather than changing the meaning of version 1.
+Add `gene install <local-application-target> --prefix <directory>` first, then package coordinates after PKG-3. Reuse locked build/sync selection; installation never resolves newer dependencies implicitly. The default native-app installation bundles the exact Gene executable/runtime identity, the locked source/compiled closure, diagnostics source, resources, native artifacts, and an install manifest. Record dynamic system-library requirements and validate them before activation; bundling the Gene executable alone is not a static-binary claim.
 
-## Build, install, and run
+On POSIX targets, write a staging generation under the same prefix filesystem, validate and synchronize its files/manifest, rename it into a content-addressed generation directory, then atomically replace that application's current pointer. A generated launcher reads the pointer once and execs that generation using an explicit package root; it never changes the user's working directory. Launcher name collisions with another owner are errors. Each invocation holds a generation lease; cleanup cannot delete a running generation.
 
-`gene build` continues to derive artifacts from source, lock, compiler identity, target, profile, and dependencies. Extend the derivation with native recipe inputs, toolchain identity, resources, and platform triple. A binary artifact is never reused for a mismatching target/ABI. Installable applications contain an entrypoint/launcher, compatible Gene runtime or declared runtime requirement, locked package closure, resources, and needed native libraries. `gene install <package-or-local-target> --prefix <dir>` writes an immutable installation generation and atomically switches its launcher only after all content validates. A failed install leaves the previous generation runnable. `gene uninstall` removes only that generation's owned files; user data remains separate.
+Update failure before pointer selection leaves the old app runnable; after selection the complete new generation is runnable. Temporary/orphan generations are recoverable by manifest. `gene uninstall` removes only owned launchers/pointers and inactive generations, never application data. Windows install transactions need a separately qualified launcher/pointer implementation; initial qualification is Linux x86_64 and macOS arm64.
 
-An installed app resolves imports/resources from its pinned closure, not the current working directory or mutable global cache. It reports its release ID and Gene runtime version. A service install uses the same artifact; service-manager integration is a deployment layer, not a different package format.
+## PKG-2: native recipes and platform artifacts
 
-## Implementation sequence
+Use ordinary data nodes under build, referenced by target uses:
 
-1. Implement format-2 resources and package-relative reads for local/path/git sources. Build and run the installable CLI fixture with the source directory unavailable.
-2. Add native artifact metadata, target/ABI validation, and one extension package from [native extensions](native-extensions.md). Test wrong-platform rejection before code runs.
-3. Add hosted immutable publication, digest verification, owner authorization, signing/key pinning, and offline/vendor round trips. Do not enable a hosted source in the supported profile before integrity checks work.
-4. Add atomic install/update/uninstall and clean-machine fixture jobs on each supported platform.
+| Recipe | Closed v1 schema |
+| --- | --- |
+| `(c_library "name" ...)` | sources: nonempty List of selected .c files; include_dirs: relative directory List; system: declared system-dependency aliases; cflags/ldflags: literal argument Lists; linkage: shared or static; targets: target-triple List. |
+| `(native_binary "name" ...)` | variants: List of artifact records with target, file, digest, ABI kind/version, and declared system aliases. Exactly one compatible variant per selected target. |
 
-**Acceptance:** a developer can publish a library, lock and sync it, build an app with a resource and native extension, install it to a separate prefix, run it without the checkout or registry, and update it without leaving a half-installed application.
+No shell-string recipe execution. Invoke the configured C compiler with argument arrays in a private build directory. Resolve pkg_config/vcpkg/framework/policy_mapping requirements through the existing `system_dependency.nim` interfaces at build time, not runtime import. Capture provider/version, headers/libraries/toolchain identity and relevant digests in derivation evidence. If host SDK inputs cannot be fully pinned, label the build as environment-dependent and disable cross-host artifact reuse.
+
+Distinguish ordinary C ABI libraries, GeneApi v4/v5 extensions, and Gene-generated FFI/AOT artifacts. A matching CPU triple alone is insufficient for the latter: record runtime/compiler ABI and required runtime identity. Never load a binary selected solely by file suffix. Stage declared shared libraries and runtime search paths without relying on the developer's cwd. Do not redistribute a system library unless its redistribution policy/notices are included; external prerequisites are recorded explicitly.
+
+First integrate an existing local genex library with a synchronous/native boundary, such as websocket, to prove packaging independently of NATIVE-2. The later retained-notification package uses the same artifact route.
+
+## PKG-3: hosted publication and signatures
+
+Extend the current registry adapter with a bounded HTTPS transport. Registry metadata uses inert Gene data parsed with limits, never eval. Select versions through existing resolution; sync retrieves immutable objects and verifies size/tree/content digests before admission. Library publications retain dependency constraints from their manifest; an application installation separately pins its complete resolved lock.
+
+The release index is a map with release_format=1, name, version, manifest_digest, tree_digest, and a path-sorted file List containing path, size, digest, and executable. Paths and permission normalization use current package tree code. Its digest uses canonicalDigest. An Ed25519 signature covers the domain-separated bytes `"gene-release-v1\0" + canonicalGeneData(index)`; signatures and keys are separate from the signed index. Use a maintained crypto library through a declared adapter, not handwritten cryptography.
+
+Trust bootstrap is explicit: registry configuration pins its trust key or an owner's key out of band. A downloaded owner-key record signed by the configured registry key may delegate that owner; merely receiving a key over the same response is insufficient. Record verified signer identity with the cached release. Rotation requires the configured trust path or explicit operator key replacement; loss of an old key must not silently approve a replacement. Cached offline verification makes no claim about revocations published while offline.
+
+Minimum endpoint contract:
+
+- GET package version metadata with bounded pagination and explicit coverage.
+- GET immutable release index and signature by digest.
+- GET immutable object by digest and declared size; reject truncated/mismatched content.
+- Authenticated upload into staging, then publish owner/name/version atomically. Repeating the same digest is idempotent; a different digest for that version is a conflict.
+
+Registry authentication checks who can publish an owner namespace; signatures authenticate the released bytes. Yanked releases are excluded from new resolution but remain retrievable for existing locks unless explicitly revoked by configured policy. publish/sync do not execute package build recipes. Local/path/git and vendor workflows continue to work without the hosted service.
+
+## Work map and acceptance
+
+| Stage | Primary code/tests | Required evidence |
+| --- | --- | --- |
+| PKG-1 | package.nim, build.nim, CLI install, resource loader; test_package/test_build/CLI | Example recipe validates; checkout removed; offline installed CLI reads resource; forced exit before/after current-pointer switch preserves a runnable generation. |
+| PKG-2 | system_dependency.nim, recipe executor, native loader | Target/ABI mismatch before loading, changed toolchain invalidates artifact, missing library diagnostic, clean install of real genex binding. |
+| PKG-3 | Registry adapter/CLI and local HTTP registry fixture | Conflict/idempotent publish, bad signature/digest/key rotation, partial download, limits, offline cache/vendor replay, no import-time fetch/build. |
+
+Reuse the existing canonical byte fixtures and source-tree collision tests. Hosted publication is a later delivery capability; it must not delay proving PKG-1's local/offline application installation.

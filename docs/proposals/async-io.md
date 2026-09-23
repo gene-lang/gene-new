@@ -1,46 +1,86 @@
 # Async I/O and Resource Lifetime
 
-**Status:** Proposed design; existing `scope`, Task, synchronous Stream, and individual async adapters remain the current contract.  
-**Purpose:** Make files, sockets, HTTP bodies, and subprocess pipes compose under one bounded, cancellable I/O model.  
-**Syntax:** Ordinary Gene calls and messages; no `async fn` form or async generator is introduced.
+**Status:** Implementation proposal, reviewed against `3b2bde9`; new APIs below are not implemented.
 
-## Decision
+**Stages:** IO-1 (contracts), IO-2 (files/pipes), IO-3 (sockets/integration).
 
-Define two library protocols, `AsyncReader` and `AsyncWriter`, implemented by owned resource objects. Their operations return Gene Tasks and use `Bytes`; existing synchronous Streams stay synchronous pull cursors. An operation Task belongs to the caller's active `scope`, or the Application root when there is no scope. A resource is explicitly closed, normally from `ensure`. The enclosing `scope` waits/cancels its Tasks as it does today, while closing the resource cancels its still-pending I/O. This separates task lifetime from a resource handle without pretending that a synchronous Stream can await.
+**Depends on:** VM-0 diagnostics from [VM reliability](vm-reliability.md). No dependency on value-operator fallback, a new scheduler, or retained native callbacks.
 
-| Operation | Contract |
-| --- | --- |
-| `(reader .read max_bytes)` | Return a Task yielding a nonempty Bytes chunk of at most `max_bytes`, or nil at EOF. Require `max_bytes > 0` and a configured upper bound. |
-| `(writer .write bytes)` | Return a Task yielding the number of bytes accepted; zero for an empty input. Partial writes are permitted. `$io/write_all` loops until complete. |
-| `(reader .close)` / `(writer .close)` | Synchronous, idempotent close request. Reject new operations; settle pending ones by completion or cancellation. It does not block the root lane waiting for an OS operation. |
-| `$io/copy reader writer ^limit n` | Return a Task; transfer in bounded chunks, stop at EOF/limit, propagate error/cancellation, and leave resource closing to its owner. |
+## Baseline and decision
 
-One read and one write may be pending simultaneously on a duplex resource. A second read or second write is rejected with a typed busy error, avoiding unspecified interleaving. Close is legal during a pending operation. A Task's result/error remains subject to existing one-time `await` rules; the resource does not consume that result on behalf of callers. `nil` means EOF; an empty Bytes value is not an EOF sentinel. Errors use typed I/O failures with operation, resource, and cause. Panic and cancellation keep their existing classifications.
+The VM has structured Tasks, one-consuming `await`, repeatable `Task:join`, and synchronous Streams. Existing filesystem, subprocess, and HTTP adapters return Tasks or Task/channel records. Preserve those public return shapes. Their native worker/completion paths are implementation inputs, not evidence that every external Task is already attached to a structured scope.
 
-Illustrative use with current Gene syntax after the library exists:
+Add `AsyncReader`, `AsyncWriter`, and `IoResource` protocols under `gene/io`. Invoke them with qualified messages; Gene does not route an arbitrary `.read` or `.close` to a protocol. Concrete adapters may expose direct convenience messages, but generic algorithms use protocol identities. Existing Stream pulls never suspend for I/O.
+
+## Public surface
+
+The proposed declarations use current Gene syntax:
 
 ```gene
-(scope
-  (let reader ($io/open_read "input.bin"))
-  (try
-    (let chunk (await (reader .read 65536)))
-    (if ($nil? chunk) 0 1)
-    ensure (reader .close)))
+(protocol AsyncReader
+  (message read [max_bytes : Int] : (Task Bytes? Error)))
+(protocol AsyncWriter
+  (message write [data : Bytes] : (Task Int Error))
+  (message flush [] : (Task Nil Error)))
+(protocol IoResource
+  (message close [] : Nil)
+  (message wait_closed [] : (Task Nil Error)))
 ```
 
-`$io/open_read` is proposed. The `scope`, `await`, `try`, `ensure`, and message forms already exist.
+All adapters implement `IoResource` and one or both I/O protocols. These declarations will be library exports, not definitions repeated in applications.
 
-## Backpressure and cancellation
+| Operation | Required behavior |
+| --- | --- |
+| `(reader .AsyncReader:read n)` | Fresh Task yielding 1 through n bytes, or nil at EOF. n must be 1..1,048,576. Empty Bytes is never an EOF/result placeholder. |
+| `(writer .AsyncWriter:write bytes)` | Fresh Task yielding accepted byte count. A nonempty write returns at least 1 on success; partial writes are legal. Empty input completes with 0. |
+| `(writer .AsyncWriter:flush)` | Task completes when adapter buffers have reached the underlying destination. It does not promise filesystem durability or peer application receipt. |
+| `(resource .IoResource:close)` | Synchronous idempotent abort/close request returning nil. Stops admission and initiates cancellation/retirement. It does not promise handles are already released. |
+| `(resource .IoResource:wait_closed)` | Fresh Task on every call; completes with nil after physical retirement, or raises the retained close error. Repetition never awaits the same consumed Task. |
+| `($io/write_all writer bytes)` | Task returning total accepted bytes; loops on partial writes. |
+| `($io/copy reader writer ^limit n ^chunk_bytes 65536)` | Task returning transferred bytes; stops at EOF or finite nonnegative n. The limit is required. Borrows endpoints and does not close them. |
+| `($io/open_read path)` | Task yielding a file reader. Opening a file may block, so it uses the adapter worker path too. |
+| `($io/open_write path ^mode "create_new")` | Task yielding a writer. Modes are create_new, truncate, append; destructive replacement requires explicit truncate. |
 
-Each adapter has a bounded byte queue and an admission limit. A producer whose queue is full returns a pending Task or an explicit backpressure error according to that adapter's documented policy; it never retains unbounded Bytes. Cancellation removes queued work and requests cancellation of active OS work. If an OS operation cannot be interrupted, its Task remains unsettled until the worker finishes or a bounded shutdown policy reports that limitation; the root scheduler continues serving other tasks. `close` returns nil immediately but the owned wrapper remains pinned until those native operations settle. A late native result after close is discarded without reopening the resource.
+Example after implementation:
 
-Callbacks and generated code run on the owning Gene lane. Worker threads may own immutable byte buffers and native handles under the existing Send rules; they do not manipulate arbitrary Gene scopes or mutable values. A resource cannot be sent to another lane unless its adapter explicitly implements a safe transfer contract. No operation holds a Gene transaction or server loop while awaiting bytes.
+```gene
+(import $io [AsyncReader IoResource open_read])
+(scope
+  (let reader (await (open_read "input.bin")))
+  (try
+    (let chunk (await (reader .AsyncReader:read 65536)))
+    (if ($nil? chunk) 0 1)
+    ensure (reader .IoResource:close)))
+```
 
-## Adapter order
+`ensure` requests close. The cleanup lease described below keeps scope settlement from reporting completion while the requested native cleanup is still active. A caller needing the close result explicitly awaits a fresh `wait_closed` Task.
 
-1. Implement protocol conformance and a fake bounded reader/writer in Gene tests. Prove result, EOF, partial write, cancellation, close, and error rules before connecting OS handles.
-2. Adapt regular files and subprocess pipes, using the existing async worker path where necessary. Retain current `fs/read_text_async` and `os/exec_*_async` as compatibility helpers.
-3. Adapt TCP byte streams and HTTP request/response bodies. Buffered HTTP calls become bounded consumers of the same body reader; the server keeps its admission limits.
-4. Measure root-lane responsiveness and memory under one slow peer plus many fast peers. Optimize scheduler/worker implementation only after the contract passes.
+## Ownership, completion, and cancellation
 
-**Acceptance:** a task can copy a large file through an HTTP upload or subprocess pipe with bounded memory, cancel halfway, close every handle, and leave unrelated request/task latency within the declared workload budget. The same test runs after a failure at every I/O boundary.
+I/O objects belong to one Application/root lane and are non-Send initially. Read/write/flush Tasks register with the active scope, or the Application root when called outside a scope. Normal scope exit still waits without raising unconsumed task failures; callers must await outcomes they need. New adapters must implement this registration, not assume `newExternalTask` already supplies it.
+
+Open operations follow the same Task ownership rule. If cancellation wins before delivery of an opened resource, the adapter closes that native handle before releasing its cleanup lease. A successfully delivered open result remains explicitly owned until close; merely exiting the creating scope does not implicitly close a resource intentionally retained elsewhere. The Application tracks open resources for shutdown and leak diagnostics. Awaiting open and closing the returned resource is the ordinary application contract.
+
+A resource permits one outstanding read and one outstanding write. Flush occupies the write slot. A second operation in the same direction raises `IoBusy` before admission. State is `open → closing → closed`; a close error is retained alongside closed state. Close never reopens a resource, double-frees an OS handle, or discards a native completion's cleanup obligation.
+
+Cancellation may settle a user Task as cancelled before an uninterruptible OS call returns. Keep the native request, buffers, and handle pinned until that call retires. The owning scope/Application holds a cleanup lease until retirement; closing during ensure attaches the same obligation even if the operation Task was already consumed. A shutdown deadline may report `cleanup_pending` and let the embedding host terminate its process; it must not report a clean shutdown or free live native storage. No hard interruption of arbitrary C is promised.
+
+Errors use `IoError` with operation, resource ID, cause, and known `bytes_transferred` when applicable. Invalid options fail synchronously; failures after admission settle the Task. A cancelled/failed write can have an external prefix already written. Neither `write_all` nor copy automatically replays that prefix or rolls it back. Subsequent reads after EOF return fresh completed nil Tasks; after close, new I/O raises `IoClosed`.
+
+## Bounds and adapter model
+
+Use 64 KiB chunks and at most 1 MiB of retained native payload per resource by default, with a 64 MiB Application-wide I/O queue budget. Count queued and active payloads, not only queue entries. A read reserves its buffer before admission; a write exceeding available byte admission raises `IoBackpressure` before retaining input. Accepted work waits for OS readiness without growing the queue. Copy retains at most one read chunk plus the remaining write slice.
+
+Native workers own copied bytes/native handles; completion is marshalled to the root lane before creating arbitrary Gene values or invoking code. Worker completion must be pumped by every supported host loop, including the HTTP server, while inference or unrelated tasks wait. Resource IDs include a generation to reject stale completion delivery; IDs do not permit freeing a context still used by a worker.
+
+Text decoding is a separate incremental UTF-8 codec. Protocols carry Bytes. File adapters preserve offsets across short reads; pipe adapters define one reader/writer per descriptor. TCP full-close is supported first; half-close is a later explicit API.
+
+## Implementation and acceptance
+
+| Stage | Work and seams | Required tests |
+| --- | --- | --- |
+| IO-1 | Add protocols, state machine, scope cleanup leases, error types, and fake adapters in `vm.nim`/`stdlib.nim` and focused new I/O modules. | One-consuming await, repeatable wait_closed, scope exit, busy direction, close/cancel races, late completion, partial writes, admission bounds. |
+| IO-2 | Adapt file and subprocess worker/completion paths; preserve existing FS/OS wrappers. | Large streamed copy with fixed memory, EOF, failed open, truncated pipe, close during blocking work, handles released after retirement. |
+| IO-3 | Add TCP readers/writers and support HTTP body adapters from [network services](network-services.md). | Slow peer beside fast tasks, cancellation at every boundary, no root-lane wait on a socket, byte-budget accounting across resources. |
+
+The conformance suite must include a third-party Gene type implementing only the qualified protocols, with no direct read/close messages. Run existing task, FS, subprocess, HTTP, and native ownership tests alongside it. IO-1 does not wait for IO-3 or a production M:N scheduler.

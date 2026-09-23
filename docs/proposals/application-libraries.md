@@ -1,53 +1,79 @@
 # Gene Application Libraries
 
-**Status:** Proposed design; additions below are not implemented unless identified as existing.  
-**Purpose:** Ship a coherent application library set so common Python scripts and data jobs do not each reinvent basic I/O and interchange.  
-**Form:** Common libraries in the existing `gene` namespace; optional libraries as individual `genex/*` packages. No new language syntax.
+**Status:** Implementation proposal, baseline reviewed at `3b2bde9`; new APIs are proposed.
 
-## Placement decision
+**Stages:** APP-1 (paths/CSV core), APP-2 (streaming CSV), APP-3 (time zones), APP-4 (archives).
 
-Use `gene/*` for small, broadly useful libraries shipped and qualified with the runtime. They appear as ordinary root namespaces such as `$path` and `$csv`, following `$str`, `$json`, and `$fs`; an application imports names explicitly but does not add a package dependency for them. Use separately versioned `genex/*` packages for less common facilities, large data sets, or native codecs. Applications declare and lock each optional package they use. Do not create a `gene/app` umbrella package or make a CSV user acquire an archive codec.
+**Placement:** Common `gene/*` namespaces; independently locked optional `genex/*` packages.
 
-`genex` currently contains native packages. Under this proposal it means optional Gene extensions; a pure-Gene optional package may also live there. Update its repository documentation when the first such package is added. If a `gene/*` library is implemented in Gene source rather than Nim, bundled-source delivery must make it available with the runtime before the namespace is advertised as built in. Each public location declares VM/platform support and runs the relevant `native-app` fixtures from [the profile](python-replacement-profile.md).
+## Placement and delivery
 
-Existing `$fs` read/write/watch/lock, `$os` subprocess/environment, regex, Date/Time/DateTime/Duration values, `$json`, and databases remain the base. The proposed modules fill workflows those primitives do not yet cover.
-
-## First supported modules
-
-| Public location | Contract for first release |
+| Public location | Delivery |
 | --- | --- |
-| `gene/path` (`$path`) | Pure `join`, `parent`, `name`, `extension`, `normalize`, and `relative` over platform paths. `normalize` is lexical; `real_path` remains the explicit filesystem/symlink operation. No implicit current-directory change. |
-| `gene/fs` (`$fs/walk`) | Add lazy recursive traversal to the existing filesystem namespace, yielding path, kind, and size metadata. Stable lexical order within each directory; explicit symlink-follow policy, cycle detection, and optional depth bound. Close releases directory resources. |
-| `gene/csv` (`$csv`) | RFC 4180-style reader/writer over UTF-8 text with explicit header mode, delimiter, quoting, newline, and malformed-row policy. Preserve empty field versus absent header. Bound field and record bytes before allocation. |
-| `genex/toml` | Optional TOML reader/writer for application configuration. Preserve the distinction between absent and explicit values when mapping into Gene data. Reject duplicate keys and invalid encoding. JSON remains `$json`. |
-| `genex/archive` | Optional gzip byte streams and ZIP read/write with explicit extraction root, path validation, total uncompressed-byte limit, and bounded per-entry reads. A native compression adapter may implement the codec. |
-| `gene/temporal` (`$temporal`) and `genex/tzdb` | Keep common UTC/fixed-offset instant and duration arithmetic in `gene/temporal`; ship IANA zone rules and conversion as an optional, versioned `genex/tzdb` data package. A named zone is a real conversion rule, not only a label. Ambiguous local times require an explicit earlier/later choice; nonexistent local times fail. Monotonic time remains for elapsed-time measurement. The existing `datetime` constructor keeps its name. |
+| `gene/path`, `gene/csv`, `gene/temporal` | Standard namespaces `$path`, `$csv`, `$temporal`, qualified with the runtime. |
+| `gene/fs` | Extend existing `$fs` with walk. |
+| `genex/tzdb`, `genex/archive` | Optional package aliases in package.gene, normal locks/imports, independent releases. |
 
-The current synchronous file functions continue to serve small inputs. Streamed file, gzip, and network data use the resource contract in [async I/O](async-io.md); no module should read an unbounded file merely to implement a lazy-looking interface. `fs_walk` may begin as a synchronous generator because directory iteration does not itself require asynchronous suspension. CSV can consume a synchronous Stream first and gain an async adapter later without changing row meaning.
-
-Illustrative imports use current syntax once these libraries are available:
+Use the current stdlib registration path for the first standard modules. Implement parser/codec internals in focused modules rather than requiring a new bundled-Gene-source loader first. Optional pure Gene code can use today's package loader. Broaden the genex README's description to include pure optional extensions as these packages are added. There is no gene/app umbrella dependency.
 
 ```gene
 (import $path [join])
 (let output (join "reports" "summary.csv"))
 ```
 
-An optional package uses the existing dependency alias form, for example `(import [parse] ^from "." ^pkg "toml")` after `package.gene` declares `toml` as an alias for `genex/toml`. Neither import adds new syntax.
+An optional timezone dependency uses `(import [to_local] ^from "." ^pkg "tzdb")`, with that alias explicitly bound to genex/tzdb. The date/time constructor names already in the root remain constructors; temporal is a distinct namespace.
 
-## Semantics shared by the modules
+## APP-1: paths and traversal
 
-- APIs accepting a path take a Str and resolve relative paths against the captured application launch directory unless explicitly passed an absolute path; they never change the process working directory.
-- Text decoding defaults to strict UTF-8. Alternative encodings require an explicit codec name and a defined error policy. Binary bytes are never silently coerced to text.
-- File/resource operations have typed recoverable errors, close on success/failure/cancellation, and avoid arbitrary code execution while parsing data.
-- Serialization output is deterministic for the same inputs and options. Parsing reports source offsets or row/column positions where possible.
-- Working memory is bounded by documented per-record limits; whole-document convenience functions are separate and explicit.
+Pure path functions never access disk, resolve symlinks, or make paths absolute implicitly:
 
-## Implementation stages and tests
+| Call | Result/rule |
+| --- | --- |
+| `($path/join first more ...)` | Variadic join of native-platform components; this call spreads a List named more. Reject an absolute/drive-qualified later component rather than discard the prefix. |
+| `($path/normalize p)` | Lexically collapse separators and dot components; preserve meaningful leading .. in a relative path; empty result is ".". |
+| `($path/parent p)`, name, extension | Lexical pieces; a leading-dot basename alone has no extension; extension includes its leading dot. |
+| `($path/relative target base)` | Relative path for compatible roots, otherwise PathError. No existence check. |
 
-1. Add `gene/path`, `$fs/walk`, and `gene/csv` through the current root namespace registration or bundled Gene source. Test cross-platform path fixtures, symlink loops, CSV quoted newlines, empty fields, malformed input, and size limits.
-2. Add `genex/toml` as an independently locked package. Test a clean offline install alongside the parser/writer cases.
-3. Add `gene/temporal` arithmetic and `genex/tzdb` conversion. Record the tzdb package revision with conversions; test DST folds/gaps and a zone-rule change.
-4. Add `genex/archive` with a package-owned native adapter if needed. Test ZIP traversal attempts, decompression limits, early close, and corrupt input.
-5. Run the automation and data fixtures in the `native-app` profile using these libraries from an installed artifact.
+Filesystem APIs resolve relative paths against the application's captured launch directory. This rule applies to actual I/O, not to the pure functions above. Keep `$fs/real_path` as explicit symlink-aware resolution. Native-platform path conventions are supported on each qualified OS; parsing foreign Windows paths on POSIX is outside the initial surface.
 
-**Acceptance:** the automation fixture can walk, parse, transform, and atomically publish data using documented bundled APIs, with bounded memory and portable errors. No application-specific Nim shim is required.
+`($fs/walk root ^follow_symlinks false ^max_depth 64 ^max_entries_per_dir 10000)` returns a synchronous Stream. Emit children in depth-first preorder, excluding root, sorted lexically per directory; each entry has absolute path, relative_path, kind, and size (nil if unavailable for that kind). Depth 1 means root's immediate children. Do not silently truncate: exceeding either limit raises FsLimitError. Filesystem disappearance/permission errors raise FsError. Following links is opt-in and uses directory identity to detect cycles; it may visit targets outside root and is not a confinement primitive.
+
+Close directory handles on normal exhaustion, early Stream close, and error. Bound one directory's materialized sort list and total traversal stack. Document that a blocking filesystem scan can stall its calling lane; service code uses an explicit worker adapter after IO-2. A synchronous generator does not make OS calls nonblocking.
+
+## APP-1/2: CSV with one incremental parser
+
+Pin the dialect to [RFC 4180](https://www.rfc-editor.org/info/rfc4180/) quoting, accepting CRLF and LF record endings. Default comma delimiter and doubled double-quote escaping. Only one ASCII non-newline delimiter is accepted. Strict UTF-8; consume one UTF-8 BOM only at the start. Preserve whitespace and embedded quoted newlines. Empty input yields zero records; a blank line is one empty field. EOF may terminate the last record without a newline.
+
+- `($csv/parse_rows text ^headers false)` returns a List for inputs up to 16 MiB.
+- With headers false, rows are Lists of Str. With headers true, the first row names property-map fields; duplicate/empty headers and mismatched row widths fail. Fields stay strings: no implicit numeric, nil, or void conversion.
+- `($csv/encode_row fields)` accepts a List of Str and returns Bytes with CRLF. No invented nil spelling; callers explicitly convert values.
+- Limits: `^max_field_bytes` defaults to 1 MiB, `^max_record_bytes` to 8 MiB, `^max_columns` to 4,096, and convenience-call `^max_bytes` to 16 MiB. Allow positive caller overrides within an explicit deployment budget. The incremental reader accepts the same record limits. Errors report byte offset and record/field indices.
+
+The engine consumes bounded Bytes chunks with incremental UTF-8 decoding and retains only the current incomplete record plus unconsumed chunk. Test splitting at every quote, CRLF, and multibyte boundary. It stops parsing when the consumer has no capacity; a feed call cannot accumulate all rows in a large chunk.
+
+APP-2 adds `($csv/reader byte_reader ^headers false ^own_reader false)`. Its concrete `.next` returns a fresh Task yielding one row or nil at EOF; it implements IoResource for close/wait_closed and calls qualified AsyncReader methods internally. One next may be pending. Close cancels its own pending read and closes the upstream only with own_reader true. The caller must give this wrapper exclusive read use until it closes. Existing synchronous Streams remain synchronous; do not await inside a Stream pull. A bounded Str/List convenience API and this adapter share the same parser and row rules.
+
+## APP-3: temporal arithmetic and tzdb
+
+Common `$temporal` functions use existing Date, DateTime, and Duration values: `add_days date n`, `add datetime duration`, `difference left right`, `to_utc datetime`, `parse_rfc3339 text`, and `format_rfc3339 datetime`. Add/difference operate on fixed elapsed microseconds; Date addition uses calendar days. An offset is required for instant conversion/difference. Reject a named-zone-only or local DateTime where an instant is required, overflow, and unsupported leap seconds. Keep wall-clock values separate from `$os/monotonic_ms`.
+
+genex/tzdb supplies `to_local instant zone` and `resolve_local datetime zone ^fold "reject"`. Fold choices are reject/earlier/later; nonexistent local times fail. Returned records contain the resolved DateTime, zone, and tzdb release ID, so saved interpretations can be reproduced. Never consult an unrecorded host zone database. Package zone rules as resources through PKG-1; test folds, gaps, historical transitions, and replacing the data package without changing a pinned run.
+
+## APP-4: archives
+
+Use a declared zlib/native codec package input through PKG-2. First support gzip and ZIP store/deflate, regular files/directories, and UTF-8 names. Reject encryption, links, device files, unsupported methods, and Zip64 in this initial profile.
+
+Gzip readers/writers implement AsyncReader/AsyncWriter and IoResource. Explicit flush drains buffered data but does not finalize gzip. A concrete `(writer .finish)` returns a Task that writes/verifies the final trailer and rejects further writes; the caller awaits it before close when a complete output is required. IoResource:close retains IO-1's abort semantics and never fabricates successful finalization. ZIP extraction takes an absent destination, builds a private sibling staging directory, verifies all entry sizes/checksums, then atomically publishes it with an exclusive destination-creation operation. No overwriting an existing tree, including one created by another process during extraction. Reject absolute/traversing paths, duplicate normalized paths, and symlink components; use safe directory-relative creation, not just a string-prefix check.
+
+Default extraction caps are 10,000 entries, 128 MiB per entry, and 1 GiB total uncompressed data, enforced during decompression. Error/cancellation cleans staging or reports the retained cleanup path; it never reports a complete destination. Streaming codecs use [IO-1/2](async-io.md).
+
+## Implementation seams and exit gates
+
+| Stage | Touchpoints | Done when |
+| --- | --- | --- |
+| APP-1 | stdlib namespace registration, new path/CSV modules, focused Nim + Gene specs | Path edge cases and traversal limits pass; CSV parser is correct at every chunk boundary; existing FS/JSON behavior passes. |
+| APP-2 | IO adapters and streaming CSV tests | 10× CSV input growth has bounded live parser memory; cancellation closes only owned endpoints. |
+| APP-3 | temporal value adapters, genex/tzdb, PKG-1 resources | Arithmetic round trips and pinned zone revisions survive installation without checkout. |
+| APP-4 | genex/archive, IO-2, PKG-2 | Corrupt/oversized/traversing archives never publish destination; partial writes and late native cleanup are covered. |
+
+Each optional package declares supported platforms and ships conformance tests. The automation/data fixtures in [the profile](python-replacement-profile.md) use these public APIs; they must not add application-specific Nim shims.

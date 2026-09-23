@@ -1,50 +1,79 @@
 # Gene Network Services
 
-**Status:** Proposed design; present HTTP behavior is documented in `docs/stdlib.md`.  
-**Purpose:** Make the existing HTTP server/client usable for ordinary deployed services and API-consuming applications.  
-**Boundary:** Network adapters use the current Gene Task and application APIs. They do not introduce a second scheduler or new call syntax.
+**Status:** Implementation proposal; current source reviewed at `3b2bde9`.
 
-## Current base and selected shape
+**Stages:** NET-1 (owned HTTP Client), NET-2 (streamed service/proxy deployment), NET-3 (direct TLS).
 
-The current server provides routing, admission limits, request tasks, timeouts, and WebSockets. The client returns redirects, opens fresh HTTP/1.1 connections, disables environment proxies, and verifies TLS. Keep its existing `request` convenience function with those defaults for compatibility. Add a reusable `Client` object for policy and connection ownership. Add TLS configuration to server `listen`, or use an explicitly documented reverse-proxy mode until direct TLS qualifies. Neither mode makes a plain public listener silently secure.
+**Depends on:** IO-1/2 contracts and cleanup. TCP/server body adapters coordinate with IO-3.
 
-## Client contract
+## Preserve existing entry points
 
-`$net/http_client/open` creates a `Client` with immutable options: connection limit and idle lifetime per origin; connect, header, body, and total timeouts; redirect policy; proxy policy; trust roots; and response/body byte limits. `(client .request ...)` returns a Task as the current convenience call does. `(client .close)` rejects new requests, cancels or settles outstanding requests under a declared close policy, and releases pooled connections. The old `$net/http_client/request` uses a short-lived client with current defaults.
+The current HTTP client accepts text bodies and returns a Task for buffered calls; its stream function returns a task/channel record. It uses positive timeout/size limits, verifies TLS, disables proxies, returns redirects, and creates fresh HTTP/1.1 connections. Keep those signatures, option names, result shapes, and defaults. Reimplement behind shared internals only after compatibility tests pass.
 
-Proposed first-release option names and defaults for `open`:
+The new reusable Client is a separate API. The server keeps buffered text requests by default; streaming is an explicit serve mode. The browser HTTP binding is a different adapter and is not silently changed by this native proposal.
 
-| Option | Default | Meaning |
+## NET-1: Client API and policy
+
+`($net/http_client/open ...)` returns a Task yielding an Application/root-lane-owned Client. Trust-file loading and transport setup happen within that Task. It implements IoResource from [async I/O](async-io.md); generic close/wait_closed use qualified messages.
+
+| Call | Result |
+| --- | --- |
+| `(client .request ^url url ...)` | Task yielding response with status, ordered header pairs, effective_url, and body as Bytes. Text decoding is explicit. |
+| `(client .stream ^url url ...)` | Task yielding the same metadata when final headers are available; body is an AsyncReader + IoResource. |
+| `(client .IoResource:close)` | Abort outstanding requests and body readers, stop new admission, start transport retirement. |
+| `(client .IoResource:wait_closed)` | Fresh Task reporting physical closure/retained error. |
+
+Request options are method (default GET), url, headers (Map or ordered pair List), body (nil, Str encoded as UTF-8, Bytes, or AsyncReader), timeout_ms, max_bytes, and content_length when known. Client transport options are fixed at open. Existing wrapper header List-of-Str remains supported there; the new pair form preserves duplicate response headers without flattening them.
+
+| Open option | Default and rule |
+| --- | --- |
+| max_connections / max_connections_per_origin | 16 total / 8 per origin, including idle sockets. |
+| max_pending_requests | 64 waiting admissions, also subject to IO Application byte budget. |
+| max_idle_ms | 30,000. |
+| connect_timeout_ms / timeout_ms | 10,000 / 30,000. Positive monotonic durations; total starts at admission, including queue wait and body consumption. |
+| max_buffered_body_bytes / max_stream_body_bytes | 8 MiB / 64 MiB. Request max_bytes can select a different finite bound within host configuration. |
+| redirects | 0; positive value permits up to that many allowed hops. |
+| proxy | nil, explicit URL, or "environment"; environment settings are captured at open. |
+| ca_file | nil uses platform trust; explicit file replaces that trust source for this Client. |
+
+Reject unknown/invalid options before network admission. Header blocks are capped at 256 KiB and 256 entries; no CR/LF injection. Queueing retains only bounded body/config snapshots. Client objects are non-Send and not serializable.
+
+## Transport, redirects, and body ownership
+
+Use one native libcurl multi transport service per Application, owning its easy/multi handles on one native thread. Bounded command/result queues connect it to the Gene root lane. Native callbacks copy bytes/status only; they never invoke Gene. This permits connection reuse and concurrent transfers without sharing one handle across threads; follow [libcurl's thread-safety contract](https://curl.se/libcurl/c/threadsafe.html). Reuse current curl loading/error adapters and preflight the required multi/wakeup functions.
+
+An upload callback with no queued bytes pauses its transfer and requests a root-lane AsyncReader read; it cannot call that Gene reader from the transport thread. A full response queue pauses native receive until the root consumer frees capacity. Resume/cancel commands wake the multi loop; neither side busy-polls. All easy-handle use, including pause/unpause and cancellation cleanup, remains on the owning transport thread.
+
+Pool identity includes origin, proxy, and trust/client-auth configuration. Start with HTTP/1.1. Do not add a cookie store, environment credential loading, automatic retries, or automatic content decompression in this release. Byte limits apply to delivered content-encoded bytes; explicit decoders impose their own expansion limits.
+
+Follow 301/302/303/307/308 only for GET/HEAD with no upload body. Reject an HTTPS-to-HTTP downgrade. Resolve relative Location against the last URL, restrict schemes to HTTP(S), count every hop under one total deadline, and strip Authorization/Cookie on origin changes. Explicit proxy credentials remain proxy-only. Other methods/body-bearing requests return the redirect. Transport failure never implicitly repeats a potentially applied operation.
+
+Uploads from AsyncReader borrow exclusive read use, leaving final close to the caller. Cancellation cancels the upload's pending read and releases that borrow. Known content_length must match actual EOF; otherwise use supported HTTP/1.1 chunked framing. Bodies are not rewound or reread for redirect/auth retry.
+
+The streamed-response Task succeeds on final headers, not on complete body receipt. Truncation, size limit, framing, TLS, and timeout failures after headers surface through the body reader; EOF means the HTTP body framing completed correctly. The total deadline remains active until EOF or body close. Closing early discards the connection unless it can be drained within a fixed small bound; no unbounded drain to preserve pooling. At complete EOF a healthy connection becomes reusable. Returned bodies keep their request alive independently of the consumed header Task, with bounded buffers and explicit cleanup leases.
+
+## NET-2: server streaming and first HTTPS deployment
+
+Add `serve ^body_mode "stream"` alongside existing buffered mode. Parse/validate headers and acquire request admission before accepting an unbounded body. Stream-mode requests expose a reader implementing AsyncReader/IoResource; buffered-mode request/body retains today's shape. Responses may select Bytes or an AsyncReader body under explicit streaming response constructors, preserving existing text helpers.
+
+Bound incomplete headers, body bytes, request queue, and socket writes. Enforce monotonic header/body-idle/total deadlines. A slow socket parks its task rather than holding the root loop. Unexpected EOF and oversized input fail the request; partial output cannot be replaced with a fictional complete error response. Early body close either bounded-drains or closes the connection. WebSocket upgrade retains its existing validated handshake and queue rules and is not a generic body reader.
+
+First qualify HTTPS with a pinned local reverse-proxy fixture terminating TLS and forwarding to a loopback/Unix-socket Gene listener. Default ignores forwarded headers. A configured trusted-proxy list may authorize a documented single-hop forwarding scheme only when that peer overwrites incoming forwarding headers. The release fixture includes this proxy configuration and dependency; do not label the Gene listener itself TLS-capable.
+
+Graceful server shutdown closes admission, gives active request tasks a default 5-second grace period, then requests cancellation/socket close and waits on cleanup leases. If native cleanup exceeds the host's shutdown deadline, return an incomplete-shutdown report. Existing server lifecycle functions remain adapters to this behavior.
+
+## NET-3: direct TLS contract
+
+Add listen's `^tls` map with cert_file, key_file, optional client_ca_file, and client_auth ("none" or "required"). Initial minimum TLS version is 1.2; negotiate 1.3 where supported. Use a maintained TLS transport adapter (OpenSSL) with declared build/runtime dependencies; do not implement TLS in Gene.
+
+`(server .reload_tls config)` returns a Task. Read and validate complete material off the root loop, then atomically publish a new immutable context for future handshakes. Existing connections retain their context. Failed reload keeps the previous context and returns an error. A server opened without TLS cannot silently switch protocol on that port through reload. Trust/client-auth checks run during handshake before application data admission.
+
+## Code map and gates
+
+| Stage | Seams | Required tests |
 | --- | --- | --- |
-| `^max_connections_per_origin` | `8` | Bound active plus idle connections for one scheme/host/port. |
-| `^max_pending_requests` | `64` | Bound requests waiting for a connection; excess admission fails before retaining a body. |
-| `^max_idle_ms` | `30000` | Close an unused pooled connection after this interval. |
-| `^connect_timeout_ms` / `^total_timeout_ms` | `10000` / `30000` | Wall-clock deadlines; nil is rejected by the supported profile. |
-| `^redirects` | `0` | Maximum redirects; zero preserves current return-without-following behavior. |
-| `^proxy` | nil | Direct connection. An explicit proxy URL or `"environment"` opts in. |
-| `^ca_file` | nil | Use the platform trust store; an explicit file replaces that trust source for this Client. |
-| `^max_buffered_body_bytes` | `8388608` | Limit only the convenience API that materializes the whole body; streaming has per-chunk and total limits. |
-| `^max_stream_body_bytes` | `67108864` | Bound a streamed response unless the application supplies a larger finite limit. |
+| NET-1 | stdlib HTTP client, new native transport module, IO bodies; test_http_client | Reuse counted by peer, queue deadline, per-origin/total caps, cross-origin redirect stripping, no body replay, invalid TLS, cancellation before/after headers, short upload/download. |
+| NET-2 | ext/http_server.nim parser/serve loop, IO-3 socket readiness; test_http_server | Slow body next to fast requests, backpressure, early close, buffered API parity, proxy TLS fixture, shutdown with active streams. |
+| NET-3 | TLS adapter/listener contexts and reload | Mismatched cert/key, untrusted client/server, context rotation with old live sessions, failed reload, retained contexts released on physical close. |
 
-Invalid option combinations fail before network I/O. A `Client` is owned by one Application; it is not implicitly serialized, Send-safe, or shared across worker lanes. `(client .close)` returns nil when close has been requested; outstanding Task outcomes remain inspectable. The first supported protocol is HTTP/1.1, matching the current transport. HTTP/2 is a separate compatibility and performance decision.
-
-Redirects remain disabled unless `^redirects` selects a maximum count. The first release follows them automatically only for GET/HEAD; other methods return the redirect response. An HTTPS request never auto-follows to HTTP. A redirect never forwards Authorization or Cookie to a different origin by default. Proxy use is opt-in and may select an explicit URL or approved environment settings. TLS verification remains on by default; custom CA material is explicit. The pool never shares a connection across incompatible proxy/TLS settings or origins, and it bounds queued requests and idle sockets.
-
-For streaming, a request body can be Bytes or an [async reader](async-io.md). The response exposes status/headers and a bounded async body reader. The caller either consumes or closes that body; cancellation closes the underlying request and returns the connection to the pool only when its protocol state is reusable. The existing buffered response path may be implemented as a bounded consumer of this reader.
-
-## Server and socket contract
-
-`$net/http/listen` gains an optional `^tls` data map naming certificate, private key, and trust/client-auth policy. The server loads a complete validated configuration before accepting TLS connections. A reload publishes a complete new configuration for future handshakes while existing connections finish under the old one; a failed reload leaves the old configuration active and reports the error. Plain HTTP remains available on explicit loopback or behind a separately configured reverse proxy. Reverse-proxy mode must define trusted peer addresses and the exact forwarded-header policy; arbitrary client-supplied forwarding headers are ignored.
-
-The public reload call is `(server .reload_tls config)` and returns a Task whose result means the new configuration is active for new handshakes. It never changes an established TLS session. Listener shutdown closes admission first, then settles or cancels request tasks under a configured grace period before releasing sockets. A timeout reports how many requests were interrupted.
-
-Request handlers can read bounded or streamed bodies. Admission limits apply before unbounded body buffering; slow readers, stalled writers, and oversized headers/bodies receive documented errors or connection close without blocking unrelated handlers. WebSocket upgrade keeps its current application-level receipt responsibilities. Add a general TCP byte-stream client/listener after [async I/O](async-io.md) is established; UDP is a later separately qualified profile.
-
-## Implementation order
-
-1. Refactor current HTTP client transport behind an owned Client while preserving all current tests and defaults. Add pooling, limits, opt-in redirect/proxy behavior, and local test peers.
-2. Expose async request/response body readers and cancellation. Verify byte-for-byte results, early close, server disconnect, and pool reuse decisions.
-3. Add TLS server mode and certificate reload, or qualify the documented reverse-proxy deployment first. Test local CA, bad certificate/key pairs, expiration/hostname failures, and reload failure.
-4. Adapt server bodies and socket byte streams to the same bounded I/O contract. Run the service workload from [the native profile](python-replacement-profile.md) with slow clients and concurrent requests.
-
-**Acceptance:** an installed Gene application can serve HTTPS under one supported mode, make repeated verified HTTPS requests efficiently, stream large bodies without whole-body buffering, and cancel work without retaining sockets or starving other requests.
+Measure full request latency, queue age, native/root queue bytes, and host-loop stalls with the recorded workload profile. NET-1/2 deliver the first service qualification; direct TLS is separately advertised only after NET-3 passes.

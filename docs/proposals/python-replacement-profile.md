@@ -1,46 +1,74 @@
-# Gene Native Application Profile
+# Gene Native Application Profile and Implementation Order
 
-**Status:** Proposed design; the profile and its gates are not implemented.  
-**Purpose:** Make “use Gene instead of Python” a testable claim for native applications.  
-**Target:** The Gene VM. The web and experimental C backends report their own coverage; they do not define this profile.
+**Status:** Implementation roadmap and qualification proposal, baseline reviewed at `3b2bde9`. No new feature or performance result is claimed.
 
-## Decision
+**Profile:** `native-app` for the cooperative native VM, with root-lane Gene execution and supported native I/O workers.
 
-Define a `native-app` support profile in documentation and executable conformance fixtures. This is a distribution and quality promise, not a new language mode or source annotation. An application remains ordinary Gene code using existing files, modules, packages, calls, and tasks. The profile is satisfied only when all required workloads pass from a clean checkout and from an installed artifact.
+**Initial qualification targets:** Linux x86_64 and macOS arm64, tested independently.
 
-The initial scope is scripts, command-line applications, HTTP services, and moderate data transformations. Numerical computing at NumPy scale is a separately declared future `numeric-data` profile. Browser-only APIs and source compatibility with Python are outside `native-app`.
+## What completion means
 
-## Capability ledger
+The profile covers automation, installable CLIs, services, and moderate data transformations. It is a supported workload set, not a compiler mode, package build profile, or Python source-compatibility promise. Browser/C lowering, concurrent AtomicArc Gene workers, scientific arrays/dataframes, and unimplemented optional libraries remain separately visible capabilities.
 
-Maintain `docs/profiles/native-app.md` as the human-facing ledger and a machine-readable fixture manifest under `tests/profiles/native-app/`. Every capability has one of `supported`, `experimental`, `planned`, or `unsupported`, a minimum Gene revision, supported operating systems, and a conformance test or a documented reason it has none. A proposed API never appears as supported because a design document exists. The ledger distinguishes the VM, web, and C backends where a feature has different behavior.
+All application behavior in the fixtures is Gene. A host test harness may launch processes, generate deterministic inputs, or inject faults, but cannot perform an absent application feature on Gene's behalf.
 
-The profile depends on the companion proposals for [value operations](value-operations.md), [application libraries](application-libraries.md), [network services](network-services.md), [async I/O](async-io.md), [native extensions](native-extensions.md), [package distribution](package-distribution.md), and [VM reliability](vm-reliability.md). Their implementation status is tracked independently.
+Track current support in `docs/profiles/native-app.md` and a data-only `tests/profiles/native-app/profile.gene` manifest. Each capability records supported/experimental/planned/unsupported, runtime revision, OS/architecture, and its conformance evidence. Proposal text alone never promotes it. The ledger includes optional genex packages even when they are not required by the four core workloads.
 
-## Required workload fixtures
+## Cross-document decisions
 
-| Fixture | Required behavior | Evidence |
+- Standard libraries use gene/*; optional genex/* packages are declared/locked individually. No gene/app umbrella.
+- Qualified messages are required for generic I/O protocols. The five selected core value protocols have the explicit VM fallback rules in [value operations](value-operations.md); that exception does not change general send resolution.
+- I/O/native close is a request. Physical retirement and retained close failure are observable separately, with cleanup leases.
+- Package resources/recipes extend existing format-1 fields and canonical encoding. Local installation comes before hosted publication.
+- Reliability repairs build on the current manual RC/weak-scope/trial-deletion mechanisms. A new root scanner is not assumed to be safe.
+
+## Recommended implementation order
+
+Stage IDs below are defined in their linked proposals. This table is the dependency authority for the series.
+
+| Order | Work | Prerequisites and exit |
 | --- | --- | --- |
-| Automation script | Traverse a fixture tree, read bounded text/binary inputs, parse JSON and CSV, launch a subprocess with explicit arguments, call a local HTTP API, write an atomic result, and return a meaningful exit code. | Output fixture, failure cases, no shell interpolation, bounded memory. |
-| Installable CLI | Use a locked dependency and packaged data file; build, install, invoke from another directory, print useful errors, and run offline after installation. | Clean-machine or clean-container install and test log. |
-| Service | Serve HTTPS behind the selected supported termination mode, stream a request body, query SQLite or Postgres, handle concurrent slow/fast clients, and stop cleanly. | Correct responses, cancellation/resource checks, sustained-load measurements. |
-| Data transformation | Stream a bounded-memory input, parse and group records, sort an explicitly bounded result, and emit a reproducible output. | Golden output and peak-memory report at two input sizes. |
+| 0 | PROFILE-0 plus [VM-0](vm-reliability.md) | Record runtime/test baseline, add fixtures/ledger/counters, reproduce reported hangs/leaks. No feature prerequisites. |
+| 1 | [VM-1/2](vm-reliability.md), [APP-1](application-libraries.md), [PKG-1](package-distribution.md) | Start ownership/eval repairs immediately. Paths/CSV and resources/offline installation can land independently. Exit with a real script and installed CLI; lifetime blockers remain visible until fixed. |
+| 2 | [VAL-1 → VAL-2 → VAL-3](value-operations.md) | VM ownership/eval evidence first. Complete witness selection, recursive equality/hash, indexing and ordering as one coherent feature; do not ship only top-level ==. |
+| 3 | [IO-1 → IO-2 → IO-3](async-io.md) and APP-2 | Establish cleanup/protocol semantics with fakes, then files/pipes/TCP. Add streamed CSV after IO-2. |
+| 4 | [NET-1 → NET-2](network-services.md) | Owned HTTP transport/body adapters use IO contracts. Qualify HTTPS via the recorded reverse-proxy fixture and service shutdown. |
+| 5 | [PKG-2](package-distribution.md), [NATIVE-1 → NATIVE-2 → NATIVE-3](native-extensions.md) | Package an existing native library first. Retained callback fixtures need no registry; NATIVE-2 uses IO-1 lifecycle, NATIVE-3 uses PKG-2 packaging. |
+| 6 | APP-3/APP-4, NET-3, PKG-3 | Zone resources need PKG-1; archives need IO-2/PKG-2. Direct TLS and hosted publication are independently qualified additions. |
+| 7 | VM-3 and PROFILE-1 release report | Run integrated long-lived/offline/platform gates after the relevant stages. Publish actual pass/fail results and remaining optional capability status. |
 
-The fixtures use local servers, generated data, and a fake external process so normal CI needs no paid service. A Postgres variant may run in a separate integration job, but the default SQLite path must pass. Each fixture contains one injected I/O failure and one cancellation or interrupted-run case where relevant.
+VM repairs and narrow conformance tests run throughout; order 7 is final qualification, not the first time reliability is tested. IO implementation need not wait on value fallback if assigned independently, because ordinary qualified protocols already exist. Core profile qualification requires VM, APP-1/streamed CSV, VAL, IO, NET-1/2, and PKG-1/2. Hosted registry, direct TLS, retained notification callbacks, and optional formats have their own completion entries; a core pass must not imply those passed.
 
-## Gate and publication contract
+## PROFILE-0: executable workload contracts
 
-1. **Correctness:** Run the native VM spec, the fixture's Gene tests, and end-to-end CLI invocation. An expected error must identify its source location and cause without a host-language traceback being the only explanation.
-2. **Packaging:** Resolve with the committed lock, build with `--locked` and `--offline` after sync/vendor, install to a separate prefix, and run with the source checkout unavailable. The installed artifact declares required native libraries and resources.
-3. **Lifecycle:** The service and repeated-script fixtures meet [VM reliability](vm-reliability.md) gates. A successful one-shot run is insufficient for a long-lived feature claim.
-4. **Performance:** Record hardware, Gene/runtime revision, input sizes, latency distribution, throughput, peak/retained memory, and output size. Establish workload-specific budgets in the fixture manifest before qualifying a release; a changed budget is reviewed rather than silently overwritten. The first profile release need not beat Python on every metric, but must remain within its published supported envelope.
-5. **Portability:** State supported OS/architecture combinations. Passing on one host does not imply another target works.
+Create one small package per workload under `tests/profiles/native-app/`. Reuse the normal Gene test runner for application assertions and a process harness for crashes/network faults.
 
-CI generates a report with each fixture, status, revision, platform, and command result. The release notes link that report. A regression changes the profile status or blocks a supported-profile release; it cannot be hidden by an unrelated passing spec suite.
+| ID | Workload | Required result |
+| --- | --- | --- |
+| SCRIPT | Walk a deterministic tree, read JSON/CSV, invoke a process with argv, call a local API, atomically publish output. | Golden output, typed failure for malformed input/process/API error, bounded traversal/parser memory. |
+| CLI | Locked dependency, resource, and a native binding; install to a temporary prefix. | Runs from unrelated cwd with source tree hidden and network disabled; update crash exposes complete old/new generation. |
+| SERVICE | HTTPS reverse proxy → Gene streaming handler → SQLite, eight concurrent clients including a slow peer. | Correct streaming/framing, fast requests continue, cancelled tasks release resources, stop reports physical cleanup honestly. |
+| DATA | Stream 10 MiB then 100 MiB of deterministic CSV, group into at most 100 keys, sort that bounded result. | Identical logical result, no whole-input retention, explicit errors on record/group limits. |
+| LIFETIME | 10,000 lifetimes using a bounded vocabulary/module graph. | VM-3 roots/handles/heap gates; no repeated initialization of a new process to hide retention. |
 
-## Implementation sequence
+The CLI binding may use the existing synchronous/native path; a retained-callback variant is added with NATIVE-3. Postgres is an additional fixture; the default requires only SQLite. No paid provider or public network is required.
 
-1. Add the ledger and fixture manifest with current behavior honestly marked. Build small fixtures using existing APIs so the gaps are observable before new libraries are added.
-2. Implement companion proposals in dependency order. The native-callback fixture can use a local library first; format-2 resources can land independently; then package that extension and qualify hosted publication. Keep tests at both the narrow API boundary and the workload boundary; a library unit test alone does not promote a workload to supported.
-3. Add install-from-artifact and sustained-service jobs. Qualify each platform only after those jobs pass.
+The manifest contains profile_format=1, workload ID, package/entry, argv, dataset seed/size, required capabilities/stages, platform, timeout_ms, and budgets. Commands are argv arrays executed without a shell. Reports store start/end, exit status, stage, runtime/toolchain IDs, relevant native dependencies, artifacts/logs, and metrics. Missing prerequisites are explicit blocked/unsupported results, never skipped tests counted as passes.
 
-**Acceptance:** a contributor can answer which of the four workloads Gene supports on a named platform, run the same commands locally, and see why any unsupported workload is blocked. No new parser form or backend-wide parity claim is required.
+## Budgets and evidence
+
+Use functional gates everywhere; performance thresholds belong to a named hardware/load profile checked in before qualification. Initial service target: 30 small requests/second for 60 seconds with up to eight clients, p95 loopback response within 250 ms and host heartbeat gaps within 250 ms, while one client is intentionally slow. Exclude model/provider time; record proxy overhead separately. These are proposed targets to measure, not achieved numbers.
+
+For DATA, compare live retained payload at identical quiescent checkpoints for 10 versus 100 MiB input; proposed growth budget is 8 MiB with fixed group/cardinality limits. Also report native buffers and process RSS so moving retention out of the Gene heap does not hide it. Workload timeouts are finite and declared; a timeout is a failure with last-progress evidence.
+
+If a target is unattainable, fix the bottleneck or publish a narrower measured workload in a reviewed manifest change. Never lower a gate automatically in the same test run. RC/object counts, native leases, queue depth/age, peak/retained memory, p50/p95/p99 latency, and loop stalls complement one another; none alone proves support.
+
+## PROFILE-1: release gate
+
+1. Run relevant narrow suites and the normal native specs. Preserve existing local-world/HTTP/stdlib/package behavior unless a separately documented API change was selected.
+2. Build with the committed lock, sync/vendor once, then build/install offline. Run with source checkout unavailable. Artifact/runtime identities and system dependencies must match the install manifest.
+3. Run fault and lifetime workloads in real separate processes with deterministic faults. Inspect outputs/state/handle counts, not only returned status strings.
+4. Qualify each OS separately. Include unavailable optional backends/features in the report rather than implying support from the native VM result.
+5. Update user guides and implemented specs only when the corresponding APIs pass; leave these proposals as the rationale and stage history.
+
+The first deliverable is the PROFILE-0 ledger and small failing/blocked fixtures. It does not require building a new benchmark service, registry, or universal test framework.

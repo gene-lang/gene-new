@@ -1,70 +1,85 @@
 # VM Fallback Protocols for Values
 
-**Status:** Proposed design; none of the fallback rules below is implemented.  
-**Purpose:** Let nominal Gene values define equality, hashing, ordering, and list-like access through protocols while preserving built-in behavior.  
-**Syntax:** Ordinary `protocol` and `impl` declarations. The VM gains dispatch rules; Gene gains no new reader form or operator syntax.
+**Status:** Implementation proposal; reviewed against `3b2bde9`.
 
-## Decision
+**Stages:** VAL-1 (canonical witnesses), VAL-2 (equality/hash), VAL-3 (indexing/order).
 
-Define five core protocols: `ValueEq`, `ValueHash`, `ValueOrder`, `IndexRead`, and `IndexWrite`. For a nominal value with a canonical implementation, the VM uses that implementation when an existing generic operation reaches the value. Built-in scalars and collections keep their current fast paths. A nominal value with no implementation keeps today's structural Node equality/hash and body indexing. `same?` always remains identity and never calls a protocol.
+**Depends on:** VM-0/1 lifetime diagnostics and eval ownership. Uses existing protocol syntax; no language reader additions.
 
-This replaces the separate `$keyed/map` scheme in the earlier draft. Ordinary Set and general-key Map must use the same equality and hash semantics as `==` and `hash`; otherwise a value could compare equal but be impossible to find as a key.
+## Selected model
 
-| Protocol | Required messages | VM use |
+Provide `ValueEq`, `ValueHash`, `ValueOrder`, `IndexRead`, and `IndexWrite` in the `gene` root, alongside existing core types/protocols. Built-in operations use their existing fast path where applicable, then consult a nominal Type's selected protocol witness. For typed Nodes the witness is checked before generic Node structural/body behavior. Plain Nodes and nominal Types that do not opt in retain their present behavior. `same?` remains identity.
+
+| Protocol | Required signatures | VM entry points |
 | --- | --- | --- |
-| `ValueEq` | `equal [other : Self] : Bool` | `==`, `!=`, and recursive equality inside List, Set, general-key Map, and Node values. |
-| `ValueHash` | `hash [] : Int` | `hash` and Set/general-key Map key operations. Requires a canonical `ValueEq` implementation. |
-| `ValueOrder` | `compare [other : Self] : Int` | Ordering operators and default stable sorting. Result must be exactly `-1`, `0`, or `1`. |
-| `IndexRead` | `size [] : Int`; `at [index : Int] : Any` | Numeric slash-path/selector reads and generic `$size`. An absent item returns void. |
-| `IndexWrite` | `put_at [index : Int value : Any] : Any` | Final numeric segment of `(set value/0 new_value)`. Requires `IndexRead`. Return the value actually stored. |
+| ValueEq | `equal [other : Self] : Bool` | ==, !=, recursive collection equality and membership. |
+| ValueHash | `hash [] : Int` | hash and Set/general-key Map keys; requires ValueEq. |
+| ValueOrder | `compare [other : Self] : Int` | Non-numeric ordering fallback and default sorting; result -1, 0, or 1. |
+| IndexRead | `size [] : Int`; `at [index : Int] : Any` | Numeric paths/selectors and generic $size. |
+| IndexWrite | `put_at [index : Int value : Any] : Any` | Final numeric set-path segment; requires IndexRead. |
 
-These are ordinary Gene message signatures. This declaration and explicit protocol call already fit the syntax; only the proposed VM fallback is new:
+Example proposed application code, after the core protocols exist:
 
 ```gene
-(protocol ValueEq
-  (message equal [other : Self] : Bool))
 (type UserId ^props {^text Str})
 (impl ValueEq for UserId
   (message equal [other : UserId] : Bool
     (== self/text other/text)))
-((UserId ^text "a") .ValueEq:equal (UserId ^text "a"))
+(impl ValueHash for UserId
+  (message hash [] : Int
+    ($hash self/text)))
 ```
 
-The actual core protocols will be provided by `gene`, so applications will not redeclare them. An implementation of `ValueHash` for this type can return `(hash self/text)`. The example's final explicit call works under today's protocol rules; the proposed `==` fallback would call the same selected implementation.
+These are existing type/impl/message forms. The VM fallback is new. No separate keyed-map family is required.
 
-## Canonical implementation rule
+## VAL-1: canonical selection and lifetime
 
-Ordinary Gene protocol implementations can be scoped and imported. Implicit VM operations cannot use an implementation that changes with the caller's lexical scope: a key inserted into a map in one module must still be findable from another. Therefore these five core protocols have a narrower rule for VM fallback: one canonical implementation per nominal Type identity, declared in the Type's defining module or selected with that Type in the same eval generation. Module/eval activation checks the complete set and pins its code revision to the Type identity. A second, different implementation for the same Type/core protocol is rejected; `import_impl` cannot change a VM fallback. Applications needing a different equivalence use a wrapper type or an explicit comparison/key function.
+Ordinary scoped protocols remain scoped. These five reserved core identities additionally require one canonical implementation per concrete Type identity for implicit VM use. Declare the impl in the Type's defining module, or in the same eval generation that creates that Type. Foreign-module, transient function-local, conditional late, and alternate import_impl definitions of these core impls are rejected. import_impl may expose the already selected identity; it cannot replace it.
 
-Existing ordinary protocols keep their scoped visibility and qualified-send behavior. Core protocols remain callable explicitly with `ValueEq:equal` or the corresponding qualifier; no arbitrary unqualified message send gains protocol fallback. Reloading cannot silently change a pinned equality/hash pair for values already held as keys. A replacement creates a new Type identity or requires an explicit migration of affected keyed collections.
+Reuse the current module/eval impl-assembly validation path. Publish the complete fallback descriptor atomically with that Type's activation. A forward declaration can be pending during assembly, but attempting fallback or exporting the Type before its descriptor is sealed raises ValueProtocolPending. A Type without these declarations is sealed with an explicit empty descriptor; a later module cannot turn an already-used structural key into a semantic key.
 
-`ValueEq` is used only when both operands have the same concrete nominal Type identity. Different nominal types compare false, matching today's structural-head distinction. A type may provide `ValueEq` without `ValueHash`, but then `hash` and key insertion fail for that type rather than silently using structural hash. `ValueHash` cannot be selected without `ValueEq`. An inherited pair may be reused together; replacing equality requires selecting a compatible hash implementation in the same activation before the type is hashable again.
+Pin selected callables, authored scopes, dependency identities, and error contracts strongly to the descriptor. Caches guard Type identity plus immutable descriptor identity. For version 1, changing a descriptor requires a new Type identity; no in-place witness replacement or automatic rehash migration is supported. Existing collections can continue using old values/code while reachable. Include descriptor/scope cycles in VM-1 lifetime tests.
 
-## Equality and hash across containers
+Same concrete nominal Types may use ValueEq/ValueOrder, including an inherited implementation whose existing declaration-bound Self contract admits those receivers. Different nominal Type identities compare false; ordering them raises OrderError. Reuse an inherited equality/hash pair together. A child replacing equality must supply its own hash too, or become explicitly unhashable; never inherit a hash accidentally incompatible with replacement equality.
 
-Keep a raw structural comparison/hash path inside the reader, compiler, and module-identity machinery. Add VM semantic equality/hash functions for user-facing `==`, `hash`, List/Set/general-key Map comparison and membership, and recursive values. For a typed Node, consult its canonical witness before generic structural Node traversal; for plain Nodes and existing built-ins, keep current behavior. Recursive container comparison invokes the same semantic rule on nested typed values. General-key Map and Set key operations use that same rule. Freezing preserves semantic equality and hash; thawed mutable values remain ineligible as keys. Property-map keys remain their existing named keys.
+ValueEq without ValueHash is allowed for non-key values. ValueHash without ValueEq is a declaration error. When ValueEq exists without ValueHash, user-facing hash and key admission raise ValueNotHashable rather than substitute structural hashing.
 
-Hash keys still must be hash-stable: retain the existing deep-frozen-key check for nominal Nodes and nested containers. `ValueEq`/`ValueHash` methods must be deterministic over the frozen reachable value and obey `a == b` implies `hash(a) == hash(b)`. The VM cannot prove purity, so violations are a user contract with conformance tests. Method errors propagate as ordinary Gene errors. A Set/Map mutation computes and validates the required hash/equality results before publishing a new entry; failure leaves that operation's collection unchanged. Generated runtime failures, panic, and cancellation retain their existing classifications.
+## VAL-2: semantic equality and keys
 
-## List-like access
+Introduce context-aware VM semantic equality/hash helpers. Keep the pure structural functions in `equality.nim` for compiler syntax, package/module identities, representation checks, and other internal bookkeeping that must never execute user code.
 
-Numeric slash-path reads such as `value/0`, selector application, and intermediate numeric segments of `set` use `IndexRead` for a nominal value with a canonical implementation. The final numeric `set` segment uses `IndexWrite` when present. Named property segments keep their existing property/schema meaning and precedence. Existing List and Node-body path behavior remains the fast path unless a nominal Type explicitly selects the protocol fallback. Buffer's existing direct `get`/`set` messages remain available; this proposal does not claim Buffer currently supports slash-path indexing.
+Route all user-facing equality paths through the semantic helper: ordinary calls, held aliases, compiler fast paths, List membership, Set/general-key Map construction/lookup/removal, and recursive equality/hash of nested values. Plain collection structure still compares structurally, but typed children invoke their canonical semantics. Property-map keys remain named keys. A top-level == change alone is incomplete.
 
-The VM accepts Int and integral F64 indices as it does for List, normalizes a negative index using `IndexRead:size`, and passes a nonnegative Int to `at`/`put_at`. A nonintegral Float read returns void; a nonintegral Float write raises. A read past the end returns void; a write past the end raises the same index-range category as a List write before calling `put_at`. `size` must return a nonnegative Int. `put_at` performs its own type validation and must not publish a partial mutation on an ordinary recoverable error. The VM rejects writes to an immutable ordinary Node; a native-wrapper implementation applies its existing owned-resource mutation rules. Direct `(value .get 0)` still requires a type-direct message or an explicit qualified protocol call, preserving Gene's no-implicit-protocol rule for general sends.
+Hash admission retains the current recursive immutability/hash-stability rules, including NaN rejection and native-resource exclusions; it is not just a check of one deepFrozen flag. Freezing must preserve the semantic value and Type witness. Thawed mutable Nodes remain ineligible as keys. ValueEq/ValueHash must depend deterministically on the value and immutable selected code, and satisfy equality implies equal hash. Equal hashes do not imply equality. The runtime does not promise stable hash integers across releases/processes, so serialized data stores values rather than hash buckets.
 
-Existing `to_stream` remains the generic iteration entry. An indexed type can provide that type-direct conversion; `IndexRead` alone does not silently make a potentially changing resource into a Stream. Functional `assoc_in`/`update_in` also keep their current contract until a separate persistent-update protocol is designed.
+Core fallback callbacks run synchronously on the root lane in version 1. They use normal callable checks, diagnostics, and budgets; they may allocate and raise ordinary errors, but cannot suspend/pump the scheduler. Worker calls that would enter a witness not qualified for worker execution fail with RuntimeLaneError before callback effects. Built-in worker operations retain their existing support. Error analysis must treat custom fallback as a potentially failing call, including through operators.
 
-## Ordering and sorting
+During a collection key operation, guard that same collection against callback-driven reentry/mutation and raise ValueOperationReentry. Compute key results before publishing insertion/removal; errors leave that library operation unpublished. Arbitrary callback side effects elsewhere are not rolled back. Reentering the same active nominal equality operand pair or hash receiver also raises, rather than infinitely recursing. The law/purity requirements remain author contracts; tests cannot prove them for arbitrary code.
 
-`ValueOrder:compare` applies to two values of the same concrete nominal Type and supplies `<`, `<=`, `>`, and `>=` after the existing numeric fast path. The VM validates the three result values. The method must define a stable total order. Built-in Str, Date, and Duration ordering can be added through VM fast paths without changing the syntax; Str uses Unicode scalar order, independent of locale. NaN is unordered and raises `OrderError` when compared through default ordering. No implicit order exists between unrelated types.
+## VAL-3: indexed access
 
-Add `($order/sort values ^compare comparator)` and `($order/sort_by values key_fn ^compare comparator)` as stable, non-mutating List operations. When `^compare` is omitted, use built-in ordering or `ValueOrder`. A comparator is an ordinary Gene function returning exactly `-1`, `0`, or `1`; `sort_by` evaluates `key_fn` once per item. Sorting copies the input before invoking callbacks. Streaming callers must collect a finite List explicitly.
+`x/0`, `(/0 x)`, dynamic numeric path segments, and intermediate numeric reads in set share one fallback helper. `($size x)` uses IndexRead:size. Named segments retain current property and schema semantics.
 
-## Implementation sequence and acceptance
+Normalize Int/integral F64 indices to a nonnegative Int using size. Nonintegral/nonfinite Float reads return void; writes raise as with existing List access. Huge/out-of-range reads return void without narrowing overflow; writes raise before invoking put_at. size must be nonnegative. at may return any value, including void for a missing logical slot.
 
-1. Introduce core protocol identities and canonical selection/validation on nominal Types. Test module imports, duplicate impls, inheritance, reload, and eval generation lifetime before switching operators.
-2. Route `==`/`!=` and `hash` through VM semantic functions, then update Set and general-key Map construction, lookup, removal, and recursive container equality/hash. Keep internal structural helpers separate. Test frozen keys across modules, nested values, missing `ValueHash`, an equality/hash law violation fixture, and errors before mutation.
-3. Route numeric path reads, selectors, `$size`, and numeric `set` through `IndexRead`/`IndexWrite`. Test negative/integral-F64 indices, missing reads, out-of-range writes, immutable values, nested paths, and native wrappers.
-4. Add `ValueOrder` fallback and stable sorting. Test comparator failures, stability, cross-type rejection, and unchanged numeric operators. Qualify the web backend separately; until it matches, reject these fallback-dependent programs in its checked profile.
+A final set segment uses IndexWrite and returns the actual stored value. If IndexRead exists without IndexWrite, writes fail; they must not fall through and mutate the representation's Node body. An ordinary immutable Node rejects writes before dispatch. Native wrappers use their existing owned-resource mutation rules. Normalize positional void to nil before put_at, matching List/body storage. Validate/adapt before mutation in the implementation; arbitrary Gene method effects are not automatically transactional.
 
-**Acceptance:** a user-defined nominal value can be compared, hashed as a frozen Set/Map key, ordered, and indexed through existing Gene operators and paths with the same result across module boundaries. Built-in and unadapted nominal values retain their current behavior, and internal syntax/module identity never depends on user protocol code.
+General unqualified sends remain type-direct: `(x .get 0)` requires a direct message, while `(x .IndexRead:at 0)` is explicit protocol dispatch. This proposal grants fallback to listed VM operations only. Existing to_stream, assoc_in/update_in, destructuring, and call spreading keep their present contracts; implementing IndexRead does not implicitly opt into those different lifetimes/representations.
+
+## Ordering and bounded sorting
+
+Numeric operators keep existing numeric/NaN behavior. For non-numeric values of the same nominal Type, ValueOrder supplies the operator fallback. Built-in Str (Unicode scalar order), Date, and Duration may gain explicit VM fast paths. Unrelated types have no implicit order.
+
+Add `($order/compare a b)`, `($order/sort values ^compare f)`, and `($order/sort_by values key_fn ^compare f)`. Omitted comparator uses homogeneous built-in ordering or ValueOrder; default sort comparison rejects NaN and mixed numeric types rather than silently infer a conversion policy. This stricter sort rule does not change existing numeric operators.
+
+Use stable O(n log n) merge sort over a copied finite List. Validate comparator results; evaluate key_fn once per item before sorting. Retain input order for ordering ties, which need not mean ==. Comparator must define a consistent strict weak ordering. A callback error returns no sorted result; captured objects the callback mutated are not restored. Streams must be bounded/collected explicitly.
+
+## Work map and exit tests
+
+| Stage | Seams | Required tests |
+| --- | --- | --- |
+| VAL-1 | Type metadata in types.nim, protocol assembly/reload/eval in vm.nim | Empty and selected descriptors seal before use; duplicate/late/scoped override rejection; inherited Self; old values survive new Type generation; witnesses release when unreachable. |
+| VAL-2 | VM equality/hash and collection operations; preserve internal equality.nim use | Aliased ==/hash, nested typed values, frozen keys across modules, equal/hash law fixtures, collisions, missing hash, callback failure/reentry, compiler fast-path parity. |
+| VAL-3 | Selector/staticLookup/set/size seams, ordering natives and new order module | Read-only sequence writes fail, negative/F64/huge indices, void normalization, immutable/native wrappers, sort stability/key-call counts, custom callbacks cannot await. |
+
+Extend existing protocol, spec, mutation, and RC suites. The web/C backends must either implement a listed fallback with shared tests or reject it before execution; an accepted nominal type must not silently fall back to structural equality on another backend. Custom worker fallback is separately qualified later.
