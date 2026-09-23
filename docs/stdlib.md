@@ -21,7 +21,9 @@ Import names when you use them repeatedly. These recipes show the common path;
 
 JSON supports objects, arrays, scalars, and escapes. Invalid input raises
 JsonError. For input from an untrusted peer, `(parse text ^strict true
-^max_depth 16)` also rejects a repeated object key and bounds nesting. Unsupported values, cycles, and non-finite floats are rejected.
+^max_depth 16)` also rejects a repeated object key and text that is not valid
+UTF-8 (so bytes from a binary WebSocket frame meet the same decoder as a text
+frame), and bounds nesting. Unsupported values, cycles, and non-finite floats are rejected.
 Use explicit conversion when crossing the web backend's Int/bigint boundary.
 
 ## Files
@@ -43,7 +45,8 @@ gene eval '($fs/write_text "greeting.txt" "Hello from Gene")'
 ```
 
 `write_text_atomic` stages and synchronizes a regular file, then publishes it in
-the same directory. For byte-oriented I/O use `read_bytes` / `write_bytes`.
+the same directory. `^owner_only true` restricts the file to its owner before
+any content is written, for a secret such as a connection credential. For byte-oriented I/O use `read_bytes` / `write_bytes`.
 Filesystem watching, locking, and asynchronous filesystem adapters are also
 available.
 

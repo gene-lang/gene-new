@@ -16,8 +16,8 @@
 # ## Initial entities
 #
 # One unique movable object: the watering can, lying in the garden. Avatars are
-# added when the operator provisions a player (`add_avatar`), each at the next
-# free spawn cell on the main street.
+# added when the operator provisions a player or a Life (`avatar_entity`), each
+# at the next free spawn cell on the main street.
 
 (mod scene)
 
@@ -32,6 +32,19 @@
 (let floor_y 1)
 
 (let spawn_cells [[23 3] [24 3] [23 5] [24 5] [23 7] [24 7] [23 9] [24 9]])
+
+# Named places a participant can walk to (`movement.walk_to` with `place_id`),
+# each a navigation cell just outside or beside the place it names. Stable ids:
+# a Life may have remembered them, so a later layout keeps or migrates them.
+(let places
+  {^commons {^label "The commons crossroads" ^cell {^x 23 ^z 23}}
+   ^street {^label "The main street" ^cell {^x 23 ^z 12}}
+   ^garden {^label "The garden beds" ^cell {^x 28 ^z 7}}
+   ^pond {^label "The pond" ^cell {^x 35 ^z 7}}
+   ^hall {^label "The kitchen and gathering hall" ^cell {^x 30 ^z 37}}
+   ^workshop {^label "The workshop" ^cell {^x 37 ^z 22}}
+   ^home_south {^label "The south home" ^cell {^x 14 ^z 7}}
+   ^home_north {^label "The north home" ^cell {^x 14 ^z 37}}})
 (let avatar_tiles ["commons:avatar_amber" "commons:avatar_teal" "commons:avatar_violet"])
 
 (fn node_index [x : Int y : Int z : Int] : Int
@@ -189,12 +202,12 @@
        ^core/label {^schema 1 ^text "Watering can"}}}])
 
 (fn avatar_entity [entity_id : Str participant_id : Str display_name : Str
-                   index : Int] : Map
+                   index : Int ^kind kind : Str = "actor/human"] : Map
   (let spawn_at (wrap_index index spawn_cells/.size))
   (let tile_at (wrap_index index avatar_tiles/.size))
   (let cell spawn_cells/%spawn_at)
   (let tile avatar_tiles/%tile_at)
-  {^id entity_id ^kind "actor/human" ^revision 1
+  {^id entity_id ^kind kind ^revision 1
    ^components
      {^core/transform {^schema 1 ^x_mm (+ (* cell/0 1000) 500) ^y_mm 1000
                        ^z_mm (+ (* cell/1 1000) 500)}

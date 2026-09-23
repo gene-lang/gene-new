@@ -8487,6 +8487,24 @@ suite "spec — store persistence protocol":
                "(read_text " & geneString(path) & ")",
                "\"second\"", dir)
 
+  test "filesystem atomic text ^owner_only restricts the published file":
+    let dir = getTempDir() / "gene-fs-atomic-owner-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    let path = dir / "secret.txt"
+    writeFile(path, "old")
+    setFilePermissions(path, {fpUserRead, fpUserWrite, fpGroupRead, fpOthersRead})
+    check_eval_at("(import $fs [write_text_atomic read_text]) " &
+               "(write_text_atomic " & geneString(path) & " \"s3cret\" ^owner_only true) " &
+               "(read_text " & geneString(path) & ")",
+               "\"s3cret\"", dir)
+    check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+    check_eval_at("(import $fs [write_text_atomic]) " &
+               "(try (write_text_atomic " & geneString(path) & " \"x\" ^owner_only 1) " &
+               " catch Any \"rejected\")",
+               "\"rejected\"", dir)
+
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import $db/sqlite [open]) " &
                "(import $store/sqlite [open : store-open Store]) " &
@@ -9290,6 +9308,20 @@ suite "spec — os and json from ai-agent plan":
                "\"deep\"")
     check_eval("(import $json [parse]) (parse \"[[1]]\" ^max_depth 2)",
                "[[1]]")
+
+  test "json/parse ^strict rejects text that is not valid UTF-8":
+    # The same bytes as a string parse leniently and are refused strictly: a
+    # binary WebSocket frame and a text frame meet one decoder.
+    check_eval("(import $json [parse]) " &
+               "($str/byte_size (parse ($str/from_utf8 ($buffer U8 [34 255 34]))))",
+               "1")
+    check_eval("(import $json [parse JsonError]) " &
+               "(try (parse ($str/from_utf8 ($buffer U8 [34 255 34])) ^strict true) " &
+               "catch JsonError \"invalid\")",
+               "\"invalid\"")
+    check_eval("(import $json [parse]) " &
+               "(parse ($str/from_utf8 ($buffer U8 [34 195 169 34])) ^strict true)",
+               "\"é\"")
 
   test "json/stringify raises JsonError for unsupported values":
     check_eval("(import $json [stringify JsonError]) " &

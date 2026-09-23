@@ -48,8 +48,9 @@
         ^from "./persistence.gene")
 (import [load_mods] ^from "../core/mods.gene")
 (import [layout region_record region_nodes solid_lookup initial_entities
-         size_x size_y size_z floor_y]
+         size_x size_y size_z floor_y places]
         ^from "./scene.gene")
+(import [life_credential_participant] ^from "./participants.gene")
 (import [NavGrid build_nav find_path advance walkable? cell_of_mm
          walk_speed_mm_per_s remaining_mm]
         ^from "./navigation.gene")
@@ -73,14 +74,22 @@
 (let commands_per_second 10)
 (let pickup_reach_mm 1500)
 (let max_held 4)
+# Local speech reaches participants who are present — attached — and within
+# this distance of the speaker when it commits (§7.2, §7.3).
+(let hearing_mm 12000)
+(let max_speech_bytes 1000)
+# A native connection must authenticate within this time (§9.4: bound
+# unauthenticated handshakes).
+(let native_auth_ms 10000)
 
 (let features
-  {^core {^version 1} ^movement {^version 1} ^objects {^version 1}})
+  {^core {^version 1} ^movement {^version 1} ^objects {^version 1}
+   ^conversation {^version 1}})
 
 (let catalogue
   [{^operation "movement.walk_to" ^contract_version 1 ^label "Walk here"
-    ^input {^cell {^x "Int" ^z "Int"}}
-    ^doc "Start a server-owned walk to a navigation cell. One walk at a time."}
+    ^input {^cell {^x "Int" ^z "Int"} ^place_id "Str" ^object_id "Str"}
+    ^doc "Start a server-owned walk to exactly one of: a navigation cell, a named place (see `places`), or where a visible object lies now. One walk at a time; arrival is a later `movement.completed` event."}
    {^operation "movement.resume" ^contract_version 1 ^label "Resume"
     ^input {^action_id "Str"}
     ^doc "Continue a suspended walk from its committed progress."}
@@ -92,7 +101,10 @@
     ^doc "Pick up a portable object within reach."}
    {^operation "object.put_down" ^contract_version 1 ^label "Put down"
     ^input {^object_id "Str"}
-    ^doc "Put a held object down where you stand."}])
+    ^doc "Put a held object down where you stand."}
+   {^operation "conversation.say" ^contract_version 1 ^label "Say"
+    ^input {^text "Str" ^thread_id "Str?" ^reply_to "Str?"}
+    ^doc "Speak aloud. Everyone attached and within 12 m when it commits hears it, as a `conversation.said` event; nobody is made to answer. Text is data, never run."}])
 
 (type WorldFault ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for WorldFault)
@@ -196,7 +208,8 @@
         (mark_action w action)
         (events .push (owner_event w action "movement.suspended"
                         {^action_id action/action_id ^reason "world_restarted"
-                         ^progress (progress_of w action)}))))
+                         ^progress (progress_of w action)
+                         ^position (position_of w action/entity_id)}))))
     (if_yes (> events/.size 0)
       (commit_frontier w ^events events))
     w
@@ -319,7 +332,9 @@
    {^world_id w/world_id ^history_id w/history_id ^type type ^schema_version 1
     ^required true ^operation_id action/operation_id ^payload payload}])
 
-# An observation everyone currently attached can see, plus the actor.
+# An observation everyone currently attached can see, plus the actor. Only the
+# actor's own copy names its operation: operation ids are scoped to their
+# participant, and another recipient's stream must not carry them (E4).
 (fn audience_events [w : Map actor_pid : Str type : Str operation_id payload : Map] : List
   (let out [])
   (let seen {})
@@ -333,7 +348,8 @@
       (seen .put pid true)
       (out .push [pid {^world_id w/world_id ^history_id w/history_id ^type type
                        ^schema_version 1 ^required true
-                       ^operation_id operation_id ^payload payload}])))
+                       ^operation_id (if (== pid actor_pid) operation_id nil)
+                       ^payload payload}])))
   out)
 
 # Send committed events to every ready connection of their recipients.
@@ -363,6 +379,14 @@
               (remaining_mm transform/x_mm transform/z_mm action/waypoints action/next_waypoint)
               0))
   {^total_mm action/total_mm ^remaining_mm left})
+
+# Where an entity stands in the live world — at a frontier being committed,
+# that is also its durable position.
+(fn position_of [w : Map entity_id : Str]
+  (let entity (w/entities .get entity_id))
+  (if (== entity void) (return nil))
+  (let t (component entity "core/transform"))
+  (if ($absent? t) nil {^x_mm t/x_mm ^y_mm t/y_mm ^z_mm t/z_mm}))
 
 (fn open_actions_of [w : Map participant_id : Str] : List
   (let out [])
@@ -413,7 +437,8 @@
       (action .put "completed_sim_time_ms" w/sim_time_ms)
       (events .push (owner_event w action "movement.completed"
                       {^action_id action/action_id ^entity_id action/entity_id
-                       ^destination action/destination})))
+                       ^destination action/destination
+                       ^position (position_of w action/entity_id)})))
     (publish_events w (commit_frontier w ^events events)))
   (if_yes (&& (dirty? w)
               (>= (- w/sim_time_ms w/last_checkpoint_sim_ms) checkpoint_interval_ms))
@@ -437,8 +462,13 @@
   ((conn .get "send") text))
 
 # Register a freshly upgraded socket. `conn` carries ^id ^participant_id and the
-# host's ^send/^close/^queued functions.
+# host's ^send/^close/^queued functions. A native connection (^native true) has
+# no participant until its `hello` authenticates.
 (fn connection_opened [w : Map conn : Map]
+  (if_yes ($absent? conn/native) (conn .put "native" false))
+  (conn .put "opened_ms" ($os/monotonic_ms))
+  (conn .put "telemetry" true)
+  (conn .put "view" "full")
   (conn .put "role" "pending")
   (conn .put "ready" false)
   (conn .put "generation" 0)
@@ -472,18 +502,33 @@
     (mark_action w action)
     (publish_events w (commit_frontier w ^events
       [(owner_event w action "movement.suspended"
-         {^action_id action/action_id ^reason reason ^progress (progress_of w action)})]))))
+         {^action_id action/action_id ^reason reason ^progress (progress_of w action)
+          ^position (position_of w action/entity_id)})]))))
 
-# Close controllers that stopped proving they are alive (§11.5).
+# Close controllers that stopped proving they are alive (§11.5), and native
+# connections that never authenticated (§9.4).
 (fn expire_idle [w : Map]
   (let now ($os/monotonic_ms))
   (for pair in w/connections
     (let conn pair/1)
+    (if_yes (&& (! conn/closing)
+                (&& conn/native (&& (== conn/role "pending")
+                                    (> (- now conn/opened_ms) native_auth_ms))))
+      (close_with w conn "authentication_timeout" "No authenticated hello in time; this connection is closed."))
     (if_yes (&& (! conn/closing) (> (- now conn/last_seen_ms) heartbeat_expiry_ms))
-      (conn .put "closing" true)
-      ((conn .get "send") (error_message "liveness_expired"
-                            "No heartbeat for 45 seconds; this connection is closed." {}))
-      ((conn .get "close")))))
+      (close_with w conn "liveness_expired" "No heartbeat for 45 seconds; this connection is closed."))))
+
+(fn close_with [w : Map conn : Map code : Str text : Str]
+  (conn .put "closing" true)
+  ((conn .get "send") (error_message code text {}))
+  ((conn .get "close")))
+
+# Native connections still authenticating; the host bounds them.
+(fn pending_native_count [w : Map] : Int
+  (var n 0)
+  (for pair in w/connections
+    (if_yes (&& pair/1/native (== pair/1/role "pending")) (set n (+ n 1))))
+  n)
 
 # --- inbound dispatch ---------------------------------------------------------------
 
@@ -498,6 +543,8 @@
        ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)}))))
   (if (== kind "ack") (return nil))
   (if (== kind "hello") (return (handle_hello w conn msg)))
+  (if ($absent? conn/participant_id)
+    (return (send w conn (error_message "not_attached" "Say hello first." {}))))
   (if (== kind "query") (return (handle_query w conn msg)))
   (if (== kind "command") (return (handle_command w conn msg))))
 
@@ -510,6 +557,26 @@
   (let role (?? msg/role "controller"))
   (if_not (|| (== role "controller") (== role "observer"))
     (return (send w conn (error_message "invalid_field" "`role` is controller or observer." {}))))
+  (if_yes ($absent? conn/participant_id)
+    # A native Life authenticates here: its credential, never a claimed name,
+    # decides who it is (§4.4). Every failure is the same answer, and the
+    # credential itself is never logged or echoed.
+    (let found (life_credential_participant w/store msg/life_id msg/credential))
+    (if (|| ($absent? found) (== (w/participants .get found) void))
+      (return (close_with w conn "authentication_failed"
+                "That life id and connection credential do not match.")))
+    (conn .put "participant_id" found))
+  (if_yes (|| (&& (present? msg/world_id) (!= msg/world_id w/world_id))
+              (&& (present? msg/history_id) (!= msg/history_id w/history_id)))
+    # A client bound to another world or history must not attach to this one
+    # as if it were the same timeline (§9.3, §12.5).
+    (return (send w conn (error_message "wrong_world"
+                           "This is a different world or history than the one this client is bound to."
+                           {^world_id w/world_id ^history_id w/history_id}))))
+  # Per-connection presentation: a Life opts out of render telemetry and asks
+  # for the structured view — no region voxels or render content (§7.1, §11.1).
+  (conn .put "telemetry" (!= msg/telemetry false))
+  (conn .put "view" (if (== msg/view "structured") "structured" "full"))
   (let pid conn/participant_id)
   (let participant (w/participants .get pid))
   (if_yes (== role "controller")
@@ -544,7 +611,8 @@
   (send w conn (message "welcome"
     {^world_id w/world_id ^history_id w/history_id ^server_epoch w/server_epoch
      ^participant_id pid ^participant_kind participant/kind
-     ^player_id participant/player_id ^display_name participant/display_name
+     ^player_id (?? participant/player_id nil) ^life_id (?? participant/life_id nil)
+     ^display_name participant/display_name
      ^role role ^entity_id participant/entity_id
      ^control_generation (if (== role "controller")
                            (str_of_int participant/control_generation) nil)
@@ -594,11 +662,13 @@
               (let last_at (- page/.size 1))
               (let last_event page/%last_at)
               (set from ($parse/parse_int (last_event .get "event_seq")))))))))
-  (send w conn (message "snapshot" (snapshot_of w participant snapshot_id cut)))
+  (send w conn (message "snapshot" (snapshot_of w participant snapshot_id cut
+                                     ^structured (== conn/view "structured"))))
   (conn .put "last_event_seq" cut)
   (send w conn (message "sync_end" {^snapshot_id snapshot_id})))
 
-(fn snapshot_of [w : Map participant : Map snapshot_id : Str cut : Int] : Map
+(fn snapshot_of [w : Map participant : Map snapshot_id : Str cut : Int
+                 ^structured structured : Bool = false] : Map
   (let entities [])
   (for pair in w/committed (entities .push pair/1))
   (let latest (operations_latest w/store participant/participant_id snapshot_receipts))
@@ -608,7 +678,8 @@
    ^world_revision (str_of_int w/world_revision)
    ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)
    ^stream_cut (str_of_int cut)
-   ^region w/region ^content w/content
+   ^region (if structured nil w/region) ^content (if structured nil w/content)
+   ^places places
    ^entities entities
    ^self {^entity_id participant/entity_id
           ^inventory (inventory_of w participant/entity_id ^committed true)}
@@ -657,8 +728,9 @@
      ^entities samples}))
   (for pair in w/connections
     (let conn pair/1)
-    # Replaceable: skipped, never queued behind, for a peer that is behind.
-    (if_yes (&& conn/ready (<= ((conn .get "queued")) telemetry_queue_limit))
+    # Replaceable: skipped, never queued behind, for a peer that is behind,
+    # and never sent to one that opted out.
+    (if_yes (&& (&& conn/ready conn/telemetry) (<= ((conn .get "queued")) telemetry_queue_limit))
       ((conn .get "send") text))))
 
 # One server tick: advance the simulation, publish telemetry when something
@@ -689,8 +761,14 @@
         (if (== query "operation.status") (operation_status w pid args)
           (if (== query "receipts.page") (receipts_page w pid args)
             (if (== query "interactions") (interactions_for w pid args)
-              (if (== query "catalogue") {^operations catalogue}
-                (fault "unknown_query" "This world does not answer that query."))))))
+              (if (== query "catalogue") {^operations catalogue ^places places}
+                (if (== query "view.current")
+                  # The committed view, as a structured snapshot: evidence at
+                  # this world revision, not a reservation (§8.2 `refresh`).
+                  (let owner (w/participants .get pid))
+                  (snapshot_of w owner $"view-${w/server_epoch}-$($crypto/random_hex 3)"
+                               (- owner/next_event_seq 1) ^structured true)
+                  (fault "unknown_query" "This world does not answer that query.")))))))
       catch WorldFault
         (return (send w conn (error_message $err/code $err/message {^request_id request_id})))))
   (send w conn (message "query_result"
@@ -806,7 +884,8 @@
             (if (== operation "core.cancel") (cancel_operation w participant op_id input)
               (if (== operation "object.pick_up") (pick_up w participant op_id input)
                 (if (== operation "object.put_down") (put_down w participant op_id input)
-                  {^admission "rejected" ^reason "unknown_operation"}))))))))
+                  (if (== operation "conversation.say") (say w participant op_id input)
+                    {^admission "rejected" ^reason "unknown_operation"})))))))))
   (let seq participant/next_operation_seq)
   (participant .put "next_operation_seq" (+ seq 1))
   (mark_participant w participant)
@@ -867,10 +946,40 @@
 
 # --- operation handlers ------------------------------------------------------------------
 
-(fn walk_to [w : Map participant : Map op_id : Str input : Map] : Map
+# The navigation cell a walk's input names: exactly one of `cell`, `place_id`
+# or `object_id`. An object is resolved where it lies now, at admission; a held
+# object is not somewhere to walk to. Answers {^cell} or {^rejection}.
+(fn walk_destination [w : Map input : Map] : Map
+  (var named 0)
+  (for key in ["cell" "place_id" "object_id"]
+    (if_yes (present? (input .get key)) (set named (+ named 1))))
+  (if (!= named 1)
+    (return {^rejection {^admission "rejected" ^reason "invalid_input"
+                         ^detail "Name exactly one of `cell`, `place_id` or `object_id`."}}))
+  (if_yes (present? input/place_id)
+    (let place (if (== ($head input/place_id) Str) (places .get input/place_id) void))
+    (if (|| (== place void) ($absent? place))
+      (return {^rejection {^admission "rejected" ^reason "unknown_place"
+                           ^detail "There is no such place here; see the catalogue's places."}}))
+    (return {^cell place/cell ^place_id input/place_id}))
+  (if_yes (present? input/object_id)
+    (let object (if (== ($head input/object_id) Str) (w/entities .get input/object_id) void))
+    (if (|| (== object void) ($absent? (component object "core/label")))
+      (return {^rejection {^admission "rejected" ^reason "not_found" ^detail "There is no such object here."}}))
+    (let at (component object "core/transform"))
+    (if ($absent? at)
+      (return {^rejection {^admission "rejected" ^reason "not_on_the_ground"
+                           ^detail "That object is being held; there is nowhere to walk to."}}))
+    (return {^cell {^x (cell_of_mm at/x_mm) ^z (cell_of_mm at/z_mm)} ^object_id input/object_id}))
   (let cell input/cell)
-  (if (|| ($absent? cell) (|| (!= ($head cell/x) Int) (!= ($head cell/z) Int)))
-    (return {^admission "rejected" ^reason "invalid_input" ^detail "`cell` needs integer x and z."}))
+  (if (|| (!= ($head cell) Map) (|| (!= ($head cell/x) Int) (!= ($head cell/z) Int)))
+    (return {^rejection {^admission "rejected" ^reason "invalid_input" ^detail "`cell` needs integer x and z."}}))
+  {^cell {^x cell/x ^z cell/z}})
+
+(fn walk_to [w : Map participant : Map op_id : Str input : Map] : Map
+  (let target (walk_destination w input))
+  (if (present? target/rejection) (return target/rejection))
+  (let cell target/cell)
   (let active (active_walk_of w participant/entity_id))
   (if (present? active)
     (return {^admission "rejected" ^reason "busy"
@@ -891,7 +1000,9 @@
   (let action {^action_id $"action-${n}" ^kind "movement.walk" ^status "running"
                ^participant_id participant/participant_id
                ^entity_id participant/entity_id ^operation_id op_id
-               ^destination {^cell {^x cell/x ^z cell/z}}
+               ^destination {^cell {^x cell/x ^z cell/z}
+                             ^place_id (?? target/place_id nil)
+                             ^object_id (?? target/object_id nil)}
                ^waypoints waypoints ^next_waypoint 0
                ^total_mm (remaining_mm at/x_mm at/z_mm waypoints 0)
                ^rules_revision w/rules_revision
@@ -920,7 +1031,8 @@
       (return {^admission "accepted" ^action_id action/action_id ^action_status "failed"
                ^reason "no_route"
                ^events [(owner_event w action "movement.failed"
-                          {^action_id action/action_id ^reason "no_route"})]})))
+                          {^action_id action/action_id ^reason "no_route"
+                           ^position (position_of w action/entity_id)})]})))
   (action .put "status" "running")
   (action .put "waypoints" waypoints)
   (action .put "next_waypoint" 0)
@@ -965,7 +1077,8 @@
    ^result {^target_operation_id target ^outcome "cancelled" ^action_id action/action_id}
    ^events [(owner_event w action "movement.cancelled"
               {^action_id action/action_id ^cancelled_by op_id
-               ^progress (progress_of w action)})]})
+               ^progress (progress_of w action)
+               ^position (position_of w action/entity_id)})]})
 
 (fn distance_mm [a : Map b : Map] : F64
   (let dx ($to_float (- a/x_mm b/x_mm)))
@@ -1026,6 +1139,58 @@
    ^events (audience_events w participant/participant_id "object.put_down" op_id
              {^object_id object_id ^by_entity_id participant/entity_id
               ^x_mm me/x_mm ^y_mm me/y_mm ^z_mm me/z_mm})})
+
+# --- conversation (§7.2, §7.3) ---------------------------------------------------------
+
+# Speech is an ordinary world event. Its audience is fixed when it commits:
+# the speaker, and every participant who is attached now and whose avatar is
+# within `hearing_mm` of the speaker. An absent participant does not hear it
+# later; one who heard it keeps it through reconnection like any event. The
+# committed positions that made someone an audience member are in the same
+# frontier (§6.1 F5).
+(fn say [w : Map participant : Map op_id : Str input : Map] : Map
+  (let text input/text)
+  (if (|| (!= ($head text) Str)
+          (|| (== ($str/trim text) "") (> ($str/byte_size text) max_speech_bytes)))
+    (return {^admission "rejected" ^reason "invalid_input"
+             ^detail $"Say 1-${max_speech_bytes} bytes of text."}))
+  (for key in ["thread_id" "reply_to"]
+    (let value (input .get key))
+    (if_yes (&& (present? value) (! (valid_token? value 160)))
+      (return {^admission "rejected" ^reason "invalid_input"
+               ^detail $"`${key}` must be a token of at most 160 characters."})))
+  (let me (component (w/entities .get participant/entity_id) "core/transform"))
+  (if ($absent? me) (return {^admission "rejected" ^reason "not_in_world"}))
+  (let pid participant/participant_id)
+  (let message_id $"${pid}:${op_id}")
+  (let present {})
+  (for pair in w/connections
+    (let conn pair/1)
+    (if_yes (&& conn/ready (present? conn/participant_id))
+      (present .put conn/participant_id true)))
+  (let heard [pid])
+  (for pair in present
+    (let other_pid ($to_str pair/0))
+    (let other (w/participants .get other_pid))
+    (let at (if (== other void) nil (position_of w other/entity_id)))
+    (if_yes (&& (&& (!= other_pid pid) (present? at))
+                (<= (distance_mm at me) ($to_float hearing_mm)))
+      (heard .push other_pid)))
+  (let payload {^message_id message_id ^conversation_id "local"
+                ^thread_id (?? input/thread_id nil) ^reply_to (?? input/reply_to nil)
+                ^speaker_entity_id participant/entity_id
+                ^speaker_name participant/display_name
+                ^speaker_kind participant/kind
+                ^text text})
+  (let events [])
+  (for other_pid in heard
+    (events .push [other_pid {^world_id w/world_id ^history_id w/history_id
+                              ^type "conversation.said" ^schema_version 1 ^required true
+                              ^operation_id (if (== other_pid pid) op_id nil)
+                              ^payload payload}]))
+  {^admission "accepted" ^action_status "completed"
+   ^result {^message_id message_id ^audience heard/.size}
+   ^events events})
 
 # --- operator status (§16.4) ---------------------------------------------------------------
 

@@ -1,0 +1,303 @@
+(mod world_peer)
+# An in-memory world that speaks the Commons protocol (gene.world.v1) to one
+# networked Life, for deterministic tests of the Life side. It keeps its own
+# durable-looking records — operations with receipts, one event stream,
+# actions, a unique watering can — so a Life can be closed and reopened
+# against the same world. Tests steer it directly: complete a walk, emit an
+# event, drop a receipt after "committing", answer `unknown`, replay events,
+# skip a sequence, disconnect. The real world process is exercised separately
+# by examples/world/tools/life_smoke.mjs.
+(import * : p ^from "../src/host/persistence")
+(import * : records ^from "../src/body/world_records")
+
+(fn new_peer [life_id, credential]
+  {^world_id "commons-test" ^history_id "history-test" ^life_id life_id ^credential credential
+   ^participant_id $"participant-${life_id}" ^entity_id $"avatar-${life_id}"
+   ^stream_id $"events-participant-${life_id}" ^rules_revision "rules-test"
+   ^epoch 0 ^generation 0 ^events [] ^ops {} ^actions {} ^next_action 1 ^revision 1
+   ^can_holder nil ^connection nil ^down false ^inbound [] ^applied 0
+   ^drop_receipts 0 ^unknown_status false ^replay_from nil ^skip_next_seq false
+   ^refuse_credential false})
+
+# --- transport ---------------------------------------------------------------------
+
+(fn transport [peer]
+  {^open (fn [endpoint]
+     (if (peer .get "down") (fail "connection refused"))
+     (let connection {^out [] ^open true ^ready false})
+     (let previous (peer .get "connection"))
+     (if_not ($absent? previous) (previous .put "open" false))
+     (peer .put "connection" connection)
+     connection)
+   ^send (fn [connection text]
+     (if_not connection/open (fail "socket closed"))
+     (receive_from peer connection ($json/parse text ^strict true)))
+   ^receive (fn [connection]
+     (if_not connection/open (fail "peer closed the WebSocket"))
+     (if (== connection/out/.size 0) (return nil))
+     (let first connection/out/0)
+     (let rest [])
+     (var i 1)
+     (while (< i connection/out/.size) (rest .push connection/out/%i) (set i (+ i 1)))
+     (connection .put "out" rest)
+     first)
+   ^close (fn [connection] (connection .put "open" false))})
+
+(fn push [connection, fields]
+  (let out {^v 1})
+  (for pair in fields (out .put pair/0 pair/1))
+  (connection/out .push ($json/stringify out)))
+
+(fn disconnect [peer]
+  (let connection (peer .get "connection"))
+  (if_not ($absent? connection) (connection .put "open" false))
+  (peer .put "connection" nil))
+
+# --- the world's records -----------------------------------------------------------
+
+(fn str [n] $"${n}")
+(fn bump_revision [peer]
+  (peer .put "revision" (+ (peer .get "revision") 1))
+  (peer .get "revision"))
+
+(fn can_entity [peer]
+  (let holder (peer .get "can_holder"))
+  (let components {^core/label {^schema 1 ^text "Watering can"} ^core/portable {^schema 1}})
+  (if ($absent? holder)
+    (components .put "core/transform" {^schema 1 ^x_mm 31500 ^y_mm 1000 ^z_mm 11500})
+    (components .put "core/contained_in" {^schema 1 ^entity_id holder}))
+  {^id "object-watering-can" ^kind "object/watering_can" ^components components})
+
+(fn snapshot [peer, cut]
+  {^snapshot_id $"snap-${cut}" ^server_epoch $"boot-${peer/epoch}"
+   ^world_revision (str (peer .get "revision")) ^committed_sim_time_ms "1000" ^stream_cut (str cut)
+   ^entities [(can_entity peer)
+              {^id (peer .get "entity_id") ^kind "actor/life"
+               ^components {^core/transform {^schema 1 ^x_mm 23500 ^y_mm 1000 ^z_mm 3500}
+                            ^core/label {^schema 1 ^text "Tester"}}}]
+   ^places {^garden {^label "The garden beds" ^cell {^x 28 ^z 7}}}
+   ^actions (open_actions peer)
+   ^receipts {^items [] ^through_seq "0" ^from_seq "1" ^complete true}})
+
+(fn open_actions [peer]
+  (let out [])
+  (for pair in (peer .get "actions")
+    (let action pair/1)
+    (if_yes (["running" "suspended"] .contains? action/status)
+      (out .push {^action_id action/action_id ^operation_id action/operation_id ^status action/status})))
+  out)
+
+# Append one durable event to the stream and deliver it if a ready connection
+# is attached. Answers the event.
+(fn emit [peer, type, payload, ^operation_id operation_id = nil, ^required required = true,
+          ^deliver deliver = true]
+  (let events (peer .get "events"))
+  (var seq (+ events/.size 1))
+  (let event {^world_id (peer .get "world_id") ^history_id (peer .get "history_id")
+    ^stream_id (peer .get "stream_id") ^event_seq (str seq) ^world_revision (str (bump_revision peer))
+    ^sim_time_ms "1000" ^type type ^schema_version 1 ^required required
+    ^operation_id operation_id ^payload payload})
+  (events .push event)
+  (if deliver (send_event peer event))
+  event)
+
+(fn send_event [peer, event]
+  (let connection (peer .get "connection"))
+  (if_yes (&& (! ($absent? connection)) connection/open connection/ready)
+    (let wire (event_for_wire peer event))
+    (if_not ($absent? wire) (push connection wire))))
+
+# A test can make the stream skip one sequence number on the wire.
+(fn event_for_wire [peer, event]
+  (if_yes (peer .get "skip_next_seq")
+    (peer .put "skip_next_seq" false)
+    (return nil))
+  (let out {^kind "event"})
+  (for pair in event (out .put pair/0 pair/1))
+  out)
+
+(fn receipt_of [peer, op_id]
+  (let record ((peer .get "ops") .get op_id))
+  (let receipt ($json/parse ($json/stringify record/receipt)))
+  (if_not ($absent? receipt/action_id)
+    (let action ((peer .get "actions") .get receipt/action_id))
+    (receipt .put "action_status" action/status))
+  receipt)
+
+# --- inbound -------------------------------------------------------------------------
+
+(fn receive_from [peer, connection, message]
+  ((peer .get "inbound") .push message)
+  (let kind message/kind)
+  (if (== kind "hello") (return (hello peer connection message)))
+  (if (== kind "command") (return (command peer connection message)))
+  (if (== kind "query") (return (query peer connection message)))
+  (if (== kind "heartbeat") (return (push connection {^kind "heartbeat"})))
+  nil)
+
+(fn hello [peer, connection, message]
+  (if_yes (|| (!= message/life_id (peer .get "life_id")) (!= message/credential (peer .get "credential"))
+              (peer .get "refuse_credential"))
+    (push connection {^kind "error" ^code "authentication_failed" ^message "No."})
+    (return nil))
+  (peer .put "epoch" (+ (peer .get "epoch") 1))
+  (peer .put "generation" (+ (peer .get "generation") 1))
+  (push connection {^kind "welcome" ^world_id (peer .get "world_id") ^history_id (peer .get "history_id")
+    ^server_epoch $"boot-${peer/epoch}" ^participant_id (peer .get "participant_id")
+    ^participant_kind "life" ^life_id (peer .get "life_id") ^role "controller"
+    ^entity_id (peer .get "entity_id") ^control_generation (str (peer .get "generation"))
+    ^stream_id (peer .get "stream_id") ^rules_revision (peer .get "rules_revision")
+    ^features {^core {^version 1}} ^catalogue [{^operation "movement.walk_to" ^contract_version 1}]
+    ^sync_required true})
+  (let events (peer .get "events"))
+  (let cut events/.size)
+  (let resume (?? message/resume/after_event_seq "0"))
+  (var after ($parse/parse_int resume))
+  (if_not ($absent? (peer .get "replay_from")) (set after (peer .get "replay_from")))
+  (push connection {^kind "sync_begin" ^snapshot_id $"snap-${cut}" ^stream_cut (str cut)})
+  (for event in events
+    (if_yes (> ($parse/parse_int event/event_seq) after)
+      (let out {^kind "event"})
+      (for pair in event (out .put pair/0 pair/1))
+      (push connection out)))
+  (let snap {^kind "snapshot"})
+  (for pair in (snapshot peer cut) (snap .put pair/0 pair/1))
+  (push connection snap)
+  (push connection {^kind "sync_end"})
+  (connection .put "ready" true)
+  (push connection {^kind "ready" ^role "controller" ^control_generation (str (peer .get "generation"))}))
+
+(fn semantic [message]
+  (records/canonical_json {^operation message/operation ^contract_version message/contract_version
+                           ^input message/input ^preconditions message/preconditions}))
+
+(fn command [peer, connection, message]
+  (let op_id message/operation_id)
+  (if (!= message/control_generation (str (peer .get "generation")))
+    (return (push connection {^kind "error" ^code "stale_control_generation" ^operation_id op_id})))
+  (let ops (peer .get "ops"))
+  (let existing (ops .get op_id))
+  (let meaning (semantic message))
+  (if_yes (! (|| ($absent? existing) (== existing void)))
+    (if (|| (== existing/semantic meaning)
+            (&& existing/tombstone (== existing/fingerprint ($crypto/sha256 meaning))))
+      (push connection (receipt_message peer op_id))
+      (push connection {^kind "error" ^code "operation_id_conflict" ^operation_id op_id}))
+    (return nil))
+  (peer .put "applied" (+ (peer .get "applied") 1))
+  (let outcome (apply_operation peer op_id message))
+  (ops .put op_id {^semantic meaning ^operation message/operation
+    ^receipt {^world_id (peer .get "world_id") ^history_id (peer .get "history_id")
+              ^operation_id op_id ^operation message/operation ^admission outcome/admission
+              ^action_id (?? outcome/action_id nil) ^action_status (?? outcome/action_status nil)
+              ^reason (?? outcome/reason nil) ^result (?? outcome/result nil)
+              ^world_revision (str (bump_revision peer)) ^rules_revision (peer .get "rules_revision")}})
+  (let staged [])
+  (for event in (?? outcome/events [])
+    (staged .push (emit peer event/type event/payload ^operation_id event/operation_id ^deliver false)))
+  # A committed operation whose reply is lost with its connection (§10.4):
+  # replay after reconnecting supplies its events; a query, its receipt.
+  (if_yes (> (peer .get "drop_receipts") 0)
+    (peer .put "drop_receipts" (- (peer .get "drop_receipts") 1))
+    (return (disconnect peer)))
+  # Events staged by an operation go out after its receipt, as in the world.
+  (push connection (receipt_message peer op_id))
+  (for event in staged (send_event peer event)))
+
+(fn receipt_message [peer, op_id]
+  (let out {^kind "receipt"})
+  (for pair in (receipt_of peer op_id) (out .put pair/0 pair/1))
+  (out .put "retained" true)
+  out)
+
+(fn apply_operation [peer, op_id, message]
+  (let operation message/operation)
+  (let input message/input)
+  (let entity (peer .get "entity_id"))
+  (if (== operation "movement.walk_to")
+    (then
+      (for pair in (peer .get "actions")
+        (if_yes (["running" "suspended"] .contains? pair/1/status)
+          (return {^admission "rejected" ^reason "busy"})))
+      (let action_id $"action-${peer/next_action}")
+      (peer .put "next_action" (+ (peer .get "next_action") 1))
+      ((peer .get "actions") .put action_id {^action_id action_id ^operation_id op_id ^status "running"})
+      (return {^admission "accepted" ^action_id action_id ^action_status "running"})))
+  (if (== operation "object.pick_up")
+    (then
+      (if_not ($absent? (peer .get "can_holder"))
+        (return {^admission "rejected" ^reason "held_by_someone_else"}))
+      (peer .put "can_holder" entity)
+      (return {^admission "accepted" ^action_status "completed" ^result {^object_id input/object_id ^held_by entity}
+               ^events [{^type "object.picked_up" ^operation_id op_id
+                         ^payload {^object_id input/object_id ^by_entity_id entity}}]})))
+  (if (== operation "object.put_down")
+    (then
+      (if_not (== (peer .get "can_holder") entity) (return {^admission "rejected" ^reason "not_held"}))
+      (peer .put "can_holder" nil)
+      (return {^admission "accepted" ^action_status "completed"
+               ^events [{^type "object.put_down" ^operation_id op_id
+                         ^payload {^object_id input/object_id ^by_entity_id entity ^x_mm 23500 ^y_mm 1000 ^z_mm 3500}}]})))
+  (if (== operation "conversation.say")
+    (return {^admission "accepted" ^action_status "completed"
+             ^result {^message_id $"${peer/participant_id}:${op_id}" ^audience 1}
+             ^events [{^type "conversation.said" ^operation_id op_id
+                       ^payload {^message_id $"${peer/participant_id}:${op_id}" ^conversation_id "local"
+                                 ^speaker_entity_id entity ^speaker_name "Tester" ^speaker_kind "life"
+                                 ^text input/text ^reply_to (?? input/reply_to nil)}}]}))
+  (if (== operation "core.cancel")
+    (then
+      (let target input/operation_id)
+      (let ops (peer .get "ops"))
+      (let found (ops .get target))
+      (if_yes (|| ($absent? found) (== found void))
+        (ops .put target {^tombstone true ^fingerprint input/fingerprint ^semantic nil
+          ^receipt {^world_id (peer .get "world_id") ^history_id (peer .get "history_id")
+                    ^operation_id target ^admission "cancelled" ^reason "cancelled_before_admission"}})
+        (return {^admission "accepted" ^action_status "completed" ^result {^outcome "tombstoned"}}))
+      (let action (if ($absent? found/receipt/action_id) nil ((peer .get "actions") .get found/receipt/action_id)))
+      (if (|| ($absent? action) (! (["running" "suspended"] .contains? action/status)))
+        (return {^admission "accepted" ^action_status "completed" ^result {^outcome "too_late"}}))
+      (action .put "status" "cancelled")
+      (return {^admission "accepted" ^action_status "completed" ^result {^outcome "cancelled"}
+               ^events [{^type "movement.cancelled" ^operation_id target
+                         ^payload {^action_id action/action_id ^position {^x_mm 25000 ^y_mm 1000 ^z_mm 5000}}}]})))
+  (if (== operation "test.reject") (return {^admission "rejected" ^reason "test_rejection"}))
+  (if (== operation "test.echo") (return {^admission "accepted" ^action_status "completed" ^result input}))
+  {^admission "rejected" ^reason "unknown_operation"})
+
+(fn query [peer, connection, message]
+  (let request_id message/request_id)
+  (if_yes (== message/query "view.current")
+    (let events (peer .get "events"))
+    (return (push connection {^kind "query_result" ^request_id request_id ^query "view.current"
+      ^result (snapshot peer events/.size)})))
+  (if (== message/query "operation.status")
+    (then
+      (let op_id message/args/operation_id)
+      (let found ((peer .get "ops") .get op_id))
+      (let result (if (peer .get "unknown_status") {^status "unknown" ^operation_id op_id ^reason "archive unavailable"}
+        (if (|| ($absent? found) (== found void)) {^status "not_found" ^operation_id op_id}
+          {^status "found" ^operation_id op_id ^receipt (receipt_of peer op_id)})))
+      (return (push connection {^kind "query_result" ^request_id request_id ^query "operation.status"
+                                ^result result}))))
+  (push connection {^kind "error" ^code "unknown_query" ^request_id request_id}))
+
+# --- steering from tests -------------------------------------------------------------
+
+(fn finish_walk [peer, op_id, ^status status = "completed"]
+  (for pair in (peer .get "actions")
+    (let action pair/1)
+    (if_yes (== action/operation_id op_id)
+      (action .put "status" status)
+      (return (emit peer $"movement.${status}"
+        {^action_id action/action_id ^entity_id (peer .get "entity_id")
+         ^position {^x_mm 31500 ^y_mm 1000 ^z_mm 11500}} ^operation_id op_id))))
+  (p/problem $"The peer has no walk for ${op_id}"))
+
+(fn commands [peer, ^operation operation = nil]
+  (let out [])
+  (for message in (peer .get "inbound")
+    (if_yes (&& (== message/kind "command") (|| ($absent? operation) (== message/operation operation)))
+      (out .push message)))
+  out)

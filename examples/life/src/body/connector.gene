@@ -4,6 +4,7 @@
 (import * : chat ^from "./chat")
 (import * : events ^from "../host/events")
 (import * : mailbox ^from "./mailbox")
+(import * : delivery_state ^from "./delivery")
 
 # Retain the actual wire adapter source, and refuse silent revision substitution.
 # Like the host's default worker path, this package is launched from the repo root.
@@ -61,9 +62,7 @@
     (require (&& (! ($absent? registration)) (== delivery/peer_id registration/peer_id)
       (== delivery/endpoint registration/endpoint) (== delivery/adapter_revision registration/adapter_revision)
       (== ($crypto/sha256 delivery/payload) delivery/digest)) "Invalid retained delivery contract")
-    (if_yes (["attempting" "reconciling" "needs_reconciliation"] .contains? delivery/status)
-      (delivery .put "status" "needs_reconciliation")
-      (delivery .put "needs_reconciliation" true)
+    (if_yes (delivery_state/restore delivery)
       (p/tx_put tx key delivery)
       (uncertain .push delivery/id)))
   uncertain)
@@ -79,10 +78,9 @@
     (require (&& (== value/gap/from cursor) (== ($head value/gap/to) Int)
                  (> value/gap/to cursor)) "Invalid mailbox history gap")
     (let id $"gap:${registration/id}:${cursor}:${value/gap/to}")
-    (let gap {^id id ^connector registration/id ^peer_id registration/peer_id
-      ^from cursor ^to value/gap/to ^reason "Remote history unavailable" ^adapter_revision registration/adapter_revision})
-    (p/tx_put tx $"history_gap/${id}" gap)
-    (events/event host tx "history_gap" gap ^event_id id ^visibility [registration/id])
+    (delivery_state/record_gap host tx id {^id id ^connector registration/id ^peer_id registration/peer_id
+      ^from cursor ^to value/gap/to ^reason "Remote history unavailable" ^adapter_revision registration/adapter_revision}
+      ^visibility [registration/id])
     (set cursor value/gap/to))
   (for message in value/messages
     (chat/require_text message/id "external message ID" 256)
@@ -102,14 +100,8 @@
     (else (fault host "connector_before_commit") (p/commit tx) (fault host "connector_after_commit"))))
 
 (fn uncertain [host, delivery, reason]
-  (if (&& (== delivery/status "needs_reconciliation") (== delivery/last_error reason)) (return nil))
-  (delivery .put "status" "needs_reconciliation")
-  (delivery .put "needs_reconciliation" true)
-  (delivery .put "last_error" reason)
-  (p/put host/store $"delivery/${delivery/id}" delivery "delivery-uncertain"))
-(fn valid_owner [tx, delivery]
-  (&& (!= delivery/cancellation_requested true)
-    (|| ($absent? delivery/owner) (== (p/tx_get tx $"owner/${delivery/owner/id}") delivery/owner))))
+  (delivery_state/uncertain host/store $"delivery/${delivery/id}" delivery reason))
+(fn valid_owner [tx, delivery] (delivery_state/valid_owner tx delivery))
 
 (fn accept_delivery [host, request, value]
   (let tx (p/begin host/store "delivery-receipt"))
@@ -128,10 +120,7 @@
     (return nil))
   (if_yes (&& (== request/kind "receipt") (== value/status "not_found"))
     # The remote guarantees absence. An idempotent retry uses identical bytes/ID.
-    (delivery .put "status" (if (valid_owner tx delivery) "pending" "cancelled"))
-    (delivery .put "needs_reconciliation" false)
-    (delivery .put "last_error" nil)
-    (p/tx_put tx $"delivery/${delivery/id}" delivery)
+    (delivery_state/absent tx $"delivery/${delivery/id}" delivery)
     (p/commit tx)
     (return nil))
   (p/abort tx)
@@ -205,26 +194,17 @@
     (let send_key $"delivery:${registration/id}")
     (if_yes (|| (! ($absent? (network/requests .get send_key))) (< now (?? (network/next .get send_key) 0))) (continue))
     (let meta (p/get host/store "meta"))
-    # The send lane holds pending deliveries; the receipt lane holds operations
-    # awaiting reconciliation. Each lane serves its least recently attempted item.
-    (var send_candidate nil)
-    (var receipt_candidate nil)
+    (let mine [])
     (for delivery in (p/values host/store "delivery/")
-      (if_not (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id)) (continue))
-      (let dispatched (?? (network/next .get $"attempt:${delivery/id}") 0))
-      (if_yes (&& (== delivery/status "pending") (== meta/mode "running")
-                  (|| ($absent? send_candidate) (< dispatched send_candidate/dispatched)))
-        (set send_candidate {^dispatched dispatched ^delivery delivery}))
-      (if_yes (&& (== delivery/status "needs_reconciliation")
-                  (|| ($absent? receipt_candidate) (< dispatched receipt_candidate/dispatched)))
-        (set receipt_candidate {^dispatched dispatched ^delivery delivery})))
-    # Alternate lanes while both have work: a stream of new sends cannot starve
-    # reconciliation, and an unresolved receipt cannot block later sends.
-    (let chosen (if ($absent? receipt_candidate) send_candidate
-      (if ($absent? send_candidate) receipt_candidate
-        (if (== (network/lanes .get registration/id) "receipt") send_candidate receipt_candidate))))
+      (if_yes (&& (== delivery/destination/adapter "http") (== delivery/destination/connector registration/id))
+        (mine .push delivery)))
+    # The shared lane rule: sends and reconciliation alternate, each serving
+    # its least recently attempted delivery.
+    (let chosen (delivery_state/next_item mine
+      (fn [delivery] (?? (network/next .get $"attempt:${delivery/id}") 0))
+      (network/lanes .get registration/id) ^sending (== meta/mode "running")))
     (if ($absent? chosen) (continue))
-    (let candidate chosen/delivery)
+    (let candidate chosen/record)
     (for delivery in [candidate]
       (let reconciling (== delivery/status "needs_reconciliation"))
       (let tx (p/begin host/store "delivery-attempt"))
@@ -237,10 +217,7 @@
       (if reconciling
         (then (p/abort tx))
         (else
-          (delivery .put "status" "attempting")
-          (delivery .put "needs_reconciliation" true)
-          (delivery .put "attempts" (+ delivery/attempts 1))
-          (p/tx_put tx $"delivery/${delivery/id}" delivery)
+          (delivery_state/begin_attempt tx $"delivery/${delivery/id}" delivery)
           (p/commit tx)))
       (network/next .put $"attempt:${delivery/id}" now)
       (network/lanes .put registration/id (if reconciling "receipt" "send"))

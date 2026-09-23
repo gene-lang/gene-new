@@ -1,0 +1,46 @@
+# The networked world profile's transport: one WebSocket through the
+# independent `genex/websocket` client (docs/proposals/world.md §9.7).
+#
+# A transport is four functions — open, send, receive, close — so the body
+# polls it from its ordinary loop, never from generated programs, and tests can
+# substitute an in-memory peer. `receive` answers one complete application
+# message as text, or nil when none is ready; nil is not a disconnect. Send
+# queues bytes and polling advances them (F12); close may discard queued
+# bytes, so durable receipts — never send results — are the recovery basis.
+#
+# The native library is loaded on first use, not at import: a Life on the
+# local profile never needs it. A missing or unloadable library is a clear
+# preflight failure (F11), not a silent downgrade to another transport.
+(mod world_wire)
+(import [load connect_protocol send receive WebSocketError] ^from "." ^pkg "websocket")
+
+(let subprotocol "gene.world.v1")
+(let default_library "src/genex/websocket/build/libgene_websocket")
+
+(var native_cell ($cell nil))
+
+(fn library_path []
+  (if ($os/env? "GENE_WEBSOCKET_LIBRARY") (return ($os/get_env "GENE_WEBSOCKET_LIBRARY")))
+  (for suffix in [".dylib" ".so"]
+    (let candidate $"${default_library}${suffix}")
+    (if ($fs/exists? candidate) (return candidate)))
+  $"${default_library}.dylib")
+
+(fn native_library []
+  (if_not ($absent? (native_cell .get)) (return (native_cell .get)))
+  (let path (library_path))
+  (if_not ($fs/exists? path)
+    (fail (new WebSocketError
+      $"The genex/websocket native library is not built (${path}). Build it with libcurl >= 8.11 and WebSocket support: python3 src/genex/websocket/tools/build.py, passing --pkg-config-path with Homebrew curl's lib/pkgconfig on macOS.")))
+  (let native (try (load path)
+    catch Any (fail (new WebSocketError $"The genex/websocket native library at ${path} could not be loaded: ${$err/message}"))))
+  (native_cell .set native)
+  native)
+
+(fn socket_transport []
+  {^open (fn [endpoint] (connect_protocol (native_library) endpoint subprotocol ^timeout_ms 2000))
+   ^send (fn [socket text] (send (native_library) socket ($str/to_utf8 text)))
+   ^receive (fn [socket]
+     (let bytes (receive (native_library) socket))
+     (if ($absent? bytes) nil ($str/from_utf8 bytes)))
+   ^close (fn [socket] ($C/close socket))})

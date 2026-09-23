@@ -16,6 +16,14 @@
 # - The participant comes from the HttpOnly session cookie, never from
 #   anything the client says in a message.
 #
+# A native Life process is not a browser: it sends no `Origin` and has no
+# cookie. An upgrade without `Origin` is admitted as a **native** connection
+# with no participant at all; its `hello` must present a Life id and the
+# operator-issued connection credential before it is anybody (§4.4, §9.4).
+# Browsers always send `Origin` on a WebSocket handshake, so a page on another
+# site cannot reach this path, and a present-but-foreign `Origin` is refused.
+# Unauthenticated native connections are bounded in number and time.
+#
 # A successful upgrade is not permission to act: the runtime still requires a
 # `hello`, a control generation, and readiness before admitting commands.
 
@@ -26,7 +34,7 @@
 (import $html [render])
 (import $web [script stylesheet])
 (import [open_world close_world connection_opened connection_closed
-         handle_message tick status_of]
+         handle_message tick status_of pending_native_count]
         ^from "./runtime.gene")
 (import [sign_in session_participant sign_out ParticipantError]
         ^from "./participants.gene")
@@ -109,6 +117,13 @@
                (section ^id "inventory_panel"
                  (h2 "Holding")
                  (div ^id "inventory_list" "Nothing."))
+               (section ^id "chat_panel"
+                 (h2 "Say")
+                 (form ^id "chat_form" ^class "chat"
+                   (input ^id "chat_text" ^name "text" ^maxlength "1000" ^autocomplete "off"
+                          ^placeholder "Speak to whoever is nearby")
+                   (button ^type "submit" "Say"))
+                 (p ^class "hint" "Everyone attached within 12 m hears it. Lives decide whether and when to answer."))
                (div ^id "notice" ^role "status" ^aria-live "polite" "")
                (section ^id "history_panel"
                  (h2 "History")
@@ -185,24 +200,28 @@
     (if_yes (&& (== request/method "GET") (== path "/health"))
       (return (json 200 ($json/stringify (status_of w)))))
     (if_yes (&& (== request/method "GET") (== path "/world/v1"))
-      # Browsers always send Origin on a WebSocket handshake; a missing or
-      # foreign one is refused before anything is upgraded.
-      (if_not (allowed? request_origin origins)
+      # Browsers always send Origin on a WebSocket handshake: a foreign one is
+      # refused before anything is upgraded, and a same-origin one must carry
+      # a session. No Origin at all is a native client (see above).
+      (let native (== request_origin ""))
+      (if_yes (&& (! native) (! (allowed? request_origin origins)))
         (return (text 403 "A same-origin socket is required.")))
-      (let pid (session_of request))
-      (if ($absent? pid)
+      (let pid (if native nil (session_of request)))
+      (if_yes (&& (! native) ($absent? pid))
         (return (text 401 "Sign in first.")))
       (var offered false)
       (for item in ($str/split (?? request/headers/sec-websocket-protocol "") ",")
         (if_yes (== ($str/trim item) subprotocol) (set offered true)))
       (if_not offered
         (return (text 400 $"This endpoint speaks the ${subprotocol} subprotocol.")))
+      (if_yes (&& native (>= (pending_native_count w) 8))
+        (return (text 503 "Too many connections are still authenticating; try again shortly.")))
       (next_conn .set (+ (next_conn .get) 1))
       (let conn_id $"conn-$(next_conn .get)")
       (return (ws_accept request ^subprotocol subprotocol
         ^on_open (fn [ws]
           (connection_opened w
-            {^id conn_id ^participant_id pid
+            {^id conn_id ^participant_id pid ^native native
              ^send (fn [payload] (ws_send ws payload))
              ^close (fn [] (ws_close ws))
              ^queued (fn [] (ws_queued ws))}))

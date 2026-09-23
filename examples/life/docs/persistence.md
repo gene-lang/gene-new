@@ -45,6 +45,20 @@ Module executions have one-million-step, 64-MiB and two-second budgets, plus a
 three-second subprocess deadline. These controls and namespace exposure are
 execution boundaries, not a general operating-system security sandbox.
 
+## Storage backends
+
+A Life's backend is fixed when it is created and recognized afterwards by which
+file exists; both behind the same record/commit interface:
+
+| File | Backend | Commit |
+| --- | --- | --- |
+| `life.sqlite` | `$db/sqlite/open` | Republishes the whole database image atomically. The local default. |
+| `life.db` | `$db/sqlite/open_file` | WAL with `synchronous=FULL` and `fullfsync`; only changed pages are written. Networked Lives use it; `LIFE_STORAGE=file` makes it the default for new local Lives. |
+
+Both put records, head moves and the commit receipt in one transaction. The
+failed-publication contract below is stated for the image backend; on either
+backend a failed commit marks the connection unusable until reopen.
+
 ## Failed publication
 
 The SQLite backend keeps a connection-local image and publishes it atomically.

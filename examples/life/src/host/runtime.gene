@@ -10,31 +10,40 @@
 (import * : scheduler ^from "../schedule/scheduler")
 (import * : budget ^from "./budget")
 (import * : connector ^from "../body/connector")
+(import * : world_network ^from "../body/world_network")
+(import * : world_records ^from "../body/world_records")
 (import [wall_ms] ^from "./clock")
 
+# `world_profile` is "local" (the original co-located world) or "network" (a
+# shared Commons world, docs/proposals/world.md §1.1), fixed at creation.
+# `world` holds the network profile's transient connection state;
+# `world_transport` substitutes the WebSocket transport (tests).
 (type Host
   ^props {^store Any ^clock Any ^worker Str ^brain Any ^decisions Any
-          ^active Cell ^thought Cell ^late Cell ^stopped Cell ^calls Cell ^fault Any ^background_dispatches Cell ^network Cell})
+          ^active Cell ^thought Cell ^late Cell ^stopped Cell ^calls Cell ^fault Any ^background_dispatches Cell ^network Cell
+          ^world_profile Str ^world Cell ^world_transport Any})
 
 (fn initialize [host]
   (let tx (p/begin host/store "create"))
   (let seed "Curiosity about the surroundings and interest in tending a small garden")
   (p/tx_put tx "meta" {^id (p/id "life") ^version 1 ^mode "running" ^clean false
     ^disposition seed ^organization "starter@1" ^model {^provider "fake"}
-    ^model_calls_per_hour 100 ^last_wall (host/clock)})
+    ^model_calls_per_hour 100 ^last_wall (host/clock) ^world_profile host/world_profile})
   (p/tx_put tx "organization/starter@1" {^id "starter@1" ^roots ["state/" "memory/"]
     ^code [] ^documentation "Starter keyed state and provenance-bearing memories"})
-  (p/tx_put tx "world" {^sim_ms 0 ^position 0 ^orientation "east" ^inventory [] ^held nil
-    ^places {^home 0 ^garden 10 ^shade 20}
-    ^objects {^plant-a {^id "plant-a" ^position 10 ^status "dry" ^version 1}
-              ^watering-can {^id "watering-can" ^position 0 ^version 1}}})
+  (if (world_records/network? host)
+    (world_network/initialize host tx)
+    (p/tx_put tx "world" {^sim_ms 0 ^position 0 ^orientation "east" ^inventory [] ^held nil
+      ^places {^home 0 ^garden 10 ^shade 20}
+      ^objects {^plant-a {^id "plant-a" ^position 10 ^status "dry" ^version 1}
+                ^watering-can {^id "watering-can" ^position 0 ^version 1}}}))
   (body/event host tx "first_start" {^disposition seed})
   (p/commit tx))
 
 (fn restore [host]
   (recovery/validate host/store)
   (let meta (p/get host/store "meta"))
-  (let world (p/get host/store "world"))
+  (let world (p/get host/store (if (world_records/network? host) "world_view" "world")))
   (if (|| ($absent? meta) (!= meta/version 1) ($absent? world))
     (p/problem "Missing or incompatible required Life state"))
   (let selected (p/get host/store $"organization/${meta/organization}"))
@@ -66,6 +75,8 @@
         (interrupted .push record/id))))
   (recovery/reconcile_schedules tx)
   (let uncertain (connector/restore host tx))
+  (if (world_records/network? host)
+    (for id in (world_network/restore host tx) (uncertain .push id)))
   (let selection (organization/pending host/store))
   (routines/restore tx)
   (if_yes (&& (! ($absent? selection)) (== selection/status "migrating"))
@@ -75,20 +86,31 @@
     (p/tx_put tx "selection/pending" nil)
     (interrupted .push selection/id))
   (body/event host tx "restart" {^clean meta/clean ^interrupted interrupted ^uncertain_deliveries uncertain
-    ^downtime_ms ($math/max 0 (- (host/clock) meta/last_wall)) ^sim_ms world/sim_ms})
+    ^downtime_ms ($math/max 0 (- (host/clock) meta/last_wall))
+    ^sim_ms (?? world/sim_ms (?? world/committed_sim_time_ms 0))})
   (meta .put "clean" false)
   (meta .put "last_wall" (host/clock))
   (p/tx_put tx "meta" meta)
   (p/commit tx))
 
+# `^profile "network"` creates a Life for a shared world; it uses the
+# incremental file store. `^storage` chooses a new store's backend ("image" or
+# "file"; LIFE_STORAGE sets the default); an existing Life keeps its own.
 (fn open_life [home, ^create create = false, ^clock clock = wall_ms,
                ^brain provider = nil, ^decisions decisions = nil,
-               ^worker worker = "examples/life/src/worker/worker.gene", ^fault fault = nil]
-  (let store (p/open_store home ^create create))
+               ^worker worker = "examples/life/src/worker/worker.gene", ^fault fault = nil,
+               ^profile profile = "local", ^storage storage = nil, ^world_transport transport = nil]
+  (if_not (["local" "network"] .contains? profile) (p/problem "Unknown world profile"))
+  (let backend (?? storage (if (== profile "network") "file"
+    (if ($os/env? "LIFE_STORAGE") ($os/get_env "LIFE_STORAGE") "image"))))
+  (let store (p/open_store home ^create create ^backend backend))
+  (let retained (if create nil (p/get store "meta")))
   (let host (Host ^store store ^clock clock ^worker ($fs/real_path worker)
     ^brain provider ^decisions ($cell (?? decisions [])) ^active ($cell nil) ^thought ($cell nil) ^late ($cell [])
     ^stopped ($cell false) ^calls ($cell 0) ^fault fault ^background_dispatches ($cell 0)
-    ^network ($cell {^requests {} ^next {} ^lanes {}})))
+    ^network ($cell {^requests {} ^next {} ^lanes {}})
+    ^world_profile (if create profile (?? retained/world_profile "local"))
+    ^world ($cell (world_network/fresh_state)) ^world_transport transport))
   (try
     (if create (initialize host) (restore host))
     host
@@ -117,13 +139,32 @@
       (notes .push {^id cycle/id ^note cycle/note ^status cycle/status ^result (?? cycle/result nil)})))
   (let pending [])
   (for job in (p/values host/store "job/") (if_yes (body/queued? job) (pending .push job)))
+  # Open world requests are pending work too: their outcomes arrive later.
+  (for op in (p/peek_where host/store "world_op/" (fn [op] (!= op/status "cancelled")))
+    (let result (p/get host/store $"world_result/${op/id}"))
+    (if_yes (|| ($absent? result) (! result/terminal))
+      (pending .push {^id op/id ^kind "world" ^operation op/operation ^input op/input
+                      ^status (?? result/status op/status)})))
   (let state {})
   (for key in (take_last (p/keys host/store "state/") 32) (state .put key (p/get host/store key)))
   {^life_id meta/id ^context_id (p/id "context") ^now (host/clock) ^disposition meta/disposition
    ^policy_revisions {^organization meta/organization} ^focus focus ^observations selected
    ^recent_decisions notes ^pending_work pending ^state state
    ^memory_excerpt (take_last (p/values host/store "memory/") 12)
+   ^world_profile host/world_profile
+   ^world (if (world_records/network? host) (world_summary host) nil)
    ^api_documentation "Gene bindings: store, state, memory, body/world, body/chat, scheduler, code, life. See src/worker/api.gene."})
+
+# What a networked Life knows of the world for one decision: its last observed
+# view, labeled with how fresh it is, and the interfaces it can use.
+(fn world_summary [host]
+  (let view (p/get host/store "world_view"))
+  (let binding (p/get host/store "world_binding"))
+  (let state (host/world .get))
+  {^freshness (if (== state/phase "ready") "synchronized" "last_observed")
+   ^world_revision (?? view/world_revision nil) ^committed_sim_time_ms (?? view/committed_sim_time_ms nil)
+   ^self (?? view/self nil) ^entities (?? view/entities []) ^places (?? view/places {})
+   ^operations (if ($absent? binding) [] (do (let names []) (for item in binding/catalogue (names .push item/operation)) names))})
 
 (fn finish [host, record, prefix, status, result]
   (let tx (p/begin host/store record/id))
@@ -156,6 +197,7 @@
     # It must not invent a fresh retry budget merely by recording a failure.
     (observation .put "wake_source" false)
     (p/tx_put tx $"event/${observation/id}" observation))
+  (world_records/finish_continuation tx record status result)
   (if_yes (routines/finish tx record status result)
     (body/event host tx "routine_failed" {^id record/routine_id ^execution_id record/id ^result result} ^cause record/id))
   (p/commit tx))
@@ -389,6 +431,10 @@
     (abandon host)
     (p/problem $"Body stopped after a persistent write failure; reopen for recovery: ${reason}"))
   (connector/tick host)
+  # The shared world's connection and the one result dispatcher run every
+  # heartbeat, whether the brain is thinking, idle or paused (§8.4, §9.7).
+  (world_network/tick host)
+  (world_network/dispatch host)
   (let active (host/active .get))
   (if_not ($absent? active)
     # A known terminal process supplies its actual outcome. A later withdrawal
@@ -442,9 +488,17 @@
           (finish host record prefix admission "Schedule changed or its dispatch window expired")
           (continue))
         (record .put "status" "running")
-        (p/put host/store $"${prefix}${record/id}" record record/id)
+        (let claim (p/begin host/store record/id))
+        (p/tx_put claim $"${prefix}${record/id}" record)
+        (if_yes (== record/kind "continuation")
+          # Claim the ready continuation under its stable identity.
+          (let cont (p/tx_get claim $"world_cont/${record/operation_id}"))
+          (cont .put "status" "running")
+          (p/tx_put claim $"world_cont/${record/operation_id}" cont))
+        (p/commit claim)
         (host/background_dispatches .set (if (== prefix "cycle/") 0 (+ (host/background_dispatches .get) 1)))
-        (let execution (execution/launch host record (if (== record/kind "routine") "routine" "run")))
+        (let execution (execution/launch host record
+          (if (["routine" "continuation"] .contains? record/kind) "routine" "run")))
         (execution .put "prefix" prefix)
         (host/active .set execution)
         (return nil))))
@@ -495,6 +549,7 @@
   # Release transient handles without claiming a clean, durable stop. This path
   # remains usable when persistence itself cannot record execution outcomes.
   (connector/stop host)
+  (world_network/stop host)
   (let active (host/active .get))
   (if_not ($absent? active)
     (execution/cancel active)
@@ -513,6 +568,7 @@
   (let mode meta/mode)
   (pause host)
   (connector/stop host)
+  (world_network/stop host)
   (let thought (host/thought .get))
   (if_not ($absent? thought) (thought/task .cancel) (thought/task .join))
   (for late in (host/late .get) (late/task .cancel) (late/task .join))

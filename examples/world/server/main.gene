@@ -2,8 +2,13 @@
 #
 #   gene run world create                     create a new world (once)
 #   gene run world player add <id> <name...>  provision a human player; prints a login code
+#   gene run world life add <id> <name...> --credential-out FILE
+#                                             provision a Life; writes its connection
+#                                             credential to an owner-only FILE
 #   gene run world run [--port 8096]          serve the world
 #   gene run world status                     print the store's summary
+#   gene run world inspect participants|entity ID|operation PARTICIPANT OP|events PARTICIPANT
+#                                             read stored records from the real file
 #
 # Every command takes `--root DIR` (default `data/world`, under the launch
 # directory). Creating is explicit: `run` on a missing world fails rather than
@@ -14,18 +19,47 @@
 (mod world_main)
 
 (import [create_world open_world close_world status_of] ^from "./runtime.gene")
-(import [provision_player] ^from "./participants.gene")
-(import [open_store close_store] ^from "./persistence.gene")
+(import [provision_player provision_life] ^from "./participants.gene")
+(import [open_store close_store participants_all entity_get operation_find
+         events_after] ^from "./persistence.gene")
 (import [serve_world] ^from "./host.gene")
 
 (fn usage []
   ($println "usage: gene run world create|run|status [--root DIR] [--port N]")
-  ($println "       gene run world player add <player_id> <display name...> [--root DIR]"))
+  ($println "       gene run world player add <player_id> <display name...> [--root DIR]")
+  ($println "       gene run world life add <life_id> <display name...> --credential-out FILE [--root DIR]")
+  ($println "       gene run world inspect participants|entity ID|operation PARTICIPANT OP|events PARTICIPANT [--root DIR]"))
+
+(fn rest_of [words : List from : Int] : Str
+  (let names [])
+  (var k from)
+  (while (< k words/.size)
+    (names .push words/%k)
+    (set k (+ k 1)))
+  ($str/join names " "))
+
+# Read-only views of the stored records, for operators and tests that must
+# check the actual file rather than a server's answer (§18.1).
+(fn inspect [root : Str words : List]
+  (let store (open_store root))
+  (try
+    (let what (?? words/1 ""))
+    (if (== what "participants")
+      (return ($println ($json/stringify (participants_all store)))))
+    (if (&& (== what "entity") (>= words/.size 3))
+      (return ($println ($json/stringify (entity_get store words/2)))))
+    (if (&& (== what "operation") (>= words/.size 4))
+      (return ($println ($json/stringify (operation_find store words/2 words/3)))))
+    (if (&& (== what "events") (>= words/.size 3))
+      (return ($println ($json/stringify (events_after store words/2 0 9007199254740991 100000)))))
+    (usage)
+    ensure (close_store store)))
 
 (fn main [argv]
   (let words [])
   (var root "data/world")
   (var port 8096)
+  (var credential_out "")
   (let args [])
   (for arg in argv (args .push ($to_str arg)))
   (var i 0)
@@ -36,6 +70,9 @@
       (elif (&& (== arg "--port") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set port ($parse/parse_int args/%i)))
+      (elif (&& (== arg "--credential-out") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set credential_out args/%i))
       (elif (== arg "--") nil)
       (else (words .push arg)))
     (set i (+ i 1)))
@@ -48,14 +85,9 @@
       (return nil)))
   (if (&& (== command "player") (&& (>= words/.size 4) (== words/1 "add")))
     (do
-      (let names [])
-      (var k 3)
-      (while (< k words/.size)
-        (names .push words/%k)
-        (set k (+ k 1)))
       (let store (open_store root))
       (try
-        (let made (provision_player store words/2 ($str/join names " ")))
+        (let made (provision_player store words/2 (rest_of words 3)))
         ($println (if made/created
                     $"world: player ${words/2} added with avatar ${made/entity_id}"
                     $"world: player ${words/2} exists; issued a new login code"))
@@ -63,6 +95,23 @@
         ($println $"login code: ${made/code}")
         ensure (close_store store))
       (return nil)))
+  (if (&& (== command "life") (&& (>= words/.size 4) (== words/1 "add")))
+    (do
+      (if (== credential_out "")
+        (fail "Name an owner-only file for the connection credential with --credential-out FILE."))
+      (let store (open_store root))
+      (try
+        (let made (provision_life store words/2 (rest_of words 3)))
+        # The credential goes to one owner-only file, never to the terminal or
+        # a log; the operator hands that file to the Life (§4.4, §9.4).
+        ($fs/write_text_atomic credential_out made/credential ^owner_only true)
+        ($println (if made/created
+                    $"world: life ${words/2} added as ${made/participant_id} with avatar ${made/entity_id}"
+                    $"world: life ${words/2} exists; issued a new connection credential"))
+        ($println $"connection credential written to ${credential_out}")
+        ensure (close_store store))
+      (return nil)))
+  (if (== command "inspect") (return (inspect root words)))
   (if (== command "run")
     (do
       (if (|| (< port 1024) (> port 65535))

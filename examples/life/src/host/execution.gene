@@ -18,7 +18,8 @@
     (code/materialize (code/read host/store selected/module) root)))
   (let candidate (if ($absent? record/candidate_module) nil
     (code/materialize (code/read host/store record/candidate_module) root)))
-  (let callback (if ($absent? record/routine_id) nil
+  # Routine handlers and world-result continuations both run saved code.
+  (let callback (if (&& ($absent? record/routine_id) ($absent? record/continuation_id)) nil
     (code/materialize (code/read host/store record/code_revision) root)))
   ($fs/write_text_atomic request ($serde/write_data {^program record/program
     ^context (?? record/context {}) ^input (?? record/input {}) ^mode mode
@@ -52,7 +53,8 @@
     (if_not (["get" "put" "keys" "roots" "revision" "load_code" "new_id" "register_routine" "cancel_routine" "get_schedule" "get_owner" "chat_history"] .contains? op)
       (p/problem "Migration permits only participating local data operations")))
   (if_yes (== execution/mode "context")
-    (if_not (["get" "keys" "roots" "revision" "load_code" "observe" "get_schedule" "get_owner" "chat_history"] .contains? op)
+    (if_not (["get" "keys" "roots" "revision" "load_code" "observe" "get_schedule" "get_owner" "chat_history"
+              "world_result" "world_describe"] .contains? op)
       (p/problem "Context construction is read-only")))
   (if (== op "begin")
     (then

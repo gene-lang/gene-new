@@ -1,5 +1,5 @@
 (mod persistence)
-(import $db/sqlite [open Db])
+(import $db/sqlite [open open_file Db])
 (import $serde [write_data read_data])
 
 (type LifeError ^props {^message Str} ^impl [Error])
@@ -9,21 +9,57 @@
 (fn id [prefix] $"${prefix}-${($crypto/random_hex 12)}")
 
 (type DurableStore
-  ^props {^db Any ^claim Any ^home Str ^records Cell ^closed Cell ^fail_next Cell ^fault Cell})
+  ^props {^db Any ^claim Any ^home Str ^backend Str ^records Cell ^closed Cell ^fail_next Cell ^fault Cell})
+
+# Two storage backends behind one interface, chosen when a Life is created and
+# recognized afterwards by which file exists:
+#
+#   "image" — life.sqlite through `$db/sqlite/open`: a connection-local image
+#             republished whole and atomically on every COMMIT. The original
+#             local profile; the failed-publication contract below is its own.
+#   "file"  — life.db through `$db/sqlite/open_file`: SQLite's pager and WAL
+#             write only the changed pages (docs/proposals/world.md §12.8).
+#             WAL, synchronous=FULL and fullfsync; a commit is durable when
+#             COMMIT returns. Networked Lives use it.
+#
+# Both publish records, head moves and the commit receipt in one transaction.
+(let backend_files {^image "life.sqlite" ^file "life.db"})
+(fn storage_settings [store]
+  (if (== store/backend "file")
+    {^backend "sqlite/open_file" ^file "life.db" ^journal_mode "wal" ^synchronous "full"
+     ^fullfsync "on" ^busy_timeout_ms 5000}
+    {^backend "sqlite/open" ^file "life.sqlite" ^publication "whole image per commit"}))
+
+(fn detect_backend [home]
+  (let image ($fs/exists? $"${home}/life.sqlite"))
+  (let file ($fs/exists? $"${home}/life.db"))
+  (if (&& image file) (problem "Life has both an image and a file database; refusing to guess"))
+  (if file "file" (if image "image" nil)))
 (type Transaction
   ^props {^store DurableStore ^base Any ^reads Any ^writes Any ^cause Str ^closed Cell})
 
-(fn open_store [home, ^create create = false]
+(fn open_store [home, ^create create = false, ^backend requested = "image"]
   (if create ($fs/make_dir home)
     (if_not ($fs/exists? home) (problem "Life does not exist; create it explicitly")))
   (let claim ($fs/try_lock $"${home}/writer.lock"))
   (if ($absent? claim) (problem "Life already has an active writer"))
   (try
-    (let path $"${home}/life.sqlite")
-    (if (== create ($fs/exists? path))
-      (problem (if create "Life already exists" "Missing Life database")))
-    (let db (open path))
+    (let found (detect_backend home))
+    (if (&& create (! ($absent? found))) (problem "Life already exists"))
+    (if (&& (! create) ($absent? found)) (problem "Missing Life database"))
+    (let backend (if create requested found))
+    (if_not (["image" "file"] .contains? backend) (problem "Unknown Life storage backend"))
+    (let path $"${home}/$(backend_files .get backend)")
+    (let db (if (== backend "file")
+      (open_file path ^create create ^busy_timeout_ms 5000)
+      (open path)))
     (try
+      (if_yes (== backend "file")
+        (let mode (db .Db:query "PRAGMA journal_mode=WAL"))
+        (if_not (== mode/0/journal_mode "wal") (problem "Life store could not enter WAL mode"))
+        (db .Db:exec "PRAGMA synchronous=FULL")
+        (db .Db:exec "PRAGMA fullfsync=ON")
+        (db .Db:exec "PRAGMA checkpoint_fullfsync=ON"))
       (if_yes create
         (db .Db:exec "BEGIN; CREATE TABLE records (revision INTEGER PRIMARY KEY AUTOINCREMENT,
           key TEXT NOT NULL, value TEXT NOT NULL, cause TEXT NOT NULL);
@@ -38,7 +74,7 @@
       (let records {})
       (for row in (db .Db:query "SELECT r.key,r.revision,r.value FROM heads h JOIN records r ON h.revision=r.revision")
         (records .put row/key {^revision row/revision ^value (read_data row/value)}))
-      (DurableStore ^db db ^claim claim ^home home ^records ($cell records)
+      (DurableStore ^db db ^claim claim ^home home ^backend backend ^records ($cell records)
         ^closed ($cell false) ^fail_next ($cell false) ^fault ($cell nil))
       catch Any
         (db .Db:close)
@@ -60,6 +96,27 @@
   (let result [])
   (for key in (keys store prefix) (result .push (get store key)))
   result)
+# Count committed records under a prefix that satisfy `predicate`, without
+# copying them. `predicate` must only read its argument.
+(fn count_where [store, prefix, predicate]
+  (if (store/closed .get) (problem "Store is closed"))
+  (var n 0)
+  (for pair in (store/records .get)
+    (if_yes (&& ($str/starts_with? ($to_str pair/0) prefix) (! ($absent? pair/1/value))
+                (predicate pair/1/value))
+      (set n (+ n 1))))
+  n)
+# The committed records under a prefix that satisfy `predicate`, uncopied.
+# Callers only read them; anything they intend to change is re-read in a
+# transaction first.
+(fn peek_where [store, prefix, predicate]
+  (if (store/closed .get) (problem "Store is closed"))
+  (let out [])
+  (for pair in (store/records .get)
+    (if_yes (&& ($str/starts_with? ($to_str pair/0) prefix) (! ($absent? pair/1/value))
+                (predicate pair/1/value))
+      (out .push pair/1/value)))
+  out)
 (fn require_writable [store]
   (if (store/closed .get) (problem "Store is closed"))
   (if_not ($absent? (store/fault .get))
@@ -117,7 +174,8 @@
     (let receipt_row (db .Db:query "SELECT last_insert_rowid() AS revision"))
     (db .Db:execute "INSERT INTO heads(key,revision) VALUES(?,?)" commit_key receipt_row/0/revision)
     (next .put commit_key {^revision receipt_row/0/revision ^value (copy receipt)})
-    # Gene's SQLite backend atomically publishes its file on COMMIT.
+    # The image backend atomically republishes its file on COMMIT; the file
+    # backend's COMMIT returns once its WAL frames are synchronized.
     (db .Db:exec "COMMIT")
     (tx/store/records .set next)
     revisions

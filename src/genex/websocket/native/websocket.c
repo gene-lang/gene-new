@@ -58,12 +58,30 @@ void gx_ws_free(GXSocket *s) {
   curl_global_cleanup();
 }
 
-GXSocket *gx_ws_connect(const char *url, int timeout_ms) {
+/* RFC 6455 subprotocol names are HTTP tokens. Accepting only this conservative
+ * subset keeps a caller's value from ever injecting another request header. */
+static int valid_protocol(const char *protocol) {
+  size_t n = strlen(protocol);
+  if (n == 0 || n > 64) return 0;
+  for (size_t i = 0; i < n; i++) {
+    char c = protocol[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+          c == '.' || c == '_' || c == '-')) return 0;
+  }
+  return 1;
+}
+
+static GXSocket *open_socket(const char *url, const char *protocol, int timeout_ms) {
   open_error[0] = 0;
   if ((strncmp(url, "ws://", 5) && strncmp(url, "wss://", 6)) || timeout_ms < 1) {
     snprintf(open_error, sizeof open_error, "expected a ws:// or wss:// URL and a positive timeout");
     return NULL;
   }
+  if (protocol && !valid_protocol(protocol)) {
+    snprintf(open_error, sizeof open_error, "a subprotocol is 1-64 letters, digits, '.', '_' or '-'");
+    return NULL;
+  }
+  struct curl_slist *headers = NULL;
   CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
   if (rc != CURLE_OK) { snprintf(open_error, sizeof open_error, "%s", curl_easy_strerror(rc)); return NULL; }
   GXSocket *s = calloc(1, sizeof *s);
@@ -78,13 +96,46 @@ GXSocket *gx_ws_connect(const char *url, int timeout_ms) {
   SET(CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
   SET(CURLOPT_TIMEOUT_MS, (long)timeout_ms);
   SET(CURLOPT_NOSIGNAL, 1L);
+  if (protocol) {
+    char line[128];
+    snprintf(line, sizeof line, "Sec-WebSocket-Protocol: %s", protocol);
+    struct curl_slist *more = curl_slist_append(headers, line);
+    if (!more) { fail(s, "out of memory"); goto error; }
+    headers = more;
+    SET(CURLOPT_HTTPHEADER, headers);
+  }
   rc = curl_easy_perform(s->curl);
   if (rc != CURLE_OK) goto error;
+  if (protocol) {
+    /* The server must select the offered protocol (RFC 6455 section 4.1): a
+     * peer that ignored it does not speak this application's protocol. The
+     * 101 upgrade is an informational response, so its headers are CURLH_1XX. */
+    struct curl_header *selected = NULL;
+    if (curl_easy_header(s->curl, "Sec-WebSocket-Protocol", 0,
+                         CURLH_HEADER | CURLH_1XX, -1, &selected)
+          != CURLHE_OK || !selected || strcmp(selected->value, protocol) != 0) {
+      fail(s, "the server did not select the offered WebSocket subprotocol");
+      rc = CURLE_OK;
+      goto error;
+    }
+    /* libcurl keeps its own reference to the header list only for the
+     * transfer that already finished. */
+    SET(CURLOPT_HTTPHEADER, NULL);
+    curl_slist_free_all(headers);
+  }
   return s;
 error:
   snprintf(open_error, sizeof open_error, "%s", s->error[0] ? s->error : curl_easy_strerror(rc));
-  s->closed = 1; gx_ws_free(s); return NULL;
+  s->closed = 1; gx_ws_free(s); curl_slist_free_all(headers); return NULL;
 #undef SET
+}
+
+GXSocket *gx_ws_connect(const char *url, int timeout_ms) {
+  return open_socket(url, NULL, timeout_ms);
+}
+
+GXSocket *gx_ws_connect_protocol(const char *url, const char *protocol, int timeout_ms) {
+  return open_socket(url, protocol, timeout_ms);
 }
 
 int gx_ws_send(GXSocket *s, void *data, size_t n) {

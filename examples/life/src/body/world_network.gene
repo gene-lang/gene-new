@@ -1,0 +1,782 @@
+# The networked world profile — docs/proposals/world.md §1.1, §8, §9–§12.
+#
+# A second implementation behind `body/world`, beside the local world. The
+# shared Commons world is an independently running environment: this Life
+# commits requests to its own outbox, sends them after publication, and
+# records what the world reports. No commit spans the two stores; operation
+# IDs and receipts connect them (§8.3, §10.4).
+#
+# ## One polled connection (§9.4, §9.7)
+#
+# `tick` runs from the body's ordinary loop, never from a generated program:
+# connect with bounded backoff and jitter; say `hello` with the Life id, its
+# operator-issued credential, the bound world/history and the durable receipt
+# cursor; take the replay, snapshot and `ready`; then send. Only one ordinary
+# exchange is outstanding at a time, in local outbox order, paced below the
+# world's rate limit (§10.1, §11.5). A socket that fails leaves every
+# unconfirmed request `needs_reconciliation` — never resent under a new ID.
+#
+# ## Intake (§8.4, §11.2)
+#
+# Ordered events are installed in bounded batches, one local commit per batch,
+# before they are acknowledged. The **receipt cursor** is the highest contiguous
+# stored event; a duplicate is dropped by sequence alone and a skipped sequence
+# blocks advancement until resynchronization. Receipts, status queries,
+# snapshots and events that describe one of this Life's operations update its
+# canonical result (`world_records/normalize`); receipts and queries also leave
+# a routing marker, since they carry no event sequence.
+#
+# ## The one standing dispatcher (§8.4)
+#
+# `dispatch` is a bounded pass: at most `dispatch_batch` stored events after
+# the **dispatcher cursor**, plus marked results. It readies waiting
+# continuations whose result is terminal and turns other people's speech and
+# actions into this Life's observations. It never runs a continuation: ready
+# work is an ordinary queued execution for the foreground executor. A pass
+# that leaves work behind simply runs again next heartbeat, and startup does
+# the same, so no wakeup can be lost. There is one dispatcher registration
+# (`world_dispatcher`) however many continuations wait.
+(mod world_network)
+(import * : p ^from "../host/persistence")
+(import * : records ^from "./world_records")
+(import * : delivery_state ^from "./delivery")
+(import * : events ^from "../host/events")
+(import * : chat ^from "./chat")
+(import * : wire ^from "./world_wire")
+
+(let heartbeat_interval_ms 15000)
+(let receipt_timeout_ms 10000)
+# An uncertain request is asked about again at most this often.
+(let reconcile_interval_ms 1000)
+(let commands_per_second 8)
+(let max_messages_per_tick 64)
+(let backoff_min_ms 500)
+(let backoff_max_ms 30000)
+(let max_message_bytes 262144)
+(let known_events ["movement.completed" "movement.failed" "movement.cancelled" "movement.suspended"
+                   "object.picked_up" "object.put_down" "conversation.said"])
+
+(fn require [condition, message] (if_not condition (p/problem message)))
+(fn fault [host, phase] (if_not ($absent? host/fault) (host/fault phase)))
+(fn int_of [value]
+  (if (== ($head value) Int) (return value))
+  (if (== ($head value) Str) (return (try ($parse/parse_int value) catch Any nil)))
+  nil)
+
+# --- records -----------------------------------------------------------------------
+
+(fn fresh_state []
+  {^phase "disconnected" ^socket nil ^transport nil ^generation nil ^epoch nil
+   ^next_connect_ms 0 ^backoff_ms 0 ^in_flight nil ^last_lane nil ^attempted {}
+   ^window_start 0 ^window_count 0 ^send_after_ms 0 ^last_heartbeat_ms 0
+   ^refresh false ^last_error nil ^connects 0 ^batch [] ^gap nil ^sync nil
+   ^messages_in 0 ^commands_sent 0 ^queries_sent 0 ^commands_per_second commands_per_second})
+
+(fn initialize [host, tx]
+  (p/tx_put tx "world_cursor" {^stream_id nil ^received 0 ^routed 0 ^gaps []})
+  (p/tx_put tx "world_routing" {^pending []})
+  (p/tx_put tx "world_dispatcher" {^id "world-result-dispatcher" ^status "active"
+    ^batch records/dispatch_batch ^passes 0 ^routed_events 0 ^routed_results 0 ^readied 0
+    ^blocked_at nil ^created_at (host/clock)})
+  (p/tx_put tx "world_view" {^status "unsynchronized" ^entities [] ^places {} ^actions []}))
+
+# Validate retained network records and reconcile what a crash left open:
+# unconfirmed sends become uncertain; a continuation whose execution was
+# interrupted is interrupted too, never rerun (§8.4, §12.3).
+(fn restore [host, tx]
+  (for key in ["world_cursor" "world_routing" "world_dispatcher" "world_view"]
+    (require (! ($absent? (p/tx_get tx key))) $"Missing networked world record ${key}"))
+  (let cursor (p/tx_get tx "world_cursor"))
+  (require (&& (== ($head cursor/received) Int) (== ($head cursor/routed) Int)
+               (<= cursor/routed cursor/received)) "Invalid world cursors")
+  (let uncertain [])
+  (for key in (p/tx_keys tx "world_op/")
+    (let op (p/tx_get tx key))
+    (if_yes (delivery_state/restore op)
+      (p/tx_put tx key op)
+      (uncertain .push op/id)))
+  (for key in (p/tx_keys tx "world_cont/")
+    (let cont (p/tx_get tx key))
+    (if_yes (["ready" "running"] .contains? cont/status)
+      (let run (p/tx_get tx $"execution/${cont/execution_id}"))
+      (if_yes (|| ($absent? run) (== run/status "interrupted"))
+        (cont .put "status" "interrupted")
+        (cont .put "outcome" {^status "interrupted" ^result "Process ended; not automatically rerun"})
+        (p/tx_put tx key cont))))
+  uncertain)
+
+(fn endpoint_check [endpoint]
+  (require (&& (== ($head endpoint) Str) (<= ($str/byte_size endpoint) 512)) "Invalid world endpoint")
+  (for forbidden in ["@" "?" "#" " " "\n" "\r" "\t" "\\" "%"]
+    (require (! ($str/contains? endpoint forbidden)) "World endpoint must not contain credentials or escapes"))
+  (require (|| ($str/starts_with? endpoint "ws://127.0.0.1:") ($str/starts_with? endpoint "ws://localhost:")
+               ($str/starts_with? endpoint "wss://")) "Use a loopback ws:// or a wss:// world endpoint"))
+
+(fn credential_path [host] $"${host/store/home}/world.credential")
+
+# Bind this Life to a world endpoint with its operator-issued credential. The
+# credential lives in one owner-only file beside the store — never in a record,
+# where inspection, `roots` or a context could reach it (§4.4, §9.4).
+(fn bind [host, endpoint, credential]
+  (require (records/network? host) "Only a networked Life binds to a world")
+  (endpoint_check endpoint)
+  (let secret ($str/trim credential))
+  (require (&& (records/token? secret 128) (>= ($str/byte_size secret) 32)) "Invalid world connection credential")
+  (let tx (p/begin host/store "world-bind"))
+  (let meta (p/tx_get tx "meta"))
+  (let previous (p/tx_get tx "world_binding"))
+  (let binding (?? previous {^life_id meta/id ^world_id nil ^history_id nil ^participant_id nil
+    ^entity_id nil ^stream_id nil ^rules_revision nil ^catalogue [] ^features {} ^places {}}))
+  (binding .put "endpoint" endpoint)
+  (binding .put "bound_at" (host/clock))
+  (p/tx_put tx "world_binding" binding)
+  ($fs/write_text_atomic (credential_path host) secret ^owner_only true)
+  (p/commit tx)
+  binding)
+
+# --- program-facing operations (§8.2) --------------------------------------------------
+
+(fn view_of [host, tx]
+  (let view (p/tx_get tx "world_view"))
+  (let state (host/world .get))
+  # A disconnected Life's view is what it last observed, and says so (§12.3).
+  (view .put "freshness" (if (== state/phase "ready") "synchronized" "last_observed"))
+  (view .put "connection" state/phase)
+  view)
+
+(fn destination_input [destination]
+  (if (== ($head destination) Str) (return {^place_id destination}))
+  (require (== ($head destination) Map) "A destination is a place id or a {^cell}/{^object_id} map")
+  destination)
+
+(fn apply [host, tx, record, op, data]
+  (if (== op "observe") (return (view_of host tx)))
+  (if (== op "world_result") (return (records/result_of tx (records/ref_id data/ref))))
+  (if (== op "world_describe")
+    (then
+      (let binding (p/tx_get tx "world_binding"))
+      (let view (p/tx_get tx "world_view"))
+      (return {^catalogue (?? binding/catalogue []) ^features (?? binding/features {})
+               ^places (?? view/places {}) ^rules_revision (?? binding/rules_revision nil)
+               ^world_id (?? binding/world_id nil)})))
+  (if (== op "world_refresh")
+    (then ((host/world .get) .put "refresh" true) (return "queued")))
+  (if (== op "world_on_result")
+    (return (records/register_continuation host tx record data/ref data/revision (?? data/inputs {}))))
+  (if (== op "world_cancel")
+    (return (records/withdraw host tx record (records/ref_id data/ref) ^owner (?? data/owner nil))))
+  (let owner (?? data/owner nil))
+  (if (== op "start_walk")
+    (return (records/prepare host tx record "movement.walk_to" (destination_input data/destination) ^owner owner)))
+  (if (["take" "pick_up"] .contains? op)
+    (return (records/prepare host tx record "object.pick_up" {^object_id data/id} ^owner owner)))
+  (if (== op "put_down")
+    (return (records/prepare host tx record "object.put_down" {^object_id data/id} ^owner owner)))
+  (if (== op "say")
+    (then
+      (let input {^text data/text})
+      (if_not ($absent? data/thread_id) (input .put "thread_id" data/thread_id))
+      (if_not ($absent? data/reply_to) (input .put "reply_to" data/reply_to))
+      (return (records/prepare host tx record "conversation.say" input ^owner owner))))
+  (if (== op "world_operation")
+    (return (records/prepare host tx record data/operation (?? data/input {}) ^owner owner)))
+  (if (== op "water")
+    (p/problem "This world has no watering operation; see body/world .describe"))
+  (p/problem $"Unknown world operation: ${op}"))
+
+# --- the connection ------------------------------------------------------------------
+
+(fn transport_of [host]
+  (let state (host/world .get))
+  (if ($absent? state/transport)
+    (state .put "transport" (?? host/world_transport (wire/socket_transport))))
+  state/transport)
+
+(fn send_json [host, state, fields]
+  (let out {^v 1})
+  (for pair in fields (out .put pair/0 pair/1))
+  ((state/transport .get "send") state/socket ($json/stringify out)))
+
+(fn schedule_reconnect [host, state, ^minimum minimum = backoff_min_ms]
+  (let base ($math/min backoff_max_ms ($math/max minimum (* 2 (?? state/backoff_ms 0)))))
+  (state .put "backoff_ms" base)
+  # Jitter keeps several Lives from reconnecting in lockstep (§11.5).
+  (state .put "next_connect_ms" (+ ($os/monotonic_ms) (+ base (jitter_ms base)))))
+
+# Up to a quarter of `base`, different per process and per moment.
+(fn jitter_ms [base]
+  (let span ($math/max 1 ($to_int (/ ($to_float base) 4.0))))
+  (let t (+ ($os/monotonic_ms) (* 7919 ($os/process_id))))
+  (- t (* span ($to_int ($math/floor (/ ($to_float t) ($to_float span)))))))
+
+# Drop the connection. Whatever was sent and not confirmed is uncertain until a
+# receipt query says otherwise.
+(fn disconnect [host, state, reason, ^minimum minimum = backoff_min_ms]
+  (if_not ($absent? state/socket)
+    (try ((state/transport .get "close") state/socket) catch Any nil))
+  (state .put "socket" nil)
+  (state .put "phase" "disconnected")
+  (state .put "last_error" reason)
+  (state .put "batch" [])
+  (state .put "sync" nil)
+  (state .put "gap" nil)
+  (state .put "in_flight" nil)
+  # Any attempt without a recorded outcome — in flight, or interrupted between
+  # its attempt commit and the send — can only be settled by a receipt query.
+  (if_yes (&& ($absent? (host/store/fault .get)) (! (host/store/closed .get)))
+    (for attempted in (p/peek_where host/store "world_op/" (fn [op] (== op/status "attempting")))
+      (let op (p/get host/store $"world_op/${attempted/id}"))
+      (delivery_state/uncertain host/store $"world_op/${op/id}" op "Connection lost before a receipt")))
+  (schedule_reconnect host state ^minimum minimum))
+
+(fn connect [host, state, binding]
+  (state .put "connects" (+ state/connects 1))
+  (let transport (transport_of host))
+  (let credential ($str/trim ($fs/read_text (credential_path host))))
+  (let socket ((transport .get "open") binding/endpoint))
+  (state .put "socket" socket)
+  (state .put "phase" "synchronizing")
+  (state .put "last_heartbeat_ms" ($os/monotonic_ms))
+  (let cursor (p/get host/store "world_cursor"))
+  (send_json host state {^kind "hello" ^role "controller" ^life_id binding/life_id
+    ^credential credential ^world_id binding/world_id ^history_id binding/history_id
+    ^telemetry false ^view "structured"
+    ^resume {^after_event_seq $"${cursor/received}"}}))
+
+(fn tick [host]
+  (if_not (records/network? host) (return nil))
+  (if (host/stopped .get) (return nil))
+  (p/require_writable host/store)
+  (let state (host/world .get))
+  (let binding (p/get host/store "world_binding"))
+  (if ($absent? binding) (return nil))
+  (if_yes ($absent? state/socket)
+    (if (< ($os/monotonic_ms) state/next_connect_ms) (return nil))
+    (try (connect host state binding)
+      catch Any
+        (disconnect host state $"Could not connect: ${$err/message}"
+          ^minimum (if ($str/contains? $err/message "native library") backoff_max_ms backoff_min_ms))
+        (return nil)))
+  (try
+    (poll host state)
+    (send_next host state (p/get host/store "world_binding"))
+    catch Any
+      (if_not ($absent? (host/store/fault .get)) (fail $err))
+      (disconnect host state $"Connection failed: ${$err/message}")))
+
+# Handlers read the binding afresh: a `welcome` earlier in the same poll may
+# have just established the world, history and entity it names.
+(fn poll [host, state]
+  (var n 0)
+  (while (< n max_messages_per_tick)
+    (if ($absent? state/socket) (break))
+    (let text ((state/transport .get "receive") state/socket))
+    (if ($absent? text) (break))
+    (set n (+ n 1))
+    (state .put "messages_in" (+ state/messages_in 1))
+    (if (> ($str/byte_size text) max_message_bytes) (p/problem "World message exceeds the size limit"))
+    (let message (try ($json/parse text ^strict true ^max_depth 32)
+      catch Any (p/problem "World sent a message that is not valid JSON")))
+    (require (&& (== ($head message) Map) (== message/v 1)) "World sent an unsupported message")
+    (if (== message/kind "event")
+      (then (state/batch .push message))
+      (else
+        (flush_events host state)
+        (handle host state (p/get host/store "world_binding") message))))
+  (flush_events host state))
+
+(fn handle [host, state, binding, message]
+  (let kind message/kind)
+  (if (== kind "welcome") (return (on_welcome host state binding message)))
+  (if (== kind "sync_begin") (return (state .put "sync" message)))
+  (if (== kind "history_gap") (return (state .put "gap" message)))
+  (if (== kind "snapshot") (return (install_snapshot host state binding message)))
+  (if (== kind "ready")
+    (then
+      (state .put "phase" "ready")
+      (state .put "backoff_ms" 0)
+      (state .put "last_error" nil)
+      (return nil)))
+  (if (== kind "receipt") (return (on_receipt host state binding message)))
+  (if (== kind "query_result") (return (on_query_result host state binding message)))
+  (if (== kind "error") (return (on_error host state binding message)))
+  # telemetry, heartbeat, sync_end and later optional kinds need nothing here.
+  nil)
+
+(fn on_welcome [host, state, binding, message]
+  (require (&& (== message/participant_kind "life") (== message/life_id binding/life_id))
+    "The world admitted this connection as someone else")
+  (if_yes (|| (&& (! ($absent? binding/world_id)) (!= binding/world_id message/world_id))
+              (&& (! ($absent? binding/history_id)) (!= binding/history_id message/history_id)))
+    # Never adopt a different world or history as if it were the same timeline.
+    (p/problem "The world's identity or history changed; this Life will not attach to it"))
+  (state .put "generation" message/control_generation)
+  (state .put "epoch" message/server_epoch)
+  (let tx (p/begin host/store "world-welcome"))
+  (let current (p/tx_get tx "world_binding"))
+  (let cursor (p/tx_get tx "world_cursor"))
+  (if_yes (&& (! ($absent? cursor/stream_id)) (!= cursor/stream_id message/stream_id))
+    (p/abort tx)
+    (p/problem "The world assigned a different event stream"))
+  (for field in ["world_id" "history_id" "participant_id" "entity_id" "stream_id" "rules_revision"
+                 "catalogue" "features"]
+    (current .put field (message .get field)))
+  (current .put "last_attached_epoch" message/server_epoch)
+  (p/tx_put tx "world_binding" current)
+  (if_yes ($absent? cursor/stream_id)
+    (cursor .put "stream_id" message/stream_id)
+    (p/tx_put tx "world_cursor" cursor))
+  (p/commit tx))
+
+# --- intake ----------------------------------------------------------------------------
+
+(fn outcome_status [type]
+  (if (== type "movement.completed") (return "completed"))
+  (if (== type "movement.failed") (return "failed"))
+  (if (== type "movement.cancelled") (return "cancelled"))
+  (if (== type "movement.suspended") (return "suspended"))
+  "completed")
+
+(fn compact_entity [entity]
+  (let components (?? entity/components {}))
+  (let at (components .get "core/transform"))
+  (let held (components .get "core/contained_in"))
+  (let label (components .get "core/label"))
+  {^id entity/id ^kind entity/kind
+   ^label (if (|| ($absent? label) (== label void)) nil label/text)
+   ^position (if (|| ($absent? at) (== at void)) nil {^x_mm at/x_mm ^y_mm at/y_mm ^z_mm at/z_mm})
+   ^held_by (if (|| ($absent? held) (== held void)) nil held/entity_id)})
+
+(fn view_entity_update [view, id, change]
+  (for entity in view/entities
+    (if_yes (== entity/id id)
+      (for pair in change (entity .put pair/0 pair/1)))))
+
+# Keep the last observed view current with what committed events report.
+(fn apply_to_view [view, binding, event]
+  (let payload (?? event/payload {}))
+  (if_yes (&& ($str/starts_with? event/type "movement.") (! ($absent? payload/position)))
+    (view_entity_update view binding/entity_id {^position payload/position})
+    (view/self .put "position" payload/position))
+  (if_yes (== event/type "object.picked_up")
+    (view_entity_update view payload/object_id {^position nil ^held_by payload/by_entity_id}))
+  (if_yes (== event/type "object.put_down")
+    (view_entity_update view payload/object_id
+      {^held_by nil ^position {^x_mm payload/x_mm ^y_mm payload/y_mm ^z_mm payload/z_mm}}))
+  (let inventory [])
+  (for entity in view/entities
+    (if_yes (== entity/held_by binding/entity_id) (inventory .push entity/id)))
+  (view/self .put "inventory" inventory)
+  (view .put "world_revision" (?? (int_of event/world_revision) view/world_revision))
+  (view .put "committed_sim_time_ms" (?? (int_of event/sim_time_ms) view/committed_sim_time_ms)))
+
+# Install buffered events: one commit per batch, then one acknowledgment.
+(fn flush_events [host, state]
+  (let batch state/batch)
+  (if (== batch/.size 0) (return nil))
+  (let binding (p/get host/store "world_binding"))
+  (state .put "batch" [])
+  (let tx (p/begin host/store "world-events"))
+  (let cursor (p/tx_get tx "world_cursor"))
+  (let view (p/tx_get tx "world_view"))
+  (var gap false)
+  (for event in batch
+    (require (&& (== event/world_id binding/world_id) (== event/history_id binding/history_id)
+                 (== event/stream_id cursor/stream_id)) "World event from another world, history or stream")
+    (let seq (int_of event/event_seq))
+    (require (&& (! ($absent? seq)) (> seq 0)) "World event without a sequence")
+    (if (<= seq cursor/received) (continue))
+    (if_yes (> seq (+ cursor/received 1))
+      # A skipped sequence is not evidence of anything: stop here and let a
+      # resynchronization supply it or report the gap (§11.3).
+      (set gap true)
+      (break))
+    (let stored {})
+    (for pair in event
+      (if_not (["v" "kind"] .contains? ($to_str pair/0)) (stored .put pair/0 pair/1)))
+    (p/tx_put tx $"world_event/${seq}" stored)
+    (cursor .put "received" seq)
+    (if_not ($absent? event/operation_id)
+      (records/normalize host tx event/operation_id
+        {^status (outcome_status event/type) ^admission "accepted"
+         ^action_id (?? event/payload/action_id nil) ^result event/payload
+         ^world_revision (int_of event/world_revision)} $"event:${seq}"))
+    (if (== view/status "synchronized") (apply_to_view view binding event)))
+  (p/tx_put tx "world_cursor" cursor)
+  (p/tx_put tx "world_view" view)
+  (fault host "world_before_event_commit")
+  (p/commit tx)
+  # Acknowledge only what is durably installed (§11.2).
+  (send_json host state {^kind "ack" ^stream_id cursor/stream_id ^event_seq $"${cursor/received}"})
+  (if gap (disconnect host state "Event sequence gap; resynchronizing")))
+
+(fn receipt_observation [receipt]
+  (let admission receipt/admission)
+  {^status (if (== admission "rejected") "rejected"
+             (if (== admission "cancelled") "cancelled" (?? receipt/action_status "completed")))
+   ^admission admission ^action_id (?? receipt/action_id nil) ^reason (?? receipt/reason nil)
+   ^detail (?? receipt/detail nil) ^result (?? receipt/result nil)
+   ^world_revision (int_of receipt/world_revision)})
+
+(fn record_observation [host, op_id, observation, source]
+  (let tx (p/begin host/store "world-result"))
+  (let normalized (records/normalize host tx op_id observation source))
+  (if_yes (&& (! ($absent? normalized)) normalized/result/terminal)
+    (records/mark_routing tx op_id))
+  (if (!= tx/writes {}) (p/commit tx) (p/abort tx)))
+
+(fn install_snapshot [host, state, binding, message]
+  (let tx (p/begin host/store "world-snapshot"))
+  (let cursor (p/tx_get tx "world_cursor"))
+  (let cut (int_of message/stream_cut))
+  (require (! ($absent? cut)) "World snapshot without a stream cut")
+  (if_yes (> cursor/received cut)
+    (p/abort tx)
+    (p/problem "This Life's event cursor is ahead of the world's stream"))
+  (if_yes (< cursor/received cut)
+    # Retention could not replay the missing range: record it, never invent it.
+    (let id $"gap:world:${cursor/stream_id}:${cursor/received}:${cut}")
+    (delivery_state/record_gap host tx id {^id id ^source "world" ^stream_id cursor/stream_id
+      ^from cursor/received ^to cut ^reason "World history unavailable for replay"})
+    (cursor/gaps .push {^from (+ cursor/received 1) ^to cut})
+    (cursor .put "received" cut)
+    (p/tx_put tx "world_cursor" cursor))
+  (let entities [])
+  (for entity in (?? message/entities []) (entities .push (compact_entity entity)))
+  (let inventory [])
+  (for entity in entities
+    (if_yes (== entity/held_by binding/entity_id) (inventory .push entity/id)))
+  (var position nil)
+  (for entity in entities (if_yes (== entity/id binding/entity_id) (set position entity/position)))
+  (p/tx_put tx "world_view" {^status "synchronized" ^world_id binding/world_id
+    ^history_id binding/history_id ^server_epoch message/server_epoch
+    ^world_revision (int_of message/world_revision)
+    ^committed_sim_time_ms (int_of message/committed_sim_time_ms)
+    ^synchronized_at (host/clock) ^self {^entity_id binding/entity_id ^position position ^inventory inventory}
+    ^entities entities ^places (?? message/places {}) ^actions (?? message/actions [])})
+  # Recent receipts only fill in results not yet known; the open-action list is
+  # current and updates status (it cannot regress a terminal result).
+  (for item in (?? message/receipts/items [])
+    (let known (p/tx_get tx $"world_result/${item/operation_id}"))
+    (if_yes ($absent? known)
+      (let normalized (records/normalize host tx item/operation_id (receipt_observation item/receipt) "snapshot"))
+      (if_yes (&& (! ($absent? normalized)) normalized/result/terminal)
+        (records/mark_routing tx item/operation_id))))
+  (for action in (?? message/actions [])
+    (records/normalize host tx action/operation_id
+      {^status action/status ^admission "accepted" ^action_id action/action_id} "snapshot"))
+  (p/commit tx))
+
+(fn on_receipt [host, state, binding, message]
+  (let flight state/in_flight)
+  (if_yes (&& (! ($absent? flight)) (== flight/kind "command") (== flight/op_id message/operation_id))
+    (state .put "in_flight" nil))
+  (if_not (&& (== message/world_id binding/world_id) (== message/history_id binding/history_id))
+    (return nil))
+  (record_observation host message/operation_id (receipt_observation message) "receipt"))
+
+(fn on_query_result [host, state, binding, message]
+  (let flight state/in_flight)
+  (if (|| ($absent? flight) (!= flight/kind "query") (!= flight/request_id message/request_id))
+    (return nil))
+  (state .put "in_flight" nil)
+  (if (== message/query "view.current")
+    (return (install_view host binding message/result)))
+  (let answer message/result)
+  (let op (p/get host/store $"world_op/${flight/op_id}"))
+  (if (== answer/status "found")
+    (return (record_observation host flight/op_id (receipt_observation answer/receipt) "query")))
+  (if (== answer/status "not_found")
+    (then
+      # Authoritative absence: the same ID and bytes may go again (§10.8).
+      (let tx (p/begin host/store "world-not-found"))
+      (let current (p/tx_get tx $"world_op/${op/id}"))
+      (if (== current/status "needs_reconciliation")
+        (then
+          (delivery_state/absent tx $"world_op/${op/id}" current)
+          # Withdrawn while uncertain and now known never to have arrived: it
+          # ends here, cancelled, and its outcome is routed like any other.
+          # A late copy still in flight meets the cancellation's tombstone.
+          (if_yes (== current/status "cancelled")
+            (p/tx_put tx $"world_result/${op/id}" (records/result_of tx op/id))
+            (records/mark_routing tx op/id))
+          (p/commit tx))
+        (else (p/abort tx)))
+      (return nil)))
+  # `unknown` is never absence: keep the request uncertain and ask again later.
+  (let reason (?? answer/reason "status unknown"))
+  (delivery_state/uncertain host/store $"world_op/${op/id}" op $"World could not confirm: ${reason}"))
+
+(fn install_view [host, binding, snapshot]
+  (let tx (p/begin host/store "world-refresh"))
+  (let view (p/tx_get tx "world_view"))
+  (let entities [])
+  (for entity in (?? snapshot/entities []) (entities .push (compact_entity entity)))
+  (let inventory [])
+  (var position nil)
+  (for entity in entities
+    (if_yes (== entity/held_by binding/entity_id) (inventory .push entity/id))
+    (if_yes (== entity/id binding/entity_id) (set position entity/position)))
+  (view .put "entities" entities)
+  (view .put "self" {^entity_id binding/entity_id ^position position ^inventory inventory})
+  (view .put "actions" (?? snapshot/actions []))
+  (view .put "world_revision" (int_of snapshot/world_revision))
+  (view .put "committed_sim_time_ms" (int_of snapshot/committed_sim_time_ms))
+  (view .put "synchronized_at" (host/clock))
+  (p/tx_put tx "world_view" view)
+  (p/commit tx))
+
+(fn on_error [host, state, binding, message]
+  (let code message/code)
+  (let flight state/in_flight)
+  (if_yes (&& (! ($absent? flight)) (! ($absent? message/operation_id)) (== flight/kind "command")
+              (== flight/op_id message/operation_id))
+    (state .put "in_flight" nil)
+    (let key $"world_op/${flight/op_id}")
+    (if_yes (== code "operation_id_conflict")
+      # The world holds a different request under this ID: a consistency
+      # error. Nothing was executed; the operation ends here, visibly.
+      (return (record_observation host flight/op_id
+        {^status "conflict" ^reason code ^detail message/message} "error")))
+    (if_yes (["rate_limited" "not_ready" "storage_failed"] .contains? code)
+      # Not admitted by this attempt. The same ID and payload go again later:
+      # the world deduplicates if an earlier attempt was recorded.
+      (let tx (p/begin host/store "world-retry"))
+      (let op (p/tx_get tx key))
+      (delivery_state/absent tx key op)
+      (p/commit tx)
+      (state .put "send_after_ms" (+ ($os/monotonic_ms) (if (== code "rate_limited") 1000 2000)))
+      (return nil))
+    (if_yes (["invalid_field" "invalid_command"] .contains? code)
+      # Refused as malformed before admission: no effect, and resending the
+      # same bytes cannot succeed.
+      (return (record_observation host flight/op_id
+        {^status "rejected" ^reason code ^detail message/message} "error")))
+    (let op (p/get host/store key))
+    (delivery_state/uncertain host/store key op $"World refused the attempt: ${code}")
+    (return (disconnect host state $"World error ${code}")))
+  (if_yes (&& (! ($absent? flight)) (== flight/kind "query") (== flight/request_id message/request_id))
+    (state .put "in_flight" nil)
+    (return nil))
+  (if (== code "authentication_failed")
+    (return (disconnect host state "The world did not accept this Life's credential" ^minimum backoff_max_ms)))
+  (if (== code "controlled_elsewhere")
+    (return (disconnect host state "Another connection controls this Life's avatar" ^minimum 5000)))
+  (if (== code "wrong_world")
+    (return (disconnect host state "The endpoint serves a different world or history" ^minimum backoff_max_ms)))
+  (if (["liveness_expired" "resync_required" "controller_replaced" "authentication_timeout"
+        "stale_control_generation" "not_controller"] .contains? code)
+    (return (disconnect host state $"World closed the connection: ${code}")))
+  (state .put "last_error" $"World error ${code}"))
+
+# --- sending ------------------------------------------------------------------------------
+
+(fn open_or_uncertain? [op] (["pending" "needs_reconciliation"] .contains? op/status))
+
+(fn send_next [host, state, binding]
+  (if (|| ($absent? state/socket) (!= state/phase "ready")) (return nil))
+  (let now ($os/monotonic_ms))
+  (if_yes (> (- now state/last_heartbeat_ms) heartbeat_interval_ms)
+    (state .put "last_heartbeat_ms" now)
+    (send_json host state {^kind "heartbeat"}))
+  (let flight state/in_flight)
+  (if_not ($absent? flight)
+    (if_yes (> (- now flight/sent_ms) receipt_timeout_ms)
+      (state .put "in_flight" nil)
+      (if_yes (== flight/kind "command")
+        (let op (p/get host/store $"world_op/${flight/op_id}"))
+        (delivery_state/uncertain host/store $"world_op/${op/id}" op "No receipt in time; reconciliation required")))
+    (return nil))
+  (if_yes (state .get "refresh")
+    (state .put "refresh" false)
+    (let request_id $"view-$($crypto/random_hex 6)")
+    (state .put "in_flight" {^kind "query" ^request_id request_id ^op_id nil ^sent_ms now})
+    (state .put "queries_sent" (+ state/queries_sent 1))
+    (send_json host state {^kind "query" ^request_id request_id ^query "view.current" ^args {}})
+    (return nil))
+  (let candidates [])
+  (for op in (p/peek_where host/store "world_op/" open_or_uncertain?)
+    (if_yes (|| (== op/status "pending")
+                (>= (- now (?? (state/attempted .get op/id) 0)) reconcile_interval_ms))
+      (candidates .push op)))
+  (if (== candidates/.size 0) (return nil))
+  (let meta (p/get host/store "meta"))
+  (let sending (&& (== meta/mode "running") (>= now state/send_after_ms)
+    (|| (> (- now state/window_start) 1000) (< state/window_count state/commands_per_second))))
+  # Pending requests go in local outbox order; uncertain ones rotate by their
+  # last attempt. The shared lane rule alternates the two.
+  (let chosen (delivery_state/next_item candidates
+    (fn [op] (if (== op/status "pending") op/sequence (?? (state/attempted .get op/id) 0)))
+    state/last_lane ^sending sending))
+  (if ($absent? chosen) (return nil))
+  (state .put "last_lane" chosen/lane)
+  (let op_id chosen/record/id)
+  (state/attempted .put op_id now)
+  (if (== chosen/lane "receipt")
+    (then
+      (let request_id $"status-$($crypto/random_hex 6)")
+      (state .put "in_flight" {^kind "query" ^request_id request_id ^op_id op_id ^sent_ms now})
+      (state .put "queries_sent" (+ state/queries_sent 1))
+      (send_json host state {^kind "query" ^request_id request_id ^query "operation.status"
+                             ^args {^operation_id op_id}}))
+    (else (send_command host state binding op_id now))))
+
+(fn send_command [host, state, binding, op_id, now]
+  (let key $"world_op/${op_id}")
+  (let tx (p/begin host/store "world-attempt"))
+  (let op (p/tx_get tx key))
+  (if_not (== op/status "pending") (p/abort tx) (return nil))
+  (if_not (delivery_state/valid_owner tx op)
+    # Its owner was retired before it left: withdraw it locally, unsent.
+    (p/abort tx)
+    (let cancel (p/begin host/store "world-withdraw"))
+    (records/withdraw host cancel {^id "world-sender"} op_id)
+    (p/commit cancel)
+    (return nil))
+  (delivery_state/begin_attempt tx key op)
+  (p/commit tx)
+  (if_yes (> (- now state/window_start) 1000)
+    (state .put "window_start" now)
+    (state .put "window_count" 0))
+  (state .put "window_count" (+ state/window_count 1))
+  (fault host "world_before_send")
+  (state .put "in_flight" {^kind "command" ^op_id op_id ^sent_ms now})
+  (state .put "commands_sent" (+ state/commands_sent 1))
+  (send_json host state {^kind "command" ^world_id binding/world_id ^history_id binding/history_id
+    ^control_generation state/generation ^operation_id op_id ^operation op/operation
+    ^contract_version op/contract_version ^rules_revision binding/rules_revision
+    ^input op/input ^preconditions op/preconditions})
+  (fault host "world_after_send"))
+
+# --- the standing dispatcher (§8.4) -------------------------------------------------------
+
+(fn observation [host, tx, kind, data, event_id, ^wake wake = false]
+  (let recorded (events/event host tx kind data ^event_id event_id ^visibility ["world"]))
+  (if_not wake
+    (recorded .put "wake_source" false)
+    (p/tx_put tx $"event/${recorded/id}" recorded))
+  recorded)
+
+# Route one operation's terminal result: ready its continuation, settle a chat
+# delivery it carries, or — with nothing waiting — keep an unsuccessful
+# outcome as a quiet observation. Every branch is idempotent.
+(fn route_result [host, tx, op_id]
+  (let result (records/result_of tx op_id))
+  (if_not result/terminal (return false))
+  (let op (p/tx_get tx $"world_op/${op_id}"))
+  (if_not ($absent? op/delivery_id)
+    (let delivery (p/tx_get tx $"delivery/${op/delivery_id}"))
+    (if_yes (&& (! ($absent? delivery)) (["pending" "attempting" "needs_reconciliation"] .contains? delivery/status))
+      (if (== result/status "completed")
+        (then (chat/delivered tx delivery {^operation_id op_id ^message_id (?? result/result/message_id nil)}))
+        (else
+          (delivery .put "status" "failed")
+          (delivery .put "reason" (?? result/reason result/status))
+          (p/tx_put tx $"delivery/${delivery/id}" delivery)))))
+  (if (records/ready_if_terminal host tx op_id) (return true))
+  (if_yes (&& ($absent? (p/tx_get tx (records/cont_key op_id))) (!= result/status "completed"))
+    (observation host tx "world_outcome" {^operation_id op_id ^operation op/operation
+      ^status result/status ^reason (?? result/reason nil)} $"world-outcome:${op_id}"))
+  false)
+
+# Answers "readied", "routed", "skipped" or "blocked".
+(fn route_event [host, tx, binding, event]
+  (let type event/type)
+  (if_not (known_events .contains? type)
+    # Unknown optional data is preserved and passed; an unknown required
+    # schema stops processing here until this Life understands it (§11.3).
+    (return (if (== event/required false) "skipped" "blocked")))
+  (let payload (?? event/payload {}))
+  (let mine (&& (! ($absent? event/operation_id))
+                (! ($absent? (p/tx_get tx $"world_op/${event/operation_id}")))))
+  (if_yes mine
+    (if (route_result host tx event/operation_id) (return "readied"))
+    (if_yes (== type "movement.suspended")
+      # A suspended walk waits for its controller: this Life decides (§6.3).
+      (observation host tx "world_activity_suspended" {^operation_id event/operation_id
+        ^action_id payload/action_id ^reason payload/reason ^progress payload/progress}
+        $"world-suspended:${event/event_seq}" ^wake true))
+    (return "routed"))
+  (if (&& (== type "conversation.said") (!= payload/speaker_entity_id binding/entity_id))
+    (then
+      (chat/accept host tx payload/text (?? payload/speaker_name "someone")
+        {^adapter "world" ^conversation (?? payload/conversation_id "local")
+         ^thread (?? payload/thread_id "main")}
+        payload/message_id nil ^speaker_kind (?? payload/speaker_kind nil))
+      (return "routed")))
+  (if_yes (["object.picked_up" "object.put_down"] .contains? type)
+    (if_not (== payload/by_entity_id binding/entity_id)
+      (observation host tx "world_observation" {^type type ^payload payload}
+        $"world-observation:${event/event_seq}")))
+  "routed")
+
+(fn dispatch [host]
+  (if_not (records/network? host) (return false))
+  (if (host/stopped .get) (return false))
+  (let cursor (p/get host/store "world_cursor"))
+  (let routing (p/get host/store "world_routing"))
+  (let dispatcher (p/get host/store "world_dispatcher"))
+  (let blocked (&& (! ($absent? dispatcher/blocked_at)) (== dispatcher/blocked_at (+ cursor/routed 1))))
+  (if (&& (|| blocked (>= cursor/routed cursor/received)) (== routing/pending/.size 0)) (return false))
+  (let binding (p/get host/store "world_binding"))
+  (let tx (p/begin host/store "world-dispatch"))
+  (let current (p/tx_get tx "world_cursor"))
+  (let marks (p/tx_get tx "world_routing"))
+  (let registration (p/tx_get tx "world_dispatcher"))
+  (var budget records/dispatch_batch)
+  (var readied 0)
+  (var seq (+ current/routed 1))
+  (var routed_events 0)
+  (var stop nil)
+  (while (&& (<= seq current/received) (> budget 0))
+    (let event (p/tx_get tx $"world_event/${seq}"))
+    # A recorded gap has no stored event; everything else was stored in order.
+    (var verdict "skipped")
+    (if_not ($absent? event) (set verdict (route_event host tx binding event)))
+    (if_yes (== verdict "blocked") (set stop seq) (break))
+    (if_yes (== verdict "readied") (set readied (+ readied 1)))
+    (set seq (+ seq 1))
+    (set routed_events (+ routed_events 1))
+    (set budget (- budget 1)))
+  (current .put "routed" (- seq 1))
+  (let remaining [])
+  (for op_id in marks/pending
+    (if (> budget 0)
+      (then
+        (if (route_result host tx op_id) (set readied (+ readied 1)))
+        (set budget (- budget 1)))
+      (else (remaining .push op_id))))
+  (let routed_results (- marks/pending/.size remaining/.size))
+  (marks .put "pending" remaining)
+  (registration .put "passes" (+ registration/passes 1))
+  (registration .put "routed_events" (+ registration/routed_events routed_events))
+  (registration .put "routed_results" (+ registration/routed_results routed_results))
+  (registration .put "readied" (+ registration/readied readied))
+  (registration .put "blocked_at" stop)
+  (registration .put "status" (if ($absent? stop) "active" "blocked"))
+  (p/tx_put tx "world_cursor" current)
+  (p/tx_put tx "world_routing" marks)
+  (p/tx_put tx "world_dispatcher" registration)
+  (fault host "world_before_dispatch_commit")
+  (p/commit tx)
+  true)
+
+# --- operator view and shutdown ----------------------------------------------------------
+
+(fn status [host]
+  (let state (host/world .get))
+  {^phase state/phase ^last_error state/last_error ^connects state/connects
+   ^generation state/generation ^server_epoch state/epoch ^in_flight state/in_flight
+   ^messages_in state/messages_in ^commands_sent state/commands_sent ^queries_sent state/queries_sent
+   ^binding (p/get host/store "world_binding") ^cursor (p/get host/store "world_cursor")
+   ^dispatcher (p/get host/store "world_dispatcher")})
+
+# Closing the socket is the orderly detach: the world suspends this avatar's
+# motor activity under its disconnect policy (§6.3, §12.4).
+(fn stop [host]
+  (if_not (records/network? host) (return nil))
+  (let state (host/world .get))
+  (if_not ($absent? state/socket)
+    (try ((state/transport .get "close") state/socket) catch Any nil))
+  (state .put "socket" nil)
+  (state .put "phase" "stopped"))

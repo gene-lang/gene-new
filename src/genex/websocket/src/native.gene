@@ -1,6 +1,8 @@
 (ffi/struct GXSocket ^fields [])
 (ffi/fn connect ^symbol "gx_ws_connect" ^release "gx_ws_free"
   [url : C/CStr timeout_ms : C/Int] : (C/OwnedPtr GXSocket))
+(ffi/fn connect_protocol ^symbol "gx_ws_connect_protocol" ^release "gx_ws_free"
+  [url : C/CStr protocol : C/CStr timeout_ms : C/Int] : (C/OwnedPtr GXSocket))
 (ffi/fn last_error ^symbol "gx_ws_last_error" [] : C/CStr)
 (ffi/fn error ^symbol "gx_ws_error" [socket : (C/Ptr GXSocket)] : C/CStr)
 (ffi/fn send ^symbol "gx_ws_send"

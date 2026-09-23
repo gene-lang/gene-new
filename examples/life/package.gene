@@ -5,4 +5,6 @@
  ^library {^entry "src/host/runtime.gene"}
  ^applications [(application "life" ^entry "src/main.gene")
                 (application "life_demo" ^entry "src/demo.gene")]
- ^dependencies {}}
+ # The networked world profile's native client (docs/proposals/world.md §9.7).
+ ^dependencies {
+   ^websocket (dep "genex/websocket" "0.1.0" ^path "../../src/genex/websocket")}}

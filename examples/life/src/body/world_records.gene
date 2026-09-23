@@ -1,0 +1,340 @@
+# The networked world profile's durable records — docs/proposals/world.md
+# §8.2–§8.4, §10.1, §10.8, §12.1. No transport here: this module decides what
+# a Life commits locally; `world_network.gene` moves it over the wire.
+#
+# ## Records (all in the Life's private store)
+#
+#   world_op/<id>      the outbox entry: one immutable request (operation,
+#                      contract version, input, preconditions) under a stable
+#                      operation ID, plus its delivery state (delivery.gene)
+#   world_result/<id>  the canonical result for that operation, whichever
+#                      channel reported it — direct receipt, status query,
+#                      snapshot or stream event (§8.4)
+#   world_cont/<id>    the operation's one default continuation: a data record
+#                      naming saved code, explicit inputs and ownership
+#   world_routing      operations whose canonical result reached a terminal
+#                      state through a receipt or query and still need routing
+#   world_cursor       per-stream receipt and dispatcher cursors (§8.4)
+#   world_dispatcher   the one standing result dispatcher's registration
+#
+# A brain program's grouped commit can publish the local tracking record, the
+# outbox request, a continuation and its own cognitive references together
+# (§8.3). Nothing here contacts the world: sending starts after publication.
+#
+# ## Canonical results
+#
+# `normalize` merges an observation into the canonical result. Terminal states
+# (completed, failed, cancelled, rejected, conflict) never revert; an older or
+# non-terminal observation cannot regress them, and a *different* terminal
+# report is recorded as a consistency conflict, never as a reason to run the
+# continuation again. `on_result` means a terminal outcome: acceptance,
+# progress and suspension update status without consuming it.
+(mod world_records)
+(import * : p ^from "../host/persistence")
+(import * : delivery_state ^from "./delivery")
+(import * : code ^from "../code/code")
+
+# Admission bounds, independent of the routine-registration limit (§8.4,
+# §12.8): a grouped submission beyond them fails before anything is published.
+(let max_open_operations 256)
+(let max_open_continuations 256)
+(let dispatch_batch 32)
+(let terminal_statuses ["completed" "failed" "cancelled" "rejected" "conflict"])
+(fn terminal? [status] (terminal_statuses .contains? status))
+
+(fn require [condition, message] (if_not condition (p/problem message)))
+(fn network? [host] (== host/world_profile "network"))
+
+# --- identity --------------------------------------------------------------------
+
+(let token_chars "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
+(fn token? [value, maximum]
+  (if_not (== ($head value) Str) (return false))
+  (let n ($str/byte_size value))
+  (if (|| (== n 0) (> n maximum)) (return false))
+  (var i 0)
+  (while (< i n)
+    (if_not ($str/contains? token_chars ($str/slice_bytes value i 1)) (return false))
+    (set i (+ i 1)))
+  true)
+
+# The world compares requests by this canonical form: object keys sorted by
+# UTF-8 bytes at every level (world server/protocol.gene). A cancellation's
+# fingerprint is its SHA-256, so the Life must render it identically.
+(fn str_before? [a, b]
+  (let x ($str/to_utf8 a))
+  (let y ($str/to_utf8 b))
+  (let nx (x .len))
+  (let ny (y .len))
+  (var i 0)
+  (while (&& (< i nx) (< i ny))
+    (let bx (x .get i))
+    (let by (y .get i))
+    (if (< bx by) (return true))
+    (if (> bx by) (return false))
+    (set i (+ i 1)))
+  (< nx ny))
+(fn sorted_strings [items]
+  (let out [])
+  (for item in items
+    (var i out/.size)
+    (out .push item)
+    (var moving true)
+    (while (&& moving (> i 0))
+      (let j (- i 1))
+      (if (str_before? item out/%j)
+        (then (out .set i out/%j) (set i j))
+        (else (set moving false))))
+    (out .set i item))
+  out)
+(fn canonical_json [value]
+  (let head ($head value))
+  (if (== head Map)
+    (do
+      (let keys [])
+      (for pair in value (keys .push ($to_str pair/0)))
+      (let parts [])
+      (for key in (sorted_strings keys)
+        (parts .push $"$($json/stringify key):$(canonical_json (value .get key))"))
+      (let joined ($str/join parts ","))
+      (return $"{${joined}}")))
+  (if (== head List)
+    (do
+      (let parts [])
+      (for item in value (parts .push (canonical_json item)))
+      (let joined ($str/join parts ","))
+      (return $"[${joined}]")))
+  ($json/stringify value))
+(fn semantic [op]
+  {^operation op/operation ^contract_version op/contract_version
+   ^input op/input ^preconditions op/preconditions})
+(fn fingerprint [op] ($crypto/sha256 (canonical_json (semantic op))))
+
+# Only data a version-1 operation schema can describe (world.md §9.2).
+(fn plain? [value, depth]
+  (if (> depth 16) (return false))
+  (let head ($head value))
+  (if (|| (== head Str) (== head Bool) (== value nil)) (return true))
+  (if (== head Int) (return (&& (<= value 9007199254740991) (>= value -9007199254740991))))
+  (if (== head List)
+    (do (for item in value (if_not (plain? item (+ depth 1)) (return false))) (return true)))
+  (if (== head Map)
+    (do (for pair in value (if_not (plain? pair/1 (+ depth 1)) (return false))) (return true)))
+  false)
+
+# --- the outbox (§10.1) ------------------------------------------------------------
+
+(fn open_op? [op] (["pending" "attempting" "needs_reconciliation"] .contains? op/status))
+(fn waiting_cont? [cont] (["waiting" "ready" "running"] .contains? cont/status))
+
+(fn ref_of [op]
+  {^id op/id ^operation_id op/id ^operation op/operation ^kind "world"})
+(fn ref_id [ref]
+  (let id (if (== ($head ref) Str) ref (?? ref/operation_id ref/id)))
+  (require (token? id 64) "A world reference needs its operation ID")
+  id)
+
+# Prepare one outbound world operation inside `tx` and answer its reference.
+# The request is immutable from here on; a repeat under the same explicit ID
+# with the same request returns the existing reference, a different one fails.
+(fn prepare [host, tx, record, operation, input, ^owner owner = nil,
+             ^preconditions preconditions = [], ^id id = nil, ^delivery_id delivery_id = nil,
+             ^target target = nil]
+  (require (token? operation 64) "A world operation name is required")
+  (require (&& (== ($head input) Map) (plain? input 0)) "World operation input must be plain data")
+  (require (== ($head preconditions) List) "World preconditions must be a list")
+  (if_not ($absent? owner)
+    (require (== (p/tx_get tx $"owner/${owner/id}") owner) "World operation owner has been retired"))
+  (let op_id (?? id (p/id "op")))
+  (require (token? op_id 64) "Invalid world operation ID")
+  (let key $"world_op/${op_id}")
+  (let previous (p/tx_get tx key))
+  (let op {^id op_id ^operation operation ^contract_version 1 ^input input
+    ^preconditions preconditions ^owner owner ^cause record/id
+    ^organization (?? record/organization nil) ^target_operation_id target
+    ^delivery_id delivery_id ^status "pending" ^needs_reconciliation false ^attempts 0
+    ^last_error nil ^created_at (host/clock)})
+  (if_not ($absent? previous)
+    (require (== (semantic previous) (semantic op)) "World operation ID reused with a different request")
+    (return (ref_of previous)))
+  # Committed open work plus what this group already staged.
+  (var staged 0)
+  (for pair in tx/writes
+    (if_yes ($str/starts_with? ($to_str pair/0) "world_op/") (set staged (+ staged 1))))
+  (let open (p/count_where host/store "world_op/" open_op?))
+  (require (< (+ open staged) max_open_operations) "World operation admission limit reached")
+  (op .put "sequence" (+ ((p/tx_keys tx "world_op/") .size) 1))
+  (op .put "fingerprint" (fingerprint op))
+  (p/tx_put tx key op)
+  (ref_of op))
+
+# --- canonical results (§8.4, §10.8) -----------------------------------------------
+
+(fn result_of [tx, op_id]
+  (let result (p/tx_get tx $"world_result/${op_id}"))
+  (if_not ($absent? result) (return result))
+  (let op (p/tx_get tx $"world_op/${op_id}"))
+  (if ($absent? op) (p/problem "Unknown world operation"))
+  (if (== op/status "cancelled")
+    (return {^operation_id op_id ^operation op/operation ^status "cancelled" ^terminal true
+             ^reason "withdrawn_before_send" ^sources ["local"]}))
+  # Sent but unconfirmed stays uncertain; never guessed into a failure.
+  {^operation_id op_id ^operation op/operation ^terminal false
+   ^status (if (== op/status "pending") "pending" "unknown") ^sources []})
+
+# Merge one observation into the canonical result. `observation` has
+# ^status plus optional ^admission ^action_id ^reason ^detail ^result
+# ^world_revision. Answers {^result ^became_terminal} or nil for an operation
+# this Life never prepared.
+(fn normalize [host, tx, op_id, observation, source]
+  (let op (p/tx_get tx $"world_op/${op_id}"))
+  (if ($absent? op) (return nil))
+  (let key $"world_result/${op_id}")
+  (let current (p/tx_get tx key))
+  (let result (?? current {^operation_id op_id ^operation op/operation ^status "pending"
+    ^terminal false ^admission nil ^action_id nil ^sources [] ^conflicts []}))
+  (let incoming observation/status)
+  (let sources (take_last result/sources 7))
+  (sources .push source)
+  (if result/terminal
+    (then
+      (if_yes (&& (terminal? incoming) (!= incoming result/status))
+        # Two different terminal reports: a consistency error to expose, not
+        # a second trigger.
+        (let conflicts (take_last (?? result/conflicts []) 7))
+        (conflicts .push {^status incoming ^source source})
+        (result .put "conflicts" conflicts)
+        (result .put "sources" sources)
+        (p/tx_put tx key result))
+      (settle tx op)
+      (return {^result result ^became_terminal false})))
+  (for field in ["admission" "action_id" "reason" "detail" "result" "world_revision"]
+    (if_not ($absent? (observation .get field)) (result .put field (observation .get field))))
+  (result .put "status" incoming)
+  (result .put "terminal" (terminal? incoming))
+  (result .put "sources" sources)
+  (result .put "updated_at" (host/clock))
+  (p/tx_put tx key result)
+  (settle tx op)
+  {^result result ^became_terminal (terminal? incoming)})
+
+(fn settled? [tx, op_id]
+  (let result (result_of tx op_id))
+  result/terminal)
+
+# The world has recorded the request: its delivery is settled.
+(fn settle [tx, op]
+  (if_yes (!= op/status "settled")
+    (op .put "status" "settled")
+    (op .put "needs_reconciliation" false)
+    (op .put "last_error" nil)
+    (p/tx_put tx $"world_op/${op/id}" op)))
+
+(fn take_last [items, maximum]
+  (let out [])
+  (var i ($math/max 0 (- items/.size maximum)))
+  (while (< i items/.size) (out .push items/%i) (set i (+ i 1)))
+  out)
+
+# Remember that a receipt or query result needs routing; the stream cursor
+# covers events (§8.4 "direct receipts … have no invented event_seq").
+(fn mark_routing [tx, op_id]
+  (let routing (?? (p/tx_get tx "world_routing") {^pending []}))
+  (if_not (routing/pending .contains? op_id)
+    (routing/pending .push op_id)
+    (p/tx_put tx "world_routing" routing)))
+
+# --- continuations (§8.4) -----------------------------------------------------------
+
+(fn cont_key [op_id] $"world_cont/${op_id}")
+(fn execution_id [op_id] $"cont-${op_id}")
+
+# One idempotent readiness transition, used by registration, routing and local
+# withdrawal alike: only a waiting continuation with a terminal result becomes
+# ready, and its ready work has an identity derived from the continuation, so
+# no path can queue it twice.
+(fn ready_if_terminal [host, tx, op_id]
+  (let cont (p/tx_get tx (cont_key op_id)))
+  (if (|| ($absent? cont) (!= cont/status "waiting")) (return false))
+  (let result (result_of tx op_id))
+  (if_not result/terminal (return false))
+  (let id (execution_id op_id))
+  (cont .put "status" "ready")
+  (cont .put "execution_id" id)
+  (cont .put "result_status" result/status)
+  (cont .put "readied_at" (host/clock))
+  (p/tx_put tx (cont_key op_id) cont)
+  (p/tx_put tx $"execution/${id}" {^id id ^status "queued" ^kind "continuation" ^program "nil"
+    ^continuation_id cont/id ^operation_id op_id ^code_revision cont/code_revision
+    ^handler "run" ^organization cont/organization ^owner cont/owner ^cause cont/registered_by
+    ^input {^operation_id op_id ^continuation_id cont/id ^inputs cont/inputs ^result result}})
+  true)
+
+(fn register_continuation [host, tx, record, ref, revision, inputs]
+  (let op_id (ref_id ref))
+  (let op (p/tx_get tx $"world_op/${op_id}"))
+  (require (! ($absent? op)) "Continuations attach to this Life's own world operations")
+  (require (== ($head revision) Str) "A continuation needs a saved code revision")
+  (code/tx_read tx revision)
+  (require (plain? inputs 0) "Continuation inputs must be plain data")
+  (let key (cont_key op_id))
+  (let previous (p/tx_get tx key))
+  (let cont {^id $"cont-${op_id}" ^operation_id op_id ^code_revision revision ^inputs inputs
+    ^organization (?? record/organization nil) ^owner (?? op/owner nil)
+    ^status "waiting" ^registered_by record/id ^registered_at (host/clock) ^execution_id nil})
+  (if_not ($absent? previous)
+    # One default continuation per operation: the same registration answers the
+    # existing record; a conflicting one is an explicit error, and a settled
+    # continuation is never rearmed.
+    (require (&& (== previous/code_revision revision) (== previous/inputs inputs))
+      "This operation already has a different continuation")
+    (return previous))
+  (let open (p/count_where host/store "world_cont/" waiting_cont?))
+  (var staged 0)
+  (for pair in tx/writes
+    (if_yes ($str/starts_with? ($to_str pair/0) "world_cont/") (set staged (+ staged 1))))
+  (require (< (+ open staged) max_open_continuations) "World continuation admission limit reached")
+  (p/tx_put tx key cont)
+  # The result may already be here: close this ordering in the same commit.
+  (ready_if_terminal host tx op_id)
+  (p/tx_get tx key))
+
+# A continuation's execution settled (runtime `finish`).
+(fn finish_continuation [tx, record, status, result]
+  (if ($absent? record/continuation_id) (return nil))
+  (let key (cont_key record/operation_id))
+  (let cont (p/tx_get tx key))
+  (if ($absent? cont) (return nil))
+  (cont .put "status" (if (== status "succeeded") "completed" status))
+  (cont .put "outcome" {^status status ^result ($str/slice_bytes ($to_str result) 0
+    ($math/min 4096 ($str/byte_size ($to_str result))))})
+  (p/tx_put tx key cont))
+
+# --- withdrawal and cancellation (§10.5) ----------------------------------------------
+
+# Withdraw an operation. Unsent work is cancelled locally; work that may have
+# reached the world gets a `core.cancel` request through the same outbox, and
+# the world's answer decides the outcome. Answers the cancellation reference or
+# the local result.
+(fn withdraw [host, tx, record, op_id, ^owner owner = nil]
+  (let key $"world_op/${op_id}")
+  (let op (p/tx_get tx key))
+  (require (! ($absent? op)) "Unknown world operation")
+  (let result (result_of tx op_id))
+  (if result/terminal (return result))
+  (if (== op/status "pending")
+    (do
+      (op .put "status" "cancelled")
+      (op .put "reason" "Withdrawn before it was sent")
+      (p/tx_put tx key op)
+      (p/tx_put tx $"world_result/${op_id}" (result_of tx op_id))
+      (ready_if_terminal host tx op_id)
+      (return (result_of tx op_id))))
+  (if (== op/cancellation_requested true)
+    (return (ref_of (p/tx_get tx $"world_op/${op/cancel_operation_id}"))))
+  (let cancel (prepare host tx record "core.cancel"
+    {^operation_id op_id ^fingerprint op/fingerprint} ^owner owner ^target op_id))
+  (op .put "cancellation_requested" true)
+  (op .put "cancel_operation_id" cancel/id)
+  (p/tx_put tx key op)
+  cancel)

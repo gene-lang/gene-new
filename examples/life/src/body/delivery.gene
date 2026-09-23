@@ -1,0 +1,91 @@
+# Transport-independent delivery state, shared by every outbound adapter: the
+# HTTP mailbox connector and the networked world profile
+# (docs/proposals/world.md §8.6, §10.1, §10.8).
+#
+# An outbound record is immutable in what it asks for — its stable ID and exact
+# bytes/semantic payload — and moves through these states:
+#
+#   pending ──attempt──▶ attempting ──receipt──▶ (adapter's settled state)
+#      ▲                     │
+#      │ not_found           ▼ restart, failure, timeout, lost reply
+#      └──────────── needs_reconciliation ◀──┐
+#                            │ unknown ──────┘
+#                            ▼ found
+#                     (adapter's settled state)
+#
+# A receipt query has three answers and they are never conflated: `found`
+# settles through the adapter; `not_found` (authoritative absence) returns the
+# record to the send lane under the same ID and bytes, unless its owner withdrew
+# it meanwhile; anything else is `unknown` and stays uncertain. Nothing here
+# ever mints a replacement ID.
+#
+# Wire framing, authentication, cursors of a particular source and what
+# "settled" means stay in the adapters.
+(mod delivery)
+(import * : p ^from "../host/persistence")
+(import * : events ^from "../host/events")
+
+(let in_flight ["attempting" "reconciling" "needs_reconciliation"])
+(fn in_flight? [record] (in_flight .contains? record/status))
+
+# Still wanted: not withdrawn, and its owner generation (if any) is current.
+(fn valid_owner [tx, record]
+  (&& (!= record/cancellation_requested true)
+    (|| ($absent? record/owner) (== (p/tx_get tx $"owner/${record/owner/id}") record/owner))))
+
+# After a restart, an attempt whose outcome was never recorded is uncertain.
+# Answers true when the record changed.
+(fn restore [record]
+  (if_not (in_flight? record) (return false))
+  (record .put "status" "needs_reconciliation")
+  (record .put "needs_reconciliation" true)
+  true)
+
+(fn begin_attempt [tx, key, record]
+  (record .put "status" "attempting")
+  (record .put "needs_reconciliation" true)
+  (record .put "attempts" (+ (?? record/attempts 0) 1))
+  (p/tx_put tx key record))
+
+# The send or its reply was lost: only a receipt can say what happened.
+(fn uncertain [store, key, record, reason]
+  (if (&& (== record/status "needs_reconciliation") (== record/last_error reason)) (return nil))
+  (record .put "status" "needs_reconciliation")
+  (record .put "needs_reconciliation" true)
+  (record .put "last_error" reason)
+  (p/put store key record "delivery-uncertain"))
+
+# Authoritative absence at the peer: resend the same ID and bytes, or stop if
+# the owner withdrew the work while it was uncertain.
+(fn absent [tx, key, record]
+  (record .put "status" (if (valid_owner tx record) "pending" "cancelled"))
+  (record .put "needs_reconciliation" false)
+  (record .put "last_error" nil)
+  (p/tx_put tx key record))
+
+# The next record to work on. The send lane holds pending records (only while
+# `sending`); the receipt lane holds records awaiting reconciliation. Each lane
+# serves its least recently attempted record, and the lanes alternate while
+# both have work: new sends cannot starve reconciliation, and an unresolved
+# receipt cannot block later sends. `attempted` answers a record's last attempt
+# time. Answers {^record ^lane} or nil.
+(fn next_item [records, attempted, last_lane, ^sending sending = true]
+  (var send nil)
+  (var receipt nil)
+  (for record in records
+    (let at (attempted record))
+    (if_yes (&& sending (== record/status "pending") (|| ($absent? send) (< at send/at)))
+      (set send {^at at ^record record}))
+    (if_yes (&& (== record/status "needs_reconciliation") (|| ($absent? receipt) (< at receipt/at)))
+      (set receipt {^at at ^record record})))
+  (let chosen (if ($absent? receipt) send
+    (if ($absent? send) receipt
+      (if (== last_lane "receipt") send receipt))))
+  (if ($absent? chosen) nil
+    {^record chosen/record ^lane (if (== chosen/record/status "needs_reconciliation") "receipt" "send")}))
+
+# A source could not supply part of its ordered history: record the gap as a
+# visible fact instead of inventing what was lost (§11.4).
+(fn record_gap [host, tx, id, fields, ^visibility visibility = []]
+  (p/tx_put tx $"history_gap/${id}" fields)
+  (events/event host tx "history_gap" fields ^event_id id ^visibility visibility))

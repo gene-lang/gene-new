@@ -83,7 +83,27 @@
     (rpc "water" {^id id ^expected expected} tx))
   (message take [id, ^tx tx = nil] (rpc "take" {^id id} tx))
   (message start_walk [destination, ^owner owner = nil, ^tx tx = nil]
-    (rpc "start_walk" {^destination destination ^owner owner} tx)))
+    (rpc "start_walk" {^destination destination ^owner owner} tx))
+  # The networked profile (docs/proposals/world.md §8.2). Each call below that
+  # changes the world prepares one outbound request and answers its reference
+  # after local publication — not the world's outcome. `result` reads the
+  # latest recorded outcome; `on_result` stores a data continuation — saved
+  # code plus explicit inputs — that runs once the outcome is terminal.
+  (message pick_up [id, ^owner owner = nil, ^tx tx = nil]
+    (rpc "pick_up" {^id id ^owner owner} tx))
+  (message put_down [id, ^owner owner = nil, ^tx tx = nil]
+    (rpc "put_down" {^id id ^owner owner} tx))
+  (message say [text, ^thread thread = nil, ^reply_to reply_to = nil, ^owner owner = nil, ^tx tx = nil]
+    (rpc "say" {^text text ^thread_id thread ^reply_to reply_to ^owner owner} tx))
+  (message operation [name, input = {}, ^owner owner = nil, ^tx tx = nil]
+    (rpc "world_operation" {^operation name ^input input ^owner owner} tx))
+  (message result [ref, ^tx tx = nil] (rpc "world_result" {^ref ref} tx))
+  (message on_result [ref, revision, inputs = {}, ^tx tx = nil]
+    (rpc "world_on_result" {^ref ref ^revision revision ^inputs inputs} tx))
+  (message cancel [ref, ^owner owner = nil, ^tx tx = nil]
+    (rpc "world_cancel" {^ref ref ^owner owner} tx))
+  (message describe [] (rpc "world_describe" nil nil))
+  (message refresh [] (rpc "world_refresh" nil nil)))
 (type Chat
   (message send [destination, text, ^owner owner = nil, ^in_reply_to in_reply_to = nil, ^tx tx = nil]
     (rpc "send" {^destination destination ^text text ^owner owner ^in_reply_to in_reply_to} tx))

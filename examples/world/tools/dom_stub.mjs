@@ -22,6 +22,7 @@ const listeners = new Map();       // "id:type" -> [fn]
 // Exported so a harness can read an element the client writes but does not own
 // a handle to — the formspec panel is written by id and never read back.
 export const texts = new Map();    // element id -> textContent
+export const values = new Map();   // element id -> form field value
 
 // §13's panel is built rather than written: the client creates one div per form
 // element and moves it by toggling `cN`/`rN` classes, because the profile has no
@@ -45,6 +46,9 @@ function element(id) {
     __children: children,
     get textContent() { return texts.get(id) ?? ""; },
     set textContent(v) { texts.set(id, v); },
+    // Form fields, by id like `textContent`: a harness sets what a person typed.
+    get value() { return values.get(id) ?? ""; },
+    set value(v) { values.set(id, v); },
     width: 1280, height: 720,
     classList: {
       toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },

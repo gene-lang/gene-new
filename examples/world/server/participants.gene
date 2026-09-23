@@ -15,11 +15,20 @@
 #
 # Credentials never go in URLs, logs, or public assets. The login code is
 # printed once, to the operator's own terminal, by the provisioning command.
+#
+# ## Lives (§4.4, §9.4)
+#
+# A Life is provisioned the same way with its stable `life_id`: a server-owned
+# participant and one avatar. It has no HTTP session. A native Life connects
+# without a browser Origin and presents an operator-issued connection
+# credential in its `hello`; only the credential's SHA-256 is stored, and it is
+# handed to the operator once — written to an owner-only file, never logged.
 
 (mod participants)
 
 (import [WorldStore in_transaction participant_put participants_all entity_put
-         login_put login_hash session_put session_find session_revoke]
+         login_put login_hash session_put session_find session_revoke
+         life_credential_put life_credential_find]
         ^from "./persistence.gene")
 (import [avatar_entity] ^from "./scene.gene")
 (import [valid_token?] ^from "./protocol.gene")
@@ -34,6 +43,15 @@
 
 (fn participant_id_for [player_id : Str] : Str $"participant-${player_id}")
 (fn entity_id_for [player_id : Str] : Str $"avatar-${player_id}")
+# One id namespace for both kinds; provisioning refuses a collision.
+(fn life_participant_id_for [life_id : Str] : Str $"participant-${life_id}")
+(fn life_entity_id_for [life_id : Str] : Str $"avatar-${life_id}")
+
+(fn find_participant [store : WorldStore participant_id : Str]
+  (var found nil)
+  (for participant in (participants_all store)
+    (if_yes (== participant/participant_id participant_id) (set found participant)))
+  found)
 
 (fn hash_secret [secret : Str] : Str ($crypto/sha256 secret))
 
@@ -56,6 +74,11 @@
                ^code code ^created false})))
   (let participant_id (participant_id_for player_id))
   (let entity_id (entity_id_for player_id))
+  # Participant ids are one namespace across kinds: a player id must not land
+  # on a Life's participant.
+  (if_not ($absent? (find_participant store participant_id))
+    (participant_problem "participant_exists"
+      $"Participant ${participant_id} already exists as another registration."))
   (let everyone (participants_all store))
   (let count everyone/.size)
   (let participant {^participant_id participant_id ^kind "human"
@@ -104,3 +127,53 @@
 (fn sign_out [store : WorldStore token : Str]
   (if (!= token "")
     (in_transaction store (fn [] (session_revoke store (hash_secret token))))))
+
+# --- Lives ----------------------------------------------------------------------
+
+# Provision a Life and its avatar, or re-issue the connection credential of an
+# existing one (the old credential stops working). Answers
+# {^participant_id ^entity_id ^credential ^created}.
+(fn provision_life [store : WorldStore life_id : Str display_name : Str] : Map
+  (if_not (valid_token? life_id 32)
+    (participant_problem "invalid_life_id"
+      "A life id is 1-32 characters of letters, digits, '.', '_', ':' or '-'."))
+  (let name ($str/trim display_name))
+  (if (|| (== name "") (> ($str/byte_size name) 64))
+    (participant_problem "invalid_display_name" "A display name is 1-64 bytes."))
+  (let credential ($crypto/random_hex 32))
+  (let now ($os/wall_ms))
+  (let participant_id (life_participant_id_for life_id))
+  (let existing (life_credential_find store life_id))
+  (if_not ($absent? existing)
+    (do
+      (in_transaction store (fn []
+        (life_credential_put store life_id existing/participant_id (hash_secret credential) now)))
+      (let participant (find_participant store existing/participant_id))
+      (return {^participant_id existing/participant_id ^entity_id participant/entity_id
+               ^credential credential ^created false})))
+  (if_not ($absent? (find_participant store participant_id))
+    (participant_problem "participant_exists"
+      $"Participant ${participant_id} already exists as another registration."))
+  (let entity_id (life_entity_id_for life_id))
+  (let everyone (participants_all store))
+  (let count everyone/.size)
+  (let participant {^participant_id participant_id ^kind "life"
+                    ^life_id life_id ^player_id nil ^display_name name
+                    ^entity_id entity_id ^control_generation 0
+                    ^next_event_seq 1 ^next_operation_seq 1})
+  (in_transaction store (fn []
+    (participant_put store participant)
+    (entity_put store (avatar_entity entity_id participant_id name count ^kind "actor/life"))
+    (life_credential_put store life_id participant_id (hash_secret credential) now)))
+  {^participant_id participant_id ^entity_id entity_id ^credential credential ^created true})
+
+# The participant a Life credential belongs to, or nil. Every failure looks the
+# same to the caller: an unknown life id and a wrong credential are one answer.
+(fn life_credential_participant [store : WorldStore life_id credential]
+  (if (|| (! (valid_token? life_id 32))
+          (|| (!= ($head credential) Str) (> ($str/byte_size credential) 128)))
+    (return nil))
+  (let row (life_credential_find store life_id))
+  (if ($absent? row) (return nil))
+  (if_not ($crypto/secure_equal? row/credential_hash (hash_secret credential)) (return nil))
+  row/participant_id)

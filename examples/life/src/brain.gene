@@ -31,9 +31,36 @@
         (set index (+ index 1)))
       (decisions .set remaining)
       (return first)))
+  (if (== context/world_profile "network") (return (network_fake context)))
   (for observation in context/observations
     (if_yes (== observation/kind "first_start")
       (return (response "I am curious about the garden. I will inspect it and revisit later."
         "(do (memory .remember {^kind \"first_observation\" ^world (body/world .observe)})
           (scheduler .wake_after 60000 \"Revisit the garden\") nil)"))))
+  (response "I have considered the observations and will remain quiet for now." "nil"))
+
+# The same deterministic fixture in a shared world: on first start it walks to
+# the garden and leaves a data continuation that says so on arrival — no model
+# call and no waiting program (docs/proposals/world.md §8.4). It acknowledges a
+# person who speaks to it, and never answers another Life, so two fixtures
+# cannot talk forever. It is a fixture, not a conversational model.
+(fn network_fake [context]
+  (for observation in context/observations
+    (if_yes (== observation/kind "first_start")
+      (return (response "I am new to the Commons. I will walk to the garden and say so when I arrive."
+        "(do
+          (let arrival (code .save \"announce-arrival\"
+            \"(fn [api input] (if (== input/result/status \\\"completed\\\") (api/body/world .say \\\"I have reached the garden.\\\") input/result/status))\"))
+          (store .commit (fn [tx]
+            (let walk (body/world .start_walk \"garden\" ^tx tx))
+            (body/world .on_result walk arrival {} ^tx tx)
+            walk/operation_id)))"))))
+  (for observation in context/observations
+    (if_yes (&& (== observation/kind "chat") (== observation/data/source "world")
+                (== observation/data/speaker_kind "human"))
+      (return (response "Someone spoke to me. I will acknowledge them."
+        "(do
+          (let focus context/focus)
+          (body/chat .send focus/reply_to \"I heard you. I am a fake-brain Life, so I can only acknowledge.\"
+            ^in_reply_to [focus/event_id]))"))))
   (response "I have considered the observations and will remain quiet for now." "nil"))

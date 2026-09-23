@@ -5,7 +5,8 @@ in Gene. This is a progress record, not a reduction of that scope.
 
 ## Current evidence
 
-`bin/gene test examples/life/tests/` exercises the Gene implementation:
+`bin/gene test --package-root examples/life examples/life/tests/` exercises the
+Gene implementation:
 
 - Explicit create/open, first-start observation, recorded disposition, fake brain.
 - Strict text/program framing, validation before effects, bounded rejected cycles.
@@ -73,6 +74,30 @@ in Gene. This is a progress record, not a reduction of that scope.
   generation changes. Rejection/failure observations aid bounded correction
   without becoming an automatic wake source.
 
+- The networked world profile (docs/proposals/world.md Milestone 2), against an
+  in-memory world: credential attach and synchronized view; a walk and its data
+  continuation published in one commit and sent only afterwards; both
+  registration/result orderings with one readiness transition; 70 outstanding
+  continuations under one dispatcher registration, routed in 32-record passes,
+  one failing and the rest running once each; an over-limit grouped submission
+  rejected whole; a lost reply recovered by receipt query while `unknown` stays
+  uncertain; an unsent request kept across an abrupt stop and an interrupted
+  attempt resent under its ID after `not_found`; replayed events dropped by
+  sequence and a skipped one blocking until resynchronization; routing restored
+  after a crash before its commit; an unknown required event blocking routing;
+  speech heard and answered through the outbox without reacting to its own
+  echo; owner withdrawal and explicit cancellation; a tombstone meeting a late
+  copy of a cancelled request; `observe` freshness, `describe` and `refresh`.
+- The transport-independent delivery kernel shared by the HTTP connector and
+  the world profile, one conformance table over both record shapes.
+- Real processes (examples/world/tools/life_smoke.mjs): two networked Lives and
+  a browser-shaped person in one Commons world, including contention for one
+  object, a Life and then the world killed mid-walk, and a request committed
+  while the world was down.
+- The local suite also passes with every new Life on the incremental file store
+  (`LIFE_STORAGE=file`), except the six checks that compare `life.sqlite`
+  image bytes, which only apply to the whole-image backend.
+
 The CLI create/run/send/inspect/stop path has also been exercised with two live
 Gene processes. Stop acknowledges only after committing its continuation point.
 `bin/gene run examples/life/src/demo.gene` also runs the full garden continuity,
@@ -81,10 +106,13 @@ withdrawn-request cancellation, and sleep/restart/wake demonstration headlessly.
 ## Required work remaining
 
 - Bounded longer histories with provenance, retention/deletion and reproducible
-  experiment metadata. Event-subscription cursors currently retain delivered IDs
-  and need to participate in the eventual history/retention policy.
-- Longer histories and richer activity checkpoints; a real communication adapter
-  with durable cursors and delivery reconciliation/uncertainty.
+  experiment metadata. Routine event subscriptions still retain delivered IDs
+  (`seen_events`); the networked world path uses sequence cursors instead, and
+  both need to participate in the eventual history/retention policy. Received
+  world events and results are retained without archival yet.
+- Longer histories and richer activity checkpoints; pause does not yet request
+  suspension of the Life's world activity (world.md §12.4); a real brain
+  adapter.
 - Small browser/3D presentation of authoritative world state and additional
   meaningful activities, preserving headless use.
 - Repeatable behavioral comparison harness and reports for memory access,

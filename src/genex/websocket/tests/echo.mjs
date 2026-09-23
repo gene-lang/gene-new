@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const payload = Buffer.from(Array.from({ length: 40001 }, (_, i) => i & 255));
 const ping = Buffer.from("between fragments");
 let sawPong = false, sawBinary = false, peerError = null;
+const protocolOffers = [];
 const peers = new Set();
 
 function frame(opcode, bytes, final = true) {
@@ -35,6 +36,18 @@ const server = net.createServer(socket => {
         const key = header.match(/^Sec-WebSocket-Key: (.+)$/mi)?.[1].trim();
         assert(key, "client must send a WebSocket key");
         const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+        const path = header.split(" ")[1];
+        const offered = header.match(/^Sec-WebSocket-Protocol: (.+)$/mi)?.[1].trim();
+        if (path === "/protocol" || path === "/ignore") {
+          // Subprotocol negotiation: select the offer, or upgrade without one.
+          protocolOffers.push(offered ?? null);
+          const selected = path === "/protocol" && offered ? `Sec-WebSocket-Protocol: ${offered}\r\n` : "";
+          socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${selected}\r\n`);
+          upgraded = true;
+          buffer = buffer.subarray(end + 4);
+          return;
+        }
+        assert(!offered, "a plain connect must not offer a subprotocol");
         socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
         upgraded = true;
         buffer = buffer.subarray(end + 4);
@@ -88,6 +101,20 @@ try {
   assert(sawPong && sawBinary, "peer must observe the PONG and binary send");
   process.stdout.write(output);
   console.log("PASS — independent peer verified masking and PONG between fragments");
+  // Subprotocol negotiation: selected, ignored by the server, and invalid.
+  const base = `ws://127.0.0.1:${server.address().port}`;
+  const negotiation = spawn(gene, ["run", root + "src/genex/websocket/tests/subprotocol.gene", library,
+    `${base}/protocol`, `${base}/ignore`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  let said = "";
+  negotiation.stdout.on("data", b => { said += b; });
+  negotiation.stderr.on("data", b => { said += b; });
+  const status = await new Promise((resolve, reject) => { negotiation.on("exit", resolve); negotiation.on("error", reject); });
+  assert.equal(status, 0, said);
+  if (peerError) throw peerError;
+  assert.deepEqual(protocolOffers, ["gene.world.v1", "gene.world.v1"],
+    "each subprotocol connect offers exactly its protocol; an invalid name never reaches the peer");
+  process.stdout.write(said);
+  console.log("PASS — independent peer saw the offered subprotocol on both connects");
 } finally {
   clearTimeout(deadline);
   child.kill("SIGKILL");

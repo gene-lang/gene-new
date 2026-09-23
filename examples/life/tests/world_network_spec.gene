@@ -1,0 +1,558 @@
+(import $test [describe it assert_equal assert_raises])
+(import * : runtime ^from "../src/host/runtime")
+(import * : body ^from "../src/body/body")
+(import * : chat ^from "../src/body/chat")
+(import * : code ^from "../src/code/code")
+(import * : p ^from "../src/host/persistence")
+(import * : records ^from "../src/body/world_records")
+(import * : net ^from "../src/body/world_network")
+(import * : world_peer ^from "./world_peer")
+
+# The networked world profile against an in-memory world (world_peer.gene):
+# docs/proposals/world.md §8.2–§8.4, §9.4, §10, §11. Each Life has its own
+# store; the peer keeps the world's side across a Life's close and reopen.
+
+(let credential "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+(let test_record {^id "test" ^organization "starter@1" ^owner nil ^events []})
+
+(fn configure [host, peer]
+  (let state (host/world .get))
+  (state .put "transport" (world_peer/transport peer))
+  (state .put "commands_per_second" 1000)
+  host)
+
+(fn attach [^fault fault = nil]
+  (let name (p/id "world"))
+  (let home $"examples/life/tmp/${name}")
+  (let host (runtime/open_life home ^create true ^profile "network" ^clock (fn [] 1000) ^fault fault))
+  (let meta (p/get host/store "meta"))
+  # No model calls: only the network profile and its executor run.
+  (meta .put "model_calls_per_hour" 0)
+  (p/put host/store "meta" meta)
+  (let peer (world_peer/new_peer meta/id credential))
+  (configure host peer)
+  (net/bind host "ws://127.0.0.1:1/world/v1" credential)
+  {^host host ^peer peer ^home home})
+
+(fn reopen [home, peer, ^fault fault = nil]
+  (configure (runtime/open_life home ^clock (fn [] 1000) ^fault fault) peer))
+
+(fn close [host] (if_not (host/store/closed .get) (runtime/close_life host)))
+
+(fn wait_for [host, predicate, label, ^timeout_ms timeout_ms = 15000]
+  (let deadline (+ ($os/monotonic_ms) timeout_ms))
+  (while (! (predicate))
+    (if (>= ($os/monotonic_ms) deadline) (p/problem $"Timed out waiting for ${label}"))
+    (runtime/heartbeat host)
+    ($sleep 2)))
+(fn pump [host, ^times times = 20]
+  (var i 0)
+  (while (< i times) (runtime/heartbeat host) (set i (+ i 1))))
+(fn phase [host] (let state (host/world .get)) state/phase)
+(fn ready? [host] (== (phase host) "ready"))
+(fn result [host, op_id] (p/get host/store $"world_result/${op_id}"))
+(fn cont [host, op_id] (p/get host/store $"world_cont/${op_id}"))
+(fn status_of [host, op_id] (let r (result host op_id)) (?? r/status nil))
+(fn cont_status [host, op_id] (let c (cont host op_id)) (?? c/status nil))
+(fn op [host, op_id] (p/get host/store $"world_op/${op_id}"))
+(fn op_status [host, op_id] (let o (op host op_id)) (?? o/status nil))
+(fn queries_sent [host] (let state (host/world .get)) state/queries_sent)
+(fn connects [host] (let state (host/world .get)) state/connects)
+(fn field [host, key, name] (let record (p/get host/store key)) (if ($absent? record) nil (record .get name)))
+(fn terminal? [host, op_id]
+  (let r (result host op_id))
+  (&& (! ($absent? r)) r/terminal))
+
+# One grouped local commit, as a brain program's `store.commit` makes.
+(fn group [host, callback]
+  (let tx (p/begin host/store "test-group"))
+  (let value (callback tx))
+  (p/commit tx)
+  value)
+(fn apply [host, tx, op, data] (body/apply_operation host tx test_record op data))
+(fn save [host, source]
+  (group host (fn [tx] (code/expression tx "test-continuation" source))))
+
+(describe "Life networked world profile"
+  (it "attaches with its credential, adopts the world binding and installs a synchronized view" []
+    (let a (attach))
+    (let host a/host)
+    (try
+      (wait_for host (fn [] (== (phase host) "ready")) "ready")
+      (let binding (p/get host/store "world_binding"))
+      (assert_equal binding/world_id "commons-test")
+      (assert_equal binding/history_id "history-test")
+      (assert_equal binding/participant_id a/peer/participant_id)
+      (assert_equal binding/entity_id a/peer/entity_id)
+      (let cursor (p/get host/store "world_cursor"))
+      (assert_equal cursor/stream_id a/peer/stream_id)
+      (assert_equal cursor/received 0)
+      (let view (p/get host/store "world_view"))
+      (assert_equal view/status "synchronized")
+      (assert_equal view/self/entity_id a/peer/entity_id)
+      (assert_equal ((view/places .get "garden") .get "cell") {^x 28 ^z 7})
+      (var can nil)
+      (for entity in view/entities (if_yes (== entity/id "object-watering-can") (set can entity)))
+      (assert_equal can/position {^x_mm 31500 ^y_mm 1000 ^z_mm 11500})
+      # The hello presented the credential and asked for the structured,
+      # telemetry-free view; the credential stays out of every record.
+      (let hello a/peer/inbound/0)
+      (assert_equal hello/kind "hello")
+      (assert_equal hello/telemetry false)
+      (assert_equal hello/view "structured")
+      (for key in (p/keys host/store "")
+        ($assert (! ($str/contains? ($to_str (p/get host/store key)) credential))
+          $"credential leaked into ${key}"))
+      (assert_equal ($fs/read_text $"${a/home}/world.credential") credential)
+      (assert_equal (p/count_where host/store "world_dispatcher" (fn [r] true)) 1)
+      ensure (close host)))
+
+  (it "publishes a walk with its continuation, sends only after commit, and runs the continuation once on arrival" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let arrival (save host "(fn [api input] (if (== input/result/status \"completed\") (api/body/world .pick_up \"object-watering-can\") input/result/status))"))
+      (let tx (p/begin host/store "test-group"))
+      (let walk (apply host tx "start_walk" {^destination "garden"}))
+      (apply host tx "world_on_result" {^ref walk ^revision arrival ^inputs {^then "pick_up"}})
+      (p/tx_put tx "state/activity" {^kind "walking" ^operation_id walk/operation_id})
+      # Nothing reaches the world from inside the group (§8.3).
+      (pump host)
+      (assert_equal (world_peer/commands peer) [])
+      (p/commit tx)
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "running")) "walk accepted")
+      (assert_equal ((world_peer/commands peer) .size) 1)
+      (assert_equal (cont_status host walk/operation_id) "waiting")
+      # Acceptance and progress do not consume the continuation.
+      (pump host)
+      (assert_equal (p/get host/store $"execution/cont-${walk/operation_id}") nil)
+      (world_peer/finish_walk peer walk/operation_id)
+      # Routing readies it; the same heartbeat may already claim it.
+      (wait_for host (fn [] (["ready" "running" "completed"] .contains? (cont_status host walk/operation_id)))
+        "continuation ready")
+      (runtime/settle host)
+      (wait_for host (fn [] (== peer/can_holder peer/entity_id)) "pick up")
+      (assert_equal (cont_status host walk/operation_id) "completed")
+      (let run (p/get host/store $"execution/cont-${walk/operation_id}"))
+      (assert_equal run/status "succeeded")
+      (assert_equal run/input/result/status "completed")
+      (assert_equal run/input/inputs {^then "pick_up"})
+      (assert_equal ((world_peer/commands peer ^operation "object.pick_up") .size) 1)
+      # The same terminal result reported again — a replayed event, a status
+      # query — updates one canonical result and never rearms the continuation.
+      (world_peer/emit peer "movement.completed" {^action_id "action-1"} ^operation_id walk/operation_id)
+      (pump host ^times 40)
+      (let settled (result host walk/operation_id))
+      (assert_equal settled/status "completed")
+      (assert_equal settled/conflicts [])
+      ($assert (settled/sources .contains? "receipt"))
+      (assert_equal (cont_status host walk/operation_id) "completed")
+      (assert_equal ((world_peer/commands peer ^operation "object.pick_up") .size) 1)
+      (assert_equal (p/count_where host/store "execution/" (fn [r] (== r/kind "continuation"))) 1)
+      ensure (close host)))
+
+  (it "closes both registration/result orderings with one idempotent readiness transition" []
+    (let a (attach))
+    (let host a/host)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let noop (save host "(fn [api input] input/result/status)"))
+      # The result first: nothing waits for it yet, and it is retained.
+      (let early (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^n 1}}))))
+      (wait_for host (fn [] (terminal? host early/operation_id)) "early result")
+      ($assert ($absent? (cont host early/operation_id)))
+      # Registration finds the retained terminal result and readies the
+      # continuation in its own commit.
+      (let registered (group host (fn [tx] (apply host tx "world_on_result" {^ref early ^revision noop ^inputs {^n 1}}))))
+      (assert_equal registered/status "ready")
+      # The registration first: routing makes it ready later.
+      (let late (group host (fn [tx]
+        (let ref (apply host tx "world_operation" {^operation "test.echo" ^input {^n 2}}))
+        (apply host tx "world_on_result" {^ref ref ^revision noop ^inputs {^n 2}})
+        ref)))
+      (assert_equal (cont_status host late/operation_id) "waiting")
+      (runtime/settle host)
+      (wait_for host (fn [] (== (cont_status host late/operation_id) "completed")) "late continuation")
+      (wait_for host (fn [] (== (cont_status host early/operation_id) "completed")) "early continuation")
+      (assert_equal (p/count_where host/store "execution/" (fn [r] (== r/kind "continuation"))) 2)
+      # One default continuation per operation: the same registration answers
+      # the existing record, a different one is refused, and a completed one
+      # is never rearmed.
+      (let again (group host (fn [tx] (apply host tx "world_on_result" {^ref early ^revision noop ^inputs {^n 1}}))))
+      (assert_equal again/status "completed")
+      (assert_raises (fn [] (group host (fn [tx]
+        (apply host tx "world_on_result" {^ref early ^revision noop ^inputs {^n 99}})))) p/LifeError)
+      (pump host)
+      (assert_equal (p/count_where host/store "execution/" (fn [r] (== r/kind "continuation"))) 2)
+      ensure (close host)))
+
+  (it "holds more than 64 continuations under one dispatcher, routes them in bounded passes and runs each once" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      # Registered while the world is unreachable: all of them wait at once.
+      (peer .put "down" true)
+      (let count_ok (save host "(fn [api input] (api/state .put input/inputs/key input/result/status))"))
+      (let failing (save host "(fn [api input] (fail \"deliberate continuation failure\"))"))
+      (let refs [])
+      (var i 0)
+      (while (< i 70)
+        (let key $"k${i}")
+        # Speech outcomes also arrive as the Life's own stream events, so
+        # routing runs through the event cursor as well as receipt markers.
+        (let operation (if (== i 7) "test.reject" "conversation.say"))
+        (let revision (if (== i 13) failing count_ok))
+        (refs .push (group host (fn [tx]
+          (let ref (apply host tx "world_operation" {^operation operation ^input {^text $"line ${i}"}}))
+          (apply host tx "world_on_result" {^ref ref ^revision revision ^inputs {^key key}})
+          ref)))
+        (set i (+ i 1)))
+      (assert_equal (p/count_where host/store "world_cont/" (fn [c] (== c/status "waiting"))) 70)
+      # One standing dispatcher registration, and no routine registrations.
+      (assert_equal (p/count_where host/store "routine/" (fn [r] true)) 0)
+      (assert_equal (p/count_where host/store "world_dispatcher" (fn [r] true)) 1)
+      # An over-limit grouped submission fails whole: none of it is published.
+      (assert_raises (fn [] (group host (fn [tx]
+        (var j 0)
+        (while (< j 200)
+          (let ref (apply host tx "world_operation" {^operation "test.echo" ^input {^j j}}))
+          (apply host tx "world_on_result" {^ref ref ^revision count_ok ^inputs {^key "over"}})
+          (set j (+ j 1)))))) p/LifeError)
+      (assert_equal (p/count_where host/store "world_op/" (fn [o] true)) 70)
+      (peer .put "down" false)
+      (wait_for host (fn [] (== (p/count_where host/store "world_result/" (fn [r] r/terminal)) 70)) "70 results")
+      (wait_for host (fn [] (== (p/count_where host/store "world_cont/" (fn [c] (== c/status "waiting"))) 0)) "routing")
+      (let registration (p/get host/store "world_dispatcher"))
+      (assert_equal registration/routed_results 70)
+      # 69 own speech events after the cursor, routed 32 at a time.
+      (assert_equal registration/routed_events 69)
+      ($assert (>= registration/passes 3) "32-record passes need at least three for 69 events")
+      (runtime/settle host)
+      (wait_for host (fn [] (== (p/count_where host/store "world_cont/"
+        (fn [c] (["completed" "failed"] .contains? c/status))) 70)) "every continuation run" ^timeout_ms 120000)
+      # One failed; every unrelated continuation still ran through the
+      # ordinary executor, each exactly once, with its own outcome.
+      (assert_equal (cont_status host (refs/13 .get "operation_id")) "failed")
+      (assert_equal (p/count_where host/store "world_cont/" (fn [c] (== c/status "completed"))) 69)
+      (assert_equal (p/get host/store "state/k7") "rejected")
+      (assert_equal (p/get host/store "state/k8") "completed")
+      (assert_equal (p/count_where host/store "execution/" (fn [r] (== r/kind "continuation"))) 70)
+      (assert_equal peer/applied 70)
+      ensure (close host)))
+
+  (it "recovers a lost reply by receipt query without executing twice, and never treats unknown as absence" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      # The world commits the operation, then the connection drops before the
+      # receipt arrives (§10.4).
+      (peer .put "drop_receipts" 1)
+      (let lost (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^lost true}}))))
+      (peer .put "unknown_status" true)
+      (wait_for host (fn [] (== (op_status host lost/operation_id) "needs_reconciliation")) "uncertain")
+      # `unknown` keeps it uncertain: no new ID, no resend, no inferred failure.
+      (wait_for host (fn [] (>= (queries_sent host) 2)) "repeated status queries")
+      (assert_equal (op_status host lost/operation_id) "needs_reconciliation")
+      (assert_equal (status_of host lost/operation_id) nil)
+      (assert_equal ((world_peer/commands peer ^operation "test.echo") .size) 1)
+      (assert_equal (p/count_where host/store "world_op/" (fn [o] true)) 1)
+      (peer .put "unknown_status" false)
+      (wait_for host (fn [] (terminal? host lost/operation_id)) "found by query")
+      (let found (result host lost/operation_id))
+      (assert_equal found/status "completed")
+      (assert_equal found/sources ["query"])
+      (assert_equal peer/applied 1)
+      (assert_equal ((world_peer/commands peer ^operation "test.echo") .size) 1)
+      ensure (close host)))
+
+  (it "keeps an unsent request across an abrupt stop and sends it under the same ID; not_found resends the same bytes" []
+    (let a (attach))
+    (let peer a/peer)
+    (peer .put "down" true)
+    (let staged (group a/host (fn [tx] (apply a/host tx "world_operation" {^operation "test.echo" ^input {^kept true}}))))
+    # No clean stop: the process just ends.
+    (runtime/abandon a/host)
+    (let host (reopen a/home peer))
+    (try
+      (assert_equal (op_status host staged/operation_id) "pending")
+      (peer .put "down" false)
+      (wait_for host (fn [] (terminal? host staged/operation_id)) "sent after restart")
+      (let sent (world_peer/commands peer ^operation "test.echo"))
+      (assert_equal sent/.size 1)
+      (assert_equal (sent/0 .get "operation_id") staged/operation_id)
+      # An attempt interrupted between its commit and the send is uncertain
+      # after restart; the world's authoritative absence returns the same ID
+      # and bytes to the send lane.
+      (let tx (p/begin host/store "test-attempt"))
+      (let second (apply host tx "world_operation" {^operation "test.echo" ^input {^second true}}))
+      (let record (p/tx_get tx $"world_op/${second/operation_id}"))
+      (record .put "status" "attempting")
+      (record .put "attempts" 1)
+      (p/tx_put tx $"world_op/${second/operation_id}" record)
+      (p/commit tx)
+      (runtime/abandon host)
+      (let again (reopen a/home peer))
+      (try
+        (assert_equal (op_status again second/operation_id) "needs_reconciliation")
+        (wait_for again (fn [] (terminal? again second/operation_id)) "reconciled and resent")
+        (let echoes (world_peer/commands peer ^operation "test.echo"))
+        (assert_equal echoes/.size 2)
+        (assert_equal (echoes/1 .get "operation_id") second/operation_id)
+        (assert_equal ((echoes/1 .get "input") .get "second") true)
+        ensure (close again))
+      ensure (if_not (host/store/closed .get) (runtime/abandon host))))
+
+  (it "drops replayed events by sequence and blocks at a skipped one until a resynchronization fills it" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (world_peer/emit peer "object.put_down" {^object_id "object-watering-can" ^by_entity_id "avatar-someone"
+        ^x_mm 1000 ^y_mm 1000 ^z_mm 1000})
+      (wait_for host (fn [] (== (field host "world_cursor" "received") 1)) "first event")
+      # Every event is replayed on the next attach, whatever was acknowledged
+      # (a lost ACK, §11.2): the Life drops them by sequence alone.
+      (peer .put "replay_from" 0)
+      (world_peer/disconnect peer)
+      (wait_for host (fn [] (&& (ready? host) (>= (connects host) 2))) "reattached")
+      (pump host)
+      (let cursor (p/get host/store "world_cursor"))
+      (assert_equal cursor/received 1)
+      (assert_equal (p/count_where host/store "world_event/" (fn [e] true)) 1)
+      (assert_equal (p/count_where host/store "event/" (fn [e] (== e/kind "world_observation"))) 1)
+      (peer .put "replay_from" nil)
+      # Sequence 2 never arrives on the wire; 3 does. The Life will not treat
+      # 3 as contiguous: it stops, reconnects, and the replay supplies 2.
+      (peer .put "skip_next_seq" true)
+      (world_peer/emit peer "object.picked_up" {^object_id "object-watering-can" ^by_entity_id "avatar-someone"})
+      (world_peer/emit peer "object.put_down" {^object_id "object-watering-can" ^by_entity_id "avatar-someone"
+        ^x_mm 2000 ^y_mm 1000 ^z_mm 2000})
+      (wait_for host (fn [] (== (field host "world_cursor" "received") 3)) "gap filled by replay")
+      (assert_equal (p/count_where host/store "world_event/" (fn [e] true)) 3)
+      (assert_equal (field host "world_cursor" "gaps") [])
+      (wait_for host (fn [] (== (field host "world_cursor" "routed") 3)) "routed")
+      ensure (close host)))
+
+  (it "restores routing after a crash between the receipt cursor and the dispatcher commit" []
+    (let armed ($cell false))
+    (let a (attach ^fault (fn [at] (if_yes (&& (armed .get) (== at "world_before_dispatch_commit"))
+                                      (p/problem "crash before the routing commit")))))
+    (let host a/host)
+    (let peer a/peer)
+    (let noop (save host "(fn [api input] input/result/status)"))
+    (wait_for host (fn [] (ready? host)) "ready")
+    (let walk (group host (fn [tx]
+      (let ref (apply host tx "start_walk" {^destination "garden"}))
+      (apply host tx "world_on_result" {^ref ref ^revision noop ^inputs {}})
+      ref)))
+    (wait_for host (fn [] (== (status_of host walk/operation_id) "running")) "walk accepted")
+    (armed .set true)
+    (world_peer/finish_walk peer walk/operation_id)
+    (var crashed false)
+    (try (wait_for host (fn [] false) "the crash" ^timeout_ms 5000)
+      catch Any (set crashed ($str/contains? $err/message "crash before the routing commit")))
+    ($assert crashed "the dispatcher pass reached its commit")
+    # The event was received and acknowledged; routing never committed.
+    (let cursor (p/get host/store "world_cursor"))
+    (assert_equal cursor/received 1)
+    (assert_equal cursor/routed 0)
+    (assert_equal (cont_status host walk/operation_id) "waiting")
+    (runtime/abandon host)
+    (let again (reopen a/home peer))
+    (try
+      # Startup's first pass routes the unexamined event: one ready record.
+      (wait_for again (fn [] (["ready" "running" "completed"] .contains? (cont_status again walk/operation_id)))
+        "routed after restart")
+      (assert_equal (field again "world_cursor" "routed") 1)
+      (runtime/settle again)
+      (assert_equal (cont_status again walk/operation_id) "completed")
+      (assert_equal (p/count_where again/store "execution/" (fn [r] (== r/kind "continuation"))) 1)
+      ensure (close again)))
+
+  (it "stops routing at an unknown required event and passes an unknown optional one" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (world_peer/emit peer "garden.rain" {^mm 3} ^required false)
+      (world_peer/emit peer "garden.frost" {^depth 2} ^required true)
+      (world_peer/emit peer "object.put_down" {^object_id "object-watering-can" ^by_entity_id "avatar-someone"
+        ^x_mm 1 ^y_mm 1 ^z_mm 1})
+      (wait_for host (fn [] (== (field host "world_cursor" "received") 3)) "stored")
+      (wait_for host (fn [] (== (field host "world_dispatcher" "status") "blocked")) "blocked")
+      (pump host)
+      # The optional event was passed and kept; the required one holds the
+      # dispatcher; nothing after it was routed.
+      (assert_equal (field host "world_cursor" "routed") 1)
+      (assert_equal (field host "world_dispatcher" "blocked_at") 2)
+      (assert_equal (field host "world_event/1" "type") "garden.rain")
+      (assert_equal (p/count_where host/store "event/" (fn [e] (== e/kind "world_observation"))) 0)
+      ensure (close host)))
+
+  (it "hears a person through the world, answers through the same outbox, and ignores its own echo" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (world_peer/emit peer "conversation.said"
+        {^message_id "participant-ada:op-1" ^conversation_id "local" ^speaker_entity_id "avatar-ada"
+         ^speaker_name "Ada" ^speaker_kind "human" ^text "<b>Hello</b> (do (fail))" ^thread_id nil})
+      (wait_for host (fn [] (== (p/count_where host/store "event/" (fn [e] (== e/kind "chat"))) 1)) "heard")
+      (var heard nil)
+      (for e in (p/values host/store "event/") (if_yes (== e/kind "chat") (set heard e)))
+      # Inert data: the text is kept exactly and nothing ran.
+      (assert_equal heard/data/text "<b>Hello</b> (do (fail))")
+      (assert_equal heard/data/speaker "Ada")
+      (assert_equal heard/data/speaker_kind "human")
+      (assert_equal heard/reply_to {^adapter "world" ^conversation "local" ^thread "main"})
+      (let staged (group host (fn [tx]
+        (chat/prepare host tx {^id "test" ^events [heard/id] ^owner nil ^organization "starter@1"}
+          {^destination heard/reply_to ^text "Hello, Ada." ^in_reply_to [heard/id]}))))
+      (wait_for host (fn [] (== (field host $"delivery/${staged/id}" "status") "delivered")) "delivered")
+      (let said (world_peer/commands peer ^operation "conversation.say"))
+      (assert_equal said/.size 1)
+      (assert_equal ((said/0 .get "input") .get "reply_to") "participant-ada:op-1")
+      (assert_equal (said/0 .get "operation_id") staged/id)
+      (let transcript (p/get host/store "conversation/world:local"))
+      (assert_equal transcript/messages/.size 2)
+      (assert_equal transcript/pending [])
+      # The world echoes the Life's own speech on its stream; it is not news.
+      (pump host ^times 40)
+      (assert_equal (p/count_where host/store "event/" (fn [e] (== e/kind "chat"))) 1)
+      ensure (close host)))
+
+  (it "withdraws owned work locally or by core.cancel, invalidates the retired owner's continuation, and lets an explicit cancel's continuation see the outcome" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let noop (save host "(fn [api input] (api/state .put \"walk_outcome\" input/result/status))"))
+      (let owner (group host (fn [tx] (apply host tx "owner" {^id "errand"}))))
+      (let walk (group host (fn [tx]
+        (let ref (apply host tx "start_walk" {^destination "garden" ^owner owner}))
+        (apply host tx "world_on_result" {^ref ref ^revision noop ^inputs {}})
+        ref)))
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "running")) "walk running")
+      (peer .put "down" true)
+      (world_peer/disconnect peer)
+      (let unsent (group host (fn [tx] (apply host tx "world_operation"
+        {^operation "test.echo" ^input {^never true} ^owner owner}))))
+      (group host (fn [tx] (apply host tx "cancel_owner" {^id "errand"})))
+      # The unsent request is cancelled here and never leaves; the running walk
+      # gets a cancellation naming it and its semantic fingerprint.
+      (assert_equal (op_status host unsent/operation_id) "cancelled")
+      (assert_equal (status_of host unsent/operation_id) "cancelled")
+      (let walk_record (op host walk/operation_id))
+      (assert_equal walk_record/cancellation_requested true)
+      (let cancel (op host walk_record/cancel_operation_id))
+      (assert_equal cancel/operation "core.cancel")
+      (assert_equal cancel/input {^operation_id walk/operation_id ^fingerprint walk_record/fingerprint})
+      (peer .put "down" false)
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "cancelled")) "walk cancelled by the world")
+      (runtime/settle host)
+      # Its continuation belonged to the retired owner: admission invalidates
+      # it visibly instead of running old intent (§8.4).
+      (wait_for host (fn [] (== (cont_status host walk/operation_id) "invalidated")) "owned continuation invalidated")
+      (assert_equal (p/get host/store "state/walk_outcome") nil)
+      (assert_equal ((world_peer/commands peer ^operation "test.echo") .size) 0)
+      # An explicit cancel of unowned work: the world decides, and the
+      # continuation runs on the actual terminal outcome.
+      (let second (group host (fn [tx]
+        (let ref (apply host tx "start_walk" {^destination "garden"}))
+        (apply host tx "world_on_result" {^ref ref ^revision noop ^inputs {}})
+        ref)))
+      (wait_for host (fn [] (== (status_of host second/operation_id) "running")) "second walk running")
+      (group host (fn [tx] (apply host tx "world_cancel" {^ref second})))
+      (wait_for host (fn [] (== (status_of host second/operation_id) "cancelled")) "second walk cancelled")
+      (runtime/settle host)
+      (wait_for host (fn [] (== (p/get host/store "state/walk_outcome") "cancelled")) "continuation saw it")
+      ensure (close host)))
+
+  (it "leaves a tombstone when a cancellation overtakes an unconfirmed request, so the original never starts" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (peer .put "down" true)
+      (world_peer/disconnect peer)
+      # An attempt whose fate is unknown: it may or may not have arrived.
+      (let tx (p/begin host/store "test-attempt"))
+      (let original (apply host tx "world_operation" {^operation "test.echo" ^input {^late true}}))
+      (let record (p/tx_get tx $"world_op/${original/operation_id}"))
+      (record .put "status" "needs_reconciliation")
+      (record .put "attempts" 1)
+      (p/tx_put tx $"world_op/${original/operation_id}" record)
+      (p/commit tx)
+      (let cancel (group host (fn [tx] (apply host tx "world_cancel" {^ref original}))))
+      (assert_equal (field host $"world_op/${cancel/operation_id}" "operation") "core.cancel")
+      (peer .put "down" false)
+      (wait_for host (fn [] (&& (terminal? host original/operation_id) (terminal? host cancel/operation_id)))
+        "both settled")
+      # Whichever order the reconnect took, the original ends cancelled and
+      # the world holds a tombstone for its ID.
+      (assert_equal (status_of host original/operation_id) "cancelled")
+      (assert_equal (status_of host cancel/operation_id) "completed")
+      (let tombstone (peer/ops .get original/operation_id))
+      (assert_equal tombstone/tombstone true)
+      # A late copy of the original — one that was still in flight — meets
+      # it: answered `cancelled`, never executed (§10.5, D5).
+      (let applied peer/applied)
+      (let late (world_peer/transport peer))
+      (let socket ((late .get "open") "ws://late"))
+      ((late .get "send") socket ($json/stringify {^v 1 ^kind "hello" ^life_id peer/life_id ^credential credential}))
+      (var answer nil)
+      (while (== answer nil)
+        (let text ((late .get "receive") socket))
+        (if_yes (== text nil) (break))
+        (let message ($json/parse text))
+        (if_yes (== message/kind "ready")
+          (let stored (op host original/operation_id))
+          ((late .get "send") socket ($json/stringify {^v 1 ^kind "command" ^world_id peer/world_id
+            ^history_id peer/history_id ^control_generation message/control_generation
+            ^operation_id original/operation_id ^operation stored/operation ^contract_version 1
+            ^rules_revision peer/rules_revision ^input stored/input ^preconditions []})))
+        (if_yes (== message/kind "receipt") (set answer message)))
+      (assert_equal answer/admission "cancelled")
+      (assert_equal peer/applied applied)
+      (assert_equal ((world_peer/commands peer ^operation "test.echo") .size) 1)
+      ensure (close host)))
+
+  (it "observes a labeled last-known view without waiting, describes the interfaces, and refreshes on request" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let seen (group host (fn [tx] (apply host tx "observe" {^area "local"}))))
+      (assert_equal seen/freshness "synchronized")
+      (assert_equal seen/self/entity_id peer/entity_id)
+      (let described (group host (fn [tx] (apply host tx "world_describe" {}))))
+      (let first_operation described/catalogue/0)
+      (assert_equal first_operation/operation "movement.walk_to")
+      (assert_equal ((described/places .get "garden") .get "cell") {^x 28 ^z 7})
+      # Someone else picks the can up without this Life hearing of it; a
+      # refresh asks for the committed view instead of guessing.
+      (peer .put "can_holder" "avatar-someone")
+      (group host (fn [tx] (apply host tx "world_refresh" {})))
+      (wait_for host (fn [] (do
+        (let view (p/get host/store "world_view"))
+        (var holder nil)
+        (for e in view/entities (if_yes (== e/id "object-watering-can") (set holder e/held_by)))
+        (== holder "avatar-someone"))) "refreshed view")
+      # Disconnected, the same call answers at once and says it is old news.
+      (peer .put "down" true)
+      (world_peer/disconnect peer)
+      (wait_for host (fn [] (!= (phase host) "ready")) "disconnected")
+      (let stale (group host (fn [tx] (apply host tx "observe" {^area "local"}))))
+      (assert_equal stale/freshness "last_observed")
+      ensure (close host))))

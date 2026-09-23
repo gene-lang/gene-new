@@ -1,0 +1,79 @@
+(import $test [describe it assert_equal])
+(import * : runtime ^from "../src/host/runtime")
+(import * : p ^from "../src/host/persistence")
+(import * : delivery_state ^from "../src/body/delivery")
+
+# One conformance table for the transport-independent delivery kernel
+# (docs/proposals/world.md §8.6, §10.8), applied to both record shapes that use
+# it: an HTTP mailbox delivery and a networked world request. The adapters'
+# own specs (connector_*_spec, world_network_spec) exercise each over its real
+# transport.
+
+(let shapes
+  [{^label "HTTP delivery" ^prefix "delivery/"
+    ^record {^id "d-1" ^destination {^adapter "http" ^connector "mailbox" ^conversation "garden" ^thread "main"}
+             ^text "hello" ^status "pending" ^attempts 0 ^needs_reconciliation false ^owner nil}}
+   {^label "world request" ^prefix "world_op/"
+    ^record {^id "op-1" ^operation "test.echo" ^contract_version 1 ^input {^n 1} ^preconditions []
+             ^status "pending" ^attempts 0 ^needs_reconciliation false ^owner nil}}])
+
+(fn with_store [callback]
+  (let name (p/id "delivery"))
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)))
+  (try (callback host) ensure (runtime/close_life host)))
+
+(fn stored [host, shape] (p/get host/store $"${shape/prefix}${shape/record/id}"))
+(fn status [host, shape] (let record (stored host shape)) record/status)
+(fn stored_field [host, shape, name] (let record (stored host shape)) (record .get name))
+
+(describe "Life delivery kernel conformance"
+  (it "moves both record shapes through attempt, uncertainty, absence and restart identically" []
+    (for shape in shapes
+      (with_store (fn [host]
+        (let key $"${shape/prefix}${shape/record/id}")
+        (p/put host/store key shape/record)
+        (let tx (p/begin host/store "attempt"))
+        (delivery_state/begin_attempt tx key (p/tx_get tx key))
+        (p/commit tx)
+        (assert_equal (status host shape) "attempting")
+        (assert_equal (stored_field host shape "attempts") 1)
+        # A restart leaves an unconfirmed attempt uncertain, never pending.
+        (let restored (stored host shape))
+        (assert_equal (delivery_state/restore restored) true)
+        (assert_equal restored/status "needs_reconciliation")
+        (assert_equal (delivery_state/restore {^status "delivered"}) false)
+        (delivery_state/uncertain host/store key (stored host shape) "lost reply")
+        (assert_equal (status host shape) "needs_reconciliation")
+        (assert_equal (stored_field host shape "last_error") "lost reply")
+        # Authoritative absence: back to the send lane with the same identity.
+        (let absent (p/begin host/store "absent"))
+        (delivery_state/absent absent key (p/tx_get absent key))
+        (p/commit absent)
+        (assert_equal (status host shape) "pending")
+        (assert_equal (stored_field host shape "id") shape/record/id)
+        (assert_equal (stored_field host shape "attempts") 1)
+        # …unless its owner withdrew it meanwhile.
+        (let withdrawn (stored host shape))
+        (withdrawn .put "cancellation_requested" true)
+        (withdrawn .put "status" "needs_reconciliation")
+        (p/put host/store key withdrawn)
+        (let second (p/begin host/store "absent"))
+        (delivery_state/absent second key (p/tx_get second key))
+        (p/commit second)
+        (assert_equal (status host shape) "cancelled")))))
+
+  (it "alternates the send and receipt lanes and serves each lane's least recently attempted record" []
+    (let records [{^id "a" ^status "pending"} {^id "b" ^status "needs_reconciliation"}
+                  {^id "c" ^status "pending"} {^id "d" ^status "needs_reconciliation"}])
+    (let attempted {^a 5 ^b 9 ^c 2 ^d 3})
+    (let at (fn [record] (attempted .get record/id)))
+    (let first (delivery_state/next_item records at nil))
+    (assert_equal [first/record/id first/lane] ["d" "receipt"])
+    (let second (delivery_state/next_item records at "receipt"))
+    (assert_equal [second/record/id second/lane] ["c" "send"])
+    (let third (delivery_state/next_item records at "send"))
+    (assert_equal [third/record/id third/lane] ["d" "receipt"])
+    # Paused sending still reconciles; an empty lane leaves the other alone.
+    (let paused (delivery_state/next_item records at "receipt" ^sending false))
+    (assert_equal [paused/record/id paused/lane] ["d" "receipt"])
+    (assert_equal (delivery_state/next_item [{^id "x" ^status "delivered"}] at nil) nil)))

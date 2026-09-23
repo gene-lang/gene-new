@@ -1,0 +1,18 @@
+(mod websocket_subprotocol)
+(import [load connect_protocol send receive WebSocketError] ^from "../src/websocket.gene")
+
+(fn main [args] : Nil
+  (var argv args/.body)
+  ($assert (== argv/.size 3) "subprotocol.gene <native library> <selecting URL> <ignoring URL>")
+  (var native (load argv/0))
+  (var socket (connect_protocol native argv/1 "gene.world.v1"))
+  ($C/close socket)
+  ($println "PASS — the server selected the offered subprotocol")
+  (var refused (try (do (connect_protocol native argv/2 "gene.world.v1") "admitted")
+                 catch WebSocketError $err/message))
+  ($assert ($str/contains? refused "did not select") $"an unselected subprotocol must fail the connect: ${refused}")
+  ($println "PASS — a server that ignores the offer is refused")
+  (var invalid (try (do (connect_protocol native argv/1 "gene.world.v1\r\nX-Injected: 1") "admitted")
+                 catch WebSocketError $err/message))
+  ($assert ($str/contains? invalid "subprotocol is") $"an invalid subprotocol name must be refused: ${invalid}")
+  ($println "PASS — an invalid subprotocol name is refused before connecting"))

@@ -114,6 +114,30 @@ if [ "$FAST" -eq 0 ]; then
   CLIENT_SMOKE_PORT=${CLIENT_SMOKE_PORT:-8098} \
     node tools/client_smoke.mjs >"$WORK/client_smoke.log" 2>&1
   if [ $? -eq 0 ]; then ok "client_smoke: $(grep -c '^  ok' "$WORK/client_smoke.log") checks"; else fail "client_smoke" "$WORK/client_smoke.log"; fi
+
+  # Milestone 2: networked Lives. The Life side's own specs (against an
+  # in-memory world), then real Life processes attached to a real world.
+  # Both need the genex/websocket native library; its absence is a failure
+  # with the build command, never a silent skip (world.md F11).
+  echo "networked Lives (Milestone 2)"
+  REPO=$(cd ../.. && pwd)
+  LIB="$REPO/src/genex/websocket/build/libgene_websocket.dylib"
+  [ -f "$LIB" ] || LIB="$REPO/src/genex/websocket/build/libgene_websocket.so"
+  if [ ! -f "$LIB" ]; then
+    fail "genex/websocket native library" "build it: python3 src/genex/websocket/tools/build.py --pkg-config-path <curl with WebSocket>/lib/pkgconfig"
+  else
+    (cd "$REPO" && "$GENE_EXE" test --package-root examples/life \
+      examples/life/tests/world_network_spec.gene examples/life/tests/delivery_spec.gene) \
+      >"$WORK/life_network_specs.log" 2>&1
+    if [ $? -eq 0 ] && grep -q ' 0 failed, 0 errors' "$WORK/life_network_specs.log"; then
+      ok "Life network specs: $(grep -o '^[0-9]* passed' "$WORK/life_network_specs.log")"
+    else
+      fail "Life network specs" "$WORK/life_network_specs.log"
+    fi
+    LIFE_SMOKE_PORT=${LIFE_SMOKE_PORT:-8099} \
+      node tools/life_smoke.mjs >"$WORK/life_smoke.log" 2>&1
+    if [ $? -eq 0 ]; then ok "life_smoke: $(grep -c '^  ok' "$WORK/life_smoke.log") checks"; else fail "life_smoke" "$WORK/life_smoke.log"; fi
+  fi
 fi
 
 echo

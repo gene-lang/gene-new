@@ -21,7 +21,10 @@ python3 src/genex/websocket/tools/build.py --pkg-config-path "$(brew --prefix cu
 
 `nimble genex` builds all genex libraries and locates Homebrew curl automatically.
 
-`src/websocket.gene` exposes `load`, `connect`, `send`, and `receive`.
+`src/websocket.gene` exposes `load`, `connect`, `connect_protocol`, `send`, and
+`receive`. `connect_protocol` offers one subprotocol (`Sec-WebSocket-Protocol`)
+and fails unless the server selects exactly that protocol; a name outside
+letters, digits, `.`, `_` and `-` is refused before connecting.
 `receive` returns nil when no complete message is ready; an empty U8 buffer
 represents an actual empty message. The native binding's `kind` reports text
 (1) or binary (2). `send` queues bytes; polling `receive` also advances writes.
@@ -34,6 +37,7 @@ trusted after admission through `aot/load`; this is not a native-code sandbox.
 
 The independent test peer checks binary/NUL preservation, client masking,
 partial frames, fragmentation around a PING, automatic PONG, empty messages and
-the queued send round trip. The adapter follows libcurl's
+the queued send round trip, plus subprotocol selection, a server that ignores
+the offer, and an invalid protocol name. The adapter follows libcurl's
 [receive](https://curl.se/libcurl/c/curl_ws_recv.html) and
 [send](https://curl.se/libcurl/c/curl_ws_send.html) contracts.

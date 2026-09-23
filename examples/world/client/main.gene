@@ -111,6 +111,8 @@
   (var el_notice ($dom/element "notice"))
   (var el_history ($dom/element "history_list"))
   (var panel_takeover ($dom/element "takeover_panel"))
+  (var chat_form ($dom/element "chat_form"))
+  (var chat_text ($dom/element "chat_text"))
   (var btn_take_over ($dom/element "take_over"))
   (var btn_observe ($dom/element "observe"))
 
@@ -518,7 +520,13 @@
     (set pending/%op_id nil)
     (if_yes (== admission_waiting op_id) (set admission_waiting ""))
     (var reason (if ($absent? r/reason) "" $" ($(text_of r/reason))"))
-    (add_history $"${label}: $(text_of r/admission)${reason}$(if (flag r/retained) \" — already recorded\" \"\")")
+    # Accepted speech shows once, as the message the world delivered (its
+    # echo event); the receipt only confirms it (§7.3, H11).
+    (var spoken (&& (== (text_of r/operation) "conversation.say") (== (text_of r/admission) "accepted")))
+    (if_yes (! spoken)
+      (add_history $"${label}: $(text_of r/admission)${reason}$(if (flag r/retained) \" — already recorded\" \"\")"))
+    (if_yes (&& (== (text_of r/operation) "conversation.say") (! spoken))
+      (notice $"The world did not accept your words${reason}."))
     (if_yes (&& (== (text_of r/operation) "movement.walk_to") (== (text_of r/admission) "accepted"))
       (set action_id r/action_id)
       (set action_status (if ($absent? r/action_status) "running" (text_of r/action_status)))
@@ -565,6 +573,12 @@
         (add_history $"You picked up $(label_of p/object_id)."))
       (if_yes (!= (text_of p/by_entity_id) entity_id)
         (add_history $"$(label_of p/by_entity_id) picked up $(label_of p/object_id).")))
+    # Speech is data: shown as text, never run or rendered as markup (§7.4, H16).
+    (if_yes (== type "conversation.said")
+      (var who (if (== (text_of p/speaker_entity_id) entity_id) "You"
+                 (if (== (text_of p/speaker_kind) "life") $"$(text_of p/speaker_name) (Life)"
+                   (text_of p/speaker_name))))
+      (add_history $"${who}: $(text_of p/text)"))
     (if_yes (== type "object.put_down")
       (var e (do (var key_462 (text_of p/object_id)) ents/%key_462))
       (if_yes (! ($absent? e))
@@ -676,6 +690,12 @@
   ($dom/add_event_listener btn_pick "click" (fn [ev : Any] : Void
     (if_yes (!= selected "")
       (command "object.pick_up" {^object_id selected} $"Pick up $(label_of selected)"))))
+  ($dom/add_event_listener chat_form "submit" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)
+    (var words : Str ($str/trim ($dom/input_value chat_text)))
+    (if_yes (!= words "")
+      (command "conversation.say" {^text words} $"You: ${words}")
+      ($dom/set_input_value chat_text ""))))
   ($dom/add_event_listener btn_put "click" (fn [ev : Any] : Void
     (if_yes (!= selected "")
       (command "object.put_down" {^object_id selected} $"Put down $(label_of selected)"))))

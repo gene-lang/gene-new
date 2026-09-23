@@ -4134,14 +4134,30 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
 
 proc biFsWriteTextAtomicSync(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
+  ## (fs/write_text_atomic path text ^owner_only false). `^owner_only true`
+  ## restricts the staged file to its owner before any content is written, so
+  ## a secret is never readable by others, even briefly.
   if args.len != 2:
     raise newException(GeneError,
       "fs/write_text_atomic expects (path, text)")
   let scope = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_text_atomic path", args[0])
   requireStr("fs/write_text_atomic text", args[1])
+  var ownerOnly = false
+  if call != nil:
+    for i, name in call[].namedNames:
+      let value = call[].namedValues[i]
+      case name
+      of "owner_only":
+        if value.kind != vkBool:
+          raise newException(GeneError,
+            "fs/write_text_atomic ^owner_only expects a Bool")
+        ownerOnly = value.boolVal
+      else:
+        raise newException(GeneError,
+          "fs/write_text_atomic got unexpected named argument: " & name)
   try:
-    fsWriteAtomic(args[0].strVal, args[1].strVal)
+    fsWriteAtomic(args[0].strVal, args[1].strVal, ownerOnly = ownerOnly)
   except CatchableError as e:
     raiseFilesystemOperationError("fs/write_text_atomic", e, scope)
   NIL
@@ -4391,8 +4407,10 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
 
 proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (json/parse text ^strict false ^max_depth 200). `^strict true` rejects
-  ## duplicate object keys; `^max_depth` lowers the nesting limit for input
-  ## from an untrusted peer.
+  ## duplicate object keys and text that is not valid UTF-8 (RFC 8259 §8.1),
+  ## so bytes from a binary WebSocket frame and a text frame meet the same
+  ## decoder; `^max_depth` lowers the nesting limit for input from an
+  ## untrusted peer.
   requireOne("json/parse", args)
   requireStr("json/parse", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -4415,6 +4433,11 @@ proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       else:
         raise newException(GeneError,
           "json/parse got unexpected named argument: " & name)
+  if p.strict:
+    let bad = unicode.validateUtf8(p.input)
+    if bad >= 0:
+      p.pos = bad
+      raiseJsonError(p, "text is not valid UTF-8")
   result = parseJsonValue(p, 0)
   jsonSkipWs(p)
   if p.pos != p.input.len:
@@ -8894,8 +8917,7 @@ proc registerStdlibNamespaces(root: Scope) =
     fsNs.nsScope.define("write_text",
       builtinNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text_atomic",
-      builtinNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync,
-                      acceptsNamed = false))
+      builtinNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync))
     fsNs.nsScope.define("write_bytes",
       builtinNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("read_bytes",

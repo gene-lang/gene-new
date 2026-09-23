@@ -118,10 +118,67 @@ See [docs/routines.md](docs/routines.md) for registration, recovery, and the opt
 energy/rest controller. Its attention policy defers ordinary observations while
 sleeping; the host still receives messages and responds to operator controls.
 
-Run the Gene tests:
+## A shared world (networked profile)
+
+A Life can instead inhabit a shared world run by another process — the
+Commons (`examples/world`, [docs/proposals/world.md](../../docs/proposals/world.md)).
+The profile is chosen once, at creation; the local world stays the default and
+is unchanged.
 
 ```sh
-bin/gene test examples/life/tests/
+bin/gene run examples/life/src/main.gene create examples/life/tmp/aster --network
+bin/gene run examples/life/src/main.gene bind examples/life/tmp/aster ws://127.0.0.1:8096/world/v1 CREDENTIAL_FILE
+bin/gene run examples/life/src/main.gene run examples/life/tmp/aster
+bin/gene run examples/life/src/main.gene command examples/life/tmp/aster '{"op":"world"}'
+```
+
+The world's operator issues the credential for this Life's id
+(`gene run world life add LIFE_ID NAME --credential-out FILE`); `bind` copies
+it into an owner-only `world.credential` beside the store, never into a record.
+The connection uses `genex/websocket` (libcurl ≥ 8.11 with WebSocket support);
+a missing native library is a clear, slowly retried failure.
+
+`body/world` keeps its names — `observe`, `start_walk`, `take` — and adds
+`pick_up`, `put_down`, `say`, a generic `operation`, `result`, `on_result`,
+`cancel`, `describe` and `refresh`. None of them waits for the world. A call
+that changes the world commits one request to the Life's own outbox and
+returns its reference; the body sends it after publication and records what
+the world reports. `observe` answers the last synchronized view at once, and
+says whether it is current or last observed. Walk-then-act is a data
+continuation, committed with the request:
+
+```gene
+(let arrival (code .save "pick-up-after-walk"
+  "(fn [api input] (if (== input/result/status \"completed\") (api/body/world .pick_up \"object-watering-can\") nil))"))
+(store .commit (fn [tx]
+  (let walk (body/world .start_walk "garden" ^tx tx))
+  (body/world .on_result walk arrival {} ^tx tx)
+  walk/operation_id))
+```
+
+The one standing dispatcher makes it ready when the walk's outcome is terminal
+— whichever of the receipt, a status query or the event stream reports it
+first — and the ordinary executor runs it once. People's speech arrives as a
+`world` conversation; `body/chat .send` answers through the same outbox.
+Networked Lives use the incremental file store (below). The fake brain, on this
+profile, walks to the garden, says so on arrival, and acknowledges a person
+who speaks to it.
+
+## Storage
+
+A Life's store is one SQLite file behind one interface, with its backend
+fixed at creation: `life.sqlite` republishes a whole image per commit (the
+local default), `life.db` is an incremental WAL file written page by page
+(`$db/sqlite/open_file`, synchronous FULL). Networked Lives use the latter;
+`LIFE_STORAGE=file` makes it the default for new local Lives too.
+
+## Tests
+
+Run the Gene tests from the repository root. The Life package declares its
+`genex/websocket` dependency, so name the package root:
+
+```sh
+bin/gene test --package-root examples/life examples/life/tests/
 ```
 
 The tests execute real Gene subprocesses, including fixtures killed with

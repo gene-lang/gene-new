@@ -10,6 +10,12 @@
   (try (native/connect url 5000)
     catch Error (fail (new WebSocketError (native/last_error)))))
 
+# Offer one subprotocol and require the server to select it (RFC 6455 §4.1).
+# A peer that ignores the offer fails the connect instead of being admitted.
+(fn connect_protocol [native url : Str protocol : Str ^timeout_ms timeout_ms : Int = 5000]
+  (try (native/connect_protocol url protocol timeout_ms)
+    catch Error (fail (new WebSocketError (native/last_error)))))
+
 (fn send [native socket data : (Buffer U8)] : Nil
   (var bytes ($buffer C/UInt8 data/.to_list))
   (if (< (native/send socket bytes) 0)

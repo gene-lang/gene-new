@@ -7,6 +7,8 @@
 (import * : code ^from "./code/code")
 (import * : budget ^from "./host/budget")
 (import * : connector ^from "./body/connector")
+(import * : world_network ^from "./body/world_network")
+(import * : world_records ^from "./body/world_records")
 
 (fn inspect [host, prefix = ""]
   (let result {})
@@ -46,7 +48,9 @@
     (return value))
   (if_yes (== op "pause") (runtime/pause host) (return "paused"))
   (if_yes (== op "resume") (runtime/resume host) (return "running"))
-  (if_yes (== op "tick") (body/tick host (?? request/ms 1000)) (return (p/get host/store "world")))
+  (if_yes (== op "tick") (body/tick host (?? request/ms 1000))
+    (return (p/get host/store (if (world_records/network? host) "world_view" "world"))))
+  (if (== op "world") (return (world_network/status host)))
   (if (== op "decision")
     (then
       ((host/decisions .get) .push (brain/response request/note request/program))
@@ -120,16 +124,29 @@
   (let args arguments/.body)
   (if_yes (< args/.size 2)
     ($println "Usage: gene run examples/life/src/main.gene create|run|send|command|inspect HOME [TEXT|JSON|PREFIX]")
+    ($println "       gene run examples/life/src/main.gene create HOME --network")
+    ($println "       gene run examples/life/src/main.gene bind HOME ENDPOINT CREDENTIAL_FILE")
     (return 2))
   (let action args/0)
   (let home args/1)
   (try
     (if (== action "create")
       (then
-        (let host (runtime/open_life home ^create true))
+        (let network (== (?? args/2 "") "--network"))
+        (let host (runtime/open_life home ^create true ^profile (if network "network" "local")))
         (let meta (p/get host/store "meta"))
         (runtime/close_life host)
-        ($println ($json/stringify {^id meta/id ^home home}))))
+        ($println ($json/stringify {^id meta/id ^home home ^world_profile meta/world_profile}))))
+    (if (== action "bind")
+      # The operator issued CREDENTIAL_FILE with `gene run world life add` for
+      # this Life's id; binding copies it beside the store, owner-only.
+      (then
+        (if (< args/.size 4) (p/problem "bind HOME ENDPOINT CREDENTIAL_FILE"))
+        (let host (runtime/open_life home))
+        (try
+          (let binding (world_network/bind host args/2 ($fs/read_text args/3)))
+          ($println ($json/stringify {^life_id binding/life_id ^endpoint binding/endpoint}))
+          ensure (runtime/close_life host))))
     (if (== action "run") (run_body home (== (?? args/2 "") "--manual-clock")))
     (if (== action "send") (send_command home {^op "chat" ^text args/2}))
     (if (== action "command") (send_command home ($json/parse args/2)))

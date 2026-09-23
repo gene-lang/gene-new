@@ -3,7 +3,14 @@
 (import * : code ^from "../code/code")
 
 (fn now [host, tx, clock]
-  (if_yes (== clock "simulation") (let world (p/tx_get tx "world")) (return world/sim_ms))
+  (if_yes (== clock "simulation")
+    # A shared world's clock is the committed simulation time this Life last
+    # observed (docs/proposals/world.md §6.1); the local world keeps its own.
+    (if_yes (== host/world_profile "network")
+      (let view (p/tx_get tx "world_view"))
+      (return (?? view/committed_sim_time_ms 0)))
+    (let world (p/tx_get tx "world"))
+    (return world/sim_ms))
   (host/clock))
 (fn valid_owner [tx, owner]
   (if ($absent? owner) true (== (p/tx_get tx $"owner/${owner/id}") owner)))

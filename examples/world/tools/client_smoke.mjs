@@ -13,7 +13,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { texts, fire, tick, created } from "./dom_stub.mjs";
+import { texts, values, fire, tick, created } from "./dom_stub.mjs";
 
 const PKG = new URL("../", import.meta.url).pathname;
 const GENE = process.env.GENE ?? new URL("../../../bin/gene", import.meta.url).pathname;
@@ -109,6 +109,17 @@ try {
       "live positions ahead of the checkpoint are shown as provisional");
   const arrived = await until(() => created.some((el) => (el.textContent ?? "").startsWith("Arrived")), 30000);
   say(arrived, "arrival comes back from the world and reaches the history");
+
+  // Speech: typed text becomes a `conversation.say`; the message appears once
+  // the world delivers it back, as inert text (§7.3, H11, H16).
+  const words = "<b>hello</b> from the page";
+  values.set("chat_text", words);
+  fire("chat_form", "submit");
+  say(values.get("chat_text") === "", "the chat box clears once the words are sent");
+  say(await until(() => created.some((el) => el.textContent === `You: ${words}`), 10000),
+      "the delivered message comes back from the world and shows as plain text");
+  say(!created.some((el) => /^You: .*: accepted/.test(el.textContent ?? "")),
+      "accepted speech appears once, as the message, not also as a receipt line");
 
   // A crash mid-walk: the page reconnects by itself, and tells the player the
   // unsaved part of the walk was not kept (§6.1, §12.7).
