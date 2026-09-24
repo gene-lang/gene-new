@@ -98,6 +98,8 @@ when compileOption("threads") and not defined(geneWasm) and
       bodyRecord: OwnedHttpBodyRecord
       uploadReader, uploadReadTask: Value
       uploadBorrowKey: uint64
+      uploadLifecycle: IoLifecycle # exclusive read borrow, when the reader has one
+      uploadOwner: uint64
       uploadError: string
 
     OwnedHttpBodyRecord = ref object
@@ -118,6 +120,7 @@ when compileOption("threads") and not defined(geneWasm) and
   var ownedHttpClients = initTable[uint64, OwnedHttpClientRecord]()
   var ownedHttpBodies = initTable[uint64, OwnedHttpBodyRecord]()
   var ownedUploadBorrows = initHashSet[uint64]()
+  var nextOwnedUploadOwner = 0'u64
   var ownedHttpPending: seq[OwnedHttpPending]
   const OwnedHttpApplicationPendingLimit = 4096
   initLock(ownedMultiLock)
@@ -747,6 +750,9 @@ when compileOption("threads") and not defined(geneWasm) and
       withLock ownedMultiLock:
         ownedUploadBorrows.excl(pending.uploadBorrowKey)
       pending.uploadBorrowKey = 0
+    if pending.uploadLifecycle != nil:
+      pending.uploadLifecycle.releaseIoRead(pending.uploadOwner)
+      pending.uploadLifecycle = nil
     client.application.ioBudget.releaseIoBudgetBytes(pending.budgetReserved)
     if client.activeCount > 0: dec client.activeCount
     if pending.serviceQueued:
@@ -865,8 +871,10 @@ when compileOption("threads") and not defined(geneWasm) and
       let message = ioScope.vars["AsyncReader"].protocolMessages["read"]
       let reader = resolveProtocolMessage(scope, message,
                                           pending.uploadReader)
-      let readTask = applyCall(reader,
-        [pending.uploadReader, newInt(requested)], NamedArgs(), scope)
+      var readTask: Value
+      withIoReadOwner(pending.uploadOwner):
+        readTask = applyCall(reader,
+          [pending.uploadReader, newInt(requested)], NamedArgs(), scope)
       if readTask.kind != vkTask:
         pending.failOwnedUpload("upload reader did not return a Task")
       else:
@@ -1726,12 +1734,32 @@ when compileOption("threads") and not defined(geneWasm) and
     let reserveBytes = queueBytes + uploadQueueBytes + body.len +
       client.caData.len
     let origin = ownedHttpOrigin(url, scope)
+    var uploadLifecycle: IoLifecycle
+    var uploadOwner = 0'u64
     if uploadReader.kind != vkNil:
       withLock ownedMultiLock:
         if uploadReader.bits in ownedUploadBorrows:
           raiseIoTestingError(scope, "IoBusy", "http_client/upload",
             client.id, "AsyncReader already belongs to an owned upload")
+      # The upload takes exclusive read use for its whole life, so a direct
+      # read by the caller cannot take bytes the request body needs.
+      uploadLifecycle = ioFileReadLifecycle(uploadReader)
+      if uploadLifecycle == nil:
+        uploadLifecycle = ioTestingReadLifecycle(uploadReader)
+      if uploadLifecycle != nil:
+        inc nextOwnedUploadOwner
+        uploadOwner = nextOwnedUploadOwner
+        case uploadLifecycle.borrowIoRead(uploadOwner)
+        of iaNone: discard
+        of iaClosed:
+          raiseIoTestingError(scope, "IoClosed", "http_client/upload",
+            client.id, "AsyncReader is closing or closed")
+        else:
+          raiseIoTestingError(scope, "IoBusy", "http_client/upload",
+            client.id, "AsyncReader has a read in flight or another borrower")
     if not client.application.ioBudget.reserveIoBudgetBytes(reserveBytes):
+      if uploadLifecycle != nil:
+        uploadLifecycle.releaseIoRead(uploadOwner)
       raiseIoTestingError(scope, "IoBackpressure", "http_client/request",
         client.id, "Application I/O byte budget is full")
     let operation = nativeNewIoOperation(scope)
@@ -1783,7 +1811,8 @@ when compileOption("threads") and not defined(geneWasm) and
       scope: scope, budgetReserved: reserveBytes, origin: origin,
       streaming: streaming, uploadReader: uploadReader,
       uploadBorrowKey: (if uploadReader.kind != vkNil:
-        uploadReader.bits else: 0'u64))
+        uploadReader.bits else: 0'u64),
+      uploadLifecycle: uploadLifecycle, uploadOwner: uploadOwner)
     beginExternalNativeOp()
     pending.nativeActive = true
     inc client.activeCount

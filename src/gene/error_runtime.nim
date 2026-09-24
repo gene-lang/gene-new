@@ -2,15 +2,17 @@
 ## retained protocol dispatch, and reporting use the ordinary call machinery.
 
 proc `=destroy`(lease: var StrictErrorLeaseData) =
-  for registration in lease.registrations:
-    # The application keeps inactive index entries until its next sweep. Clear
-    # the entire record so syntax, error rows, and native metadata release their
-    # compiler/value graphs too. Detach before any nested destructor can run.
-    var retired = move registration[]
-    reset(retired)
-  `=destroy`(lease.registrations)
-  `=destroy`(lease.deferred)
-  `=destroy`(lease.keep)
+  withoutPendingException:
+    for registration in lease.registrations:
+      # The application keeps inactive index entries until its next sweep.
+      # Clear the entire record so syntax, error rows, and native metadata
+      # release their compiler/value graphs too. Detach before any nested
+      # destructor can run.
+      var retired = move registration[]
+      reset(retired)
+    `=destroy`(lease.registrations)
+    `=destroy`(lease.deferred)
+    `=destroy`(lease.keep)
 
 proc strictTargetParts(target: Value): seq[string] =
   if target.kind == vkSymbol:

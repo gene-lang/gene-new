@@ -1,0 +1,78 @@
+(fn checkpoint [phase count]
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^workload "selection" ^phase phase ^iterations count
+     ^rc_stats stats/rc_stats? ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes
+     ^native_roots stats/native_roots
+     ^io_root_tasks stats/io_root_tasks
+     ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^active_impl_assemblies stats/active_impl_assemblies
+     ^canonical_impls stats/canonical_impls
+     ^impl_scope_index_entries stats/impl_scope_index_entries
+     ^impl_scope_index_scopes stats/impl_scope_index_scopes
+     ^base_scopes stats/base_scopes})))
+
+(fn main [args] : Int
+  (let count ($parse/parse_int (?? args/0 "10000")))
+  # The task parks between the two impls of one declaration unit, so its
+  # selection is still being assembled when it is cancelled.
+  (let parked_form ($read_one """
+    (do
+      (type Parked ^props {^text Str})
+      (impl ValueEq for Parked
+        (message equal [other : Parked] : Bool (== self/text other/text)))
+      (started .send true)
+      (blocker .recv)
+      (impl Hash for Parked (message hash [] : Int 1))
+      Parked)
+  """))
+  # A compile error from a nested eval, and a runtime failure, each after the
+  # unit's Type and first impl are prepared but before its second impl.
+  (let nested_compile_form ($read_one """
+    (do
+      (type Partial ^props {^text Str})
+      (impl ValueEq for Partial
+        (message equal [other : Partial] : Bool (== self/text other/text)))
+      (eval (quote (var)) ^in (env))
+      (impl Hash for Partial (message hash [] : Int 1))
+      Partial)
+  """))
+  (let runtime_between_form ($read_one """
+    (do
+      (type Between ^props {^text Str})
+      (impl ValueEq for Between
+        (message equal [other : Between] : Bool (== self/text other/text)))
+      (fail (AssertionError ^message "between impls"))
+      (impl Hash for Between (message hash [] : Int 1))
+      Between)
+  """))
+  (let complete_form ($read_one """
+    (do
+      (type Whole ^props {^text Str})
+      (impl ValueEq for Whole
+        (message equal [other : Whole] : Bool (== self/text other/text)))
+      (== (Whole ^text "a") (Whole ^text "a")))
+  """))
+  (fn one []
+    (scope
+      (let started ($channel ^capacity 1))
+      (let blocker ($channel ^capacity 1))
+      (let task (spawn ^lane root (eval parked_form ^in (env))))
+      (started .recv)
+      (task .cancel))
+    ($assert (try (eval nested_compile_form ^in (env)) false
+               catch CompileError true))
+    ($assert (try (eval runtime_between_form ^in (env)) false
+               catch Error true))
+    # The next eval still assembles and publishes a complete selection.
+    ($assert (eval complete_form ^in (env))))
+  (repeat 100 (one))
+  (checkpoint "warm" 100)
+  (for batch in [1 100 1000 count]
+    ($println ($json/stringify
+      {^workload "selection" ^phase "starting" ^iterations batch}))
+    (repeat batch (one))
+    (checkpoint "after" batch))
+  0)

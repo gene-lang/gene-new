@@ -1,0 +1,55 @@
+(import $net/http [listen serve stop status text])
+(import $net/http_client [request])
+
+(var server nil)
+
+(fn handle [req]
+  (if (== req/path "/json")
+    (return (text 200 ($json/stringify {^path req/path ^items [1 2 3]}))))
+  (if (== req/path "/echo")
+    (return (text 200 req/body)))
+  (text 404 "not found"))
+
+(fn checkpoint [phase count]
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  (let serving (status server))
+  ($println ($json/stringify
+    {^workload "service" ^phase phase ^iterations count
+     ^rc_stats stats/rc_stats? ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes
+     ^native_roots stats/native_roots
+     ^io_root_tasks stats/io_root_tasks
+     ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^io_open_resources stats/io_open_resources
+     ^http_client_open_resources stats/http_client_open_resources
+     ^http_client_pending_requests stats/http_client_pending_requests
+     ^in_flight_requests serving/in_flight_requests})))
+
+(fn main [args] : Int
+  (let port ($parse/parse_int args/0))
+  (let count ($parse/parse_int (?? args/1 "10000")))
+  (let base $"http://127.0.0.1:${port}")
+  (set server (listen ^host "127.0.0.1" ^port port))
+  # One process serves and drives: every checkpoint runs between completed
+  # request pairs, so any per-request retention shows as a slope.
+  (fn one []
+    (let listed (await (request ^url $"${base}/json")))
+    ($assert (== listed/status 200))
+    (let echoed (await (request ^method "POST" ^url $"${base}/echo"
+                                ^body "payload")))
+    ($assert (== echoed/body "payload")))
+  (let driver (spawn ^lane root
+    (do
+      (repeat 100 (one))
+      (checkpoint "warm" 100)
+      (for batch in [1 100 1000 count]
+        ($println ($json/stringify
+          {^workload "service" ^phase "starting" ^iterations batch}))
+        (repeat batch (one))
+        (checkpoint "after" batch))
+      (stop server)
+      0)))
+  (serve server ^handler handle ^drain_timeout_ms 5000)
+  (await driver)
+  0)

@@ -1,6 +1,6 @@
 # Long-Lived VM Reliability
 
-**Status:** VM-0 lifetime counters/ledger and selected VM-1 repairs are experimental. The nested `try`/`ensure` scope-unwind path now settles noncancelable I/O cleanup leases on error, panic, return, and task cancellation. Built-in protocol implementation values are published for atomic RC before worker lookup, fixing a reproducible concurrent error-admission use-after-free. VM-2 retirement is experimental for one candidate class: released, discarded, and failed-prepare sandbox generation roots. It replaces the earlier scalar-only `this_mod` repair with trial deletion over the pending roots under the module-mutation pause (see VM-2 below). Released scalar and Type/protocol/impl generations, and discarded or failed ones, hold flat managed counts through 10,000 lifetimes, and retained module, function, and instance controls still execute. A related VM-1 repair makes a Value destroyed during Nim exception unwinding complete its release; each failed preparation previously leaked 11–15 managed values. A test-only RC collection safepoint and macOS arm64 VM-3 probes report flat 1/100/1,000/10,000 batches for fixed eval/closure/cell/failure, escaped witness, cancellation, and generation vocabularies. Other mixed-cycle classes, cancellation during selection, sustained-service lifetime, AtomicArc, and Linux qualification remain open. Design baseline `3b2bde9`.
+**Status:** VM-0 lifetime counters/ledger and selected VM-1 repairs are experimental. The nested `try`/`ensure` scope-unwind path now settles noncancelable I/O cleanup leases on error, panic, return, and task cancellation. Built-in protocol implementation values are published for atomic RC before worker lookup, fixing a reproducible concurrent error-admission use-after-free. VM-2 retirement is experimental for one candidate class: released, discarded, and failed-prepare sandbox generation roots. It replaces the earlier scalar-only `this_mod` repair with trial deletion over the pending roots under the module-mutation pause (see VM-2 below). Released scalar and Type/protocol/impl generations, and discarded or failed ones, hold flat managed counts through 10,000 lifetimes, and retained module, function, and instance controls still execute. A related VM-1 repair makes a Value destroyed during Nim exception unwinding complete its release; each failed preparation previously leaked 11–15 managed values. Retirement also models shared `#Ref` tables and fresh or yield-suspended generator Fibers (through a VM-installed adapter). The same unwinding rule now covers other destructors that do real work (`withoutPendingException` in `pending_exception.nim`). A test-only RC collection safepoint and macOS arm64 VM-3 probes report flat 1/100/1,000/10,000 batches for fixed eval/closure/cell/failure, escaped witness, cancellation, partial-selection cancellation and failure, in-process HTTP service, and generation vocabularies. Other mixed-cycle classes, sustained external-load service lifetime, AtomicArc, and Linux qualification remain open. Design baseline `3b2bde9`.
 
 **Stages:** VM-0 (evidence), VM-1 (eval/ownership repairs), VM-2 (cycle coverage), VM-3 (qualification).
 
@@ -22,6 +22,20 @@ The current Nim 2.2 compiler warns that the ref finalizer constructor used for
 that fallback is deprecated; migration to a supported destructor arrangement
 remains a VM-3 toolchain qualification item. ORC and AtomicArc lifetime gates
 pass on the current compiler.
+
+Released-generation retirement reads the Nim 2.2 ORC reference header as its
+count adapter (see VM-2). A first-use probe disables retirement when the
+layout differs, and `nimble leakcheck` then fails its retirement-availability
+and generation cases rather than leaking silently. Re-run `nimble leakcheck`
+and the lifetime profile on every Nim upgrade before trusting retirement.
+
+AtomicArc retirement is a separate qualification task: it needs the worker
+pause plus dedicated thread tests (active worker lanes, shared impl values,
+sanitizer runs) before it can be enabled. Until then AtomicArc builds retain
+released generations. The memory model is pinned in `config.nims` only when
+the command line names none; `nim.cfg` used to pin ORC unconditionally, so a
+`--mm:atomicArc` build also defined `gcOrc` and compiled ORC's header and cycle
+collector into what was reported as AtomicArc.
 
 The current runtime is not a single tracing heap. `types.nim` uses NaN-boxed Values with manual reference counting, weak captured-scope storage/strengthening, Nim-managed scopes, and a conservative trial-deletion path for selected Cell/Env/EventBus object cycles. `runtime/gc_stats` already exposes live-managed and scheduler counters. `docs/development.md` reports remaining mixed cycles and an eval-defined type/method hang. Reproduce each on the selected revision before assigning a cause; these are reported limits, not newly reproduced results.
 

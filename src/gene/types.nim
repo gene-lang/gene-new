@@ -35,6 +35,7 @@
 
 import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
             unicode]
+import ./pending_exception
 
 when not defined(geneWasm):
   import std/re as nre
@@ -201,6 +202,21 @@ proc installResourceReleaseHook*(hook: ResourceReleaseHook) =
   ## native resource node release its runtime record on its final refcount
   ## transition without importing the VM or exposing the id to Gene.
   resourceReleaseHook = hook
+
+type ContinuationEdgesHook* = proc(continuation: RootRef,
+                                   scopes: var seq[pointer],
+                                   values: var seq[uint64]): bool {.nimcall,
+                                                                     raises: [].}
+  ## Appends every owning Scope ref and boxed Value a VM continuation holds, as
+  ## raw pointers and bits, and returns true. Returns false when it holds state
+  ## the adapter does not model; the continuation's edges then stay uncounted.
+
+var continuationEdgesHook: ContinuationEdgesHook
+
+proc installContinuationEdgesHook*(hook: ContinuationEdgesHook) =
+  ## Installed once by the VM, which alone knows a continuation's shape. Used
+  ## by released-generation retirement (VM-2) for suspended generators.
+  continuationEdgesHook = hook
 
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
@@ -2834,9 +2850,18 @@ proc retirementSupported(): bool =
           retirementLayout = 1
   retirementLayout == 1
 
+proc generationRetirementAvailable*(): bool =
+  ## Whether this build reads ORC counts and retires released generations. A
+  ## false result on an ORC build means the Nim header layout changed.
+  retirementSupported()
+
 type
+  RetireNodeKind = enum
+    rnkValue, rnkScope, rnkRefTable, rnkRefEntry
+
   RetireNode = object
-    scope: pointer      # set for a Scope node; `bits` identifies a boxed Value
+    kind: RetireNodeKind
+    address: pointer    # a Scope or `#Ref` table/entry; `bits` for a Value
     bits: uint64
     total: int
     internal: int
@@ -2848,7 +2873,7 @@ type
 
   RetireGraph = object
     nodes: seq[RetireNode]
-    scopeIndex: Table[uint64, int]
+    refIndex: Table[uint64, int]  # Scopes and `#Ref` tables/entries
     valueIndex: Table[uint64, int]
     weakScopes: seq[tuple[source: int, target: uint64]]
     weakValues: seq[tuple[source: int, target: uint64]]
@@ -2886,16 +2911,20 @@ proc valueNode(g: var RetireGraph, bits: uint64): int =
     g.nodes.add RetireNode(bits: bits, total: retireValueTotal(bits))
     g.valueIndex[bits] = result
 
-proc scopeNode(g: var RetireGraph, scope: Scope): int =
-  if scope == nil:
+proc refNode(g: var RetireGraph, address: pointer,
+             kind: RetireNodeKind): int =
+  if address == nil:
     return -1
-  let key = cast[uint64](cast[pointer](scope))
-  result = g.scopeIndex.getOrDefault(key, -1)
+  let key = cast[uint64](address)
+  result = g.refIndex.getOrDefault(key, -1)
   if result < 0:
     result = g.nodes.len
-    g.nodes.add RetireNode(scope: cast[pointer](scope),
-                           total: nimStrongRefs(cast[pointer](scope)))
-    g.scopeIndex[key] = result
+    g.nodes.add RetireNode(kind: kind, address: address,
+                           total: nimStrongRefs(address))
+    g.refIndex[key] = result
+
+proc scopeNode(g: var RetireGraph, scope: Scope): int =
+  g.refNode(cast[pointer](scope), rnkScope)
 
 proc strongEdge(g: var RetireGraph, source, target: int) =
   if target < 0:
@@ -2910,7 +2939,7 @@ proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
   ## `counting` expands an internally owned node: strong edges are counted
   ## and discover their targets. Otherwise only weak edges are collected, for a
   ## live node whose uncounted strong edges already make their targets live.
-  let s {.cursor.} = cast[Scope](g.nodes[idx].scope)
+  let s {.cursor.} = cast[Scope](g.nodes[idx].address)
   when counting:
     g.nodes[idx].expanded = true
   template value(v: Value) =
@@ -2936,7 +2965,10 @@ proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
       value(s.requiredImplTypes[i])
     for i in 0 ..< s.corePendingTypes.len:
       value(s.corePendingTypes[i])
-    # moduleRefs entries are separate refs; their Values stay uncounted.
+    # A module root shares its `#Ref` table with every scope that ran a chunk
+    # declaring refs; the table and its entries are nodes of their own.
+    if s.moduleRefs != nil:
+      g.strongEdge(idx, g.refNode(cast[pointer](s.moduleRefs), rnkRefTable))
     value(s.supervisorEvents)
     value(s.supervisorDeadLetters)
     for i in 0 ..< s.ownedTasks.len:
@@ -2972,6 +3004,17 @@ proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
         value(source.receiver)
     scopeRef(impl.assemblyScope)
     weakScope(impl.weakAssemblyScope)
+
+proc expandRetireModuleRef(g: var RetireGraph, idx: int) =
+  ## `#Ref` tables and entries hold no weak edges, so only counting expands them.
+  g.nodes[idx].expanded = true
+  if g.nodes[idx].kind == rnkRefTable:
+    let table {.cursor.} = cast[ModuleRefTable](g.nodes[idx].address)
+    for entry in table.entries.values:
+      g.strongEdge(idx, g.refNode(cast[pointer](entry), rnkRefEntry))
+  else:
+    let entry {.cursor.} = cast[ModuleRefEntry](g.nodes[idx].address)
+    g.strongEdge(idx, g.valueNode(entry.value.bits))
 
 proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
   let bits = g.nodes[idx].bits
@@ -3062,6 +3105,18 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
       let d {.cursor.} = cast[StreamData](data)
       scopeRef(d.itemScope)
       scopeRef(d.generatorScope)
+      when counting:
+        # A generator's continuation is VM state; count its edges only when the
+        # stream is its sole owner and the VM can enumerate all of them.
+        if d.generatorContinuation != nil and continuationEdgesHook != nil and
+            nimStrongRefs(cast[pointer](d.generatorContinuation)) == 1:
+          var scopes: seq[pointer]
+          var values: seq[uint64]
+          if continuationEdgesHook(d.generatorContinuation, scopes, values):
+            for address in scopes:
+              g.strongEdge(idx, g.scopeNode(cast[Scope](address)))
+            for bits in values:
+              g.strongEdge(idx, g.valueNode(bits))
     of okTask:
       scopeRef(cast[TaskData](data).boundaryScope)
     of okChannel:
@@ -3170,10 +3225,10 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
       let idx = g.ready.pop()
       if g.nodes[idx].expanded:
         continue
-      if g.nodes[idx].scope != nil:
-        g.expandRetireScope(idx, counting = true)
-      else:
-        g.expandRetireValue(idx, counting = true)
+      case g.nodes[idx].kind
+      of rnkScope: g.expandRetireScope(idx, counting = true)
+      of rnkValue: g.expandRetireValue(idx, counting = true)
+      of rnkRefTable, rnkRefEntry: g.expandRetireModuleRef(idx)
     var queue: seq[int]
     for i in 0 ..< g.nodes.len:
       if g.nodes[i].internal > g.nodes[i].total:
@@ -3184,8 +3239,8 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
         queue.add i
     template resolveWeakEdges(fromScope, fromValue: int) =
       for i in fromScope ..< g.weakScopes.len:
-        let target = g.scopeIndex.getOrDefault(g.weakScopes[i].target, -1)
-        if target >= 0:
+        let target = g.refIndex.getOrDefault(g.weakScopes[i].target, -1)
+        if target >= 0 and g.nodes[target].kind == rnkScope:
           g.nodes[g.weakScopes[i].source].edges.add int32(target)
       for i in fromValue ..< g.weakValues.len:
         let target = g.valueIndex.getOrDefault(g.weakValues[i].target, -1)
@@ -3201,10 +3256,10 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
         g.nodes[idx].weakScanned = true
         let fromScope = g.weakScopes.len
         let fromValue = g.weakValues.len
-        if g.nodes[idx].scope != nil:
-          g.expandRetireScope(idx, counting = false)
-        else:
-          g.expandRetireValue(idx, counting = false)
+        case g.nodes[idx].kind
+        of rnkScope: g.expandRetireScope(idx, counting = false)
+        of rnkValue: g.expandRetireValue(idx, counting = false)
+        of rnkRefTable, rnkRefEntry: discard
         resolveWeakEdges(fromScope, fromValue)
       for target in g.nodes[idx].edges:
         if not g.nodes[target].live:
@@ -3212,8 +3267,9 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
           queue.add int(target)
     var doomed: seq[Scope]
     for i in 0 ..< g.nodes.len:
-      if g.nodes[i].scope != nil and g.nodes[i].expanded and not g.nodes[i].live:
-        doomed.add cast[Scope](g.nodes[i].scope)
+      if g.nodes[i].kind == rnkScope and g.nodes[i].expanded and
+          not g.nodes[i].live:
+        doomed.add cast[Scope](g.nodes[i].address)
     if doomed.len == 0:
       return 0
     var kept: seq[Scope]
@@ -3440,17 +3496,15 @@ proc weakenEscapedMapItems(p: ptr GeneMap) =
   else:
     weakenOwnedFunctions(candidates)
 
-when compileOption("exceptions", "goto"):
-  proc nimErrorFlag(): ptr bool {.importc, nodecl, raises: [], gcsafe.}
-
 proc rcRelease(bits: uint64) =
   when compileOption("exceptions", "goto"):
-    # Nim destroys a raising call's partially assigned result temporary before
-    # clearing the pending-exception flag. The error checks after this body's
-    # own calls would then return mid-release, skipping the free or GC_unref and
-    # leaking whatever the value owned. Run the release as if nothing were
-    # pending, then restore the flag.
-    let pending = nimErrorFlag()
+    # Nim can destroy a Value before clearing the pending-exception flag (see
+    # pending_exception.nim). The error checks after this body's own calls
+    # would then return mid-release, skipping the free or GC_unref and leaking
+    # whatever the value owned. Run the release as if nothing were pending,
+    # then restore the flag. Recursion rather than withoutPendingException
+    # keeps the common path to one flag load.
+    let pending = pendingExceptionFlag()
     if unlikely(pending[]):
       pending[] = false
       rcRelease(bits)

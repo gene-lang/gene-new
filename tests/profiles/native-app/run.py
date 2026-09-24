@@ -87,9 +87,10 @@ def load_profile(gene: Path) -> dict:
             raise ValueError(f"missing package or entry for {wid}")
         if wid == "lifetime":
             for field in ("witness_entry", "cancellation_entry",
-                          "generation_entry", "generation_failure_entry",
-                          "retained_entry", "retained_function_entry",
-                          "retained_instance_entry"):
+                          "selection_entry", "service_entry",
+                          "generation_entry",
+                          "generation_failure_entry", "retained_entry",
+                          "retained_function_entry", "retained_instance_entry"):
                 scenario_entry = contained(package, workload.get(field, ""))
                 if not scenario_entry.is_file():
                     raise ValueError(f"lifetime {field} is missing")
@@ -329,6 +330,9 @@ def run_lifetime(workload: dict) -> dict:
         for label, field, scenario_args in (
                 ("witness", "witness_entry", [str(batches[-1])]),
                 ("cancellation", "cancellation_entry", [str(batches[-1])]),
+                ("selection", "selection_entry", [str(batches[-1])]),
+                ("service", "service_entry",
+                 [str(free_loopback_port()), str(batches[-1])]),
                 ("generation", "generation_entry",
                  [str(plugin), str(batches[-1]), "simple.gene"]),
                 ("generation_rich", "generation_entry",
@@ -388,12 +392,31 @@ def run_lifetime(workload: dict) -> dict:
             generation_counters = (
                 "sandbox_generation_records", "sandbox_transaction_records",
                 "module_cache_entries", "module_compile_headers",
-                "module_compile_artifacts", "canonical_impls", "base_scopes")
+                "module_compile_artifacts", "canonical_impls",
+                "active_impl_assemblies", "released_generation_roots",
+                "base_scopes")
+            service_counters = (
+                "io_open_resources", "http_client_open_resources",
+                "http_client_pending_requests", "in_flight_requests")
+            selection_counters = (
+                "active_impl_assemblies", "canonical_impls",
+                "impl_scope_index_entries", "impl_scope_index_scopes",
+                "base_scopes")
             if label.startswith("generation") and any(
                     not isinstance(scenario_baseline.get(counter), int)
                     for counter in generation_counters):
                 return {"outcome": "failure",
                         "reason": "generation_owners_unavailable"}
+            if label == "selection" and any(
+                    not isinstance(scenario_baseline.get(counter), int)
+                    for counter in selection_counters):
+                return {"outcome": "failure",
+                        "reason": "selection_owners_unavailable"}
+            if label == "service" and any(
+                    not isinstance(scenario_baseline.get(counter), int)
+                    for counter in service_counters):
+                return {"outcome": "failure",
+                        "reason": "service_owners_unavailable"}
             scenario_checked = [item for item in scenario_snapshots
                                 if item["phase"] == "after"]
             for item in scenario_checked:
@@ -402,12 +425,18 @@ def run_lifetime(workload: dict) -> dict:
                         item.get("live_managed") != scenario_baseline[
                             "live_managed"] or
                         item.get("managed_classes") != scenario_classes or
-                        (label == "cancellation" and (
+                        (label in ("cancellation", "selection", "service") and (
                             item.get("io_root_tasks") != 0 or
                             item.get("io_root_cleanup_tasks") != 0)) or
                         (label.startswith("generation") and any(
                             item.get(counter) != scenario_baseline.get(counter)
-                            for counter in generation_counters))):
+                            for counter in generation_counters)) or
+                        (label == "selection" and any(
+                            item.get(counter) != scenario_baseline.get(counter)
+                            for counter in selection_counters)) or
+                        (label == "service" and any(
+                            item.get(counter) != 0
+                            for counter in service_counters))):
                     return {"outcome": "failure",
                             "reason": label + "_retention",
                             "baseline": scenario_baseline, "snapshot": item}
@@ -442,6 +471,9 @@ def run_lifetime(workload: dict) -> dict:
                                 "impl_failure_unwind", "compile_failure",
                                 "escaped_type_witnesses",
                                 "cancelled_type_tasks",
+                                "cancelled_partial_selection",
+                                "failed_partial_selection",
+                                "in_process_service_requests",
                                 "released_scalar_modules",
                                 "released_type_protocol_impl_modules",
                                 "discarded_generations",

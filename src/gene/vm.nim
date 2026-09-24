@@ -6,6 +6,7 @@ import ./[compiler, diagnostics, digest, equality, gir, package, printer, reader
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors]
 import ./io_lifecycle
+import ./pending_exception
 import ./ext/logging
 export type_contracts
 
@@ -323,7 +324,9 @@ type
     supervisorRetryHighWater: int
     supervisorDrainActive: bool
     when compileOption("threads") and defined(gcAtomicArc):
-      workers: seq[Thread[SchedulerWorkerContext]]
+      # Heap-allocated so growing a running pool moves only references: a
+      # running thread keeps using its Thread object's address.
+      workers: seq[ref Thread[SchedulerWorkerContext]]
       workerContexts: seq[SchedulerWorkerContext]
       workersStarted: bool
       workerLeaseCount: int
@@ -1104,6 +1107,52 @@ proc releaseResourceRecord(id: uint64) {.nimcall, raises: [].} =
 
 initLock(resourceRecordLock)
 installResourceReleaseHook(releaseResourceRecord)
+
+proc generatorFiberEdges(continuation: RootRef, scopes: var seq[pointer],
+                         values: var seq[uint64]): bool {.nimcall, raises: [].} =
+  ## Owning edges of a fresh or yield-suspended generator Fiber, for
+  ## released-generation retirement. Task, actor, wait, pending-unwind,
+  ## ensure/for/namespace, or frame-extra state is not modeled: such a Fiber is
+  ## opaque, and its generation stays alive.
+  if continuation == nil or not (continuation of Fiber):
+    return false
+  let fiber {.cursor.} = cast[Fiber](continuation)
+  if fiber.initializationLease != nil or fiber.callError != nil or
+      fiber.pendingError != nil or fiber.pendingPanic != nil or
+      fiber.pendingCancel != nil or fiber.pendingReturn != nil or
+      fiber.ensureBody != nil or fiber.ensureScope != nil or
+      fiber.ensureValue.bits != 0 or fiber.forItems.len > 0 or
+      fiber.forStream.bits != 0 or fiber.forPattern.bits != 0 or
+      fiber.forBody != nil or fiber.ownedScope != nil or
+      fiber.task.bits != 0 or fiber.actorOwner.bits != 0 or
+      fiber.actorReturnType.bits != 0 or fiber.actorScope != nil or
+      fiber.actorAskReply.bits != 0 or fiber.actorMessage.bits != 0 or
+      fiber.waitChannel.bits != 0 or fiber.waitSendValue.bits != 0 or
+      fiber.waitActor.bits != 0 or fiber.waitTask.bits != 0:
+    return false
+  if fiber.scope != nil:
+    scopes.add cast[pointer](fiber.scope)
+  values.add fiber.callResult.bits
+  values.add fiber.returnType.bits
+  for value in fiber.stack:
+    values.add value.bits
+  for value in fiber.errorTypes:
+    values.add value.bits
+  for frame in fiber.frames:
+    if frame.extra != nil:
+      return false
+    if frame.scope != nil:
+      scopes.add cast[pointer](frame.scope)
+    values.add frame.returnType.bits
+    values.add frame.restoreValue.bits
+    for value in frame.errorTypes:
+      values.add value.bits
+  for handler in fiber.handlers:
+    if handler.scope != nil:
+      scopes.add cast[pointer](handler.scope)
+  true
+
+installContinuationEdgesHook(generatorFiberEdges)
 
 proc sandboxGenerationPrepared(id: uint64): bool =
   if id == 0:
@@ -7698,6 +7747,9 @@ proc biRuntimeGcStats(args: openArray[Value],
     entries["module_compile_headers"] = newInt(app.moduleCompileHeaders.len)
     entries["module_compile_artifacts"] = newInt(app.moduleCompileArtifacts.len)
     entries["canonical_impls"] = newInt(app.canonicalImplCount())
+    entries["active_impl_assemblies"] = newInt(app.activeImplAssemblies.len)
+    entries["released_generation_roots"] =
+      newInt(app.releasedGenerationScopes.len)
     entries["base_scopes"] = newInt(app.baseScopes.len)
     entries["impl_scope_index_entries"] = newInt(app.implScopeIndex.len)
     var indexedScopes = 0
@@ -7944,6 +7996,11 @@ when not defined(geneWasm):
                                       contentType: "text/css; charset=utf-8",
                                       body: css))
     app.webAssetUrl(fileName)
+
+# Reader lifecycles for exclusive read borrowing (the owned HTTP Client's
+# AsyncReader uploads); defined with their records in ext/io_*.nim.
+proc ioFileReadLifecycle*(value: Value): IoLifecycle
+proc ioTestingReadLifecycle*(value: Value): IoLifecycle
 
 include ./stdlib
 
@@ -20069,7 +20126,8 @@ when compileOption("threads") and defined(gcAtomicArc):
     for i in oldCount ..< workerCount:
       let ctx = SchedulerWorkerContext(scheduler: s, slot: i)
       s.workerContexts[i] = ctx
-      createThread(s.workers[i], schedulerWorkerLoop, ctx)
+      new(s.workers[i])
+      createThread(s.workers[i][], schedulerWorkerLoop, ctx)
 
   proc startSchedulerWorkers(s: SchedulerState): bool =
     withSchedulerLock(s):
@@ -20097,7 +20155,7 @@ when compileOption("threads") and defined(gcAtomicArc):
         shouldJoin = true
     if shouldJoin:
       for i in 0 ..< s.workers.len:
-        joinThread(s.workers[i])
+        joinThread(s.workers[i][])
       withSchedulerLock(s):
         s.workers.setLen(0)
         s.workerContexts.setLen(0)

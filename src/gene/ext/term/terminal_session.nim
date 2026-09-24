@@ -2,6 +2,7 @@
 
 import std/[algorithm, monotimes, strutils, times, unicode]
 import ./[pty_process, vterm]
+import ../../pending_exception
 
 type
   TerminalSessionObj = object
@@ -28,13 +29,14 @@ const
   defaultTerminalPumpBytes* = 64 * 1024
 
 proc `=destroy`(session: var TerminalSessionObj) =
-  if session.process != nil:
-    try:
-      session.process.close()
-    except CatchableError:
-      discard
-  if session.emulator != nil:
-    session.emulator.close()
+  withoutPendingException:
+    if session.process != nil:
+      try:
+        session.process.close()
+      except CatchableError:
+        discard
+    if session.emulator != nil:
+      session.emulator.close()
 
 proc openTerminalSession*(argv: seq[string], cwd = "", rows = 24, cols = 80,
                           environment: seq[string] = @[],

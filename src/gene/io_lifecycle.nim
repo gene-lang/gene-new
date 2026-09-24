@@ -36,6 +36,7 @@ type
   IoSnapshot* = object
     phase*: IoPhase
     readBusy*: bool
+    readBorrowed*: bool
     writeBusy*: bool
     retainedBytes*: int
     activeOperations*: int
@@ -59,10 +60,26 @@ type
     writeTicket: IoTicket
     readBusy: bool
     writeBusy: bool
+    readBorrower: uint64 # exclusive read owner, or 0
     retainedBytes: int
     maxBytes: int
     closeLease: bool
     closeError: string
+
+var ioReadOwner {.threadvar.}: uint64
+  ## The borrower issuing a read right now on this lane, or 0 for a direct
+  ## caller read. Admission is synchronous, so a borrower sets it only around
+  ## its own read call.
+
+template withIoReadOwner*(owner: uint64, body: untyped) =
+  ## Run `body` as `owner`'s own read: admission accepts it on a resource that
+  ## `owner` borrowed and still refuses it on one borrowed by anyone else.
+  let savedIoReadOwner = ioReadOwner
+  ioReadOwner = owner
+  try:
+    body
+  finally:
+    ioReadOwner = savedIoReadOwner
 
 const
   DefaultIoResourceBytes* = 1_048_576
@@ -132,7 +149,8 @@ proc ioSnapshot*(resource: IoLifecycle): IoSnapshot =
   acquire(resource.lock)
   try:
     result = IoSnapshot(phase: resource.phase,
-      readBusy: resource.readBusy, writeBusy: resource.writeBusy,
+      readBusy: resource.readBusy, readBorrowed: resource.readBorrower != 0,
+      writeBusy: resource.writeBusy,
       retainedBytes: resource.retainedBytes,
       activeOperations: int(resource.readBusy) + int(resource.writeBusy),
       closeLease: resource.closeLease, closeError: resource.closeError)
@@ -141,6 +159,36 @@ proc ioSnapshot*(resource: IoLifecycle): IoSnapshot =
 
 proc ioResourceId*(resource: IoLifecycle): uint64 =
   resource.resourceId
+
+proc borrowIoRead*(resource: IoLifecycle, owner: uint64): IoAdmissionFailure =
+  ## Give `owner` exclusive read use until releaseIoRead: every other read,
+  ## including a direct caller read, is then refused as busy. Close stays with
+  ## the caller. A read already in flight belongs to its caller, so the borrow
+  ## is refused until it settles. Borrowing again as the same owner is a no-op.
+  if owner == 0:
+    return iaInvalid
+  acquire(resource.lock)
+  try:
+    if resource.phase != iopOpen:
+      return iaClosed
+    if resource.readBorrower == owner:
+      return iaNone
+    if resource.readBorrower != 0 or resource.readBusy:
+      return iaBusy
+    resource.readBorrower = owner
+    iaNone
+  finally:
+    release(resource.lock)
+
+proc releaseIoRead*(resource: IoLifecycle, owner: uint64) =
+  ## End `owner`'s borrow. A read it admitted keeps the read slot until it
+  ## finishes, as any read does.
+  acquire(resource.lock)
+  try:
+    if owner != 0 and resource.readBorrower == owner:
+      resource.readBorrower = 0
+  finally:
+    release(resource.lock)
 
 proc admitIoOperation*(resource: IoLifecycle, direction: IoDirection,
                        reserveBytes: int): IoAdmission =
@@ -157,6 +205,9 @@ proc admitIoOperation*(resource: IoLifecycle, direction: IoDirection,
       return IoAdmission(failure: iaClosed)
     if (direction == iodRead and resource.readBusy) or
         (direction in {iodWrite, iodFlush} and resource.writeBusy):
+      return IoAdmission(failure: iaBusy)
+    if direction == iodRead and resource.readBorrower != 0 and
+        resource.readBorrower != ioReadOwner:
       return IoAdmission(failure: iaBusy)
     if direction == iodWrite and reserveBytes == 0:
       return IoAdmission(accepted: true, immediate: true)

@@ -1,0 +1,14 @@
+(protocol Local (message value [] : Int))
+(type Item ^props {^n Int})
+(impl Local for Item (message value [] : Int self/n))
+(var item (Item ^n 7))
+#Ref kept item
+(fn make_counter [start]
+  (var c ($cell start))
+  (fn [] (c .set (+ (c .get) 1)) (c .get)))
+(var counter (make_counter 1))
+(fn ^^generator counting [n]
+  (var i 0)
+  (while (< i n) (yield (+ i item/n)) (set i (+ i 1))))
+(var stream (counting 100))
+(stream .next)

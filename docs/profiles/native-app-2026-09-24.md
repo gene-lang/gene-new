@@ -121,6 +121,18 @@ debug RC build. The wasm module, rebuilt after fixing a `--threads:off` compile
 error in `http_client_multi.nim`, passed all 39 ABI cases and is 9,860 bytes
 smaller than the same build of the previous commit.
 
+A second continuation extended retirement to shared `#Ref` tables and
+suspended generator Fibers, and added selection and in-process service
+children. The eight-child runner returned `probe_pass` with 881, 822, 794, 891
+(partial selections), 866 (10,000 in-process HTTP request pairs), 824, 824,
+and 826 managed values at every checkpoint; the generation counts moved by the
+two counter keys they now report. Instrumented binary SHA-256
+`44da426147c4d2a5675254c7d3e6379b2d015e274a28229a853e2bd99b2503b2`; sampled peak
+RSS 100,909,056 bytes. The service child exposed a serve-loop stall: an
+in-process await on a native Client transfer waited out the 50 ms idle select
+(100 requests took 5,354 ms before the fix and 150 ms after). NET-1 AsyncReader
+uploads now hold an exclusive read borrow in the reader's I/O lifecycle.
+
 `nimble test`, `nimble spec`, and `nimble leakcheck` passed. Linux x86_64
 runtime qualification was unavailable on this host: the Docker daemon was
 not running, and no Podman or QEMU runner was installed. The native-app

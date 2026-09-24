@@ -48,6 +48,18 @@ proc ioTestingRecord(value: Value, call: ptr NativeCall,
     raiseValueSemanticError("RuntimeLaneError",
       "I/O resource belongs to another lane")
 
+proc ioTestingReadLifecycle*(value: Value): IoLifecycle =
+  ## The lifecycle behind an IoTestResource Value, or nil.
+  if value.kind != vkNode or value.nodeResourceId == 0:
+    return nil
+  acquire(resourceRecordLock)
+  try:
+    let record = ioTestingRecords.getOrDefault(value.nodeResourceId)
+    if record != nil:
+      result = record.lifecycle
+  finally:
+    release(resourceRecordLock)
+
 proc ioTestingAdmission(record: IoTestingRecord, direction: IoDirection,
                         bytes: int, scope: Scope,
                         operation: string): IoAdmission =

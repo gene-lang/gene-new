@@ -4,7 +4,8 @@
 ## bounded source edges rather than recursively expanded call-chain strings.
 
 import std/[algorithm, sets, strutils, tables]
-import ./[digest, equality, gir, native_errors, printer, types]
+import ./[digest, equality, gir, native_errors, pending_exception, printer,
+         types]
 
 proc mergeErrors*(target: var ErrorEffectSummary, source: ErrorEffectSummary) =
   target.open = target.open or source.open
@@ -162,65 +163,66 @@ proc `=destroy`(analysis: var ErrorAnalysisData) =
   # abstract values in both directions. Those temporary cycles must be broken
   # when analysis finishes, including in atomicArc builds without cycle GC.
   # Published summaries and bytecode are independent and remain untouched.
-  var seen = initHashSet[pointer]()
-  var environments: seq[ErrorEnvironment]
-  var functions: seq[AnalyzedFunction]
-  var types: seq[AnalyzedType]
-  var values: seq[AbstractValue]
-  proc visit(value: AbstractValue)
-  proc visit(environment: ErrorEnvironment)
-  proc visit(function: AnalyzedFunction)
-  proc visit(typ: AnalyzedType)
-  proc visit(value: AbstractValue) =
-    if value == nil or seen.containsOrIncl(cast[pointer](value)): return
-    values.add value
-    visit(value.fn)
-    visit(value.space)
-    visit(value.nominal)
-  proc visit(environment: ErrorEnvironment) =
-    if environment == nil or seen.containsOrIncl(cast[pointer](environment)): return
-    environments.add environment
-    visit(environment.parent)
-    for binding in environment.values.values: visit(binding.value)
-  proc visit(function: AnalyzedFunction) =
-    if function == nil or seen.containsOrIncl(cast[pointer](function)): return
-    functions.add function
-    visit(function.environment)
-    visit(function.receiver)
-    visit(function.resultValue)
-  proc visit(typ: AnalyzedType) =
-    if typ == nil or seen.containsOrIncl(cast[pointer](typ)): return
-    types.add typ
-    visit(typ.parent)
-    for parent in typ.protocolParents: visit(parent)
-    for function in typ.methods.values: visit(function)
-    for function in typ.importedProtocolMembers: visit(function)
-    visit(typ.constructor)
-  visit(analysis.rootEnvironment)
-  for environment in analysis.byChunk.values: visit(environment)
-  for function in analysis.functions: visit(function)
-  for function in analysis.byProto.values: visit(function)
-  for typ in analysis.types.values: visit(typ)
-  for item in analysis.publicValues.values: visit(item.value)
-  for value in values:
-    value.fn = nil
-    value.space = nil
-    value.nominal = nil
-  for function in functions:
-    function.environment = nil
-    function.receiver = nil
-    function.resultValue = nil
-  for environment in environments:
-    environment.parent = nil
-    environment.values.clear()
-  for typ in types:
-    typ.parent = nil
-    typ.protocolParents = @[]
-    typ.methods.clear()
-    typ.importedProtocolMembers = @[]
-    typ.constructor = nil
-  for _, field in fieldPairs(analysis):
-    `=destroy`(field)
+  withoutPendingException:
+    var seen = initHashSet[pointer]()
+    var environments: seq[ErrorEnvironment]
+    var functions: seq[AnalyzedFunction]
+    var types: seq[AnalyzedType]
+    var values: seq[AbstractValue]
+    proc visit(value: AbstractValue)
+    proc visit(environment: ErrorEnvironment)
+    proc visit(function: AnalyzedFunction)
+    proc visit(typ: AnalyzedType)
+    proc visit(value: AbstractValue) =
+      if value == nil or seen.containsOrIncl(cast[pointer](value)): return
+      values.add value
+      visit(value.fn)
+      visit(value.space)
+      visit(value.nominal)
+    proc visit(environment: ErrorEnvironment) =
+      if environment == nil or seen.containsOrIncl(cast[pointer](environment)): return
+      environments.add environment
+      visit(environment.parent)
+      for binding in environment.values.values: visit(binding.value)
+    proc visit(function: AnalyzedFunction) =
+      if function == nil or seen.containsOrIncl(cast[pointer](function)): return
+      functions.add function
+      visit(function.environment)
+      visit(function.receiver)
+      visit(function.resultValue)
+    proc visit(typ: AnalyzedType) =
+      if typ == nil or seen.containsOrIncl(cast[pointer](typ)): return
+      types.add typ
+      visit(typ.parent)
+      for parent in typ.protocolParents: visit(parent)
+      for function in typ.methods.values: visit(function)
+      for function in typ.importedProtocolMembers: visit(function)
+      visit(typ.constructor)
+    visit(analysis.rootEnvironment)
+    for environment in analysis.byChunk.values: visit(environment)
+    for function in analysis.functions: visit(function)
+    for function in analysis.byProto.values: visit(function)
+    for typ in analysis.types.values: visit(typ)
+    for item in analysis.publicValues.values: visit(item.value)
+    for value in values:
+      value.fn = nil
+      value.space = nil
+      value.nominal = nil
+    for function in functions:
+      function.environment = nil
+      function.receiver = nil
+      function.resultValue = nil
+    for environment in environments:
+      environment.parent = nil
+      environment.values.clear()
+    for typ in types:
+      typ.parent = nil
+      typ.protocolParents = @[]
+      typ.methods.clear()
+      typ.importedProtocolMembers = @[]
+      typ.constructor = nil
+    for _, field in fieldPairs(analysis):
+      `=destroy`(field)
 
 proc unknownValue(): AbstractValue = AbstractValue(kind: avUnknown)
 proc scalarValue(name: string): AbstractValue =

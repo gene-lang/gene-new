@@ -2700,7 +2700,11 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## timer and the nearest connection/drain deadline.
       if hasRunnableFiber():
         return 0
-      var timeout = 50
+      # A native worker (HTTP client, file I/O) settles its Task off-lane and
+      # wakes the awaiting fiber without touching any socket here. Poll at the
+      # scheduler's own 1 ms boundary while such work is in flight, or a
+      # handler or root-lane task awaiting it stalls for the full idle wait.
+      var timeout = if externalNativeOpsPending(): 1 else: 50
       let now = getMonoTime()
       template clampTo(deadline: MonoTime) =
         block:

@@ -9,8 +9,35 @@
 ## Build with: nim c -r -d:geneRcStats --path:src tests/test_rc.nim
 
 when defined(geneRcStats):
-  import gene/[compiler, native_api, printer, types, vm]
+  import gene/[compiler, native_api, pending_exception, printer, types, vm]
   import std/[os, unittest]
+
+  # A container's generated destructor can release its elements with the
+  # pending-exception flag still set; each element's destructor must finish.
+  type UnwindProbe = object
+    id: uint64
+  var unwindProbeSlots = [1, 2, 3]
+  var unwindProbeTrail: seq[string]
+  proc unwindProbeSlot(i: int): int = unwindProbeSlots[i] # can raise
+  proc `=destroy`(probe: var UnwindProbe) =
+    withoutPendingException:
+      if probe.id != 0:
+        unwindProbeTrail.add "enter"
+        discard unwindProbeSlot(1)
+        unwindProbeTrail.add "finished"
+  proc `=copy`(dest: var UnwindProbe, src: UnwindProbe) = dest.id = src.id
+  proc newUnwindProbe(): UnwindProbe = UnwindProbe(id: 1)
+  proc raiseUnwindProbe() = raise newException(IOError, "unwind")
+  proc unwindLiteralProbes() =
+    var probes = @[newUnwindProbe(), newUnwindProbe()]
+    raiseUnwindProbe()
+    echo probes.len
+  proc unwindAddedProbes() =
+    var probes: seq[UnwindProbe]
+    probes.add newUnwindProbe()
+    probes.add newUnwindProbe()
+    raiseUnwindProbe()
+    echo probes.len
 
   var ffiAutoLibraryCloses, ffiAutoPointerReleases: int
   proc closeAutoLibrary(handle: pointer) {.nimcall.} =
@@ -637,11 +664,18 @@ when defined(geneRcStats):
 
     # Retirement is off where Gene worker lanes exist (AtomicArc).
     when not defined(gcAtomicArc):
+      test "this toolchain supports released-generation retirement":
+        # Fails after a Nim upgrade that changes the ORC header layout, rather
+        # than letting retirement switch itself off and leak generations.
+        check generationRetirementAvailable()
+
       test "released sandbox generations retire their module cycles":
         # Scalar exports, a Type/protocol/impl graph, a type-direct method, and a
         # function capturing this_mod all close Module -> Namespace -> Scope.
+        # stateful.gene adds a `#Ref` table, a cell closure, and a suspended
+        # generator whose Fiber holds a call scope below the root.
         for entry in ["simple.gene", "plugin.gene", "retained_item.gene",
-                      "self.gene"]:
+                      "self.gene", "stateful.gene"]:
           let source = "(var tx ($runtime/sandbox_transaction)) " &
             "(var generation (tx .prepare " & sandboxOptions(entry) & ")) " &
             "(tx .commit) (generation .release)"
@@ -656,6 +690,24 @@ when defined(geneRcStats):
           "($assert (try (failed .prepare " & sandboxOptions("failing.gene") &
           ") false catch Any true)) " &
           "(failed .discard)"
+        discard leakedManaged(source)
+        check leakedManaged(source) == 0
+
+      test "a retained generator keeps yielding after its generation is released":
+        let source = "(var tx ($runtime/sandbox_transaction)) " &
+          "(var generation (tx .prepare " & sandboxOptions("stateful.gene") &
+          ")) " &
+          "(var m (generation .module)) " &
+          "(var stream m/stream) " &
+          "(set m nil) " &
+          "(tx .commit) (generation .release) " &
+          "(var next_tx ($runtime/sandbox_transaction)) " &
+          "(var next (next_tx .prepare " & sandboxOptions("plugin.gene") & ")) " &
+          "(next_tx .commit) (next .release) " &
+          "($assert (== (stream .next) 8)) " &
+          "($assert (== (stream .next) 9)) " &
+          "(set stream nil) " &
+          "($runtime/test_collect)"
         discard leakedManaged(source)
         check leakedManaged(source) == 0
 
@@ -677,6 +729,16 @@ when defined(geneRcStats):
           "($runtime/test_collect)"
         discard leakedManaged(source)
         check leakedManaged(source) == 0
+
+    test "container elements finish their destructors while an exception unwinds":
+      for (label, body) in [("literal", unwindLiteralProbes),
+                            ("added", unwindAddedProbes)]:
+        unwindProbeTrail.setLen(0)
+        try:
+          body()
+        except IOError:
+          discard
+        check unwindProbeTrail == @["enter", "finished", "enter", "finished"]
 
     test "a value destroyed while an exception unwinds is fully released":
       # Nim destroys a raising call's assigned result temporary with the

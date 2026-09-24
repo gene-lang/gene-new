@@ -3,6 +3,31 @@ when withDir(thisDir(), system.fileExists("nimble.paths")):
   include "nimble.paths"
 # end Nimble config
 
+# Memory model: ORC unless the command line names another ARC-family manager.
+#
+# `Value` (src/gene/types.nim) does manual reference counting through
+# =copy/=sink/=dup/=destroy hooks over raw alloc0/dealloc heap objects that hold
+# GC-managed fields (string/seq/Table). That scheme relies on ARC/ORC move
+# semantics; a --mm:refc build would mismanage those inner fields and corrupt or
+# leak memory. The pin lives here, not in nim.cfg: a config-file --mm:orc stays
+# defined when a command line adds --mm:atomicArc, so that build defined both
+# gcOrc and gcAtomicArc and compiled ORC's header and cycle collector into it.
+block:
+  var memoryManager = ""
+  for i in 1 .. paramCount():
+    let arg = paramStr(i)
+    for prefix in ["--mm:", "--mm=", "--gc:", "--gc="]:
+      if arg.len > prefix.len and arg[0 ..< prefix.len] == prefix:
+        memoryManager = arg[prefix.len .. ^1]
+  var normalized = ""
+  for c in memoryManager:
+    normalized.add(if c in {'A'..'Z'}: char(ord(c) + 32) else: c)
+  if normalized.len == 0:
+    switch("mm", "orc")
+  elif normalized notin ["orc", "arc", "atomicarc"]:
+    quit("gene needs an ARC-family memory manager (orc, arc, atomicArc), " &
+         "not --mm:" & memoryManager)
+
 # macOS: link against an SDK the installed linker can read.
 #
 # The Command Line Tools' default SDK (`MacOSX.sdk`) can be newer than the

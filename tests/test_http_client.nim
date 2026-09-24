@@ -97,6 +97,31 @@ suite "net/http_client e2e":
     check client.output == "cancelled"
     check elapsed < 2000
 
+  test "an in-process client of a serving process is not held by the idle poll":
+    # The serve loop used to sleep its 50 ms idle wait while a native request
+    # settled off-lane, so each await in the serving process stalled that long:
+    # 100 requests took about 5 s. They now take a small fraction of that.
+    let client = runHttpClient("client-in-process.gene", """
+(import $net/http [listen serve stop text])
+(import $net/http_client [request])
+(var server (listen ^host "127.0.0.1" ^port 8224))
+(fn handle [req] (text 200 req/path))
+(var driver (spawn ^lane root
+  (do
+    (var started ($os/monotonic_ms))
+    (repeat 100
+      (var r (await (request ^url "http://127.0.0.1:8224/ping")))
+      ($assert (== r/body "/ping")))
+    (var elapsed (- ($os/monotonic_ms) started))
+    (stop server)
+    elapsed)))
+(serve server ^handler handle ^drain_timeout_ms 1000)
+(var elapsed (await driver))
+($println (if (< elapsed 2500) "fast" $"slow ${elapsed} ms"))
+""")
+    check client.exitCode == 0
+    check client.output == "fast"
+
   test "HTTPS verifies a loopback certificate through an explicit CA file":
     if findExe("openssl").len == 0:
       skip()

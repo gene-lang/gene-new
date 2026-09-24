@@ -450,6 +450,41 @@ class OwnedHttpClientTests(unittest.TestCase):
         self.assertEqual(data, {"busy": True, "status": 202, "size": 0,
                                 "pending": 0, "leases": 0})
 
+    def test_async_reader_upload_excludes_direct_caller_reads(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let AsyncWriter $io/AsyncWriter)
+  (let IoResource $io/IoResource)
+  (let IoBusy $io/IoBusy)
+  (let endpoints ($io/pipe))
+  (let reader endpoints/0)
+  (let writer endpoints/1)
+  (let client (await ($net/http_client/open)))
+  (let upload (client .request ^url "{self.base}/upload"
+    ^method "POST" ^body reader))
+  # Before the upload issues any read of its own: only the borrow refuses it.
+  (let direct_busy (try (reader .AsyncReader:read 16) false
+                     catch IoBusy true))
+  (await (writer .AsyncWriter:write ($binary/from_str "body")))
+  (writer .IoResource:close)
+  (await (writer .IoResource:wait_closed))
+  (let response (await upload))
+  (let after (await (reader .AsyncReader:read 16)))
+  (reader .IoResource:close)
+  (await (reader .IoResource:wait_closed))
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {{^busy direct_busy ^status response/status
+      ^size ($binary/size response/body) ^after_eof ($nil? after)
+      ^pending stats/http_client_pending_requests
+      ^leases stats/io_cleanup_leases}}))
+""", timeout=12)
+        self.assertEqual(data, {"busy": True, "status": 202, "size": 4,
+                                "after_eof": True, "pending": 0,
+                                "leases": 0})
+
     def test_large_async_upload_does_not_block_fast_request(self) -> None:
         path = pathlib.Path(self.temp.name) / "upload-large.bin"
         path.write_bytes(b"q" * (2 * 1024 * 1024 + 17))

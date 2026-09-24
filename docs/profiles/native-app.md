@@ -82,6 +82,11 @@ discard-plus-failure iteration grew 30. Retained module, function-only, and
 instance/Type controls still execute after release. Retirement runs only at
 release, discard, failed preparation, and the test collection point, and is
 off under AtomicArc.
+Two more children cover VM-3 gaps. A selection child cancels a Task parked
+between two impls of one eval unit and fails units after a partial selection;
+it holds 891 managed values with no open impl assemblies. An in-process
+service child serves and drives 10,000 HTTP request pairs through the native
+Client in one RC process and holds 866 values with no open I/O or requests.
 
 The CLI probe now builds a selected `c_library`, calls its C ABI function,
 and repeats that call after installing the application with the source

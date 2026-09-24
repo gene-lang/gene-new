@@ -53,6 +53,8 @@
      ^entry "src/batches.gene" ^driver "command" ^args []
      ^witness_entry "src/witnesses.gene"
      ^cancellation_entry "src/cancellation.gene"
+     ^selection_entry "src/selection.gene"
+     ^service_entry "src/service.gene"
      ^generation_entry "src/generation.gene"
      ^generation_failure_entry "src/generation_failure.gene"
      ^generation_plugin "plugin"

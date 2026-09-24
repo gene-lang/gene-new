@@ -12,6 +12,8 @@
      ^module_compile_headers stats/module_compile_headers
      ^module_compile_artifacts stats/module_compile_artifacts
      ^canonical_impls stats/canonical_impls
+     ^active_impl_assemblies stats/active_impl_assemblies
+     ^released_generation_roots stats/released_generation_roots
      ^base_scopes stats/base_scopes
      ^impl_scope_index_entries stats/impl_scope_index_entries
      ^impl_scope_index_scopes stats/impl_scope_index_scopes

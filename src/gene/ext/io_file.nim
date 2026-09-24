@@ -1198,8 +1198,18 @@ static void gene_io_file_block_sigpipe(void) {
     scope.registerIoTask(result)
     record.waiters.add result
 
+  proc ioFileReadLifecycle*(value: Value): IoLifecycle =
+    ## The lifecycle behind a file, pipe, or TCP reader Value, or nil.
+    if value.kind != vkNode or value.nodeResourceId == 0:
+      return nil
+    withLock ioFileLock:
+      let record = ioFileRecords.getOrDefault(value.nodeResourceId)
+      if record != nil:
+        result = record.lifecycle
+
 else:
   proc pollIoFileCompletions() = discard
+  proc ioFileReadLifecycle*(value: Value): IoLifecycle = nil
   proc releaseIoFileResourceRecord(id: uint64) {.raises: [].} = discard
   proc ioFileOpenCount(app: Application): int = 0
   proc ioFileWaitingCount(): int = 0
