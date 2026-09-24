@@ -74,6 +74,18 @@ The richer Type/protocol/impl generation still retains about 15 values per
 release. A test-only edge trace accounted for its Protocol 4/4, Type 5/5,
 instance Node 2/2, and method Function 2/2 boxed owners; the remaining
 unmodeled edge is a possible escaped Nim Scope reference, so VM-2 stays open.
+A later checkpoint trace of a released generation observed `Item` Type at
+6 boxed owners with only 4 reachable from the root Scope, and the `item`
+instance Node at 3 owners with 2 root-owned. This is a different quiescent
+point from the earlier edge trace and leaves extra boxed owners to locate;
+the Nim Scope edge is still only a hypothesis. The temporary trace code was
+removed after recording these counts.
+After expanding the Scope Value-edge inventory, the four-child lifetime
+runner again returned `probe_pass` with the same warm/final counts: 881,
+822, 794, and 820. All retained module/function/instance controls passed.
+The updated instrumented binary SHA-256 was
+`dc089ad9bbdd0ba5bb40a07b6be4cb7d7a6293ee10a62f24f0dc112678ef8f26`.
+This does not qualify the richer generation.
 
 `nimble test`, `nimble spec`, and `nimble leakcheck` passed. Linux x86_64
 runtime qualification was unavailable on this host: the Docker daemon was

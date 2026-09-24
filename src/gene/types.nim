@@ -2651,8 +2651,28 @@ proc scopeOwnedReferences(owner: Scope, target: uint64): int =
     count(owner.slots[i])
   for value in owner.vars.values:
     count(value)
+  for fallback in owner.wildcardFallbacks.values:
+    count(fallback.value)
+  for binding in owner.slotTypes:
+    count(binding.expr)
+  for binding in owner.varTypes.values:
+    count(binding.expr)
   count(owner.annotationSelfType)
   for value in owner.requiredImplTypes:
+    count(value)
+  for value in owner.corePendingTypes:
+    count(value)
+  if owner.moduleRefs != nil:
+    for entry in owner.moduleRefs.entries.values:
+      if entry != nil:
+        count(entry.value)
+  count(owner.supervisorEvents)
+  count(owner.supervisorDeadLetters)
+  for value in owner.ownedTasks:
+    count(value)
+  for value in owner.ownedCleanupTasks:
+    count(value)
+  for value in owner.ownedActors:
     count(value)
   for impl in owner.impls:
     count(impl.protocol)
@@ -2832,6 +2852,16 @@ proc shallowOwnedReferences(owner: Scope, target: uint64, exact: var bool): int 
   ## It never over-counts. `exact` turns false when such a container holds a
   ## further container this count does not follow.
   exact = true
+  # These fields own Values as well, but the hot shallow path only indexes
+  # bindings. A full walk is needed whenever any of them is populated.
+  if owner.wildcardFallbacks.len > 0 or owner.slotTypes.len > 0 or
+      owner.varTypes.len > 0 or owner.corePendingTypes.len > 0 or
+      owner.requiredImplTypes.len > 0 or owner.moduleRefs != nil or
+      owner.ownedTasks.len > 0 or owner.ownedCleanupTasks.len > 0 or
+      owner.ownedActors.len > 0 or owner.annotationSelfType.bits != 0 or
+      owner.supervisorEvents.bits != 0 or owner.supervisorDeadLetters.bits != 0 or
+      owner.impls.len > 0:
+    exact = false
   var total = 0
   template item(value: Value) =
     block:
