@@ -21,14 +21,16 @@
   (state .put "commands_per_second" 1000)
   host)
 
-(fn attach [^fault fault = nil]
+(fn attach [^fault fault = nil ^thinking thinking = false]
   (let name (p/id "world"))
   (let home $"examples/life/tmp/${name}")
   (let host (runtime/open_life home ^create true ^profile "network" ^clock (fn [] 1000) ^fault fault))
   (let meta (p/get host/store "meta"))
-  # No model calls: only the network profile and its executor run.
-  (meta .put "model_calls_per_hour" 0)
-  (p/put host/store "meta" meta)
+  # No model calls unless asked: then the network profile and its executor
+  # run alone. With `thinking`, the deterministic fake brain decides.
+  (if_not thinking
+    (meta .put "model_calls_per_hour" 0)
+    (p/put host/store "meta" meta))
   (let peer (world_peer/new_peer meta/id credential))
   (configure host peer)
   (net/bind host "ws://127.0.0.1:1/world/v1" credential)
@@ -223,16 +225,19 @@
           (set j (+ j 1)))))) p/LifeError)
       (assert_equal (p/count_where host/store "world_op/" (fn [o] true)) 70)
       (peer .put "down" false)
-      (wait_for host (fn [] (== (p/count_where host/store "world_result/" (fn [r] r/terminal)) 70)) "70 results")
+      # Registration took a while; don't wait out the grown reconnect backoff.
+      ((host/world .get) .put "next_connect_ms" 0)
+      (wait_for host (fn [] (== (p/count_where host/store "world_result/" (fn [r] r/terminal)) 70)) "70 results" ^timeout_ms 120000)
       (wait_for host (fn [] (== (p/count_where host/store "world_cont/" (fn [c] (== c/status "waiting"))) 0)) "routing")
       (let registration (p/get host/store "world_dispatcher"))
       (assert_equal registration/routed_results 70)
       # 69 own speech events after the cursor, routed 32 at a time.
       (assert_equal registration/routed_events 69)
       ($assert (>= registration/passes 3) "32-record passes need at least three for 69 events")
-      (runtime/settle host)
+      # Seventy worker processes: pump until they finish rather than within
+      # `settle`'s fixed deadline, which a loaded machine can exceed.
       (wait_for host (fn [] (== (p/count_where host/store "world_cont/"
-        (fn [c] (["completed" "failed"] .contains? c/status))) 70)) "every continuation run" ^timeout_ms 120000)
+        (fn [c] (["completed" "failed"] .contains? c/status))) 70)) "every continuation run" ^timeout_ms 180000)
       # One failed; every unrelated continuation still ran through the
       # ordinary executor, each exactly once, with its own outcome.
       (assert_equal (cont_status host (refs/13 .get "operation_id")) "failed")
@@ -555,4 +560,99 @@
       (wait_for host (fn [] (!= (phase host) "ready")) "disconnected")
       (let stale (group host (fn [tx] (apply host tx "observe" {^area "local"}))))
       (assert_equal stale/freshness "last_observed")
+      ensure (close host)))
+
+  (it "orders non-terminal reports by the world's status revision and records a same-revision disagreement" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let walk (group host (fn [tx] (apply host tx "start_walk" {^destination "garden"}))))
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "running")) "running")
+      (world_peer/suspend_walk peer walk/operation_id)
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "suspended")) "suspended")
+      (let stale (fn [status revision]
+        (world_peer/push peer/connection {^kind "receipt" ^world_id peer/world_id ^history_id peer/history_id
+          ^operation_id walk/operation_id ^operation "movement.walk_to" ^admission "accepted"
+          ^action_id "action-1" ^action_status status ^action_status_revision revision})))
+      # A delayed `running` from before the suspension changes nothing.
+      (stale "running" 1)
+      (pump host)
+      (assert_equal (status_of host walk/operation_id) "suspended")
+      (assert_equal (field host $"world_result/${walk/operation_id}" "status_revision") 2)
+      (assert_equal (field host $"world_result/${walk/operation_id}" "conflicts") [])
+      # A different status under the same revision is a disagreement to expose.
+      (stale "running" 2)
+      (pump host)
+      (assert_equal (status_of host walk/operation_id) "suspended")
+      (let conflicts (field host $"world_result/${walk/operation_id}" "conflicts"))
+      (assert_equal conflicts/.size 1)
+      # A newer terminal report wins; a late receipt cannot regress it.
+      (world_peer/finish_walk peer walk/operation_id)
+      (wait_for host (fn [] (== (status_of host walk/operation_id) "completed")) "completed")
+      (stale "running" 1)
+      (pump host)
+      (assert_equal (status_of host walk/operation_id) "completed")
+      ensure (close host)))
+
+  (it "holds a ready continuation until the Life is synchronized, and invalidates it if the rules changed" []
+    (let a (attach))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      (wait_for host (fn [] (ready? host)) "ready")
+      (let noop (save host "(fn [api input] (api/state .put input/inputs/key input/result/status))"))
+      (let first (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^n 1}}))))
+      (let second (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^n 2}}))))
+      (wait_for host (fn [] (&& (terminal? host first/operation_id) (terminal? host second/operation_id))) "results")
+      (peer .put "down" true)
+      (world_peer/disconnect peer)
+      (wait_for host (fn [] (!= (phase host) "ready")) "disconnected")
+      # Both results are retained, so registration readies at once — but
+      # nothing that reads or acts on the world runs while disconnected.
+      (group host (fn [tx] (apply host tx "world_on_result" {^ref first ^revision noop ^inputs {^key "first"}})))
+      (pump host ^times 60)
+      (assert_equal (cont_status host first/operation_id) "ready")
+      (assert_equal (field host $"execution/cont-${first/operation_id}" "status") "queued")
+      # The world returns under changed rules: registered under the old ones,
+      # it is invalidated visibly for reconsideration, not run.
+      (peer .put "rules_revision" "rules-test-2")
+      (peer .put "down" false)
+      (wait_for host (fn [] (== (cont_status host first/operation_id) "invalidated")) "invalidated")
+      (assert_equal (p/get host/store "state/first") nil)
+      # Registered under the current rules, one runs once synchronized.
+      (group host (fn [tx] (apply host tx "world_on_result" {^ref second ^revision noop ^inputs {^key "second"}})))
+      (runtime/settle host)
+      (wait_for host (fn [] (== (p/get host/store "state/second") "completed")) "second ran")
+      ensure (close host)))
+
+  (it "brings a walk suspended while it was away to the Life's own decision, which resumes it without a second walk" []
+    (let a (attach ^thinking true))
+    (let host a/host)
+    (let peer a/peer)
+    (try
+      # The fake brain's first decision: walk to the garden and speak on arrival.
+      (wait_for host (fn [] (== ((world_peer/commands peer ^operation "movement.walk_to") .size) 1))
+        "first walk" ^timeout_ms 30000)
+      (let walk (world_peer/commands peer ^operation "movement.walk_to"))
+      (let walk_id (walk/0 .get "operation_id"))
+      (wait_for host (fn [] (== (status_of host walk_id) "running")) "running")
+      # It is suspended while the Life is disconnected, and no event says so:
+      # only the next snapshot does.
+      (world_peer/disconnect peer)
+      (world_peer/suspend_walk peer walk_id ^event false)
+      (wait_for host (fn [] (== ((world_peer/commands peer ^operation "movement.resume") .size) 1))
+        "the Life resumed it" ^timeout_ms 30000)
+      (assert_equal (p/count_where host/store "event/" (fn [e] (== e/kind "world_activity_suspended"))) 1)
+      (var noticed nil)
+      (for e in (p/values host/store "event/") (if_yes (== e/kind "world_activity_suspended") (set noticed e)))
+      (assert_equal noticed/data/operation_id walk_id)
+      (assert_equal noticed/data/progress {^total_mm 5000 ^remaining_mm 2000})
+      (world_peer/finish_walk peer walk_id)
+      (wait_for host (fn [] (== ((world_peer/commands peer ^operation "conversation.say") .size) 1))
+        "arrival spoken" ^timeout_ms 30000)
+      (assert_equal ((world_peer/commands peer ^operation "movement.walk_to") .size) 1)
+      # Its speech is sent before the continuation's worker has finished.
+      (wait_for host (fn [] (== (cont_status host walk_id) "completed")) "continuation finished")
       ensure (close host))))

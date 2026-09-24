@@ -84,8 +84,15 @@
   (for pair in (peer .get "actions")
     (let action pair/1)
     (if_yes (["running" "suspended"] .contains? action/status)
-      (out .push {^action_id action/action_id ^operation_id action/operation_id ^status action/status})))
+      (out .push {^action_id action/action_id ^operation_id action/operation_id ^status action/status
+                  ^status_revision action/status_revision ^suspended_reason (?? action/reason nil)
+                  ^progress {^total_mm 5000 ^remaining_mm 2000}})))
   out)
+
+# Every status change bumps the action's status revision, as in the world.
+(fn set_action_status [action, status]
+  (action .put "status" status)
+  (action .put "status_revision" (+ action/status_revision 1)))
 
 # Append one durable event to the stream and deliver it if a ready connection
 # is attached. Answers the event.
@@ -121,7 +128,8 @@
   (let receipt ($json/parse ($json/stringify record/receipt)))
   (if_not ($absent? receipt/action_id)
     (let action ((peer .get "actions") .get receipt/action_id))
-    (receipt .put "action_status" action/status))
+    (receipt .put "action_status" action/status)
+    (receipt .put "action_status_revision" action/status_revision))
   receipt)
 
 # --- inbound -------------------------------------------------------------------------
@@ -221,8 +229,16 @@
           (return {^admission "rejected" ^reason "busy"})))
       (let action_id $"action-${peer/next_action}")
       (peer .put "next_action" (+ (peer .get "next_action") 1))
-      ((peer .get "actions") .put action_id {^action_id action_id ^operation_id op_id ^status "running"})
+      ((peer .get "actions") .put action_id {^action_id action_id ^operation_id op_id ^status "running"
+                                            ^status_revision 1})
       (return {^admission "accepted" ^action_id action_id ^action_status "running"})))
+  (if (== operation "movement.resume")
+    (then
+      (let action ((peer .get "actions") .get input/action_id))
+      (if (|| ($absent? action) (== action void) (!= action/status "suspended"))
+        (return {^admission "rejected" ^reason "not_suspended"}))
+      (set_action_status action "running")
+      (return {^admission "accepted" ^action_id action/action_id ^action_status "running"})))
   (if (== operation "object.pick_up")
     (then
       (if_not ($absent? (peer .get "can_holder"))
@@ -258,10 +274,11 @@
       (let action (if ($absent? found/receipt/action_id) nil ((peer .get "actions") .get found/receipt/action_id)))
       (if (|| ($absent? action) (! (["running" "suspended"] .contains? action/status)))
         (return {^admission "accepted" ^action_status "completed" ^result {^outcome "too_late"}}))
-      (action .put "status" "cancelled")
+      (set_action_status action "cancelled")
       (return {^admission "accepted" ^action_status "completed" ^result {^outcome "cancelled"}
                ^events [{^type "movement.cancelled" ^operation_id target
-                         ^payload {^action_id action/action_id ^position {^x_mm 25000 ^y_mm 1000 ^z_mm 5000}}}]})))
+                         ^payload {^action_id action/action_id ^status_revision action/status_revision
+                                   ^position {^x_mm 25000 ^y_mm 1000 ^z_mm 5000}}}]})))
   (if (== operation "test.reject") (return {^admission "rejected" ^reason "test_rejection"}))
   (if (== operation "test.echo") (return {^admission "accepted" ^action_status "completed" ^result input}))
   {^admission "rejected" ^reason "unknown_operation"})
@@ -289,10 +306,25 @@
   (for pair in (peer .get "actions")
     (let action pair/1)
     (if_yes (== action/operation_id op_id)
-      (action .put "status" status)
+      (set_action_status action status)
       (return (emit peer $"movement.${status}"
-        {^action_id action/action_id ^entity_id (peer .get "entity_id")
+        {^action_id action/action_id ^entity_id (peer .get "entity_id") ^status_revision action/status_revision
          ^position {^x_mm 31500 ^y_mm 1000 ^z_mm 11500}} ^operation_id op_id))))
+  (p/problem $"The peer has no walk for ${op_id}"))
+
+# Suspend a running walk, with its event or — as if this Life never saw it —
+# only in the world's state, where the next snapshot shows it.
+(fn suspend_walk [peer, op_id, ^event event = true]
+  (for pair in (peer .get "actions")
+    (let action pair/1)
+    (if_yes (== action/operation_id op_id)
+      (set_action_status action "suspended")
+      (action .put "reason" "controller_detached")
+      (if_yes event
+        (emit peer "movement.suspended"
+          {^action_id action/action_id ^reason "controller_detached" ^status_revision action/status_revision
+           ^progress {^total_mm 5000 ^remaining_mm 2000}} ^operation_id op_id))
+      (return action)))
   (p/problem $"The peer has no walk for ${op_id}"))
 
 (fn commands [peer, ^operation operation = nil]

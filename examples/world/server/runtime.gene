@@ -203,7 +203,7 @@
     (for pair in actions
       (let action pair/1)
       (if_yes (== action/status "running")
-        (action .put "status" "suspended")
+        (set_status action "suspended")
         (action .put "suspended_reason" "world_restarted")
         (mark_action w action)
         (events .push (owner_event w action "movement.suspended"
@@ -322,6 +322,14 @@
   (w .put "dirty_participants" {})
   delivered)
 
+# Every change of an action's status bumps its status revision, a committed
+# order a client can compare: a receipt, a status answer, a snapshot and a
+# stream event may reach it out of order, and only a newer revision may replace
+# what it already knows (world.md §8.4).
+(fn set_status [action : Map status : Str]
+  (action .put "status" status)
+  (action .put "status_revision" (+ (?? action/status_revision 0) 1)))
+
 (fn terminal? [status : Str] : Bool
   (|| (== status "completed") (|| (== status "failed") (== status "cancelled"))))
 
@@ -330,7 +338,8 @@
 (fn owner_event [w : Map action : Map type : Str payload : Map] : List
   [action/participant_id
    {^world_id w/world_id ^history_id w/history_id ^type type ^schema_version 1
-    ^required true ^operation_id action/operation_id ^payload payload}])
+    ^required true ^operation_id action/operation_id
+    ^payload (do (payload .put "status_revision" (?? action/status_revision 0)) payload)}])
 
 # An observation everyone currently attached can see, plus the actor. Only the
 # actor's own copy names its operation: operation ids are scoped to their
@@ -370,6 +379,7 @@
    ^kind action/kind ^status action/status
    ^destination action/destination ^entity_id action/entity_id
    ^suspended_reason (?? action/suspended_reason nil)
+   ^status_revision (?? action/status_revision 0)
    ^progress (progress_of w action)})
 
 (fn progress_of [w : Map action : Map] : Map
@@ -433,7 +443,7 @@
     # durable, together with everything else that moved.
     (let events [])
     (for action in arrivals
-      (action .put "status" "completed")
+      (set_status action "completed")
       (action .put "completed_sim_time_ms" w/sim_time_ms)
       (events .push (owner_event w action "movement.completed"
                       {^action_id action/action_id ^entity_id action/entity_id
@@ -497,7 +507,7 @@
   (let participant (w/participants .get participant_id))
   (let action (active_walk_of w participant/entity_id))
   (if_yes (&& (present? action) (== action/status "running"))
-    (action .put "status" "suspended")
+    (set_status action "suspended")
     (action .put "suspended_reason" reason)
     (mark_action w action)
     (publish_events w (commit_frontier w ^events
@@ -894,6 +904,7 @@
                 ^admission outcome/admission
                 ^action_id (?? outcome/action_id nil)
                 ^action_status (?? outcome/action_status nil)
+                ^action_status_revision (action_revision w outcome)
                 ^result (?? outcome/result nil)
                 ^reason (?? outcome/reason nil)
                 ^detail (?? outcome/detail nil)
@@ -917,6 +928,12 @@
   (send w conn (message "receipt" receipt))
   (publish_events w delivered))
 
+# The status revision of the action an operation just admitted or changed.
+(fn action_revision [w : Map outcome : Map]
+  (if ($absent? outcome/action_id) (return nil))
+  (let action (w/actions .get outcome/action_id))
+  (if (|| (== action void) ($absent? action)) nil (?? action/status_revision 0)))
+
 # A retained receipt, with the current status of its action if it has one.
 (fn current_receipt [w : Map receipt : Map] : Map
   (let out (copy receipt))
@@ -926,6 +943,7 @@
     (let action (if (== live void) (action_get w/store receipt/action_id) live))
     (if_yes (present? action)
       (out .put "action_status" action/status)
+      (out .put "action_status_revision" (?? action/status_revision 0))
       (out .put "action" (action_view w action))))
   out)
 
@@ -997,7 +1015,7 @@
     (return {^admission "rejected" ^reason "no_route" ^detail "There is no way to walk there."}))
   (let n w/next_action)
   (w .put "next_action" (+ n 1))
-  (let action {^action_id $"action-${n}" ^kind "movement.walk" ^status "running"
+  (let action {^action_id $"action-${n}" ^kind "movement.walk" ^status "running" ^status_revision 1
                ^participant_id participant/participant_id
                ^entity_id participant/entity_id ^operation_id op_id
                ^destination {^cell {^x cell/x ^z cell/z}
@@ -1025,7 +1043,7 @@
   (let waypoints (find_path w/nav at/x_mm at/z_mm dest/x dest/z))
   (if ($absent? waypoints)
     (do
-      (action .put "status" "failed")
+      (set_status action "failed")
       (action .put "failure" "no_route")
       (mark_action w action)
       (return {^admission "accepted" ^action_id action/action_id ^action_status "failed"
@@ -1033,7 +1051,7 @@
                ^events [(owner_event w action "movement.failed"
                           {^action_id action/action_id ^reason "no_route"
                            ^position (position_of w action/entity_id)})]})))
-  (action .put "status" "running")
+  (set_status action "running")
   (action .put "waypoints" waypoints)
   (action .put "next_waypoint" 0)
   (action .put "suspended_reason" nil)
@@ -1070,7 +1088,7 @@
                ^result {^target_operation_id target ^outcome "too_late"
                         ^target_status (if ($absent? stored) "completed" stored/status)}})))
   # Active or suspended: stop at this committed step, keeping real progress.
-  (action .put "status" "cancelled")
+  (set_status action "cancelled")
   (action .put "cancelled_by" op_id)
   (mark_action w action)
   {^admission "accepted" ^action_status "completed"

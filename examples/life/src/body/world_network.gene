@@ -400,6 +400,7 @@
       (records/normalize host tx event/operation_id
         {^status (outcome_status event/type) ^admission "accepted"
          ^action_id (?? event/payload/action_id nil) ^result event/payload
+         ^status_revision (?? event/payload/status_revision nil)
          ^world_revision (int_of event/world_revision)} $"event:${seq}"))
     (if (== view/status "synchronized") (apply_to_view view binding event)))
   (p/tx_put tx "world_cursor" cursor)
@@ -416,6 +417,7 @@
              (if (== admission "cancelled") "cancelled" (?? receipt/action_status "completed")))
    ^admission admission ^action_id (?? receipt/action_id nil) ^reason (?? receipt/reason nil)
    ^detail (?? receipt/detail nil) ^result (?? receipt/result nil)
+   ^status_revision (?? receipt/action_status_revision nil)
    ^world_revision (int_of receipt/world_revision)})
 
 (fn record_observation [host, op_id, observation, source]
@@ -463,8 +465,15 @@
       (if_yes (&& (! ($absent? normalized)) normalized/result/terminal)
         (records/mark_routing tx item/operation_id))))
   (for action in (?? message/actions [])
-    (records/normalize host tx action/operation_id
-      {^status action/status ^admission "accepted" ^action_id action/action_id} "snapshot"))
+    (let normalized (records/normalize host tx action/operation_id
+      {^status action/status ^admission "accepted" ^action_id action/action_id
+       ^status_revision (?? action/status_revision nil)} "snapshot"))
+    # A walk suspended while this Life was away — or whose event it has not
+    # seen — still needs this Life's decision (§6.3, §12.3).
+    (if_yes (&& (! ($absent? normalized)) (== action/status "suspended"))
+      (suspended_activity host tx action/operation_id
+        {^action_id action/action_id ^reason (?? action/suspended_reason nil)
+         ^progress (?? action/progress nil) ^status_revision (?? action/status_revision nil)})))
   (p/commit tx))
 
 (fn on_receipt [host, state, binding, message]
@@ -657,6 +666,19 @@
     (p/tx_put tx $"event/${recorded/id}" recorded))
   recorded)
 
+# A suspended walk waits for its controller: this Life decides whether to
+# resume or cancel it (§6.3). The observation names the action, its committed
+# progress and where it stopped; the decision's context adds the current view.
+# One observation per suspension, whether the event or a snapshot reported it.
+(fn suspended_activity [host, tx, op_id, details]
+  (let revision (?? details/status_revision 0))
+  (let op (p/tx_get tx $"world_op/${op_id}"))
+  (observation host tx "world_activity_suspended"
+    {^operation_id op_id ^action_id details/action_id ^reason (?? details/reason nil)
+     ^progress (?? details/progress nil) ^position (?? details/position nil)
+     ^destination (?? op/input nil) ^status_revision revision}
+    $"world-suspended:${details/action_id}:${revision}" ^wake true))
+
 # Route one operation's terminal result: ready its continuation, settle a chat
 # delivery it carries, or — with nothing waiting — keep an unsuccessful
 # outcome as a quiet observation. Every branch is idempotent.
@@ -692,10 +714,7 @@
   (if_yes mine
     (if (route_result host tx event/operation_id) (return "readied"))
     (if_yes (== type "movement.suspended")
-      # A suspended walk waits for its controller: this Life decides (§6.3).
-      (observation host tx "world_activity_suspended" {^operation_id event/operation_id
-        ^action_id payload/action_id ^reason payload/reason ^progress payload/progress}
-        $"world-suspended:${event/event_seq}" ^wake true))
+      (suspended_activity host tx event/operation_id payload))
     (return "routed"))
   (if (&& (== type "conversation.said") (!= payload/speaker_entity_id binding/entity_id))
     (then
@@ -760,6 +779,23 @@
   (fault host "world_before_dispatch_commit")
   (p/commit tx)
   true)
+
+# A ready continuation reads or acts on the world, so it runs only against a
+# current, synchronized view of the world it was registered for (§12.3):
+# "wait" while disconnected or synchronizing, "ready", or the reason it can
+# no longer run as registered — the world, its history or its rules changed —
+# for which it is invalidated visibly, for reconsideration, never rerun.
+(fn continuation_gate [host, record]
+  (let state (host/world .get))
+  (if (!= state/phase "ready") (return "wait"))
+  (let cont (p/get host/store $"world_cont/${record/operation_id}"))
+  (let binding (p/get host/store "world_binding"))
+  (if (|| (&& (! ($absent? cont/world_id)) (!= cont/world_id binding/world_id))
+          (&& (! ($absent? cont/history_id)) (!= cont/history_id binding/history_id)))
+    (return "The world or its history changed after this continuation was registered"))
+  (if (&& (! ($absent? cont/rules_revision)) (!= cont/rules_revision binding/rules_revision))
+    (return "The world's rules changed after this continuation was registered; reconsider it"))
+  "ready")
 
 # --- operator view and shutdown ----------------------------------------------------------
 

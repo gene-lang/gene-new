@@ -144,6 +144,28 @@ Tests: `tests/spec_runner.nim` ("filesystem atomic text ^owner_only …",
 - `life_smoke`'s restarted world: 24 commits, maximum 11 ms, on its incremental
   store. This is one small run, not the §12.8 calibration.
 
+### Follow-up from review (2026-09-23)
+
+Three gaps a review of world.md/life.md found in this milestone, closed
+(world.md revision 6):
+
+- **Ordered non-terminal statuses.** Every action has a status revision,
+  bumped on each committed status change and carried on receipts
+  (`action_status_revision`), status answers, snapshots and movement events.
+  A Life applies only newer reports; a delayed `running` cannot undo
+  `suspended`, and two statuses under one revision are recorded as a conflict.
+- **A decision for a suspended walk.** A suspension reaches the Life as one
+  waking observation per action and revision, from the event or from a
+  reconnect snapshot, with reason, progress and destination. The fake brain
+  resumes the same action; `life_smoke` no longer injects resumes — both Lives
+  decide on their own after a Life crash and a world crash.
+- **Continuations wait for synchronization.** A ready continuation runs only
+  while the Life is attached and synchronized to the world, history and rules
+  it was registered under; otherwise it waits, or is invalidated visibly.
+
+Evidence: Life suite 128 passed (3 new: status ordering, gating, a suspension
+seen only in a snapshot and resumed by the Life itself).
+
 ### Carried into Milestone 3
 
 - **Lost world reply with real processes.** The in-memory peer drops a

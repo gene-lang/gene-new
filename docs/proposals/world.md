@@ -2,8 +2,8 @@
 
 **Status:** Experimental design proposal, not an implementation report.  
 **Date:** 2026-09-21.  
-**Updated:** 2026-09-22.  
-**Revision:** 5 — one world-result dispatcher with data continuations; physical revision/receipt retention; incremental disk-backed storage in milestones 1–3. Preserve the copy-and-adapt policy and browser-first rollout.  
+**Updated:** 2026-09-23.  
+**Revision:** 6 — ordered non-terminal action statuses (status revisions), a decision path for suspended activity, and continuations admitted only against a synchronized view (§6.3, §8.4, §12.3). Revision 5 — one world-result dispatcher with data continuations; physical revision/receipt retention; incremental disk-backed storage in milestones 1–3. Preserve the copy-and-adapt policy and browser-first rollout.  
 **Companion:** The latest reviewed `life.md`
 **Decision:** One authoritative world process, one separate process per AI Life, and a browser player client for humans. Human and AI controllers use the same world-action contracts over WebSocket. Keep HTTP for pages/assets and explicit application-level receipts, replay, and reconnection for live interaction. Miclone is a source reference for copied code, not a required package, engine, or service.
 
@@ -422,7 +422,9 @@ Initial policy:
 
 Suspending movement does not cancel environmental processes such as plant growth. The initial world has no mandatory survival damage while an inhabitant is offline. Presence is a transport/operational fact, not a forced psychological description such as sleeping.
 
-At world restart, restore unfinished avatar-controlled motor activities as suspended until their controller reconciles. A browser offers explicit Resume or Cancel; a Life decides through its own code. Autonomous world systems resume from saved simulation time. The selected policy must be visible in activity documentation. Closing a player browser is therefore not world shutdown, but it also does not promise that this actor continues walking forever unattended.
+At world restart, restore unfinished avatar-controlled motor activities as suspended until their controller reconciles. A browser offers explicit Resume or Cancel; a Life decides through its own code.
+
+Because `on_result` fires only for terminal outcomes (§8.4), a suspension must reach the Life another way. Its adapter records one durable, waking observation per suspension — identified by action ID and status revision, whether the `movement.suspended` event or a reconnect snapshot reported it — naming the operation, action, reason, committed progress and stopping point; the decision's context adds the current synchronized view. The Life answers with an ordinary program: resume the same action, cancel it, or leave it. With inference unavailable it simply stays suspended, visibly. Resuming never creates a second walk, and the operation's original continuation still waits for its terminal outcome. Autonomous world systems resume from saved simulation time. The selected policy must be visible in activity documentation. Closing a player browser is therefore not world shutdown, but it also does not promise that this actor continues walking forever unattended.
 
 ### 6.4 Fairness without a universal mind scheduler
 
@@ -625,7 +627,7 @@ The existing foreground executor:
     publish deliberately grouped local changes/follow-up work with its completion marker
 ```
 
-Keep canonical operation results independent of their delivery channel. A direct receipt, query response, and later stream event can all describe the same terminal outcome; they update the same result and cannot create three logical triggers. An older observation cannot regress a terminal result to running/pending. Retain the exact terminal outcome reference needed by a ready continuation. A conflicting terminal result is a consistency error, not a reason to run the continuation again.
+Keep canonical operation results independent of their delivery channel. A direct receipt, query response, and later stream event can all describe the same terminal outcome; they update the same result and cannot create three logical triggers. An older observation cannot regress a terminal result to running/pending, and non-terminal statuses are ordered too: every action carries a **status revision** that increases with each committed status change and travels on receipts (`action_status_revision`), status answers, snapshots and movement events. An observation older than the stored revision changes nothing — a delayed `running` cannot overwrite a newer `suspended` — and two different statuses under one revision are a consistency conflict to expose. `world_revision` cannot serve here: a retained receipt keeps its original revision while reporting the current status. Retain the exact terminal outcome reference needed by a ready continuation. A conflicting terminal result is a consistency error, not a reason to run the continuation again.
 
 The standing subscription is a wakeup for durable routing work, not the sole copy of that work. A coalesced wakeup or one pending invocation must not lose later arrivals. After a pass settles, check for more eligible routing/ready records and schedule another bounded pass; startup performs the same check. A result without a continuation is retained according to its result-retention policy, so a late registration can inspect it.
 
@@ -656,6 +658,8 @@ A dispatcher invocation processes a bounded number of records, with the reported
 Bound outstanding continuation records, ready work, and routing backlog by configured counts/bytes independently of the standing-registration cap. A grouped submission that exceeds admission capacity fails before either its new continuation or outbox request is published. Already committed work is never dropped to satisfy a smaller bound; pause new affected admission and expose backlog when necessary. Prefer indexed operation/result lookups and ready-state scans over scanning all historical continuations each time.
 
 For a handler that prepares another world operation, group its relevant local state change, consumed-trigger/completion marker, and next immutable outbox request in one local commit. Keep the next operation ID stable across recovery. External sending follows durable publication. This supplies replay-safe local publication, not exactly-once execution of arbitrary Gene or external I/O. A started handler interrupted after nonparticipating effects retains partial outcomes and is reconciled, not blindly rerun. Ready work that never started can be admitted normally; interrupted work needs its explicit recovery decision.
+
+A ready continuation reads or acts on the world, so the executor also admits it only against a current synchronized view (§12.3): the Life is attached and has installed its reconnect baseline, and the world, history and rules revision it was registered under are still current. While disconnected or synchronizing it stays ready-but-waiting; if the world, history or rules changed it is invalidated visibly for reconsideration rather than run under an assumption it can no longer check. Its ready identity is unchanged either way, so waiting never duplicates it.
 
 Cancellation and ownership checks occur before dispatch and before final local publication. Cognitive-organization changes account for waiting, ready, and interrupted continuation records, their code dependencies, and their inputs. Preserve compatibility, migrate, invalidate visibly for reconsideration, or defer selection; never run old-layout code against newly organized data.
 
@@ -934,7 +938,7 @@ Only then expose the receipt and publish notifications.
 
 A normal precondition or domain rejection can itself be retained as the command's immutable rejected result. Invalid framing/authentication or unavailable transport is not a committed operation and carries no false receipt. A persistence failure prevents publication and puts dependent processing into a visible recovery/failure state.
 
-For a long action, admission commits the action record first. Intermediate movement may remain provisional; periodic/action-boundary checkpoints commit its progress with the physical state (§6.1). A terminal or suspension status is committed before its receipt/event is published. Statuses are `queued`, `running`, `suspended`, `completed`, `failed`, or `cancelled`; durable terminal statuses do not revert. Admission distinguishes rejection from failure of an already admitted activity.
+For a long action, admission commits the action record first. Intermediate movement may remain provisional; periodic/action-boundary checkpoints commit its progress with the physical state (§6.1). A terminal or suspension status is committed before its receipt/event is published. Statuses are `queued`, `running`, `suspended`, `completed`, `failed`, or `cancelled`; durable terminal statuses do not revert. Each committed status change increments the action's status revision (§8.4). Admission distinguishes rejection from failure of an already admitted activity.
 
 This yields one logical application of a known command under an intact durable world history. It is not a promise of exactly-once effects in arbitrary external systems.
 
@@ -1140,7 +1144,7 @@ A missing required module or corrupt store is a recovery failure, not permission
 
 The Life first restores its identity, cognitive organization, pending requests, canonical results, continuations, and distinct receipt/dispatcher progress. It reconstructs the one standing dispatcher without allocating a registration per operation; durable pending-routing and ready records survive a lost wakeup. It then reconnects to the configured world/history, replays retained events, obtains current authoritative avatar state, and reconciles every uncertain outbound action. Resume ready never-started work only after its normal checks; do not automatically rerun interrupted arbitrary handlers.
 
-While disconnected, its old world view is labeled last observed. It may inspect private memory or think about unrelated work, but must not claim to know its current physical location or complete a new world action without synchronization. The default first implementation waits for world synchronization before world-focused deliberation and action dispatch.
+While disconnected, its old world view is labeled last observed. It may inspect private memory or think about unrelated work, but must not claim to know its current physical location or complete a new world action without synchronization. The default first implementation waits for world synchronization before world-focused deliberation, action dispatch and ready world-result continuations (§8.4).
 
 After a reconnect, its own entity may have changed because of already admitted movement or environmental activity. Accept the world's current facts; never upload an old inventory or position snapshot to overwrite them.
 

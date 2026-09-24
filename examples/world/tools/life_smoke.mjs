@@ -17,9 +17,9 @@
 //     Life answers a person through its own outbox (§7.3, H11);
 //   - a human and two Lives contend for the one watering can through the same
 //     handler: exactly one holds it (W1, H1);
-//   - a Life killed mid-walk: the world suspends the walk, the restarted Life
-//     reconciles it, resumes it, and the continuation registered before the
-//     crash still runs once (R1, F8);
+//   - a Life killed mid-walk: the world suspends the walk; the restarted Life
+//     is shown the suspension, decides to resume it itself, and the
+//     continuation registered before the crash still runs once (R1, F8);
 //   - the world killed mid-walk while a Life commits a request and is then
 //     killed itself: the request reaches the restarted world once, under the
 //     same operation ID (R2, D2);
@@ -314,15 +314,18 @@ try {
   await until(async () => (await health()).controllers === 2, "the world noticed Brin's socket close", 10000);
   startLife("brin");
   await attached("brin");
-  const suspended = await until(() => resultOf("brin", pondWalk.id)?.status === "suspended" && resultOf("brin", pondWalk.id),
-    "Brin reconciled the suspended walk", 30000);
-  say(!suspended.terminal && contOf("brin", pondWalk.id).status === "waiting",
-      "after the crash the walk is suspended, not failed; its continuation still waits",
-      suspended.status);
-  decide("brin", "I will resume my walk.", `(body/world .operation "movement.resume" {^action_id "${suspended.action_id}"})`);
+  // Nobody tells Brin what to do: the restarted Life is shown the suspended
+  // walk and decides itself (its fake brain resumes it), §6.3.
   await heard(ada, "Brin", "reached the pond");
+  const noticed = values(inspect("brin", "event/")).filter((e) =>
+    e.kind === "world_activity_suspended" && e.data.operation_id === pondWalk.id);
+  say(noticed.length === 1 && noticed[0].data.reason === "controller_detached",
+      "after the crash the Life was shown its suspended walk once, with why and how far it had got");
+  say(opsOf("brin", "movement.walk_to").filter((o) => o.input.place_id === "pond").length === 1
+      && opsOf("brin", "movement.resume").length === 1,
+      "it resumed that action itself — one resume, no second walk");
   say(contOf("brin", pondWalk.id).status === "completed" && resultOf("brin", pondWalk.id).status === "completed",
-      "resumed under the same action, and the continuation registered before the crash ran once");
+      "and the continuation registered before the crash ran once, on arrival");
 
   // --- the world killed mid-walk; a Life commits while it is down, then dies (R2, D2) ---------
   decide("aster", "I will walk to the hall.", walkThen(`"hall"`, sayAfterWalk("I reached the hall.")));
@@ -342,16 +345,19 @@ try {
   await startWorld();
   startLife("aster");
   await attached("aster");
-  const walkAfter = await until(() => resultOf("aster", hallWalk.id)?.status === "suspended" && resultOf("aster", hallWalk.id),
+  const restartNotice = await until(() => values(inspect("aster", "event/")).find((e) =>
+    e.kind === "world_activity_suspended" && e.data.operation_id === hallWalk.id),
     "Aster learned the walk was suspended by the restart", 30000);
-  say(walkAfter.status === "suspended", "the restarted world suspended the walk at its checkpoint; the Life adopted that");
+  say(restartNotice.data.reason === "world_restarted",
+      "the restarted world suspended the walk at its checkpoint, and the Life was shown that");
   const sent = await until(() => resultOf("aster", offline.id)?.terminal && resultOf("aster", offline.id),
     "the offline request reached the world", 30000);
   say(sent.status === "completed" && opsOf("aster", "conversation.say").filter((o) => o.input.text.includes("while the world was away")).length === 1,
       "the request committed before the crash reached the world under its original ID, once", offline.id);
-  decide("aster", "I will resume my walk.", `(body/world .operation "movement.resume" {^action_id "${walkAfter.action_id}"})`);
   await until(() => contOf("aster", hallWalk.id)?.status === "completed", "Aster's hall continuation", 60000);
-  say(resultOf("aster", hallWalk.id).status === "completed", "the resumed walk completed and its continuation ran");
+  say(resultOf("aster", hallWalk.id).status === "completed"
+      && opsOf("aster", "movement.walk_to").filter((o) => o.input.place_id === "hall").length === 1,
+      "Aster resumed it on its own; the walk completed once and its continuation ran");
 
   // --- preflight: no native library (F11) -----------------------------------------------------
   command("brin", { op: "stop" });

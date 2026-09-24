@@ -55,6 +55,13 @@
             (let walk (body/world .start_walk \"garden\" ^tx tx))
             (body/world .on_result walk arrival {} ^tx tx)
             walk/operation_id)))"))))
+  # A suspended walk waits for this Life's decision; the fixture resumes it
+  # from its committed progress under the same action — never a second walk.
+  (for observation in context/observations
+    (if_yes (== observation/kind "world_activity_suspended")
+      (let action_id observation/data/action_id)
+      (return (response "My walk was suspended. I will resume it from where it stopped."
+        $"(body/world .operation \"movement.resume\" {^action_id \"${action_id}\"})"))))
   (for observation in context/observations
     (if_yes (&& (== observation/kind "chat") (== observation/data/source "world")
                 (== observation/data/speaker_kind "human"))

@@ -27,7 +27,9 @@
 # (completed, failed, cancelled, rejected, conflict) never revert; an older or
 # non-terminal observation cannot regress them, and a *different* terminal
 # report is recorded as a consistency conflict, never as a reason to run the
-# continuation again. `on_result` means a terminal outcome: acceptance,
+# continuation again. Among non-terminal reports the world's per-action status
+# revision decides: an older one changes nothing, and two different statuses
+# under one revision are a conflict. `on_result` means a terminal outcome: acceptance,
 # progress and suspension update status without consuming it.
 (mod world_records)
 (import * : p ^from "../host/persistence")
@@ -208,7 +210,22 @@
         (p/tx_put tx key result))
       (settle tx op)
       (return {^result result ^became_terminal false})))
-  (for field in ["admission" "action_id" "reason" "detail" "result" "world_revision"]
+  (let incoming_revision observation/status_revision)
+  (let known_revision result/status_revision)
+  (if_yes (&& (! ($absent? incoming_revision)) (! ($absent? known_revision)))
+    (let stale (< incoming_revision known_revision))
+    (let clash (&& (== incoming_revision known_revision) (!= incoming result/status)))
+    (if_yes clash
+      (let conflicts (take_last (?? result/conflicts []) 7))
+      (conflicts .push {^status incoming ^status_revision incoming_revision ^source source})
+      (result .put "conflicts" conflicts))
+    (if_yes (|| stale clash)
+      # A delayed `running` cannot undo a newer `suspended` (§8.4).
+      (result .put "sources" sources)
+      (p/tx_put tx key result)
+      (settle tx op)
+      (return {^result result ^became_terminal false})))
+  (for field in ["admission" "action_id" "reason" "detail" "result" "world_revision" "status_revision"]
     (if_not ($absent? (observation .get field)) (result .put field (observation .get field))))
   (result .put "status" incoming)
   (result .put "terminal" (terminal? incoming))
@@ -279,8 +296,13 @@
   (require (plain? inputs 0) "Continuation inputs must be plain data")
   (let key (cont_key op_id))
   (let previous (p/tx_get tx key))
+  # The world it was registered against; it runs only against the same one
+  # (world_network/continuation_gate). Unknown before the first attach.
+  (let binding (p/get host/store "world_binding"))
   (let cont {^id $"cont-${op_id}" ^operation_id op_id ^code_revision revision ^inputs inputs
     ^organization (?? record/organization nil) ^owner (?? op/owner nil)
+    ^world_id (?? binding/world_id nil) ^history_id (?? binding/history_id nil)
+    ^rules_revision (?? binding/rules_revision nil)
     ^status "waiting" ^registered_by record/id ^registered_at (host/clock) ^execution_id nil})
   (if_not ($absent? previous)
     # One default continuation per operation: the same registration answers the

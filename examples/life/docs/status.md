@@ -87,7 +87,10 @@ Gene implementation:
   after a crash before its commit; an unknown required event blocking routing;
   speech heard and answered through the outbox without reacting to its own
   echo; owner withdrawal and explicit cancellation; a tombstone meeting a late
-  copy of a cancelled request; `observe` freshness, `describe` and `refresh`.
+  copy of a cancelled request; `observe` freshness, `describe` and `refresh`;
+  non-terminal statuses ordered by the world's status revision; ready
+  continuations held until synchronized and invalidated after a rules change;
+  a walk suspended while away surfaced to the Life, which resumes it itself.
 - The transport-independent delivery kernel shared by the HTTP connector and
   the world profile, one conformance table over both record shapes.
 - Real processes (examples/world/tools/life_smoke.mjs): two networked Lives and
