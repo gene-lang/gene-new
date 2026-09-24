@@ -1,0 +1,20 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:7764a3c9ff0548902714703b7666053642835146cbb7419ae4800382deb4dc5d"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:genex/websocket@0.1.0#sha256:a32fcbe877b747316926f7f1592cf894ffa1e40fe355a6597f410067a5082796"]
+  ^packages [
+    (locked_package
+      ^id "workspace:genex/websocket@0.1.0#sha256:a32fcbe877b747316926f7f1592cf894ffa1e40fe355a6597f410067a5082796"
+      ^name "genex/websocket"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:7764a3c9ff0548902714703b7666053642835146cbb7419ae4800382deb4dc5d"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}
