@@ -12,7 +12,7 @@ The native VM currently supplies functions, modules, packages and locks, tasks, 
 | --- | --- | --- |
 | Script | APP-1 implemented; passing macOS arm64 fixture and typed fault checks | Linux qualification and the full profile gates |
 | Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Linux qualification and cross-host native artifact policy |
-| Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one repeat missed the 250 ms heartbeat gate | Investigate the rare host-loop stall, Linux runtime qualification, and VM-3 lifetime gate |
+| Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one earlier repeat missed the 250 ms heartbeat gate, and ten repeats after the serve-loop idle fix passed with 53–73 ms maximum gaps | Investigate the rare host-loop stall, Linux runtime qualification, and VM-3 lifetime gate |
 | Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Linux qualification and remaining VAL/IO release gates |
 | Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and Linux qualification |
 

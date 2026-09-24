@@ -13,6 +13,10 @@
 (var max_tick_at_ms 0)
 (var max_tick_active_connections 0)
 (var max_tick_in_flight 0)
+# SQLite runs synchronously on the root lane; its slowest call is the first
+# suspect when the heartbeat stalls.
+(var max_db_ms 0)
+(var max_db_at_ms 0)
 
 (fn heartbeat []
   (let now ($os/monotonic_ms))
@@ -38,8 +42,14 @@
       (return (text 200 "slow"))))
   (if (== request/path "/db")
     (do
+      (let started ($os/monotonic_ms))
       (db .Db:execute "insert into hits(v) values (?)" 1)
       (let row (db .Db:query_one "select count(*) as n from hits"))
+      (let spent (- ($os/monotonic_ms) started))
+      (if (> spent max_db_ms)
+        (do
+          (set max_db_ms spent)
+          (set max_db_at_ms started)))
       (return (text 200 ($to_str row/n)))))
   (if (== request/path "/meta")
     (return (text 200 ($json/stringify
@@ -85,7 +95,8 @@
      ^max_heartbeat_at_ms max_tick_at_ms
      ^max_heartbeat_active_connections max_tick_active_connections
      ^max_heartbeat_in_flight max_tick_in_flight
-     ^tick_count tick_count ^io_cleanup_leases stats/io_cleanup_leases
+     ^tick_count tick_count ^max_db_ms max_db_ms ^max_db_at_ms max_db_at_ms
+     ^io_cleanup_leases stats/io_cleanup_leases
      ^io_open_resources stats/io_open_resources
      ^io_retained_bytes stats/io_retained_bytes ^shutdown shutdown}))
   0)

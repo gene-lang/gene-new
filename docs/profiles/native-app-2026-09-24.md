@@ -133,6 +133,12 @@ in-process await on a native Client transfer waited out the 50 ms idle select
 (100 requests took 5,354 ms before the fix and 150 ms after). NET-1 AsyncReader
 uploads now hold an exclusive read borrow in the reader's I/O lifecycle.
 
+After the serve-loop idle fix (`4c2e836`), ten consecutive release-binary
+SERVICE repeats returned `probe_pass`: maximum heartbeat gaps 53–73 ms, p95
+9.5–16.8 ms, p99 13.5–17.0 ms. The last six also recorded the fixture's slowest
+synchronous SQLite call at 2–4 ms. The earlier 336 ms gap did not recur and
+remains unexplained.
+
 `nimble test`, `nimble spec`, and `nimble leakcheck` passed. Linux x86_64
 runtime qualification was unavailable on this host: the Docker daemon was
 not running, and no Podman or QEMU runner was installed. The native-app

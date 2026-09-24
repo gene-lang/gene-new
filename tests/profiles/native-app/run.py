@@ -919,6 +919,8 @@ def run_service(gene: Path, workload: dict) -> dict:
                                 "max_heartbeat_active_connections"),
                             "max_heartbeat_in_flight": stopped.get(
                                 "max_heartbeat_in_flight"),
+                            "max_db_ms": stopped.get("max_db_ms"),
+                            "max_db_at_ms": stopped.get("max_db_at_ms"),
                             "tick_count": tick_count,
                             "load": load_metrics}
                 cleanup = {key: stopped.get(key) for key in
@@ -955,6 +957,9 @@ def run_service(gene: Path, workload: dict) -> dict:
                     "proxy_overhead_ms": round(proxy_baseline_ms -
                                                plain_baseline_ms, 2),
                     "max_heartbeat_gap_ms": heartbeat_gap,
+                    "max_heartbeat_at_ms": stopped.get("max_heartbeat_at_ms"),
+                    "max_db_ms": stopped.get("max_db_ms"),
+                    "max_db_at_ms": stopped.get("max_db_at_ms"),
                     "tick_count": tick_count, "cleanup": cleanup,
                     "shutdown": shutdown}}
             except (OSError, urllib.error.URLError, TimeoutError, ValueError,
