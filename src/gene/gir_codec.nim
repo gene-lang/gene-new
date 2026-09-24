@@ -9,7 +9,7 @@ import ./[gir, printer, reader, types]
 
 # The number changes whenever the chunk layout does, so a stale artifact fails
 # closed instead of being read with a different shape.
-const GirArtifactFormat* = 18
+const GirArtifactFormat* = 19
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -65,13 +65,34 @@ proc validateInertValue(value: Value, seen: var HashSet[uint64]) =
   else: discard
 
 proc toJsonHook(value: Value): JsonNode =
-  ## Values reachable from GIR are inert reader data. Canonical Gene text is
-  ## the one representation shared with manifests and lockfiles.
+  ## Values reachable from GIR are inert reader data. The sole tagged
+  ## exception is an ffi/fn declaration stub with no callable native entry.
+  ## Canonical Gene text handles all ordinary values.
+  if value.kind == vkNativeFn:
+    let metadata = value.nativeErrorMetadata
+    if value.nativeImpl != nil or value.nativeCallImpl != nil or
+        value.nativeAcceptsNamed or value.nativeFastKind != nfkNone or
+        metadata.identity.len > 0 or metadata.version.len > 0 or
+        value.nativeFnName.len == 0 or value.nativeFnName.len > 256:
+      raise newException(ValueError,
+        "executable GIR contains an active native function")
+    result = newJObject()
+    result["ffi_stub"] = %value.nativeFnName
+    return
   var seen = initHashSet[uint64]()
   value.validateInertValue(seen)
   %value.print()
 
 proc fromJsonHook(value: var Value, node: JsonNode) =
+  if node.kind == JObject:
+    if node.len != 1 or not node.hasKey("ffi_stub") or
+        node["ffi_stub"].kind != JString or
+        node["ffi_stub"].getStr().len == 0 or
+        node["ffi_stub"].getStr().len > 256:
+      raise newException(ValueError,
+        "encoded GIR native stub is invalid")
+    value = newNativeFn(node["ffi_stub"].getStr(), nil)
+    return
   if node.kind != JString:
     raise newException(ValueError, "encoded GIR value must be a string")
   value = read(node.getStr(), "<artifact.gir>",

@@ -1598,7 +1598,7 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
   # keep the default depth so genuine redeclarations remain errors.
   # This concerns bindings only: loop jump targets belong to their own chunk.
   child.repeatBindings = repeatBindings
-  child.loopDepth = c.loopDepth
+  child.loopDepth = if scoped: 0 else: c.loopDepth
   if scoped:
     child.enableLocalSlots()
     child.parentSlots = c.parentFrames()

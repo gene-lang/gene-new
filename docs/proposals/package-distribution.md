@@ -1,6 +1,6 @@
 # Package Publication and Application Distribution
 
-**Status:** Implementation proposal; source baseline `3b2bde9`.
+**Status:** PKG-1 implemented for local/path POSIX installation, selected resources, materialization, and uninstall on macOS arm64. PKG-2 has experimental `native_binary` variant selection and source-built `c_library` shared/static outputs, digest/ABI and system-dependency checks, verified native artifact sidecars, and compiler-free offline installation. The native-app CLI probe includes a C binding with a pinned macOS SDK. A separate macOS arm64 fixture packages the existing genex WebSocket AOT adapter and exchanges a binary frame from an installed launcher with source/cache/compiler unavailable. PKG-3 has a bounded canonical release-index reader/builder, whole-tree admission checks, explicit OpenSSL 3 Ed25519 signing tested against RFC 8032 vectors, registry-pinned owner-key delegation, and a bounded curl 8.4+ HTTPS metadata/object transport with staged size/digest verification. A local TLS fixture verifies signed release admission, committed version-page coverage, selected-tree acquisition through the existing solver/store, CLI `--registry-config`, offline cache and vendor signature re-verification, and authenticated staged `pkg publish` with idempotence/conflict behavior. It rejects tampering, invalid delegation, fresh selection of yanked releases, wrong keys/tokens, and corrupted cached or vendored signatures. The local fixture also builds and installs an app with a hosted dependency and launches it without source or compiler. A deployable registry service and Linux runtime qualification remain open. Design baseline `3b2bde9`.
 
 **Stages:** PKG-1 (resources/offline install), PKG-2 (native recipes), PKG-3 (hosted publication).
 
@@ -8,7 +8,7 @@
 
 ## Reuse the existing model
 
-`package.nim` already has format-1 `files`, `build`, target `uses`, `system_dependencies`, source-tree capture, canonicalGeneData/canonicalDigest, registry adapters, locks, and vendor stores. `build.nim` explicitly rejects unavailable target recipes. Implement that reserved recipe path. Do not add format 2, parallel resources/native top-level fields, a second solver, or a new signature serialization.
+`package.nim` already has format-1 `files`, `build`, target `uses`, `system_dependencies`, source-tree capture, canonicalGeneData/canonicalDigest, registry adapters, locks, and vendor stores. `build.nim` explicitly rejects unavailable target recipes. Implement that reserved recipe path. Package manifests and locks remain inert Gene data in `package.gene` and `package.gene.lock`; these are the package metadata inputs. Do not add format 2, parallel resources/native top-level fields, a second solver, or a new signature serialization.
 
 Keep current package/source identities, tree digests, and lock semantics unchanged. Publication provenance and build-artifact digests are separate records. Extend closed schemas with versioned recipe nodes and structured unsupported-recipe errors; old runtimes already reject recipe-dependent targets. Selecting a package for the wrong runtime must produce an early compatibility error.
 

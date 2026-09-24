@@ -1,8 +1,9 @@
 ## Deterministic pure-Gene target planning and artifact construction.
 
-import std/[algorithm, os, sets, strutils, tables]
+import std/[algorithm, os, osproc, sets, strutils, tables]
 import ./[digest, gir, gir_codec, package, printer, process_lock, reader,
           system_dependency, types, vm]
+import ./native_api
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
@@ -34,6 +35,8 @@ type
   ToolchainSet* = ref object
     compilerIdentity*: string
     hostTargetTriple*: string
+    cCompilerPath*: string
+    cCompilerEvidenceOverride*: string
 
   BuildPolicy* = object
     ## Phase-1 pure Gene compilation requests no ambient authority. Later
@@ -43,6 +46,8 @@ type
 
   ArtifactSource* = ref object
     name*: string
+    root*: string
+    required*: bool
 
   ArtifactStore* = ref object
     root*: string
@@ -78,6 +83,15 @@ type
     verifyReproducible*: bool
     maxParallelism*: int
 
+  BuildResource* = object
+    path*: string
+    size*: int64
+    digest*: string
+    builtRelative*, compilerEvidence*: string
+    nativeAlias*, nativeTarget*, abiKind*, runtimeIdentity*: string
+    abiVersion*: int
+    systemEvidence*: seq[string]
+
   BuildArtifact* = object
     packageId*: string
     packageName*: string
@@ -92,6 +106,7 @@ type
     profile*: BuildProfile
     compiledChunk*: Chunk
     compiledModules*: seq[CompiledModule]
+    resources*: seq[BuildResource]
     cacheReason*: string
 
   BuildResult* = ref object
@@ -115,9 +130,14 @@ proc raiseBuild(code: BuildErrorCode, message: string,
 
 proc defaultSourceSnapshot(pkg: Package, snapshotRoot: string): Package
 
-proc newToolchainSet*(compilerIdentity, hostTargetTriple: string): ToolchainSet =
+proc newToolchainSet*(compilerIdentity, hostTargetTriple: string,
+                     cCompilerPath = "",
+                     cCompilerEvidenceOverride = ""): ToolchainSet =
   ToolchainSet(compilerIdentity: compilerIdentity,
-               hostTargetTriple: hostTargetTriple)
+               hostTargetTriple: hostTargetTriple,
+               cCompilerPath: (if cCompilerPath.len > 0: cCompilerPath
+                               else: findExe("cc")),
+               cCompilerEvidenceOverride: cCompilerEvidenceOverride)
 
 proc newLocalArtifactStore*(root: string): ArtifactStore =
   ArtifactStore(root: normalizedPath(absolutePath(root)))
@@ -159,7 +179,8 @@ proc derivationId(environment: BuildEnvironment, request: BuildRequest,
                   graph: MaterializedGraph, pkg: Package,
                   kind: BuildArtifactKind, target, entry, sourceDigest: string,
                   dependencyArtifacts: seq[BuildArtifact],
-                  profile: BuildProfile): string =
+                  profile: BuildProfile,
+                  resources: seq[BuildResource]): string =
   var dependencyIds: seq[string]
   for artifact in dependencyArtifacts:
     dependencyIds.add artifact.packageId & "=" & artifact.artifactDigest
@@ -187,6 +208,16 @@ proc derivationId(environment: BuildEnvironment, request: BuildRequest,
   entries["assertions"] = newBool(profile.assertions)
   entries["sealing"] = newSym(profile.sealing)
   entries["lto"] = newBool(profile.lto)
+  var nativeInputs: seq[string]
+  for resource in resources:
+    if resource.nativeAlias.len > 0:
+      nativeInputs.add resource.nativeAlias & "=" & resource.digest & "=" &
+        resource.abiKind & ":" & $resource.abiVersion & "=" &
+        resource.runtimeIdentity & "=" & resource.compilerEvidence
+      nativeInputs.add resource.systemEvidence
+  if nativeInputs.len > 0:
+    nativeInputs.sort()
+    entries["native_inputs"] = valueList(nativeInputs)
   canonicalDigest(newMap(entries))
 
 proc artifactMetadata(pkg: Package, artifact: BuildArtifact,
@@ -216,6 +247,25 @@ proc artifactMetadata(pkg: Package, artifact: BuildArtifact,
   entries["lock_digest"] =
     if graph.lockDigest.len > 0: newStr(graph.lockDigest) else: NIL
   entries["dependencies"] = valueList(dependencies)
+  if artifact.resources.len > 0:
+    var resources: seq[Value]
+    for resource in artifact.resources:
+      var item = initPropTable()
+      item["path"] = newStr(resource.path)
+      item["size"] = newInt(resource.size)
+      item["digest"] = newStr(resource.digest)
+      if resource.nativeAlias.len > 0:
+        item["native_alias"] = newStr(resource.nativeAlias)
+        item["native_target"] = newStr(resource.nativeTarget)
+        item["abi_kind"] = newSym(resource.abiKind)
+        item["abi_version"] = newInt(resource.abiVersion)
+        item["runtime_identity"] = newStr(resource.runtimeIdentity)
+        item["system_evidence"] = valueList(resource.systemEvidence)
+        if resource.builtRelative.len > 0:
+          item["built_relative"] = newStr(resource.builtRelative)
+          item["compiler_evidence"] = newStr(resource.compilerEvidence)
+      resources.add newMap(item)
+    entries["resources"] = newList(resources)
   newMap(entries)
 
 proc updateU64(context: var Sha256Context, value: uint64) =
@@ -315,7 +365,75 @@ proc activeArtifact(indexPath: string): string =
   result = entries["artifact_digest"].strVal
   requireBuildDigest(result, indexPath)
 
-proc verifyArtifactObject(objectPath, expectedDigest, expectedDerivation: string,
+proc verifyBuiltSidecars(metadata: Value, objectPath: string) =
+  if not metadata.mapEntries.hasKey("resources"):
+    return
+  let resources = metadata.mapEntries["resources"]
+  if resources.kind != vkList:
+    raiseBuild(becNonReproducible,
+      "artifact resources metadata is not a list", [objectPath])
+  for item in resources.listItems:
+    if item.kind != vkMap or
+        not item.mapEntries.hasKey("built_relative"):
+      continue
+    let fields = item.mapEntries
+    if fields["built_relative"].kind != vkString or
+        not fields.hasKey("digest") or fields["digest"].kind != vkString or
+        not fields.hasKey("size") or fields["size"].kind != vkInt:
+      raiseBuild(becNonReproducible,
+        "built native metadata is malformed", [objectPath])
+    let relative = fields["built_relative"].strVal
+    if not relative.startsWith("native/") or relative.contains("..") or
+        relative.isAbsolute:
+      raiseBuild(becNonReproducible,
+        "built native path is invalid", [objectPath, relative])
+    let absolute = objectPath / relative
+    if not fileExists(absolute) or symlinkExists(absolute) or
+        not containsPath(canonicalPath(objectPath), canonicalPath(absolute)) or
+        getFileSize(absolute) != fields["size"].intVal or
+        "sha256:" & sha256File(absolute) != fields["digest"].strVal:
+      raiseBuild(becNonReproducible,
+        "built native artifact failed content verification",
+        [objectPath, relative])
+
+proc hydrateBuiltResources(artifact: var BuildArtifact) =
+  let metadataPath = artifact.objectPath / "metadata.gene"
+  let forms = readAll(readFile(metadataPath), metadataPath,
+                      ReadOptions(rejectDuplicateProps: true))
+  if forms.len != 1 or forms[0].kind != vkMap:
+    raiseBuild(becNonReproducible,
+      "cached native metadata is invalid", [artifact.objectPath])
+  let entries = forms[0].mapEntries
+  for resource in artifact.resources.mitems:
+    if resource.builtRelative.len == 0:
+      continue
+    var found = false
+    if entries.hasKey("resources") and entries["resources"].kind == vkList:
+      for item in entries["resources"].listItems:
+        if item.kind != vkMap: continue
+        let fields = item.mapEntries
+        if not fields.hasKey("built_relative") or
+            fields["built_relative"].kind != vkString or
+            fields["built_relative"].strVal != resource.builtRelative:
+          continue
+        if found or not fields.hasKey("digest") or
+            fields["digest"].kind != vkString or
+            not fields.hasKey("size") or fields["size"].kind != vkInt or
+            not fields.hasKey("compiler_evidence") or
+            fields["compiler_evidence"].kind != vkString or
+            fields["compiler_evidence"].strVal != resource.compilerEvidence:
+          raiseBuild(becNonReproducible,
+            "cached native resource metadata disagrees with derivation",
+            [artifact.objectPath, resource.builtRelative])
+        resource.digest = fields["digest"].strVal
+        resource.size = int64(fields["size"].intVal)
+        found = true
+    if not found:
+      raiseBuild(becNonReproducible,
+        "cached native resource is absent", [artifact.objectPath,
+         resource.builtRelative])
+
+proc verifyArtifactObject*(objectPath, expectedDigest, expectedDerivation: string,
                           kind: BuildArtifactKind): bool =
   if not dirExists(objectPath):
     return false
@@ -338,6 +456,7 @@ proc verifyArtifactObject(objectPath, expectedDigest, expectedDerivation: string
       raiseBuild(becNonReproducible,
         "artifact-store object failed content verification",
         ["expected: " & expectedDigest, "actual: " & observed, objectPath])
+    verifyBuiltSidecars(forms[0], objectPath)
     return true
   except BuildError:
     raise
@@ -373,6 +492,7 @@ proc loadVerifiedArtifactPayload(objectPath, expectedDigest,
       raiseBuild(becNonReproducible,
         "artifact-store object failed content verification",
         ["expected: " & expectedDigest, "actual: " & observed, objectPath])
+    verifyBuiltSidecars(forms[0], objectPath)
   except BuildError:
     raise
   except CatchableError as error:
@@ -663,6 +783,298 @@ proc entryChunk(artifact: ExecutableGir): Chunk =
     if compiled.identity == artifact.entryIdentity:
       return compiled.chunk
 
+proc targetUses(pkg: Package, kind: BuildArtifactKind,
+                target: string): seq[string] =
+  case kind
+  of bakGeneLibrary:
+    result = pkg.library.uses
+  of bakGeneApplication:
+    for application in pkg.applications:
+      if application.name == target:
+        return application.uses
+  of bakGeneTest:
+    discard
+
+proc cCompilerEvidence(toolchains: ToolchainSet): string =
+  if toolchains.cCompilerEvidenceOverride.len > 0:
+    return toolchains.cCompilerEvidenceOverride
+  let path = toolchains.cCompilerPath
+  if path.len == 0 or not fileExists(path):
+    raiseBuild(becRecipeUnavailable,
+      "c_library requires a configured C compiler")
+  let input = normalizedPath(absolutePath(path)) & "\0" &
+    sha256File(path) & "\0" & getEnv("SDKROOT") & "\0" &
+    getEnv("MACOSX_DEPLOYMENT_TARGET") & "\0" & getEnv("SYSROOT")
+  "environment-dependent:sha256:" & sha256Hex(input)
+
+proc selectedResources(engine: BuildEngine, request: BuildRequest,
+                       pkg: Package, kind: BuildArtifactKind,
+                       target: string): seq[BuildResource] =
+  var seen = initHashSet[string]()
+  let triple = if request.targetTriple.len > 0: request.targetTriple
+               else: engine.environment.toolchains.hostTargetTriple
+  for alias in targetUses(pkg, kind, target):
+    var recipeKind = ""
+    if pkg.buildRecipes.kind == vkList:
+      for recipe in pkg.buildRecipes.listItems:
+        if recipe.kind != vkNode or recipe.body.len == 0 or
+            recipe.body[0].kind != vkString or
+            recipe.body[0].strVal != alias:
+          continue
+        if recipeKind.len > 0:
+          raiseBuild(becRequestInvalid,
+            "target recipe alias is duplicated", [pkg.name, alias])
+        if recipe.head.kind != vkSymbol:
+          raiseBuild(becRequestInvalid,
+            "target recipe head must be a symbol", [pkg.name, alias])
+        recipeKind = recipe.head.symVal
+    if recipeKind.len == 0:
+      raiseBuild(becRecipeUnavailable,
+        "target references an unknown recipe", [pkg.name, alias])
+    if recipeKind == "native_binary":
+      var variant: NativeBinaryVariant
+      try:
+        variant = pkg.nativeBinaryVariant(alias, triple)
+      except PackageError as error:
+        raiseBuild(becRequestInvalid, error.msg, [pkg.name, alias])
+      let identity = engine.environment.toolchains.compilerIdentity
+      if variant.abiKind == "gene_api":
+        if variant.abiVersion notin [GeneApiVersion,
+                                     int(GeneApiV5Version)] or
+            variant.runtimeIdentity != identity:
+          raiseBuild(becRecipeUnavailable,
+            "native binary GeneApi/runtime identity is incompatible",
+            [pkg.name, alias, triple])
+      elif variant.abiKind == "gene_generated":
+        if variant.abiVersion != 1 or variant.runtimeIdentity != identity:
+          raiseBuild(becRecipeUnavailable,
+            "generated native binary runtime identity is incompatible",
+            [pkg.name, alias, triple])
+      elif variant.abiVersion != 1 or variant.runtimeIdentity.len > 0:
+        raiseBuild(becRequestInvalid,
+          "ordinary C ABI variant requires version 1 and no runtime identity",
+          [pkg.name, alias])
+      let actual = "sha256:" & sha256File(pkg.root / variant.path)
+      if actual != variant.digest:
+        raiseBuild(becNonReproducible,
+          "native binary digest mismatch",
+          [pkg.name, alias, "expected: " & variant.digest,
+           "actual: " & actual])
+      let size = getFileSize(pkg.root / variant.path)
+      if size > 1024'i64 * 1024 * 1024:
+        raiseBuild(becRequestInvalid,
+          "native binary exceeds 1 GiB build limit", [pkg.name, alias])
+      var evidence: seq[string]
+      for systemAlias in variant.systemAliases:
+        if engine.environment.systemDependencyProviders == nil:
+          raiseBuild(becRecipeUnavailable,
+            "native binary requires a system dependency resolver",
+            [pkg.name, alias, systemAlias])
+        let resolved = engine.environment.systemDependencyProviders.resolve(
+          SystemDependencyRequest(
+            requirement: pkg.systemDependencies[systemAlias],
+            targetTriple: triple, toolchainIdentity: identity))
+        evidence.add systemAlias & "=" & resolved.canonicalDigest
+      evidence.sort()
+      if variant.path in seen:
+        raiseBuild(becRequestInvalid,
+          "native binary is selected more than once", [pkg.name, variant.path])
+      seen.incl variant.path
+      result.add BuildResource(path: variant.path, size: size,
+        digest: variant.digest, nativeAlias: alias,
+        nativeTarget: variant.target,
+        abiKind: variant.abiKind, abiVersion: variant.abiVersion,
+        runtimeIdentity: variant.runtimeIdentity,
+        systemEvidence: evidence)
+      continue
+    if recipeKind == "c_library":
+      if triple != engine.environment.toolchains.hostTargetTriple:
+        raiseBuild(becRecipeUnavailable,
+          "c_library needs a compiler configured for this target",
+          [pkg.name, alias, triple])
+      var recipe: CLibraryRecipe
+      try:
+        recipe = pkg.cLibraryRecipe(alias, triple)
+      except PackageError as error:
+        raiseBuild(becRequestInvalid, error.msg, [pkg.name, alias])
+      if recipe.linkage == "static" and
+          (recipe.ldflags.len > 0 or recipe.systemAliases.len > 0):
+        raiseBuild(becRecipeUnavailable,
+          "static c_library cannot apply link flags or system libraries",
+          [pkg.name, alias])
+      let relative = "native/" & sha256Hex(alias)[0 .. 31] & ".bin"
+      if relative in seen:
+        raiseBuild(becRequestInvalid,
+          "native output is selected more than once", [pkg.name, alias])
+      seen.incl relative
+      let identity = engine.environment.toolchains.compilerIdentity
+      var evidence: seq[string]
+      for systemAlias in recipe.systemAliases:
+        if engine.environment.systemDependencyProviders == nil:
+          raiseBuild(becRecipeUnavailable,
+            "c_library requires a system dependency resolver",
+            [pkg.name, alias, systemAlias])
+        let resolved = engine.environment.systemDependencyProviders.resolve(
+          SystemDependencyRequest(
+            requirement: pkg.systemDependencies[systemAlias],
+            targetTriple: triple, toolchainIdentity: identity))
+        evidence.add systemAlias & "=" & resolved.canonicalDigest
+      evidence.sort()
+      result.add BuildResource(path: relative, builtRelative: relative,
+        nativeAlias: alias, nativeTarget: triple,
+        abiKind: "c_abi", abiVersion: 1,
+        compilerEvidence: cCompilerEvidence(engine.environment.toolchains),
+        systemEvidence: evidence)
+      continue
+    if recipeKind == "c_library":
+      if triple != engine.environment.toolchains.hostTargetTriple:
+        raiseBuild(becRecipeUnavailable,
+          "c_library needs a configured compiler for this target",
+          [pkg.name, alias, triple])
+      var recipe: CLibraryRecipe
+      try:
+        recipe = pkg.cLibraryRecipe(alias, triple)
+      except PackageError as error:
+        raiseBuild(becRequestInvalid, error.msg, [pkg.name, alias])
+      let relative = "native/" & sha256Hex(alias)[0 .. 31] & ".bin"
+      if relative in seen:
+        raiseBuild(becRequestInvalid,
+          "native output is selected more than once", [pkg.name, alias])
+      seen.incl relative
+      let identity = engine.environment.toolchains.compilerIdentity
+      var evidence: seq[string]
+      for systemAlias in recipe.systemAliases:
+        if engine.environment.systemDependencyProviders == nil:
+          raiseBuild(becRecipeUnavailable,
+            "c_library requires a system dependency resolver",
+            [pkg.name, alias, systemAlias])
+        let resolved = engine.environment.systemDependencyProviders.resolve(
+          SystemDependencyRequest(
+            requirement: pkg.systemDependencies[systemAlias],
+            targetTriple: triple, toolchainIdentity: identity))
+        evidence.add systemAlias & "=" & resolved.canonicalDigest
+      evidence.sort()
+      result.add BuildResource(path: relative,
+        builtRelative: relative, nativeAlias: alias,
+        nativeTarget: triple, abiKind: "c_abi", abiVersion: 1,
+        compilerEvidence: cCompilerEvidence(engine.environment.toolchains),
+        systemEvidence: evidence)
+      continue
+    if recipeKind != "resources":
+      raiseBuild(becRecipeUnavailable,
+        "target recipe kind is not implemented", [pkg.name, alias])
+    for path in pkg.resourceRecipeFiles(alias):
+      if path in seen:
+        raiseBuild(becRequestInvalid,
+          "resource is selected by more than one recipe", [pkg.name, path])
+      seen.incl path
+      let absolute = pkg.root / path
+      let size = getFileSize(absolute)
+      if size > 1024'i64 * 1024 * 1024:
+        raiseBuild(becRequestInvalid,
+          "resource exceeds the 1 GiB build limit", [pkg.name, path])
+      result.add BuildResource(path: path, size: size,
+                               digest: "sha256:" & sha256File(absolute))
+  result.sort(proc (a, b: BuildResource): int = cmp(a.path, b.path))
+
+proc runNativeTool(executable: string, args: seq[string], workDir: string) =
+  ## Start argv directly. A shell would make cflags/ldflags executable input.
+  let process = startProcess(executable, workDir, args,
+                             options = {poParentStreams})
+  try:
+    let status = process.waitForExit(120_000)
+    if status == -1:
+      process.terminate()
+      discard process.waitForExit(5_000)
+      raiseBuild(becRecipeUnavailable,
+        "native compiler exceeded 120-second deadline", [executable])
+    if status != 0:
+      raiseBuild(becRecipeUnavailable,
+        "native compiler failed", [executable, "exit code: " & $status])
+  finally:
+    process.close()
+
+proc compileCLibrary(engine: BuildEngine, request: BuildRequest,
+                     pkg: Package, resource: BuildResource,
+                     workRoot: string): string =
+  when not defined(posix) or defined(emscripten) or defined(geneWasm):
+    raiseBuild(becRecipeUnavailable,
+      "c_library currently requires a native POSIX host")
+  else:
+    let recipe = pkg.cLibraryRecipe(resource.nativeAlias,
+                                     resource.nativeTarget)
+    if engine.environment.toolchains.cCompilerEvidenceOverride.len > 0:
+      raiseBuild(becRecipeUnavailable,
+        "installed compiler evidence cannot authorize a native rebuild",
+        [pkg.name, resource.nativeAlias])
+    let compiler = engine.environment.toolchains.cCompilerPath
+    if compiler.len == 0 or not fileExists(compiler):
+      raiseBuild(becRecipeUnavailable,
+        "c_library compiler is unavailable for a cache miss",
+        [pkg.name, resource.nativeAlias])
+    if cCompilerEvidence(engine.environment.toolchains) !=
+        resource.compilerEvidence:
+      raiseBuild(becNonReproducible,
+        "C compiler changed after derivation planning",
+        [pkg.name, resource.nativeAlias])
+    var compileArgs = @["-fPIC"]
+    compileArgs.add recipe.cflags
+    for directory in recipe.includeDirs:
+      compileArgs.add "-I" & (pkg.root / directory)
+    var linkArgs: seq[string]
+    linkArgs.add recipe.ldflags
+    for alias in recipe.systemAliases:
+      let resolved = engine.environment.systemDependencyProviders.resolve(
+        SystemDependencyRequest(
+          requirement: pkg.systemDependencies[alias],
+          targetTriple: resource.nativeTarget,
+          toolchainIdentity: engine.environment.toolchains.compilerIdentity))
+      if alias & "=" & resolved.canonicalDigest notin resource.systemEvidence:
+        raiseBuild(becNonReproducible,
+          "system dependency changed after derivation planning",
+          [pkg.name, resource.nativeAlias, alias])
+      for root in resolved.headerRoots:
+        compileArgs.add "-I" & root.path
+      for definition in resolved.compileDefinitions:
+        compileArgs.add "-D" & definition
+      compileArgs.add resolved.compileOptions
+      for root in resolved.libraryRoots:
+        linkArgs.add "-L" & root.path
+      for name in resolved.linkNames:
+        linkArgs.add "-l" & name
+      for library in resolved.libraryFiles:
+        linkArgs.add library.path
+      linkArgs.add resolved.linkOptions
+    result = workRoot / resource.builtRelative
+    createDir(parentDir(result))
+    if recipe.linkage == "shared":
+      var args = when defined(macosx): @["-dynamiclib"]
+                 else: @["-shared"]
+      args.add compileArgs
+      for source in recipe.sources:
+        args.add pkg.root / source
+      args.add @["-o", result]
+      args.add linkArgs
+      runNativeTool(compiler, args, workRoot)
+    else:
+      var objects: seq[string]
+      for i, source in recipe.sources:
+        let output = workRoot / ("object-" & $i & ".o")
+        var args = compileArgs
+        args.add @["-c", pkg.root / source, "-o", output]
+        runNativeTool(compiler, args, workRoot)
+        objects.add output
+      let archiver = findExe("ar")
+      if archiver.len == 0:
+        raiseBuild(becRecipeUnavailable,
+          "static c_library requires ar", [pkg.name, resource.nativeAlias])
+      runNativeTool(archiver, @["rcs", result] & objects, workRoot)
+    if not fileExists(result) or symlinkExists(result) or
+        getFileSize(result) > 1024'i64 * 1024 * 1024:
+      raiseBuild(becRecipeUnavailable,
+        "c_library did not produce a bounded regular artifact",
+        [pkg.name, resource.nativeAlias])
+
 proc preparedArtifact(engine: BuildEngine, request: BuildRequest,
                       graph: MaterializedGraph, pkg: Package,
                       kind: BuildArtifactKind, target, entry: string,
@@ -677,8 +1089,10 @@ proc preparedArtifact(engine: BuildEngine, request: BuildRequest,
                          target: target, kind: kind, entry: entry,
                          sourceDigest: sourceDigest, profile: profile,
                          cacheReason: "derivation has no active artifact")
+  result.resources = engine.selectedResources(request, pkg, kind, target)
   result.derivationId = derivationId(engine.environment, request, graph, pkg,
-    kind, target, entry, sourceDigest, dependencies, profile)
+    kind, target, entry, sourceDigest, dependencies, profile,
+    result.resources)
 
 proc loadCachedArtifact(engine: BuildEngine, request: BuildRequest,
                         graph: MaterializedGraph, pkg: Package,
@@ -693,10 +1107,25 @@ proc loadCachedArtifact(engine: BuildEngine, request: BuildRequest,
       else: "explicit rebuild requested"
     return
   let indexPath = derivationIndexPath(artifactRoot, result.derivationId)
-  let cachedDigest = activeArtifact(indexPath)
+  var selectedRoot = artifactRoot
+  var cachedDigest = ""
+  for source in engine.environment.artifactSources:
+    if source.root.len == 0: continue
+    let candidate = activeArtifact(derivationIndexPath(
+      source.root, result.derivationId))
+    if source.required and candidate.len == 0:
+      raiseBuild(becNonReproducible,
+        "required installed artifact is missing",
+        [source.root, result.derivationId])
+    if candidate.len > 0:
+      selectedRoot = source.root
+      cachedDigest = candidate
+      break
+  if cachedDigest.len == 0:
+    cachedDigest = activeArtifact(indexPath)
   if cachedDigest.len == 0:
     return
-  let cachedObject = digestObjectPath(artifactRoot, cachedDigest)
+  let cachedObject = digestObjectPath(selectedRoot, cachedDigest)
   let payload = loadVerifiedArtifactPayload(cachedObject, cachedDigest,
                                             result.derivationId, kind)
   if payload.len == 0:
@@ -717,6 +1146,7 @@ proc loadCachedArtifact(engine: BuildEngine, request: BuildRequest,
       [cachedObject, error.msg])
   result.artifactDigest = cachedDigest
   result.objectPath = cachedObject
+  result.hydrateBuiltResources()
   result.cacheHit = true
   result.cacheReason = "verified derivation and artifact digest matched"
 
@@ -752,12 +1182,34 @@ proc buildOne(engine: BuildEngine, request: BuildRequest,
   let payload = compiled.payload
   result.compiledChunk = compiled.executable.entryChunk()
   result.compiledModules = compiled.executable.modules
+  let nativeWork = artifactRoot / "tmp" /
+    ("native-" & result.derivationId[7 .. 22] & "-" &
+     $getCurrentProcessId())
+  if dirExists(nativeWork): removeDir(nativeWork)
+  createDir(nativeWork)
+  defer:
+    if dirExists(nativeWork): removeDir(nativeWork)
+  for resource in result.resources.mitems:
+    if resource.builtRelative.len == 0: continue
+    let output = engine.compileCLibrary(request, pkg, resource, nativeWork)
+    resource.size = getFileSize(output)
+    resource.digest = "sha256:" & sha256File(output)
   if request.verifyReproducible:
     let repeated = compilePayload().payload
     if repeated != payload:
       raiseBuild(becNonReproducible,
         "clean compiler observations disagreed for one derivation",
         [pkg.name & ":" & target])
+    let repeatWork = nativeWork / "repeat"
+    createDir(repeatWork)
+    for resource in result.resources:
+      if resource.builtRelative.len == 0: continue
+      let repeatedNative = engine.compileCLibrary(request, pkg, resource,
+                                                  repeatWork)
+      if "sha256:" & sha256File(repeatedNative) != resource.digest:
+        raiseBuild(becNonReproducible,
+          "native compiler observations disagreed for one derivation",
+          [pkg.name, resource.nativeAlias])
   let metadata = artifactMetadata(pkg, result, request, graph, dependencies,
                                   profile)
   result.artifactDigest = artifactDigest(kind, metadata, payload)
@@ -772,6 +1224,11 @@ proc buildOne(engine: BuildEngine, request: BuildRequest,
     createDir(temp)
     writeFile(temp / "artifact.gir", payload)
     writeFile(temp / "metadata.gene", metadata.print() & "\n")
+    for resource in result.resources:
+      if resource.builtRelative.len == 0: continue
+      let destination = temp / resource.builtRelative
+      createDir(parentDir(destination))
+      copyFile(nativeWork / resource.builtRelative, destination)
     createDir(parentDir(result.objectPath))
     try:
       moveDir(temp, result.objectPath)
@@ -849,7 +1306,13 @@ proc projectViewPath(graph: MaterializedGraph, request: BuildRequest,
                      artifact: BuildArtifact): string =
   let packageKey = artifact.packageName.replace('/', '_') & "-" &
     sha256Hex(artifact.packageId)[0 .. 11]
-  graph.workspaceRoot / ".gene" / "build" / request.profile / packageKey /
+  let installed = getEnv("GENE_INSTALLED_ARTIFACTS")
+  let base = if installed.len > 0:
+      userArtifactStoreDir() / "installed-views" /
+        sha256Hex(normalizedPath(absolutePath(installed)))[0 .. 15]
+    else:
+      graph.workspaceRoot / ".gene" / "build"
+  base / request.profile / packageKey /
     ($artifact.kind & "-" & artifact.target)
 
 proc materializeProjectView(path: string, artifact: BuildArtifact) =
@@ -955,10 +1418,6 @@ proc build*(engine: BuildEngine, request: BuildRequest,
     if not pkg.hasLibrary:
       raiseBuild(becTargetNotFound,
         "dependency package has no library target", [pkg.name, pkg.manifestPath])
-    if pkg.library.uses.len > 0:
-      raiseBuild(becRecipeUnavailable,
-        "target recipes are not available in the pure-Gene build phase",
-        [pkg.name, pkg.library.uses.join(", ")])
     let aliases = buildGraph.dependencyAliases(packageId)
     for alias in aliases:
       planLibrary(pkg.dependencyEdges[alias])
@@ -1123,11 +1582,6 @@ proc build*(engine: BuildEngine, request: BuildRequest,
   if target.kind == bakGeneLibrary:
     result.rootArtifact = builtLibraries[rootPkg.id]
   else:
-    for application in rootPkg.applications:
-      if application.name == target.name and application.uses.len > 0:
-        raiseBuild(becRecipeUnavailable,
-          "target recipes are not available in the pure-Gene build phase",
-          [rootPkg.name, application.uses.join(", ")])
     result.rootArtifact = engine.buildOne(effectiveRequest, buildGraph, rootPkg,
       target.kind, target.name, target.entry, dependencies, artifactRoot,
       profile)

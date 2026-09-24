@@ -12,7 +12,9 @@ tasks.
 
 Packages support format-1 workspaces, solving, locks, immutable source stores,
 multiple versions, and git/path/local-registry sources. Pure-Gene builds support
-target planning and artifact reuse. The web backend supports an explicitly
+target planning and artifact reuse. Selected resource recipes and local POSIX
+installation are available; native artifact recipes and hosted publication are
+still open. The web backend supports an explicitly
 checked subset, including embedded web modules.
 
 Known limits worth carrying into design decisions:
@@ -88,8 +90,8 @@ move. Do not recreate a second directory of overlapping feature designs.
 
 ## Roadmap
 
-Current open areas include hosted registry publication/signing, native/resource
-build recipes and application distribution, JIT, production M:N scheduling,
+Current open areas include hosted registry publication/signing, native
+build recipes and broader application distribution, JIT, production M:N scheduling,
 full compile-time function macros/hygiene, static effects and exhaustiveness,
 general foreign callback factories and retained/queued callback modes, and
 optional runtime event instrumentation. Call-scoped synchronous native callbacks

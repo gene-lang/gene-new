@@ -1,0 +1,10 @@
+(fn main [args] : Int
+  (let count ($parse/parse_int (?? args/0 "10000")))
+  (let source "(do (type Local ^props {^n Int} (message value [] : Int self/n)) ((Local ^n 7) .value))")
+  (repeat count
+    ($assert (== (eval ($read_one source) ^in (env)) 7)))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify {^workload "lifetime" ^ok true
+                             ^iterations count ^rc_stats stats/rc_stats?
+                             ^live_managed stats/live_managed}))
+  0)

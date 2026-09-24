@@ -12,10 +12,12 @@
 #     native-created ReplyTo; full mailboxes answer 503.
 
 const httpMaxBodyBytes = 10 * 1024 * 1024
+const httpStreamBodyMaxBytes = 64 * 1024 * 1024
 const httpMaxHeaderLines = 128
 const httpMaxHeaderBytes = 32 * 1024
 const httpRecvTimeoutMs = 10_000
 const httpReadChunkBytes = 8 * 1024
+const httpMaxChunkLineBytes = 4096
 const httpDefaultRequestTimeoutMs = 30_000
 const httpDefaultMaxConnections = 1024
 const httpDefaultMaxInFlight = 256
@@ -31,10 +33,9 @@ const wsPongGraceMs = 45_000
 let HttpRuntimeLogger = newRuntimeLogger("gene/http")
 
 proc httpNamespaceBinding(scope: Scope, name: string): Value =
-  let root =
-    if scope != nil: scope.application().builtinsScope()
-    else: builtinsScope()
-  let netNs = root.vars.getOrDefault("net", VOID)
+  let app = if scope != nil: scope.application() else: currentApplication()
+  let source = if app.stdlib != nil: app.stdlib else: app.builtinsScope()
+  let netNs = source.vars.getOrDefault("net", VOID)
   if netNs.kind != vkNamespace:
     return VOID
   let httpNs = netNs.nsScope.vars.getOrDefault("http", VOID)
@@ -109,8 +110,11 @@ type
     hpsBad        # malformed request; caller answers 400 and closes
     hpsTooLarge   # declared body exceeds the limit; caller answers 413
 
-proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
-    tuple[status: HttpParseStatus, value: Value] =
+  HttpParseResult = tuple[status: HttpParseStatus, value: Value,
+                          bodyStart, contentLength: int, chunked: bool]
+
+proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope,
+                            headersOnly = false): HttpParseResult =
   ## Incremental HTTP/1.1 request parser over a connection's accumulated
   ## bytes. Same validation rules as the previous blocking socket parser:
   ## bounded header lines/bytes, bounded content-length body, malformed
@@ -118,16 +122,16 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
   let headerEnd = buf.find("\r\n\r\n")
   if headerEnd < 0:
     if buf.len > httpMaxHeaderBytes:
-      return (hpsBad, VOID)
-    return (hpsNeedMore, VOID)
+      return (hpsBad, VOID, 0, 0, false)
+    return (hpsNeedMore, VOID, 0, 0, false)
   if headerEnd > httpMaxHeaderBytes:
-    return (hpsBad, VOID)
+    return (hpsBad, VOID, 0, 0, false)
   let lines = buf[0 ..< headerEnd].split("\r\n")
   if lines.len == 0 or lines.len - 1 > httpMaxHeaderLines:
-    return (hpsBad, VOID)
+    return (hpsBad, VOID, 0, 0, false)
   let lineParts = lines[0].split(' ')
   if lineParts.len != 3 or not lineParts[2].startsWith("HTTP/"):
-    return (hpsBad, VOID)
+    return (hpsBad, VOID, 0, 0, false)
   let httpMethod = lineParts[0]
   let target = lineParts[1]
   var path = target
@@ -138,32 +142,43 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
     query = target[qMark + 1 .. ^1]
   var headers = initPropTable()
   var contentLength = 0
+  var transferEncoding = ""
   for i in 1 ..< lines.len:
     let line = lines[i]
     let colon = line.find(':')
     if colon <= 0:
-      return (hpsBad, VOID)
+      return (hpsBad, VOID, 0, 0, false)
     let key = line[0 ..< colon].strip().toLowerAscii()
     let val = line[colon + 1 .. ^1].strip()
+    if key == "transfer-encoding":
+      if headers.hasKey(key):
+        return (hpsBad, VOID, 0, 0, false)
+      transferEncoding = val.toLowerAscii()
+    if key == "content-length" and headers.hasKey(key):
+      return (hpsBad, VOID, 0, 0, false)
     headers[key] = newStr(val)
     if key == "content-length":
       try:
         contentLength = parseInt(val)
       except ValueError:
-        return (hpsBad, VOID)
+        return (hpsBad, VOID, 0, 0, false)
       if contentLength < 0:
-        return (hpsBad, VOID)
-      if maxBodyBytes >= 0 and contentLength > maxBodyBytes:
-        return (hpsTooLarge, VOID)   # 413 per async-http-server proposal §9
+        return (hpsBad, VOID, 0, 0, false)
+  let chunked = transferEncoding == "chunked"
+  if transferEncoding.len > 0 and
+      (not headersOnly or not chunked or headers.hasKey("content-length")):
+    return (hpsBad, VOID, 0, 0, false)
+  if maxBodyBytes >= 0 and contentLength > maxBodyBytes:
+    return (hpsTooLarge, VOID, 0, 0, false)
   let bodyStart = headerEnd + 4
-  if buf.len < bodyStart + contentLength:
-    return (hpsNeedMore, VOID)
-  let body = buf[bodyStart ..< bodyStart + contentLength]
+  if not headersOnly and buf.len < bodyStart + contentLength:
+    return (hpsNeedMore, VOID, 0, 0, false)
+  let body = if headersOnly: "" else: buf[bodyStart ..< bodyStart + contentLength]
   var params: PropTable
   try:
     params = parseQueryEntries(query, scope)
   except GeneError:
-    return (hpsBad, VOID)   # malformed percent escape is the client's fault
+    return (hpsBad, VOID, 0, 0, false)
   var props = initPropTable()
   props["method"] = newStr(httpMethod)
   props["path"] = newStr(path)
@@ -171,9 +186,11 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
   props["params"] = newMap(params)
   props["headers"] = newMap(headers)
   props["body"] = newStr(body)
-  let head = httpNamespaceBinding(scope, "Request")
-  (hpsDone, newNode(if head.kind == vkType: head else: newSym("Request"),
-                    props = props))
+  let head = httpNamespaceBinding(scope,
+    if headersOnly: "StreamRequest" else: "Request")
+  (hpsDone, newNode(if head.kind == vkType: head
+                    else: newSym(if headersOnly: "StreamRequest" else: "Request"),
+                    props = props), bodyStart, contentLength, chunked)
 
 proc responseWireParts(resp: Value, scope: Scope):
     tuple[status: int, body: string, headers: OrderedTable[string, string]] =
@@ -201,6 +218,82 @@ proc responseWireParts(resp: Value, scope: Scope):
     requireStr("Response body item", item)
     result.body.add item.strVal
 
+type HttpStreamWire = object
+  status: int
+  headers: string
+  reader: Value
+  knownLength: int
+  maxBytes: int
+  ownReader: bool
+
+proc streamResponseWire(resp: Value, scope: Scope): HttpStreamWire =
+  if resp.kind != vkNode or resp.head.bits !=
+      httpNamespaceBinding(scope, "StreamResponse").bits:
+    raiseHttpError("stream response must be a StreamResponse", scope)
+  let props = resp.props
+  if not props.hasKey("status") or not props.hasKey("headers") or
+      not props.hasKey("body") or not props.hasKey("max_bytes") or
+      not props.hasKey("own_reader"):
+    raiseHttpError("StreamResponse is missing required fields", scope)
+  result.status = int(requireInt64("StreamResponse status", props["status"]))
+  if result.status < 200 or result.status > 599 or
+      result.status in [204, 205, 304]:
+    raiseHttpError("StreamResponse status must permit a body", scope)
+  result.reader = props["body"]
+  let ioScope = scope.application().stdlib.vars["io"].nsScope
+  if not scope.typeImplementsProtocol(projectHead(result.reader),
+                                      ioScope.vars["AsyncReader"]):
+    raiseHttpError("StreamResponse body must implement AsyncReader", scope)
+  result.maxBytes = int(requireInt64("StreamResponse max_bytes",
+                                     props["max_bytes"]))
+  result.knownLength = -1
+  if props.hasKey("content_length"):
+    result.knownLength = int(requireInt64("StreamResponse content_length",
+                                             props["content_length"]))
+  if result.maxBytes < 1 or result.maxBytes > 1_073_741_824 or
+      result.knownLength < -1 or result.knownLength > result.maxBytes:
+    raiseHttpError("StreamResponse byte limits are invalid", scope)
+  if props["own_reader"].kind != vkBool:
+    raiseHttpError("StreamResponse own_reader must be Bool", scope)
+  result.ownReader = props["own_reader"].boolVal
+  if result.ownReader and not scope.typeImplementsProtocol(
+      projectHead(result.reader), ioScope.vars["IoResource"]):
+    raiseHttpError("owned StreamResponse body must implement IoResource", scope)
+  let headers = props["headers"]
+  if headers.kind != vkMap or headers.mapEntries.len > 256:
+    raiseHttpError("StreamResponse headers must be a bounded Map", scope)
+  result.headers = "HTTP/1.1 " & $result.status & " " &
+    httpStatusText(result.status) & "\r\n"
+  var hasContentType = false
+  for key, value in headers.mapEntries:
+    if value.kind != vkString:
+      raiseHttpError("StreamResponse header values must be Str", scope)
+    let lower = key.toLowerAscii()
+    if lower in ["content-length", "transfer-encoding", "connection"] or
+        key.len == 0 or key.contains({'\r', '\n'}) or
+        value.strVal.contains({'\r', '\n'}):
+      raiseHttpError("StreamResponse header is invalid or reserved", scope)
+    for ch in key:
+      if not (ch in {'A'..'Z', 'a'..'z', '0'..'9'} or
+              ch in "!#$%&'*+-.^_`|~"):
+        raiseHttpError("StreamResponse header name is invalid", scope)
+    for ch in value.strVal:
+      if ch == '\x7f' or (ch < ' ' and ch != '\t'):
+        raiseHttpError("StreamResponse header value is invalid", scope)
+    if lower == "content-type": hasContentType = true
+    result.headers.add key & ": " & value.strVal & "\r\n"
+    if result.headers.len > 256 * 1024:
+      raiseHttpError("StreamResponse headers exceed 256 KiB", scope)
+  if not hasContentType:
+    result.headers.add "content-type: application/octet-stream\r\n"
+  if result.knownLength >= 0:
+    result.headers.add "content-length: " & $result.knownLength & "\r\n"
+  else:
+    result.headers.add "transfer-encoding: chunked\r\n"
+  result.headers.add "connection: close\r\n\r\n"
+  if result.headers.len > 256 * 1024:
+    raiseHttpError("StreamResponse headers exceed 256 KiB", scope)
+
 # --- server runtime registry: listen / stop / status -----------------------
 #
 # A Server value carries a `^listener Int` handle into this registry so that
@@ -208,11 +301,58 @@ proc responseWireParts(resp: Value, scope: Scope):
 # running server through the same Server node the application holds.
 
 type
+  HttpTlsAbiProc = proc(): cint {.cdecl.}
+  HttpTlsServerOpenProc = proc(cert, key, clientCa: cstring,
+                               requireClient: cint): pointer {.cdecl.}
+  HttpTlsServerCloseProc = proc(server: pointer) {.cdecl.}
+  HttpTlsConnOpenProc = proc(server: pointer, fd: cint): pointer {.cdecl.}
+  HttpTlsHandshakeProc = proc(connection: pointer): cint {.cdecl.}
+  HttpTlsReadProc = proc(connection, output: pointer, capacity: csize_t,
+                          produced: ptr csize_t): cint {.cdecl.}
+  HttpTlsPendingProc = proc(connection: pointer): cint {.cdecl.}
+  HttpTlsWriteProc = proc(connection, input: pointer, length: csize_t,
+                           consumed: ptr csize_t): cint {.cdecl.}
+  HttpTlsConnCloseProc = proc(connection: pointer) {.cdecl.}
+  HttpTlsLastErrorProc = proc(): cstring {.cdecl.}
+  HttpTlsReloadStartProc = proc(server: pointer, cert, key, clientCa: cstring,
+                                requireClient: cint): pointer {.cdecl.}
+  HttpTlsReloadPollProc = proc(job: pointer): cint {.cdecl.}
+  HttpTlsReloadCancelProc = proc(job: pointer) {.cdecl.}
+  HttpTlsReloadErrorProc = proc(job: pointer): cstring {.cdecl.}
+  HttpTlsReloadReleaseProc = proc(job: pointer) {.cdecl.}
+
+  HttpTlsNative = ref object
+    image: LibHandle
+    lease: Value
+    openServer: HttpTlsServerOpenProc
+    closeServer: HttpTlsServerCloseProc
+    openConnection: HttpTlsConnOpenProc
+    handshake: HttpTlsHandshakeProc
+    read: HttpTlsReadProc
+    pending: HttpTlsPendingProc
+    hasPending: HttpTlsPendingProc
+    write: HttpTlsWriteProc
+    closeConnection: HttpTlsConnCloseProc
+    lastError: HttpTlsLastErrorProc
+    reloadStart: HttpTlsReloadStartProc
+    reloadPoll: HttpTlsReloadPollProc
+    reloadCancel: HttpTlsReloadCancelProc
+    reloadError: HttpTlsReloadErrorProc
+    reloadRelease: HttpTlsReloadReleaseProc
+
+  HttpTlsReloadPending = ref object
+    native: HttpTlsNative
+    job: pointer
+    task: Value
+    scheduler: SchedulerState
+
   HttpServerRuntime = ref object
     id: int
     host: string
     port: int
     listener: Socket
+    tls: HttpTlsNative
+    tlsServer: pointer
     listening: bool         # listener socket is live
     serving: bool           # event loop currently running
     stopRequested: bool
@@ -241,6 +381,105 @@ type
 
 var gHttpServerRegistry = initTable[int, HttpServerRuntime]()
 var gHttpServerNextId = 0
+var gHttpTlsImages: seq[LibHandle] # release shims remain mapped through exit
+var gHttpTlsReloadPending: seq[HttpTlsReloadPending]
+var gHttpTlsReloadLock: Lock
+initLock(gHttpTlsReloadLock)
+
+proc httpTlsPath(scope: Scope, path: string): string =
+  if isAbsolute(path): normalizedPath(path)
+  else: normalizedPath(scope.application().launchDir / path)
+
+proc httpTlsConfig(value: Value, scope: Scope):
+    tuple[cert, key, clientCa: string, required: bool] =
+  if value.kind != vkMap:
+    raiseHttpError("listen ^tls requires a Map", scope)
+  let fields = value.mapEntries
+  for name in fields.keys:
+    if name notin ["cert_file", "key_file", "client_ca_file", "client_auth"]:
+      raiseHttpError("listen ^tls has unexpected field: " & name, scope)
+  if not fields.hasKey("cert_file") or not fields.hasKey("key_file") or
+      fields["cert_file"].kind != vkString or
+      fields["key_file"].kind != vkString or
+      fields["cert_file"].strVal.len == 0 or
+      fields["key_file"].strVal.len == 0:
+    raiseHttpError("listen ^tls needs cert_file and key_file Str", scope)
+  result.cert = httpTlsPath(scope, fields["cert_file"].strVal)
+  result.key = httpTlsPath(scope, fields["key_file"].strVal)
+  if fields.hasKey("client_ca_file") and fields["client_ca_file"].kind != vkNil:
+    if fields["client_ca_file"].kind != vkString or
+        fields["client_ca_file"].strVal.len == 0:
+      raiseHttpError("listen ^tls client_ca_file must be a path Str", scope)
+    result.clientCa = httpTlsPath(scope, fields["client_ca_file"].strVal)
+  if fields.hasKey("client_auth"):
+    if fields["client_auth"].kind != vkString or
+        fields["client_auth"].strVal notin ["none", "required"]:
+      raiseHttpError("listen ^tls client_auth must be none or required", scope)
+    result.required = fields["client_auth"].strVal == "required"
+  if result.required and result.clientCa.len == 0:
+    raiseHttpError("listen ^tls required client_auth needs client_ca_file", scope)
+
+proc loadHttpTls(scope: Scope): HttpTlsNative =
+  var owner: Value
+  if scope == nil or not scope.lookupOptional("this_pkg", owner):
+    raiseHttpError("direct TLS requires a package with genex/tls dependency alias tls",
+                   scope)
+  var nativeCall = NativeCall(dispatchScope: scope)
+  var dependency, lease: Value
+  try:
+    dependency = biPkgDependency([owner, newStr("tls")], addr nativeCall)
+    lease = biPkgNativeBinary([dependency, newStr("native")], addr nativeCall)
+    let path = biMaterializedPath([lease], addr nativeCall).strVal
+    let image = loadLib(path)
+    if image == nil:
+      raiseHttpError("cannot load declared TLS native binary", scope)
+    result = HttpTlsNative(image: image, lease: lease,
+      openServer: cast[HttpTlsServerOpenProc](symAddr(image,
+        "gene_tls_server_open")),
+      closeServer: cast[HttpTlsServerCloseProc](symAddr(image,
+        "gene_tls_server_close")),
+      openConnection: cast[HttpTlsConnOpenProc](symAddr(image,
+        "gene_tls_connection_open")),
+      handshake: cast[HttpTlsHandshakeProc](symAddr(image,
+        "gene_tls_connection_handshake")),
+      read: cast[HttpTlsReadProc](symAddr(image,
+        "gene_tls_connection_read")),
+      pending: cast[HttpTlsPendingProc](symAddr(image,
+        "gene_tls_connection_pending")),
+      hasPending: cast[HttpTlsPendingProc](symAddr(image,
+        "gene_tls_connection_has_pending")),
+      write: cast[HttpTlsWriteProc](symAddr(image,
+        "gene_tls_connection_write")),
+      closeConnection: cast[HttpTlsConnCloseProc](symAddr(image,
+        "gene_tls_connection_close")),
+      lastError: cast[HttpTlsLastErrorProc](symAddr(image,
+        "gene_tls_last_error")),
+      reloadStart: cast[HttpTlsReloadStartProc](symAddr(image,
+        "gene_tls_reload_start")),
+      reloadPoll: cast[HttpTlsReloadPollProc](symAddr(image,
+        "gene_tls_reload_poll")),
+      reloadCancel: cast[HttpTlsReloadCancelProc](symAddr(image,
+        "gene_tls_reload_cancel")),
+      reloadError: cast[HttpTlsReloadErrorProc](symAddr(image,
+        "gene_tls_reload_error")),
+      reloadRelease: cast[HttpTlsReloadReleaseProc](symAddr(image,
+        "gene_tls_reload_release")))
+    let abi = cast[HttpTlsAbiProc](symAddr(image, "gene_tls_abi"))
+    if abi == nil or abi() != 1 or result.openServer == nil or
+        result.closeServer == nil or result.openConnection == nil or
+        result.handshake == nil or result.read == nil or result.pending == nil or
+        result.hasPending == nil or
+        result.write == nil or
+        result.closeConnection == nil or result.lastError == nil or
+        result.reloadStart == nil or result.reloadPoll == nil or
+        result.reloadCancel == nil or result.reloadError == nil or
+        result.reloadRelease == nil:
+      unloadLib(image)
+      raiseHttpError("TLS native adapter ABI is missing or incompatible", scope)
+    gHttpTlsImages.add image
+  except CatchableError as error:
+    raiseHttpError("direct TLS needs declared genex/tls native recipe: " &
+                   error.msg, scope)
 
 proc httpRuntimeFor(serverVal: Value): HttpServerRuntime =
   ## The registered runtime behind a Server value, or nil.
@@ -303,10 +542,12 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     httpSetNonBlocking(result.getFd().cint)
 
 proc registerHttpRuntime(host: string, port: int, listener: Socket,
-                         listening: bool): HttpServerRuntime =
+                         listening: bool, tls: HttpTlsNative = nil,
+                         tlsServer: pointer = nil): HttpServerRuntime =
   inc gHttpServerNextId
   result = HttpServerRuntime(id: gHttpServerNextId, host: host, port: port,
-                             listener: listener, listening: listening)
+                             listener: listener, listening: listening,
+                             tls: tls, tlsServer: tlsServer)
   gHttpServerRegistry[result.id] = result
 
 proc dropHttpRuntime(rt: HttpServerRuntime) =
@@ -315,6 +556,10 @@ proc dropHttpRuntime(rt: HttpServerRuntime) =
   if rt.listening:
     rt.listener.close()
     rt.listening = false
+  if rt.tlsServer != nil:
+    rt.tls.closeServer(rt.tlsServer)
+    rt.tlsServer = nil
+  rt.tls = nil
   gHttpServerRegistry.del(rt.id)
 
 proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -328,13 +573,38 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let scope = if call == nil: nil else: call[].dispatchScope
   if call != nil:
     for name in call[].namedNames:
-      if name notin ["host", "port"]:
+      if name notin ["host", "port", "tls"]:
         raise newException(GeneError,
           "http/listen got unexpected named argument: " & name)
   let (host, port) = httpServerHostPort(args, call, "http/listen", scope)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    let listener = httpBindListener(host, port, scope)
-    let rt = registerHttpRuntime(host, port, listener, listening = true)
+    var tlsConfig: Value = NIL
+    if args.len == 1 and args[0].props.hasKey("tls"):
+      tlsConfig = args[0].props["tls"]
+    let tlsIndex = nativeNamedIndex(call, "tls")
+    if tlsIndex >= 0:
+      if tlsConfig.kind != vkNil:
+        raiseHttpError("listen ^tls is specified twice", scope)
+      tlsConfig = call[].namedValues[tlsIndex]
+    var tls: HttpTlsNative
+    var tlsServer: pointer
+    if tlsConfig.kind != vkNil:
+      let config = httpTlsConfig(tlsConfig, scope)
+      tls = loadHttpTls(scope)
+      tlsServer = tls.openServer(config.cert.cstring, config.key.cstring,
+        if config.clientCa.len == 0: nil else: config.clientCa.cstring,
+        if config.required: 1 else: 0)
+      if tlsServer == nil:
+        raiseHttpError("TLS material validation failed: " &
+          $tls.lastError(), scope)
+    var listener: Socket
+    try:
+      listener = httpBindListener(host, port, scope)
+    except CatchableError:
+      if tlsServer != nil: tls.closeServer(tlsServer)
+      raise
+    let rt = registerHttpRuntime(host, port, listener, listening = true,
+                                 tls = tls, tlsServer = tlsServer)
     var props = initPropTable()
     props["host"] = newStr(host)
     props["port"] = newInt(port)
@@ -386,6 +656,54 @@ proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   props["bytes_read"] = newInt(rt.bytesRead)
   props["bytes_written"] = newInt(rt.bytesWritten)
   newNode(newSym("Status"), props = props)
+
+proc pollHttpTlsReloadCompletions() =
+  withLock gHttpTlsReloadLock:
+    var i = 0
+    while i < gHttpTlsReloadPending.len:
+      let pending = gHttpTlsReloadPending[i]
+      if pending.scheduler != currentScheduler():
+        inc i
+        continue
+      if pending.task.taskCancelled or pending.task.taskCancelRequested:
+        pending.native.reloadCancel(pending.job)
+      let status = pending.native.reloadPoll(pending.job)
+      if status == 0:
+        inc i
+        continue
+      if not pending.task.taskCancelled:
+        if status == 1:
+          if tryCompleteTask(pending.task, NIL):
+            wakeTaskWaitersIn(pending.scheduler, pending.task)
+        else:
+          let message = $pending.native.reloadError(pending.job)
+          if tryFailTask(pending.task,
+              if message.len > 0: "TLS reload failed: " & message
+              else: "TLS reload failed"):
+            wakeTaskWaitersIn(pending.scheduler, pending.task)
+      pending.native.reloadRelease(pending.job)
+      gHttpTlsReloadPending.delete(i)
+
+proc biHttpReloadTls(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 2:
+    raiseHttpError("Server.reload_tls expects a TLS config Map", scope)
+  let rt = httpRuntimeFor(args[0])
+  if rt == nil or rt.tlsServer == nil or rt.stopRequested:
+    raiseHttpError("Server.reload_tls requires a live TLS listener", scope)
+  let config = httpTlsConfig(args[1], scope)
+  let job = rt.tls.reloadStart(rt.tlsServer, config.cert.cstring,
+    config.key.cstring,
+    if config.clientCa.len == 0: nil else: config.clientCa.cstring,
+    if config.required: 1 else: 0)
+  if job == nil:
+    raiseHttpError("TLS reload worker is unavailable", scope)
+  let task = newExternalTask()
+  let pending = HttpTlsReloadPending(native: rt.tls, job: job,
+    task: retainedCopy(task), scheduler: schedulerForScope(scope))
+  withLock gHttpTlsReloadLock:
+    gHttpTlsReloadPending.add pending
+  task
 
 # --- routes and dispatch configuration --------------------------------------
 
@@ -751,22 +1069,58 @@ proc httpErrorFallbackNode(task: Value): Value =
 
 type
   HttpConnPhase = enum
+    hcpTlsHandshake  # TLS trust before any HTTP byte reaches the parser
     hcpReading      # accumulating request bytes
     hcpDispatched   # handler task in flight; response not yet started
     hcpWriting      # flushing response bytes
+    hcpStreamingResponse # bounded AsyncReader response in progress
     hcpWebSocket    # upgraded; frames in both directions until close
+
+  HttpChunkState = enum
+    hcsSize, hcsData, hcsDataCr, hcsDataLf, hcsTrailer, hcsDone
+
+  HttpBodyDecodeStatus = enum
+    hbdNeedMore, hbdData, hbdDone, hbdBad, hbdTooLarge
 
   HttpConn = ref object
     sock: Socket
     fd: int
+    tlsConnection: pointer
+    tlsReadWantWrite, tlsWriteWantRead, tlsHandshakeWantWrite: bool
+    tlsReadNeedsSocket: bool
+    tlsPendingWriteLength: int
     phase: HttpConnPhase
     buf: string             # accumulated request bytes
     task: Value             # pending handler task; NIL after 504 orphaning
+    inFlightCounted: bool
+    streamingBody: bool
+    bodyReader, bodyWriter, bodyWriteTask: Value
+    bodyChunk: string
+    bodyWriteOffset: int
+    bodyRemaining: int
+    bodyDone: bool
+    bodyWaitingForSocket: bool
+    bodyChunked: bool
+    bodyRaw: string
+    bodyRawPos: int
+    chunkState: HttpChunkState
+    chunkRemaining: int
+    chunkLine: string
+    chunkTrailerBytes: int
+    chunkTrailerLines: int
+    decodedBodyBytes: int
     readDeadline: MonoTime  # header/body arrival deadline (slowloris guard)
     taskDeadline: MonoTime  # handler completion deadline
     hasTaskDeadline: bool
     writeBuf: string
     writePos: int
+    writeFailed: bool
+    responseReader, responseReadTask, responseCloseTask: Value
+    responseOwnReader: bool
+    responseFromRequestBody: bool
+    responseChunked: bool
+    responseKnownLength, responseMaxBytes, responseSent: int
+    responseFinalQueued: bool
     started: MonoTime       # accept time, for access_log latency
     reqMethod: string       # parsed request line, for logging ("" until
     reqPath: string         #   a request parses)
@@ -781,6 +1135,107 @@ type
     wsPingDeadline: MonoTime
     wsAwaitingPong: bool
     wsPongDeadline: MonoTime
+
+proc decodeHttpBody(conn: HttpConn, maxBodyBytes: int): HttpBodyDecodeStatus =
+  ## Consume only one decoded chunk at a time. The socket read buffer is at
+  ## most httpReadChunkBytes; bodyChunk is handed to the bounded pipe before
+  ## more network bytes are admitted.
+  while true:
+    if not conn.bodyChunked:
+      if conn.bodyRemaining == 0:
+        return hbdDone
+      if conn.bodyRawPos >= conn.bodyRaw.len:
+        conn.bodyRaw = ""
+        conn.bodyRawPos = 0
+        return hbdNeedMore
+      let count = min(conn.bodyRemaining,
+                      conn.bodyRaw.len - conn.bodyRawPos)
+      conn.bodyChunk = conn.bodyRaw[conn.bodyRawPos ..<
+                                     conn.bodyRawPos + count]
+      conn.bodyRawPos += count
+      conn.bodyRemaining -= count
+      if conn.bodyRawPos == conn.bodyRaw.len:
+        conn.bodyRaw = ""
+        conn.bodyRawPos = 0
+      return hbdData
+
+    if conn.chunkState == hcsDone:
+      return hbdDone
+    if conn.bodyRawPos >= conn.bodyRaw.len:
+      conn.bodyRaw = ""
+      conn.bodyRawPos = 0
+      return hbdNeedMore
+
+    case conn.chunkState
+    of hcsSize, hcsTrailer:
+      let ch = conn.bodyRaw[conn.bodyRawPos]
+      inc conn.bodyRawPos
+      conn.chunkLine.add ch
+      if conn.chunkLine.len > httpMaxChunkLineBytes or
+          (ch < ' ' and ch notin {'\r', '\n', '\t'}):
+        return hbdBad
+      if ch == '\n':
+        if conn.chunkLine.len < 2 or conn.chunkLine[^2] != '\r':
+          return hbdBad
+        let line = conn.chunkLine[0 ..< conn.chunkLine.len - 2]
+        conn.chunkLine = ""
+        if '\r' in line or '\n' in line:
+          return hbdBad
+        if conn.chunkState == hcsTrailer:
+          conn.chunkTrailerBytes += line.len + 2
+          inc conn.chunkTrailerLines
+          if conn.chunkTrailerBytes > httpMaxHeaderBytes or
+              conn.chunkTrailerLines > httpMaxHeaderLines:
+            return hbdBad
+          if line.len == 0:
+            conn.chunkState = hcsDone
+            return hbdDone
+          if line.find(':') <= 0:
+            return hbdBad
+        else:
+          let semicolon = line.find(';')
+          let digits = (if semicolon < 0: line
+                        else: line[0 ..< semicolon]).strip()
+          if digits.len == 0 or digits.len > 16:
+            return hbdBad
+          var size = 0
+          for digitChar in digits:
+            let digit =
+              if digitChar in {'0'..'9'}: ord(digitChar) - ord('0')
+              elif digitChar in {'a'..'f'}: ord(digitChar) - ord('a') + 10
+              elif digitChar in {'A'..'F'}: ord(digitChar) - ord('A') + 10
+              else: return hbdBad
+            if size > (high(int) - digit) div 16:
+              return hbdBad
+            size = size * 16 + digit
+          if size > maxBodyBytes - conn.decodedBodyBytes:
+            return hbdTooLarge
+          conn.chunkRemaining = size
+          conn.chunkState = if size == 0: hcsTrailer else: hcsData
+    of hcsData:
+      let count = min(conn.chunkRemaining,
+                      conn.bodyRaw.len - conn.bodyRawPos)
+      conn.bodyChunk = conn.bodyRaw[conn.bodyRawPos ..<
+                                     conn.bodyRawPos + count]
+      conn.bodyRawPos += count
+      conn.chunkRemaining -= count
+      conn.decodedBodyBytes += count
+      if conn.chunkRemaining == 0:
+        conn.chunkState = hcsDataCr
+      if conn.bodyRawPos == conn.bodyRaw.len:
+        conn.bodyRaw = ""
+        conn.bodyRawPos = 0
+      return hbdData
+    of hcsDataCr:
+      if conn.bodyRaw[conn.bodyRawPos] != '\r': return hbdBad
+      inc conn.bodyRawPos
+      conn.chunkState = hcsDataLf
+    of hcsDataLf:
+      if conn.bodyRaw[conn.bodyRawPos] != '\n': return hbdBad
+      inc conn.bodyRawPos
+      conn.chunkState = hcsSize
+    of hcsDone:
+      return hbdDone
 
 # --- RFC 6455 WebSocket support (slice C9) -----------------------------------
 #
@@ -1077,6 +1532,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var maxConnections = httpDefaultMaxConnections
   var maxInFlight = httpDefaultMaxInFlight
   var maxBodyBytes = httpMaxBodyBytes
+  var bodyMode = "buffered"
+  var bodyIdleMs = httpRecvTimeoutMs
+  var bodyIdleSet = false
   var requestTimeoutMs = httpDefaultRequestTimeoutMs
   var drainTimeoutMs = httpDefaultDrainTimeoutMs
   var handler = if args.len == 2: args[1] else: NIL
@@ -1096,7 +1554,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if call != nil:
     for name in call[].namedNames:
       if name notin ["max_requests", "max_connections", "max_in_flight",
-                     "max_body_bytes", "request_timeout_ms",
+                     "max_body_bytes", "body_mode", "body_idle_ms",
+                     "request_timeout_ms",
                      "drain_timeout_ms", "handler", "routes", "on_error",
                      "dispatch", "overload_response", "supervision",
                      "access_log", "error_log", "redact_headers",
@@ -1118,6 +1577,15 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedInt("max_connections", maxConnections)
     namedInt("max_in_flight", maxInFlight)
     namedInt("max_body_bytes", maxBodyBytes)
+    let bodyModeIndex = nativeNamedIndex(call, "body_mode")
+    if bodyModeIndex >= 0:
+      requireStr("http/serve ^body_mode", call[].namedValues[bodyModeIndex])
+      bodyMode = call[].namedValues[bodyModeIndex].strVal
+    let bodyIdleIndex = nativeNamedIndex(call, "body_idle_ms")
+    if bodyIdleIndex >= 0:
+      bodyIdleMs = int(requireInt64("http/serve ^body_idle_ms",
+                                    call[].namedValues[bodyIdleIndex]))
+      bodyIdleSet = true
     namedInt("request_timeout_ms", requestTimeoutMs)
     namedInt("drain_timeout_ms", drainTimeoutMs)
     namedVal("handler", handler)
@@ -1131,6 +1599,19 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedVal("access_log", accessLog)
     namedVal("error_log", errorLog)
     namedVal("redact_headers", redactHeaders)
+  if bodyMode notin ["buffered", "stream"]:
+    raiseHttpError("http/serve ^body_mode must be buffered or stream", scope)
+  if bodyMode == "stream" and
+      (maxBodyBytes < 0 or maxBodyBytes > httpStreamBodyMaxBytes):
+    raiseHttpError("http/serve stream ^max_body_bytes must be 0..67108864",
+                   scope)
+  if bodyIdleMs < 1 or bodyIdleMs > 300000:
+    raiseHttpError("http/serve ^body_idle_ms must be within 1..300000", scope)
+  if bodyIdleSet and bodyMode != "stream":
+    raiseHttpError("http/serve ^body_idle_ms requires stream mode", scope)
+  when not compileOption("threads"):
+    if bodyMode == "stream":
+      raiseHttpError("http/serve stream bodies require a threaded runtime", scope)
   # A tick with no period would spin the loop; a period with no tick is a
   # silently ignored argument. Both are mistakes worth a diagnostic.
   if onTick.kind != vkNil and tickMs <= 0:
@@ -1162,6 +1643,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   elif handler.kind == vkNil and poolConfig.kind == vkNil:
     raiseHttpError("http/serve requires a handler, ^routes, or an " &
                    "actor_pool ^dispatch", scope)
+  if bodyMode == "stream" and poolConfig.kind != vkNil:
+    raiseHttpError("http/serve stream bodies require task_per_request dispatch",
+                   scope)
   if supervisionPolicy.kind != vkNil:
     if poolConfig.kind == vkNil:
       raiseHttpError("http/serve ^supervision requires an actor_pool " &
@@ -1197,6 +1681,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var rt = httpRuntimeFor(args[0])
     var ownRegistration = false
     if rt == nil:
+      if args[0].props.hasKey("tls"):
+        raiseHttpError("direct TLS needs http/listen ^tls before http/serve",
+                       scope)
       let listener = httpBindListener(host, port, scope)
       rt = registerHttpRuntime(host, port, listener, listening = true)
       ownRegistration = true
@@ -1224,6 +1711,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var served = 0
     var draining = false
     var drainDeadline: MonoTime
+    let app = scope.application()
+    let initialCleanupLeases = app.ioBudget.ioBudgetSnapshot().cleanupLeases
+    let initialFileResources = app.ioFileOpenCount()
+    var forcedConnections = 0
+    var remainingCleanupLeases = 0
+    var remainingFileResources = 0
+    var cleanupTasks: seq[Value]
+    var cleanupTaskFailed = false
     # `on_tick` fires on a fixed period. `tickMs` of 0 with a handler present is
     # a mistake worth naming rather than a busy loop, so it is rejected at
     # `serve` rather than spun on here.
@@ -1270,7 +1765,87 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       except CatchableError:
         discard
 
+    proc refreshStreamInterests(conn: HttpConn) =
+      var events: set[Event] = {}
+      if conn.phase in {hcpDispatched, hcpStreamingResponse} and
+          conn.streamingBody and conn.bodyWaitingForSocket:
+        events.incl (if conn.tlsReadWantWrite: Event.Write else: Event.Read)
+      if conn.phase == hcpStreamingResponse and
+          conn.writePos < conn.writeBuf.len:
+        events.incl (if conn.tlsWriteWantRead: Event.Read else: Event.Write)
+      selector.updateHandle(conn.fd, events)
+
+    proc closeBodyResources(conn: HttpConn) =
+      if conn.bodyWriter.kind == vkNode or conn.bodyReader.kind == vkNode:
+        var nativeCall = NativeCall(dispatchScope: scope)
+        if conn.bodyWriter.kind == vkNode:
+          try:
+            discard biIoFileClose([conn.bodyWriter], addr nativeCall)
+            cleanupTasks.add biIoFileWaitClosed([conn.bodyWriter], addr nativeCall)
+          except CatchableError:
+            cleanupTaskFailed = true
+        if conn.bodyReader.kind == vkNode:
+          try:
+            discard biIoFileClose([conn.bodyReader], addr nativeCall)
+            cleanupTasks.add biIoFileWaitClosed([conn.bodyReader], addr nativeCall)
+          except CatchableError:
+            cleanupTaskFailed = true
+      conn.bodyWriter = NIL
+      conn.bodyReader = NIL
+      conn.bodyWriteTask = NIL
+      conn.bodyChunk = ""
+      conn.bodyRaw = ""
+      conn.chunkLine = ""
+      conn.streamingBody = false
+      conn.bodyWaitingForSocket = false
+
+    proc closeResponseResources(conn: HttpConn) =
+      if conn.responseReadTask.kind == vkTask and
+          not conn.responseReadTask.taskDone:
+        discard nativeTaskCancel(conn.responseReadTask, scope)
+      if conn.responseOwnReader and conn.responseReader.kind != vkNil:
+        try:
+          let ioScope = scope.application().stdlib.vars["io"].nsScope
+          let message = ioScope.vars["IoResource"].protocolMessages["close"]
+          let closer = resolveProtocolMessage(scope, message,
+                                              conn.responseReader)
+          discard applyCall(closer, [conn.responseReader], NamedArgs(), scope)
+          let waiterMessage = ioScope.vars["IoResource"].protocolMessages[
+            "wait_closed"]
+          let waiter = resolveProtocolMessage(scope, waiterMessage,
+                                              conn.responseReader)
+          let closeTask = applyCall(waiter, [conn.responseReader],
+                                    NamedArgs(), scope)
+          if closeTask.kind == vkTask: cleanupTasks.add closeTask
+          else: cleanupTaskFailed = true
+        except CatchableError:
+          cleanupTaskFailed = true
+      conn.responseReadTask = NIL
+      conn.responseCloseTask = NIL
+      conn.responseReader = NIL
+
+    proc pruneCleanupTasks() =
+      var index = 0
+      while index < cleanupTasks.len:
+        let task = cleanupTasks[index]
+        if task.kind != vkTask:
+          cleanupTaskFailed = true
+          cleanupTasks.delete(index)
+        elif task.taskDone:
+          if task.taskHasError or task.taskHasPanic or task.taskCancelled:
+            cleanupTaskFailed = true
+          cleanupTasks.delete(index)
+        else:
+          inc index
+
     proc closeConn(conn: HttpConn) =
+      closeBodyResources(conn)
+      closeResponseResources(conn)
+      if conn.inFlightCounted:
+        if conn.task.kind == vkTask and not conn.task.taskDone:
+          discard nativeTaskCancel(conn.task, scope)
+        dec rt.inFlight
+        conn.inFlightCounted = false
       if conn.phase == hcpWebSocket:
         rt.wsOpen.del(conn.fd)
         rt.wsOutbound.del(conn.fd)
@@ -1286,6 +1861,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             HttpRuntimeLogger.emit(llError, "ws on_close panic: " & e.msg)
       unregisterConn(conn)
       conns.del(conn.fd)
+      if conn.tlsConnection != nil:
+        rt.tls.closeConnection(conn.tlsConnection)
+        conn.tlsConnection = nil
       conn.sock.close()
       rt.activeConnections = conns.len
 
@@ -1307,7 +1885,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       conn.wsAwaitingPong = false
       rt.wsOpen[conn.fd] = true
       try:
-        selector.updateHandle(conn.fd, {Event.Read})
+        selector.updateHandle(conn.fd,
+          {if conn.tlsReadWantWrite: Event.Write else: Event.Read})
       except CatchableError:
         closeConn(conn)
         return
@@ -1374,35 +1953,84 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       except GenePanic as e:
         HttpRuntimeLogger.emit(llError, "error_log panic: " & e.msg)
 
+    proc recvConn(conn: HttpConn, buffer: pointer, size: int): int =
+      if conn.tlsConnection == nil:
+        return recv(SocketHandle(conn.fd), buffer, size.cint, 0).int
+      var produced: csize_t
+      let status = rt.tls.read(conn.tlsConnection, buffer, csize_t(size),
+                               addr produced)
+      case status
+      of 1:
+        conn.tlsReadWantWrite = false
+        conn.tlsReadNeedsSocket = false
+        int(produced)
+      of 3: 0
+      of 0:
+        conn.tlsReadWantWrite = false
+        conn.tlsReadNeedsSocket = true
+        -2
+      of 2:
+        conn.tlsReadWantWrite = true
+        conn.tlsReadNeedsSocket = true
+        -3
+      else: -1
+
+    proc sendConn(conn: HttpConn, buffer: pointer, size: int): int =
+      if conn.tlsConnection == nil:
+        return send(SocketHandle(conn.fd), buffer, size.cint, sendFlags).int
+      var consumed: csize_t
+      let attempted = if conn.tlsPendingWriteLength > 0:
+                        conn.tlsPendingWriteLength
+                      else: min(size, 65536)
+      let status = rt.tls.write(conn.tlsConnection, buffer,
+        csize_t(attempted), addr consumed)
+      case status
+      of 1:
+        conn.tlsWriteWantRead = false
+        conn.tlsPendingWriteLength = 0
+        int(consumed)
+      of 0:
+        conn.tlsWriteWantRead = true
+        conn.tlsPendingWriteLength = attempted
+        -2
+      of 2:
+        conn.tlsWriteWantRead = false
+        conn.tlsPendingWriteLength = attempted
+        -3
+      else: -1
+
     proc tryFlush(conn: HttpConn): bool =
       ## Flush as much of the response as the socket accepts. True when the
       ## payload is fully written or the connection is beyond saving.
       while conn.writePos < conn.writeBuf.len:
         let remaining = conn.writeBuf.len - conn.writePos
-        let n = send(SocketHandle(conn.fd),
-                     addr conn.writeBuf[conn.writePos],
-                     remaining.cint, sendFlags)
+        let n = sendConn(conn, addr conn.writeBuf[conn.writePos], remaining)
         if n > 0:
           conn.writePos += n
           rt.bytesWritten += n
-        elif n < 0 and (errno == EAGAIN or errno == EWOULDBLOCK):
+        elif n in [-2, -3] or (conn.tlsConnection == nil and n < 0 and
+            (errno == EAGAIN or errno == EWOULDBLOCK)):
           return false
-        elif n < 0 and errno == EINTR:
+        elif conn.tlsConnection == nil and n < 0 and errno == EINTR:
           continue
         else:
+          conn.writeFailed = true
           return true    # client went away mid-response; keep serving
       true
 
     proc startWrite(conn: HttpConn, payload: string) =
+      closeBodyResources(conn)
       conn.writeBuf = payload
       conn.writePos = 0
+      conn.writeFailed = false
       conn.phase = hcpWriting
       conn.task = NIL
       if tryFlush(conn):
         completeWrite(conn)
       else:
         try:
-          selector.updateHandle(conn.fd, {Event.Write})
+          selector.updateHandle(conn.fd,
+            {if conn.tlsWriteWantRead: Event.Read else: Event.Write})
         except CatchableError:
           finishServed(conn)
 
@@ -1464,6 +2092,232 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         logError(conn, e.msg, panic = false)
         inc rt.failedRequests
         (simpleHttpWirePayload(500, "Internal Server Error"), 500)
+
+    proc failStreamResponse(conn: HttpConn, message: string) =
+      HttpRuntimeLogger.emit(llError, "stream response error: " & message)
+      logError(conn, message, panic = false)
+      inc rt.failedRequests
+      finishServed(conn) # headers may already be on the wire; no replacement
+
+    proc requestOwnedResponseClose(conn: HttpConn) =
+      if not conn.responseOwnReader or conn.responseCloseTask.kind == vkTask:
+        return
+      let ioScope = scope.application().stdlib.vars["io"].nsScope
+      let protocol = ioScope.vars["IoResource"]
+      let closer = resolveProtocolMessage(scope,
+        protocol.protocolMessages["close"], conn.responseReader)
+      discard applyCall(closer, [conn.responseReader], NamedArgs(), scope)
+      let waiter = resolveProtocolMessage(scope,
+        protocol.protocolMessages["wait_closed"], conn.responseReader)
+      conn.responseCloseTask = applyCall(waiter, [conn.responseReader],
+                                         NamedArgs(), scope)
+      if conn.responseCloseTask.kind != vkTask:
+        raise newException(GeneError,
+          "stream response wait_closed did not return a Task")
+
+    proc pumpStreamResponse(conn: HttpConn) =
+      var budget = 16 # immediate readers cannot monopolize the server lane
+      while budget > 0 and conn.phase == hcpStreamingResponse and
+          conn.fd in conns:
+        dec budget
+        if conn.writePos < conn.writeBuf.len:
+          if not tryFlush(conn):
+            try: refreshStreamInterests(conn)
+            except CatchableError: closeConn(conn)
+            return
+          if conn.writeFailed:
+            failStreamResponse(conn, "client closed during streamed write")
+            return
+          conn.writeBuf = ""
+          conn.writePos = 0
+        if conn.responseFinalQueued:
+          if conn.responseCloseTask.kind == vkTask:
+            if not conn.responseCloseTask.taskDone:
+              try: refreshStreamInterests(conn)
+              except CatchableError: closeConn(conn)
+              return
+            if conn.responseCloseTask.taskHasError or
+                conn.responseCloseTask.taskHasPanic or
+                conn.responseCloseTask.taskCancelled:
+              failStreamResponse(conn,
+                "owned stream reader failed to close")
+              return
+          finishServed(conn)
+          return
+        if conn.responseReadTask.kind == vkTask:
+          if not conn.responseReadTask.taskDone:
+            try: refreshStreamInterests(conn)
+            except CatchableError: closeConn(conn)
+            return
+          let readTask = conn.responseReadTask
+          conn.responseReadTask = NIL
+          if readTask.taskHasError or readTask.taskHasPanic or
+              readTask.taskCancelled:
+            failStreamResponse(conn, "stream reader failed")
+            return
+          let part = readTask.taskResult
+          if part.kind == vkNil:
+            if conn.responseKnownLength >= 0 and
+                conn.responseSent != conn.responseKnownLength:
+              failStreamResponse(conn, "stream ended before Content-Length")
+              return
+            try:
+              requestOwnedResponseClose(conn)
+            except CatchableError as error:
+              failStreamResponse(conn, "stream close failed: " & error.msg)
+              return
+            conn.responseFinalQueued = true
+            if conn.responseChunked:
+              conn.writeBuf = "0\r\n\r\n"
+              conn.writePos = 0
+            continue
+          if part.kind != vkBytes or part.bytesVal.len == 0:
+            failStreamResponse(conn, "reader returned non-Bytes or empty Bytes")
+            return
+          let size = part.bytesVal.len
+          if size > conn.responseMaxBytes - conn.responseSent or
+              (conn.responseKnownLength >= 0 and
+               size > conn.responseKnownLength - conn.responseSent):
+            failStreamResponse(conn, "stream exceeded its declared byte limit")
+            return
+          conn.responseSent += size
+          conn.writeBuf =
+            if conn.responseChunked:
+              toHex(size) & "\r\n" & part.bytesVal & "\r\n"
+            else: part.bytesVal
+          conn.writePos = 0
+          continue
+        let requested =
+          if conn.responseKnownLength < 0: 65536
+          elif conn.responseSent < conn.responseKnownLength:
+            min(65536, conn.responseKnownLength - conn.responseSent)
+          else: 1 # known length still requires EOF confirmation
+        try:
+          let ioScope = scope.application().stdlib.vars["io"].nsScope
+          let message = ioScope.vars["AsyncReader"].protocolMessages["read"]
+          let reader = resolveProtocolMessage(scope, message,
+                                              conn.responseReader)
+          conn.responseReadTask = applyCall(reader,
+            [conn.responseReader, newInt(requested)], NamedArgs(), scope)
+          if conn.responseReadTask.kind != vkTask:
+            raise newException(GeneError,
+              "stream response read did not return a Task")
+        except CatchableError as error:
+          failStreamResponse(conn, "stream read failed: " & error.msg)
+          return
+        if not conn.responseReadTask.taskDone:
+          try: refreshStreamInterests(conn)
+          except CatchableError: closeConn(conn)
+          return
+      if conn.phase == hcpStreamingResponse and conn.fd in conns:
+        try: refreshStreamInterests(conn)
+        except CatchableError: closeConn(conn)
+
+    proc startStreamResponse(conn: HttpConn, response: Value) =
+      let wire = streamResponseWire(response, scope)
+      conn.responseFromRequestBody = conn.bodyReader.kind == vkNode and
+        wire.reader.bits == conn.bodyReader.bits
+      if not conn.responseFromRequestBody:
+        closeBodyResources(conn)
+      conn.phase = hcpStreamingResponse
+      conn.responseReader = wire.reader
+      conn.responseOwnReader = wire.ownReader
+      conn.responseChunked = wire.knownLength < 0
+      conn.responseKnownLength = wire.knownLength
+      conn.responseMaxBytes = wire.maxBytes
+      conn.responseSent = 0
+      conn.responseFinalQueued = false
+      conn.writeBuf = wire.headers
+      conn.writePos = 0
+      conn.writeFailed = false
+      if conn.reqMethod == "HEAD":
+        requestOwnedResponseClose(conn)
+        conn.responseFinalQueued = true
+      inc rt.completedRequests
+      logAccess(conn, wire.status)
+      pumpStreamResponse(conn)
+
+    proc failStreamingBody(conn: HttpConn, status: int) =
+      if conn.phase == hcpStreamingResponse:
+        failStreamResponse(conn,
+          if status == 413: "request body exceeded byte limit"
+          else: "request body framing failed")
+        return
+      if conn.inFlightCounted:
+        if conn.task.kind == vkTask and not conn.task.taskDone:
+          discard nativeTaskCancel(conn.task, scope)
+        dec rt.inFlight
+        conn.inFlightCounted = false
+      respondCounted(conn, status,
+        if status == 413: "Payload Too Large" else: "Bad Request")
+
+    proc pumpStreamingBody(conn: HttpConn) =
+      if not conn.streamingBody or conn.fd notin conns or
+          conn.phase notin {hcpDispatched, hcpStreamingResponse}:
+        return
+      if conn.bodyWriteTask.kind == vkTask:
+        if not conn.bodyWriteTask.taskDone:
+          return
+        let completed = conn.bodyWriteTask
+        conn.bodyWriteTask = NIL
+        if completed.taskCancelled or completed.taskHasError or
+            completed.taskHasPanic or completed.taskResult.kind != vkInt or
+            completed.taskResult.intVal <= 0:
+          if conn.phase == hcpStreamingResponse:
+            failStreamResponse(conn, "request body pipe write failed")
+            return
+          closeBodyResources(conn)
+          try: refreshStreamInterests(conn)
+          except CatchableError: closeConn(conn)
+          return
+        conn.bodyWriteOffset += int(completed.taskResult.intVal)
+      if conn.bodyWriteOffset >= conn.bodyChunk.len:
+        conn.bodyChunk = ""
+        conn.bodyWriteOffset = 0
+        case decodeHttpBody(conn, maxBodyBytes)
+        of hbdData: discard
+        of hbdNeedMore:
+          if not conn.bodyWaitingForSocket:
+            conn.readDeadline = timerDeadline(bodyIdleMs)
+            conn.bodyWaitingForSocket = true
+          try: refreshStreamInterests(conn)
+          except CatchableError: closeConn(conn)
+          return
+        of hbdBad:
+          failStreamingBody(conn, 400)
+          return
+        of hbdTooLarge:
+          failStreamingBody(conn, 413)
+          return
+        of hbdDone:
+          if conn.bodyWriter.kind == vkNode:
+            var nativeCall = NativeCall(dispatchScope: scope)
+            try: discard biIoFileClose([conn.bodyWriter], addr nativeCall)
+            except CatchableError: discard
+            conn.bodyWriter = NIL
+          conn.bodyDone = true
+          conn.streamingBody = false
+          conn.bodyWaitingForSocket = false
+          try: refreshStreamInterests(conn)
+          except CatchableError: closeConn(conn)
+          return
+      if conn.bodyWriteOffset < conn.bodyChunk.len:
+        conn.bodyWaitingForSocket = false
+        var nativeCall = NativeCall(dispatchScope: scope)
+        try:
+          conn.bodyWriteTask = biIoFileWrite(
+            [conn.bodyWriter,
+             newBytes(conn.bodyChunk[conn.bodyWriteOffset .. ^1])],
+            addr nativeCall)
+          refreshStreamInterests(conn)
+        except CatchableError:
+          if conn.phase == hcpStreamingResponse:
+            failStreamResponse(conn, "request body pipe write failed")
+            return
+          closeBodyResources(conn)
+          try: refreshStreamInterests(conn)
+          except CatchableError: closeConn(conn)
+        return
 
     proc dispatchConn(conn: HttpConn, request: Value) =
       # Generated assets are answered before the application's own routing, by
@@ -1539,6 +2393,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         else:
           conn.task = dispatchHttpHandler(routed, request, scope)
         inc rt.inFlight
+        conn.inFlightCounted = true
       except GeneError as e:
         HttpRuntimeLogger.emit(llError, "handler error: " & e.msg)
         respondCounted(conn, 500, "Internal Server Error")
@@ -1546,29 +2401,65 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         HttpRuntimeLogger.emit(llError, "handler panic: " & e.msg)
         respondCounted(conn, 500, "Internal Server Error")
 
+    proc handleStreamingReadable(conn: HttpConn) =
+      if not conn.streamingBody or conn.bodyWriteTask.kind == vkTask or
+          conn.bodyChunk.len > 0 or conn.bodyRawPos < conn.bodyRaw.len:
+        return
+      let amount = if conn.bodyChunked: httpReadChunkBytes
+                   else: min(httpReadChunkBytes, conn.bodyRemaining)
+      if amount <= 0:
+        pumpStreamingBody(conn)
+        return
+      var chunk = newString(amount)
+      let n = recvConn(conn, addr chunk[0], amount)
+      if n > 0:
+        chunk.setLen(n)
+        conn.bodyRaw = move chunk
+        conn.bodyRawPos = 0
+        conn.bodyWaitingForSocket = false
+        conn.readDeadline = timerDeadline(bodyIdleMs)
+        rt.bytesRead += n
+        pumpStreamingBody(conn)
+      elif n == 0:
+        if conn.phase == hcpStreamingResponse:
+          failStreamResponse(conn, "request body ended before framing completed")
+        else:
+          closeConn(conn) # truncated body cannot become a successful EOF
+      elif n notin [-2, -3] and (conn.tlsConnection != nil or
+          (errno != EAGAIN and errno != EWOULDBLOCK and errno != EINTR)):
+        if conn.phase == hcpStreamingResponse:
+          failStreamResponse(conn, "request body socket read failed")
+        else:
+          closeConn(conn)
+
     proc handleReadable(conn: HttpConn) =
       var chunk = newString(httpReadChunkBytes)
       while true:
-        let n = recv(SocketHandle(conn.fd), addr chunk[0],
-                     httpReadChunkBytes.cint, 0)
+        let n = recvConn(conn, addr chunk[0], httpReadChunkBytes)
         if n > 0:
           let start = conn.buf.len
           conn.buf.setLen(start + n)
           copyMem(addr conn.buf[start], addr chunk[0], n)
           rt.bytesRead += n
-          if n < httpReadChunkBytes:
+          if bodyMode == "stream" and
+              (conn.buf.find("\r\n\r\n") >= 0 or
+               conn.buf.len > httpMaxHeaderBytes):
+            break
+          if n < httpReadChunkBytes and conn.tlsConnection == nil:
             break
         elif n == 0:
           closeConn(conn)      # EOF before a complete request
           return
-        elif errno == EAGAIN or errno == EWOULDBLOCK:
+        elif n in [-2, -3] or (conn.tlsConnection == nil and
+            (errno == EAGAIN or errno == EWOULDBLOCK)):
           break
-        elif errno == EINTR:
+        elif conn.tlsConnection == nil and errno == EINTR:
           continue
         else:
           closeConn(conn)
           return
-      let parsed = parseHttpRequestBuffer(conn.buf, maxBodyBytes, scope)
+      let parsed = parseHttpRequestBuffer(conn.buf, maxBodyBytes, scope,
+                                         headersOnly = bodyMode == "stream")
       case parsed.status
       of hpsNeedMore:
         discard
@@ -1581,7 +2472,39 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         conn.reqMethod = reqProps["method"].strVal
         conn.reqPath = reqProps["path"].strVal
         conn.reqHeaders = reqProps["headers"]
-        dispatchConn(conn, parsed.value)
+        if bodyMode == "stream":
+          try:
+            var nativeCall = NativeCall(dispatchScope: scope)
+            let pair = biIoPipe([], addr nativeCall)
+            conn.bodyReader = pair.listItems[0]
+            conn.bodyWriter = pair.listItems[1]
+            let available = max(0, conn.buf.len - parsed.bodyStart)
+            let initial = if parsed.chunked: available
+                          else: min(parsed.contentLength, available)
+            conn.bodyRaw =
+              if initial > 0:
+                conn.buf[parsed.bodyStart ..< parsed.bodyStart + initial]
+              else: ""
+            conn.buf = ""
+            conn.bodyRawPos = 0
+            conn.bodyChunk = ""
+            conn.bodyWriteOffset = 0
+            conn.bodyRemaining = parsed.contentLength
+            conn.bodyChunked = parsed.chunked
+            conn.chunkState = hcsSize
+            conn.bodyWaitingForSocket = false
+            conn.readDeadline = timerDeadline(bodyIdleMs)
+            conn.streamingBody = true
+            parsed.value.setNodeProp("body", conn.bodyReader)
+            dispatchConn(conn, parsed.value)
+            if conn.fd in conns and conn.phase == hcpDispatched:
+              pumpStreamingBody(conn)
+          except CatchableError as error:
+            HttpRuntimeLogger.emit(llError,
+              "stream body setup failed: " & error.msg)
+            respondCounted(conn, 500, "Internal Server Error")
+        else:
+          dispatchConn(conn, parsed.value)
 
     proc wsFlushConn(conn: HttpConn) =
       if tryFlush(conn):
@@ -1593,14 +2516,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             closeConn(conn)
             return
           try:
-            selector.updateHandle(conn.fd, {Event.Read})
+            selector.updateHandle(conn.fd,
+              {if conn.tlsReadWantWrite: Event.Write else: Event.Read})
           except CatchableError:
             closeConn(conn)
         else:
           closeConn(conn)    # dead socket mid-frame
       else:
         try:
-          selector.updateHandle(conn.fd, {Event.Read, Event.Write})
+          selector.updateHandle(conn.fd,
+            {if conn.tlsReadWantWrite: Event.Write else: Event.Read,
+             if conn.tlsWriteWantRead: Event.Read else: Event.Write})
         except CatchableError:
           closeConn(conn)
 
@@ -1616,21 +2542,21 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     proc handleWsReadable(conn: HttpConn) =
       var chunk = newString(httpReadChunkBytes)
       while true:
-        let n = recv(SocketHandle(conn.fd), addr chunk[0],
-                     httpReadChunkBytes.cint, 0)
+        let n = recvConn(conn, addr chunk[0], httpReadChunkBytes)
         if n > 0:
           let start = conn.buf.len
           conn.buf.setLen(start + n)
           copyMem(addr conn.buf[start], addr chunk[0], n)
           rt.bytesRead += n
-          if n < httpReadChunkBytes:
+          if n < httpReadChunkBytes and conn.tlsConnection == nil:
             break
         elif n == 0:
           closeConn(conn)
           return
-        elif errno == EAGAIN or errno == EWOULDBLOCK:
+        elif n in [-2, -3] or (conn.tlsConnection == nil and
+            (errno == EAGAIN or errno == EWOULDBLOCK)):
           break
-        elif errno == EINTR:
+        elif conn.tlsConnection == nil and errno == EINTR:
           continue
         else:
           closeConn(conn)
@@ -1725,10 +2651,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           var noSigPipe: cint = 1
           discard setsockopt(SocketHandle(fd), SOL_SOCKET, SO_NOSIGPIPE,
                              addr noSigPipe, SockLen(sizeof(noSigPipe)))
-        let conn = HttpConn(sock: client, fd: fd, phase: hcpReading,
+        let conn = HttpConn(sock: client, fd: fd,
+                            phase: if rt.tlsServer != nil: hcpTlsHandshake
+                                   else: hcpReading,
                             task: NIL, started: getMonoTime(),
                             reqHeaders: NIL,
                             readDeadline: timerDeadline(httpRecvTimeoutMs))
+        if rt.tlsServer != nil:
+          conn.tlsConnection = rt.tls.openConnection(rt.tlsServer, fd.cint)
+          if conn.tlsConnection == nil:
+            client.close()
+            continue
         conns[fd] = conn
         rt.activeConnections = conns.len
         try:
@@ -1736,7 +2669,30 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         except CatchableError:
           conns.del(fd)
           rt.activeConnections = conns.len
+          if conn.tlsConnection != nil:
+            rt.tls.closeConnection(conn.tlsConnection)
           client.close()
+
+    proc advanceTlsHandshake(conn: HttpConn) =
+      let status = rt.tls.handshake(conn.tlsConnection)
+      case status
+      of 1:
+        conn.phase = hcpReading
+        conn.tlsHandshakeWantWrite = false
+        conn.readDeadline = timerDeadline(httpRecvTimeoutMs)
+        try:
+          selector.updateHandle(conn.fd, {Event.Read})
+        except CatchableError:
+          closeConn(conn)
+      of 0, 2:
+        conn.tlsHandshakeWantWrite = status == 2
+        try:
+          selector.updateHandle(conn.fd,
+            {if conn.tlsHandshakeWantWrite: Event.Write else: Event.Read})
+        except CatchableError:
+          closeConn(conn)
+      else:
+        closeConn(conn)
 
     proc selectTimeoutMs(): int =
       ## Sleep in the kernel only as long as nothing else needs the loop:
@@ -1759,10 +2715,30 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         clampTo(drainDeadline)
       for conn in conns.values:
         case conn.phase
-        of hcpReading: clampTo(conn.readDeadline)
+        of hcpTlsHandshake, hcpReading: clampTo(conn.readDeadline)
         of hcpDispatched:
           if conn.hasTaskDeadline: clampTo(conn.taskDeadline)
+          if conn.streamingBody and conn.bodyWaitingForSocket:
+            clampTo(conn.readDeadline)
+            if conn.tlsConnection != nil and
+                not conn.tlsReadNeedsSocket and
+                rt.tls.hasPending(conn.tlsConnection) > 0:
+              timeout = 0
         of hcpWriting: discard
+        of hcpStreamingResponse:
+          if conn.hasTaskDeadline: clampTo(conn.taskDeadline)
+          if conn.streamingBody and conn.bodyWaitingForSocket:
+            clampTo(conn.readDeadline)
+            if conn.tlsConnection != nil and
+                not conn.tlsReadNeedsSocket and
+                rt.tls.hasPending(conn.tlsConnection) > 0:
+              timeout = 0
+          if conn.writePos >= conn.writeBuf.len and
+              (conn.responseReadTask.kind != vkTask or
+               conn.responseReadTask.taskDone) and
+              (conn.responseCloseTask.kind != vkTask or
+               conn.responseCloseTask.taskDone):
+            timeout = 0
         of hcpWebSocket:
           clampTo(conn.wsPingDeadline)
           if conn.wsAwaitingPong: clampTo(conn.wsPongDeadline)
@@ -1809,27 +2785,41 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       let now = getMonoTime()
       var settled: seq[HttpConn]
       var expiredReads: seq[HttpConn]
+      var expiredStreams: seq[HttpConn]
       var wsPing: seq[HttpConn]
       var wsDead: seq[HttpConn]
       for conn in conns.values:
         case conn.phase
         of hcpDispatched:
-          if conn.task.kind == vkTask and conn.task.taskDone:
+          if conn.streamingBody and conn.bodyWaitingForSocket and
+              now > conn.readDeadline:
+            expiredReads.add conn
+          elif conn.task.kind == vkTask and conn.task.taskDone:
             settled.add conn
           elif conn.hasTaskDeadline and now > conn.taskDeadline:
             settled.add conn
+        of hcpTlsHandshake:
+          if now > conn.readDeadline:
+            expiredReads.add conn
         of hcpReading:
           if now > conn.readDeadline:
             expiredReads.add conn
         of hcpWriting:
           discard
+        of hcpStreamingResponse:
+          if (conn.hasTaskDeadline and now > conn.taskDeadline) or
+              (conn.streamingBody and conn.bodyWaitingForSocket and
+               now > conn.readDeadline):
+            expiredStreams.add conn
         of hcpWebSocket:
           if conn.wsAwaitingPong and now > conn.wsPongDeadline:
             wsDead.add conn
           elif now > conn.wsPingDeadline:
             wsPing.add conn
       for conn in settled:
-        dec rt.inFlight
+        if conn.inFlightCounted:
+          dec rt.inFlight
+          conn.inFlightCounted = false
         if conn.task.kind == vkTask and conn.task.taskDone:
           let task = conn.task
           if not (task.taskHasPanic or task.taskCancelled or
@@ -1837,6 +2827,18 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
               task.taskResult.kind == vkNode and
               task.taskResult.props.hasKey("ws_accept"):
             wsBeginUpgrade(conn, task.taskResult)
+          elif not (task.taskHasPanic or task.taskCancelled or
+                    task.taskHasError) and
+              task.taskResult.kind == vkNode and
+              task.taskResult.head.bits ==
+                httpNamespaceBinding(scope, "StreamResponse").bits:
+            try:
+              startStreamResponse(conn, task.taskResult)
+            except CatchableError as error:
+              HttpRuntimeLogger.emit(llError,
+                "stream response setup failed: " & error.msg)
+              closeResponseResources(conn)
+              respondCounted(conn, 500, "Internal Server Error")
           else:
             let response = httpTaskResponsePayload(conn)
             logAccess(conn, response.status)
@@ -1846,7 +2848,23 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           # one reads. The client gets a definitive timeout answer.
           respondCounted(conn, 504, "Gateway Timeout")
       for conn in expiredReads:
+        if conn.phase == hcpTlsHandshake:
+          closeConn(conn)
+          continue
+        if conn.inFlightCounted:
+          if conn.task.kind == vkTask and not conn.task.taskDone:
+            discard nativeTaskCancel(conn.task, scope)
+          dec rt.inFlight
+          conn.inFlightCounted = false
         respondCounted(conn, 408, "Request Timeout")
+      for conn in expiredStreams:
+        if conn.fd in conns:
+          inc rt.timeouts
+          failStreamResponse(conn,
+            if conn.streamingBody and conn.bodyWaitingForSocket and
+                now > conn.readDeadline:
+              "request body exceeded idle deadline"
+            else: "stream response exceeded request deadline")
       for conn in wsDead:
         closeConn(conn)
       for conn in wsPing:
@@ -1872,7 +2890,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       for conn in conns.values:
         # WebSocket streams never block a drain: delivery has no response to
         # finish, so drop them with the idle readers.
-        if conn.phase in [hcpReading, hcpWebSocket]:
+        if conn.phase in [hcpTlsHandshake, hcpReading, hcpWebSocket]:
           idle.add conn
       for conn in idle:
         closeConn(conn)
@@ -1906,31 +2924,99 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
               continue    # closed earlier in this same event batch
             let conn = conns[ev.fd]
             if Event.Error in ev.events:
-              closeConn(conn)
+              if conn.phase == hcpStreamingResponse:
+                failStreamResponse(conn, "client closed during streamed response")
+              else:
+                closeConn(conn)
               continue
             case conn.phase
+            of hcpTlsHandshake:
+              if (conn.tlsHandshakeWantWrite and Event.Write in ev.events) or
+                  (not conn.tlsHandshakeWantWrite and Event.Read in ev.events):
+                advanceTlsHandshake(conn)
             of hcpReading:
-              if Event.Read in ev.events:
+              if (conn.tlsReadWantWrite and Event.Write in ev.events) or
+                  (not conn.tlsReadWantWrite and Event.Read in ev.events):
+                conn.tlsReadNeedsSocket = false
                 handleReadable(conn)
+                if conn.fd in conns and conn.phase == hcpReading:
+                  selector.updateHandle(conn.fd,
+                    {if conn.tlsReadWantWrite: Event.Write else: Event.Read})
             of hcpWriting:
-              if Event.Write in ev.events:
+              if (conn.tlsWriteWantRead and Event.Read in ev.events) or
+                  (not conn.tlsWriteWantRead and Event.Write in ev.events):
                 if tryFlush(conn):
                   completeWrite(conn)
+                elif conn.fd in conns:
+                  selector.updateHandle(conn.fd,
+                    {if conn.tlsWriteWantRead: Event.Read else: Event.Write})
+            of hcpStreamingResponse:
+              if (conn.tlsReadWantWrite and Event.Write in ev.events) or
+                  (not conn.tlsReadWantWrite and Event.Read in ev.events):
+                conn.tlsReadNeedsSocket = false
+                handleStreamingReadable(conn)
+              if ((conn.tlsWriteWantRead and Event.Read in ev.events) or
+                  (not conn.tlsWriteWantRead and Event.Write in ev.events)) and
+                  conn.fd in conns and
+                  conn.phase == hcpStreamingResponse:
+                pumpStreamResponse(conn)
+              if conn.fd in conns and conn.phase == hcpStreamingResponse:
+                refreshStreamInterests(conn)
             of hcpWebSocket:
-              if Event.Write in ev.events:
+              if (conn.tlsWriteWantRead and Event.Read in ev.events) or
+                  (not conn.tlsWriteWantRead and Event.Write in ev.events):
                 wsFlushConn(conn)
-              if Event.Read in ev.events and conn.fd in conns:
+              if conn.fd in conns and
+                  ((conn.tlsReadWantWrite and Event.Write in ev.events) or
+                   (not conn.tlsReadWantWrite and Event.Read in ev.events)):
+                conn.tlsReadNeedsSocket = false
                 handleWsReadable(conn)
+              if conn.fd in conns and conn.phase == hcpWebSocket:
+                var interests = {if conn.tlsReadWantWrite: Event.Write
+                                 else: Event.Read}
+                if conn.writePos < conn.writeBuf.len:
+                  interests.incl (if conn.tlsWriteWantRead: Event.Read
+                                  else: Event.Write)
+                selector.updateHandle(conn.fd, interests)
             of hcpDispatched:
-              discard    # not watching; response path re-arms the fd
+              if conn.streamingBody and
+                  ((conn.tlsReadWantWrite and Event.Write in ev.events) or
+                   (not conn.tlsReadWantWrite and Event.Read in ev.events)):
+                conn.tlsReadNeedsSocket = false
+                handleStreamingReadable(conn)
+              if conn.fd in conns and conn.phase == hcpDispatched and
+                  conn.streamingBody:
+                refreshStreamInterests(conn)
           pumpScheduler()
+          var bodyConns: seq[HttpConn]
+          for conn in conns.values:
+            if conn.streamingBody and
+                conn.phase in {hcpDispatched, hcpStreamingResponse}:
+              bodyConns.add conn
+          for conn in bodyConns:
+            if conn.fd in conns:
+              pumpStreamingBody(conn)
+              if conn.fd in conns and conn.streamingBody and
+                  conn.bodyWaitingForSocket and conn.tlsConnection != nil and
+                  not conn.tlsReadNeedsSocket and
+                  rt.tls.hasPending(conn.tlsConnection) > 0:
+                handleStreamingReadable(conn)
+          var responseConns: seq[HttpConn]
+          for conn in conns.values:
+            if conn.phase == hcpStreamingResponse:
+              responseConns.add conn
+          for conn in responseConns:
+            if conn.fd in conns:
+              pumpStreamResponse(conn)
           wsReapPending()
           drainWsOutbound()
           harvest()
+          pruneCleanupTasks()
     finally:
       var leftover: seq[HttpConn]
       for conn in conns.values:
         leftover.add conn
+      forcedConnections = leftover.len
       for conn in leftover:
         closeConn(conn)
       try:
@@ -1938,11 +3024,38 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       except CatchableError:
         discard
       closeHttpPool(pool)
+      let cleanupDeadline =
+        if draining: drainDeadline else: timerDeadline(drainTimeoutMs)
+      while true:
+        withScopedScheduler(scope):
+          pumpScheduler()
+        pruneCleanupTasks()
+        let snapshot = app.ioBudget.ioBudgetSnapshot()
+        remainingCleanupLeases = max(0, snapshot.cleanupLeases -
+          initialCleanupLeases)
+        remainingFileResources = max(0,
+          app.ioFileOpenCount() - initialFileResources)
+        if remainingCleanupLeases == 0 and remainingFileResources == 0 and
+            cleanupTasks.len == 0 or
+            getMonoTime() >= cleanupDeadline:
+          break
+        sleep(1)
       rt.serving = false
       dropHttpRuntime(rt)
       if ownRegistration:
         args[0].setNodeProp("listener", VOID)   # void deletes the prop
-    NIL
+    var shutdown = initPropTable()
+    shutdown["complete"] = newBool(remainingCleanupLeases == 0 and
+      remainingFileResources == 0 and cleanupTasks.len == 0 and
+      not cleanupTaskFailed)
+    shutdown["graceful"] = newBool(forcedConnections == 0)
+    shutdown["forced_connections"] = newInt(forcedConnections)
+    shutdown["cleanup_leases"] = newInt(remainingCleanupLeases)
+    shutdown["open_io_resources"] = newInt(remainingFileResources)
+    shutdown["pending_cleanup_tasks"] = newInt(cleanupTasks.len)
+    shutdown["close_failed"] = newBool(cleanupTaskFailed)
+    shutdown["served_requests"] = newInt(served)
+    newMap(shutdown)
   else:
     raiseHttpError("http/serve requires a native posix build", scope)
     NIL
@@ -1994,6 +3107,98 @@ proc biHttpBytes(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     else:
       raise newException(GeneError, "http/bytes expects a Bytes or Str body")
   newHttpResponseValue(scope, status, body, "application/octet-stream")
+
+proc biHttpStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if scope == nil or args.len notin [1, 2]:
+    raiseHttpError("http/stream expects (reader) or (status, reader)", scope)
+  let status = if args.len == 1: 200
+               else: int(requireInt64("http/stream status", args[0]))
+  if status < 200 or status > 599 or status in [204, 205, 304]:
+    raiseHttpError("http/stream status must permit a body", scope)
+  let reader = args[^1]
+  let ioScope = scope.application().stdlib.vars["io"].nsScope
+  if not scope.typeImplementsProtocol(projectHead(reader),
+                                      ioScope.vars["AsyncReader"]):
+    raiseHttpError("http/stream body must implement AsyncReader", scope)
+  var contentType = "application/octet-stream"
+  var extraHeaders = NIL
+  var knownLength = -1
+  var maxBytes = 64 * 1024 * 1024
+  var ownReader = false
+  var seen = initHashSet[string]()
+  if call != nil:
+    for i, name in call[].namedNames:
+      if name in seen:
+        raiseHttpError("http/stream got duplicate named argument: " & name,
+                       scope)
+      seen.incl name
+      let value = call[].namedValues[i]
+      case name
+      of "content_type":
+        requireStr("http/stream ^content_type", value)
+        contentType = value.strVal
+      of "headers":
+        if value.kind != vkMap:
+          raiseHttpError("http/stream ^headers must be a Map", scope)
+        extraHeaders = value
+      of "content_length":
+        knownLength = int(requireInt64("http/stream ^content_length", value))
+      of "max_bytes":
+        maxBytes = int(requireInt64("http/stream ^max_bytes", value))
+      of "own_reader":
+        if value.kind != vkBool:
+          raiseHttpError("http/stream ^own_reader must be Bool", scope)
+        ownReader = value.boolVal
+      else:
+        raiseHttpError("http/stream got unexpected named argument: " & name,
+                       scope)
+  if maxBytes < 1 or maxBytes > 1_073_741_824 or
+      knownLength < -1 or knownLength > maxBytes:
+    raiseHttpError("http/stream byte limits are invalid", scope)
+  if ownReader and not scope.typeImplementsProtocol(projectHead(reader),
+                                                     ioScope.vars["IoResource"]):
+    raiseHttpError("owned stream body must implement IoResource", scope)
+  var headers = initPropTable()
+  headers["content-type"] = newStr(contentType)
+  var headerBytes = 0
+  if extraHeaders.kind == vkMap:
+    if extraHeaders.mapEntries.len > 256:
+      raiseHttpError("http/stream accepts at most 256 headers", scope)
+    for key, value in extraHeaders.mapEntries:
+      if value.kind != vkString:
+        raiseHttpError("http/stream header values must be Str", scope)
+      let lower = key.toLowerAscii()
+      if key.len == 0 or lower in
+          ["content-length", "transfer-encoding", "connection"]:
+        raiseHttpError("http/stream header name is reserved or empty", scope)
+      for ch in key:
+        if not (ch in {'A'..'Z', 'a'..'z', '0'..'9'} or
+                ch in "!#$%&'*+-.^_`|~"):
+          raiseHttpError("http/stream header name is invalid", scope)
+      for ch in value.strVal:
+        if ch == '\r' or ch == '\n' or ch == '\x7f' or
+            (ch < ' ' and ch != '\t'):
+          raiseHttpError("http/stream header value is invalid", scope)
+      headerBytes += key.len + value.strVal.len + 4
+      if headerBytes > 256 * 1024:
+        raiseHttpError("http/stream headers exceed 256 KiB", scope)
+      headers[lower] = value
+  for ch in contentType:
+    if ch == '\r' or ch == '\n' or ch == '\x7f' or
+        (ch < ' ' and ch != '\t'):
+      raiseHttpError("http/stream content type is invalid", scope)
+  if contentType.len + headerBytes > 256 * 1024:
+    raiseHttpError("http/stream headers exceed 256 KiB", scope)
+  var props = initPropTable()
+  props["status"] = newInt(status)
+  props["headers"] = newMap(headers)
+  props["body"] = reader
+  if knownLength >= 0: props["content_length"] = newInt(knownLength)
+  props["max_bytes"] = newInt(maxBytes)
+  props["own_reader"] = newBool(ownReader)
+  newNode(httpNamespaceBinding(scope, "StreamResponse"),
+          props = props, immutable = true)
 
 proc biHttpNotFound(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call[].dispatchScope

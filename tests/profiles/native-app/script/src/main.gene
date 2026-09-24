@@ -1,0 +1,37 @@
+(import $str [trim])
+
+(type ScriptError ^props {^message Str})
+(impl Error for ScriptError)
+
+(fn main [args] : Int
+  (let root "tests/profiles/native-app/script/fixtures")
+  (let input ($path/join root "input.json"))
+  (let csv_path (?? args/2 ($path/join root "people.csv")))
+  (let files ($into ($map ($fs/walk root) /relative_path) []))
+  (let record ($json/parse ($fs/read_text input)))
+  (let rows ($csv/parse_rows ($fs/read_text csv_path) ^headers true))
+  (var total 0)
+  (for row in rows
+    (set total (+ total ($parse/parse_int row/count))))
+  (let child_source (if ($os/env? "GENE_PROFILE_CHILD_FAIL")
+                        "(fail \"child failed\")" "(+ 2 3)"))
+  (let child ($os/exec ^cmd ($os/executable_path)
+                         ^args ["eval" child_source] ^timeout_ms 5000))
+  (if_not (== child/status 0)
+    (fail (ScriptError ^message "subprocess failed")))
+  (let response (await ($net/http_client/request
+                        ^url args/0 ^timeout_ms 5000 ^max_bytes 65536)))
+  (if_not (== response/status 200)
+    (fail (ScriptError ^message "API returned an unsuccessful status")))
+  (let api ($json/parse response/body))
+  (let ok (&& (== record/name "Ada")
+              (== record/visits 3)
+              (== total 8)
+              (== api/result "ok")
+              (== (trim child/stdout) "5")))
+  (if_not ok (fail (ScriptError ^message "unexpected input or response")))
+  (let output {^name record/name ^total total ^files files
+               ^api api/result ^process_result (trim child/stdout)})
+  ($fs/write_text_atomic args/1 ($json/stringify output))
+  ($println ($json/stringify {^workload "script" ^ok ok ^output output}))
+  (if ok 0 1))

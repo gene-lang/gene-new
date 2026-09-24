@@ -30,7 +30,9 @@
   slots, and same-depth `;`/arrow mixtures are read errors; `->` and `=>` mix,
   and nested forms are independent.
 - A `Value` occupies one machine word and zero initialization is `nil`.
-- Structural equality and hash ignore meta. `same?` is scalar identity by
+- Default structural equality and hash ignore meta. A nominal Type with sealed
+  `ValueEq`/`ValueHash` witnesses may define different value semantics on the
+  native VM. `same?` is scalar identity by
   value and heap/container identity by reference.
 - `props`, `body`, and `meta` return detached shallow snapshots. Nested values
   retain identity. Deep freeze, Send checks, and serialization traverse meta.

@@ -1,6 +1,6 @@
 # Native Extension Lifecycle
 
-**Status:** Implementation proposal, reviewed against `3b2bde9`.
+**Status:** NATIVE-1 and NATIVE-2 have experimental v5 ingress, typed C registration, root-lane dispatch, bounded cleanup, and owned Gene subscriptions. NATIVE-3 now has an experimental `genex/libuv_timer` `c_library` package: a libuv 1.52.x owner thread sends timer notifications through v5 ingress and joins only after both asynchronous handle close callbacks. A 10,000-lifetime macOS arm64 installed-app probe passes with its source checkout hidden and compiler unavailable: each close leaves zero live native contexts/handles, 20,000 handle close callbacks are recorded, and native roots/materialized leases return to baseline. Linux runtime qualification remains open. Design baseline `3b2bde9`.
 
 **Stages:** NATIVE-1 (native ingress/ABI), NATIVE-2 (subscription/binding), NATIVE-3 (package qualification).
 

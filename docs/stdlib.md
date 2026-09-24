@@ -50,6 +50,170 @@ any content is written, for a secret such as a connection credential. For byte-o
 Filesystem watching, locking, and asynchronous filesystem adapters are also
 available.
 
+An application target can declare immutable resources with an existing
+format-1 `^build [(resources "assets" ^files ["data/schema.json"])]`
+recipe and select it through `^uses ["assets"]`. When the target is built and
+run, `$pkg/read_bytes` or `$pkg/read_text` reads the selected resource from
+the owning `this_pkg`. The runtime checks its recorded size and digest. The
+resource path is package-relative; neither call searches the current working
+directory. `$pkg/materialize` returns a verified, closeable lease exposing a
+physical cache path when a native library needs one. The cache is private to
+the current user and has no automatic eviction in this release.
+
+```gene
+(let schema ($pkg/read_text this_pkg "data/schema.json"))
+(let lease ($pkg/materialize this_pkg "data/schema.json"))
+(try ($println (lease .path)) ensure (lease .close))
+```
+
+Experimental PKG-2 `native_binary` recipes select a prebuilt file by target,
+ABI, and digest. `($pkg/native_binary this_pkg "alias")` returns the same
+closeable materialization lease. Pass its path to `ffi/open` or the matching
+native extension loader, and close the lease after closing the library.
+Experimental source-built `c_library` recipes produce verified shared
+libraries or static archives from selected C sources. The same
+`$pkg/native_binary` lookup materializes their output; see
+[package installation](spec/package-install.md).
+
+## Paths and CSV
+
+`$path` performs lexical path operations without filesystem access. The native
+VM currently qualifies these operations for POSIX paths:
+
+```gene runnable
+(import $path [join relative extension])
+[(join "reports" "2026" "summary.csv")
+ (relative "reports/2026" "reports")
+ (extension "summary.csv")]
+# ["reports/2026/summary.csv" "2026" ".csv"]
+```
+
+`join` rejects an absolute later component. `relative` rejects incompatible
+roots or unresolved leading `..` segments. `$fs/walk` returns a lazy Stream of
+`{^path ^relative_path ^kind ^size}` records in depth-first order. It sorts one
+directory at a time, does not follow symlinks by default, and enforces depth,
+per-directory, and total entry limits. Close a partially consumed Stream.
+
+```gene
+(let entries ($fs/walk "reports" ^max_depth 2))
+(try
+  (for entry in entries ($println entry/relative_path))
+  ensure (entries .close))
+```
+
+`$csv/parse_rows` is the bounded, eager convenience operation. Fields remain
+strings; `^headers true` yields property maps, and malformed rows raise typed
+`CsvError` with offset, record, and field positions. The parser accepts LF or
+CRLF records, quoted newlines, and a UTF-8 BOM at the start. Experimental
+`$csv/reader` accepts a qualified `AsyncReader`; each concrete `.next` returns
+a Task yielding one row or nil. Close it through `IoResource`. Pass
+`^own_reader true` when the wrapper should close the upstream reader too.
+
+```gene runnable
+(import $csv [parse_rows encode_row])
+[(parse_rows "name,count\nAda,3\n" ^headers true)
+ ($binary/to_str (encode_row ["a,b" "two"]))]
+# [[{^name "Ada" ^count "3"}] "\"a,b\",two\r\n"]
+```
+
+```gene
+(import $io [open_read IoResource])
+(let rows ($csv/reader (await (open_read "large.csv"))
+                        ^headers true ^own_reader true))
+(try
+  (let row (await (rows .next)))
+  (if ($nil? row) nil row/name)
+  ensure (rows .IoResource:close))
+```
+
+## Value protocols and ordering (native VM experimental)
+
+`ValueEq` and `ValueHash` select equality and hash behavior for a nominal Type.
+They apply inside Lists, Sets, and general-key Maps as well as to `==` and
+`$hash`. An equality-only Type cannot be used as a key. `same?` still checks
+identity. `IndexRead` supplies `size` and numeric path reads; `IndexWrite`
+supplies final numeric `set` writes. Unqualified messages such as `(x .get 0)`
+do not dispatch through these protocols.
+
+`gene/order` supplies stable List sorting. `sort_by` evaluates its key function
+once per item and preserves input order when keys compare equal:
+
+```gene runnable
+(import gene/order [sort_by])
+(let rows [{^rank 2 ^name "Ada"} {^rank 1 ^name "Bob"}
+           {^rank 2 ^name "Cy"}])
+(let sorted (sort_by rows /rank))
+[sorted/0/name sorted/1/name sorted/2/name]
+# ["Bob" "Ada" "Cy"]
+```
+
+`$order/compare` and numeric operators use `ValueOrder` for matching nominal
+Types. Default sorting rejects mixed numeric types, NaN, and unrelated Types;
+pass `^compare f` to `sort` or `sort_by` for an explicit policy. These
+callbacks are synchronous on the root lane.
+
+## Async byte I/O (native VM experimental)
+
+`gene/io` exports `AsyncReader`, `AsyncWriter`, and `IoResource`. Generic code
+uses qualified sends such as `(reader .AsyncReader:read 65536)` and
+`(resource .IoResource:close)`; implementing a protocol does not add a bare
+`.read` or `.close` message. Reads return fresh Tasks with Bytes or nil at EOF.
+`close` requests retirement synchronously, while each `wait_closed` call returns
+a fresh Task for the physical result.
+
+`($io/write_all writer bytes)` returns a Task and loops over partial writes.
+`($io/copy reader writer ^limit n ^chunk_bytes 65536)` returns a Task, borrows
+both endpoints, and requires a finite nonnegative byte limit. The protocol and
+generic operations have fake-adapter conformance coverage. Worker-backed
+`$io/open_read path` and `$io/open_write path ^mode "create_new"` are experimental
+on threaded POSIX runtimes. Write modes are `create_new`, explicit `truncate`,
+and `append`; unthreaded runtimes return a failed open Task. File read/write,
+flush, and close use cleanup leases. `($io/pipe)` returns a `[reader writer]`
+pair on threaded POSIX runtimes with the same qualified protocols; closing its
+writer delivers EOF after buffered bytes, and a closed reader makes later
+writes fail with `IoError`.
+`($io/tcp_connect host port ^timeout_ms 10000)` returns a Task yielding a
+duplex `TcpStream`; `($io/tcp_listen host port ^backlog 128)` returns a Task
+yielding a `TcpListener`. A listener's concrete `.accept` returns a Task of
+`TcpStream`, and `.local_port` exposes the selected port when listening on
+port 0. Both stream directions use the same `AsyncReader`/`AsyncWriter`
+protocols and byte budgets as files and pipes. Close is a full socket close;
+there is no local half-close or TLS on these raw TCP streams. A blocked accept,
+read, or write parks in the POSIX readiness watcher, leaving native workers
+available for unrelated work.
+
+```gene
+(let IoResource $io/IoResource)
+(let listener (await ($io/tcp_listen "127.0.0.1" 0)))
+(let accepting (listener .accept))
+(let client (await ($io/tcp_connect "127.0.0.1"
+                                     (listener .local_port))))
+(let server (await accepting))
+(client .IoResource:close)
+(server .IoResource:close)
+(listener .IoResource:close)
+(await (client .IoResource:wait_closed))
+(await (server .IoResource:wait_closed))
+(await (listener .IoResource:wait_closed))
+```
+
+For binary subprocess output, pass pipe writers as `^stdout_pipe` and/or
+`^stderr_pipe` to `$os/exec_stream_async`, then consume their readers through
+`AsyncReader`. Each option consumes and closes its writer when the child
+finishes; the returned Task keeps its existing process-result map. Existing
+`^stdout_chan` line streaming is unchanged. For binary input, pass an `io/pipe`
+reader as `^stdin_pipe` and write through its paired `AsyncWriter`; close that
+writer to deliver EOF to the child. The subprocess consumes and closes the
+reader on completion or cancellation. HTTP client and response body adapters
+remain open; the server's request-body adapter is experimental.
+The streamed channel's captured text field in that map is empty; use the pipe
+reader for its raw bytes.
+When capturing both stdout and stderr through pipes, read them concurrently;
+a child can block on one full pipe while the other reader waits for EOF.
+`$io/testing/new` provides a deterministic native resource for adapter tests;
+`$io/testing/complete_read` and `complete_write` stand in for physical worker
+completion. It is a test surface, not a file or socket transport.
+
 ## HTTP server
 
 Save this as `server.gene` and run it with `gene run server.gene`:
@@ -78,11 +242,39 @@ the bounded outbound queue drops anything. In the web profile,
 handler can suspend without blocking the other requests. TLS and broader
 production hardening remain future work.
 
+For a bounded streamed request body, pass `^body_mode "stream"` to `serve`.
+The handler receives a `StreamRequest` with `request/body` implementing
+qualified `AsyncReader` and `IoResource`; nil from `read` means the declared
+Content-Length or final chunk/trailer arrived completely. This mode accepts
+Content-Length or `Transfer-Encoding: chunked` with task-per-request dispatch;
+`^body_idle_ms` sets its body idle timeout (default 10000). Buffered `Request`
+bodies and responses keep their existing shapes. For output, `(stream reader)`
+or `(stream status reader ^own_reader true ^content_length n)` sends a bounded
+`AsyncReader` response with Content-Length when known, otherwise chunked
+framing. A handler can return `(stream request/body)` to echo a streamed upload
+before that upload finishes. See the [response contract](spec/http-stream-response.md) and the
+[streamed request contract](spec/http-stream-request.md).
+
 Use [the async-server example](../examples/async-http-server.gene) for routes,
 limits, and lifecycle control. The [Todo app](../examples/todo_app/src/main.gene)
 adds forms, SQLite, and browser behavior.
 
 ## HTTP client
+
+The experimental reusable Client is separate from the module-level one-shot
+functions below. Open returns a Task; a Client's `.request` returns a Task with
+Bytes body and ordered header pairs, and qualified `IoResource` close waits for
+native retirement. It reuses HTTP/1.1 connections across requests from the
+same Application. See the [owned Client contract](spec/http-client-owned.md)
+for the current buffered surface and remaining streamed features.
+
+```gene
+(let IoResource $io/IoResource)
+(let client (await ($net/http_client/open)))
+(let response (await (client .request ^url "http://127.0.0.1:8080/data")))
+(client .IoResource:close)
+(await (client .IoResource:wait_closed))
+```
 
 ```gene
 (import $net/http_client [request])

@@ -1,0 +1,48 @@
+(import $io [open_read IoResource])
+(import $csv [reader])
+(import $order [sort_by])
+(import $parse [parse_int])
+
+(type DataLimitError ^props {^message Str})
+(impl Error for DataLimitError)
+
+(fn main [args] : Int
+  (let source (await (open_read args/0)))
+  (let rows (reader source ^headers true ^own_reader true))
+  (var totals {})
+  (var result [])
+  (var parser_peak 0)
+  (var parser_at_eof 0)
+  (var io_peak 0)
+  (var io_at_eof 0)
+  (try
+    (var row (await (rows .next)))
+    (while row
+      (let group row/group)
+      (let previous (?? totals/%group nil))
+      (if ($nil? previous)
+        (then
+          (if (>= ($size totals) 100)
+            (then (fail (DataLimitError ^message "group limit exceeded"))))))
+      (set totals/%group (+ (?? previous 0) (parse_int row/value)))
+      (set row (await (rows .next))))
+    (set result (sort_by ($into ($to_pairs_stream totals) [])
+                         (fn [pair] ($to_str pair/0))))
+    (let at_eof ($runtime/gc_stats))
+    (set parser_peak at_eof/csv_parser_peak_resource_bytes)
+    (set parser_at_eof at_eof/csv_parser_retained_bytes)
+    (set io_peak at_eof/io_peak_retained_bytes)
+    (set io_at_eof at_eof/io_retained_bytes)
+    ensure (rows .IoResource:close))
+  (await (rows .IoResource:wait_closed))
+  (let after_close ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^workload "data" ^ok true ^groups result
+     ^parser_peak_bytes parser_peak
+     ^parser_retained_at_eof parser_at_eof
+     ^parser_retained_after_close after_close/csv_parser_retained_bytes
+     ^io_peak_bytes io_peak
+     ^io_retained_at_eof io_at_eof
+     ^io_retained_after_close after_close/io_retained_bytes
+     ^io_cleanup_leases_after_close after_close/io_cleanup_leases}))
+  0)

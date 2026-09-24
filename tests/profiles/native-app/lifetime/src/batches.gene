@@ -1,0 +1,46 @@
+(fn checkpoint [phase batch]
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^phase phase ^batch batch ^rc_stats stats/rc_stats?
+     ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes
+     ^native_roots stats/native_roots
+     ^io_root_tasks stats/io_root_tasks
+     ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^io_cleanup_leases stats/io_cleanup_leases
+     ^io_open_resources stats/io_open_resources
+     ^cycle_candidates stats/cycle_candidates})))
+
+(fn main [args] : Int
+  (let final_batch ($parse/parse_int (?? args/0 "10000")))
+  ($assert (== final_batch 10000))
+  (let eval_form ($read_one
+    "(do (type Local ^props {^n Int} (message value [] : Int self/n)) ((Local ^n 7) .value))"))
+  (let closure_form ($read_one
+    "(do (let c ($cell 7)) (fn [] (c .get)))"))
+  (let cycle_form ($read_one
+    "(do (let c ($cell nil)) (c .set c) nil)"))
+  (let failure_form ($read_one
+    "(do (type Broken ^props {^text Str}) (impl ValueEq for Broken (message equal [other : Broken] : Bool (== self/text other/text))) (fail (AssertionError ^message \"expected\")))"))
+  (let compile_failure_form ($read_one
+    "(do (type Broken ^props {}) (var))"))
+  (let control (eval closure_form ^in (env)))
+  ($assert (== (control) 7))
+  (fn exercise []
+    ($assert (== (eval eval_form ^in (env)) 7))
+    (eval closure_form ^in (env))
+    (eval cycle_form ^in (env))
+    ($assert (try (eval failure_form ^in (env)) false
+               catch Error true))
+    ($assert (try (eval compile_failure_form ^in (env)) false
+               catch CompileError true)))
+  (repeat 100 (exercise))
+  (checkpoint "warm" 100)
+  (for batch in [1 100 1000 final_batch]
+    ($println ($json/stringify {^phase "starting" ^batch batch}))
+    (repeat batch (exercise))
+    ($assert (== (control) 7))
+    (checkpoint "after" batch))
+  (checkpoint "final" final_batch)
+  0)

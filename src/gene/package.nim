@@ -7,7 +7,7 @@
 ## inert data and are never compiled or executed. Runtime code receives only a
 ## pre-materialized alias graph and performs O(1) edge lookup.
 
-import std/[algorithm, os, sequtils, sets, strutils, tables, times, uri]
+import std/[algorithm, base64, os, sequtils, sets, strutils, tables, times, uri]
 import std/unicode as unicode
 import ./types
 import ./reader
@@ -15,6 +15,7 @@ import ./digest
 import ./printer
 import ./process_lock
 import ./unicode_package
+import ./release_crypto
 
 const
   ManifestFileName* = "package.gene"
@@ -110,6 +111,19 @@ type
     linkage*: SystemLinkage
     components*: seq[string]
 
+  NativeBinaryVariant* = object
+    alias*, target*, path*, digest*: string
+    abiKind*: string
+    abiVersion*: int
+    runtimeIdentity*: string
+    systemAliases*: seq[string]
+
+  CLibraryRecipe* = object
+    alias*: string
+    sources*, includeDirs*, systemAliases*: seq[string]
+    cflags*, ldflags*, targets*: seq[string]
+    linkage*: string
+
   DependencyDecl* = object
     ## One alias-keyed, validated `(dep "owner/name" …)` declaration.
     alias*: string
@@ -140,6 +154,7 @@ type
     manifestDigest*: string
     treeDigest*: string
     archiveDigest*: string
+    releaseIndexDigest*: string ## hosted candidate only; not package identity
     id*: string
     sourceKind*: DependencySourceKind
     sourceName*: string
@@ -224,10 +239,31 @@ type
     removedObjects*: int
     removedRootReceipts*: int
 
+  RegistryCandidateSource* = object
+    manifestRoot*: string
+    version*: string
+    manifestDigest*: string
+    treeDigest*: string
+    indexDigest*: string
+    yanked*: bool
+
+  RegistryCandidateLoader* = proc(name: string, offline: bool):
+      seq[RegistryCandidateSource] {.closure.}
+  RegistrySourceRootLoader* = proc(pkg: Package, offline: bool):
+      string {.closure.}
+  RegistryLockedVerifier* = proc(pkg: Package, offline: bool,
+                                workspaceRoot: string) {.closure.}
+  RegistryVendorExporter* = proc(pkg: Package,
+                                 vendorRoot: string) {.closure.}
+
   PackageSourceAdapter* = ref object
     name*: string
     root*: string
     url*: string
+    candidateLoader*: RegistryCandidateLoader
+    sourceRootLoader*: RegistrySourceRootLoader
+    verifyLockedRelease*: RegistryLockedVerifier
+    exportVendorSignature*: RegistryVendorExporter
 
   GitCheckout* = object
     root*: string
@@ -1604,7 +1640,7 @@ const immutableDefaultExcludes = [
   "package.gene.lock", ".gene/**", "vendor/**", ".git/**", ".hg/**",
   ".svn/**", ".DS_Store", "Thumbs.db", "*~", "*.swp", "*.tmp"]
 
-proc selectedByFiles(pkg: Package, relPath: string): bool =
+proc selectedByFiles*(pkg: Package, relPath: string): bool =
   var included = false
   for pattern in pkg.files.includes:
     if globMatches(pattern, relPath):
@@ -1619,6 +1655,273 @@ proc selectedByFiles(pkg: Package, relPath: string): bool =
     if globMatches(pattern, relPath):
       return false
   true
+
+proc resourceRecipeFiles*(pkg: Package, alias: string): seq[string] =
+  ## A format-1 `(resources "name" ^files [...])` recipe. Only a target that
+  ## names it through `^uses` activates it; unknown recipe heads retain the
+  ## existing build-feature diagnostic at the build boundary.
+  if pkg.buildRecipes.kind != vkList:
+    raisePackageError(pecManifestInvalid, "^build must be a list", [pkg.manifestPath])
+  var found = false
+  var seen = initHashSet[string]()
+  for recipe in pkg.buildRecipes.listItems:
+    if recipe.kind != vkNode or recipe.head.kind != vkSymbol or
+        recipe.head.symVal != "resources":
+      continue
+    if recipe.body.len != 1 or recipe.body[0].kind != vkString or
+        recipe.body[0].strVal.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "resources recipe requires one string name", [pkg.manifestPath])
+    if recipe.body[0].strVal != alias:
+      continue
+    if found:
+      raisePackageError(pecManifestInvalid,
+        "duplicate resources recipe: " & alias, [pkg.manifestPath])
+    found = true
+    rejectUnknown(recipe.props, ["files"], "resources recipe", pkg.manifestPath)
+    if not recipe.props.hasKey("files") or
+        recipe.props["files"].kind != vkList or
+        recipe.props["files"].listItems.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "resources recipe requires a nonempty ^files list", [pkg.manifestPath])
+    for value in recipe.props["files"].listItems:
+      let raw = manifestString(value, "resources.files", pkg.manifestPath)
+      let path = normalizeRelativePath(raw, "resources.files", pkg.manifestPath)
+      if path.len == 0 or path in seen:
+        raisePackageError(pecManifestInvalid,
+          "duplicate or empty resource path: " & path, [pkg.manifestPath])
+      if not pkg.selectedByFiles(path):
+        raisePackageError(pecManifestInvalid,
+          "resource is excluded by ^files: " & path, [pkg.manifestPath])
+      let absolute = pkg.root / path
+      if not fileExists(absolute) or symlinkExists(absolute) or
+          not containsPath(pkg.realRoot, canonicalPath(absolute)):
+        raisePackageError(pecManifestInvalid,
+          "resource must be a contained regular file: " & path,
+          [pkg.manifestPath])
+      seen.incl path
+      result.add path
+  if not found:
+    raisePackageError(pecManifestInvalid,
+      "unknown resources recipe: " & alias, [pkg.manifestPath])
+  result.sort()
+
+proc nativeBinaryVariant*(pkg: Package, alias,
+                          target: string): NativeBinaryVariant =
+  ## Select one explicit platform/ABI variant; never infer compatibility from
+  ## a filename suffix or from the build host.
+  if pkg.buildRecipes.kind != vkList:
+    raisePackageError(pecManifestInvalid, "^build must be a list", [pkg.manifestPath])
+  var found = false
+  var matches = 0
+  for recipe in pkg.buildRecipes.listItems:
+    if recipe.kind != vkNode or recipe.head.kind != vkSymbol or
+        recipe.head.symVal != "native_binary" or recipe.body.len == 0 or
+        recipe.body[0].kind != vkString or recipe.body[0].strVal != alias:
+      continue
+    if found:
+      raisePackageError(pecManifestInvalid,
+        "duplicate native_binary recipe: " & alias, [pkg.manifestPath])
+    found = true
+    if recipe.body.len != 1 or alias.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "native_binary requires one string name", [pkg.manifestPath])
+    rejectUnknown(recipe.props, ["variants"], "native_binary recipe",
+                  pkg.manifestPath)
+    if not recipe.props.hasKey("variants") or
+        recipe.props["variants"].kind != vkList or
+        recipe.props["variants"].listItems.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "native_binary requires nonempty ^variants", [pkg.manifestPath])
+    var seenTargets = initHashSet[string]()
+    for entry in recipe.props["variants"].listItems:
+      if entry.kind != vkMap:
+        raisePackageError(pecManifestInvalid,
+          "native_binary variant must be a Map", [pkg.manifestPath])
+      let props = entry.mapEntries
+      rejectUnknown(props,
+        ["target", "file", "digest", "abi_kind", "abi_version",
+         "runtime_identity", "system"], "native_binary variant",
+        pkg.manifestPath)
+      for field in ["target", "file", "digest", "abi_kind", "abi_version"]:
+        if not props.hasKey(field):
+          raisePackageError(pecManifestInvalid,
+            "native_binary variant requires ^" & field, [pkg.manifestPath])
+      let variantTarget = manifestString(props["target"],
+                                         "native_binary.target", pkg.manifestPath)
+      if variantTarget.len == 0 or variantTarget in seenTargets:
+        raisePackageError(pecManifestInvalid,
+          "native_binary target is empty or duplicated: " & variantTarget,
+          [pkg.manifestPath])
+      seenTargets.incl variantTarget
+      var candidate = NativeBinaryVariant(alias: alias, target: variantTarget)
+      candidate.path = normalizeRelativePath(
+        manifestString(props["file"], "native_binary.file", pkg.manifestPath),
+        "native_binary.file", pkg.manifestPath)
+      if candidate.path.len == 0 or not pkg.selectedByFiles(candidate.path):
+        raisePackageError(pecManifestInvalid,
+          "native binary is excluded by ^files: " & candidate.path,
+          [pkg.manifestPath])
+      let absolute = pkg.root / candidate.path
+      if not fileExists(absolute) or symlinkExists(absolute) or
+          not containsPath(pkg.realRoot, canonicalPath(absolute)):
+        raisePackageError(pecManifestInvalid,
+          "native binary must be a contained regular file: " & candidate.path,
+          [pkg.manifestPath])
+      candidate.digest = manifestString(props["digest"],
+                                     "native_binary.digest", pkg.manifestPath)
+      if candidate.digest.len != 71 or not candidate.digest.startsWith("sha256:"):
+        raisePackageError(pecManifestInvalid,
+          "native binary digest must be sha256", [pkg.manifestPath])
+      for ch in candidate.digest[7 .. ^1]:
+        if ch notin {'0'..'9', 'a'..'f'}:
+          raisePackageError(pecManifestInvalid,
+            "native binary digest must be lowercase hex", [pkg.manifestPath])
+      let kind = props["abi_kind"]
+      if kind.kind == vkSymbol: candidate.abiKind = kind.symVal
+      elif kind.kind == vkString: candidate.abiKind = kind.strVal
+      else:
+        raisePackageError(pecManifestInvalid,
+          "native binary abi_kind must be a symbol or Str", [pkg.manifestPath])
+      if candidate.abiKind notin ["c_abi", "gene_api", "gene_generated"] or
+          props["abi_version"].kind != vkInt or
+          not props["abi_version"].intFitsInt64 or
+          props["abi_version"].intVal < 0 or
+          props["abi_version"].intVal > 65535:
+        raisePackageError(pecManifestInvalid,
+          "native binary ABI kind/version is invalid", [pkg.manifestPath])
+      candidate.abiVersion = int(props["abi_version"].intVal)
+      if props.hasKey("runtime_identity"):
+        candidate.runtimeIdentity = manifestString(props["runtime_identity"],
+          "native_binary.runtime_identity", pkg.manifestPath)
+      if props.hasKey("system"):
+        candidate.systemAliases = manifestStrings(props["system"],
+          "native_binary.system", pkg.manifestPath)
+        var seen = initHashSet[string]()
+        for requirement in candidate.systemAliases:
+          if requirement in seen or not pkg.systemDependencies.hasKey(requirement):
+            raisePackageError(pecManifestInvalid,
+              "native binary system alias is duplicate or undeclared: " &
+              requirement, [pkg.manifestPath])
+          seen.incl requirement
+      if variantTarget == target:
+        inc matches
+        result = candidate
+  if not found or matches != 1:
+    raisePackageError(pecManifestInvalid,
+      "native_binary has no unique variant for target: " & target,
+      [pkg.manifestPath, alias])
+
+proc cLibraryRecipe*(pkg: Package, alias,
+                     target: string): CLibraryRecipe =
+  ## Parse a selected source recipe as inert manifest data. The build engine
+  ## supplies the compiler and resolves system dependencies separately.
+  if pkg.buildRecipes.kind != vkList:
+    raisePackageError(pecManifestInvalid, "^build must be a list", [pkg.manifestPath])
+  var found = false
+  for recipe in pkg.buildRecipes.listItems:
+    if recipe.kind != vkNode or recipe.head.kind != vkSymbol or
+        recipe.head.symVal != "c_library" or recipe.body.len == 0 or
+        recipe.body[0].kind != vkString or recipe.body[0].strVal != alias:
+      continue
+    if found:
+      raisePackageError(pecManifestInvalid,
+        "duplicate c_library recipe: " & alias, [pkg.manifestPath])
+    found = true
+    if recipe.body.len != 1 or alias.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "c_library requires one string name", [pkg.manifestPath])
+    rejectUnknown(recipe.props,
+      ["sources", "include_dirs", "system", "cflags", "ldflags",
+       "linkage", "targets"], "c_library recipe", pkg.manifestPath)
+    for field in ["sources", "linkage", "targets"]:
+      if not recipe.props.hasKey(field):
+        raisePackageError(pecManifestInvalid,
+          "c_library requires ^" & field, [pkg.manifestPath])
+    result.alias = alias
+    let sources = manifestStrings(recipe.props["sources"],
+                                  "c_library.sources", pkg.manifestPath)
+    if sources.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "c_library sources must be nonempty", [pkg.manifestPath])
+    var seen = initHashSet[string]()
+    for raw in sources:
+      let path = normalizeRelativePath(raw, "c_library.sources",
+                                        pkg.manifestPath)
+      if not path.endsWith(".c") or path in seen or
+          not pkg.selectedByFiles(path):
+        raisePackageError(pecManifestInvalid,
+          "c_library source must be a unique selected .c file: " & path,
+          [pkg.manifestPath])
+      let absolute = pkg.root / path
+      if not fileExists(absolute) or symlinkExists(absolute) or
+          not containsPath(pkg.realRoot, canonicalPath(absolute)):
+        raisePackageError(pecManifestInvalid,
+          "c_library source must be a contained regular file: " & path,
+          [pkg.manifestPath])
+      seen.incl path
+      result.sources.add path
+    result.sources.sort()
+    if recipe.props.hasKey("include_dirs"):
+      seen.clear()
+      for raw in manifestStrings(recipe.props["include_dirs"],
+                                 "c_library.include_dirs", pkg.manifestPath):
+        let path = normalizeRelativePath(raw, "c_library.include_dirs",
+                                          pkg.manifestPath)
+        let absolute = pkg.root / path
+        if path.len == 0 or path in seen or not dirExists(absolute) or
+            symlinkExists(absolute) or
+            not containsPath(pkg.realRoot, canonicalPath(absolute)):
+          raisePackageError(pecManifestInvalid,
+            "c_library include directory is invalid: " & path,
+            [pkg.manifestPath])
+        seen.incl path
+        result.includeDirs.add path
+      result.includeDirs.sort()
+    if recipe.props.hasKey("system"):
+      seen.clear()
+      result.systemAliases = manifestStrings(recipe.props["system"],
+        "c_library.system", pkg.manifestPath)
+      for name in result.systemAliases:
+        if name in seen or not pkg.systemDependencies.hasKey(name):
+          raisePackageError(pecManifestInvalid,
+            "c_library system alias is duplicate or undeclared: " & name,
+            [pkg.manifestPath])
+        seen.incl name
+      result.systemAliases.sort()
+    if recipe.props.hasKey("cflags"):
+      result.cflags = manifestStrings(recipe.props["cflags"],
+                                     "c_library.cflags", pkg.manifestPath)
+    if recipe.props.hasKey("ldflags"):
+      result.ldflags = manifestStrings(recipe.props["ldflags"],
+                                      "c_library.ldflags", pkg.manifestPath)
+    for flag in result.cflags & result.ldflags:
+      if flag.len == 0 or '\0' in flag or '\n' in flag or '\r' in flag:
+        raisePackageError(pecManifestInvalid,
+          "c_library flags must be literal nonempty arguments",
+          [pkg.manifestPath])
+    let link = recipe.props["linkage"]
+    if link.kind == vkSymbol: result.linkage = link.symVal
+    elif link.kind == vkString: result.linkage = link.strVal
+    if result.linkage notin ["shared", "static"]:
+      raisePackageError(pecManifestInvalid,
+        "c_library linkage must be shared or static", [pkg.manifestPath])
+    result.targets = manifestStrings(recipe.props["targets"],
+                                     "c_library.targets", pkg.manifestPath)
+    if result.targets.len == 0 or target notin result.targets:
+      raisePackageError(pecManifestInvalid,
+        "c_library target is incompatible: " & target, [pkg.manifestPath])
+    seen.clear()
+    for value in result.targets:
+      if value.len == 0 or value in seen:
+        raisePackageError(pecManifestInvalid,
+          "c_library targets must be unique nonempty triples",
+          [pkg.manifestPath])
+      seen.incl value
+    result.targets.sort()
+  if not found:
+    raisePackageError(pecManifestInvalid,
+      "unknown c_library recipe: " & alias, [pkg.manifestPath])
 
 type SourceTreeEntry = object
   path: string
@@ -2150,6 +2453,12 @@ proc newPackageManager*(userStoreRoot = "",
       raisePackageError(pecManifestInvalid, "registry adapter must not be nil")
     validateLocalName(adapter.name, "registry name", adapter.root)
     adapter.url = canonicalPackageUrl(adapter.url, adapter.root)
+    if (adapter.candidateLoader == nil) !=
+        (adapter.sourceRootLoader == nil) or
+        (adapter.candidateLoader == nil and adapter.root.len == 0):
+      raisePackageError(pecManifestInvalid,
+        "registry adapter needs a source root or both hosted callbacks",
+        [adapter.name])
     if adapter.name in names or adapter.url in urls:
       raisePackageError(pecManifestInvalid,
         "registry names and URLs must have a one-to-one mapping",
@@ -2590,6 +2899,24 @@ proc resolve*(manager: PackageManager, request: ResolveRequest): Resolution =
       if adapter.name != selectedRegistry:
         continue
       consultedRegistries.incl adapter.name
+      if adapter.candidateLoader != nil:
+        for candidate in adapter.candidateLoader(dep.name, request.offline):
+          let pkg = loadPackageAt(candidate.manifestRoot, poRegistrySource)
+          if pkg.name != dep.name or pkg.version != candidate.version or
+              pkg.manifestDigest != candidate.manifestDigest:
+            raisePackageError(pecIdentityMismatch,
+              "hosted manifest disagrees with signed release metadata",
+              [candidate.manifestRoot])
+          pkg.sourceKind = dskRegistry
+          pkg.sourceName = adapter.name
+          pkg.sourcePath = adapter.url
+          pkg.treeDigest = candidate.treeDigest
+          pkg.releaseIndexDigest = candidate.indexDigest
+          pkg.yanked = candidate.yanked
+          pkg.id = "candidate:registry:" & pkg.name & "@" & pkg.version & "#" &
+            sha256Hex(adapter.name & "\0" & pkg.manifestDigest)
+          result.add pkg
+        continue
       let packageDir = adapter.root / nameParts[0] / nameParts[1]
       if not dirExists(packageDir):
         continue
@@ -2693,6 +3020,10 @@ proc resolve*(manager: PackageManager, request: ResolveRequest): Resolution =
         raisePackageError(pecIdentityMismatch,
           "dependency " & dep.alias & " expected " & dep.name & " but found " &
           pkg.name, [pkg.manifestPath])
+      let preservedEdge = (declaring.preservationIdentity(), dep.alias)
+      if pkg.yanked and (not preserved.hasKey(preservedEdge) or
+          preserved[preservedEdge] != pkg.preservationIdentity()):
+        continue
       if dep.constraint.len == 0 or
           matchesConstraint(pkg.version, dep.constraint, declaring.manifestPath):
         compatible.add pkg
@@ -2788,7 +3119,31 @@ proc resolve*(manager: PackageManager, request: ResolveRequest): Resolution =
       pkg.selectedFeatures.add feature
     pkg.selectedFeatures.sort()
     if pkg.sourceKind == dskRegistry:
+      if pkg.releaseIndexDigest.len > 0:
+        var source = ""
+        for adapter in manager.registries:
+          if adapter.name == pkg.sourceName and
+              adapter.sourceRootLoader != nil:
+            source = adapter.sourceRootLoader(pkg, request.offline)
+            break
+        if source.len == 0:
+          raisePackageError(pecNotFound,
+            "hosted registry source loader is unavailable", [pkg.name])
+        let full = loadPackageAt(source, poRegistrySource)
+        if full.name != pkg.name or full.version != pkg.version or
+            full.manifestDigest != pkg.manifestDigest:
+          raisePackageError(pecIdentityMismatch,
+            "selected hosted source differs from the solver manifest",
+            [pkg.name & "@" & pkg.version])
+        pkg.root = full.root
+        pkg.realRoot = full.realRoot
+        pkg.manifestPath = full.manifestPath
+      let promisedTree = pkg.treeDigest
       pkg.treeDigest = sourceTreeDigest(pkg)
+      if promisedTree.len > 0 and pkg.treeDigest != promisedTree:
+        raisePackageError(pecIdentityMismatch,
+          "selected hosted source differs from its signed tree digest",
+          [pkg.name & "@" & pkg.version])
       pkg.archiveDigest = sourcePackageDigest(pkg, pkg.treeDigest)
       pkg.id = packageInstanceId(pkg, context.workspaceRoot.root,
                                  context.workspaceRoot)
@@ -3088,7 +3443,11 @@ proc sync*(manager: PackageManager, resolution: Resolution,
       for adapter in manager.registries:
         if adapter.name != expected.sourceName:
           continue
-        let source = adapter.root / parts[0] / parts[1] / expected.version
+        let source =
+          if adapter.sourceRootLoader != nil:
+            adapter.sourceRootLoader(expected, policy.offline)
+          else:
+            adapter.root / parts[0] / parts[1] / expected.version
         if not fileExists(source / ManifestFileName):
           continue
         result = verifiedPackageAt(source, expected, poRegistrySource)
@@ -3186,6 +3545,13 @@ proc sync*(manager: PackageManager, resolution: Resolution,
     if pkg.sourceKind in {dskWorkspace, dskPath}:
       result.packagesById[id] = pkg
       continue
+    if pkg.sourceKind == dskRegistry:
+      for adapter in manager.registries:
+        if adapter.name == pkg.sourceName and
+            adapter.verifyLockedRelease != nil:
+          adapter.verifyLockedRelease(pkg, policy.offline,
+                                      resolution.workspaceRoot)
+          break
     let vendored = vendorPath(pkg)
     if dirExists(vendored):
       if resolution.lockDigest.len > 0 and not vendorIndexLoaded:
@@ -3327,6 +3693,329 @@ proc requireSha256(value, field, path: string) =
     if ch notin {'0' .. '9', 'a' .. 'f'}:
       raisePackageError(pecManifestInvalid,
         "^" & field & " must use lowercase hexadecimal", [path])
+
+const
+  MaxReleaseIndexBytes* = 8 * 1024 * 1024
+  MaxReleaseIndexFiles* = 100_000
+  MaxReleasePathBytes* = 4096
+  MaxReleaseObjectBytes* = 1024 * 1024 * 1024
+
+type
+  ReleaseTrust* = object
+    registryPublicKey*: string
+    pinnedOwnerKeys*: Table[string, string]
+
+proc releaseKeyId*(publicKey: string): string =
+  if publicKey.len != 32:
+    raisePackageError(pecManifestInvalid,
+      "release signer public key must be 32 bytes")
+  "sha256:" & sha256Hex(publicKey)
+
+proc newReleaseTrust*(registryPublicKey: string,
+                      pinnedOwnerKeys = initTable[string, string]()):
+                      ReleaseTrust =
+  discard releaseKeyId(registryPublicKey)
+  for owner, key in pinnedOwnerKeys:
+    validateLocalName(owner, "owner", "release trust configuration")
+    discard releaseKeyId(key)
+  ReleaseTrust(registryPublicKey: registryPublicKey,
+               pinnedOwnerKeys: pinnedOwnerKeys)
+
+proc ownerKeyRecord*(owner, publicKey: string): Value =
+  validateLocalName(owner, "owner", "owner key record")
+  var fields = initPropTable()
+  fields["owner_key_format"] = newInt(1)
+  fields["owner"] = newStr(owner)
+  fields["key_id"] = newStr(releaseKeyId(publicKey))
+  fields["public_key"] = newStr(base64.encode(publicKey))
+  newMap(fields)
+
+proc parseOwnerKeyRecord(record: Value):
+    tuple[owner, keyId, publicKey: string] =
+  if record.kind != vkMap:
+    raisePackageError(pecManifestInvalid,
+      "owner key record must be a Map")
+  let fields = record.mapEntries
+  rejectUnknown(fields,
+    ["owner_key_format", "owner", "key_id", "public_key"],
+    "owner key record", "owner key record")
+  for field in ["owner_key_format", "owner", "key_id", "public_key"]:
+    if not fields.hasKey(field):
+      raisePackageError(pecManifestInvalid,
+        "owner key record requires ^" & field)
+  if fields["owner_key_format"].kind != vkInt or
+      fields["owner_key_format"].intVal != 1:
+    raisePackageError(pecManifestInvalid,
+      "owner key record ^owner_key_format must be 1")
+  result.owner = manifestString(fields["owner"], "owner", "owner key record")
+  validateLocalName(result.owner, "owner", "owner key record")
+  result.keyId = manifestString(fields["key_id"], "key_id", "owner key record")
+  requireSha256(result.keyId, "key_id", "owner key record")
+  let encoded = manifestString(fields["public_key"], "public_key",
+                               "owner key record")
+  if encoded.len != 44:
+    raisePackageError(pecManifestInvalid,
+      "owner key record public key must be canonical base64")
+  try:
+    result.publicKey = base64.decode(encoded)
+  except ValueError:
+    raisePackageError(pecManifestInvalid,
+      "owner key record public key is not base64")
+  if result.publicKey.len != 32 or base64.encode(result.publicKey) != encoded or
+      releaseKeyId(result.publicKey) != result.keyId:
+    raisePackageError(pecManifestInvalid,
+      "owner key record public key and key_id disagree")
+
+proc readOwnerKeyRecord*(source: string): Value =
+  if source.len > 4096:
+    raisePackageError(pecManifestInvalid,
+      "owner key record exceeds the byte limit")
+  var forms: seq[Value]
+  try:
+    forms = readAll(source, "owner key record",
+      ReadOptions(maxDepth: 4, rejectDuplicateProps: true))
+  except ReadError as error:
+    raisePackageError(pecManifestInvalid, error.msg, ["owner key record"])
+  if forms.len != 1:
+    raisePackageError(pecManifestInvalid,
+      "owner key record must contain one data form")
+  discard parseOwnerKeyRecord(forms[0])
+  forms[0]
+
+proc ownerKeySignaturePayload*(record: Value): string =
+  discard parseOwnerKeyRecord(record)
+  "gene-owner-key-v1\0" & canonicalGeneData(record)
+
+proc releaseSignaturePayload*(index: Value): string
+
+proc verifyTrustedRelease*(trust: ReleaseTrust, crypto: ReleaseCrypto,
+                           index: Value, signature: string,
+                           signer: string, ownerRecord: Value = NIL,
+                           ownerRecordSignature = ""): string =
+  ## Return the verified signer identity to retain with the cached release.
+  ## A pinned owner key is an out-of-band trust path. Otherwise an owner
+  ## record must be signed by the configured registry key. Neither record nor
+  ## release may introduce a new registry key from the response itself.
+  let payload = releaseSignaturePayload(index)
+  case signer
+  of "registry":
+    if ownerRecord.kind != vkNil or ownerRecordSignature.len > 0 or
+        not crypto.ed25519Verify(trust.registryPublicKey, payload, signature):
+      raisePackageError(pecIdentityMismatch,
+        "release signature is not valid for the configured registry key")
+    result = "registry:" & releaseKeyId(trust.registryPublicKey)
+  of "owner":
+    let owner = index.mapEntries["name"].strVal.split('/')[0]
+    var key: string
+    if trust.pinnedOwnerKeys.hasKey(owner):
+      key = trust.pinnedOwnerKeys[owner]
+      if ownerRecord.kind != vkNil:
+        let delegated = parseOwnerKeyRecord(ownerRecord)
+        if delegated.owner != owner or delegated.publicKey != key:
+          raisePackageError(pecIdentityMismatch,
+            "owner key record disagrees with the configured owner pin")
+        if ownerRecordSignature.len > 0 and not crypto.ed25519Verify(
+            trust.registryPublicKey, ownerKeySignaturePayload(ownerRecord),
+            ownerRecordSignature):
+          raisePackageError(pecIdentityMismatch,
+            "provided owner-key signature is not valid")
+      elif ownerRecordSignature.len > 0:
+        raisePackageError(pecManifestInvalid,
+          "owner-key signature has no owner-key record")
+    else:
+      if ownerRecord.kind == vkNil or ownerRecordSignature.len != 64:
+        raisePackageError(pecIdentityMismatch,
+          "owner release needs a registry-signed owner key record")
+      let delegated = parseOwnerKeyRecord(ownerRecord)
+      if delegated.owner != owner or not crypto.ed25519Verify(
+          trust.registryPublicKey, ownerKeySignaturePayload(ownerRecord),
+          ownerRecordSignature):
+        raisePackageError(pecIdentityMismatch,
+          "owner key is not delegated by the configured registry key")
+      key = delegated.publicKey
+    if not crypto.ed25519Verify(key, payload, signature):
+      raisePackageError(pecIdentityMismatch,
+        "release signature is not valid for the trusted owner key")
+    result = "owner:" & owner & ":" & releaseKeyId(key)
+  else:
+    raisePackageError(pecManifestInvalid,
+      "release signer must be registry or owner")
+
+proc validateReleaseIndex*(index: Value) =
+  ## Validate inert release metadata before signature checking or admission.
+  ## Every accepted path is canonical under the same Unicode and case-fold
+  ## topology rules as source-tree capture. This is intentionally independent
+  ## of filesystem state: the registry may serve the index before any object.
+  if index.kind != vkMap:
+    raisePackageError(pecManifestInvalid, "release index must be a Map")
+  let fields = index.mapEntries
+  rejectUnknown(fields,
+    ["release_format", "name", "version", "manifest_digest",
+     "tree_digest", "files"], "release index", "release index")
+  for field in ["release_format", "name", "version", "manifest_digest",
+                "tree_digest", "files"]:
+    if not fields.hasKey(field):
+      raisePackageError(pecManifestInvalid,
+        "release index requires ^" & field)
+  if fields["release_format"].kind != vkInt or
+      fields["release_format"].intVal != 1:
+    raisePackageError(pecManifestInvalid,
+      "release index ^release_format must be 1")
+  let name = manifestString(fields["name"], "name", "release index")
+  validatePackageName(name, "release index")
+  let version = manifestString(fields["version"], "version", "release index")
+  discard parseSemVersion(version, "release index")
+  for field in ["manifest_digest", "tree_digest"]:
+    let digest = manifestString(fields[field], field, "release index")
+    requireSha256(digest, field, "release index")
+  if fields["files"].kind != vkList or
+      fields["files"].listItems.len > MaxReleaseIndexFiles:
+    raisePackageError(pecManifestInvalid,
+      "release index ^files must be a bounded List")
+  var previous = ""
+  var terminals = initHashSet[string]()
+  var foldedTopology = initTable[string, string]()
+  for item in fields["files"].listItems:
+    if item.kind != vkMap:
+      raisePackageError(pecManifestInvalid,
+        "release index file must be a Map")
+    let file = item.mapEntries
+    rejectUnknown(file, ["path", "size", "digest", "executable"],
+      "release index file", "release index")
+    for field in ["path", "size", "digest", "executable"]:
+      if not file.hasKey(field):
+        raisePackageError(pecManifestInvalid,
+          "release index file requires ^" & field)
+    let path = manifestString(file["path"], "path", "release index")
+    if path.len == 0 or path.len > MaxReleasePathBytes or
+        normalizeRelativePath(path, "path", "release index") != path or
+        path <= previous:
+      raisePackageError(pecManifestInvalid,
+        "release index file paths must be unique, sorted and bounded",
+        [path])
+    previous = path
+    if file["size"].kind != vkInt or file["size"].intVal < 0 or
+        file["size"].intVal > MaxReleaseObjectBytes:
+      raisePackageError(pecManifestInvalid,
+        "release index file ^size is outside the supported bound", [path])
+    requireSha256(manifestString(file["digest"], "digest", "release index"),
+      "digest", path)
+    if file["executable"].kind != vkBool:
+      raisePackageError(pecManifestInvalid,
+        "release index file ^executable must be Bool", [path])
+    var prefix = ""
+    let segments = path.split('/')
+    for i, segment in segments:
+      if i > 0:
+        prefix.add '/'
+      prefix.add segment
+      if i < segments.high and prefix in terminals:
+        raisePackageError(pecManifestInvalid,
+          "release index file conflicts with a parent file", [path])
+      let folded = unicodeDefaultCaseFold151(prefix)
+      if foldedTopology.hasKey(folded) and
+          foldedTopology[folded] != prefix:
+        raisePackageError(pecManifestInvalid,
+          "release index has a case-fold path collision", [path])
+      foldedTopology[folded] = prefix
+    terminals.incl path
+
+proc readReleaseIndex*(source: string): Value =
+  if source.len > MaxReleaseIndexBytes:
+    raisePackageError(pecManifestInvalid,
+      "release index exceeds the byte limit")
+  var forms: seq[Value]
+  try:
+    forms = readAll(source, "release index",
+      ReadOptions(maxDepth: 16, rejectDuplicateProps: true))
+  except ReadError as error:
+    raisePackageError(pecManifestInvalid, error.msg, ["release index"])
+  if forms.len != 1:
+    raisePackageError(pecManifestInvalid,
+      "release index must contain exactly one data form")
+  result = forms[0]
+  validateReleaseIndex(result)
+
+proc buildReleaseIndex*(pkg: Package): Value =
+  ## Cold publication path; capture exact selected bytes and never run a
+  ## package recipe. Symlinks have no v1 release-index representation.
+  let entries = sourceTreeEntries(pkg)
+  if entries.len > MaxReleaseIndexFiles:
+    raisePackageError(pecManifestInvalid,
+      "release has too many files", [pkg.manifestPath])
+  var files: seq[Value]
+  for entry in entries:
+    if entry.symlink:
+      raisePackageError(pecManifestInvalid,
+        "release index v1 cannot publish symlinks", [entry.path])
+    if entry.path.len > MaxReleasePathBytes or
+        entry.size > MaxReleaseObjectBytes:
+      raisePackageError(pecManifestInvalid,
+        "release file exceeds the index bound", [entry.path])
+    let digest = "sha256:" & sha256File(entry.absolutePath)
+    if getFileSize(entry.absolutePath) != entry.size:
+      raisePackageError(pecIdentityMismatch,
+        "release file changed while hashing", [entry.path])
+    var file = initPropTable()
+    file["path"] = newStr(entry.path)
+    file["size"] = newInt(entry.size)
+    file["digest"] = newStr(digest)
+    file["executable"] = newBool(entry.executable)
+    files.add newMap(file)
+  var fields = initPropTable()
+  fields["release_format"] = newInt(1)
+  fields["name"] = newStr(pkg.name)
+  fields["version"] = newStr(pkg.version)
+  fields["manifest_digest"] = newStr(pkg.manifestDigest)
+  fields["tree_digest"] = newStr(sourceTreeDigest(pkg))
+  fields["files"] = newList(files)
+  result = newMap(fields)
+  validateReleaseIndex(result)
+  if print(result).len > MaxReleaseIndexBytes:
+    raisePackageError(pecManifestInvalid,
+      "release index exceeds the byte limit", [pkg.manifestPath])
+
+proc releaseSignaturePayload*(index: Value): string =
+  validateReleaseIndex(index)
+  "gene-release-v1\0" & canonicalGeneData(index)
+
+proc signReleaseIndex*(crypto: ReleaseCrypto, seed: string,
+                       index: Value): string =
+  crypto.ed25519Sign(seed, releaseSignaturePayload(index))
+
+proc verifyReleaseSignature*(crypto: ReleaseCrypto, publicKey,
+                             signature: string, index: Value): bool =
+  crypto.ed25519Verify(publicKey, releaseSignaturePayload(index), signature)
+
+proc verifyReleaseTree*(index: Value, root: string) =
+  validateReleaseIndex(index)
+  var declared = initHashSet[string]()
+  for item in index.mapEntries["files"].listItems:
+    declared.incl item.mapEntries["path"].strVal
+  proc walk(dir, relativeDir: string) =
+    for kind, child in walkDir(dir, relative = false):
+      let path = (if relativeDir.len > 0: relativeDir & "/" else: "") &
+        extractFilename(child)
+      case kind
+      of pcDir:
+        walk(child, path)
+      of pcFile:
+        if path notin declared:
+          raisePackageError(pecIdentityMismatch,
+            "release tree has a file absent from the signed index", [path])
+        declared.excl path
+      of pcLinkToFile, pcLinkToDir:
+        raisePackageError(pecIdentityMismatch,
+          "release tree has an unindexed symlink", [path])
+  walk(root, "")
+  if declared.len > 0:
+    raisePackageError(pecIdentityMismatch,
+      "release tree is missing a signed file", [root])
+  let pkg = loadPackageAt(root, poRegistrySource)
+  let actual = buildReleaseIndex(pkg)
+  if canonicalDigest(actual) != canonicalDigest(index):
+    raisePackageError(pecIdentityMismatch,
+      "release tree does not match the signed index", [root])
 
 proc loadResolutionLock*(manager: PackageManager,
                          startDir: string): Resolution =
@@ -3967,6 +4656,12 @@ proc vendor*(manager: PackageManager, graph: MaterializedGraph,
       moveDir(temp, target)
       protectMaterializedTree(target)
     result.packagePaths[id] = target
+    if pkg.sourceKind == dskRegistry:
+      for adapter in manager.registries:
+        if adapter.name == pkg.sourceName and
+            adapter.exportVendorSignature != nil:
+          adapter.exportVendorSignature(pkg, destination)
+          break
     index.add "\n  (vendored_package ^id " & geneQuoted(id) &
       " ^source object ^path " & geneQuoted(relative) & ")"
   index.add "\n]}\n"

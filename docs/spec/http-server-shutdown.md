@@ -1,0 +1,34 @@
+# Experimental HTTP server shutdown
+
+`($net/http/stop server)` requests a graceful stop and returns nil. The
+`serve` loop closes admission, allows active requests up to
+`^drain_timeout_ms` (5,000 by default), then closes any remaining sockets and
+cancels their request tasks. Idle connections and WebSockets close when the
+drain starts.
+
+`serve` now returns a Map when it exits normally:
+
+| Field | Meaning |
+| --- | --- |
+| `complete` | Server-owned body/response close Tasks finished successfully, and tracked cleanup leases and I/O file resources returned to their entry baselines by the deadline. |
+| `graceful` | No connection was still open when the final close pass began. |
+| `forced_connections` | Connections closed in that final pass. |
+| `cleanup_leases` | Cleanup leases still above the entry baseline. |
+| `open_io_resources` | I/O file resources still above the entry baseline. |
+| `pending_cleanup_tasks` | Server-owned body/response close Tasks still pending. |
+| `close_failed` | A tracked close Task failed, panicked, or was cancelled. |
+| `served_requests` | Responses fully served during this call. |
+
+The final close pass pumps root-lane completions until the server-owned close
+Tasks finish and tracked cleanup counts return to their entry baselines, or
+the drain deadline expires. Completed close Tasks are pruned during normal
+service, so a long-lived server does not retain one Task per request.
+`complete: false` reports cleanup that did not finish by that deadline;
+it does not turn a partial response into a successful one. `graceful: false`
+reports forced socket closure even when later physical cleanup completes.
+Exceptions from `serve` still propagate after cleanup is requested.
+
+The [native-app service fixture](../../tests/profiles/native-app/service)
+uses pinned Caddy TLS termination and validates the return Map alongside
+post-stop runtime counters. The fixture does not claim direct TLS support in
+Gene. Linux runtime qualification and complete VM lifetime gates remain open.

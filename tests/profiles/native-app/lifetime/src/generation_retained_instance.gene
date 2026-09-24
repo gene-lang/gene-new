@@ -1,0 +1,19 @@
+(fn acquire [dir]
+  (let tx ($runtime/sandbox_transaction))
+  (let generation (tx .prepare
+    {^dir dir ^entry "retained_item.gene" ^grants [] ^shared []
+     ^label "retained-instance" ^policy {^max_steps 1000
+       ^max_memory_mb 16 ^timeout_ms 1000}}))
+  (let module (generation .module))
+  (let protocol module/Local)
+  (let item module/item)
+  (tx .commit)
+  (generation .release)
+  [protocol item])
+
+(fn main [args] : Int
+  (let pair (acquire args/0))
+  (let P pair/0)
+  (let item pair/1)
+  ($assert (== (item .direct) 7))
+  0)

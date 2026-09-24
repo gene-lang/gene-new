@@ -4,7 +4,7 @@ when defined(posix):
   import std/posix
 when defined(macosx):
   const SigWinch = 28
-import gene/[package, repl, vm, web]
+import gene/[digest, package, repl, vm, web]
 
 # The no-follow source profile requires a physical fixture root. On macOS,
 # getTempDir() commonly starts with the /var symlink.
@@ -2070,6 +2070,450 @@ suite "cli — Gene package builds":
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "cache hit" in ran.output
+
+  test "selected resources are readable from the pinned package":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/report" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene" ^uses ["assets"])]
+ ^files {^include ["package.gene" "src/**" "data/**"]}
+ ^build [(resources "assets" ^files ["data/schema.json"])]}
+""")
+    writeBuildFixture(root / "src/main.gene",
+      "(fn main [args] ($println ($pkg/read_text this_pkg \"data/schema.json\")))")
+    writeBuildFixture(root / "data/schema.json", "{\"name\":\"Ada\"}")
+    var ran = runGene(["run", "--package-root", root, "cli"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.strip == "{\"name\":\"Ada\"}"
+    ran = runGene(["build", "--package-root", root, "cli", "--locked",
+                   "--explain"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "cache hit" in ran.output
+
+  test "materialized resources repair cache bytes and release leases":
+    let root = buildCliRoot()
+    let cache = cliDir / "resource_cache"
+    if dirExists(cache): removeDir(cache)
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/materialize" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene" ^uses ["assets"])]
+ ^files {^include ["package.gene" "src/**" "data/**"]}
+ ^build [(resources "assets" ^files ["data/value.txt"])]}
+""")
+    writeBuildFixture(root / "src/main.gene", """
+(fn main [args]
+  (let first ($pkg/materialize this_pkg "data/value.txt"))
+  (let path (first .path))
+  (let before (/materialized_resource_leases ($runtime/gc_stats)))
+  (first .close)
+  ($fs/write_text path "corrupt")
+  (let second ($pkg/materialize this_pkg "data/value.txt"))
+  (let restored ($fs/read_text (second .path)))
+  (let reopened (/materialized_resource_leases ($runtime/gc_stats)))
+  (second .close)
+  ($println [before restored reopened
+             (/materialized_resource_leases ($runtime/gc_stats))
+             (try (second .path) false catch PackageResourceError true)]))
+""")
+    writeBuildFixture(root / "data/value.txt", "verified")
+    let hadCache = existsEnv("GENE_USER_PACKAGES")
+    let oldCache = getEnv("GENE_USER_PACKAGES")
+    putEnv("GENE_USER_PACKAGES", cache)
+    try:
+      let ran = runGene(["run", "--package-root", root, "cli"])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check ran.output.strip == "[1 \"verified\" 1 0 true]"
+    finally:
+      if hadCache: putEnv("GENE_USER_PACKAGES", oldCache)
+      else: delEnv("GENE_USER_PACKAGES")
+
+  test "native_binary selects a verified target and rejects ABI mismatches":
+    let root = buildCliRoot()
+    let cCompiler = findExe("cc")
+    if cCompiler.len == 0:
+      skip()
+    let source = root / "native/demo.c"
+    let binary = root / "native/demo.bin"
+    writeBuildFixture(source,
+      "#include <stdint.h>\nint64_t native_answer(int64_t value) { return value + 1; }\n")
+    let flags = when defined(macosx): @["-dynamiclib", "-fPIC"]
+                else: @["-shared", "-fPIC"]
+    let compiler = startProcess(cCompiler, args = flags &
+      @[source, "-o", binary], options = {poStdErrToStdOut})
+    let compilerOutput = compiler.outputStream.readAll()
+    check compiler.waitForExit() == 0
+    if not fileExists(binary): checkpoint compilerOutput
+    compiler.close()
+    let goodDigest = "sha256:" & sha256File(binary)
+    let target = hostCPU & "-" & hostOS
+    proc manifest(variantTarget, digest, kind: string,
+                  version: int): string =
+      "{^format 1 ^name \"acme/native\" ^version \"1.0.0\" " &
+      "^applications [(application \"cli\" ^entry \"src/main.gene\" " &
+      "^uses [\"demo\"])] " &
+      "^files {^include [\"package.gene\" \"src/**\" \"native/**\"]} " &
+      "^build [(native_binary \"demo\" ^variants [" &
+      "{^target \"" & variantTarget & "\" ^file \"native/demo.bin\" " &
+      "^digest \"" & digest & "\" ^abi_kind " & kind &
+      " ^abi_version " & $version & "}])]}"
+    writeBuildFixture(root / "src/main.gene", """
+(fn main [args]
+  (let lease ($pkg/native_binary this_pkg "demo"))
+  (let lib ($ffi/open (lease .path)))
+  (let answer ($ffi/bind lib "native_answer" [C/Int64] C/Int64))
+  (let value (answer 41))
+  ($ffi/Library/close lib)
+  (lease .close)
+  ($println [value (/materialized_resource_leases ($runtime/gc_stats))]))
+""")
+    writeBuildFixture(root / "package.gene",
+      manifest(target, goodDigest, "c_abi", 1))
+    var ran = runGene(["run", "--package-root", root, "cli"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.strip == "[42 0]"
+    when defined(posix):
+      let prefix = cliDir / "native_binary_install"
+      if dirExists(prefix): removeDir(prefix)
+      ran = runGene(["install", "cli", "--prefix", prefix,
+                     "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      let hidden = root & ".hidden"
+      if dirExists(hidden): removeDir(hidden)
+      moveDir(root, hidden)
+      try:
+        let launched = startProcess(prefix / "bin" / "cli", getTempDir(),
+                                    options = {poStdErrToStdOut})
+        let output = launched.outputStream.readAll()
+        check launched.waitForExit() == 0
+        launched.close()
+        check output.strip == "[42 0]"
+      finally:
+        moveDir(hidden, root)
+    writeBuildFixture(root / "package.gene",
+      manifest("foreign-cpu-foreign-os", goodDigest, "c_abi", 1))
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "no unique variant" in ran.output
+    writeBuildFixture(root / "package.gene",
+      manifest(target, goodDigest, "gene_api", 99))
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "GeneApi/runtime identity is incompatible" in ran.output
+    writeBuildFixture(root / "package.gene",
+      manifest(target, "sha256:" & repeat('0', 64), "c_abi", 1))
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "native binary digest mismatch" in ran.output
+    writeBuildFixture(root / "package.gene",
+      "{^format 1 ^name \"acme/native\" ^version \"1.0.0\" " &
+      "^applications [(application \"cli\" ^entry \"src/main.gene\" " &
+      "^uses [\"demo\"])] " &
+      "^files {^include [\"package.gene\" \"src/**\" \"native/**\"]} " &
+      "^system_dependencies {^missing (system_library " &
+      "^name \"gene-native-test-library-that-does-not-exist\" " &
+      "^version \">=1.0\" ^providers [pkg_config] ^linkage dynamic)} " &
+      "^build [(native_binary \"demo\" ^variants [" &
+      "{^target \"" & target & "\" ^file \"native/demo.bin\" " &
+      "^digest \"" & goodDigest & "\" ^abi_kind c_abi " &
+      "^abi_version 1 ^system [\"missing\"]}])]}" )
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "SYSTEM_DEPENDENCY_" in ran.output
+
+  test "c_library compiles a verified native sidecar":
+    let root = buildCliRoot()
+    let target = hostCPU & "-" & hostOS
+    writeBuildFixture(root / "package.gene",
+      "{^format 1 ^name \"acme/source_native\" ^version \"1.0.0\" " &
+      "^applications [(application \"cli\" ^entry \"src/main.gene\" " &
+      "^uses [\"demo\"])] " &
+      "^files {^include [\"package.gene\" \"src/**\" \"native/**\"]} " &
+      "^build [(c_library \"demo\" ^sources [\"native/demo.c\"] " &
+      "^cflags [\"-DDELTA=1\"] ^linkage shared " &
+      "^targets [\"" & target & "\"])]}")
+    writeBuildFixture(root / "native/demo.c", """
+#include <stdint.h>
+#ifndef DELTA
+#error DELTA must be set by the recipe
+#endif
+int64_t native_answer(int64_t value) { return value + DELTA; }
+""")
+    writeBuildFixture(root / "src/main.gene", """
+(fn main [args]
+  (let lease ($pkg/native_binary this_pkg "demo"))
+  (let lib ($ffi/open (lease .path)))
+  (let answer ($ffi/bind lib "native_answer" [C/Int64] C/Int64))
+  (let value (answer 41))
+  ($ffi/Library/close lib)
+  (lease .close)
+  ($println [value (/materialized_resource_leases ($runtime/gc_stats))]))
+""")
+    var ran = runGene(["run", "--package-root", root, "cli"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.strip == "[42 0]"
+    ran = runGene(["build", "--package-root", root, "cli", "--locked",
+                   "--explain"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "cache hit" in ran.output
+    let oldInstalledArtifacts = getEnv("GENE_INSTALLED_ARTIFACTS")
+    let hadInstalledArtifacts = existsEnv("GENE_INSTALLED_ARTIFACTS")
+    let oldEvidence = getEnv("GENE_C_COMPILER_EVIDENCE")
+    let hadEvidence = existsEnv("GENE_C_COMPILER_EVIDENCE")
+    putEnv("GENE_INSTALLED_ARTIFACTS", cliDir / "missing-installed-artifacts")
+    putEnv("GENE_C_COMPILER_EVIDENCE", "pinned-test-evidence")
+    try:
+      let rebuilt = runGene(["build", "--package-root", root, "cli",
+                             "--locked", "--rebuild"])
+      check rebuilt.exitCode != 0
+      check "installed compiler evidence cannot authorize a native rebuild" in
+        rebuilt.output
+    finally:
+      if hadInstalledArtifacts:
+        putEnv("GENE_INSTALLED_ARTIFACTS", oldInstalledArtifacts)
+      else: delEnv("GENE_INSTALLED_ARTIFACTS")
+      if hadEvidence: putEnv("GENE_C_COMPILER_EVIDENCE", oldEvidence)
+      else: delEnv("GENE_C_COMPILER_EVIDENCE")
+    when defined(posix):
+      let prefix = cliDir / "c_library_install"
+      let emptyCache = cliDir / "c_library_empty_cache"
+      if dirExists(prefix):
+        makeMaterializedTreeWritable(prefix)
+        removeDir(prefix)
+      if dirExists(emptyCache):
+        makeMaterializedTreeWritable(emptyCache)
+        removeDir(emptyCache)
+      ran = runGene(["install", "cli", "--prefix", prefix,
+                     "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      let hidden = root & ".hidden"
+      if dirExists(hidden): removeDir(hidden)
+      moveDir(root, hidden)
+      let hadStore = existsEnv("GENE_ARTIFACT_STORE")
+      let oldStore = getEnv("GENE_ARTIFACT_STORE")
+      let hadCompiler = existsEnv("GENE_C_COMPILER")
+      let oldCompiler = getEnv("GENE_C_COMPILER")
+      putEnv("GENE_ARTIFACT_STORE", emptyCache)
+      putEnv("GENE_C_COMPILER", cliDir / "missing-cc")
+      try:
+        let launched = startProcess(prefix / "bin" / "cli", getTempDir(),
+                                    options = {poStdErrToStdOut})
+        let output = launched.outputStream.readAll()
+        check launched.waitForExit() == 0
+        launched.close()
+        check output.strip == "[42 0]"
+        let generation = canonicalPath(prefix / "apps" /
+          "acme_source_native-cli" / "current")
+        for path in walkDirRec(generation / "sources"):
+          check "/.gene/build/" notin path
+        var installedIndex = ""
+        for path in walkDirRec(generation / "artifacts" / "derivations"):
+          if path.endsWith("index.gene"):
+            installedIndex = path
+            break
+        check installedIndex.len > 0
+        if installedIndex.len > 0:
+          let saved = readFile(installedIndex)
+          removeFile(installedIndex)
+          putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
+          let rejectedIndex = startProcess(prefix / "bin" / "cli", getTempDir(),
+                                           options = {poStdErrToStdOut})
+          let missingOutput = rejectedIndex.outputStream.readAll()
+          check rejectedIndex.waitForExit() != 0
+          rejectedIndex.close()
+          check "required installed artifact is missing" in missingOutput
+          writeFile(installedIndex, saved)
+          putEnv("GENE_ARTIFACT_STORE", emptyCache)
+        var installedSidecar = ""
+        for path in walkDirRec(generation / "artifacts" / "objects"):
+          if path.endsWith(".bin") and "/native/" in path:
+            installedSidecar = path
+            break
+        check installedSidecar.len > 0
+        if installedSidecar.len > 0:
+          setFilePermissions(installedSidecar, {fpUserRead, fpUserWrite})
+          writeFile(installedSidecar, "corrupt-installed")
+          let rejected = startProcess(prefix / "bin" / "cli", getTempDir(),
+                                      options = {poStdErrToStdOut})
+          let errorOutput = rejected.outputStream.readAll()
+          check rejected.waitForExit() != 0
+          rejected.close()
+          check "built native artifact failed content verification" in
+            errorOutput
+      finally:
+        if hadStore: putEnv("GENE_ARTIFACT_STORE", oldStore)
+        else: delEnv("GENE_ARTIFACT_STORE")
+        if hadCompiler: putEnv("GENE_C_COMPILER", oldCompiler)
+        else: delEnv("GENE_C_COMPILER")
+        moveDir(hidden, root)
+    var sidecar = ""
+    let currentSourceDigest = sourceTreeDigest(loadPackageAt(root, poEntry))
+    for path in walkDirRec(cliArtifactStore / "objects"):
+      if not path.endsWith("metadata.gene"): continue
+      let metadata = readFile(path)
+      if "^package_name \"acme/source_native\"" notin metadata or
+          "^profile dev" notin metadata or
+          "^source_digest \"" & currentSourceDigest & "\"" notin metadata:
+        continue
+      for candidate in walkDirRec(parentDir(path) / "native"):
+        if candidate.endsWith(".bin"):
+          sidecar = candidate
+          break
+      if sidecar.len > 0: break
+    check sidecar.len > 0
+    if sidecar.len > 0:
+      setFilePermissions(sidecar, {fpUserRead, fpUserWrite})
+      writeFile(sidecar, "corrupt")
+      ran = runGene(["build", "--package-root", root, "cli", "--locked"])
+      check ran.exitCode != 0
+      check "built native artifact failed content verification" in ran.output
+    let staticManifest = readFile(root / "package.gene").replace(
+      "^linkage shared", "^linkage static")
+    writeBuildFixture(root / "package.gene", staticManifest)
+    ran = runGene(["build", "--package-root", root, "cli"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    let missingSystem = staticManifest.replace(
+      "^linkage static", "^linkage shared ^system [\"missing\"]").replace(
+      "^build [", "^system_dependencies {^missing (system_library " &
+      "^name \"gene-c-library-that-does-not-exist\" ^version \">=1.0\" " &
+      "^providers [pkg_config] ^linkage dynamic)} ^build [")
+    writeBuildFixture(root / "package.gene", missingSystem)
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "SYSTEM_DEPENDENCY_" in ran.output
+
+  test "undeclared and excluded resources are rejected":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/report" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene")]
+ ^files {^include ["package.gene" "src/**" "data/**"]}
+ ^build [(resources "assets" ^files ["data/schema.json"])]}
+""")
+    writeBuildFixture(root / "src/main.gene",
+      "(fn main [args] ($pkg/read_text this_pkg \"data/schema.json\"))")
+    writeBuildFixture(root / "data/schema.json", "{}")
+    var ran = runGene(["run", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "PackageResourceError" in ran.output
+    check "not selected" in ran.output
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/report" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene" ^uses ["assets"])]
+ ^files {^include ["package.gene" "src/**"]}
+ ^build [(resources "assets" ^files ["data/schema.json"])]}
+""")
+    ran = runGene(["build", "--package-root", root, "cli"])
+    check ran.exitCode != 0
+    check "resource is excluded" in ran.output
+
+  when defined(posix):
+    test "install selects a complete offline generation and keeps the prior one":
+      let root = buildCliRoot()
+      let prefix = cliDir / "install prefix's"
+      if dirExists(prefix): removeDir(prefix)
+      writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/report" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene" ^uses ["assets"])]
+ ^files {^include ["package.gene" "src/**" "data/**"]}
+ ^build [(resources "assets" ^files ["data/message.txt"])]}
+""")
+      writeBuildFixture(root / "src/main.gene",
+        "(fn main [args] ($println ($pkg/read_text this_pkg \"data/message.txt\")))")
+      writeBuildFixture(root / "data/message.txt", "first")
+      var ran = runGene(["build", "--package-root", root, "cli"])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      ran = runGene(["install", "cli", "--prefix", prefix,
+                     "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      let launcher = prefix / "bin" / "cli"
+      let firstRun = startProcess(launcher, getTempDir(),
+                                  options = {poStdErrToStdOut})
+      let firstOutput = firstRun.outputStream.readAll()
+      check firstRun.waitForExit() == 0
+      firstRun.close()
+      check firstOutput.strip == "first"
+      let current = prefix / "apps" / "acme_report-cli" / "current"
+      let oldTarget = expandSymlink(current)
+      writeBuildFixture(root / "data/message.txt", "second")
+      ran = runGene(["pkg", "resolve", "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      ran = runGene(["install", "cli", "--prefix", prefix,
+                     "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check expandSymlink(current) != oldTarget
+      check dirExists(prefix / "apps" / "acme_report-cli" / oldTarget)
+      let hidden = root & ".hidden"
+      if dirExists(hidden): removeDir(hidden)
+      moveDir(root, hidden)
+      try:
+        let launched = startProcess(launcher, getTempDir(),
+                                    options = {poStdErrToStdOut})
+        let output = launched.outputStream.readAll()
+        let status = launched.waitForExit()
+        launched.close()
+        if status != 0: checkpoint output
+        check status == 0
+        check output.strip == "second"
+      finally:
+        moveDir(hidden, root)
+
+    test "uninstall retains a generation while its launcher is running":
+      let root = buildCliRoot()
+      let prefix = cliDir / "install_lease_prefix"
+      if dirExists(prefix): removeDir(prefix)
+      writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/lease" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene")]}
+""")
+      writeBuildFixture(root / "src/main.gene",
+        "(fn main [args] ($os/exec ^cmd \"/bin/sleep\" ^args [\"2\"] " &
+        "^timeout_ms 5000) ($println \"done\"))")
+      var ran = runGene(["pkg", "resolve", "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      ran = runGene(["install", "cli", "--prefix", prefix,
+                     "--package-root", root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      let launcher = prefix / "bin" / "cli"
+      let appBase = prefix / "apps" / "acme_lease-cli"
+      let generation = appBase / expandSymlink(appBase / "current")
+      let child = startProcess(launcher, getTempDir(),
+                               options = {poStdErrToStdOut})
+      defer: child.close()
+      var observed = false
+      for _ in 0 ..< 100:
+        for _, _ in walkDir(generation / "leases"):
+          observed = true
+        if observed: break
+        sleep(10)
+      check observed
+      ran = runGene(["uninstall", "acme/lease:cli", "--prefix", prefix])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check "1 still in use" in ran.output
+      check dirExists(generation)
+      check not fileExists(launcher)
+      check child.outputStream.readAll().strip() == "done"
+      check child.waitForExit() == 0
+      ran = runGene(["uninstall", "acme/lease:cli", "--prefix", prefix])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check "0 still in use" in ran.output
+      check not dirExists(generation)
 
   test "build all includes independent co-lived workspace products":
     let root = buildCliRoot()

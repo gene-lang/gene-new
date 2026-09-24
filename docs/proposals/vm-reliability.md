@@ -1,6 +1,6 @@
 # Long-Lived VM Reliability
 
-**Status:** Implementation and qualification proposal; baseline source reviewed at `3b2bde9`, no new benchmark claimed.
+**Status:** VM-0 lifetime counters/ledger and selected VM-1 repairs are experimental. The nested `try`/`ensure` scope-unwind path now settles noncancelable I/O cleanup leases on error, panic, return, and task cancellation. Built-in protocol implementation values are published for atomic RC before worker lookup, fixing a reproducible concurrent error-admission use-after-free. A guarded VM-2 source repair retires the `this_mod` self edge for released scalar-only modules after their final external Module owner drops; 10,000 generation lifetimes are flat and a retained function using `this_mod` still executes. Protocol boxed-owner counts and full impl Value-edge enumeration now account for all traced boxed refs in the richer module, but an escaped Nim Scope ref remains unmodeled; that Type/protocol/impl generation still retains about 15 managed values per release. A test-only RC collection safepoint and macOS arm64 VM-3 probes report flat 1/100/1,000/10,000 batches for fixed eval/closure/cell/failure, escaped witness, cancellation, and scalar-generation vocabularies. Broader mixed-cycle coverage, cancellation during selection, non-scalar module generations, sustained-service lifetime, and Linux qualification remain open. Design baseline `3b2bde9`.
 
 **Stages:** VM-0 (evidence), VM-1 (eval/ownership repairs), VM-2 (cycle coverage), VM-3 (qualification).
 
@@ -9,6 +9,19 @@
 ## Supported runtime and actual baseline
 
 Qualify the cooperative VM with ORC and root-lane Gene execution first. Native I/O workers may exchange their supported native payloads; concurrent Gene worker lanes under AtomicArc remain a separately qualified feature. Browser and C lowering have separate gates.
+
+The standalone native threaded suite built with default ORC reproducibly
+crashes in its concurrent shared-Value await case; the repository's supported
+AtomicArc `threadcheck` configuration passes that case. Do not count the ORC
+threaded combination as qualified or silently expand the native-app profile to
+it before the shared-Value ownership fault is isolated.
+
+Dynamic FFI owned pointers now pin their release library, retire on explicit
+close or reclamation, and allow an unreachable library to close afterward.
+The current Nim 2.2 compiler warns that the ref finalizer constructor used for
+that fallback is deprecated; migration to a supported destructor arrangement
+remains a VM-3 toolchain qualification item. ORC and AtomicArc lifetime gates
+pass on the current compiler.
 
 The current runtime is not a single tracing heap. `types.nim` uses NaN-boxed Values with manual reference counting, weak captured-scope storage/strengthening, Nim-managed scopes, and a conservative trial-deletion path for selected Cell/Env/EventBus object cycles. `runtime/gc_stats` already exposes live-managed and scheduler counters. `docs/development.md` reports remaining mixed cycles and an eval-defined type/method hang. Reproduce each on the selected revision before assigning a cause; these are reported limits, not newly reproduced results.
 

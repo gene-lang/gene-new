@@ -5,6 +5,16 @@ temp/
 tests/*
 !tests/*.nim
 !tests/*.mjs
+!tests/test_owned_http_client.py
+!tests/test_genex_package.py
+!tests/test_genex_libuv_timer.py
+!tests/test_genex_tzdb.py
+!tests/test_archive_codec.py
+!tests/test_genex_archive_package.py
+!tests/test_archive_zip.py
+!tests/test_tls_adapter.py
+!tests/test_genex_tls_package.py
+!tests/test_registry_https.py
 !tests/transpile/
 !tests/transpile/**
 # Hand-written Gene programs the test suites load as entry modules. They are
@@ -12,6 +22,10 @@ tests/*
 # suite passed only on a machine where they happened to exist.
 !tests/fixtures/
 !tests/fixtures/**
+!tests/profiles/
+!tests/profiles/**
+!tests/lifetime/
+!tests/lifetime/**
 
 benchmarks/bench_core
 benchmarks/bench_self_type
@@ -64,6 +78,8 @@ coverage/
 tmp/
 *.tmp
 archive/
+!src/genex/archive/
+!src/genex/archive/**
 examples/ai_agent/logs/
 examples/ai_agent/home/
 *.vsix

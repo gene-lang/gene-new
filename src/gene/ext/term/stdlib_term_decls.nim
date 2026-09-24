@@ -179,21 +179,21 @@ static void gene_turn_interrupt_end(void) {
   gene_turn_interrupt_pending = 0;
 }
 """.}
-  proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
-  proc cAttrBold(): cint {.importc: "gene_curses_attr_bold".}
-  proc cAttrDim(): cint {.importc: "gene_curses_attr_dim".}
-  proc cAttrUnderline(): cint {.importc: "gene_curses_attr_underline".}
-  proc cAttrReverse(): cint {.importc: "gene_curses_attr_reverse".}
-  proc cAttrBlink(): cint {.importc: "gene_curses_attr_blink".}
-  proc cAttrItalic(): cint {.importc: "gene_curses_attr_italic".}
-  proc cSetLocale() {.importc: "gene_curses_setlocale".}
-  proc cSaveTermios() {.importc: "gene_curses_save_termios".}
-  proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
-  proc cRestoreDisplay() {.importc: "gene_curses_restore_display".}
-  proc cInstallRestoreHooks() {.importc: "gene_curses_install_restore_hooks".}
-  proc cTurnInterruptBegin(): cint {.importc: "gene_turn_interrupt_begin".}
-  proc cTurnInterruptTake(): cint {.importc: "gene_turn_interrupt_take".}
-  proc cTurnInterruptEnd() {.importc: "gene_turn_interrupt_end".}
+  proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair", nodecl.}
+  proc cAttrBold(): cint {.importc: "gene_curses_attr_bold", nodecl.}
+  proc cAttrDim(): cint {.importc: "gene_curses_attr_dim", nodecl.}
+  proc cAttrUnderline(): cint {.importc: "gene_curses_attr_underline", nodecl.}
+  proc cAttrReverse(): cint {.importc: "gene_curses_attr_reverse", nodecl.}
+  proc cAttrBlink(): cint {.importc: "gene_curses_attr_blink", nodecl.}
+  proc cAttrItalic(): cint {.importc: "gene_curses_attr_italic", nodecl.}
+  proc cSetLocale() {.importc: "gene_curses_setlocale", nodecl.}
+  proc cSaveTermios() {.importc: "gene_curses_save_termios", nodecl.}
+  proc cRestoreTermios() {.importc: "gene_curses_restore_termios", nodecl.}
+  proc cRestoreDisplay() {.importc: "gene_curses_restore_display", nodecl.}
+  proc cInstallRestoreHooks() {.importc: "gene_curses_install_restore_hooks", nodecl.}
+  proc cTurnInterruptBegin(): cint {.importc: "gene_turn_interrupt_begin", nodecl.}
+  proc cTurnInterruptTake(): cint {.importc: "gene_turn_interrupt_take", nodecl.}
+  proc cTurnInterruptEnd() {.importc: "gene_turn_interrupt_end", nodecl.}
 
   var stdscr {.importc: "stdscr", header: "<ncurses.h>".}: CursesWindow
   var LINES {.importc: "LINES", header: "<ncurses.h>".}: cint

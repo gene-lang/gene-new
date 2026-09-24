@@ -1,0 +1,12 @@
+(import $parse [read_all])
+
+(fn main [args] : Int
+  (let path (?? args/0 "tests/profiles/native-app/profile.gene"))
+  (let forms (read_all ($fs/read_text path)))
+  (try
+    (let profile (forms .next))
+    (if (forms .has_next)
+      (fail "native-app profile must contain one data value"))
+    ($println ($json/stringify profile))
+    0
+    ensure (forms .close)))

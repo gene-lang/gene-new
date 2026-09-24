@@ -1,0 +1,37 @@
+(mod timer)
+(import $io [IoResource])
+
+# The subscription owns the C callback context. The materialized image and
+# library stay alive until its native retirement and handler have both settled.
+(type Timer ^props {^subscription Any ^library Any ^lease Any ^released Cell}
+  (ctor [subscription library lease]
+    (set self/subscription subscription)
+    (set self/library library)
+    (set self/lease lease)
+    (set self/released ($cell false)))
+  (message status [] (self/subscription .status)))
+
+(impl IoResource for Timer
+  (message close [] : Nil
+    (self/subscription .IoResource:close)
+    nil)
+  (message wait_closed [] : (Task Nil Error)
+    (spawn ^lane root
+      (try
+        (await (self/subscription .IoResource:wait_closed))
+        ensure
+          (if (&& (not (self/released .get))
+                  (== (/state (self/subscription .status)) "closed"))
+            (do
+              (self/released .set true)
+              ($ffi/Library/close self/library)
+              (self/lease .close)))))))
+
+(fn open [handler]
+  (let lease ($pkg/native_binary this_pkg "native"))
+  (let library ($ffi/open (lease .path)))
+  (let subscription
+    ($native/ingress/open library handler
+      ^register "gene_timer_register"
+      ^unregister "gene_timer_unregister"))
+  (new Timer subscription library lease))

@@ -1,0 +1,5 @@
+(protocol Local (message value [] : Int))
+(type Item ^props {^n Int}
+  (message direct [] : Int self/n))
+(impl Local for Item (message value [] : Int self/n))
+(var item (Item ^n 7))

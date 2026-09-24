@@ -1,0 +1,45 @@
+(fn checkpoint [phase count]
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^workload "generation" ^phase phase ^iterations count
+     ^rc_stats stats/rc_stats? ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes
+     ^native_roots stats/native_roots
+     ^sandbox_generation_records stats/sandbox_generation_records
+     ^sandbox_transaction_records stats/sandbox_transaction_records
+     ^module_cache_entries stats/module_cache_entries
+     ^module_compile_headers stats/module_compile_headers
+     ^module_compile_artifacts stats/module_compile_artifacts
+     ^canonical_impls stats/canonical_impls
+     ^base_scopes stats/base_scopes
+     ^impl_scope_index_entries stats/impl_scope_index_entries
+     ^impl_scope_index_scopes stats/impl_scope_index_scopes
+     ^sandbox_roots stats/sandbox_roots
+     ^module_identities stats/module_identities
+     ^packages_by_root stats/packages_by_root})))
+
+(fn main [args] : Int
+  (let plugin_dir args/0)
+  (let count ($parse/parse_int (?? args/1 "10000")))
+  (let entry (?? args/2 "plugin.gene"))
+  (fn one []
+    (let tx ($runtime/sandbox_transaction))
+    (let generation (tx .prepare
+      {^dir plugin_dir ^entry entry ^grants [] ^shared []
+       ^label "vm3" ^policy {^max_steps 1000 ^max_memory_mb 16
+                             ^timeout_ms 1000}}))
+    (let candidate (generation .module))
+    (if (== entry "plugin.gene")
+      ($assert (== candidate/item/n 7))
+      ($assert (== candidate/answer 42)))
+    (tx .commit)
+    (generation .release))
+  (repeat 100 (one))
+  (checkpoint "warm" 100)
+  (for batch in [1 100 1000 count]
+    ($println ($json/stringify
+      {^workload "generation" ^phase "starting" ^iterations batch}))
+    (repeat batch (one))
+    (checkpoint "after" batch))
+  0)

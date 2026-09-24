@@ -1,0 +1,9 @@
+{^format 1 ^name "gene/native_app_cli" ^version "0.1.0"
+ ^applications [(application "cli" ^entry "src/main.gene"
+                  ^uses ["assets" "native"])]
+ ^dependencies {^support (dep "gene/native_app_support" "0.1.0" ^path "../support")}
+ ^files {^include ["package.gene" "src/**" "data/**" "native/**"]}
+ ^build [(resources "assets" ^files ["data/schema.json"])
+         (c_library "native" ^sources ["native/score.c"]
+           ^cflags ["-O2"] ^linkage shared
+           ^targets ["arm64-macosx" "amd64-linux"])]}

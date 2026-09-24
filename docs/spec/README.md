@@ -10,7 +10,20 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Protocols and dispatch](protocols.md)
 - [Streams](streams.md)
 - [Tasks, channels, and actors](concurrency.md)
+- [Experimental TCP byte I/O](async-io-tcp.md)
+- [Experimental streamed HTTP requests](http-stream-request.md)
+- [Experimental streamed HTTP responses](http-stream-response.md)
+- [Experimental owned HTTP Client](http-client-owned.md)
+- [Experimental HTTP server shutdown](http-server-shutdown.md)
+- [Experimental native ingress v5 foundation](native-ingress-v5.md)
 - [Modules and native boundaries](modules.md)
+- [Native paths, CSV, and filesystem walking](path-csv-walk.md)
+- [Experimental temporal arithmetic and RFC3339](temporal.md)
+- [Experimental pinned time zones](tzdb.md)
+- [Experimental archives](archive.md)
+- [Experimental direct TLS](tls-adapter.md)
+- [Local package resources and installation](package-install.md)
+- [Experimental release index and signatures](package-release.md)
 
 `tests/spec_runner.nim` is the executable contract. If implemented prose and
 those tests disagree, resolve the discrepancy explicitly. Historical design

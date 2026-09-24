@@ -63,10 +63,18 @@ Useful commands:
 | `gene pkg sync` | Materialize locked source objects. |
 | `gene pkg members`, `tree`, `why` | Inspect the workspace and graph. |
 | `gene pkg vendor` | Materialize a project-local vendor store. |
+| `gene pkg publish --registry-config <path> --signing-key <file>` | Sign and stage a local package release, then publish its immutable version. |
 | `gene pkg cache gc` | Remove unreferenced cached objects. |
 
 Workspaces, multiple package versions, lockfiles, git/path sources, and local
-registry adapters are implemented. Hosted publication is not yet available.
+registry adapters are implemented. Experimental hosted resolution and sync
+use `gene pkg resolve --registry-config <path>` and
+`gene pkg sync --registry-config <path>` with an operator-pinned key. Keep the
+same config for offline sync so cached signatures are rechecked. See the
+[release format and config](spec/package-release.md). The publish client is
+experimental; a deployable hosted registry service is not yet included.
+`gene build`, project `gene run`/`test`, and `gene install` accept the same
+`--registry-config` for hosted dependencies.
 Runtime imports consume the resolved graph rather than performing dependency
 resolution as a side effect.
 
@@ -82,9 +90,33 @@ reuses artifacts by derivation identity. `--locked` preserves the resolved
 graph; `--offline` avoids fetching missing sources. `--explain` describes build
 decisions.
 
-Native/resource recipes, mixed application images, and full install/distribution
-work remain incomplete. Accepting a flag or a manifest field does not imply
+Native recipe qualification, mixed application images, and hosted distribution
+work remain incomplete. Resource recipes and local POSIX installation are
+available for the qualified source profile. Experimental `native_binary`
+and `c_library` recipes can verify, build, and install C ABI libraries.
+Accepting a flag or a manifest field does not imply
 that every backend can build it; unsupported combinations produce diagnostics.
+
+## Local native installation
+
+On POSIX hosts, a locked local application with pure Gene sources and a
+selected `resources` recipe can be installed to a separate prefix:
+
+```sh
+gene pkg resolve
+gene install my_app --prefix "$HOME/.local" --package-root .
+"$HOME/.local/bin/my_app"
+gene uninstall owner/name:my_app --prefix "$HOME/.local"
+```
+
+`gene install` uses the lock offline, stages a copy of the selected package
+closure and Gene executable, verifies an offline build, then switches the
+launcher to the complete generation. It retains prior generations on update.
+The launcher pins its generation for its whole run, so uninstall leaves a
+generation in place while a process still uses it; rerun uninstall to reclaim
+it later. The package source checkout and user package cache are not needed
+for the installed CLI. Packaged genex binding qualification, hosted release selection,
+Windows installation, and system-service integration remain separate stages.
 
 ## Testing
 

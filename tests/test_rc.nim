@@ -9,8 +9,16 @@
 ## Build with: nim c -r -d:geneRcStats --path:src tests/test_rc.nim
 
 when defined(geneRcStats):
-  import gene/[compiler, types, vm]
-  import std/[os, tables, unittest]
+  import gene/[compiler, native_api, printer, types, vm]
+  import std/[os, unittest]
+
+  var ffiAutoLibraryCloses, ffiAutoPointerReleases: int
+  proc closeAutoLibrary(handle: pointer) {.nimcall.} =
+    discard handle
+    inc ffiAutoLibraryCloses
+  proc releaseAutoPointer(address: pointer) {.cdecl.} =
+    discard address
+    inc ffiAutoPointerReleases
 
   proc leakedManaged(src: string, useLocalSlots = true): int =
     ## Managed heap objects surviving one run of `src` after the program scope is
@@ -29,6 +37,29 @@ when defined(geneRcStats):
   GC_fullCollect()
 
   suite "rc — closures and scopes (geneRcStats)":
+    test "abandoned owned pointers retire before their borrowed FFI image":
+      ffiAutoLibraryCloses = 0
+      ffiAutoPointerReleases = 0
+      var library = newFfiLibrary(cast[pointer](1), "auto-fixture",
+                                  closeAutoLibrary)
+      var owned = newCForeignOwnedPtr(cast[pointer](2),
+        cast[pointer](releaseAutoPointer), library = library)
+      expect GeneError:
+        library.closeFfiLibrary()
+      owned = NIL
+      GC_fullCollect()
+      check ffiAutoPointerReleases == 1
+      library.closeFfiLibrary()
+      check ffiAutoLibraryCloses == 1
+      library = NIL
+      GC_fullCollect()
+      check ffiAutoLibraryCloses == 1
+      var abandoned = newFfiLibrary(cast[pointer](3), "abandoned-fixture",
+                                    closeAutoLibrary)
+      abandoned = NIL
+      GC_fullCollect()
+      check ffiAutoLibraryCloses == 2
+
     test "returned local types retain and release their declaration scopes":
       for slots in [true, false]:
         check leakedManaged("""
@@ -159,6 +190,243 @@ when defined(geneRcStats):
       GC_fullCollect()
       check liveManaged == before
 
+    test "selected core witnesses keep escaped code and release it with the Type":
+      GC_fullCollect()
+      let before = liveManaged
+      var saved = NIL
+      block:
+        var scope = newGlobalScope()
+        scope.implOverlayRoot = true
+        saved = run(compileSource("""
+          (type WitnessKey ^props {^text Str})
+          (impl ValueEq for WitnessKey
+            (message equal [other : WitnessKey] : Bool
+              (== self/text other/text)))
+          (impl ValueHash for WitnessKey
+            (message hash [] : Int ($hash self/text)))
+          (impl ValueOrder for WitnessKey
+            (message compare [other : WitnessKey] : Int
+              (if (< self/text other/text) -1
+                (if (> self/text other/text) 1 0))))
+          WitnessKey
+        """), scope)
+        scope = nil
+      GC_fullCollect()
+      check saved.typeCoreWitness(cvEqual).kind == vkFunction
+      check saved.typeCoreWitness(cvHash).kind == vkFunction
+      check saved.typeCoreWitness(cvCompare).kind == vkFunction
+      block:
+        let scope = newGlobalScope()
+        scope.define("Saved", saved)
+        check run(compileSource(
+          "(== (Saved ^text \"x\") (Saved ^text \"x\"))"),
+          scope).boolVal
+        check run(compileSource("($hash #(Saved ^text \"x\"))"),
+          scope).kind == vkInt
+        let sorted = run(compileSource(
+          "($order/sort [(Saved ^text \"b\") (Saved ^text \"a\")])"),
+          scope)
+        check sorted.listItems[0].props["text"].strVal == "a"
+      saved = NIL
+      GC_fullCollect()
+      check liveManaged == before
+
+    test "io helper Tasks release protocol captures after structured settlement":
+      let scope = newGlobalScope()
+      discard run(compileSource("""
+        (let AsyncWriter $io/AsyncWriter)
+        (let IoResource $io/IoResource)
+        (type Sink ^props {})
+        (impl AsyncWriter for Sink
+          (message write [data : Bytes] : (Task Int Error)
+            (spawn ^lane root ($binary/size data)))
+          (message flush [] : (Task Nil Error)
+            (spawn ^lane root nil)))
+        (impl IoResource for Sink
+          (message close [] : Nil nil)
+          (message wait_closed [] : (Task Nil Error)
+            (spawn ^lane root nil)))
+      """), scope)
+      let body = compileSource("""
+        (scope
+          (let sink (Sink))
+          (await ($io/write_all sink ($binary/from_str "abc")))
+          (sink .IoResource:close)
+          (await (sink .IoResource:wait_closed)))
+      """)
+      GC_fullCollect()
+      let before = liveManaged
+      for _ in 0 ..< 10:
+        discard run(body, scope)
+      GC_fullCollect()
+      check liveManaged == before
+
+    test "closed native test I/O resources release their Task and handle roots":
+      check leakedManaged("""
+        (let AsyncWriter $io/AsyncWriter)
+        (let IoResource $io/IoResource)
+        (var resource ($io/testing/new))
+        (let operation (resource .AsyncWriter:write ($binary/from_str "abc")))
+        (resource .IoResource:close)
+        ($io/testing/complete_write resource 2)
+        (await (resource .IoResource:wait_closed))
+        (set resource nil)
+      """) == 0
+
+    when compileOption("threads") and defined(posix):
+      test "closed worker-backed file readers release handles and Tasks":
+        let path = "tmp/gene-io-rc-reader.bin"
+        writeFile(path, "abc")
+        defer: removeFile(path)
+        check leakedManaged("""
+          (let AsyncReader $io/AsyncReader)
+          (let IoResource $io/IoResource)
+          (var reader (await ($io/open_read "tmp/gene-io-rc-reader.bin")))
+          (await (reader .AsyncReader:read 3))
+          (reader .IoResource:close)
+          (await (reader .IoResource:wait_closed))
+          (set reader nil)
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "closed worker-backed file writers release copied buffers":
+        let path = "tmp/gene-io-rc-writer.bin"
+        if fileExists(path): removeFile(path)
+        defer:
+          if fileExists(path): removeFile(path)
+        check leakedManaged("""
+          (let AsyncWriter $io/AsyncWriter)
+          (let IoResource $io/IoResource)
+          (var writer (await ($io/open_write "tmp/gene-io-rc-writer.bin")))
+          (await (writer .AsyncWriter:write ($binary/from_str "abc")))
+          (writer .IoResource:close)
+          (await (writer .IoResource:wait_closed))
+          (set writer nil)
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "closed pipe endpoints release both descriptor handles":
+        check leakedManaged("""
+          (let AsyncReader $io/AsyncReader)
+          (let AsyncWriter $io/AsyncWriter)
+          (let IoResource $io/IoResource)
+          (let endpoints ($io/pipe))
+          (let reader endpoints/0)
+          (let writer endpoints/1)
+          (await (writer .AsyncWriter:write ($binary/from_str "x")))
+          (writer .IoResource:close)
+          (await (writer .IoResource:wait_closed))
+          (await (reader .AsyncReader:read 2))
+          (await (reader .AsyncReader:read 2))
+          (reader .IoResource:close)
+          (await (reader .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "subprocess stdout releases its duplicated pipe descriptor":
+        check leakedManaged("""
+          (let AsyncReader $io/AsyncReader)
+          (let IoResource $io/IoResource)
+          (let endpoints ($io/pipe))
+          (let reader endpoints/0)
+          (let writer endpoints/1)
+          (let task ($os/exec_stream_async ^cmd "printf"
+            ^args ["abc"] ^stdout_pipe writer))
+          (await task)
+          (await (reader .AsyncReader:read 3))
+          (await (reader .AsyncReader:read 3))
+          (await (writer .IoResource:wait_closed))
+          (reader .IoResource:close)
+          (await (reader .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "subprocess stdout and stderr release both duplicated writers":
+        check leakedManaged("""
+          (let AsyncReader $io/AsyncReader)
+          (let IoResource $io/IoResource)
+          (let stdout ($io/pipe))
+          (let stderr ($io/pipe))
+          (let task ($os/exec_stream_async ^cmd "sh"
+            ^args ["-c" "printf o; printf e >&2"]
+            ^stdout_pipe stdout/1 ^stderr_pipe stderr/1))
+          (await task)
+          (await (stdout/0 .AsyncReader:read 1))
+          (await (stderr/0 .AsyncReader:read 1))
+          (await (stdout/0 .AsyncReader:read 1))
+          (await (stderr/0 .AsyncReader:read 1))
+          (await (stdout/1 .IoResource:wait_closed))
+          (await (stderr/1 .IoResource:wait_closed))
+          (stdout/0 .IoResource:close)
+          (stderr/0 .IoResource:close)
+          (await (stdout/0 .IoResource:wait_closed))
+          (await (stderr/0 .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "subprocess stdin and stdout release borrowed pipe endpoints":
+        check leakedManaged("""
+          (let AsyncReader $io/AsyncReader)
+          (let AsyncWriter $io/AsyncWriter)
+          (let IoResource $io/IoResource)
+          (let input ($io/pipe))
+          (let output ($io/pipe))
+          (let task ($os/exec_stream_async ^cmd "cat"
+            ^stdin_pipe input/0 ^stdout_pipe output/1))
+          (await (input/1 .AsyncWriter:write ($binary/from_str "abc")))
+          (input/1 .IoResource:close)
+          (await (input/1 .IoResource:wait_closed))
+          (await task)
+          (await (output/0 .AsyncReader:read 3))
+          (await (output/0 .AsyncReader:read 3))
+          (await (input/0 .IoResource:wait_closed))
+          (await (output/1 .IoResource:wait_closed))
+          (output/0 .IoResource:close)
+          (await (output/0 .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "CSV reader releases its source and parser state after close":
+        check leakedManaged("""
+          (let IoResource $io/IoResource)
+          (let pipe ($io/pipe))
+          (let rows ($csv/reader pipe/0 ^own_reader true))
+          (await ($io/write_all pipe/1 ($binary/from_str "a,b\n")))
+          (pipe/1 .IoResource:close)
+          (await (pipe/1 .IoResource:wait_closed))
+          (await (rows .next))
+          (await (rows .next))
+          (rows .IoResource:close)
+          (await (rows .IoResource:wait_closed))
+        """) == 0
+
+      test "TCP listener and duplex streams release native handles":
+        check leakedManaged("""
+          (let IoResource $io/IoResource)
+          (let listener (await ($io/tcp_listen "127.0.0.1" 0)))
+          (let accepting (listener .accept))
+          (let client (await ($io/tcp_connect "127.0.0.1"
+            (listener .local_port))))
+          (let server (await accepting))
+          (client .IoResource:close)
+          (server .IoResource:close)
+          (listener .IoResource:close)
+          (await (client .IoResource:wait_closed))
+          (await (server .IoResource:wait_closed))
+          (await (listener .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
+      test "owned HTTP Client retires its multi service after close":
+        check leakedManaged("""
+          (let IoResource $io/IoResource)
+          (let client (await ($net/http_client/open)))
+          (client .IoResource:close)
+          (await (client .IoResource:wait_closed))
+          (await (client .IoResource:wait_closed))
+          ($runtime/gc_stats)
+        """) == 0
+
     test "released error witnesses reclaim their formatter environments":
       check leakedManaged("""
         (fn raise_local []
@@ -194,6 +462,36 @@ when defined(geneRcStats):
       check stats.mapEntries["rc_stats?"].boolVal
       check stats.mapEntries["live_managed"].kind == vkInt
       check stats.mapEntries["live_managed"].intVal >= 0
+      let classes = stats.mapEntries["managed_classes"]
+      check classes.kind == vkMap
+      var classTotal = 0'i64
+      for _, count in classes.mapEntries:
+        check count.kind == vkInt
+        check count.intVal >= 0
+        classTotal += count.intVal
+      check classTotal == stats.mapEntries["live_managed"].intVal
+      check stats.mapEntries["native_roots"].kind == vkInt
+      let initialRoots = nativeRootCount()
+      let nativeRoot = geneRoot(newStr("retained"))
+      check nativeRootCount() == initialRoots + 1
+      geneRootRelease(nativeRoot)
+      geneRootRelease(nativeRoot)
+      check nativeRootCount() == initialRoots
+      check stats.mapEntries["cleanup_leases"].kind == vkNil
+      check stats.mapEntries["io_root_tasks"].kind == vkInt
+      check stats.mapEntries["io_root_cleanup_tasks"].kind == vkInt
+      check stats.mapEntries["io_retained_bytes"].kind == vkInt
+      check stats.mapEntries["io_peak_retained_bytes"].kind == vkInt
+      check stats.mapEntries["io_cleanup_leases"].kind == vkInt
+      check stats.mapEntries["io_open_resources"].kind == vkInt
+      check stats.mapEntries["io_file_open_resources"].kind == vkInt
+      check stats.mapEntries["cycle_candidates"].kind == vkNil
+
+    test "test-only collection runs at the root-lane safe point":
+      let scope = newGlobalScope()
+      check run(compileSource("($runtime/test_collect)"), scope).kind == vkNil
+      expect GeneError:
+        discard run(compileSource("($runtime/test_collect 1)"), scope)
 
     test "transient anonymous closures are reclaimed":
       check leakedManaged("((fn [] (fn [] 1)))") == 0
@@ -255,6 +553,16 @@ when defined(geneRcStats):
         "(let s ([1] => collect args...)) (s .close)") == 0
       check leakedManaged("(fn broken [x] (fail \"expected\")) " &
         "(let s ([1] => broken)) (try (s .next) catch Any nil)") == 0
+
+    test "filesystem walk releases retained frames after early close":
+      let dir = getTempDir() / "gene-walk-rc-spec"
+      if dirExists(dir): removeDir(dir)
+      createDir(dir)
+      writeFile(dir / "one.txt", "one")
+      let literal = newStr(dir).print()
+      check leakedManaged("(let s ($fs/walk " & literal & ")) " &
+                          "(s .next) (s .close)") == 0
+      check leakedManaged("(($fs/walk " & literal & ") -> $into [])") == 0
 
     test "packed and generic buffer backing values are reclaimed":
       check leakedManaged("(repeat 100 (var b ($buffer U8 65536)) (b .fill 7))") == 0
@@ -319,6 +627,18 @@ when defined(geneRcStats):
 
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
+
+    test "released scalar sandbox module drops its self-binding":
+      let directory = getCurrentDir() /
+        "tests/profiles/native-app/lifetime/plugin"
+      let source = "(var tx ($runtime/sandbox_transaction)) " &
+        "(var generation (tx .prepare {^dir " & newStr(directory).print() &
+        " ^entry \"simple.gene\" ^grants [] ^shared [] ^label \"rc\" " &
+        " ^policy {^max_steps 1000 ^max_memory_mb 16 " &
+        " ^timeout_ms 1000}})) " &
+        "(tx .commit) (generation .release)"
+      discard leakedManaged(source) # prime the one grant-set builtins root
+      check leakedManaged(source) == 0
 
     test "borrowed caller environments and snapshots are reclaimed":
       check leakedManaged(

@@ -5,7 +5,7 @@
 import std/strutils
 import ./types
 
-const NativeErrorModelVersion* = "2"
+const NativeErrorModelVersion* = "3"
 
 proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
   var local = if name.startsWith("gene/"): name[5..^1] else: name

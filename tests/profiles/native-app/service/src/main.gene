@@ -1,0 +1,91 @@
+(import $net/http [listen serve stop status text stream])
+(import $db/sqlite [open_file Db])
+
+(let AsyncReader $io/AsyncReader)
+(let AsyncWriter $io/AsyncWriter)
+(let IoResource $io/IoResource)
+
+(var server nil)
+(var db nil)
+(var last_tick_ms 0)
+(var max_tick_gap_ms 0)
+(var tick_count 0)
+(var max_tick_at_ms 0)
+(var max_tick_active_connections 0)
+(var max_tick_in_flight 0)
+
+(fn heartbeat []
+  (let now ($os/monotonic_ms))
+  (if (> last_tick_ms 0)
+    (do
+      (let gap (- now last_tick_ms))
+      (if (> gap max_tick_gap_ms)
+        (do
+          (set max_tick_gap_ms gap)
+          (set max_tick_at_ms now)
+          (let snapshot (status server))
+          (set max_tick_active_connections snapshot/active_connections)
+          (set max_tick_in_flight snapshot/in_flight_requests)))))
+  (set last_tick_ms now)
+  (set tick_count (+ tick_count 1)))
+
+(fn handle [request]
+  (if (== request/path "/health")
+    (return (text 200 "ready")))
+  (if (== request/path "/slow")
+    (do
+      ($sleep 650)
+      (return (text 200 "slow"))))
+  (if (== request/path "/db")
+    (do
+      (db .Db:execute "insert into hits(v) values (?)" 1)
+      (let row (db .Db:query_one "select count(*) as n from hits"))
+      (return (text 200 ($to_str row/n)))))
+  (if (== request/path "/meta")
+    (return (text 200 ($json/stringify
+      {^path request/path
+       ^forwarded_for (?? request/headers/x-forwarded-for "")
+       ^forwarded_proto (?? request/headers/x-forwarded-proto "")
+       ^forwarded_host (?? request/headers/x-forwarded-host "")}))))
+  (if (== request/path "/upload")
+    (do
+      (var total 0)
+      (while true
+        (let part (await (request/body .AsyncReader:read 65536)))
+        (if ($nil? part) (then (break)))
+        (set total (+ total ($binary/size part))))
+      (return (text 200 ($to_str total)))))
+  (if (== request/path "/stream")
+    (do
+      (let endpoints ($io/pipe))
+      (await (endpoints/1 .AsyncWriter:write
+        ($binary/from_str "stream-ok")))
+      (endpoints/1 .IoResource:close)
+      (await (endpoints/1 .IoResource:wait_closed))
+      (return (stream endpoints/0 ^content_length 9 ^own_reader true))))
+  (if (== request/path "/stop")
+    (do
+      (stop server)
+      (return (text 200 "stopping"))))
+  (text 404 "not found"))
+
+(fn main [args] : Int
+  (let port ($parse/parse_int args/0))
+  (let database args/1)
+  (set db (open_file database ^create true))
+  (db .Db:exec "create table hits (v integer not null)")
+  (set server (listen ^host "127.0.0.1" ^port port))
+  ($println ($json/stringify {^event "ready" ^port port}))
+  (let shutdown (serve server ^handler handle ^body_mode "stream"
+    ^drain_timeout_ms 5000 ^on_tick heartbeat ^tick_ms 50))
+  (db .Db:close)
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^event "stopped" ^ok true ^max_heartbeat_gap_ms max_tick_gap_ms
+     ^max_heartbeat_at_ms max_tick_at_ms
+     ^max_heartbeat_active_connections max_tick_active_connections
+     ^max_heartbeat_in_flight max_tick_in_flight
+     ^tick_count tick_count ^io_cleanup_leases stats/io_cleanup_leases
+     ^io_open_resources stats/io_open_resources
+     ^io_retained_bytes stats/io_retained_bytes ^shutdown shutdown}))
+  0)

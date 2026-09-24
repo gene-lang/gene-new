@@ -1,0 +1,16 @@
+(fn acquire [dir]
+  (let tx ($runtime/sandbox_transaction))
+  (let generation (tx .prepare
+    {^dir dir ^entry "self.gene" ^grants [] ^shared []
+     ^label "retained-function" ^policy {^max_steps 1000
+       ^max_memory_mb 16 ^timeout_ms 1000}}))
+  (let module (generation .module))
+  (let identity module/identity)
+  (tx .commit)
+  (generation .release)
+  identity)
+
+(fn main [args] : Int
+  (let identity (acquire args/0))
+  ($assert (same? (identity) (identity)))
+  0)

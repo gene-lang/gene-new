@@ -13,6 +13,9 @@ suites in `tests/test_vm.nim`.
   `TaskOutcome/ok`, `error`, `panic`, or `cancelled`, does not consume the
   ordinary `await` result, and may be repeated. Cancellation of the joining
   task still propagates normally.
+- `Task/done?` is a non-consuming readiness check. It stays true after the
+  task's result has been consumed by `await`; it does not wait or inspect the
+  outcome.
 - `spawn ^lane root` enqueues and returns its `Task` before the child body can
   begin. `$runtime/require_root_lane` returns `nil` on that lane and raises the
   typed `RuntimeLaneError` everywhere else.

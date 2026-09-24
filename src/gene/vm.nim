@@ -1,10 +1,11 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, net, os,
+import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monotimes, net, os,
             options, osproc, sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, gir, package, printer, reader, types,
+import ./[compiler, diagnostics, digest, equality, gir, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors]
+import ./io_lifecycle
 import ./ext/logging
 export type_contracts
 
@@ -300,11 +301,17 @@ type
     timeoutMs: int
     task: Value
 
+  IoPipeBorrow = object
+    fd: cint
+    resourceId: uint64
+    ticket: IoTicket
+    cleanupLease: Value
+
   CaptureSafetyMode = enum
     csmSend
     csmWorker
 
-  SchedulerState = ref object of RuntimeContext
+  SchedulerState* = ref object of RuntimeContext
     lock: Lock
     rootLane: int
     runQueue: seq[Fiber]
@@ -460,6 +467,13 @@ type
     # Internal resolution — built-in type messages, error types raised by the
     # VM — goes through here so it does not depend on the bare surface.
     stdlib: Scope
+    ioWriteAllHelper: Value
+    ioCopyHelper: Value
+    csvNextHelper: Value
+    csvWaitClosedHelper: Value
+    rootIoTasks: seq[Value] # I/O helpers called outside a structured task scope
+    rootIoCleanupTasks: seq[Value]
+    ioBudget: IoBudget
     spawnBuiltinsPublished: bool
     scheduler: SchedulerState
     nativeAdd: Value
@@ -521,6 +535,10 @@ type
     packageGraph: MaterializedGraph
     packagesById: Table[string, Package]
     packagesByRoot: Table[string, Package]   # manifest cache, canonical root
+    resourceIndex: Table[string, Table[string,
+      tuple[size: int64, digest, sourceRoot, sourcePath: string]]]
+      # selected target resources, including verified native sidecars
+    nativeBinaryIndex: Table[string, Table[string, NativeBinaryVariant]]
     moduleIdentities: Table[string, string]  # abs module path -> §10 identity
     # Experimental URL module sources (design §15.9). Enabled only by the
     # `gene runurl` entry; when off, URL module paths are rejected at
@@ -631,6 +649,23 @@ type
     application: Application
     ownerLane: int
     fd: int
+
+  MaterializedResourceRecord = ref object
+    application: Application
+    path: string
+    digest: string
+    closed: bool
+
+  IoTestingRecord = ref object
+    application: Application
+    ownerLane: int
+    lifecycle: IoLifecycle
+    readTicket, writeTicket: IoTicket
+    readTask, writeTask: Value
+    readLease, writeLease, closeLease: Value
+    waiters: seq[Value]
+    writePayload, written, closeFailure: string
+    handleGone: bool
 
   FsWatcherRecord = ref object
     application: Application
@@ -821,6 +856,7 @@ proc schedulerForScope(scope: Scope): SchedulerState
 proc application*(scope: Scope): Application
 proc builtinsScope*(app: Application): Scope
 proc builtinsScope*(): Scope
+proc currentApplication(): Application
 proc resolveModulePath*(app: Application, rawPath: string): string
 proc resolveApplicationModulePath*(app: Application, rawPath: string): string
 proc applicationPackage*(app: Application): Package
@@ -912,10 +948,15 @@ template withNativeSyncCallback*(callback: NativeSyncCallback, body: untyped) =
     finally:
       leaveNativeSyncCallback(callback)
 
+var semanticWitnessDepth {.threadvar.}: int
+
 proc rejectNativeCallbackWait(operation: string) =
   if nativeSyncCallbackDepth > 0:
     raise newException(GeneError,
       operation & " cannot suspend or run the scheduler inside a synchronous native callback")
+  if semanticWitnessDepth > 0:
+    raise newException(GeneError,
+      operation & " cannot suspend or run the scheduler inside a value witness")
 
 var activeSandboxCompileKey {.threadvar.}: string
 var activeSandboxCompileDir {.threadvar.}: string
@@ -966,6 +1007,48 @@ var sandboxTransactionRecords = initTable[uint64, SandboxTransactionRecord]()
 var sandboxGenerationRecords = initTable[uint64, SandboxGenerationRecord]()
 var fsWatcherRecords = initTable[uint64, FsWatcherRecord]()
 var fsFileLockRecords = initTable[uint64, FsFileLockRecord]()
+var materializedResourceRecords = initTable[uint64, MaterializedResourceRecord]()
+var ioTestingRecords = initTable[uint64, IoTestingRecord]()
+var materializedLeaseCounts = initTable[string, int]()
+proc releaseIoFileResourceRecord(id: uint64) {.raises: [].}
+proc releaseCsvReaderRecord(id: uint64) {.raises: [].}
+proc releaseOwnedHttpClientRecord(id: uint64) {.raises: [].}
+proc releaseOwnedHttpBodyRecord(id: uint64) {.raises: [].}
+type NativeIngressAdapter* = object
+  open*, close*, waitClosed*, status*: NativeCallProc
+var nativeIngressAdapter: NativeIngressAdapter
+var nativeIngressHandleReleaseHook: proc(id: uint64) {.nimcall, raises: [].}
+
+proc installNativeIngressAdapter*(adapter: NativeIngressAdapter) =
+  nativeIngressAdapter = adapter
+
+proc installNativeIngressHandleReleaseHook*(
+    hook: proc(id: uint64) {.nimcall, raises: [].}) =
+  nativeIngressHandleReleaseHook = hook
+proc ioFileOpenCount(app: Application): int
+proc ioFileWaitingCount(): int
+proc csvReaderOpenCount(app: Application): int
+proc csvReaderPayloadStats(app: Application): tuple[current, peakResource: int]
+proc ownedHttpClientOpenCount(app: Application): int
+proc ownedHttpClientPendingCount(app: Application): int
+
+proc materializedLeaseCount(): int =
+  acquire(resourceRecordLock)
+  try:
+    for _, count in materializedLeaseCounts:
+      result += count
+  finally:
+    release(resourceRecordLock)
+
+proc ioOpenResourceCount(app: Application): int =
+  acquire(resourceRecordLock)
+  try:
+    for _, record in ioTestingRecords:
+      if record.application == app and
+          record.lifecycle.ioSnapshot().phase != iopClosed:
+        inc result
+  finally:
+    release(resourceRecordLock)
 
 proc releaseResourceRecord(id: uint64) {.nimcall, raises: [].} =
   if id == 0:
@@ -985,7 +1068,30 @@ proc releaseResourceRecord(id: uint64) {.nimcall, raises: [].} =
     closeFileLock(fileLock.fd)
     fileLock.fd = -1
     fsFileLockRecords.del(id)
+  let materialized = materializedResourceRecords.getOrDefault(id)
+  if materialized != nil:
+    if not materialized.closed:
+      let count = materializedLeaseCounts.getOrDefault(materialized.path)
+      if count <= 1: materializedLeaseCounts.del(materialized.path)
+      else: materializedLeaseCounts[materialized.path] = count - 1
+    materializedResourceRecords.del(id)
+  let ioRecord = ioTestingRecords.getOrDefault(id)
+  if ioRecord != nil:
+    ioRecord.handleGone = true
+    try:
+      if ioRecord.lifecycle.ioSnapshot().activeOperations == 0:
+        discard ioRecord.lifecycle.requestIoClose()
+        discard ioRecord.lifecycle.retireIoClose(ioRecord.closeFailure)
+        ioTestingRecords.del(id)
+    except CatchableError:
+      discard # preserve the record and its cleanup obligation
   release(resourceRecordLock)
+  releaseIoFileResourceRecord(id)
+  releaseCsvReaderRecord(id)
+  releaseOwnedHttpClientRecord(id)
+  releaseOwnedHttpBodyRecord(id)
+  if nativeIngressHandleReleaseHook != nil:
+    nativeIngressHandleReleaseHook(id)
 
 initLock(resourceRecordLock)
 installResourceReleaseHook(releaseResourceRecord)
@@ -1156,8 +1262,28 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 # Drive the scheduler until the given task settles, or raise on deadlock.
 proc pumpUntilDone(task: Value, parentTask: Value = NIL)
 proc pollHttpClientCompletions()
+proc pollOwnedHttpClientCompletions()
 proc pollCursesInputCompletions()
 proc pollOsExecAsyncCompletions()
+proc pollIoFileCompletions()
+var nativeIngressPollHook: proc(scheduler: SchedulerState) {.nimcall.}
+var nativeIngressSleepHook: proc(timeoutMs: int): bool {.nimcall.}
+var nativeIngressActiveHook: proc(scheduler: SchedulerState): bool {.nimcall.}
+
+proc installNativeIngressPollHook*(hook: proc(scheduler: SchedulerState) {.nimcall.}) =
+  nativeIngressPollHook = hook
+
+proc installNativeIngressSleepHook*(hook: proc(timeoutMs: int): bool {.nimcall.}) =
+  nativeIngressSleepHook = hook
+
+proc installNativeIngressActiveHook*(hook: proc(scheduler: SchedulerState): bool {.nimcall.}) =
+  nativeIngressActiveHook = hook
+
+proc pollNativeIngressHook() =
+  if nativeIngressPollHook != nil:
+    let scheduler = currentScheduler()
+    if currentEventLane() == scheduler.rootLane:
+      nativeIngressPollHook(scheduler)
 
 # Actor message processing runs each handler as a scheduler fiber. scheduleActor
 # enqueues the next message's handler fiber if the actor is idle; driveActor pumps
@@ -1207,6 +1333,40 @@ proc registerOwnedTask(scope: Scope, task: Value) =
       return
     s = s.parent
 
+proc pruneRootIoTasks(app: Application) =
+  var pending: seq[Value]
+  for existing in app.rootIoTasks:
+    if existing.kind == vkTask and not existing.taskDone:
+      pending.add existing
+  app.rootIoTasks = pending
+  pending = @[]
+  for existing in app.rootIoCleanupTasks:
+    if existing.kind == vkTask and not existing.taskDone:
+      pending.add existing
+  app.rootIoCleanupTasks = pending
+
+proc registerIoTask(scope: Scope, task: Value) =
+  var current = scope
+  while current != nil:
+    if current.ownsTasks:
+      current.ownedTasks.add task
+      return
+    current = current.parent
+  let app = if scope == nil: currentApplication() else: scope.application()
+  app.pruneRootIoTasks()
+  app.rootIoTasks.add task
+
+proc registerIoCleanupTask(scope: Scope, task: Value) =
+  var current = scope
+  while current != nil:
+    if current.ownsTasks:
+      current.ownedCleanupTasks.add task
+      return
+    current = current.parent
+  let app = if scope == nil: currentApplication() else: scope.application()
+  app.pruneRootIoTasks()
+  app.rootIoCleanupTasks.add task
+
 proc unregisterOwnedTask(scope: Scope, task: Value): bool =
   var s = scope
   while s != nil:
@@ -1229,8 +1389,26 @@ proc requestTaskCancellation(task: Value) =
     task.finishTaskCancel()
     wakeTaskWaiters(task)
 
+proc waitOwnedCleanupTasks(scope: Scope) =
+  try:
+    for task in scope.ownedCleanupTasks:
+      if task.kind == vkTask and not task.taskDone:
+        pumpUntilDone(task)
+  finally:
+    var unresolved: seq[Value]
+    for task in scope.ownedCleanupTasks:
+      if task.kind == vkTask and not task.taskDone:
+        unresolved.add task
+    scope.ownedCleanupTasks.setLen(0)
+    if unresolved.len > 0:
+      # A scheduler failure must not make native retirement disappear with the
+      # scope. Keep an Application root so diagnostics report pending cleanup.
+      let app = scope.application()
+      app.pruneRootIoTasks()
+      app.rootIoCleanupTasks.add unresolved
+
 proc cancelOwnedTasks(scope: Scope) =
-  if scope.ownedTasks.len == 0:
+  if scope.ownedTasks.len == 0 and scope.ownedCleanupTasks.len == 0:
     return
   var pending: seq[Value]
   for i in countdown(scope.ownedTasks.high, 0):
@@ -1244,15 +1422,17 @@ proc cancelOwnedTasks(scope: Scope) =
         pumpUntilDone(task)
   finally:
     scope.ownedTasks.setLen(0)
+    scope.waitOwnedCleanupTasks()
 
 proc waitOwnedTasks(scope: Scope) =
-  if scope.ownedTasks.len == 0:
+  if scope.ownedTasks.len == 0 and scope.ownedCleanupTasks.len == 0:
     return
   try:
     for i in 0 ..< scope.ownedTasks.len:
       let task = scope.ownedTasks[i]
       if task.kind == vkTask and not task.taskDone:
         pumpUntilDone(task)
+    scope.waitOwnedCleanupTasks()
   except CatchableError:
     scope.cancelOwnedTasks()
     raise
@@ -2051,27 +2231,305 @@ proc biRem(args: openArray[Value]): Value {.nimcall.} =
   if bf == 0.0: raise newException(GeneError, "division by zero")
   newFloat(a.toFloat mod bf)
 
+proc orderCompare(left, right: Value, strictNumeric: bool): int
+
 template comparison(name: string, op: untyped): NativeProc =
   (proc(args: openArray[Value]): Value {.nimcall.} =
-    requireNums(name, args)
+    if args.len < 2:
+      requireNums(name, args)
     for i in 1 ..< args.len:
       let ok =
         if args[i-1].kind == vkInt and args[i].kind == vkInt:
           op(intCompare(args[i-1], args[i]), 0)
         else:
-          op(args[i-1].toFloat, args[i].toFloat)
+          if args[i-1].isNumber and args[i].isNumber:
+            op(args[i-1].toFloat, args[i].toFloat)
+          else:
+            op(orderCompare(args[i-1], args[i], false), 0)
       if not ok: return FALSE
     TRUE)
 
+type SemanticPair = tuple[left, right: uint64]
+type ActiveIndexOperation = tuple[receiver, index: uint64, name: string]
+
+var activeSemanticPairs {.threadvar.}: seq[SemanticPair]
+var activeSemanticHashes {.threadvar.}: seq[uint64]
+var activeOrderPairs {.threadvar.}: seq[SemanticPair]
+var activeKeyCollections {.threadvar.}: seq[uint64]
+var activeIndexOperations {.threadvar.}: seq[ActiveIndexOperation]
+
+proc raiseValueSemanticError(kind, message: string) {.noreturn.} =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  let typ = builtinBinding(nil, kind)
+  var error: ref GeneError
+  new(error)
+  error.msg = kind & ": " & message
+  error.errVal = newNode(if typ.kind == vkType: typ else: newSym(kind),
+                         props = props, immutable = true)
+  error.hasErrVal = true
+  raise error
+
+proc beginKeyOperation(collection: Value) =
+  for active in activeKeyCollections:
+    if active == collection.bits:
+      raiseValueSemanticError("ValueOperationReentry",
+        "collection key operation reentered")
+  activeKeyCollections.add collection.bits
+
+proc endKeyOperation() =
+  activeKeyCollections.setLen(activeKeyCollections.len - 1)
+
+proc invokeValueEqual(witness, left, right: Value): bool =
+  if currentEventLane() != currentScheduler().rootLane:
+    raiseValueSemanticError("RuntimeLaneError",
+      "value equality witness requires the root lane")
+  let key: SemanticPair =
+    if left.bits <= right.bits: (left.bits, right.bits)
+    else: (right.bits, left.bits)
+  for active in activeSemanticPairs:
+    if active == key:
+      raiseValueSemanticError("ValueOperationReentry",
+        "recursive equality on the same values")
+  activeSemanticPairs.add key
+  inc semanticWitnessDepth
+  defer:
+    dec semanticWitnessDepth
+    activeSemanticPairs.setLen(activeSemanticPairs.len - 1)
+  let answer = applyCall(witness, [left, right], NamedArgs())
+  if answer.kind != vkBool:
+    raise newException(GeneError, "ValueEq/equal must return Bool")
+  answer.boolVal
+
+proc invokeValueHash(witness, value: Value): Hash =
+  if currentEventLane() != currentScheduler().rootLane:
+    raiseValueSemanticError("RuntimeLaneError",
+      "value hash witness requires the root lane")
+  for active in activeSemanticHashes:
+    if active == value.bits:
+      raiseValueSemanticError("ValueOperationReentry",
+        "recursive hash on the same value")
+  activeSemanticHashes.add value.bits
+  inc semanticWitnessDepth
+  defer:
+    dec semanticWitnessDepth
+    activeSemanticHashes.setLen(activeSemanticHashes.len - 1)
+  let answer = applyCall(witness, [value], NamedArgs())
+  if answer.kind != vkInt:
+    raise newException(GeneError, "ValueHash/hash must return Int")
+  if answer.intFitsInt64: Hash(answer.intVal)
+  else: hashes.hash(answer.intToString)
+
+proc semanticEqual(left, right: Value): bool
+proc semanticHash(value: Value): Hash
+proc readyCoreWitness(typ: Value, operation: CoreValueMethod): Value
+proc requireHashStableKey(name: string, key: Value)
+
+proc semanticPropsEqual(left, right: PropTable): bool =
+  if left.len != right.len: return false
+  for id, value in left.idPairs:
+    var other: Value
+    if not right.tryGetById(id, other) or not semanticEqual(value, other):
+      return false
+  true
+
+proc semanticEqual(left, right: Value): bool =
+  if left.kind != right.kind: return false
+  if left.kind == vkNode and left.head.kind == vkType:
+    if right.head.bits != left.head.bits: return false
+    let witness = left.head.readyCoreWitness(cvEqual)
+    if witness.kind != vkNil:
+      return invokeValueEqual(witness, left, right)
+  case left.kind
+  of vkList:
+    if left.listItems.len != right.listItems.len: return false
+    for i, item in left.listItems:
+      if not semanticEqual(item, right.listItems[i]): return false
+    true
+  of vkMap:
+    semanticPropsEqual(left.mapEntries, right.mapEntries)
+  of vkSet:
+    beginKeyOperation(left)
+    var guardedRight = false
+    defer:
+      if guardedRight: endKeyOperation()
+      endKeyOperation()
+    if right.bits != left.bits:
+      beginKeyOperation(right)
+      guardedRight = true
+    if left.setItems.len != right.setItems.len: return false
+    for item in left.setItems:
+      var found = false
+      for candidate in right.setItems:
+        if semanticEqual(item, candidate):
+          found = true
+          break
+      if not found: return false
+    true
+  of vkHashMap:
+    beginKeyOperation(left)
+    var guardedRight = false
+    defer:
+      if guardedRight: endKeyOperation()
+      endKeyOperation()
+    if right.bits != left.bits:
+      beginKeyOperation(right)
+      guardedRight = true
+    if left.hashMapEntries.len != right.hashMapEntries.len: return false
+    for entry in left.hashMapEntries:
+      var found = false
+      for candidate in right.hashMapEntries:
+        if semanticEqual(entry.key, candidate.key):
+          if not semanticEqual(entry.val, candidate.val): return false
+          found = true
+          break
+      if not found: return false
+    true
+  of vkNode:
+    if not semanticEqual(left.head, right.head) or
+        left.body.len != right.body.len:
+      return false
+    for i, item in left.body:
+      if not semanticEqual(item, right.body[i]): return false
+    semanticPropsEqual(left.props, right.props)
+  of vkPipeline:
+    if not semanticEqual(left.pipelineInitial, right.pipelineInitial) or
+        left.pipelineStages.len != right.pipelineStages.len:
+      return false
+    for i, stage in left.pipelineStages:
+      let other = right.pipelineStages[i]
+      if stage.kind != other.kind or
+          not semanticEqual(stage.head, other.head) or
+          stage.body.len != other.body.len or
+          not semanticPropsEqual(stage.props, other.props):
+        return false
+      for j, item in stage.body:
+        if not semanticEqual(item, other.body[j]): return false
+    true
+  else:
+    equality.equal(left, right)
+
+proc semanticHash(value: Value): Hash =
+  if value.kind == vkNode and value.head.kind == vkType:
+    let eqWitness = value.head.readyCoreWitness(cvEqual)
+    if eqWitness.kind != vkNil:
+      let hashWitness = value.head.readyCoreWitness(cvHash)
+      if hashWitness.kind == vkNil:
+        raiseValueSemanticError("ValueNotHashable",
+          value.head.typeName & " implements ValueEq without ValueHash")
+      return invokeValueHash(hashWitness, value)
+  var h: Hash = hashes.hash(ord(value.kind))
+  case value.kind
+  of vkList:
+    for item in value.listItems: h = h !& semanticHash(item)
+  of vkMap:
+    var acc: Hash = 0
+    for id, item in value.mapEntries.idPairs:
+      acc = acc xor (hashes.hash(id) !& semanticHash(item))
+    h = h !& acc
+  of vkSet:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
+    var acc: Hash = 0
+    for item in value.setItems: acc = acc xor semanticHash(item)
+    h = h !& acc
+  of vkHashMap:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
+    var acc: Hash = 0
+    for entry in value.hashMapEntries:
+      acc = acc xor (semanticHash(entry.key) !& semanticHash(entry.val))
+    h = h !& acc
+  of vkNode:
+    h = h !& semanticHash(value.head)
+    for item in value.body: h = h !& semanticHash(item)
+    var acc: Hash = 0
+    for id, item in value.props.idPairs:
+      acc = acc xor (hashes.hash(id) !& semanticHash(item))
+    h = h !& acc
+  of vkPipeline:
+    h = h !& semanticHash(value.pipelineInitial)
+    for stage in value.pipelineStages:
+      h = h !& hashes.hash(ord(stage.kind))
+      h = h !& semanticHash(stage.head)
+      for item in stage.body: h = h !& semanticHash(item)
+      var acc: Hash = 0
+      for id, item in stage.props.idPairs:
+        acc = acc xor (hashes.hash(id) !& semanticHash(item))
+      h = h !& acc
+  else:
+    return equality.hash(value)
+  !$h
+
+proc checkedOrderResult(answer: Value): int =
+  if answer.kind != vkInt or
+      intCompare(answer, newInt(-1)) < 0 or
+      intCompare(answer, newInt(1)) > 0:
+    raiseValueSemanticError("OrderError",
+      "comparator must return exactly -1, 0, or 1")
+  int(answer.intVal)
+
+proc invokeOrderCallback(callback: Value, args: openArray[Value],
+                         name: string, scope: Scope = nil): Value =
+  if currentEventLane() != currentScheduler().rootLane:
+    raiseValueSemanticError("RuntimeLaneError", name & " requires the root lane")
+  inc semanticWitnessDepth
+  defer: dec semanticWitnessDepth
+  applyCall(callback, args, NamedArgs(), scope)
+
+proc invokeValueOrder(witness, left, right: Value): int =
+  let key: SemanticPair =
+    if left.bits <= right.bits: (left.bits, right.bits)
+    else: (right.bits, left.bits)
+  for active in activeOrderPairs:
+    if active == key:
+      raiseValueSemanticError("ValueOperationReentry",
+        "recursive ordering on the same values")
+  activeOrderPairs.add key
+  defer: activeOrderPairs.setLen(activeOrderPairs.len - 1)
+  checkedOrderResult(invokeOrderCallback(witness, [left, right],
+                                        "ValueOrder:compare"))
+
+proc orderCompare(left, right: Value, strictNumeric: bool): int =
+  if left.kind == vkInt and right.kind == vkInt:
+    return intCompare(left, right)
+  if left.isNumber and right.isNumber:
+    if strictNumeric and left.kind != right.kind:
+      raiseValueSemanticError("OrderError",
+        "default ordering requires one numeric type")
+    let a = left.toFloat
+    let b = right.toFloat
+    if a != a or b != b:
+      raiseValueSemanticError("OrderError", "NaN has no default ordering")
+    return cmp(a, b)
+  if left.kind == vkString and right.kind == vkString:
+    # Valid UTF-8 byte order preserves Unicode scalar order.
+    return cmp(left.strVal, right.strVal)
+  if left.kind == vkDate and right.kind == vkDate:
+    result = cmp(left.dateYear, right.dateYear)
+    if result == 0: result = cmp(left.dateMonth, right.dateMonth)
+    if result == 0: result = cmp(left.dateDay, right.dateDay)
+    return
+  if left.kind == vkDuration and right.kind == vkDuration:
+    return cmp(left.durationMicroseconds, right.durationMicroseconds)
+  if left.kind == vkNode and right.kind == vkNode and
+      left.head.kind == vkType and right.head.bits == left.head.bits:
+    let witness = left.head.readyCoreWitness(cvCompare)
+    if witness.kind != vkNil:
+      return invokeValueOrder(witness, left, right)
+  raiseValueSemanticError("OrderError",
+    "values have no common default ordering: " & $left.kind & " and " &
+    $right.kind)
+
 proc biEq(args: openArray[Value]): Value {.nimcall.} =
   for i in 1 ..< args.len:
-    if not equal(args[i-1], args[i]): return FALSE
+    if not semanticEqual(args[i-1], args[i]): return FALSE
   TRUE
 
 proc biNe(args: openArray[Value]): Value {.nimcall.} =
   ## (!= a b ...) — exactly (! (== a b ...)).
   for i in 1 ..< args.len:
-    if not equal(args[i-1], args[i]): return TRUE
+    if not semanticEqual(args[i-1], args[i]): return TRUE
   FALSE
 
 proc biContains(args: openArray[Value]): Value {.nimcall.} =
@@ -2084,11 +2542,14 @@ proc biContains(args: openArray[Value]): Value {.nimcall.} =
   case args[0].kind
   of vkList:
     for item in args[0].listItems:
-      if equal(item, args[1]): return TRUE
+      if semanticEqual(item, args[1]): return TRUE
     FALSE
   of vkSet:
+    beginKeyOperation(args[0])
+    defer: endKeyOperation()
+    requireHashStableKey("Set/contains?", args[1])
     for item in args[0].setItems:
-      if equal(item, args[1]): return TRUE
+      if semanticEqual(item, args[1]): return TRUE
     FALSE
   else:
     raise newException(GeneError,
@@ -2175,23 +2636,114 @@ proc biHash(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "hash expects 1 argument, got " & $args.len)
   if not isHashStable(args[0]):
     raise newException(GeneError, "hash expects a hash-stable value")
-  newInt(int64(hash(args[0])))
+  newInt(int64(semanticHash(args[0])))
+
+type SortEntry = object
+  value: Value
+  key: Value
+
+proc orderComparator(call: ptr NativeCall): Value =
+  if call == nil: return NIL
+  var found = false
+  for i, name in call[].namedNames:
+    if name != "compare" or found:
+      raise newException(GeneError,
+        "order sort got unexpected or duplicate named argument: " & name)
+    found = true
+    result = call[].namedValues[i]
+  if found:
+    let scope = call[].dispatchScope
+    if result.kind == vkNil or not result.valueImplementsCallable(scope):
+      raiseTypeError("order ^compare", "Callable", result, scope)
+
+proc stableSortEntries(entries: var seq[SortEntry], comparator: Value,
+                       scope: Scope) =
+  if entries.len < 2: return
+  var work = entries
+  var scratch = newSeq[SortEntry](work.len)
+  proc compareKeys(left, right: Value): int =
+    if comparator.kind == vkNil:
+      orderCompare(left, right, true)
+    else:
+      checkedOrderResult(invokeOrderCallback(comparator, [left, right],
+                                            "order comparator", scope))
+  proc sortRange(first, last: int) =
+    if last - first < 2: return
+    let middle = first + (last - first) div 2
+    sortRange(first, middle)
+    sortRange(middle, last)
+    var left = first
+    var right = middle
+    for pos in first ..< last:
+      if right >= last or
+          (left < middle and compareKeys(work[left].key,
+                                         work[right].key) <= 0):
+        scratch[pos] = work[left]
+        inc left
+      else:
+        scratch[pos] = work[right]
+        inc right
+    for pos in first ..< last:
+      work[pos] = scratch[pos]
+  sortRange(0, work.len)
+  entries = move work
+
+proc orderSortedList(source, keyFn, comparator: Value,
+                     scope: Scope): Value =
+  if source.kind != vkList:
+    raise newException(GeneError, "order/sort expects a finite List")
+  if keyFn.kind != vkNil and not keyFn.valueImplementsCallable(scope):
+    raiseTypeError("order/sort_by key_fn", "Callable", keyFn, scope)
+  var entries = newSeq[SortEntry](source.listItems.len)
+  for i, value in source.listItems:
+    entries[i].value = value
+    entries[i].key =
+      if keyFn.kind == vkNil: value
+      else: invokeOrderCallback(keyFn, [value], "order key function", scope)
+  stableSortEntries(entries, comparator, scope)
+  var values = newSeq[Value](entries.len)
+  for i, entry in entries:
+    values[i] = entry.value
+  newList(values, source.listImmutable)
+
+proc biOrderCompare(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "order/compare expects 2 values")
+  newInt(orderCompare(args[0], args[1], true))
+
+proc biOrderSort(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "order/sort expects one List")
+  let comparator = orderComparator(call)
+  orderSortedList(args[0], NIL, comparator,
+                  if call == nil: nil else: call[].dispatchScope)
+
+proc biOrderSortBy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "order/sort_by expects a List and key_fn")
+  if args[1].kind == vkNil:
+    raiseTypeError("order/sort_by key_fn", "Callable", args[1],
+      if call == nil: nil else: call[].dispatchScope)
+  let comparator = orderComparator(call)
+  orderSortedList(args[0], args[1], comparator,
+                  if call == nil: nil else: call[].dispatchScope)
 
 proc findEqualValue(items: openArray[Value], key: Value): int =
   for i, item in items:
-    if equal(item, key):
+    if semanticEqual(item, key):
       return i
   -1
 
 proc findHashMapKey(entries: openArray[HashMapEntry], key: Value): int =
   for i, entry in entries:
-    if equal(entry.key, key):
+    if semanticEqual(entry.key, key):
       return i
   -1
 
 proc requireHashStableKey(name: string, key: Value) =
   if not isHashStable(key):
     raiseTypeError(name, "HashStable", key, nil)
+  discard semanticHash(key)
 
 proc buildSet(name: string, values: openArray[Value]): Value =
   var items: seq[Value]
@@ -2478,6 +3030,7 @@ proc biTaskDetach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
 
 proc biTaskJoin(args: openArray[Value],
                 call: ptr NativeCall): Value {.nimcall.}
+proc biTaskDone(args: openArray[Value]): Value {.nimcall.}
 
 proc requireChannel(name: string, value: Value) =
   if value.kind != vkChannel:
@@ -4344,11 +4897,15 @@ proc freezeValue(value: Value): Value =
     newMap(freezeEntries(value.mapEntries), immutable = true,
            deepFrozen = true)
   of vkSet:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
     var items = newSeq[Value](value.setItems.len)
     for i, item in value.setItems:
       items[i] = freezeValue(item)
     buildSet("freeze", items)
   of vkHashMap:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
     var entries: seq[HashMapEntry]
     for entry in value.hashMapEntries:
       entries.add HashMapEntry(key: freezeValue(entry.key),
@@ -4408,11 +4965,15 @@ proc thawValue(value: Value): Value =
   of vkMap:
     newMap(thawEntries(value.mapEntries), immutable = false)
   of vkSet:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
     var items = newSeq[Value](value.setItems.len)
     for i, item in value.setItems:
       items[i] = thawValue(item)
     buildSet("thaw", items)
   of vkHashMap:
+    beginKeyOperation(value)
+    defer: endKeyOperation()
     var entries: seq[HashMapEntry]
     for entry in value.hashMapEntries:
       entries.add HashMapEntry(key: thawValue(entry.key),
@@ -4878,8 +5439,12 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
       if mapped.kind == vkVoid:
         if not dropVoid: items.add NIL
       else: items.add mapped
-    result = if receiver.kind == vkList: newList(items, receiver.listImmutable)
-             else: buildSet(name, items)
+    if receiver.kind == vkList:
+      result = newList(items, receiver.listImmutable)
+    else:
+      beginKeyOperation(receiver)
+      defer: endKeyOperation()
+      result = buildSet(name, items)
   of vkMap:
     var entries = initPropTable()
     for key, val in receiver.mapEntries:
@@ -5048,6 +5613,78 @@ proc readIndex(items: openArray[Value], rawIndex: int64): Value =
   if idx < 0 or idx >= int64(items.len):
     return VOID
   items[int(idx)]
+
+proc invokeIndexedWitness(witness: Value, args: openArray[Value], name: string): Value =
+  if currentEventLane() != currentScheduler().rootLane:
+    raiseValueSemanticError("RuntimeLaneError", name & " requires the root lane")
+  let key: ActiveIndexOperation = (
+    receiver: args[0].bits,
+    index: if args.len > 1: args[1].bits else: 0'u64,
+    name: name)
+  for active in activeIndexOperations:
+    if active == key:
+      raiseValueSemanticError("ValueOperationReentry",
+        name & " reentered on the same receiver and index")
+  activeIndexOperations.add key
+  inc semanticWitnessDepth
+  defer:
+    dec semanticWitnessDepth
+    activeIndexOperations.setLen(activeIndexOperations.len - 1)
+  applyCall(witness, args, NamedArgs())
+
+proc indexReadSize(target, witness: Value): Value =
+  result = invokeIndexedWitness(witness, [target], "IndexRead:size")
+  if result.kind != vkInt or intCompare(result, newInt(0)) < 0:
+    raise newException(GeneError,
+      "IndexRead:size must return a nonnegative Int")
+
+proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
+  ## Return VOID for an absent read. Keep arbitrary Int indices wide until the
+  ## bounds check; narrowing first would wrap a huge index into a valid slot.
+  var raw = NIL
+  case segment.kind
+  of vkInt:
+    raw = segment
+  of vkFloat:
+    let f = segment.floatVal
+    if f.classify notin {fcNormal, fcZero, fcNegZero} or f != f.trunc:
+      if writing:
+        raise newException(GeneError, "set index must be a finite whole-number index")
+      return VOID
+    if f >= 9223372036854775808.0 or f < -9223372036854775808.0:
+      raw = newIntFromDecimal(formatFloat(f, ffDecimal, 0).split('.')[0])
+    else:
+      raw = newInt(int64(f))
+  else:
+    if writing:
+      raise newException(GeneError, "set index must be an Int or Float")
+    return VOID
+  let normalized =
+    if intCompare(raw, newInt(0)) < 0: intAdd(size, raw)
+    else: raw
+  if intCompare(normalized, newInt(0)) < 0 or
+      intCompare(normalized, size) >= 0:
+    if writing:
+      raise newException(GeneError,
+        "set index out of range: " & segment.print())
+    return VOID
+  normalized
+
+proc readIndexedValue(target, segment: Value): Value =
+  if target.kind notin {vkList, vkNode}:
+    return VOID
+  if target.kind == vkNode and target.head.kind == vkType:
+    let sizeFn = target.head.readyCoreWitness(cvSize)
+    if sizeFn.kind != vkNil:
+      let atFn = target.head.readyCoreWitness(cvAt)
+      let index = normalizeNumericIndex(segment,
+        indexReadSize(target, sizeFn), false)
+      if index.kind == vkVoid:
+        return VOID
+      return invokeIndexedWitness(atFn, [target, index], "IndexRead:at")
+  let items = if target.kind == vkList: target.listItems else: target.body
+  let index = normalizeNumericIndex(segment, newInt(items.len), false)
+  if index.kind == vkVoid: VOID else: items[int(index.intVal)]
 
 proc updateIndex(name: string, itemsLen: int, rawIndex: int64): int =
   var idx = rawIndex
@@ -5441,6 +6078,10 @@ proc biListSize(args: openArray[Value]): Value {.nimcall.} =
   of vkBytes:
     newInt(args[0].bytesVal.len)
   else:
+    if args[0].kind == vkNode and args[0].head.kind == vkType:
+      let sizeFn = args[0].head.readyCoreWitness(cvSize)
+      if sizeFn.kind != vkNil:
+        return indexReadSize(args[0], sizeFn)
     raise newException(GeneError, "size expects a collection")
 
 proc biListEmpty(args: openArray[Value]): Value {.nimcall.} =
@@ -5510,6 +6151,8 @@ proc biSetHas(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Set/has expects 2 arguments, got " & $args.len)
   if args[0].kind != vkSet:
     raise newException(GeneError, "Set/has expects a Set")
+  beginKeyOperation(args[0])
+  defer: endKeyOperation()
   requireHashStableKey("Set/has", args[1])
   newBool(findEqualValue(args[0].setItems, args[1]) >= 0)
 
@@ -5579,6 +6222,8 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
       entries[key] = args[2]
     newMap(entries, args[0].mapImmutable)
   of vkHashMap:
+    beginKeyOperation(args[0])
+    defer: endKeyOperation()
     var entries: seq[HashMapEntry]
     for entry in args[0].hashMapEntries:
       entries.add entry
@@ -5595,6 +6240,8 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   of vkMap:
     args[0].mapEntries.getOrDefault(keySegment("Map/get", args[1]), VOID)
   of vkHashMap:
+    beginKeyOperation(args[0])
+    defer: endKeyOperation()
     requireHashStableKey("Map/get", args[1])
     let idx = findHashMapKey(args[0].hashMapEntries, args[1])
     if idx >= 0: args[0].hashMapEntries[idx].val else: VOID
@@ -5880,7 +6527,11 @@ proc readSetPathChild(target, segment: Value): Value =
       raise newException(GeneError,
         "set cannot assign through a Node projection; props, body, and meta " &
         "are copies")
-  result = readUpdateChild("set", target, segment)
+  result =
+    if target.kind in {vkList, vkNode} and segment.kind in {vkInt, vkFloat}:
+      readIndexedValue(target, segment)
+    else:
+      readUpdateChild("set", target, segment)
   if result.kind == vkVoid:
     raise newException(GeneError,
       "set path segment '" & segment.print() & "' is missing")
@@ -5942,16 +6593,32 @@ proc setMutableChild(target, segment, value: Value): Value =
   var body: seq[Value] = @[]
   case target.kind
   of vkNode:
+    if segment.kind in {vkInt, vkFloat} and target.head.kind == vkType:
+      let sizeFn = target.head.readyCoreWitness(cvSize)
+      if sizeFn.kind != vkNil:
+        if target.nodeImmutable:
+          raise newException(GeneError, "cannot mutate immutable Node")
+        if target.head.isNativeWrapperType and not target.nodeConstructing:
+          rejectNativeWrapperWrite("set cannot modify " & target.head.typeName)
+        let putFn = target.head.readyCoreWitness(cvPutAt)
+        if putFn.kind == vkNil:
+          raise newException(GeneError,
+            "IndexWrite is required to set an indexed " & target.head.typeName)
+        let index = normalizeNumericIndex(segment,
+          indexReadSize(target, sizeFn), true)
+        let stored = if value.kind == vkVoid: NIL else: value
+        return invokeIndexedWitness(putFn, [target, index, stored],
+                                    "IndexWrite:put_at")
     case segment.kind
     of vkSymbol, vkString:
       # Props keep their own checked writer, which already owns immutability,
       # the closed schema, `void` removal, and boundary adaptation.
       result = setCheckedNodeProp(target, keySegment("set", segment), value)
-    of vkInt:
+    of vkInt, vkFloat:
       if target.nodeImmutable:
         raise newException(GeneError, "cannot mutate immutable Node")
-      index = updateIndex("set", target.body.len,
-                          requireInt64("set", segment))
+      index = int(normalizeNumericIndex(segment,
+        newInt(target.body.len), true).intVal)
       stored = if value.kind == vkVoid: NIL else: value
       if target.head.kind == vkType and not target.nodeConstructing:
         # Validate the whole typed shape rather than this position alone: a
@@ -5969,7 +6636,7 @@ proc setMutableChild(target, segment, value: Value): Value =
         result = stored
     else:
       raise newException(GeneError,
-        "set path segment must be a Sym, Str, or Int")
+        "set path segment must be a Sym, Str, or Int (or integral Float)")
   of vkMap:
     # `putMapEntry` already owns immutability and `void`-removes the entry.
     target.putMapEntry(keySegment("set", segment), value)
@@ -5977,24 +6644,8 @@ proc setMutableChild(target, segment, value: Value): Value =
   of vkList:
     if target.listImmutable:
       raise newException(GeneError, "cannot mutate immutable List")
-    # An integral Float indexes a List, because the web profile lowers an
-    # `F64` index to `xs[i]` and JavaScript accepts it — rejecting it here
-    # would mean the same source indexes a list on one backend and fails on
-    # the other. A *non*-integral Float is still an error: `xs/%1.5` is a bug
-    # in any backend, and silently truncating it is how that bug survives.
-    var listIndex: int64
-    if segment.kind == vkInt:
-      listIndex = requireInt64("set", segment)
-    elif segment.kind == vkFloat:
-      let f = segment.floatVal
-      if f != f.trunc or f.classify notin {fcNormal, fcZero, fcNegZero}:
-        raise newException(GeneError,
-          "set into a List requires a whole-number index, got " & $f)
-      listIndex = int64(f)
-    else:
-      raise newException(GeneError,
-        "set into a List requires an Int index")
-    index = updateIndex("set", target.listItems.len, listIndex)
+    index = int(normalizeNumericIndex(segment,
+      newInt(target.listItems.len), true).intVal)
     stored = if value.kind == vkVoid: NIL else: value
     target.setListItem(index, stored)
     result = stored
@@ -6589,6 +7240,8 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
 proc timerDeadline(milliseconds: int64): MonoTime =
   getMonoTime() + initDuration(milliseconds = milliseconds)
 
+proc sleepUntil(deadline: MonoTime)
+
 proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("sleep", args)
   let milliseconds = requireInt64("sleep", args[0])
@@ -6621,10 +7274,7 @@ proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
       workerLease = beginSchedulerWorkerLease()
       workerLeaseOpen = true
     if not schedulerRunOneRootUntil(deadline, workerLease):
-      let remaining = deadline - getMonoTime()
-      if remaining <= initDuration():
-        break
-      os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
+      sleepUntil(deadline)
   NIL
 
 proc requireFfiLibrary(name: string, value: Value) =
@@ -6701,7 +7351,9 @@ proc isSupportedDynamicFfiSignature(params: openArray[Value],
       (a == "C/Float" and b in ["C/Float", "C/Int"]) or
       (a == "C/Size" and b == "C/Size") or
       (isDynamicFfiPointerParamType(params[0]) and
-        (b == "C/Size" or isDynamicFfiPointerParamType(params[1])))
+        (b == "C/Size" or isDynamicFfiPointerParamType(params[1]) or
+         (isDynamicFfiBufferParamType(params[1]) and
+          typeExprLabel(returnType) == "C/Int")))
   of 3:
     isDynamicFfiPointerParamType(params[0]) and
       ((typeExprLabel(params[1]) == "C/Int" and
@@ -6946,11 +7598,53 @@ proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.}
 proc runtimePanicSummary(message: string, hasValue: bool,
                          value: Value): string
-proc nextRuntimeResourceId(): uint64
-proc newRuntimeResourceHandle(scope: Scope, typeName: string,
+proc nextRuntimeResourceId*(): uint64
+proc newRuntimeResourceHandle*(scope: Scope, typeName: string,
                               id: uint64): Value
+proc nativeTaskCancel*(task: Value, scope: Scope): bool
+proc nativeTaskComplete*(task, value: Value, scope: Scope = nil): bool
+proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
+                     hasValue = false, scope: Scope = nil): bool
+proc nativeNewIoCleanupLease*(scope: Scope): Value
+proc nativeNewIoOperation*(scope: Scope): tuple[task, cleanupLease: Value]
+proc nativeRetireIoCleanupLease*(lease: Value, scope: Scope = nil): bool
+proc raiseIoTestingError(scope: Scope, kind, operation: string, id: uint64,
+                         message: string) {.noreturn.}
+proc biIoOpenRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoOpenWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTcpConnect(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTcpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTcpAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTcpLocalPort(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingSocketBuffer(args: openArray[Value],
+                             call: ptr NativeCall): Value {.nimcall.}
+proc biIoPipe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc beginIoPipeOutputBorrow(writer: Value, scope: Scope,
+                             task: Value, operation: string): IoPipeBorrow
+proc finishIoPipeOutputBorrow(borrow: IoPipeBorrow, scope: Scope)
+proc beginIoPipeInputBorrow(reader: Value, scope: Scope,
+                            task: Value): IoPipeBorrow
+proc finishIoPipeInputBorrow(borrow: IoPipeBorrow, scope: Scope)
+proc biIoFileRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoFileWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoFileFlush(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoFileClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoFileWaitClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingNew(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingFlush(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingWaitClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingCompleteRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingCompleteWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingWritten(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingFailClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biIoTestingState(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc canonicalImplCount*(app: Application): int
 
-proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
+proc biRuntimeGcStats(args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "runtime/gc_stats expects no arguments")
   var entries = initPropTable()
@@ -6960,6 +7654,71 @@ proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
       TRUE
     else:
       FALSE
+  when defined(geneRcStats):
+    let counts = managedLiveByKind()
+    var classes = initPropTable()
+    classes["string"] = newInt(counts[managedString])
+    classes["int64"] = newInt(counts[managedInt64])
+    classes["list"] = newInt(counts[managedList])
+    classes["map"] = newInt(counts[managedMap])
+    classes["node"] = newInt(counts[managedNode])
+    classes["function"] = newInt(counts[managedFunction])
+    classes["native_function"] = newInt(counts[managedNativeFunction])
+    entries["managed_classes"] = newMap(classes, immutable = true)
+    entries["native_roots"] = newInt(nativeRootCount())
+  else:
+    entries["managed_classes"] = NIL
+    entries["native_roots"] = NIL
+  # These owners have no exact public counter yet. Nil distinguishes missing
+  # instrumentation from a real zero, which is essential for a release gate.
+  entries["cleanup_leases"] = NIL
+  entries["cycle_candidates"] = NIL
+  entries["materialized_resource_leases"] = newInt(materializedLeaseCount())
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let app = if scope == nil: currentApplication() else: scope.application()
+  when defined(geneRcStats):
+    acquire(resourceRecordLock)
+    try:
+      entries["sandbox_generation_records"] =
+        newInt(sandboxGenerationRecords.len)
+      entries["sandbox_transaction_records"] =
+        newInt(sandboxTransactionRecords.len)
+    finally:
+      release(resourceRecordLock)
+    entries["module_cache_entries"] = newInt(app.moduleCache.len)
+    entries["module_compile_headers"] = newInt(app.moduleCompileHeaders.len)
+    entries["module_compile_artifacts"] = newInt(app.moduleCompileArtifacts.len)
+    entries["canonical_impls"] = newInt(app.canonicalImplCount())
+    entries["base_scopes"] = newInt(app.baseScopes.len)
+    entries["impl_scope_index_entries"] = newInt(app.implScopeIndex.len)
+    var indexedScopes = 0
+    for _, scopes in app.implScopeIndex:
+      indexedScopes += scopes.len
+    entries["impl_scope_index_scopes"] = newInt(indexedScopes)
+    entries["sandbox_roots"] = newInt(app.sandboxRoots.len)
+    entries["module_identities"] = newInt(app.moduleIdentities.len)
+    entries["packages_by_root"] = newInt(app.packagesByRoot.len)
+  app.pruneRootIoTasks()
+  entries["io_root_tasks"] = newInt(app.rootIoTasks.len)
+  entries["io_root_cleanup_tasks"] = newInt(app.rootIoCleanupTasks.len)
+  let ioBudget = app.ioBudget.ioBudgetSnapshot()
+  entries["io_retained_bytes"] = newInt(ioBudget.retainedBytes)
+  entries["io_peak_retained_bytes"] = newInt(app.ioBudget.ioBudgetPeak())
+  entries["io_cleanup_leases"] = newInt(ioBudget.cleanupLeases)
+  let fileResources = app.ioFileOpenCount()
+  let csvResources = app.csvReaderOpenCount()
+  entries["io_open_resources"] = newInt(app.ioOpenResourceCount() +
+                                         fileResources + csvResources)
+  entries["io_file_open_resources"] = newInt(fileResources)
+  entries["io_waiting_readiness"] = newInt(ioFileWaitingCount())
+  entries["io_csv_open_resources"] = newInt(csvResources)
+  entries["http_client_open_resources"] =
+    newInt(ownedHttpClientOpenCount(app))
+  entries["http_client_pending_requests"] =
+    newInt(ownedHttpClientPendingCount(app))
+  let csvPayload = app.csvReaderPayloadStats()
+  entries["csv_parser_retained_bytes"] = newInt(csvPayload.current)
+  entries["csv_parser_peak_resource_bytes"] = newInt(csvPayload.peakResource)
   let scheduler = currentScheduler()
   withSchedulerLock(scheduler):
     entries["supervisor_retry_pending"] =
@@ -6971,6 +7730,20 @@ proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
     entries["supervisor_retry_drops"] =
       newIntFromDecimal($scheduler.supervisorRetryDrops)
   newMap(entries, immutable = true)
+
+when defined(geneRcStats):
+  proc biRuntimeTestCollect(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 0:
+      raise newException(GeneError,
+        "runtime/test_collect expects no arguments")
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let scheduler = schedulerForScope(scope)
+    if currentEventLane() != scheduler.rootLane:
+      raise newException(GeneError,
+        "runtime/test_collect requires the scheduler root lane")
+    GC_fullCollect()
+    NIL
 
 proc biRuntimeRequireRootLane(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =
@@ -7365,6 +8138,14 @@ include ./events
 
 proc registerTestingNamespace(root: Scope)
 
+proc markImplValuesShared(impl: ProtocolImpl) =
+  when compileOption("threads"):
+    markSharedValue(impl.protocol)
+    markSharedValue(impl.receiver)
+    for entry in impl.messages:
+      markSharedValue(entry.message)
+      markSharedValue(entry.fn)
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -7437,6 +8218,40 @@ proc buildBuiltins(app: Application): Scope =
   discard defineBuiltinType(result, vkCallableView, "CallableView", [])
   let toStrProtocol = newProtocol("ToStr", ["to_str"])
   result.define("ToStr", toStrProtocol)
+  # VM fallback protocols keep normal Gene declaration syntax. Their implicit
+  # use will be attached to one nominal Type identity, not looked up through a
+  # caller's scoped/imported implementation set.
+  let builtinScope = result
+  proc coreRequirement(name, source: string,
+                       params: seq[string]): Value =
+    let proto = compileSource(source, "<builtin " & name & ">").functions[0]
+    newFunction(name, params, proto, builtinScope)
+  let valueEq = newProtocol("ValueEq", ["equal"], signatures = [
+    coreRequirement("ValueEq:equal",
+      "(fn equal [self other : Self] : Bool nil)", @["self", "other"])],
+    scope = result)
+  result.define("ValueEq", valueEq)
+  let valueHash = newProtocol("ValueHash", ["hash"], signatures = [
+    coreRequirement("ValueHash:hash",
+      "(fn hash [self] : Int nil)", @["self"])], scope = result)
+  result.define("ValueHash", valueHash)
+  let valueOrder = newProtocol("ValueOrder", ["compare"], signatures = [
+    coreRequirement("ValueOrder:compare",
+      "(fn compare [self other : Self] : Int nil)", @["self", "other"])],
+    scope = result)
+  result.define("ValueOrder", valueOrder)
+  let indexRead = newProtocol("IndexRead", ["size", "at"], signatures = [
+    coreRequirement("IndexRead:size",
+      "(fn size [self] : Int nil)", @["self"]),
+    coreRequirement("IndexRead:at",
+      "(fn at [self index : Int] : Any nil)", @["self", "index"])],
+    scope = result)
+  result.define("IndexRead", indexRead)
+  let indexWrite = newProtocol("IndexWrite", ["put_at"], signatures = [
+    coreRequirement("IndexWrite:put_at",
+      "(fn put_at [self index : Int value : Any] : Any nil)",
+      @["self", "index", "value"])], scope = result)
+  result.define("IndexWrite", indexWrite)
   let runtimeError = newType("RuntimeError", NIL,
     @[TypeField(name: "message", optional: false,
                 typeExpr: newSym("Str"), scope: result)],
@@ -7447,6 +8262,9 @@ proc buildBuiltins(app: Application): Scope =
   let runtimeLaneError = newType("RuntimeLaneError", runtimeError,
                                  @[], @[], result)
   result.define("RuntimeLaneError", runtimeLaneError)
+  for name in ["ValueProtocolPending", "ValueNotHashable",
+               "ValueOperationReentry", "OrderError"]:
+    result.define(name, newType(name, runtimeError, @[], @[], result))
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
@@ -7894,7 +8712,11 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
-                      builtinNativeFn("runtime/gc_stats", biRuntimeGcStats))
+                      builtinNativeCallFn("runtime/gc_stats", biRuntimeGcStats,
+                                          acceptsNamed = false))
+  when defined(geneRcStats):
+    runtimeScope.define("test_collect", builtinNativeCallFn(
+      "runtime/test_collect", biRuntimeTestCollect, acceptsNamed = false))
   runtimeScope.define("guard_call",
                       builtinNativeCallFn("runtime/guard_call",
                                       biRuntimeGuardCall,
@@ -8003,7 +8825,8 @@ proc buildBuiltins(app: Application): Scope =
     "detach": builtinNativeCallFn("Task/detach", biTaskDetach,
                                              acceptsNamed = false),
     "join": builtinNativeCallFn("Task/join", biTaskJoin,
-                                         acceptsNamed = false)})
+                                         acceptsNamed = false),
+    "done?": builtinNativeFn("Task/done?", biTaskDone)})
   let taskOutcomeType = newEnum("TaskOutcome", @["T", "E"],
     [(name: "ok", payloadTypes: @[newSym("T")],
       hasBacking: false, backing: NIL),
@@ -8182,6 +9005,11 @@ proc buildBuiltins(app: Application): Scope =
   # binding position by the compiler (reservedStdlibRoots).
   result.define("genex", newNamespace("genex", newScope(result)))
   app.stdlib = geneScope
+  # Foreign native threads can look up canonical implementations without first
+  # spawning a Gene task, so their manual Value edges must already use atomic
+  # reference counts when this root becomes visible.
+  for impl in result.impls:
+    markImplValuesShared(impl)
 
 var gApplication: Application
 
@@ -8211,6 +9039,12 @@ proc newApplicationState(root: string): Application =
                        implScopeIndex:
                          initTable[tuple[receiver, message: uint64], seq[Scope]](),
                        scheduler: newSchedulerState(),
+                       ioBudget: newIoBudget(),
+                       resourceIndex: initTable[string, Table[string,
+                         tuple[size: int64, digest, sourceRoot,
+                               sourcePath: string]]](),
+                       nativeBinaryIndex:
+                         initTable[string, Table[string, NativeBinaryVariant]](),
                        currentModuleDir: root,
                        launchDir: launchRoot,
                        userStoreRoot: userStoreDir())
@@ -8367,6 +9201,10 @@ proc schedulerState(app: Application): SchedulerState =
     app.scheduler = newSchedulerState()
   app.scheduler
 
+proc schedulerOwnsApplication*(scheduler: SchedulerState,
+                               app: Application): bool =
+  app != nil and app.scheduler == scheduler
+
 proc currentScheduler(): SchedulerState =
   if activeScheduler != nil:
     return activeScheduler
@@ -8376,6 +9214,11 @@ proc schedulerForScope(scope: Scope): SchedulerState =
   if scope != nil and scope.application != nil:
     return Application(scope.application).schedulerState()
   currentApplication().schedulerState()
+
+proc requireNativeRootLane*(scope: Scope) =
+  if scope == nil or currentEventLane() != schedulerForScope(scope).rootLane:
+    raise newException(GeneError,
+      "native subscription creation requires the root lane")
 
 template withScheduler(scope: Scope, body: untyped): untyped =
   let savedScheduler = activeScheduler
@@ -8616,6 +9459,56 @@ proc packageValue*(pkg: Package): Value =
     deps.add newMap(entry)
   entries["dependencies"] = newList(deps)
   newMap(entries)
+
+proc installPackageResource*(app: Application, packageId, path,
+                             digest: string, size: int64,
+                             sourceRoot = "", sourcePath = "") =
+  if not app.packagesById.hasKey(packageId):
+    raise newException(GeneError, "resource owner is not in this Application")
+  if not app.resourceIndex.hasKey(packageId):
+    app.resourceIndex[packageId] =
+      initTable[string, tuple[size: int64, digest, sourceRoot,
+                              sourcePath: string]]()
+  let root = if sourceRoot.len > 0: sourceRoot
+             else: app.packagesById[packageId].realRoot
+  let absolute = if sourcePath.len > 0: sourcePath
+                 else: app.packagesById[packageId].root / path
+  if not fileExists(absolute) or symlinkExists(absolute) or
+      not containsPath(canonicalPath(root), canonicalPath(absolute)):
+    raise newException(GeneError,
+      "selected package resource source is unavailable: " & path)
+  var resources = app.resourceIndex[packageId]
+  if resources.hasKey(path) and
+      (resources[path].size != size or resources[path].digest != digest):
+    raise newException(GeneError, "conflicting selected package resource: " & path)
+  if not resources.hasKey(path):
+    resources[path] = (size: size, digest: digest,
+      sourceRoot: root, sourcePath: absolute)
+  app.resourceIndex[packageId] = resources
+
+proc installPackageNativeBinary*(app: Application, packageId, alias,
+                                 target, path, digest, abiKind,
+                                 runtimeIdentity: string,
+                                 abiVersion: int) =
+  if target != hostCPU & "-" & hostOS:
+    raise newException(GeneError,
+      "native binary target is incompatible with this runtime: " & target)
+  if not app.resourceIndex.hasKey(packageId) or
+      not app.resourceIndex[packageId].hasKey(path) or
+      app.resourceIndex[packageId][path].digest != digest:
+    raise newException(GeneError,
+      "native binary is not a verified selected package resource")
+  if not app.nativeBinaryIndex.hasKey(packageId):
+    app.nativeBinaryIndex[packageId] =
+      initTable[string, NativeBinaryVariant]()
+  var binaries = app.nativeBinaryIndex[packageId]
+  if binaries.hasKey(alias):
+    raise newException(GeneError,
+      "native binary alias is selected more than once: " & alias)
+  binaries[alias] = NativeBinaryVariant(alias: alias, target: target,
+    path: path, digest: digest, abiKind: abiKind,
+    abiVersion: abiVersion, runtimeIdentity: runtimeIdentity)
+  app.nativeBinaryIndex[packageId] = binaries
 
 proc biRuntimeGuardCall(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
@@ -9242,7 +10135,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
     binds[name] = target                   # bind
     true
   of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil, vkVoid:
-    equal(pat, target)                     # literal
+    semanticEqual(pat, target)             # literal
   of vkList:
     let (items, ok) = patternItems(target)
     if not ok: return false
@@ -9265,7 +10158,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
       let resolved = resolvePatternPath(pat, scope)
       if resolved.kind == vkNil:
         raise newException(GeneError, "unknown pattern path: " & pat.print())
-      return equal(resolved, target)
+      return semanticEqual(resolved, target)
     if pat.isTypedPattern:
       pat.requireTypedPatternShape()
       if not matchesTypeExpr(pat.body[1], target, scope):
@@ -9280,7 +10173,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
       of "unquote":          # %name -> compare to a lexical value
         if pat.body.len != 1 or pat.body[0].kind != vkSymbol:
           raise newException(GeneError, "pattern %name expects a name")
-        return equal(target, scope.lookup(pat.body[0].symVal))
+        return semanticEqual(target, scope.lookup(pat.body[0].symVal))
       of "@":                # meta pattern plus value pattern
         if pat.body.len != 2:
           raise newException(GeneError,
@@ -9331,7 +10224,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
     # props open (mentioned keys required), body matched positionally.
     if target.kind != vkNode:
       return matchProjectedNode(pat, target, scope, binds)
-    var headOk = equal(pat.head, target.head)
+    var headOk = semanticEqual(pat.head, target.head)
     if not headOk and pat.head.kind == vkSymbol and target.head.kind == vkType:
       # `(Task ^id id)` against a Task instance: resolve the pattern head to a type
       var resolved: Value
@@ -9588,6 +10481,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.varsDirty = false
   scope.varTypes.clear()
   scope.impls.setLen(0)
+  scope.corePendingTypes.setLen(0)
   scope.implAssembly = nil
   scope.implValidationEpoch = 0
   scope.implOverlayRoot = false
@@ -9602,6 +10496,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
     else: nil
   scope.ownsTasks = false
   scope.ownedTasks.setLen(0)
+  scope.ownedCleanupTasks.setLen(0)
   scope.ownsActors = false
   scope.actorFailureStrategy = afsStop
   scope.supervisorEvents = NIL
@@ -9956,6 +10851,8 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.varTypes.clear()
   if scope.impls.len != 0:
     scope.impls.setLen(0)
+  if scope.corePendingTypes.len != 0:
+    scope.corePendingTypes.setLen(0)
   scope.implOverlayRoot = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
@@ -9967,6 +10864,8 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.ownsTasks = false
   if scope.ownedTasks.len != 0:
     scope.ownedTasks.setLen(0)
+  if scope.ownedCleanupTasks.len != 0:
+    scope.ownedCleanupTasks.setLen(0)
   if scope.ownsActors:
     scope.ownsActors = false
   scope.actorFailureStrategy = afsStop
@@ -10440,7 +11339,7 @@ proc fileModulePath(scope: Scope): string =
   var module: Value
   if root.lookupOptional("this_mod", module) and module.kind == vkModule:
     return module.modulePath
-  ""
+  result = ""
 
 proc classifyStandaloneImpl(scope: Scope, protocol, receiver: Value,
                             proto: ImplProto): ImplVisibility =
@@ -10678,6 +11577,105 @@ proc inheritedImplMessage(ancestors: openArray[ProtocolImpl], message: Value):
         result = (entry.fn, ImplBodySource(message: message,
           protocol: ancestor.protocol, receiver: ancestor.receiver))
 
+proc coreValueProtocolName(app: Application, protocol: Value): string =
+  if protocol.kind != vkProtocol: return ""
+  let root = app.builtinsScope()
+  for name in ["ValueEq", "ValueHash", "ValueOrder", "IndexRead", "IndexWrite"]:
+    let core = root.vars.getOrDefault(name, NIL)
+    if same(protocol, core): return name
+    if core.kind == vkProtocol and protocol.protocolIsOrInherits(core):
+      raise newException(GeneError,
+        "VM fallback protocol cannot be inherited: " & name)
+  ""
+
+proc coreValueUnitRoot(scope: Scope): Scope =
+  ## Only unconditional module declarations and the current eval unit may
+  ## acquire VM witnesses. A function-local Type is sealed empty at creation.
+  if scope == nil or scope.forceOverlayImpls:
+    return nil
+  if scope.implStageRoot or scope.implOverlayRoot or scope.moduleRoot:
+    return scope
+  if not scope.moduleStatic:
+    return nil
+  var current = scope.parent
+  while current != nil:
+    if current.implStageRoot or current.implOverlayRoot or current.moduleRoot:
+      return current
+    current = current.parent
+
+proc registerCoreValueType(scope: Scope, typ: Value) =
+  let root = scope.coreValueUnitRoot()
+  if root != nil:
+    typ.markTypeCoreWitnessesPending()
+    root.corePendingTypes.add typ
+
+type CoreWitnessPlan = tuple[typ: Value, witnesses: CoreValueWitnesses]
+
+proc coreWitnessPlans(scope: Scope, onlyTyp: Value = NIL): seq[CoreWitnessPlan] =
+  if scope == nil or scope.corePendingTypes.len == 0:
+    return
+  let app = scope.application()
+  let canonical = app.builtinsScope().impls
+  for typ in scope.corePendingTypes:
+    if onlyTyp.kind != vkNil and not same(typ, onlyTyp):
+      continue
+    var witnesses: CoreValueWitnesses
+    let parent = typ.typeParent
+    if parent.kind == vkType:
+      var planned = false
+      for previous in result:
+        if same(previous.typ, parent):
+          witnesses = previous.witnesses
+          planned = true
+          break
+      if not planned:
+        witnesses = parent.typeCoreWitnesses()
+    var ownEq = false
+    var ownHash = false
+    for source in [canonical, scope.impls]:
+      for impl in source:
+        if not same(impl.receiver, typ):
+          continue
+        let coreName = app.coreValueProtocolName(impl.protocol)
+        if coreName.len == 0:
+          continue
+        case coreName
+        of "ValueEq": ownEq = true
+        of "ValueHash": ownHash = true
+        else: discard
+        for entry in impl.messages:
+          let operation =
+            case coreName
+            of "ValueEq": cvEqual
+            of "ValueHash": cvHash
+            of "ValueOrder": cvCompare
+            of "IndexRead":
+              if entry.message.protocolMessageName == "size": cvSize else: cvAt
+            of "IndexWrite": cvPutAt
+            else: raise newException(FieldDefect, "unknown core value protocol")
+          witnesses[operation] = functionForScopeStorage(entry.fn, typ.typeScope)
+    # Replacing equality invalidates an inherited hash. A child can supply a
+    # new pair, or remain explicitly unhashable.
+    if ownEq and not ownHash:
+      witnesses[cvHash] = NIL
+    if witnesses[cvHash].kind != vkNil and witnesses[cvEqual].kind == vkNil:
+      raise newException(GeneError,
+        "ValueHash requires ValueEq for " & typ.typeName)
+    if witnesses[cvPutAt].kind != vkNil and
+        (witnesses[cvSize].kind == vkNil or witnesses[cvAt].kind == vkNil):
+      raise newException(GeneError,
+        "IndexWrite requires IndexRead for " & typ.typeName)
+    result.add (typ: typ, witnesses: witnesses)
+
+proc sealCoreWitnessPlans(scope: Scope, plans: seq[CoreWitnessPlan]) =
+  for plan in plans:
+    plan.typ.sealTypeCoreWitnesses(plan.witnesses)
+  var pending: seq[Value]
+  for typ in scope.corePendingTypes:
+    if not typ.typeCoreWitnessesSealed:
+      pending.add typ
+  scope.corePendingTypes = pending
+
 proc assembleImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage],
                   visibility = ivOverlay, exported = false,
@@ -10689,6 +11687,16 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
   if receiver.kind != vkType:
     raise newException(GeneError, "impl receiver must be a type")
   let app = scope.application()
+  let coreName = app.coreValueProtocolName(protocol)
+  if coreName.len > 0:
+    let ownEvalType = visibility == ivOverlay and scope.implOverlayRoot and
+      receiver.typeScope == scope
+    if visibility != ivCanonical and not ownEvalType:
+      raise newException(GeneError,
+        coreName & " requires a canonical impl in the Type's defining module")
+    if receiver.typeCoreWitnessesSealed:
+      raise newException(GeneError,
+        coreName & " cannot be added after Type activation")
   let ancestors = if useProspectiveAncestors: prospectiveAncestors
                   else: ancestorImpls(scope, receiver)
   let bindings = conformanceSelfBindings(protocol, receiver, ancestors)
@@ -10866,6 +11874,8 @@ proc commitRecomposedImpls(app: Application,
                                             scopes: seq[ImplScopeUpdate]]) =
   app.checkStrictImplChanges(recomposed.canonical, recomposed.scopes)
   let root = app.builtinsScope()
+  for impl in recomposed.canonical:
+    markImplValuesShared(impl)
   root.impls = @[]
   for impl in recomposed.canonical: root.impls.add impl.implForScopeStorage(root)
   for update in recomposed.scopes:
@@ -10996,6 +12006,35 @@ proc relevantImplAssemblies(scope: Scope): seq[ImplAssembly] =
   for assembly in scope.application().activeImplAssemblies:
     if not assembly.finished and assembly notin result:
       result.add assembly
+
+proc readyCoreWitness(typ: Value, operation: CoreValueMethod): Value =
+  if typ.typeCoreWitnessesSealed:
+    return typ.typeCoreWitness(operation)
+  let owner = typ.typeScope.coreValueUnitRoot()
+  if owner == nil:
+    raiseValueSemanticError("ValueProtocolPending", typ.typeName)
+  # A Type with no remaining core declarations can seal before the source
+  # unit ends. This preserves ordinary structural operations in that unit,
+  # while a later ValueEq/Hash declaration keeps the Type pending until its
+  # witness pair is fully assembled.
+  for assembly in relevantImplAssemblies(typ.typeScope):
+    for declaration in assembly.declarations:
+      if declaration.published:
+        continue
+      let operands = declarationOperands(assembly, declaration)
+      if operands.receiver.kind != vkNil and not same(operands.receiver, typ):
+        continue
+      if operands.protocol.kind != vkProtocol or
+          owner.application().coreValueProtocolName(operands.protocol).len > 0:
+        raiseValueSemanticError("ValueProtocolPending", typ.typeName)
+  let parent = typ.typeParent
+  if parent.kind == vkType and not parent.typeCoreWitnessesSealed:
+    discard readyCoreWitness(parent, operation)
+  let plans = owner.coreWitnessPlans(typ)
+  if plans.len != 1:
+    raiseValueSemanticError("ValueProtocolPending", typ.typeName)
+  owner.sealCoreWitnessPlans(plans)
+  typ.typeCoreWitness(operation)
 
 proc declarationVisible(scope: Scope, assembly: ImplAssembly,
                         declaration: StaticImplDeclaration,
@@ -11181,6 +12220,8 @@ proc readyTypeDirectMessage(typ: Value, name: string): Value =
 
 proc finishImplAssembly(scope: Scope, chunk: Chunk) =
   if scope.implAssembly == nil:
+    if not scope.implStageRoot and scope.corePendingTypes.len > 0:
+      scope.sealCoreWitnessPlans(scope.coreWitnessPlans())
     return
   let assembly = ImplAssembly(scope.implAssembly)
   if assembly.chunk != chunk or assembly.finished:
@@ -11203,6 +12244,8 @@ proc finishImplAssembly(scope: Scope, chunk: Chunk) =
       active.add item
   app.activeImplAssemblies = active
   assembly.scope = nil
+  if not scope.implStageRoot and scope.corePendingTypes.len > 0:
+    scope.sealCoreWitnessPlans(scope.coreWitnessPlans())
 
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage],
@@ -11240,7 +12283,11 @@ proc sameImplMessages(a, b: ProtocolImpl): bool =
   true
 
 proc activateStagedImpls(stage: Scope) =
-  if stage == nil or not stage.implStageRoot or stage.impls.len == 0:
+  if stage == nil or not stage.implStageRoot:
+    return
+  let corePlans = stage.coreWitnessPlans()
+  if stage.impls.len == 0:
+    stage.sealCoreWitnessPlans(corePlans)
     return
   let app = stage.application()
   let root = app.builtinsScope()
@@ -11284,6 +12331,7 @@ proc activateStagedImpls(stage: Scope) =
     of ivOverlay:
       changed = true
   app.commitRecomposedImpls(recomposed)
+  stage.sealCoreWitnessPlans(corePlans)
   if changed:
     inc app.implEpoch
 
@@ -12537,11 +13585,13 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
       publishSpawnValue(binding.expr, seenScopes, seenValues, seenChunks)
       publishSpawnScope(binding.typeBindingScope, seenScopes, seenValues,
                         seenChunks)
-    # Impls on the global root (design §10) are app-wide and reached through the
-    # shared runtime, not the worker snapshot; publishing their fns would drag in
-    # the impl's defining-module scope. Skip them here.
-    if not atBuiltins:
-      for impl in current.impls:
+    # Built-in impls are read by every worker during protocol lookup. Mark
+    # their Value edges for atomic RC, but do not recurse into a formatter's
+    # defining scope: that would publish unrelated module state.
+    for impl in current.impls:
+      if atBuiltins:
+        markImplValuesShared(impl)
+      else:
         publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
         publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
         for entry in impl.messages:
@@ -12656,6 +13706,27 @@ proc completedTaskFromPanic(e: ref GenePanic): Value =
 proc nativeNewAsyncTask*(): Value =
   newExternalTask()
 
+proc nativeNewIoLifecycle*(scope: Scope,
+                           maxBytes = DefaultIoResourceBytes): IoLifecycle =
+  if scope == nil:
+    raise newException(GeneError, "native I/O lifecycle requires an owning scope")
+  newIoLifecycle(scope.application().ioBudget, nextRuntimeResourceId(), maxBytes)
+
+proc nativeNewIoCleanupLease*(scope: Scope): Value =
+  ## Adapters register this independently of the user-facing operation Task.
+  ## Cancellation may settle that Task early; scope exit still waits for this
+  ## lease until the native request and buffers have physically retired.
+  result = newExternalTask()
+  scope.registerIoCleanupTask(result)
+
+proc nativeNewIoOperation*(scope: Scope): tuple[task, cleanupLease: Value] =
+  ## Admission has two independent owners: the cancelable user Task and the
+  ## physical-retirement lease. A late native completion may lose the race to
+  ## Task cancellation, but it still must retire the lease.
+  result.task = newExternalTask()
+  scope.registerIoTask(result.task)
+  result.cleanupLease = nativeNewIoCleanupLease(scope)
+
 proc nativeTaskComplete*(task, value: Value, scope: Scope = nil): bool =
   withScopedScheduler(scope):
     if task.kind != vkTask:
@@ -12663,6 +13734,18 @@ proc nativeTaskComplete*(task, value: Value, scope: Scope = nil): bool =
     result = tryCompleteTask(task, value)
     if result:
       wakeTaskWaiters(task)
+
+proc nativeTaskPanic*(task: Value, message: string,
+                      scope: Scope = nil): bool =
+  withScopedScheduler(scope):
+    if task.kind != vkTask:
+      raise newException(GeneError, "native task panic expects a Task")
+    result = tryPanicTask(task, message)
+    if result:
+      wakeTaskWaiters(task)
+
+proc nativeRetireIoCleanupLease*(lease: Value, scope: Scope = nil): bool =
+  nativeTaskComplete(lease, NIL, scope)
 
 proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
                      hasValue = false, scope: Scope = nil): bool =
@@ -12685,13 +13768,16 @@ proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
     if result:
       wakeTaskWaiters(task)
 
-proc nativeTaskCancel*(task: Value, scope: Scope = nil): bool =
+proc nativeTaskCancel*(task: Value, scope: Scope): bool =
   withScopedScheduler(scope):
     if task.kind != vkTask:
       raise newException(GeneError, "native task cancel expects a Task")
     result = tryCancelTask(task)
     if result:
       wakeTaskWaiters(task)
+
+include ./ext/io_testing
+include ./ext/io_file
 
 proc taskBoundaryScopeOr(task: Value, fallback: Scope = nil): Scope =
   let boundaryScope = task.taskBoundaryScope
@@ -12843,6 +13929,11 @@ proc biTaskJoin(args: openArray[Value],
     pumpUntilDone(task)
   let scope = if call == nil: nil else: call[].dispatchScope
   taskJoinOutcome(task, scope)
+
+proc biTaskDone(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Task/done?", args)
+  requireTask("Task/done?", args[0])
+  newBool(args[0].taskDone)
 
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initPropTable()
@@ -14368,6 +15459,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if f.recycleScope:
       releaseCallScope(gVmPools, f.scope)
 
+  proc settleUnwoundOwnership(f: Frame, cancel: bool) =
+    if f.extra == nil:
+      return
+    if f.kind == fkTaskScopeBody and f.extra.ownedScope != nil:
+      let owned = f.extra.ownedScope
+      try:
+        if cancel: owned.cancelOwnedTasks()
+        else: owned.waitOwnedTasks()
+      finally:
+        owned.closeOwnedActors()
+    elif f.kind == fkSupervisorBody and f.extra.ownedScope != nil:
+      f.extra.ownedScope.closeOwnedActors()
+
   template advanceForLoop() =
     if curForStream.kind == vkStream:
       if curForStream.streamHasNext:
@@ -15489,6 +16593,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                             else: "",
                             if proto.nativeType != nil: proto.nativeType.contractFingerprint
                             else: "")
+          scope.registerCoreValueType(typ)
           let pendingContract = PendingTypeContract(typ: typ, proto: proto,
             messages: messages, ctorFn: ctorFn)
           scope.registerTypeContract(chunk, pendingContract)
@@ -15625,6 +16730,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if parentProtocol.kind != vkProtocol:
                 raise newException(GeneError,
                   "protocol ^inherit entries must be protocols")
+              if scope.application().coreValueProtocolName(parentProtocol).len > 0:
+                raise newException(GeneError,
+                  "VM fallback protocol cannot be inherited: " &
+                  parentProtocol.protocolName)
               parents[i] = parentProtocol
           var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
           if proto.messages.len > 0:
@@ -17824,6 +18933,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # would break the depth ordering the next trace walk relies on.
             trimTailTraceFrames(frames.len)
             var f = frames.pop()
+            settleUnwoundOwnership(f, true)
             strunc(curStackBase)
             loadFrameRegs(f)
             closeCurrentForStream()
@@ -17839,6 +18949,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           strunc(curStackBase)    # drop the failing frame's region
           trimTailTraceFrames(frames.len)
           var f = frames.pop()
+          settleUnwoundOwnership(f, true)
           loadFrameRegs(f)
           closeCurrentForStream()
           err = translateErrorBoundary(curChecksErrors, curErrorTypes,
@@ -17882,8 +18993,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
-      for f in frames:
-        releaseFrameCallScope(f)
+      for i in countdown(frames.high, 0):
+        settleUnwoundOwnership(frames[i], true)
+        releaseFrameCallScope(frames[i])
       releaseFrameStack(gVmPools, frames)
       raise
     except GeneCancel as c:
@@ -17922,8 +19034,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
-      for f in frames:
-        releaseFrameCallScope(f)
+      for i in countdown(frames.high, 0):
+        settleUnwoundOwnership(frames[i], true)
+        releaseFrameCallScope(frames[i])
       releaseFrameStack(gVmPools, frames)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
@@ -17966,6 +19079,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             break
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
+          settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
           closeCurrentForStream()
           releaseCurrentCallScope()
@@ -17980,6 +19094,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           strunc(curStackBase)
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
+          settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
           closeCurrentForStream()
           releaseCurrentCallScope()
@@ -18343,7 +19458,13 @@ proc sleepUntil(deadline: MonoTime) =
   let remaining = deadline - getMonoTime()
   if remaining <= initDuration():
     return
-  os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
+  let milliseconds = max(1, int(min(remaining.inMilliseconds,
+                                    int64(high(int)))))
+  if nativeIngressSleepHook != nil and nativeIngressSleepHook(milliseconds):
+    pollOsExecAsyncCompletions()
+    return
+  if nativeIngressSleepHook == nil:
+    os.sleep(milliseconds)
 
 proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
                           wakeSenders: bool) =
@@ -18723,6 +19844,11 @@ proc runFiber(f: Fiber) =
     else:
       f.task.finishTaskCancel()
       wakeTaskWaiters(f.task)
+  finally:
+    if not activeWorkerThread and f.task.kind == vkTask and f.task.taskDone:
+      let app = f.scope.application()
+      if app.rootIoTasks.len > 0 or app.rootIoCleanupTasks.len > 0:
+        app.pruneRootIoTasks()
 
 when compileOption("threads") and defined(gcAtomicArc):
   proc schedulerWorkerStopRequested(s: SchedulerState): bool =
@@ -18991,6 +20117,7 @@ proc schedulerWorkerLeaseHasProgress(lease: SchedulerWorkerLease): bool =
 
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
   pollOsExecAsyncCompletions()
+  pollNativeIngressHook()
   if schedulerRunOne(skipWorkerSafe = lease.active):
     return true
   # If the cooperative root lane has no exclusive work, let it help drain the
@@ -19008,6 +20135,7 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool =
   pollOsExecAsyncCompletions()
+  pollNativeIngressHook()
   if schedulerRunOneUntil(deadline, skipWorkerSafe = lease.active):
     return true
   if lease.active and schedulerRunOneUntil(deadline, skipWorkerSafe = false):
@@ -19115,6 +20243,7 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
         not task.taskCancelRequested:
       task.requestTaskCancellation()
     pollOsExecAsyncCompletions()
+    pollNativeIngressHook()
     # Completion polling may settle the exact task we are awaiting. Do not
     # enter the scheduler afterward: the poll also ends the external-op count,
     # so an unrelated distant timer could otherwise put a completed await back
@@ -19136,6 +20265,14 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
     if not progressed:
       if task.taskDone:
         break
+      if currentEventLane() == currentScheduler().rootLane and
+          nativeIngressActiveHook != nil and
+          nativeIngressActiveHook(currentScheduler()):
+        if nativeIngressSleepHook != nil:
+          discard nativeIngressSleepHook(100)
+        else:
+          os.sleep(100)
+        continue
       if externalNativeOpsPending():
         os.sleep(1)
         continue
@@ -19145,6 +20282,13 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
           # Avoid a condition wait while any such native op may need this lane.
           if externalNativeOpsPending():
             os.sleep(1)
+          elif currentEventLane() == currentScheduler().rootLane and
+              nativeIngressActiveHook != nil and
+              nativeIngressActiveHook(currentScheduler()):
+            if nativeIngressSleepHook != nil:
+              discard nativeIngressSleepHook(100)
+            else:
+              os.sleep(100)
           else:
             discard task.waitExternalTaskChange()
           if task.taskDone:
@@ -19159,6 +20303,27 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
           continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
+
+proc waitApplicationIoCleanup*(app: Application) =
+  ## The CLI host must settle cleanup obligations before quitting its process.
+  ## Ordinary root Tasks are not implicitly joined; only explicitly retained
+  ## I/O cleanup Tasks enter this list.
+  if app == nil: return
+  let scheduler = app.schedulerState()
+  if currentEventLane() != scheduler.rootLane:
+    raise newException(GeneError,
+      "Application I/O cleanup requires the root lane")
+  let saved = activeScheduler
+  activeScheduler = scheduler
+  try:
+    while app.rootIoCleanupTasks.len > 0:
+      let pending = app.rootIoCleanupTasks
+      for task in pending:
+        if task.kind == vkTask and not task.taskDone:
+          pumpUntilDone(task, NIL)
+      app.pruneRootIoTasks()
+  finally:
+    activeScheduler = saved
 
 proc closeStreamCallback(stream: Value) {.nimcall.} =
   let continuation = stream.streamGeneratorContinuation
@@ -21581,14 +22746,6 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
 proc isSelectorCallStage(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("call_stage") and v.body.len > 0
 
-proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
-  var idx = rawIndex
-  if idx < 0:
-    idx = int64(items.len) + idx
-  if idx < 0 or idx >= int64(items.len):
-    return VOID
-  items[int(idx)]
-
 proc staticLookup(target, segment: Value): Value =
   if target.kind == vkVoid:
     return VOID
@@ -21600,28 +22757,8 @@ proc staticLookup(target, segment: Value): Value =
         items.add item
     return newStream(items)
   case segment.kind
-  of vkInt:
-    case target.kind
-    of vkList:
-      if segment.intFitsInt64: lookupIndex(target.listItems, segment.intVal) else: VOID
-    of vkNode:
-      if segment.intFitsInt64: lookupIndex(target.body, segment.intVal) else: VOID
-    else:
-      VOID
-  of vkFloat:
-    # An integral Float indexes a sequence, matching `set` and matching the
-    # web profile, which lowers an `F64` index to `xs[i]`. Without this the
-    # same source reads a list in the browser and yields `void` on the VM —
-    # silently, because `void` is a legal value rather than an error. A
-    # non-integral Float stays absent: `xs/%1.5` names no element.
-    let f = segment.floatVal
-    if f != f.trunc or f.classify notin {fcNormal, fcZero, fcNegZero}:
-      VOID
-    else:
-      case target.kind
-      of vkList: lookupIndex(target.listItems, int64(f))
-      of vkNode: lookupIndex(target.body, int64(f))
-      else: VOID
+  of vkInt, vkFloat:
+    readIndexedValue(target, segment)
   of vkSymbol, vkString:
     # A symbol segment's payload is directly a PropTable key id — no string,
     # no intern-table probe. A string segment probes lookup-only: an
@@ -22018,14 +23155,16 @@ proc ffiPointerTarget(label: string): Value =
   NIL
 
 proc ffiPointerResult(label: string, address: pointer,
-                      releaseAddress: pointer = nil): Value =
+                      releaseAddress: pointer = nil,
+                      library: Value = NIL): Value =
   if address == nil and not isFfiNullablePtrLabel(label):
     raise newException(GeneError, "FFI returned null for non-null pointer result")
   if label.compositeLabelHasSingleArg("C/OwnedPtr"):
     if releaseAddress == nil:
       raise newException(GeneError,
         "FFI OwnedPtr result requires a release function")
-    newCForeignOwnedPtr(address, releaseAddress, ffiPointerTarget(label))
+    newCForeignOwnedPtr(address, releaseAddress, ffiPointerTarget(label),
+                        library = library)
   elif label.compositeLabelHasSingleArg("C/ConstPtr") or
       label.compositeLabelHasSingleArg("C/NullableConstPtr"):
     newCConstPtr(address, ffiPointerTarget(label))
@@ -22164,6 +23303,9 @@ proc ffiAotBufferLease*(where, label: string, value: Value): FfiBufferLease =
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
                       named: NamedArgs, dispatchScope: Scope): Value =
+  template ffiPointerResult(label, address, releaseAddress: untyped): untyped =
+    ffiPointerResult(label, address, releaseAddress,
+                     callee.ffiCallableLibrary)
   if named.len != 0:
     raise newException(GeneError,
       "FFI callable '" & callee.ffiCallableName & "' does not accept named arguments")
@@ -26060,6 +27202,17 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         let fn = cast[SizeSizePtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 2 and isFfiPtrLabel(paramLabels[0]) and
+      isFfiBufferLabel(paramLabels[1]):
+    let state = ffiPointerArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    let buffer = ffiBufferArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", paramLabels[1], params[1], args[1])
+    type PtrBufferIntProc = proc(state, data: pointer,
+                                 length: csize_t): cint {.cdecl.}
+    let fn = cast[PtrBufferIntProc](callee.ffiCallableAddress)
+    returnFfiBufferResult(buffer, fn(state, buffer.data, buffer.length),
+                          newInt(int64(nativeResult)))
+  if paramLabels.len == 2 and isFfiPtrLabel(paramLabels[0]) and
       paramLabels[1] == "C/Size":
     let arg0 = ffiPointerArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
@@ -28036,10 +29189,12 @@ proc reloadFileModule*(app: Application, path: string): Value =
     recomposed.canonical.validateImplCollection()
     for update in recomposed.scopes:
       update.scope.validateProspectiveBase(update.impls, recomposed.canonical)
+    let corePlans = replacementScope.coreWitnessPlans()
 
     # Commit. No enumerable live scope is mutated before this point.
     app.checkStrictScopeReplacement(oldScope, replacementScope)
     app.commitRecomposedImpls(recomposed)
+    replacementScope.sealCoreWitnessPlans(corePlans)
     app.moduleCache[identity] = replacement
     inc app.moduleEpoch
     var bases: seq[Scope]
@@ -28302,13 +29457,13 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   app.loadSandboxedModule(args[0].strVal, args[1].strVal, grants, shared,
     if args.len == 5: args[4].strVal else: "")
 
-proc nextRuntimeResourceId(): uint64 =
+proc nextRuntimeResourceId*(): uint64 =
   result = nextResourceId.fetchAdd(1'u64) + 1'u64
   if result == 0:
     raise newException(GeneError,
       "runtime resource identity space is exhausted")
 
-proc newRuntimeResourceHandle(scope: Scope, typeName: string,
+proc newRuntimeResourceHandle*(scope: Scope, typeName: string,
                               id: uint64): Value =
   let typ = builtinBinding(scope, typeName)
   if typ.kind != vkType:
@@ -28952,6 +30107,9 @@ proc biSandboxGenerationRelease(args: openArray[Value],
     generation.application = nil
     generation.module = NIL
     generation.moduleEntries.clear()
+    for owned in generation.scopes:
+      owned.sandboxGenerationReleased = true
+      owned.retireReleasedModuleSelfBinding()
     generation.moduleKeys.setLen(0)
     generation.compileKeys.setLen(0)
     generation.scopes.setLen(0)

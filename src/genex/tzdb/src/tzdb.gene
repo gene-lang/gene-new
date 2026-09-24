@@ -1,0 +1,13 @@
+(mod tzdb)
+
+(fn release_id [] "2026d")
+
+(fn to_local [instant : DateTime zone : Str]
+  ($temporal/_tzif_to_local
+    ($pkg/read_bytes this_pkg $"zoneinfo/${zone}")
+    instant zone "2026d"))
+
+(fn resolve_local [datetime : DateTime zone : Str ^fold fold : Str = "reject"]
+  ($temporal/_tzif_resolve_local
+    ($pkg/read_bytes this_pkg $"zoneinfo/${zone}")
+    datetime zone "2026d" fold))

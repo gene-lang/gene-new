@@ -5,7 +5,10 @@
 ## client sockets. The concurrency test is the core contract: a handler parked
 ## in `sleep` must not stall other requests.
 
-import std/[monotimes, net, os, osproc, streams, strutils, times, unittest]
+import std/[json, monotimes, net, os, osproc, streams, strutils, times,
+            unittest]
+when defined(posix):
+  import std/[nativesockets, posix]
 import gene/[repl, vm]
 
 let httpTestDir = getTempDir() / "gene_http_tests"
@@ -57,6 +60,35 @@ proc readAllHttp(s: Socket, timeoutMs = 15000): string =
       break
     result.add chunk
 
+proc sendHttpBounded(s: Socket, payload: string, timeoutMs = 5000) =
+  ## A failed child must not strand this suite inside net.Socket.send's retry
+  ## loop after its peer has closed the connection.
+  when defined(posix):
+    if payload.len == 0: return
+    let fd = s.getFd()
+    when defined(macosx):
+      var noSigPipe: cint = 1
+      discard posix.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                               addr noSigPipe, SockLen(sizeof(noSigPipe)))
+    nativesockets.setBlocking(fd, false)
+    defer: nativesockets.setBlocking(fd, true)
+    let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+    var offset = 0
+    while offset < payload.len:
+      let flags: cint = when defined(linux): MSG_NOSIGNAL.cint else: 0
+      let count = posix.send(fd, unsafeAddr payload[offset],
+                             payload.len - offset, flags)
+      if count > 0:
+        offset += count
+      elif count < 0 and errno in [EAGAIN, EWOULDBLOCK, EINTR]:
+        if getMonoTime() >= deadline:
+          raise newException(TimeoutError, "HTTP test send timed out")
+        sleep(5)
+      else:
+        raise newException(IOError, "HTTP test peer closed during send")
+  else:
+    s.send(payload)
+
 proc httpGet(port: int, target: string): string =
   let s = httpConnect(port)
   defer: s.close()
@@ -69,6 +101,29 @@ proc statusLine(response: string): string =
 proc bodyOf(response: string): string =
   let sep = response.find("\r\n\r\n")
   if sep < 0: "" else: response[sep + 4 .. ^1]
+
+proc decodeChunkedHttp(response: string): string =
+  let body = bodyOf(response)
+  var offset = 0
+  while offset < body.len:
+    let lineEnd = body.find("\r\n", offset)
+    if lineEnd < 0:
+      raise newException(ValueError, "missing chunk-size terminator")
+    let size = parseHexInt(body[offset ..< lineEnd])
+    offset = lineEnd + 2
+    if size == 0:
+      if body[offset .. ^1] != "\r\n":
+        raise newException(ValueError, "missing final chunk terminator")
+      return
+    if offset + size + 2 > body.len or
+        body[offset + size ..< offset + size + 2] != "\r\n":
+      raise newException(ValueError, "incomplete chunk payload")
+    result.add body[offset ..< offset + size]
+    offset += size + 2
+  raise newException(ValueError, "missing final chunk")
+
+proc geneQuotedPath(path: string): string =
+  "\"" & path.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
 suite "net/http server e2e":
   setup:
@@ -115,6 +170,551 @@ suite "net/http server e2e":
     let resp = readAllHttp(s)
     check statusLine(resp) == "HTTP/1.1 200 OK"
     check bodyOf(resp) == "chunked"
+
+  test "stream mode dispatches after headers and reads bounded body chunks":
+    let p = startHttpServer("stream_body.gene", """
+(import $net/http [Server StreamRequest serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  ($assert (== ($head req) StreamRequest))
+  (var total 0)
+  (while true
+    (let part (await (req/body .AsyncReader:read 4096)))
+    (if ($nil? part) (then (break)))
+    (set total (+ total ($binary/size part))))
+  (text ($to_str total)))
+(serve (Server ^host "127.0.0.1" ^port 8191) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8191)
+    defer: s.close()
+    sendHttpBounded(s, "POST /upload HTTP/1.1\r\nhost: t\r\n" &
+                    "content-length: 16384\r\n\r\n")
+    for _ in 0 ..< 16:
+      sendHttpBounded(s, repeat('x', 1024))
+      sleep(1)
+    let response = readAllHttp(s)
+    check statusLine(response).contains("200 OK")
+    check bodyOf(response) == "16384"
+
+  test "a slow streamed body does not delay an unrelated fast request":
+    let p = startHttpServer("stream_concurrent.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (if (== req/path "/fast")
+    (then (text "fast"))
+    (else
+      (do
+        (var total 0)
+        (while true
+          (let part (await (req/body .AsyncReader:read 4096)))
+          (if ($nil? part) (then (break)))
+          (set total (+ total ($binary/size part))))
+        (text ($to_str total))))))
+(serve (Server ^host "127.0.0.1" ^port 8192) handle
+  ^body_mode "stream" ^max_requests 2)
+""")
+    defer: (p.terminate(); p.close())
+    let slow = httpConnect(8192)
+    defer: slow.close()
+    sendHttpBounded(slow, "POST /slow HTTP/1.1\r\nhost: t\r\n" &
+                    "content-length: 8192\r\n\r\n" & repeat('x', 1024))
+    sleep(50)
+    let started = getMonoTime()
+    let fast = httpGet(8192, "/fast")
+    let fastMs = (getMonoTime() - started).inMilliseconds
+    check bodyOf(fast) == "fast"
+    check fastMs < 700
+    sendHttpBounded(slow, repeat('x', 7168))
+    check bodyOf(readAllHttp(slow)) == "8192"
+
+  test "stream backpressure leaves fast requests responsive":
+    let p = startHttpServer("stream_backpressure.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (if (== req/path "/fast")
+    (then (text "fast"))
+    (else
+      (do
+        ($sleep 400)
+        (var total 0)
+        (while true
+          (let part (await (req/body .AsyncReader:read 4096)))
+          (if ($nil? part) (then (break)))
+          (set total (+ total ($binary/size part))))
+        (text ($to_str total))))))
+(serve (Server ^host "127.0.0.1" ^port 8193) handle
+  ^body_mode "stream" ^body_idle_ms 100 ^max_requests 2)
+""")
+    defer: (p.terminate(); p.close())
+    let slow = httpConnect(8193)
+    defer: slow.close()
+    sendHttpBounded(slow, "POST /slow HTTP/1.1\r\nhost: t\r\n" &
+                    "content-length: 262144\r\n\r\n" & repeat('x', 131072))
+    sleep(50)
+    let started = getMonoTime()
+    let fast = httpGet(8193, "/fast")
+    let fastMs = (getMonoTime() - started).inMilliseconds
+    check bodyOf(fast) == "fast"
+    check fastMs < 350
+    sendHttpBounded(slow, repeat('x', 131072))
+    check bodyOf(readAllHttp(slow)) == "262144"
+
+  test "truncated stream body never appears as successful EOF":
+    let p = startHttpServer("stream_truncated.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (var total 0)
+  (while true
+    (let part (await (req/body .AsyncReader:read 1024)))
+    (if ($nil? part) (then (break)))
+    (set total (+ total ($binary/size part))))
+  (text ($to_str total)))
+(serve (Server ^host "127.0.0.1" ^port 8194) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8194)
+    defer: s.close()
+    sendHttpBounded(s, "POST /bad HTTP/1.1\r\nhost: t\r\n" &
+                       "content-length: 100\r\n\r\nshort")
+    discard s.getFd().shutdown(SHUT_WR)
+    let response = readAllHttp(s, timeoutMs = 2000)
+    check not response.contains("200 OK")
+
+  test "stream mode rejects conflicting framing and oversize before dispatch":
+    let p = startHttpServer("stream_rejections.gene", """
+(import $net/http [Server serve text])
+(fn handle [req] (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8195) handle
+  ^body_mode "stream" ^max_body_bytes 1024 ^max_requests 2)
+""")
+    defer: (p.terminate(); p.close())
+    let oversized = httpConnect(8195)
+    defer: oversized.close()
+    sendHttpBounded(oversized, "POST /large HTTP/1.1\r\nhost: t\r\n" &
+                               "content-length: 2048\r\n\r\n")
+    check statusLine(readAllHttp(oversized)) == "HTTP/1.1 413 Payload Too Large"
+    let conflicting = httpConnect(8195)
+    defer: conflicting.close()
+    sendHttpBounded(conflicting, "POST /conflict HTTP/1.1\r\nhost: t\r\n" &
+                                 "transfer-encoding: chunked\r\n" &
+                                 "content-length: 1\r\n\r\n")
+    check statusLine(readAllHttp(conflicting)) == "HTTP/1.1 400 Bad Request"
+
+  test "chunked stream frames split across reads yield only decoded Bytes":
+    let p = startHttpServer("stream_chunked.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (var payload "")
+  (while true
+    (let part (await (req/body .AsyncReader:read 4096)))
+    (if ($nil? part) (then (break)))
+    (set payload ($ payload ($binary/to_str part))))
+  (text payload))
+(serve (Server ^host "127.0.0.1" ^port 8198) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8198)
+    defer: s.close()
+    sendHttpBounded(s, "POST /chunked HTTP/1.1\r\nhost: t\r\n" &
+                       "transfer-encoding: chunked\r\n\r\n")
+    for piece in ["4;foo=bar\r", "\nWi", "ki\r\n", "5\r\nped", "ia\r\n",
+                  "0\r\nX-Trace: yes\r\n\r\n"]:
+      sendHttpBounded(s, piece)
+      sleep(5)
+    check bodyOf(readAllHttp(s)) == "Wikipedia"
+
+  test "chunked stream rejects malformed size and decoded-size overflow":
+    let p = startHttpServer("stream_chunked_errors.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (while true
+    (let part (await (req/body .AsyncReader:read 4096)))
+    (if ($nil? part) (then (break))))
+  (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8199) handle
+  ^body_mode "stream" ^max_body_bytes 8 ^max_requests 3)
+""")
+    defer: (p.terminate(); p.close())
+    let malformed = httpConnect(8199)
+    defer: malformed.close()
+    sendHttpBounded(malformed, "POST /bad HTTP/1.1\r\nhost: t\r\n" &
+                               "transfer-encoding: chunked\r\n\r\nZ\r\n")
+    check statusLine(readAllHttp(malformed)) == "HTTP/1.1 400 Bad Request"
+    let oversized = httpConnect(8199)
+    defer: oversized.close()
+    sendHttpBounded(oversized, "POST /large HTTP/1.1\r\nhost: t\r\n" &
+                               "transfer-encoding: chunked\r\n\r\n9\r\n")
+    check statusLine(readAllHttp(oversized)) ==
+      "HTTP/1.1 413 Payload Too Large"
+    let cumulative = httpConnect(8199)
+    defer: cumulative.close()
+    sendHttpBounded(cumulative, "POST /cumulative HTTP/1.1\r\nhost: t\r\n" &
+                                "transfer-encoding: chunked\r\n\r\n" &
+                                "5\r\nabcde\r\n5\r\n")
+    check statusLine(readAllHttp(cumulative)) ==
+      "HTTP/1.1 413 Payload Too Large"
+
+  test "truncated chunked body never appears as successful EOF":
+    let p = startHttpServer("stream_chunked_truncated.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (while true
+    (let part (await (req/body .AsyncReader:read 4096)))
+    (if ($nil? part) (then (break))))
+  (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8200) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8200)
+    defer: s.close()
+    sendHttpBounded(s, "POST /bad HTTP/1.1\r\nhost: t\r\n" &
+                       "transfer-encoding: chunked\r\n\r\n4\r\nWi")
+    discard s.getFd().shutdown(SHUT_WR)
+    check not readAllHttp(s, timeoutMs = 2000).contains("200 OK")
+
+  test "stream body idle timeout is monotonic and reports 408":
+    let p = startHttpServer("stream_idle.gene", """
+(import $net/http [Server serve text])
+(let AsyncReader $io/AsyncReader)
+(fn handle [req]
+  (await (req/body .AsyncReader:read 1))
+  (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8201) handle
+  ^body_mode "stream" ^body_idle_ms 150
+  ^request_timeout_ms 2000 ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8201)
+    defer: s.close()
+    sendHttpBounded(s, "POST /idle HTTP/1.1\r\nhost: t\r\n" &
+                       "content-length: 10\r\n\r\n")
+    let started = getMonoTime()
+    let response = readAllHttp(s, timeoutMs = 3000)
+    let elapsed = (getMonoTime() - started).inMilliseconds
+    check statusLine(response) == "HTTP/1.1 408 Request Timeout"
+    check elapsed < 1500
+
+  test "handler may close an unfinished stream body and answer early":
+    let p = startHttpServer("stream_early_close.gene", """
+(import $net/http [Server serve text])
+(let IoResource $io/IoResource)
+(fn handle [req]
+  (req/body .IoResource:close)
+  (text "early"))
+(serve (Server ^host "127.0.0.1" ^port 8196) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8196)
+    defer: s.close()
+    sendHttpBounded(s, "POST /early HTTP/1.1\r\nhost: t\r\n" &
+                       "content-length: 1048576\r\n\r\n")
+    check bodyOf(readAllHttp(s, timeoutMs = 3000)) == "early"
+
+  test "streaming headers stop at the configured header cap":
+    let p = startHttpServer("stream_header_limit.gene", """
+(import $net/http [Server serve text])
+(fn handle [req] (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8197) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8197)
+    defer: s.close()
+    try:
+      sendHttpBounded(s, "GET /x HTTP/1.1\r\nhost: t\r\nx-long: " &
+                         repeat('x', 40000))
+    except IOError:
+      discard # the server may reject before the entire oversized line arrives
+    check statusLine(readAllHttp(s)) == "HTTP/1.1 400 Bad Request"
+
+  test "known-length streamed response preserves binary bytes":
+    let path = httpTestDir / "stream_response_known.bin"
+    writeFile(path, "a\0b")
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_known.gene", """
+(import $net/http [Server serve stream])
+(import $io [open_read])
+(fn handle [req]
+  (let source (await (open_read """ & geneQuotedPath(path) & """)))
+  (stream 200 source ^content_length 3 ^own_reader true))
+(serve (Server ^host "127.0.0.1" ^port 8203) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let response = httpGet(8203, "/known")
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check response.contains("content-length: 3\r\n")
+    check bodyOf(response) == "a\0b"
+
+  test "unknown-length streamed response uses complete chunked framing":
+    let path = httpTestDir / "stream_response_chunked.bin"
+    let expected = repeat('x', 70000) & "\0"
+    writeFile(path, expected)
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_chunked.gene", """
+(import $net/http [Server serve stream])
+(import $io [open_read])
+(fn handle [req]
+  (let source (await (open_read """ & geneQuotedPath(path) & """)))
+  (stream 200 source ^own_reader true))
+(serve (Server ^host "127.0.0.1" ^port 8204) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let response = httpGet(8204, "/chunked")
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check response.contains("transfer-encoding: chunked\r\n")
+    check decodeChunkedHttp(response) == expected
+
+  test "a short stream closes after headers without inventing completion":
+    let path = httpTestDir / "stream_response_short.bin"
+    writeFile(path, "ab")
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_short.gene", """
+(import $net/http [Server serve stream])
+(import $io [open_read])
+(fn handle [req]
+  (let source (await (open_read """ & geneQuotedPath(path) & """)))
+  (stream 200 source ^content_length 3 ^own_reader true))
+(serve (Server ^host "127.0.0.1" ^port 8205) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let response = httpGet(8205, "/short")
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check response.contains("content-length: 3\r\n")
+    check bodyOf(response) == "ab"
+
+  test "stream byte limit closes without a false final chunk":
+    let path = httpTestDir / "stream_response_limit.bin"
+    writeFile(path, "abcdef")
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_limit.gene", """
+(import $net/http [Server serve stream])
+(import $io [open_read])
+(fn handle [req]
+  (let source (await (open_read """ & geneQuotedPath(path) & """)))
+  (stream 200 source ^own_reader true ^max_bytes 4))
+(serve (Server ^host "127.0.0.1" ^port 8207) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let response = httpGet(8207, "/limited")
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check response.contains("transfer-encoding: chunked\r\n")
+    check not bodyOf(response).endsWith("0\r\n\r\n")
+
+  test "HEAD streamed response keeps headers and sends no body":
+    let path = httpTestDir / "stream_response_head.bin"
+    writeFile(path, "abc")
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_head.gene", """
+(import $net/http [Server serve stream])
+(import $io [open_read])
+(fn handle [req]
+  (let source (await (open_read """ & geneQuotedPath(path) & """)))
+  (stream 200 source ^content_length 3 ^own_reader true))
+(serve (Server ^host "127.0.0.1" ^port 8208) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8208)
+    defer: s.close()
+    sendHttpBounded(s, "HEAD /file HTTP/1.1\r\nhost: t\r\n\r\n")
+    let response = readAllHttp(s)
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check response.contains("content-length: 3\r\n")
+    check bodyOf(response) == ""
+
+  test "streamed response accepts a third-party AsyncReader implementation":
+    let p = startHttpServer("stream_response_protocol.gene", """
+(import $net/http [Server serve stream])
+(let AsyncReader $io/AsyncReader)
+(type Parts ^props {^chunks List ^index Cell})
+(impl AsyncReader for Parts
+  (message read [self max_bytes : Int] : (Task Bytes? Error)
+    (spawn ^lane root
+      (do
+        (let index (self/index .get))
+        (if (>= index ($size self/chunks))
+          nil
+          (do
+            (self/index .set (+ index 1))
+            self/chunks/%index))))))
+(fn handle [req]
+  (stream 200 (Parts ^chunks [($binary/from_str "a")
+                              ($binary/from_list [98 0])]
+                     ^index ($cell 0))))
+(serve (Server ^host "127.0.0.1" ^port 8209) handle ^max_requests 1)
+""")
+    defer: (p.terminate(); p.close())
+    let response = httpGet(8209, "/parts")
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check bodyOf(response).contains("\r\na\r\n")
+    check bodyOf(response).contains("\r\nb\0\r\n")
+    check bodyOf(response).endsWith("0\r\n\r\n")
+
+  test "streamed response deadline closes an unfinished body":
+    let p = startHttpServer("stream_response_timeout.gene", """
+(import $net/http [Server serve stream])
+(let AsyncReader $io/AsyncReader)
+(type SlowReader ^props {})
+(impl AsyncReader for SlowReader
+  (message read [self max_bytes : Int] : (Task Bytes? Error)
+    (spawn ^lane root
+      (do ($sleep 1000) ($binary/from_str "late")))))
+(fn handle [req] (stream 200 (SlowReader)))
+(serve (Server ^host "127.0.0.1" ^port 8210) handle
+  ^request_timeout_ms 150 ^max_requests 1)
+""")
+    defer:
+      if p.running: p.terminate()
+      p.close()
+    let started = getMonoTime()
+    let response = httpGet(8210, "/timeout")
+    let elapsed = (getMonoTime() - started).inMilliseconds
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check not bodyOf(response).endsWith("0\r\n\r\n")
+    check elapsed < 1000
+    check p.waitForExit(3000) == 0
+
+  test "streamed response can echo an unfinished request body":
+    let p = startHttpServer("stream_echo.gene", """
+(import $net/http [Server serve stream])
+(fn handle [req] (stream 200 req/body))
+(serve (Server ^host "127.0.0.1" ^port 8211) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer:
+      if p.running: p.terminate()
+      p.close()
+    let s = httpConnect(8211)
+    defer: s.close()
+    sendHttpBounded(s, "POST /echo HTTP/1.1\r\nhost: t\r\n" &
+                       "content-length: 8\r\n\r\nabcd")
+    var first = ""
+    let deadline = getMonoTime() + initDuration(seconds = 3)
+    while not first.contains("\r\nabcd\r\n") and getMonoTime() < deadline:
+      let part = s.recv(1, timeout = 1000)
+      if part.len == 0: break
+      first.add part
+    check first.contains("\r\nabcd\r\n")
+    sendHttpBounded(s, "efgh")
+    let response = first & readAllHttp(s)
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check bodyOf(response).contains("\r\nefgh\r\n")
+    check bodyOf(response).endsWith("0\r\n\r\n")
+    check p.waitForExit(3000) == 0
+
+  test "chunked upload can be echoed before its final chunk":
+    let p = startHttpServer("stream_chunked_echo.gene", """
+(import $net/http [Server serve stream])
+(fn handle [req] (stream 200 req/body))
+(serve (Server ^host "127.0.0.1" ^port 8212) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer:
+      if p.running: p.terminate()
+      p.close()
+    let s = httpConnect(8212)
+    defer: s.close()
+    sendHttpBounded(s, "POST /echo HTTP/1.1\r\nhost: t\r\n" &
+                       "transfer-encoding: chunked\r\n\r\n" &
+                       "4\r\nWiki\r\n")
+    var first = ""
+    let deadline = getMonoTime() + initDuration(seconds = 3)
+    while getMonoTime() < deadline:
+      let headEnd = first.find("\r\n\r\n")
+      if headEnd >= 0:
+        let chunkLineEnd = first.find("\r\n", headEnd + 4)
+        if chunkLineEnd >= 0 and first.len > chunkLineEnd + 2:
+          break
+      let part = s.recv(1, timeout = 1000)
+      if part.len == 0: break
+      first.add part
+    check first.endsWith("W")
+    sendHttpBounded(s, "5\r\npedia\r\n0\r\n\r\n")
+    let response = first & readAllHttp(s)
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check decodeChunkedHttp(response) == "Wikipedia"
+    check p.waitForExit(3000) == 0
+
+  test "malformed upload during echo closes the partial response":
+    let p = startHttpServer("stream_echo_malformed.gene", """
+(import $net/http [Server serve stream])
+(fn handle [req] (stream 200 req/body))
+(serve (Server ^host "127.0.0.1" ^port 8213) handle
+  ^body_mode "stream" ^max_requests 1)
+""")
+    defer:
+      if p.running: p.terminate()
+      p.close()
+    let s = httpConnect(8213)
+    defer: s.close()
+    sendHttpBounded(s, "POST /echo HTTP/1.1\r\nhost: t\r\n" &
+                       "transfer-encoding: chunked\r\n\r\n" &
+                       "4\r\nWiki\r\n")
+    var first = ""
+    let deadline = getMonoTime() + initDuration(seconds = 3)
+    while getMonoTime() < deadline:
+      let headEnd = first.find("\r\n\r\n")
+      if headEnd >= 0:
+        let chunkLineEnd = first.find("\r\n", headEnd + 4)
+        if chunkLineEnd >= 0 and first.len > chunkLineEnd + 2:
+          break
+      let part = s.recv(1, timeout = 1000)
+      if part.len == 0: break
+      first.add part
+    check first.endsWith("W")
+    sendHttpBounded(s, "Z\r\n")
+    let response = first & readAllHttp(s)
+    check statusLine(response) == "HTTP/1.1 200 OK"
+    check not bodyOf(response).endsWith("0\r\n\r\n")
+    check p.waitForExit(3000) == 0
+
+  test "slow response peer does not delay a fast request":
+    let path = httpTestDir / "stream_response_slow.bin"
+    writeFile(path, repeat('x', 16 * 1024 * 1024))
+    defer: removeFile(path)
+    let p = startHttpServer("stream_response_slow.gene", """
+(import $net/http [Server serve stream text])
+(import $io [open_read])
+(fn handle [req]
+  (if (== req/path "/fast")
+    (text "fast")
+    (do
+      (let source (await (open_read """ & geneQuotedPath(path) & """)))
+      (stream 200 source ^own_reader true))))
+(serve (Server ^host "127.0.0.1" ^port 8206) handle ^max_requests 2)
+""")
+    defer:
+      if p.running: p.terminate()
+      p.close()
+    var slow = httpConnect(8206)
+    when defined(posix):
+      var receiveBuffer: cint = 4096
+      discard posix.setsockopt(slow.getFd(), SOL_SOCKET, SO_RCVBUF,
+                               addr receiveBuffer,
+                               SockLen(sizeof(receiveBuffer)))
+    defer:
+      if slow != nil: slow.close()
+    sendHttpBounded(slow, "GET /slow HTTP/1.1\r\nhost: t\r\n\r\n")
+    sleep(50)
+    let started = getMonoTime()
+    let fast = httpGet(8206, "/fast")
+    let fastMs = (getMonoTime() - started).inMilliseconds
+    check bodyOf(fast) == "fast"
+    check fastMs < 700
+    slow.close() # abort the large transfer; it must retire its owned reader
+    slow = nil
+    check p.waitForExit(3000) == 0
 
   test "POST body and query params reach the handler":
     let p = startHttpServer("post.gene", """
@@ -530,6 +1130,80 @@ suite "net/http server e2e":
     check "stopped" in output
     check "on_tick raised" in output
     check "boom_in_tick" in output
+
+  test "stop returns a physical-cleanup report after a forced drain":
+    let p = startHttpServer("stop-report.gene", """
+(import $net/http [listen serve stop text])
+(var srv (listen ^host "127.0.0.1" ^port 8222))
+(let report (serve srv
+  (fn [req]
+    (if (== req/path "/hold")
+      (do ($sleep 1000) (text 200 "late"))
+      (do (stop srv) (text 200 "stopping"))))
+  ^body_mode "stream" ^drain_timeout_ms 100))
+($println ($json/stringify report))
+""")
+    defer:
+      try: p.terminate()
+      except OSError: discard
+      p.close()
+    let hold = httpConnect(8222)
+    defer: hold.close()
+    sendHttpBounded(hold, "GET /hold HTTP/1.1\r\nhost: t\r\n\r\n")
+    sleep(80)
+    let stopped = httpGet(8222, "/stop")
+    check statusLine(stopped).startsWith("HTTP/1.1 200")
+    check p.waitForExit(5000) == 0
+    let output = p.outputStream.readAll()
+    check "\"complete\":true" in output
+    check "\"graceful\":false" in output
+    check "\"forced_connections\":1" in output
+    check "\"cleanup_leases\":0" in output
+    check "\"pending_cleanup_tasks\":0" in output
+    check "\"close_failed\":false" in output
+
+  test "stop reports incomplete cleanup when an owned reader will not close":
+    let p = startHttpServer("stop-incomplete.gene", """
+(import $net/http [listen serve stop text stream])
+(let AsyncReader $io/AsyncReader)
+(let IoResource $io/IoResource)
+(type NeverClose ^props {})
+(impl AsyncReader for NeverClose
+  (message read [max_bytes : Int] : (Task Bytes? Error)
+    (spawn ^lane root nil)))
+(impl IoResource for NeverClose
+  (message close [] : Nil nil)
+  (message wait_closed [] : (Task Nil Error)
+    (spawn ^lane root (do ($sleep 1000) nil))))
+(var srv (listen ^host "127.0.0.1" ^port 8223))
+(let report (serve srv
+  (fn [req]
+    (if (== req/path "/stop")
+      (do (stop srv) (text 200 "stopping"))
+      (stream (NeverClose) ^own_reader true)))
+  ^drain_timeout_ms 100))
+($println ($json/stringify report))
+""")
+    defer:
+      try: p.terminate()
+      except OSError: discard
+      p.close()
+    let held = httpConnect(8223)
+    defer: held.close()
+    sendHttpBounded(held, "GET /held HTTP/1.1\r\nhost: t\r\n\r\n")
+    sleep(80)
+    let stopped = httpGet(8223, "/stop")
+    check statusLine(stopped).startsWith("HTTP/1.1 200")
+    check p.waitForExit(5000) == 0
+    var report = newJNull()
+    for line in p.outputStream.readAll().splitLines:
+      if line.startsWith("{"):
+        report = parseJson(line)
+    check report.kind == JObject
+    if report.kind == JObject:
+      check report["complete"].getBool == false
+      check report["graceful"].getBool == false
+      check report["pending_cleanup_tasks"].getInt > 0
 
   test "ws_accept ^subprotocol selects an offered subprotocol; ws_queued reports backlog":
     # A browser that offers a subprotocol fails the handshake unless the

@@ -1,0 +1,5 @@
+{
+  "macosx-arm64": {
+    "sdk_root": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+  }
+}

@@ -1,7 +1,67 @@
 import gene/ext/logging
 import gene/[compiler, gir, native_api, printer, types, vm]
-import std/[atomics, os, strutils, tables]
+import std/[atomics, dynlib, monotimes, os, osproc, strtabs, streams,
+            strutils, tables, times]
 import std/unittest
+
+type
+  V5EmitForeign = proc(context: pointer, generation: uint64,
+                       data: pointer, length: csize_t,
+                       began, enqueued: ptr cint): cint {.cdecl.}
+  V5HoldStart = proc(context: pointer, generation: uint64): cint {.cdecl.}
+  V5HoldFinish = proc(): cint {.cdecl.}
+
+proc unloadV5Fixture(address: pointer) {.nimcall.} =
+  unloadLib(cast[LibHandle](address))
+
+var v5ForeignDelivered: seq[string]
+var v5WakeDeliveredAt: MonoTime
+
+type DelayedIngressArgs = object
+  context: pointer
+  generation: uint64
+
+proc delayedIngress(args: DelayedIngressArgs) {.thread.} =
+  os.sleep(50)
+  if geneIngressBegin(args.context, args.generation) == 1:
+    var byte = 'w'
+    discard geneIngressEnqueue(args.context, addr byte, 1)
+    geneIngressEnd(args.context)
+
+proc captureV5Wake(args: openArray[Value]): Value {.nimcall.} =
+  v5WakeDeliveredAt = getMonoTime()
+  NIL
+
+proc captureV5Foreign(args: openArray[Value]): Value {.nimcall.} =
+  v5ForeignDelivered.add args[0].bytesVal
+  NIL
+
+proc buildV5Fixture(): string =
+  let compiler = findExe("cc")
+  if compiler.len == 0:
+    return ""
+  let root = getTempDir() / "gene-native-v5-fixture"
+  createDir(root)
+  result = root / (when defined(macosx): "native_v5.dylib"
+                   else: "native_v5.so")
+  var args = when defined(macosx): @["-dynamiclib", "-fPIC"]
+             else: @["-shared", "-fPIC"]
+  args.add @["-std=c11", "-pthread", "-Isrc/gene",
+    "tests/fixtures/native_ingress_v5_fixture.c", "-o", result]
+  let environment = newStringTable(modeCaseSensitive)
+  for key, value in envPairs(): environment[key] = value
+  when defined(macosx):
+    let pinned = "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+    if dirExists(pinned): environment["SDKROOT"] = pinned
+  let process = startProcess(compiler, getCurrentDir(), args,
+                             env = environment,
+                             options = {poStdErrToStdOut})
+  let diagnostics = process.outputStream.readAll()
+  let code = process.waitForExit()
+  process.close()
+  if code != 0:
+    raise newException(ValueError,
+      "v5 C fixture failed to compile: " & diagnostics)
 
 proc detachOnWorker(attachment: GeneThreadAttachment) {.thread.} =
   geneDetachThread(attachment)
@@ -160,6 +220,346 @@ proc raiseSharedErrors(args: SharedErrorArgs) {.thread.} =
       geneDetachThread(attachment)
 
 suite "native api threaded attachment":
+  test "v5 C ingress copies foreign notifications and waits for entry quiescence":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        defer: library.closeFfiLibrary()
+        let v4 = geneLoadModuleVersioned(library, "wrong-v4", 4)
+        check v4.status == gsError
+        check v4.message.contains("initializer not found")
+        check geneLoadModuleVersioned(library, "unsupported", 6).status == gsError
+        let initialized = geneLoadModuleVersioned(library, "v5-fixture", 5)
+        check initialized.status == gsOk
+        let emit = cast[V5EmitForeign](symAddr(handle,
+          "gene_test_v5_emit_foreign"))
+        let holdStart = cast[V5HoldStart](symAddr(handle,
+          "gene_test_v5_hold_start"))
+        let holdFinish = cast[V5HoldFinish](symAddr(handle,
+          "gene_test_v5_hold_finish"))
+        check emit != nil and holdStart != nil and holdFinish != nil
+        let context = newGeneIngressContext(91, maxCount = 2,
+          maxBytes = 4, maxPayload = 4)
+        var payload = "ok"
+        var began, enqueued: cint
+        check emit(context, 91, addr payload[0], 2,
+                   addr began, addr enqueued) == 0
+        check began == 1 and enqueued == GeneIngressAccepted
+        payload[0] = 'X'
+        var copied = ""
+        check geneIngressPop(context, copied)
+        check copied == "ok"
+        check holdStart(context, 91) == 1
+        check geneIngressStats(context).inFlight == 1
+        geneIngressClose(context)
+        geneIngressConfirmUnregistered(context)
+        check not geneIngressCanRetire(context)
+        check holdFinish() == GeneIngressClosed
+        check geneIngressCanRetire(context)
+        check geneIngressStats(context).firstFailure == GeneIngressClosed
+        geneIngressDestroy(context)
+        let bounded = newGeneIngressContext(93, maxCount = 1,
+          maxBytes = 1, maxPayload = 1)
+        check emit(bounded, 92, addr payload[0], 1,
+                   addr began, addr enqueued) == 0
+        check began == 0 and enqueued == GeneIngressEntryMissing
+        geneIngressFailNextAllocation(bounded)
+        check emit(bounded, 93, addr payload[0], 1,
+                   addr began, addr enqueued) == 0
+        check began == 1 and enqueued == GeneIngressAllocationFailed
+        check emit(bounded, 93, addr payload[0], 1,
+                   addr began, addr enqueued) == 0
+        check enqueued == GeneIngressAccepted
+        check emit(bounded, 93, addr payload[0], 1,
+                   addr began, addr enqueued) == 0
+        check enqueued == GeneIngressOverflow
+        let stats = geneIngressStats(bounded)
+        check stats.rejected == 2
+        check stats.firstFailure == GeneIngressAllocationFailed
+        geneIngressClose(bounded)
+        geneIngressConfirmUnregistered(bounded)
+        check geneIngressCanRetire(bounded)
+        geneIngressDestroy(bounded)
+        let scope = newGlobalScope()
+        v5ForeignDelivered.setLen(0)
+        let subscription = newGeneIngressSubscription(
+          newNativeFn("capture_v5_foreign", captureV5Foreign), scope)
+        var message = "foreign"
+        check emit(subscription.context, subscription.id,
+                   addr message[0], csize_t(message.len),
+                   addr began, addr enqueued) == 0
+        check began == 1 and enqueued == GeneIngressAccepted
+        discard run(compileSource("($sleep 5)"), scope)
+        check v5ForeignDelivered == @["foreign"]
+        check subscription.handled == 1
+        geneIngressRequestCloseSubscription(subscription)
+        geneIngressConfirmUnregistered(subscription.context)
+        geneIngressReleaseSubscription(subscription)
+
+  test "v5 ingress wake interrupts a long root scheduler sleep":
+    let scope = newGlobalScope()
+    let subscription = newGeneIngressSubscription(
+      newNativeFn("capture_v5_wake", captureV5Wake), scope)
+    let started = getMonoTime()
+    var worker: Thread[DelayedIngressArgs]
+    createThread(worker, delayedIngress,
+      DelayedIngressArgs(context: subscription.context,
+                         generation: subscription.id))
+    discard run(compileSource("($sleep 700)"), scope)
+    joinThread(worker)
+    let delay = (v5WakeDeliveredAt - started).inMilliseconds
+    check delay >= 20 and delay < 250
+    check subscription.handled == 1
+    geneIngressRequestCloseSubscription(subscription)
+    geneIngressConfirmUnregistered(subscription.context)
+    geneIngressReleaseSubscription(subscription)
+
+  test "v5 unregister runs off-root and retains context through late C entry":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        defer: library.closeFfiLibrary()
+        check geneLoadModuleVersioned(library, "unregister-v5", 5).status == gsOk
+        let holdStart = cast[V5HoldStart](symAddr(handle,
+          "gene_test_v5_hold_start"))
+        let holdFinish = cast[V5HoldFinish](symAddr(handle,
+          "gene_test_v5_hold_finish"))
+        let slow = cast[GeneIngressUnregisterProc](symAddr(handle,
+          "gene_test_v5_unregister_slow"))
+        let failure = cast[GeneIngressUnregisterProc](symAddr(handle,
+          "gene_test_v5_unregister_fail"))
+        check holdStart != nil and holdFinish != nil
+        check slow != nil and failure != nil
+        let scope = newGlobalScope()
+        let baseline = nativeRootCount()
+        let subscription = newGeneIngressSubscription(
+          newNativeFn("capture_v5_foreign", captureV5Foreign), scope,
+          unregisterProc = slow)
+        let waiting1 = geneIngressWaitClosed(subscription, scope)
+        let waiting2 = geneIngressWaitClosed(subscription, scope)
+        check waiting1.bits != waiting2.bits
+        check holdStart(subscription.context, subscription.id) == 1
+        let started = getMonoTime()
+        geneIngressRequestCloseSubscription(subscription)
+        check (getMonoTime() - started).inMilliseconds < 100
+        check geneIngressSubscriptionStatus(subscription).unregisterPending
+        let deadline = getMonoTime() + initDuration(seconds = 3)
+        while geneIngressSubscriptionStatus(subscription).unregisterPending and
+            getMonoTime() < deadline:
+          discard run(compileSource("($sleep 10)"), scope)
+        check geneIngressStats(subscription.context).unregistered
+        check not geneIngressCanRetire(subscription.context)
+        check not waiting1.taskDone and not waiting2.taskDone
+        check holdFinish() == GeneIngressClosed
+        check geneIngressCanRetire(subscription.context)
+        geneIngressReleaseSubscription(subscription)
+        check waiting1.taskDone and waiting2.taskDone
+        check not waiting1.taskHasError and not waiting2.taskHasError
+        let late = geneIngressWaitClosed(subscription, scope)
+        check late.taskDone and late.bits != waiting1.bits
+        when defined(geneRcStats):
+          check nativeRootCount() == baseline
+
+        let failed = newGeneIngressSubscription(
+          newNativeFn("capture_v5_foreign", captureV5Foreign), scope,
+          unregisterProc = failure)
+        let failedWait = geneIngressWaitClosed(failed, scope)
+        geneIngressRequestCloseSubscription(failed)
+        let failDeadline = getMonoTime() + initDuration(seconds = 3)
+        while geneIngressSubscriptionStatus(failed).unregisterPending and
+            getMonoTime() < failDeadline:
+          discard run(compileSource("($sleep 10)"), scope)
+        check failed.terminalStatus == gsError
+        check failed.terminalMessage.contains("unregistration returned 17")
+        check failedWait.taskDone and failedWait.taskHasError
+        let repeatWait = geneIngressWaitClosed(failed, scope)
+        check repeatWait.taskDone and repeatWait.taskHasError
+        check repeatWait.bits != failedWait.bits
+        check not geneIngressStats(failed.context).unregistered
+        expect GeneError:
+          geneIngressReleaseSubscription(failed)
+        # The fixture guarantees it has no future callbacks despite the
+        # nonzero diagnostic; the test may explicitly discharge that proof.
+        geneIngressConfirmUnregistered(failed.context)
+        geneIngressReleaseSubscription(failed)
+
+  test "v5 Gene IoResource wrapper waits for physical native retirement":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        defer: library.closeFfiLibrary()
+        check geneLoadModuleVersioned(library, "wrapper-v5", 5).status == gsOk
+        let emit = cast[V5EmitForeign](symAddr(handle,
+          "gene_test_v5_emit_foreign"))
+        let slow = cast[GeneIngressUnregisterProc](symAddr(handle,
+          "gene_test_v5_unregister_slow"))
+        let scope = newGlobalScope()
+        v5ForeignDelivered.setLen(0)
+        let baseline = nativeRootCount()
+        let subscription = newGeneIngressSubscription(
+          newNativeFn("capture_v5_foreign", captureV5Foreign), scope,
+          unregisterProc = slow)
+        let wrapper = newGeneIngressHandle(subscription, scope)
+        scope.define("native_handle", wrapper)
+        var message = "owned"
+        var began, enqueued: cint
+        check emit(subscription.context, subscription.id,
+                   addr message[0], csize_t(message.len),
+                   addr began, addr enqueued) == 0
+        check began == 1 and enqueued == GeneIngressAccepted
+        discard run(compileSource("($sleep 5)"), scope)
+        check v5ForeignDelivered == @["owned"]
+        let active = run(compileSource("(native_handle .status)"), scope)
+        check active.mapEntries["state"].strVal == "active"
+        check active.mapEntries["handled"].intVal == 1
+        let first = run(compileSource(
+          "(let IoResource $io/IoResource) " &
+          "(native_handle .IoResource:wait_closed)"), scope)
+        let second = run(compileSource(
+          "(native_handle .IoResource:wait_closed)"), scope)
+        check first.bits != second.bits
+        check not first.taskDone and not second.taskDone
+        let during = run(compileSource(
+          "(/io_root_cleanup_tasks ($runtime/gc_stats))"), scope)
+        check during.intVal >= 3
+        let started = getMonoTime()
+        discard run(compileSource("(native_handle .IoResource:close)"), scope)
+        check (getMonoTime() - started).inMilliseconds < 100
+        discard nativeTaskCancel(first, scope)
+        check first.taskCancelled
+        discard run(compileSource(
+          "(await (native_handle .IoResource:wait_closed))"), scope)
+        check subscription.released
+        check first.taskDone and second.taskDone
+        check first.taskCancelled and not second.taskHasError
+        let closed = run(compileSource("(native_handle .status)"), scope)
+        check closed.mapEntries["state"].strVal == "closed"
+        let late = run(compileSource(
+          "(native_handle .IoResource:wait_closed)"), scope)
+        check late.taskDone and late.bits != first.bits
+        let after = run(compileSource(
+          "(/io_root_cleanup_tasks ($runtime/gc_stats))"), scope)
+        check after.intVal == 0
+        when defined(geneRcStats):
+          check nativeRootCount() == baseline
+
+  test "v5 abandoned Gene handle requests close and retires after unregister":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        defer: library.closeFfiLibrary()
+        check geneLoadModuleVersioned(library, "abandoned-v5", 5).status == gsOk
+        let slow = cast[GeneIngressUnregisterProc](symAddr(handle,
+          "gene_test_v5_unregister_slow"))
+        let scope = newGlobalScope()
+        let subscription = newGeneIngressSubscription(
+          newNativeFn("capture_v5_foreign", captureV5Foreign), scope,
+          unregisterProc = slow)
+        var wrapper = newGeneIngressHandle(subscription, scope)
+        wrapper = NIL
+        let deadline = getMonoTime() + initDuration(seconds = 3)
+        while not subscription.released and getMonoTime() < deadline:
+          discard run(compileSource("($sleep 10)"), scope)
+        check subscription.released
+        check subscription.closeRequested
+
+  test "v5 C registration bridge creates a Gene-owned subscription":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        let scope = newGlobalScope()
+        scope.define("bridge_library", library)
+        scope.define("bridge_handler",
+          newNativeFn("capture_v5_foreign", captureV5Foreign))
+        v5ForeignDelivered.setLen(0)
+        let wrapper = run(compileSource("""
+          ($native/ingress/open bridge_library bridge_handler
+            ^register "gene_test_v5_register"
+            ^unregister "gene_test_v5_unregister_slow")
+        """), scope)
+        scope.define("bridge_subscription", wrapper)
+        discard run(compileSource("($sleep 5)"), scope)
+        check v5ForeignDelivered == @["registered"]
+        let status = run(compileSource("(bridge_subscription .status)"), scope)
+        check status.mapEntries["state"].strVal == "active"
+        check status.mapEntries["handled"].intVal == 1
+        expect GeneError:
+          library.closeFfiLibrary()
+        discard run(compileSource("""
+          (let IoResource $io/IoResource)
+          (bridge_subscription .IoResource:close)
+          (await (bridge_subscription .IoResource:wait_closed))
+        """), scope)
+        check run(compileSource("(bridge_subscription .status)"),
+                  scope).mapEntries["state"].strVal == "closed"
+        library.closeFfiLibrary()
+        check library.ffiLibraryClosed
+
+  test "v5 failed registration keeps cleanup until C unregister returns":
+    let path = buildV5Fixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      if handle != nil:
+        let library = newFfiLibrary(cast[pointer](handle), path,
+                                    unloadV5Fixture)
+        let scope = newGlobalScope()
+        scope.define("bridge_library", library)
+        scope.define("bridge_handler",
+          newNativeFn("capture_v5_foreign", captureV5Foreign))
+        let baseline = nativeRootCount()
+        expect GeneError:
+          discard run(compileSource("""
+            ($native/ingress/open bridge_library bridge_handler
+              ^register "gene_test_v5_register_fail"
+              ^unregister "gene_test_v5_unregister_slow")
+          """), scope)
+        expect GeneError:
+          library.closeFfiLibrary()
+        discard run(compileSource("($sleep 250)"), scope)
+        expect GeneError:
+          discard run(compileSource("""
+            ($native/ingress/open bridge_library bridge_handler
+              ^register "gene_test_v5_register_no_context"
+              ^unregister "gene_test_v5_unregister_slow")
+          """), scope)
+        discard run(compileSource("($sleep 250)"), scope)
+        library.closeFfiLibrary()
+        check library.ffiLibraryClosed
+        when defined(geneRcStats):
+          check nativeRootCount() == baseline
   test "concurrent awaits consume once while joins retain a consistent outcome":
     let app = newApplication()
     let producer = newGlobalScope(app)
@@ -221,7 +621,7 @@ suite "native api threaded attachment":
           check successes == 1
 
   test "native failure publication checks payload and formatter Send requirements":
-    for kind in ["data", "formatter", "admitted"]:
+    for kind in ["data", "formatter", "admitted", "builtin"]:
       let scope = newGlobalScope(newApplication())
       scope.implOverlayRoot = true
       var payload: Value
@@ -238,10 +638,14 @@ suite "native api threaded attachment":
             (message message [] : Str ^errors [] (local .get)))
           (NativeFailure ^code 1)
         """), scope)
-      else:
+      elif kind == "admitted":
         payload = run(compileSource("""
           (try (fail ($freeze (AssertionError ^message "native"))) catch Error $err)
         """), scope)
+      else:
+        # A foreign native thread may admit a built-in error before this
+        # Application has ever spawned a Gene task.
+        payload = run(compileSource("($freeze (AssertionError ^message \"native\"))"), scope)
       let task = nativeNewAsyncTask()
       markSharedValue(payload)
       markSharedValue(task)
@@ -251,7 +655,7 @@ suite "native api threaded attachment":
       joinThread(worker)
       scope.define("pending", task)
       let caught = run(compileSource("(try (await pending) catch Error $err)"), scope)
-      if kind == "admitted":
+      if kind in ["admitted", "builtin"]:
         check args.accepted
         check not args.rejected
         check caught.bits == payload.bits

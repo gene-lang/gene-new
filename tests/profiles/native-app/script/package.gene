@@ -1,0 +1,2 @@
+{^format 1 ^name "gene/native_app_script" ^version "0.1.0"
+ ^applications [(application "script" ^entry "src/main.gene")]}

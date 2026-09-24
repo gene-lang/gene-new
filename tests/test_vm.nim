@@ -3126,8 +3126,13 @@ suite "vm — actors":
        "        (fail (Boom ^message \"bad\"))))) " &
        "    (spawn (a .send i)) " &
        "    (set i (+ i 1))) " &
-       "  ($sleep 20) " &
+       "  (var attempts 0) " &
        "  (var stats ($runtime/gc_stats)) " &
+       "  (while (< attempts 1000) " &
+       "    (if (> stats/supervisor_retry_drops 0) (then (break))) " &
+       "    ($sleep 1) " &
+       "    (set attempts (+ attempts 1)) " &
+       "    (set stats ($runtime/gc_stats))) " &
        "  (var first (events .recv)) " &
        "  (var second (events .recv)) " &
        "  (var drained 0) " &

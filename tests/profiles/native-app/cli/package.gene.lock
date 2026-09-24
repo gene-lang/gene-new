@@ -1,0 +1,31 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:2fe146a9d8ec3313f793f145a015b6276f99fb37426bec65803386c82d3132cb"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:gene/native_app_cli@0.1.0#sha256:e7b09ca931f07115f88f493ed6521d886f3a127dd3f20099876ebf45a3d8368a"]
+  ^packages [
+    (locked_package
+      ^id "path:gene/native_app_support@0.1.0#sha256:402565864ca32a44335f950ceb3738df8d0222de7a2523d01a163e2154810331"
+      ^name "gene/native_app_support"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:4983cd2bfee48fbe9480c1b6b034fcaa46f2595f07a2e2f2954a724c30466d43"
+      ^source (path ^path "../support")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:gene/native_app_cli@0.1.0#sha256:e7b09ca931f07115f88f493ed6521d886f3a127dd3f20099876ebf45a3d8368a"
+      ^name "gene/native_app_cli"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:2fe146a9d8ec3313f793f145a015b6276f99fb37426bec65803386c82d3132cb"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^support (locked_edge ^scope runtime ^target "path:gene/native_app_support@0.1.0#sha256:402565864ca32a44335f950ceb3738df8d0222de7a2523d01a163e2154810331")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}

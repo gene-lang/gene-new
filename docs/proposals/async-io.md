@@ -1,6 +1,6 @@
 # Async I/O and Resource Lifetime
 
-**Status:** Implementation proposal, reviewed against `3b2bde9`; new APIs below are not implemented.
+**Status:** IO-1 contracts and lifecycle are experimental in the native VM. IO-2 has worker-backed POSIX files and `io/pipe` endpoints with bounded bytes, root-lane completion, cleanup leases, and typed broken-pipe errors. Blocked pipe operations park in a `poll(2)` readiness watcher instead of timed worker requeues. `os/exec_stream_async` accepts consumed `^stdin_pipe` readers and `^stdout_pipe`/`^stderr_pipe` writers for raw Bytes. IO-3 has experimental duplex TCP streams/listeners and HTTP server request/response body adapters using the same lifecycle/readiness path; binary exchange, slow-peer fairness, cancellation, and byte budgets pass on macOS. The owned HTTP Client has experimental buffered/streamed responses and AsyncReader uploads; Linux runtime qualification remains open. macOS ORC/AtomicArc tests pass. Design baseline `3b2bde9`.
 
 **Stages:** IO-1 (contracts), IO-2 (files/pipes), IO-3 (sockets/integration).
 

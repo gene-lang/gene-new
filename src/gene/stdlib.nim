@@ -1565,7 +1565,376 @@ proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 
 
 # net/http server implementation (event loop, dispatch, helpers).
+proc biPkgDependency(args: openArray[Value],
+                     call: ptr NativeCall): Value {.nimcall.}
+proc biPkgNativeBinary(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.}
+proc biMaterializedPath(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.}
 include ./ext/http_server
+
+include ./ext/csv
+include ./ext/fs_walk
+include ./ext/temporal
+include ./ext/tzif
+proc packageValue*(pkg: Package): Value
+
+# --- package-relative immutable resources -----------------------------------
+
+proc raisePackageResourceError(scope: Scope, message: string) {.noreturn.} =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  var error: ref GeneError
+  new(error)
+  error.msg = message
+  error.errVal = newNode(builtInTypeHead(scope, "PackageResourceError"),
+                         props = props)
+  error.hasErrVal = true
+  raise error
+
+proc selectedPackageValue(scope: Scope, value: Value): Package =
+  if scope == nil or value.kind != vkMap:
+    raisePackageResourceError(scope, "pkg: expected a Package value")
+  let id = value.mapEntries.getOrDefault("id", NIL)
+  if id.kind != vkString or not scope.application().packagesById.hasKey(id.strVal):
+    raisePackageResourceError(scope, "pkg: package is not in this Application")
+  result = scope.application().packagesById[id.strVal]
+
+proc packageResourceBytes(args: openArray[Value], call: ptr NativeCall,
+                          text: bool): Value =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 2 or args[1].kind != vkString:
+    raisePackageResourceError(scope, "pkg/read requires a Package and path Str")
+  let pkg = selectedPackageValue(scope, args[0])
+  var maxBytes = 16 * 1024 * 1024
+  if call != nil:
+    for i, name in call[].namedNames:
+      if name != "max_bytes":
+        raisePackageResourceError(scope, "pkg/read unknown option: " & name)
+      let value = call[].namedValues[i]
+      if value.kind != vkInt or not value.intFitsInt64 or value.intVal < 1 or
+          value.intVal > 64 * 1024 * 1024:
+        raisePackageResourceError(scope, "pkg/read ^max_bytes must be bounded Int")
+      maxBytes = int(value.intVal)
+  var path: string
+  try:
+    path = normalizeRelativePath(args[1].strVal, "resource", pkg.manifestPath)
+  except PackageError as error:
+    raisePackageResourceError(scope, "pkg/read: " & error.msg)
+  let app = scope.application()
+  if path.len == 0 or not app.resourceIndex.hasKey(pkg.id) or
+      not app.resourceIndex[pkg.id].hasKey(path):
+    raisePackageResourceError(scope, "pkg/read resource is not selected: " & path)
+  let selected = app.resourceIndex[pkg.id][path]
+  if selected.size > maxBytes:
+    raisePackageResourceError(scope, "pkg/read resource exceeds max_bytes")
+  let absolute = selected.sourcePath
+  try:
+    if not fileExists(absolute) or symlinkExists(absolute) or
+        not containsPath(canonicalPath(selected.sourceRoot),
+                         canonicalPath(absolute)):
+      raisePackageResourceError(scope, "pkg/read resource is missing: " & path)
+    let bytes = readFile(absolute)
+    if bytes.len != selected.size or
+        "sha256:" & sha256Hex(bytes) != selected.digest:
+      raisePackageResourceError(scope, "pkg/read resource digest mismatch: " & path)
+    if text:
+      if unicode.validateUtf8(bytes) >= 0:
+        raisePackageResourceError(scope, "pkg/read_text requires UTF-8: " & path)
+      result = newStr(bytes)
+    else:
+      result = newBytes(bytes)
+  except OSError as error:
+    raisePackageResourceError(scope, "pkg/read: " & error.msg)
+
+proc biPkgReadBytes(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  result = packageResourceBytes(args, call, false)
+
+proc biPkgReadText(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  result = packageResourceBytes(args, call, true)
+
+proc biPkgDependency(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 2 or args[1].kind != vkString:
+    raisePackageResourceError(scope, "pkg/dependency expects Package and alias Str")
+  let pkg = selectedPackageValue(scope, args[0])
+  if not pkg.dependencyEdges.hasKey(args[1].strVal):
+    raisePackageResourceError(scope, "pkg/dependency alias is not declared")
+  let id = pkg.dependencyEdges[args[1].strVal]
+  if not scope.application().packagesById.hasKey(id):
+    raisePackageResourceError(scope, "pkg/dependency is not materialized")
+  result = scope.application().packagesById[id].packageValue()
+
+proc biPkgMaterialize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  when defined(emscripten) or defined(geneWasm):
+    raisePackageResourceError(scope, "pkg/materialize is unavailable on this target")
+  else:
+    if args.len != 2 or args[1].kind != vkString:
+      raisePackageResourceError(scope, "pkg/materialize expects Package and path Str")
+    let pkg = selectedPackageValue(scope, args[0])
+    var path: string
+    try:
+      path = normalizeRelativePath(args[1].strVal, "resource", pkg.manifestPath)
+    except PackageError as error:
+      raisePackageResourceError(scope, "pkg/materialize: " & error.msg)
+    let app = scope.application()
+    if path.len == 0 or not app.resourceIndex.hasKey(pkg.id) or
+        not app.resourceIndex[pkg.id].hasKey(path):
+      raisePackageResourceError(scope, "pkg/materialize resource is not selected")
+    let selected = app.resourceIndex[pkg.id][path]
+    if not selected.digest.startsWith("sha256:") or
+        selected.digest.len != 71:
+      raisePackageResourceError(scope, "pkg/materialize invalid resource digest")
+    let source = selected.sourcePath
+    let cache = app.userStoreRoot / "resources" / "sha256"
+    let cached = cache / selected.digest[7 .. ^1]
+    try:
+      if not fileExists(source) or symlinkExists(source) or
+          not containsPath(canonicalPath(selected.sourceRoot),
+                           canonicalPath(source)):
+        raisePackageResourceError(scope, "pkg/materialize resource is missing")
+      createDir(cache)
+      fsRestrictDirToOwner(app.userStoreRoot / "resources")
+      fsRestrictDirToOwner(cache)
+      let claim = acquireProcessFileLock(cached & ".lock")
+      try:
+        var valid = fileExists(cached) and getFileSize(cached) == selected.size
+        if valid:
+          valid = "sha256:" & sha256File(cached) == selected.digest
+        if not valid:
+          let temporary = cached & ".tmp-" & $getCurrentProcessId()
+          if fileExists(temporary): removeFile(temporary)
+          try:
+            copyFile(source, temporary)
+            setFilePermissions(temporary, {fpUserRead, fpUserWrite})
+            if getFileSize(temporary) != selected.size or
+                "sha256:" & sha256File(temporary) != selected.digest:
+              raisePackageResourceError(scope,
+                "pkg/materialize source changed during copy")
+            moveFile(temporary, cached)
+          except CatchableError:
+            if fileExists(temporary): removeFile(temporary)
+            raise
+      finally:
+        claim.release()
+      let id = nextRuntimeResourceId()
+      result = newRuntimeResourceHandle(scope, "MaterializedResource", id)
+      acquire(resourceRecordLock)
+      try:
+        materializedResourceRecords[id] = MaterializedResourceRecord(
+          application: app, path: cached, digest: selected.digest)
+        materializedLeaseCounts[cached] =
+          materializedLeaseCounts.getOrDefault(cached) + 1
+      finally:
+        release(resourceRecordLock)
+    except OSError as error:
+      raisePackageResourceError(scope, "pkg/materialize: " & error.msg)
+
+proc biPkgNativeBinary(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 2 or args[1].kind != vkString:
+    raisePackageResourceError(scope,
+      "pkg/native_binary expects Package and recipe alias Str")
+  let pkg = selectedPackageValue(scope, args[0])
+  let app = scope.application()
+  if not app.nativeBinaryIndex.hasKey(pkg.id) or
+      not app.nativeBinaryIndex[pkg.id].hasKey(args[1].strVal):
+    raisePackageResourceError(scope,
+      "native binary recipe is not selected: " & args[1].strVal)
+  let selected = app.nativeBinaryIndex[pkg.id][args[1].strVal]
+  if selected.target != hostCPU & "-" & hostOS:
+    raisePackageResourceError(scope,
+      "native binary target is incompatible with this runtime")
+  biPkgMaterialize([args[0], newStr(selected.path)], call)
+
+proc requireMaterialized(scope: Scope, value: Value):
+                         MaterializedResourceRecord =
+  let expected = builtInTypeHead(scope, "MaterializedResource")
+  if value.kind != vkNode or value.nodeResourceId == 0 or
+      not value.head.typeInheritsFrom(expected):
+    raisePackageResourceError(scope, "expected a MaterializedResource")
+  acquire(resourceRecordLock)
+  try:
+    result = materializedResourceRecords.getOrDefault(value.nodeResourceId)
+    if result == nil or result.application != scope.application():
+      raisePackageResourceError(scope, "materialized resource is unavailable")
+  finally:
+    release(resourceRecordLock)
+
+proc biMaterializedPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raisePackageResourceError(scope, "MaterializedResource/path expects receiver")
+  let record = requireMaterialized(scope, args[0])
+  if record.closed:
+    raisePackageResourceError(scope, "materialized resource is closed")
+  result = newStr(record.path)
+
+proc biMaterializedClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raisePackageResourceError(scope, "MaterializedResource/close expects receiver")
+  let record = requireMaterialized(scope, args[0])
+  acquire(resourceRecordLock)
+  try:
+    if not record.closed:
+      record.closed = true
+      let count = materializedLeaseCounts.getOrDefault(record.path)
+      if count <= 1: materializedLeaseCounts.del(record.path)
+      else: materializedLeaseCounts[record.path] = count - 1
+  finally:
+    release(resourceRecordLock)
+  result = NIL
+
+# --- paths: lexical native-platform path operations ---------------------------
+
+proc raisePathError(message: string, scope: Scope) =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, "PathError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc pathPieces(path: string): seq[string] =
+  var part = ""
+  for ch in path:
+    let separator =
+      when defined(windows): ch == '/' or ch == '\\'
+      else: ch == '/'
+    if separator:
+      if part.len > 0:
+        result.add part
+        part = ""
+    else:
+      part.add ch
+  if part.len > 0:
+    result.add part
+
+proc pathLexicalNormalize(raw: string): string =
+  when defined(windows):
+    # Windows drive/UNC semantics need a separately qualified path profile.
+    # Refuse those inputs instead of treating them as a relative POSIX path.
+    if raw.len >= 2 and raw[1] == ':':
+      raise newException(ValueError, "drive-qualified paths are not yet supported")
+    if raw.startsWith("\\\\") or raw.startsWith("//"):
+      raise newException(ValueError, "UNC paths are not yet supported")
+  let absolute = raw.len > 0 and raw[0] == '/'
+  var parts: seq[string]
+  for part in pathPieces(raw):
+    if part == ".":
+      continue
+    if part == "..":
+      if parts.len > 0 and parts[^1] != "..":
+        parts.setLen(parts.len - 1)
+      elif not absolute:
+        parts.add part
+    else:
+      parts.add part
+  result = parts.join("/")
+  if absolute:
+    result = "/" & result
+  elif result.len == 0:
+    result = "."
+
+proc pathInput(name: string, value: Value, scope: Scope): string =
+  if value.kind != vkString:
+    raisePathError(name & " expects Str path", scope)
+  result = value.strVal
+  if '\0' in result:
+    raisePathError(name & " rejects NUL in a path", scope)
+
+proc pathBaseName(path: string): string =
+  let normalized = pathLexicalNormalize(path)
+  if normalized in ["/", "."]:
+    return ""
+  let slash = normalized.rfind('/')
+  result = if slash < 0: normalized else: normalized[slash + 1 .. ^1]
+
+proc biPathNormalize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1: raisePathError("path/normalize expects one path", scope)
+  try:
+    result = newStr(pathLexicalNormalize(pathInput("path/normalize", args[0], scope)))
+  except ValueError as e:
+    raisePathError("path/normalize: " & e.msg, scope)
+
+proc biPathJoin(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len == 0: raisePathError("path/join expects at least one path", scope)
+  var joined = pathInput("path/join", args[0], scope)
+  for i in 1 ..< args.len:
+    let part = pathInput("path/join", args[i], scope)
+    if part.len > 0 and (isAbsolute(part) or
+        (when defined(windows): part.len >= 2 and part[1] == ':'
+         else: false)):
+      raisePathError("path/join rejects an absolute later component", scope)
+    if part.len > 0:
+      if joined.len > 0 and joined[^1] != '/': joined.add '/'
+      joined.add part
+  try:
+    result = newStr(pathLexicalNormalize(joined))
+  except ValueError as e:
+    raisePathError("path/join: " & e.msg, scope)
+
+proc biPathParent(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1: raisePathError("path/parent expects one path", scope)
+  try:
+    let p = pathLexicalNormalize(pathInput("path/parent", args[0], scope))
+    let slash = p.rfind('/')
+    result = newStr(if p == "/": "/"
+                    elif p == "." or slash < 0: "."
+                    elif slash == 0: "/"
+                    else: p[0 ..< slash])
+  except ValueError as e:
+    raisePathError("path/parent: " & e.msg, scope)
+
+proc biPathName(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1: raisePathError("path/name expects one path", scope)
+  try:
+    result = newStr(pathBaseName(pathInput("path/name", args[0], scope)))
+  except ValueError as e:
+    raisePathError("path/name: " & e.msg, scope)
+
+proc biPathExtension(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1: raisePathError("path/extension expects one path", scope)
+  try:
+    let name = pathBaseName(pathInput("path/extension", args[0], scope))
+    let dot = name.rfind('.')
+    result = newStr(if dot <= 0: "" else: name[dot .. ^1])
+  except ValueError as e:
+    raisePathError("path/extension: " & e.msg, scope)
+
+proc biPathRelative(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 2: raisePathError("path/relative expects target and base", scope)
+  try:
+    let target = pathLexicalNormalize(pathInput("path/relative", args[0], scope))
+    let base = pathLexicalNormalize(pathInput("path/relative", args[1], scope))
+    if target.startsWith("/") != base.startsWith("/"):
+      raisePathError("path/relative requires compatible roots", scope)
+    let toParts = pathPieces(target)
+    let fromParts = pathPieces(base)
+    if (toParts.len > 0 and toParts[0] == "..") or
+        (fromParts.len > 0 and fromParts[0] == ".."):
+      raisePathError("path/relative cannot resolve a leading parent segment", scope)
+    var common = 0
+    while common < toParts.len and common < fromParts.len and
+        toParts[common] == fromParts[common]:
+      inc common
+    var relativeParts: seq[string]
+    for _ in common ..< fromParts.len: relativeParts.add ".."
+    for i in common ..< toParts.len: relativeParts.add toParts[i]
+    result = newStr(if relativeParts.len == 0: "." else: relativeParts.join("/"))
+  except ValueError as e:
+    raisePathError("path/relative: " & e.msg, scope)
 
 # --- os: environment, subprocess, and line input (docs/stdlib.md "Module Layout") ---
 #
@@ -1927,6 +2296,48 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     process.close()
 
 when compileOption("threads"):
+  when defined(posix):
+    {.emit: """
+#include <signal.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+static ssize_t gene_os_exec_pipe_write(int fd, const void *data, size_t len) {
+  sigset_t blocked;
+  sigset_t oldmask;
+  sigset_t pending;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGPIPE);
+  int mask_error = pthread_sigmask(SIG_BLOCK, &blocked, &oldmask);
+  if (mask_error != 0) { errno = mask_error; return -1; }
+  ssize_t count = write(fd, data, len);
+  int saved_errno = errno;
+  if (count < 0 && saved_errno == EPIPE &&
+      !sigismember(&oldmask, SIGPIPE) &&
+      sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
+    int received;
+    sigwait(&blocked, &received);
+  }
+  pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+  errno = saved_errno;
+  return count;
+}
+static int gene_os_exec_finish_stdin(int fd) {
+  int replacement = open("/dev/null", O_WRONLY | O_CLOEXEC);
+  if (replacement < 0) return -1;
+  int result = dup2(replacement, fd);
+  int saved_errno = errno;
+  close(replacement);
+  errno = saved_errno;
+  return result < 0 ? -1 : 0;
+}
+""".}
+    proc osExecPipeWrite(fd: cint, data: pointer, len: csize_t): int
+      {.importc: "gene_os_exec_pipe_write", nodecl.}
+    proc osExecFinishStdin(fd: cint): cint
+      {.importc: "gene_os_exec_finish_stdin", nodecl.}
+
   # The sync and async inherited-stream variants share one physical terminal
   # and manipulate process-wide SIGINT disposition. Serialize both surfaces.
   var osExecStdioLock: Lock
@@ -2038,6 +2449,9 @@ when compileOption("threads"):
       maxBytes: int
       taskBits: uint64      # external Task (OBJECT_TAG bits), worker-borrowed
       lineChanBits: uint64  # 0, or a Channel (bits) receiving stdout lines
+      stdoutPipeFd: cint    # duplicate of an io/pipe writer, worker-owned
+      stderrPipeFd: cint
+      stdinPipeFd: cint     # duplicate of an io/pipe reader, worker-owned
       lineLock: Lock
       lineHead: ptr SharedExecLine
       lineTail: ptr SharedExecLine
@@ -2065,6 +2479,15 @@ when compileOption("threads"):
       ctx: ptr OsExecAsyncCtx
       taskOwner: Value
       lineChanOwner: Value
+      pipeWriterOwner: Value
+      pipeBorrow: IoPipeBorrow
+      pipeScope: Scope
+      stderrWriterOwner: Value
+      stderrBorrow: IoPipeBorrow
+      stderrScope: Scope
+      stdinReaderOwner: Value
+      stdinBorrow: IoPipeBorrow
+      stdinScope: Scope
 
   proc sharedExecText(text: string): SharedExecText =
     result.len = text.len
@@ -2097,6 +2520,16 @@ when compileOption("threads"):
   proc freeOsExecCtx(ctx: ptr OsExecAsyncCtx) =
     if ctx == nil:
       return
+    when defined(posix):
+      if ctx.stdoutPipeFd >= 0:
+        discard posix.close(ctx.stdoutPipeFd)
+        ctx.stdoutPipeFd = -1
+      if ctx.stderrPipeFd >= 0:
+        discard posix.close(ctx.stderrPipeFd)
+        ctx.stderrPipeFd = -1
+      if ctx.stdinPipeFd >= 0:
+        discard posix.close(ctx.stdinPipeFd)
+        ctx.stdinPipeFd = -1
     discard consumeSharedExecText(ctx.name)
     discard consumeSharedExecText(ctx.cmd)
     discard consumeSharedExecText(ctx.workdir)
@@ -2192,6 +2625,12 @@ when compileOption("threads"):
               ctx.lineTail = lineTail
         let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
         if workerDone and not channelBlocked:
+          if pending.pipeBorrow.resourceId != 0:
+            finishIoPipeOutputBorrow(pending.pipeBorrow, pending.pipeScope)
+          if pending.stderrBorrow.resourceId != 0:
+            finishIoPipeOutputBorrow(pending.stderrBorrow, pending.stderrScope)
+          if pending.stdinBorrow.resourceId != 0:
+            finishIoPipeInputBorrow(pending.stdinBorrow, pending.stdinScope)
           var channel {.cursor.}: Value
           channel.bits = ctx.lineChanBits
           if ctx.lineChanBits != 0:
@@ -2232,8 +2671,12 @@ when compileOption("threads"):
           osExecAsyncPending.setLen(last)
         else:
           inc i
+    pollIoFileCompletions()
     pollHttpClientCompletions()
+    pollOwnedHttpClientCompletions()
+    pollHttpTlsReloadCompletions()
     pollCursesInputCompletions()
+    pollNativeIngressHook()
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -2241,6 +2684,17 @@ when compileOption("threads"):
       # It never constructs a Gene Value or touches an ORC-managed object from
       # the scheduler heap.
       let ctx = cast[ptr OsExecAsyncCtx](jobPtr)
+      defer:
+        when defined(posix):
+          if ctx.stdoutPipeFd >= 0:
+            discard posix.close(ctx.stdoutPipeFd)
+            ctx.stdoutPipeFd = -1
+          if ctx.stderrPipeFd >= 0:
+            discard posix.close(ctx.stderrPipeFd)
+            ctx.stderrPipeFd = -1
+          if ctx.stdinPipeFd >= 0:
+            discard posix.close(ctx.stdinPipeFd)
+            ctx.stdinPipeFd = -1
       let nativeName = readSharedExecText(ctx.name)
       let nativeCmd = readSharedExecText(ctx.cmd)
       let nativeWorkdir = readSharedExecText(ctx.workdir)
@@ -2255,6 +2709,9 @@ when compileOption("threads"):
       var errTruncated = false
       var timedOut = false
       var cancelled = false
+      var stdoutPipeFailed = false
+      var stderrPipeFailed = false
+      var stdinPipeFailed = false
       var lineBuf = ""
       var exitCode = 0
       var chanGone = ctx.lineChanBits == 0
@@ -2290,9 +2747,31 @@ when compileOption("threads"):
                 ctx.lineTail.next = node
                 ctx.lineTail = node
 
+      template writeOutputPipe(pipeFd: cint, chunk: string,
+                               failed: var bool) =
+        block:
+          when defined(posix):
+            if pipeFd >= 0 and not failed:
+              var written = 0
+              while written < chunk.len:
+                let count = osExecPipeWrite(pipeFd,
+                  unsafeAddr chunk[written], csize_t(chunk.len - written))
+                if count > 0:
+                  written += count
+                elif errno == EAGAIN or errno == EWOULDBLOCK:
+                  if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+                    cancelled = true
+                    break
+                  os.sleep(2)
+                else:
+                  failed = true
+                  break
+
       template handleStdoutChunk(chunk: string) =
         block:
-          appendCapped(outText, outTruncated, chunk)
+          if ctx.stdoutPipeFd < 0:
+            appendCapped(outText, outTruncated, chunk)
+          writeOutputPipe(ctx.stdoutPipeFd, chunk, stdoutPipeFailed)
           if not chanGone:
             for ch in chunk:
               if ch == '\n':
@@ -2302,6 +2781,12 @@ when compileOption("threads"):
                 lineBuf.setLen(0)
               else:
                 lineBuf.add ch
+
+      template handleStderrChunk(chunk: string) =
+        block:
+          if ctx.stderrPipeFd < 0:
+            appendCapped(errText, errTruncated, chunk)
+          writeOutputPipe(ctx.stderrPipeFd, chunk, stderrPipeFailed)
 
       template settleFail(message: string) =
         block:
@@ -2382,11 +2867,51 @@ when compileOption("threads"):
           when defined(posix):
             let outFd = process.outputHandle.cint
             let errFd = process.errorHandle.cint
+            let inFd = process.inputHandle.cint
             discard fcntl(outFd, F_SETFL,
                           fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
             discard fcntl(errFd, F_SETFL,
                           fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
+            if ctx.stdinPipeFd >= 0:
+              if inFd < 0 or fcntl(inFd, F_SETFL,
+                  fcntl(inFd, F_GETFL, 0) or O_NONBLOCK) < 0:
+                stdinPipeFailed = true
             var buf: array[4096, char]
+            var stdinBuf: array[4096, char]
+            var stdinCount = 0
+            var stdinOffset = 0
+            var stdinDone = ctx.stdinPipeFd < 0
+            template finishInput() =
+              block:
+                if not stdinDone:
+                  stdinDone = true
+                  if osExecFinishStdin(inFd) != 0:
+                    stdinPipeFailed = true
+                  discard posix.close(ctx.stdinPipeFd)
+                  ctx.stdinPipeFd = -1
+            template pumpInput() =
+              block:
+                if not stdinDone and not stdinPipeFailed:
+                  if stdinOffset >= stdinCount:
+                    let received = posix.read(ctx.stdinPipeFd,
+                                              addr stdinBuf[0], stdinBuf.len)
+                    if received > 0:
+                      stdinCount = received
+                      stdinOffset = 0
+                    elif received == 0:
+                      finishInput()
+                    elif errno != EAGAIN and errno != EWOULDBLOCK:
+                      stdinPipeFailed = true
+                  if not stdinDone and stdinOffset < stdinCount:
+                    let accepted = osExecPipeWrite(inFd,
+                      addr stdinBuf[stdinOffset],
+                      csize_t(stdinCount - stdinOffset))
+                    if accepted > 0:
+                      stdinOffset += accepted
+                    elif errno == EPIPE:
+                      finishInput()
+                    elif errno != EAGAIN and errno != EWOULDBLOCK:
+                      stdinPipeFailed = true
             # Template, not a nested proc: a proc would capture the cursor
             # views through the expanded helpers into a closure env.
             template drainAvailable(fd: cint, isOut: bool) =
@@ -2398,12 +2923,16 @@ when compileOption("threads"):
                   when isOut:
                     handleStdoutChunk(chunk)
                   else:
-                    appendCapped(errText, errTruncated, chunk)
+                    handleStderrChunk(chunk)
                 else:
                   break
             while process.running:
               drainAvailable(outFd, true)
               drainAvailable(errFd, false)
+              pumpInput()
+              if stdoutPipeFailed or stderrPipeFailed or stdinPipeFailed:
+                process.terminate()
+                break
               if cancellationRequested():
                 cancelled = true
                 process.terminate()
@@ -2413,7 +2942,8 @@ when compileOption("threads"):
                 process.terminate()
                 break
               os.sleep(osExecPollMs)
-            exitCode = if timedOut or cancelled:
+            exitCode = if timedOut or cancelled or stdoutPipeFailed or
+                          stderrPipeFailed or stdinPipeFailed:
                          (discard process.waitForExit(); -1)
                        else:
                          process.waitForExit()
@@ -2435,10 +2965,19 @@ when compileOption("threads"):
                        else:
                          process.waitForExit()
             handleStdoutChunk(process.outputStream.readAll())
-            appendCapped(errText, errTruncated, process.errorStream.readAll())
+            handleStderrChunk(process.errorStream.readAll())
           if lineBuf.len > 0:
             sendLine(lineBuf)
             lineBuf.setLen(0)
+          if stdoutPipeFailed:
+            settleFail(nativeName & " stdout pipe closed during write")
+            return
+          if stderrPipeFailed:
+            settleFail(nativeName & " stderr pipe closed during write")
+            return
+          if stdinPipeFailed:
+            settleFail(nativeName & " stdin pipe transfer failed")
+            return
           if cancelled:
             ctx.resultCancelled = true
             return
@@ -2492,8 +3031,12 @@ when compileOption("threads"):
 
 else:
   proc pollOsExecAsyncCompletions() =
+    pollIoFileCompletions()
     pollHttpClientCompletions()
+    pollOwnedHttpClientCompletions()
+    pollHttpTlsReloadCompletions()
     pollCursesInputCompletions()
+    pollNativeIngressHook()
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        inheritStdio: bool,
@@ -2510,6 +3053,9 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
   var maxBytes = osExecDefaultOutputCap
   var workdir = ""
   var lineChan = NIL
+  var stdoutPipe = NIL
+  var stderrPipe = NIL
+  var stdinPipe = NIL
   if call != nil:
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
@@ -2541,6 +3087,18 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        scope)
         requireChannel(name & " ^stdout_chan", v)
         lineChan = v
+      of "stdout_pipe":
+        if not wantChan or inheritStdio:
+          raiseOsError(name & " got unexpected named argument: stdout_pipe", scope)
+        stdoutPipe = v
+      of "stderr_pipe":
+        if not wantChan or inheritStdio:
+          raiseOsError(name & " got unexpected named argument: stderr_pipe", scope)
+        stderrPipe = v
+      of "stdin_pipe":
+        if not wantChan or inheritStdio:
+          raiseOsError(name & " got unexpected named argument: stdin_pipe", scope)
+        stdinPipe = v
       else:
         raiseOsError(name & " got unexpected named argument: " & argName,
                      scope)
@@ -2548,9 +3106,12 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     raiseOsError(name & " requires a non-empty ^cmd", scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
-  if wantChan and lineChan.kind == vkNil:
-    raiseOsError(name & " requires ^stdout_chan (a Channel of stdout lines)",
+  if wantChan and lineChan.kind == vkNil and stdoutPipe.kind == vkNil and
+      stderrPipe.kind == vkNil and stdinPipe.kind == vkNil:
+    raiseOsError(name & " requires a stream channel or pipe",
                  scope)
+  if lineChan.kind != vkNil and stdoutPipe.kind != vkNil:
+    raiseOsError(name & " accepts one stdout destination at a time", scope)
   when compileOption("threads"):
     if scope == nil or scope.application == nil:
       raiseOsError(name & " requires a scheduler scope", scope)
@@ -2560,6 +3121,9 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     if lineChan.kind != vkNil:
       markSharedValue(lineChan)
     let ctx = cast[ptr OsExecAsyncCtx](allocShared0(sizeof(OsExecAsyncCtx)))
+    ctx.stdoutPipeFd = -1
+    ctx.stderrPipeFd = -1
+    ctx.stdinPipeFd = -1
     ctx.name = sharedExecText(name)
     ctx.cmd = sharedExecText(cmd)
     ctx.workdir = sharedExecText(workdir)
@@ -2586,6 +3150,45 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     let pending = OsExecPending(ctx: ctx)
     pending.taskOwner = retainedCopy(task)
     pending.lineChanOwner = retainedCopy(lineChan)
+    if stdoutPipe.kind != vkNil:
+      try:
+        pending.pipeBorrow = beginIoPipeOutputBorrow(stdoutPipe, scope, task,
+                                                     "stdout_pipe")
+        pending.pipeWriterOwner = retainedCopy(stdoutPipe)
+        pending.pipeScope = scope.application().builtinsScope()
+        ctx.stdoutPipeFd = pending.pipeBorrow.fd
+      except CatchableError:
+        freeOsExecCtx(ctx)
+        raise
+    if stderrPipe.kind != vkNil:
+      try:
+        pending.stderrBorrow = beginIoPipeOutputBorrow(stderrPipe, scope, task,
+                                                       "stderr_pipe")
+        pending.stderrWriterOwner = retainedCopy(stderrPipe)
+        pending.stderrScope = scope.application().builtinsScope()
+        ctx.stderrPipeFd = pending.stderrBorrow.fd
+      except CatchableError:
+        freeOsExecCtx(ctx)
+        if task.kind == vkTask and not task.taskDone:
+          discard nativeTaskCancel(task, scope)
+        if pending.pipeBorrow.resourceId != 0:
+          finishIoPipeOutputBorrow(pending.pipeBorrow, pending.pipeScope)
+        raise
+    if stdinPipe.kind != vkNil:
+      try:
+        pending.stdinBorrow = beginIoPipeInputBorrow(stdinPipe, scope, task)
+        pending.stdinReaderOwner = retainedCopy(stdinPipe)
+        pending.stdinScope = scope.application().builtinsScope()
+        ctx.stdinPipeFd = pending.stdinBorrow.fd
+      except CatchableError:
+        freeOsExecCtx(ctx)
+        if task.kind == vkTask and not task.taskDone:
+          discard nativeTaskCancel(task, scope)
+        if pending.pipeBorrow.resourceId != 0:
+          finishIoPipeOutputBorrow(pending.pipeBorrow, pending.pipeScope)
+        if pending.stderrBorrow.resourceId != 0:
+          finishIoPipeOutputBorrow(pending.stderrBorrow, pending.stderrScope)
+        raise
     # Scheduler-side ownership: the pending ref retains task/channel while the
     # worker borrows their raw bits. The worker ctx itself is shared raw memory.
     withLock osExecAsyncLock:
@@ -2599,6 +3202,14 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
         osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
       pending.ctx = nil
       freeOsExecCtx(ctx)
+      if pending.pipeBorrow.resourceId != 0:
+        finishIoPipeOutputBorrow(pending.pipeBorrow, pending.pipeScope)
+      if pending.stderrBorrow.resourceId != 0:
+        finishIoPipeOutputBorrow(pending.stderrBorrow, pending.stderrScope)
+      if pending.stdinBorrow.resourceId != 0:
+        finishIoPipeInputBorrow(pending.stdinBorrow, pending.stdinScope)
+      if task.kind == vkTask and not task.taskDone:
+        failTask(task, name & " could not start a worker thread")
       raiseOsError(name & " could not start a worker thread: " & e.msg, scope)
     task
   else:
@@ -2643,6 +3254,9 @@ const
   CurlGlobalDefault = 3.clong
   CurlOk = 0.cint
   CurlWriteError = 23.cint
+  CurlWritePause = csize_t(0x10000001)
+  CurlReadPause = csize_t(0x10000001)
+  CurlReadAbort = csize_t(0x10000000)
   CurlOperationTimedOut = 28.cint
   CurlAbortedByCallback = 42.cint
   CurlOptWriteData = 10001.cint
@@ -2661,8 +3275,13 @@ const
   CurlOptSslVerifyHost = 81.cint
   CurlOptProtocols = 181.cint
   CurlOptHttpProxyTunnel = 61.cint
+  CurlOptSuppressConnectHeaders = 265.cint
   CurlOptNoBody = 44.cint
   CurlOptWriteFunction = 20011.cint
+  CurlOptReadFunction = 20012.cint
+  CurlOptReadData = 10009.cint
+  CurlOptUpload = 46.cint
+  CurlOptInfileSizeLarge = 30115.cint
   CurlOptPostFields = 10015.cint
   CurlOptHttpHeader = 10023.cint
   CurlOptHeaderData = 10029.cint
@@ -2673,12 +3292,20 @@ const
   CurlOptCaInfoBlob = 40309.cint
   CurlOptAcceptEncoding = 10102.cint
   CurlOptTimeoutMs = 155.cint
+  CurlOptConnectTimeoutMs = 156.cint
+  CurlOptNoProxy = 10177.cint
+  CurlOptMaxAgeConn = 288.cint
   CurlOptHeaderFunction = 20079.cint
   CurlOptXferInfoData = 10057.cint
   CurlOptXferInfoFunction = 20219.cint
   CurlOptPostFieldSizeLarge = 30120.cint
   CurlInfoEffectiveUrl = 0x100001.cint
   CurlInfoResponseCode = 0x200002.cint
+  CurlMultiOk = 0.cint
+  CurlMultiDone = 1.cint
+  CurlMultiOptMaxConnects = 6.cint
+  CurlMultiOptMaxHostConnections = 7.cint
+  CurlMultiOptMaxTotalConnections = 13.cint
   HttpDefaultTimeoutMs = 60_000
   HttpDefaultMaxBytes = 4_000_000
   HttpDefaultPendingBytes = 1_000_000
@@ -2704,7 +3331,27 @@ type
     slistAppend: proc(list: pointer, value: cstring): pointer {.cdecl.}
     slistFreeAll: proc(list: pointer) {.cdecl.}
 
+  CurlMultiMessage {.bycopy.} = object
+    kind: cint
+    easy: pointer
+    resultCode: cint # low member of CURLMsg.data union
+
+  CurlMultiApi = object
+    init: proc(): pointer {.cdecl.}
+    cleanup: proc(multi: pointer): cint {.cdecl.}
+    addHandle: proc(multi, easy: pointer): cint {.cdecl.}
+    removeHandle: proc(multi, easy: pointer): cint {.cdecl.}
+    perform: proc(multi: pointer, running: ptr cint): cint {.cdecl.}
+    poll: proc(multi, extraFds: pointer, extraCount: cuint,
+               timeoutMs: cint, numFds: ptr cint): cint {.cdecl.}
+    wakeup: proc(multi: pointer): cint {.cdecl.}
+    infoRead: proc(multi: pointer, remaining: ptr cint): ptr CurlMultiMessage
+      {.cdecl.}
+    easyPause: proc(easy: pointer, action: cint): cint {.cdecl.}
+    setoptAddr: pointer
+
 var gCurlApi: CurlApi
+var gCurlMultiApi: CurlMultiApi
 
 # AArch64 (notably Apple Silicon) gives variadic arguments a different ABI
 # treatment from fixed-signature arguments. Calling curl_easy_setopt/getinfo by
@@ -2728,6 +3375,9 @@ static int gene_curl_setopt_ptr(void *fn, void *h, int o, void *v) {
 static int gene_curl_getinfo_ptr(void *fn, void *h, int o, void *v) {
   return ((gene_curl_vararg_fn)fn)(h, o, v);
 }
+static int gene_curl_multi_setopt_long(void *fn, void *h, int o, long v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
 """.}
 
 proc cCurlSetoptStr(fn, handle: pointer, option: cint,
@@ -2745,6 +3395,9 @@ proc cCurlSetoptPtr(fn, handle: pointer, option: cint,
 proc cCurlGetinfoPtr(fn, handle: pointer, option: cint,
                      value: pointer): cint
   {.importc: "gene_curl_getinfo_ptr", nodecl.}
+proc cCurlMultiSetoptLong(fn, handle: pointer, option: cint,
+                          value: clong): cint
+  {.importc: "gene_curl_multi_setopt_long", nodecl.}
 
 proc raiseHttpClientError(message: string, scope: Scope,
                           kind = "usage") =
@@ -2810,6 +3463,31 @@ proc loadCurlApi(scope: Scope) =
                            kind = "unavailable")
     api.lib = lib
     gCurlApi = api
+
+proc loadCurlMultiApi(scope: Scope) =
+  loadCurlApi(scope)
+  if gCurlMultiApi.init != nil:
+    return
+  let lib = gCurlApi.lib
+  template multiSym(name: string): pointer =
+    block:
+      let address = symAddr(lib, name)
+      if address == nil:
+        raiseHttpClientError("libcurl is missing symbol " & name, scope,
+                             kind = "unavailable")
+      address
+  var api: CurlMultiApi
+  api.init = cast[typeof(api.init)](multiSym"curl_multi_init")
+  api.cleanup = cast[typeof(api.cleanup)](multiSym"curl_multi_cleanup")
+  api.addHandle = cast[typeof(api.addHandle)](multiSym"curl_multi_add_handle")
+  api.removeHandle = cast[typeof(api.removeHandle)](multiSym"curl_multi_remove_handle")
+  api.perform = cast[typeof(api.perform)](multiSym"curl_multi_perform")
+  api.poll = cast[typeof(api.poll)](multiSym"curl_multi_poll")
+  api.wakeup = cast[typeof(api.wakeup)](multiSym"curl_multi_wakeup")
+  api.infoRead = cast[typeof(api.infoRead)](multiSym"curl_multi_info_read")
+  api.easyPause = cast[typeof(api.easyPause)](multiSym"curl_easy_pause")
+  api.setoptAddr = multiSym"curl_multi_setopt"
+  gCurlMultiApi = api
 
 proc moduleFetchWrite(data: pointer, size, count: csize_t,
                       userData: pointer): csize_t {.cdecl.} =
@@ -3534,8 +4212,10 @@ proc biHttpClientRequest(args: openArray[Value],
   biHttpClientStart("net/http_client/request", false, args, call)
 
 proc biHttpClientStream(args: openArray[Value],
-                        call: ptr NativeCall): Value {.nimcall.} =
+                         call: ptr NativeCall): Value {.nimcall.} =
   biHttpClientStart("net/http_client/stream", true, args, call)
+
+include ./ext/http_client_multi
 
 proc biOsBeginInterrupt(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -5843,8 +6523,13 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       if not isHashStable(item):
         raiseSerdeError(r.scope,
           "serde_set element is not hash-stable", r.path)
+      try:
+        discard semanticHash(item)
+      except GeneError as error:
+        raiseSerdeError(r.scope,
+          "serde_set element has no usable hash: " & error.msg, r.path)
       for existing in items:
-        if equal(existing, item):
+        if semanticEqual(existing, item):
           raiseSerdeError(r.scope,
             "serde_set contains a duplicate element", r.path)
       items.add item
@@ -8152,6 +8837,68 @@ proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   aotModuleHandles.add handle
   newMap(entries)
 
+proc biIoWriteAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2 or args[1].kind != vkBytes:
+    raise newException(GeneError, "io/write_all expects a writer and Bytes")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if currentEventLane() != schedulerForScope(scope).rootLane:
+    raiseValueSemanticError("RuntimeLaneError", "io/write_all requires the root lane")
+  let app = if scope == nil: currentApplication() else: scope.application()
+  result = applyCall(app.ioWriteAllHelper, args, NamedArgs(), scope)
+  if result.kind != vkTask:
+    raise newException(GeneError, "io/write_all helper did not return a Task")
+  scope.registerIoTask(result)
+
+proc biIoRetainCleanup(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1 or args[0].kind != vkTask:
+    raise newException(GeneError, "io/_retain_cleanup expects one Task")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if scope == nil or currentEventLane() != schedulerForScope(scope).rootLane:
+    raiseValueSemanticError("RuntimeLaneError",
+      "io/_retain_cleanup requires the root lane")
+  scope.registerIoCleanupTask(args[0])
+  args[0]
+
+proc biIoCopy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "io/copy expects a reader and writer")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if currentEventLane() != schedulerForScope(scope).rootLane:
+    raiseValueSemanticError("RuntimeLaneError", "io/copy requires the root lane")
+  let app = if scope == nil: currentApplication() else: scope.application()
+  let named = if call == nil: NamedArgs()
+              else: NamedArgs(names: call[].namedNames,
+                              values: call[].namedValues)
+  result = applyCall(app.ioCopyHelper, args, named, scope)
+  if result.kind != vkTask:
+    raise newException(GeneError, "io/copy helper did not return a Task")
+  scope.registerIoTask(result)
+
+proc biNativeIngressOpen(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+  if nativeIngressAdapter.open == nil:
+    raise newException(GeneError, "native ingress adapter is unavailable")
+  nativeIngressAdapter.open(args, call)
+
+proc biNativeIngressClose(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  if nativeIngressAdapter.close == nil:
+    raise newException(GeneError, "native ingress adapter is unavailable")
+  nativeIngressAdapter.close(args, call)
+
+proc biNativeIngressWaitClosed(args: openArray[Value],
+                               call: ptr NativeCall): Value {.nimcall.} =
+  if nativeIngressAdapter.waitClosed == nil:
+    raise newException(GeneError, "native ingress adapter is unavailable")
+  nativeIngressAdapter.waitClosed(args, call)
+
+proc biNativeIngressStatus(args: openArray[Value],
+                           call: ptr NativeCall): Value {.nimcall.} =
+  if nativeIngressAdapter.status == nil:
+    raise newException(GeneError, "native ingress adapter is unavailable")
+  nativeIngressAdapter.status(args, call)
+
 proc registerStdlibNamespaces(root: Scope) =
   let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
@@ -8181,6 +8928,27 @@ proc registerStdlibNamespaces(root: Scope) =
     root.define(name, result)
     root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
   let osError = defineErrorType("OsError")
+  let pathError = defineErrorType("PathError")
+  let packageResourceError = defineErrorType("PackageResourceError")
+  var materializedMessages = initTable[string, Value]()
+  materializedMessages["path"] = builtinNativeCallFn(
+    "MaterializedResource/path", biMaterializedPath, acceptsNamed = false)
+  materializedMessages["close"] = builtinNativeCallFn(
+    "MaterializedResource/close", biMaterializedClose, acceptsNamed = false)
+  let materializedType = newType("MaterializedResource", NIL, @[], @[], root,
+    messages = materializedMessages, repr = trNativeWrapper)
+  root.define("MaterializedResource", materializedType)
+  let fsError = defineErrorType("FsError")
+  let fsLimitError = newType("FsLimitError", fsError, @[], @[], root)
+  root.define("FsLimitError", fsLimitError)
+  let csvError = newType("CsvError", NIL,
+    @[TypeField(name: "message", optional: false, typeExpr: newSym("Str"), scope: root),
+      TypeField(name: "offset", optional: false, typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "record", optional: false, typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "field", optional: false, typeExpr: newSym("Int"), scope: root)],
+    @[errorProtocol], root)
+  root.define("CsvError", csvError)
+  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: csvError)
   let terminalError = defineErrorType("TerminalError")
   let cursesError = defineErrorType("CursesError")
   let httpClientError = defineErrorType("HttpClientError")
@@ -8307,6 +9075,11 @@ proc registerStdlibNamespaces(root: Scope) =
   bitScope.define("shl", builtinNativeFn("bit/shl", biBitShl))
   bitScope.define("shr", builtinNativeFn("bit/shr", biBitShr))
   root.define("bit", newNamespace("bit", bitScope))
+  let orderScope = newScope(root)
+  orderScope.define("compare", builtinNativeFn("order/compare", biOrderCompare))
+  orderScope.define("sort", builtinNativeCallFn("order/sort", biOrderSort))
+  orderScope.define("sort_by", builtinNativeCallFn("order/sort_by", biOrderSortBy))
+  root.define("order", newNamespace("order", orderScope))
   let bytesScope = newScope(root)
   bytesScope.define("from_list", builtinNativeFn("binary/from_list", biBytesFromList))
   bytesScope.define("to_list", builtinNativeFn("binary/to_list", biBytesToList))
@@ -8417,6 +9190,400 @@ proc registerStdlibNamespaces(root: Scope) =
   cssScope.define("render", builtinNativeCallFn("css/render", biCssRender,
                                              acceptsNamed = false))
   root.define("css", newNamespace("css", cssScope))
+  let pkgScope = newScope(root)
+  pkgScope.define("read_bytes", builtinNativeCallFn("pkg/read_bytes",
+                   biPkgReadBytes))
+  pkgScope.define("read_text", builtinNativeCallFn("pkg/read_text",
+                   biPkgReadText))
+  pkgScope.define("dependency", builtinNativeCallFn("pkg/dependency",
+                   biPkgDependency, acceptsNamed = false))
+  pkgScope.define("materialize", builtinNativeCallFn("pkg/materialize",
+                   biPkgMaterialize, acceptsNamed = false))
+  pkgScope.define("native_binary", builtinNativeCallFn("pkg/native_binary",
+                   biPkgNativeBinary, acceptsNamed = false))
+  pkgScope.define("MaterializedResource", materializedType)
+  pkgScope.define("PackageResourceError", packageResourceError)
+  root.define("pkg", newNamespace("pkg", pkgScope))
+  let csvScope = newScope(root)
+  csvScope.define("parse_rows", builtinNativeCallFn("csv/parse_rows",
+                    biCsvParseRows))
+  csvScope.define("encode_row", builtinNativeCallFn("csv/encode_row",
+                    biCsvEncodeRow))
+  csvScope.define("reader", builtinNativeCallFn("csv/reader", biCsvReader))
+  csvScope.define("_feed", builtinNativeCallFn("csv/_feed", biCsvReaderFeed,
+                    acceptsNamed = false))
+  csvScope.define("_step", builtinNativeCallFn("csv/_step", biCsvReaderStep,
+                    acceptsNamed = false))
+  csvScope.define("_finish_next", builtinNativeCallFn("csv/_finish_next",
+                    biCsvReaderFinishNext, acceptsNamed = false))
+  csvScope.define("_source_closed", builtinNativeCallFn("csv/_source_closed",
+                    biCsvReaderSourceClosed, acceptsNamed = false))
+  csvScope.define("CsvError", csvError)
+  let csvReaderType = newType("CsvReader", NIL, @[], @[], root,
+                              repr = trNativeWrapper)
+  root.define("CsvReader", csvReaderType)
+  csvScope.define("CsvReader", csvReaderType)
+  var csvReaderMessages = initTable[string, Value]()
+  csvReaderMessages["next"] = builtinNativeCallFn("CsvReader/next",
+    biCsvReaderNext, acceptsNamed = false)
+  csvReaderType.setTypeOwnMessages(csvReaderMessages, NIL)
+  root.define("csv", newNamespace("csv", csvScope))
+  let pathScope = newScope(root)
+  pathScope.define("join", builtinNativeCallFn("path/join", biPathJoin,
+                                                  acceptsNamed = false))
+  pathScope.define("normalize", builtinNativeCallFn("path/normalize",
+                        biPathNormalize, acceptsNamed = false))
+  pathScope.define("parent", builtinNativeCallFn("path/parent", biPathParent,
+                                                  acceptsNamed = false))
+  pathScope.define("name", builtinNativeCallFn("path/name", biPathName,
+                                                acceptsNamed = false))
+  pathScope.define("extension", builtinNativeCallFn("path/extension",
+                        biPathExtension, acceptsNamed = false))
+  pathScope.define("relative", builtinNativeCallFn("path/relative",
+                        biPathRelative, acceptsNamed = false))
+  pathScope.define("PathError", pathError)
+  root.define("path", newNamespace("path", pathScope))
+  let temporalScope = newScope(root)
+  temporalScope.define("add_days", builtinNativeFn("temporal/add_days",
+    biTemporalAddDays))
+  temporalScope.define("add", builtinNativeFn("temporal/add", biTemporalAdd))
+  temporalScope.define("difference", builtinNativeFn("temporal/difference",
+    biTemporalDifference))
+  temporalScope.define("to_utc", builtinNativeFn("temporal/to_utc",
+    biTemporalToUtc))
+  temporalScope.define("parse_rfc3339", builtinNativeFn(
+    "temporal/parse_rfc3339", biTemporalParseRfc3339))
+  temporalScope.define("format_rfc3339", builtinNativeFn(
+    "temporal/format_rfc3339", biTemporalFormatRfc3339))
+  temporalScope.define("_tzif_to_local", builtinNativeFn(
+    "temporal/_tzif_to_local", biTemporalTzifToLocal))
+  temporalScope.define("_tzif_resolve_local", builtinNativeFn(
+    "temporal/_tzif_resolve_local", biTemporalTzifResolveLocal))
+  root.define("temporal", newNamespace("temporal", temporalScope))
+  let ioError = newType("IoError", NIL,
+    @[TypeField(name: "message", typeExpr: newSym("Str"), scope: root),
+      TypeField(name: "operation", typeExpr: newSym("Str"), scope: root),
+      TypeField(name: "resource_id", optional: true,
+                typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "cause", optional: true,
+                typeExpr: newSym("Any"), scope: root),
+      TypeField(name: "bytes_transferred", optional: true,
+                typeExpr: newSym("Int"), scope: root)],
+    @[errorProtocol], root)
+  root.define("IoError", ioError)
+  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: ioError)
+  let ioBusy = newType("IoBusy", ioError, @[], @[], root)
+  let ioClosed = newType("IoClosed", ioError, @[], @[], root)
+  let ioBackpressure = newType("IoBackpressure", ioError, @[], @[], root)
+  root.define("IoBusy", ioBusy)
+  root.define("IoClosed", ioClosed)
+  root.define("IoBackpressure", ioBackpressure)
+  let ioScope = newScope(root)
+  proc ioRequirement(name, source: string): Value =
+    let proto = compileSource(source, "<builtin gene/io " & name & ">").functions[0]
+    newFunction(name, proto.params, proto, ioScope)
+  let asyncReader = newProtocol("AsyncReader", ["read"], signatures = [
+    ioRequirement("AsyncReader:read",
+      "(fn read [self max_bytes : Int] : (Task Bytes? Error) nil)")],
+    scope = ioScope)
+  let asyncWriter = newProtocol("AsyncWriter", ["write", "flush"],
+    signatures = [
+      ioRequirement("AsyncWriter:write",
+        "(fn write [self data : Bytes] : (Task Int Error) nil)"),
+      ioRequirement("AsyncWriter:flush",
+        "(fn flush [self] : (Task Nil Error) nil)")],
+    scope = ioScope)
+  let ioResource = newProtocol("IoResource", ["close", "wait_closed"],
+    signatures = [
+      ioRequirement("IoResource:close",
+        "(fn close [self] : Nil nil)"),
+      ioRequirement("IoResource:wait_closed",
+        "(fn wait_closed [self] : (Task Nil Error) nil)")],
+    scope = ioScope)
+  ioScope.define("AsyncReader", asyncReader)
+  ioScope.define("AsyncWriter", asyncWriter)
+  ioScope.define("IoResource", ioResource)
+  csvScope.define("AsyncReader", asyncReader)
+  csvScope.define("IoResource", ioResource)
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: csvReaderType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biCsvReaderClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed", biCsvReaderWaitClosed,
+                                acceptsNamed = false))])
+  for name in ["IoError", "IoBusy", "IoClosed", "IoBackpressure"]:
+    ioScope.define(name, root.vars[name])
+  proc ioFunction(name, source: string): Value =
+    let proto = compileSource(source, "<builtin gene/io " & name & ">").functions[0]
+    functionForScopeStorage(newFunction(name, proto.params, proto, ioScope),
+                            ioScope, binding = true)
+  app.ioWriteAllHelper = ioFunction("write_all", """
+    (fn write_all [writer data : Bytes]
+      (spawn ^lane root
+        (do
+          (let total ($binary/size data))
+          (var offset 0)
+          (while (< offset total)
+            (let left (- total offset))
+            (let want (if (< left 1048576) left 1048576))
+            (let part ($binary/slice data offset want))
+            (let accepted (await (writer .AsyncWriter:write part)))
+            (if (<= accepted 0)
+              (fail (IoError ^message "writer made no progress"
+                               ^operation "write_all"
+                               ^bytes_transferred offset)))
+            (if (> accepted want)
+              (fail (IoError ^message "writer accepted more than offered"
+                               ^operation "write_all"
+                               ^bytes_transferred offset)))
+            (set offset (+ offset accepted)))
+          offset)))
+  """)
+  app.ioCopyHelper = ioFunction("copy", """
+    (fn copy [reader writer, ^limit : Int, ^chunk_bytes : Int = 65536]
+      (if (< limit 0)
+        (fail (IoError ^message "copy limit must be nonnegative"
+                         ^operation "copy")))
+      (if (< chunk_bytes 1)
+        (fail (IoError ^message "copy chunk_bytes must be positive"
+                         ^operation "copy")))
+      (if (> chunk_bytes 1048576)
+        (fail (IoError ^message "copy chunk_bytes exceeds 1 MiB"
+                         ^operation "copy")))
+      (spawn ^lane root
+        (do
+          (var transferred 0)
+          (while (< transferred limit)
+            (let left (- limit transferred))
+            (let want (if (< left chunk_bytes) left chunk_bytes))
+            (let part (await (reader .AsyncReader:read want)))
+            (if ($nil? part) (break))
+            (let got ($binary/size part))
+            (if (== got 0)
+              (fail (IoError ^message "reader returned empty Bytes"
+                               ^operation "copy"
+                               ^bytes_transferred transferred)))
+            (if (> got want)
+              (fail (IoError ^message "reader exceeded requested chunk"
+                               ^operation "copy"
+                               ^bytes_transferred transferred)))
+            (let written (await (write_all writer part)))
+            (set transferred (+ transferred written)))
+          transferred)))
+  """)
+  ioScope.define("write_all", builtinNativeCallFn("io/write_all", biIoWriteAll,
+                     acceptsNamed = false))
+  ioScope.define("copy", builtinNativeCallFn("io/copy", biIoCopy))
+  ioScope.define("_retain_cleanup", builtinNativeCallFn(
+    "io/_retain_cleanup", biIoRetainCleanup, acceptsNamed = false))
+  let ioFileReaderType = newType("IoFileReader", NIL, @[], @[], root,
+                                 repr = trNativeWrapper)
+  root.define("IoFileReader", ioFileReaderType)
+  ioScope.define("FileReader", ioFileReaderType)
+  root.impls.add ProtocolImpl(protocol: asyncReader,
+    receiver: ioFileReaderType,
+    messages: @[ImplMessage(message: asyncReader.protocolMessages["read"],
+      fn: builtinNativeCallFn("AsyncReader/read", biIoFileRead,
+                              acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ioFileReaderType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biIoFileClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed", biIoFileWaitClosed,
+                                acceptsNamed = false))])
+  ioScope.define("open_read", builtinNativeCallFn("io/open_read", biIoOpenRead,
+                     acceptsNamed = false))
+  let ioFileWriterType = newType("IoFileWriter", NIL, @[], @[], root,
+                                 repr = trNativeWrapper)
+  root.define("IoFileWriter", ioFileWriterType)
+  ioScope.define("FileWriter", ioFileWriterType)
+  root.impls.add ProtocolImpl(protocol: asyncWriter,
+    receiver: ioFileWriterType,
+    messages: @[
+      ImplMessage(message: asyncWriter.protocolMessages["write"],
+        fn: builtinNativeCallFn("AsyncWriter/write", biIoFileWrite,
+                                acceptsNamed = false)),
+      ImplMessage(message: asyncWriter.protocolMessages["flush"],
+        fn: builtinNativeCallFn("AsyncWriter/flush", biIoFileFlush,
+                                acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ioFileWriterType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biIoFileClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed", biIoFileWaitClosed,
+                                acceptsNamed = false))])
+  ioScope.define("open_write", builtinNativeCallFn("io/open_write", biIoOpenWrite))
+  let ioPipeReaderType = newType("IoPipeReader", NIL, @[], @[], root,
+                                 repr = trNativeWrapper)
+  let ioPipeWriterType = newType("IoPipeWriter", NIL, @[], @[], root,
+                                 repr = trNativeWrapper)
+  root.define("IoPipeReader", ioPipeReaderType)
+  root.define("IoPipeWriter", ioPipeWriterType)
+  ioScope.define("PipeReader", ioPipeReaderType)
+  ioScope.define("PipeWriter", ioPipeWriterType)
+  root.impls.add ProtocolImpl(protocol: asyncReader,
+    receiver: ioPipeReaderType,
+    messages: @[ImplMessage(message: asyncReader.protocolMessages["read"],
+      fn: builtinNativeCallFn("AsyncReader/read", biIoFileRead,
+                              acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: asyncWriter,
+    receiver: ioPipeWriterType,
+    messages: @[
+      ImplMessage(message: asyncWriter.protocolMessages["write"],
+        fn: builtinNativeCallFn("AsyncWriter/write", biIoFileWrite,
+                                acceptsNamed = false)),
+      ImplMessage(message: asyncWriter.protocolMessages["flush"],
+        fn: builtinNativeCallFn("AsyncWriter/flush", biIoFileFlush,
+                                acceptsNamed = false))])
+  for typ in [ioPipeReaderType, ioPipeWriterType]:
+    root.impls.add ProtocolImpl(protocol: ioResource, receiver: typ,
+      messages: @[
+        ImplMessage(message: ioResource.protocolMessages["close"],
+          fn: builtinNativeCallFn("IoResource/close", biIoFileClose,
+                                  acceptsNamed = false)),
+        ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+          fn: builtinNativeCallFn("IoResource/wait_closed", biIoFileWaitClosed,
+                                  acceptsNamed = false))])
+  ioScope.define("pipe", builtinNativeCallFn("io/pipe", biIoPipe,
+                   acceptsNamed = false))
+  let ioTcpStreamType = newType("IoTcpStream", NIL, @[], @[], root,
+                                repr = trNativeWrapper)
+  root.define("IoTcpStream", ioTcpStreamType)
+  ioScope.define("TcpStream", ioTcpStreamType)
+  root.impls.add ProtocolImpl(protocol: asyncReader,
+    receiver: ioTcpStreamType,
+    messages: @[ImplMessage(message: asyncReader.protocolMessages["read"],
+      fn: builtinNativeCallFn("AsyncReader/read", biIoFileRead,
+                              acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: asyncWriter,
+    receiver: ioTcpStreamType,
+    messages: @[
+      ImplMessage(message: asyncWriter.protocolMessages["write"],
+        fn: builtinNativeCallFn("AsyncWriter/write", biIoFileWrite,
+                                acceptsNamed = false)),
+      ImplMessage(message: asyncWriter.protocolMessages["flush"],
+        fn: builtinNativeCallFn("AsyncWriter/flush", biIoFileFlush,
+                                acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ioTcpStreamType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biIoFileClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed", biIoFileWaitClosed,
+                                acceptsNamed = false))])
+  ioScope.define("tcp_connect", builtinNativeCallFn("io/tcp_connect",
+                   biIoTcpConnect))
+  let ioTcpListenerType = newType("IoTcpListener", NIL, @[], @[], root,
+                                  repr = trNativeWrapper)
+  root.define("IoTcpListener", ioTcpListenerType)
+  ioScope.define("TcpListener", ioTcpListenerType)
+  var tcpListenerMessages = initTable[string, Value]()
+  tcpListenerMessages["accept"] = builtinNativeCallFn("TcpListener/accept",
+    biIoTcpAccept, acceptsNamed = false)
+  tcpListenerMessages["local_port"] = builtinNativeCallFn(
+    "TcpListener/local_port", biIoTcpLocalPort, acceptsNamed = false)
+  ioTcpListenerType.setTypeOwnMessages(tcpListenerMessages, NIL)
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ioTcpListenerType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biIoFileClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed", biIoFileWaitClosed,
+                                acceptsNamed = false))])
+  ioScope.define("tcp_listen", builtinNativeCallFn("io/tcp_listen",
+                   biIoTcpListen))
+  # Deterministic native adapter for protocol and close/cancel conformance.
+  # Its completion is controlled by gene/io/testing, so tests can hold an OS-
+  # shaped operation past user Task cancellation without a timing race.
+  let ioTestType = newType("IoTestResource", NIL, @[], @[], root,
+                           repr = trNativeWrapper)
+  root.define("IoTestResource", ioTestType)
+  root.impls.add ProtocolImpl(protocol: asyncReader, receiver: ioTestType,
+    messages: @[ImplMessage(message: asyncReader.protocolMessages["read"],
+      fn: builtinNativeCallFn("AsyncReader/read", biIoTestingRead,
+                              acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: asyncWriter, receiver: ioTestType,
+    messages: @[
+      ImplMessage(message: asyncWriter.protocolMessages["write"],
+        fn: builtinNativeCallFn("AsyncWriter/write", biIoTestingWrite,
+                                acceptsNamed = false)),
+      ImplMessage(message: asyncWriter.protocolMessages["flush"],
+        fn: builtinNativeCallFn("AsyncWriter/flush", biIoTestingFlush,
+                                acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: ioResource, receiver: ioTestType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biIoTestingClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed",
+                                biIoTestingWaitClosed,
+                                acceptsNamed = false))])
+  let ioTestingScope = newScope(ioScope)
+  ioTestingScope.define("new", builtinNativeCallFn("io/testing/new",
+                         biIoTestingNew))
+  ioTestingScope.define("complete_read", builtinNativeCallFn(
+    "io/testing/complete_read", biIoTestingCompleteRead,
+    acceptsNamed = false))
+  ioTestingScope.define("complete_write", builtinNativeCallFn(
+    "io/testing/complete_write", biIoTestingCompleteWrite,
+    acceptsNamed = false))
+  ioTestingScope.define("written", builtinNativeCallFn("io/testing/written",
+                         biIoTestingWritten, acceptsNamed = false))
+  ioTestingScope.define("fail_close", builtinNativeCallFn(
+    "io/testing/fail_close", biIoTestingFailClose, acceptsNamed = false))
+  ioTestingScope.define("state", builtinNativeCallFn("io/testing/state",
+                         biIoTestingState, acceptsNamed = false))
+  ioTestingScope.define("socket_buffer", builtinNativeCallFn(
+    "io/testing/socket_buffer", biIoTestingSocketBuffer,
+    acceptsNamed = false))
+  ioScope.define("testing", newNamespace("io/testing", ioTestingScope))
+  root.define("io", newNamespace("io", ioScope))
+  proc csvFunction(name, source: string): Value =
+    let proto = compileSource(source, "<builtin gene/csv " & name & ">").functions[0]
+    functionForScopeStorage(newFunction(name, proto.params, proto, csvScope),
+                            csvScope, binding = true)
+  app.csvNextHelper = csvFunction("next", """
+    (fn next [reader source]
+      (spawn ^lane root
+        (try
+          (do
+            (var step ($csv/_step reader))
+            (while (== step/0 0)
+              (let chunk (await (source .AsyncReader:read 65536)))
+              ($csv/_feed reader chunk)
+              (set step ($csv/_step reader)))
+            step/1)
+          ensure ($csv/_finish_next reader))))
+  """)
+  app.csvWaitClosedHelper = csvFunction("wait_closed", """
+    (fn wait_closed [reader signal]
+      (spawn ^lane root
+        (do
+          (signal .join)
+          (let source_closed ($csv/_source_closed reader))
+          (if ($nil? source_closed)
+            nil
+            (match (source_closed .join)
+              (when (TaskOutcome/ok _) nil)
+              (when (TaskOutcome/error error) (fail error))
+              (when (TaskOutcome/cancelled)
+                (fail (CsvError ^message "upstream close was cancelled")))))
+          nil)))
+  """)
   let urlScope = newScope(root)
   urlScope.define("encode_component",
                   builtinNativeFn("url/encode_component", biUrlEncodeComponent))
@@ -8444,6 +9611,15 @@ proc registerStdlibNamespaces(root: Scope) =
                               strField("body")],
                             @[], root)
   httpScope.define("Request", requestType)
+  let streamRequestType = newType("StreamRequest", NIL,
+    @[strField("method"), strField("path"), strField("query"),
+      TypeField(name: "params", optional: false,
+                typeExpr: newSym("Map"), scope: root),
+      TypeField(name: "headers", optional: false,
+                typeExpr: newSym("Map"), scope: root),
+      TypeField(name: "body", optional: false,
+                typeExpr: asyncReader, scope: root)], @[], root)
+  httpScope.define("StreamRequest", streamRequestType)
   let responseType = newType("Response", NIL,
                              @[TypeField(name: "status", optional: false,
                                          typeExpr: newSym("Int"),
@@ -8456,12 +9632,27 @@ proc registerStdlibNamespaces(root: Scope) =
                                          scope: root)],
                              @[], root)
   httpScope.define("Response", responseType)
+  let streamResponseType = newType("StreamResponse", NIL,
+    @[TypeField(name: "status", typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "headers", typeExpr: newSym("Map"), scope: root),
+      TypeField(name: "body", typeExpr: asyncReader, scope: root),
+      TypeField(name: "content_length", optional: true,
+                typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "max_bytes", typeExpr: newSym("Int"), scope: root),
+      TypeField(name: "own_reader", typeExpr: newSym("Bool"), scope: root)],
+    @[], root)
+  httpScope.define("StreamResponse", streamResponseType)
+  var serverMessages = initTable[string, Value]()
+  serverMessages["reload_tls"] = builtinNativeCallFn(
+    "Server/reload_tls", biHttpReloadTls, acceptsNamed = false)
   let serverType = newType("Server", NIL,
                            @[TypeField(name: "host", optional: true,
                                        typeExpr: newSym("Str"), scope: root),
                              TypeField(name: "port", optional: false,
-                                       typeExpr: newSym("Int"), scope: root)],
-                           @[], root)
+                                       typeExpr: newSym("Int"), scope: root),
+                             TypeField(name: "tls", optional: true,
+                                       typeExpr: newSym("Map"), scope: root)],
+                           @[], root, messages = serverMessages)
   httpScope.define("Server", serverType)
   let requestMsgType = newType("RequestMsg", NIL,
                                @[TypeField(name: "req", optional: false,
@@ -8484,6 +9675,7 @@ proc registerStdlibNamespaces(root: Scope) =
                                    biHttpSupervisorPolicy))
   httpScope.define("bytes", builtinNativeCallFn("http/bytes", biHttpBytes,
                                             acceptsNamed = false))
+  httpScope.define("stream", builtinNativeCallFn("http/stream", biHttpStream))
   httpScope.define("text", builtinNativeCallFn("http/text", biHttpText,
                                            acceptsNamed = false))
   httpScope.define("html", builtinNativeCallFn("http/html", biHttpHtml,
@@ -8511,6 +9703,73 @@ proc registerStdlibNamespaces(root: Scope) =
   httpClientScope.define("stream",
     builtinNativeCallFn("net/http_client/stream", biHttpClientStream))
   httpClientScope.define("HttpClientError", httpClientError)
+  let ownedHttpClientType = newType("OwnedHttpClient", NIL, @[], @[], root,
+                                    repr = trNativeWrapper)
+  root.define("OwnedHttpClient", ownedHttpClientType)
+  httpClientScope.define("Client", ownedHttpClientType)
+  var ownedHttpMethods = initTable[string, Value]()
+  ownedHttpMethods["request"] = builtinNativeCallFn("Client/request",
+    biOwnedHttpClientRequest)
+  ownedHttpMethods["stream"] = builtinNativeCallFn("Client/stream",
+    biOwnedHttpClientStream)
+  ownedHttpClientType.setTypeOwnMessages(ownedHttpMethods, NIL)
+  let ownedHttpBodyType = newType("OwnedHttpBody", NIL, @[], @[], root,
+                                  repr = trNativeWrapper)
+  root.define("OwnedHttpBody", ownedHttpBodyType)
+  httpClientScope.define("BodyReader", ownedHttpBodyType)
+  root.impls.add ProtocolImpl(protocol: asyncReader,
+    receiver: ownedHttpBodyType,
+    messages: @[ImplMessage(message: asyncReader.protocolMessages["read"],
+      fn: builtinNativeCallFn("AsyncReader/read", biOwnedHttpBodyRead,
+                              acceptsNamed = false))])
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ownedHttpBodyType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biOwnedHttpBodyClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed",
+                                biOwnedHttpBodyWaitClosed,
+                                acceptsNamed = false))])
+  httpClientScope.define("open", builtinNativeCallFn("net/http_client/open",
+    biOwnedHttpClientOpen))
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ownedHttpClientType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close",
+                                biOwnedHttpClientClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed",
+                                biOwnedHttpClientWaitClosed,
+                                acceptsNamed = false))])
+  let ingressType = newType("NativeIngressSubscription", NIL, @[], @[], root,
+                            repr = trNativeWrapper)
+  root.define("NativeIngressSubscription", ingressType)
+  let ingressScope = newScope(root)
+  ingressScope.define("Subscription", ingressType)
+  ingressScope.define("open", builtinNativeCallFn("native/ingress/open",
+    biNativeIngressOpen))
+  let nativeScope = newScope(root)
+  nativeScope.define("ingress", newNamespace("native/ingress", ingressScope))
+  root.define("native", newNamespace("native", nativeScope))
+  var ingressMethods = initTable[string, Value]()
+  ingressMethods["status"] = builtinNativeCallFn(
+    "NativeIngressSubscription/status", biNativeIngressStatus,
+    acceptsNamed = false)
+  ingressType.setTypeOwnMessages(ingressMethods, NIL)
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: ingressType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biNativeIngressClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed",
+                                biNativeIngressWaitClosed,
+                                acceptsNamed = false))])
   # Extend the `net` namespace buildBuiltins already created (the raw TCP ops)
   # instead of rebinding the name, so the TCP ops and `net/http` are members
   # of one namespace.
@@ -8932,6 +10191,9 @@ proc registerStdlibNamespaces(root: Scope) =
       builtinNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
     fsNs.nsScope.define("real_path",
       builtinNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
+    fsNs.nsScope.define("walk", builtinNativeCallFn("fs/walk", biFsWalk))
+    fsNs.nsScope.define("FsError", fsError)
+    fsNs.nsScope.define("FsLimitError", fsLimitError)
 
   # json: parse/stringify over Gene value kinds (docs/stdlib.md "Module Layout").
   let jsonScope = newScope(root)

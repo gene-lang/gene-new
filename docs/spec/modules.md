@@ -77,6 +77,34 @@ budgets bound the second.
 - Native code retains values only through roots. Borrowed CallerEnv and
   in-progress construction values cannot be rooted. Foreign calls preserve
   Gene error, panic, and cancellation status and must obey lane and Send rules.
+- A dynamic FFI `C/OwnedPtr` retains a native borrow of the `ffi/Library` that
+  supplied its release symbol. `ffi/Library/close` rejects the live borrow.
+  Explicit `C/close` or final reclamation invokes the release exactly once,
+  then drops the borrow; an unreachable open library closes automatically.
+
+## Selected package resources
+
+Format-1 `^build` accepts a data-only `(resources "name" ^files ["path" ...])`
+recipe when a library/application target names it in `^uses`. Each path is a
+canonical relative regular file included by the package's `^files` policy.
+The build records its size and SHA-256 digest in artifact metadata; a change
+to selected source changes the derivation. Unknown recipe kinds still fail
+with `BUILD_FEATURE_UNAVAILABLE` when selected.
+
+An executing built target installs the selected resource identities in its
+Application. `($pkg/read_bytes this_pkg path ^max_bytes n)` and
+`($pkg/read_text this_pkg path ^max_bytes n)` resolve the supplied Package ID
+against that Application's materialized graph and selected-resource index.
+They do not trust a caller-supplied root path. A missing or unselected path,
+oversized value, changed bytes, or invalid UTF-8 for `read_text` raises
+`PackageResourceError`. The default read limit is 16 MiB, with a maximum
+caller override of 64 MiB. `($pkg/dependency this_pkg alias)` returns only a
+declared, materialized direct dependency. `$pkg/materialize` verifies a
+selected resource into a private content-addressed cache and returns a
+`MaterializedResource` whose direct `.path` and idempotent `.close` messages
+hold and release a counted lease. The resource path is unavailable after
+close. The cache has no eviction in PKG-1; future cleanup must respect live
+leases, including resources still held by another Application.
 
 ## Synchronous native callbacks
 

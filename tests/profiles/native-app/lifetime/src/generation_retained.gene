@@ -1,0 +1,12 @@
+(fn main [args] : Int
+  (let tx ($runtime/sandbox_transaction))
+  (let generation (tx .prepare
+    {^dir args/0 ^entry "self.gene" ^grants [] ^shared []
+     ^label "retained" ^policy {^max_steps 1000 ^max_memory_mb 16
+                                ^timeout_ms 1000}}))
+  (let saved (generation .module))
+  (let identity saved/identity)
+  (tx .commit)
+  (generation .release)
+  ($assert (same? (identity) saved))
+  0)

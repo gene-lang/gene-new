@@ -1,0 +1,1 @@
+(fn label [name : Str] : Str $"report: ${name}")

@@ -1,0 +1,16 @@
+{^format 1
+ ^name "genex/archive"
+ ^version "0.1.0"
+ ^description "Bounded gzip and ZIP deflate codec backed by zlib"
+ ^library {^entry "src/archive.gene" ^uses ["codec"]}
+ ^files {^include ["package.gene" "README.md" "src/**" "native/**"]}
+ ^system_dependencies {
+   ^zlib (system_library ^name "zlib" ^version ">=1.2.11 <2"
+     ^providers [pkg_config] ^linkage dynamic)
+   ^unicode (system_library ^name "libutf8proc" ^version ">=3.1.0 <4"
+     ^providers [pkg_config] ^linkage dynamic)}
+ ^build [(c_library "codec" ^sources ["native/codec.c" "native/zip.c"]
+           ^system ["zlib" "unicode"]
+           ^cflags ["-pthread"] ^ldflags ["-pthread"]
+           ^linkage shared
+           ^targets ["arm64-macosx" "amd64-linux"])]}

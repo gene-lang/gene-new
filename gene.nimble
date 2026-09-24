@@ -68,6 +68,19 @@ task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
 
 task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
+  exec "nim c -r --path:src --hints:off tests/test_release_crypto.nim"
+  exec "nim c -r --path:src --hints:off tests/test_package_release.nim"
+  exec "python3 tests/test_registry_https.py"
+  exec "nim c -r --path:src --hints:off tests/test_tzif.nim"
+  exec "python3 tests/test_owned_http_client.py"
+  exec "python3 tests/test_genex_package.py"
+  exec "python3 tests/test_genex_libuv_timer.py"
+  exec "python3 tests/test_genex_tzdb.py"
+  exec "python3 tests/test_archive_codec.py"
+  exec "python3 tests/test_genex_archive_package.py"
+  exec "python3 tests/test_archive_zip.py"
+  exec "python3 tests/test_tls_adapter.py"
+  exec "python3 tests/test_genex_tls_package.py"
   exec "node tests/test_wasm.mjs"
 
 task spec, "Run executable language surface specs":
@@ -103,9 +116,15 @@ task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 
 task threadcheck, "Run threaded atomicArc smoke checks":
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_lifecycle.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_scope.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_file.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_tcp.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_csv_stream.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_native_api_threads.nim"
+  exec "python3 tests/test_owned_http_client.py --atomic-arc"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_thread_workers.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 

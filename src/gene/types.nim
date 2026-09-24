@@ -396,6 +396,11 @@ type
     weakAssemblyScope*: pointer # owning-scope storage back-reference
     managedContract*: bool
 
+  CoreValueMethod* = enum
+    cvEqual, cvHash, cvCompare, cvSize, cvAt, cvPutAt
+
+  CoreValueWitnesses* = array[CoreValueMethod, Value]
+
   TypeBinding* = object
     expr*: Value
     scope*: Scope           # strong only for future escaped bindings
@@ -488,6 +493,7 @@ type
     annotationSelfType*: Value # lexical type context of the current method body
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
+    corePendingTypes*: seq[Value] # nominal Types awaiting unit activation
     implAssembly*: RootRef # VM-owned forward declaration state, lexical for eval
     implValidationEpoch*: uint64
     implValidationActive*: bool
@@ -495,6 +501,7 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
+    sandboxGenerationReleased*: bool # explicit generation retired; self-edge audit
     moduleBase*: Scope      # cached ancestor module root; roots identify self via moduleRoot
     moduleStatic*: bool     # unconditional module/namespace declaration scope
     moduleRefs*: ModuleRefTable
@@ -509,6 +516,7 @@ type
     sandboxGenerationId*: uint64
     ownsTasks*: bool
     ownedTasks*: seq[Value]
+    ownedCleanupTasks*: seq[Value] # physical I/O retirement; not user-cancelled
     ownsActors*: bool
     actorFailureStrategy*: ActorFailureStrategy
     supervisorEvents*: Value
@@ -750,6 +758,7 @@ type
     modulePath: string    # non-empty only for file-backed module roots
 
   ModuleData = ref object of GeneObjectData
+    valueRefs: int          # boxed Value owners; release-time self-cycle audit
     runtimeId: int
     instanceKey: string
     name: string
@@ -990,6 +999,7 @@ type
     activeBorrows: int     # owner-lane native calls pin disposal/transfer
     release: CPtrReleaseProc
     foreignRelease: pointer
+    library: Value       # pins and borrows the release shim's FFI image
 
   CSliceData = ref object of GeneObjectData
     address: pointer
@@ -1019,6 +1029,7 @@ type
     path: string
     closed: bool
     close: FfiLibraryCloseProc
+    nativeBorrows: int
 
   FfiCallableData = ref object of GeneObjectData
     name: string
@@ -1130,6 +1141,8 @@ type
     scopeEscaped: bool   # later reads must promote a weakened declaration scope
     name: string
     contractPending: bool
+    coreWitnessesSealed: bool
+    coreWitnesses: CoreValueWitnesses
     annotationRefBits: uint64 # borrowed nominal/protocol identity in owned code
     annotationContractName: string # canonical builtin spelling for signature equality
     opaqueAbiAnnotation: bool
@@ -1213,6 +1226,7 @@ type
     weakScope*: pointer
 
   ProtocolData = ref object of GeneObjectData
+    valueRefs: int        # boxed owners for mixed module-scope edge auditing
     name: string
     weakScope: pointer       # defining scope; module roots outlive loaded protocols
     messages: OrderedTable[string, Value] # own messages, keyed by local name
@@ -1248,6 +1262,47 @@ type
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
 # ---------------------------------------------------------------------------
+
+proc releaseFfiLibraryBorrow*(v: Value)
+
+proc finalizeOwnedCPtr(data: CPtrData) {.nimcall.} =
+  ## Owned foreign pointers must retire even if their Gene wrapper is dropped
+  ## without an explicit C/close. Library pinning is qualified separately.
+  if data == nil or not data.owned or data.closed or data.address == nil:
+    return
+  var retired = true
+  try:
+    if data.release != nil:
+      data.release(data.address)
+    elif data.foreignRelease != nil:
+      type ForeignReleaseProc = proc(address: pointer) {.cdecl.}
+      cast[ForeignReleaseProc](data.foreignRelease)(data.address)
+  except CatchableError:
+    retired = false
+  if retired:
+    data.address = nil
+    data.closed = true
+    if data.library.bits != 0:
+      try: releaseFfiLibraryBorrow(data.library)
+      except CatchableError: discard
+      data.library = Value(bits: 0)
+
+proc allocateOwnedCPtr(): CPtrData =
+  new(result, finalizeOwnedCPtr)
+
+proc finalizeFfiLibrary(data: FfiLibraryData) {.nimcall.} =
+  if data == nil or data.closed or data.handle == nil or
+      data.nativeBorrows > 0:
+    return
+  try:
+    if data.close != nil: data.close(data.handle)
+    data.handle = nil
+    data.closed = true
+  except CatchableError:
+    discard
+
+proc allocateFfiLibrary(): FfiLibraryData =
+  new(result, finalizeFfiLibrary)
 
 var
   symbolNames: seq[string]              # symbol id -> text
@@ -1471,6 +1526,10 @@ proc boxObject(data: GeneObjectData): Value =
   case data.objKind
   of okType:
     TypeData(data).valueRefs = 1
+  of okModule:
+    ModuleData(data).valueRefs = 1
+  of okProtocol:
+    ProtocolData(data).valueRefs = 1
   of okEnv:
     EnvData(data).cycleRefs = 1
     tag = CYCLE_OBJECT_TAG
@@ -1489,15 +1548,34 @@ proc boxObject(data: GeneObjectData): Value =
   Value(bits: (tag shl TAG_SHIFT) or
               (cast[uint64](cast[pointer](data)) and PAYLOAD_MASK))
 
+type ManagedKind* = enum
+  managedString, managedInt64, managedList, managedMap,
+  managedNode, managedFunction, managedNativeFunction
+
 when defined(geneRcStats):
   # Opt-in diagnostic: counts live managed (heap, refcounted) objects so tests can
   # assert that retain/release balance. Zero cost unless `-d:geneRcStats` is set.
   var liveManaged*: int
-  template trackAlloc = inc liveManaged
-  template trackFree = dec liveManaged
+  var liveManagedByKind: array[ManagedKind, int]
+  var nativeRootsOutstanding: int
+  template managedKind(T: typedesc): ManagedKind =
+    when T is GeneString: managedString
+    elif T is GeneInt64: managedInt64
+    elif T is GeneList: managedList
+    elif T is GeneMap: managedMap
+    elif T is GeneNode: managedNode
+    elif T is GeneFunction: managedFunction
+    elif T is GeneNativeFn: managedNativeFunction
+    else: {.error: "untracked manually managed type".}
+  template trackAlloc(T: typedesc) =
+    inc liveManaged
+    inc liveManagedByKind[managedKind(T)]
+  template trackFree(T: typedesc) =
+    dec liveManaged
+    dec liveManagedByKind[managedKind(T)]
 else:
-  template trackAlloc = discard
-  template trackFree = discard
+  template trackAlloc(T: typedesc) = discard
+  template trackFree(T: typedesc) = discard
 
 proc managedLiveCount*(): int =
   when defined(geneRcStats):
@@ -1505,8 +1583,37 @@ proc managedLiveCount*(): int =
   else:
     0
 
+proc managedLiveByKind*(): array[ManagedKind, int] =
+  when defined(geneRcStats):
+    liveManagedByKind
+  else:
+    default(array[ManagedKind, int])
+
+proc noteNativeRootCreated*() =
+  when defined(geneRcStats):
+    when compileOption("threads"):
+      discard atomicFetchAdd(addr nativeRootsOutstanding, 1, ATOMIC_ACQ_REL)
+    else:
+      inc nativeRootsOutstanding
+
+proc noteNativeRootReleased*() =
+  when defined(geneRcStats):
+    when compileOption("threads"):
+      discard atomicFetchSub(addr nativeRootsOutstanding, 1, ATOMIC_ACQ_REL)
+    else:
+      dec nativeRootsOutstanding
+
+proc nativeRootCount*(): int =
+  when defined(geneRcStats):
+    when compileOption("threads"):
+      atomicLoadN(addr nativeRootsOutstanding, ATOMIC_ACQUIRE)
+    else:
+      nativeRootsOutstanding
+  else:
+    0
+
 proc createObj(T: typedesc): ptr T {.inline.} =
-  trackAlloc()
+  trackAlloc(T)
   cast[ptr T](alloc0(sizeof(T)))
 
 proc encodeSmallInt(v: int64): uint64 {.inline.} =
@@ -1916,6 +2023,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
     emit(d.task)
   of okCPtr:
     emit(CPtrData(data).targetType)
+    emit(CPtrData(data).library)
   of okCSlice:
     emit(CSliceData(data).targetType)
   of okBuffer:
@@ -1953,6 +2061,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
   of okType:
     let d = TypeData(data)
     emit(d.parent)
+    for witness in d.coreWitnesses:
+      emit(witness)
     for field in d.fields:
       emit(field.typeExpr)
     for field in d.bodyFields:
@@ -2109,7 +2219,9 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.resultScope = nil
     clearValueSlot(d.task)
   of okCPtr:
-    clearValueSlot(CPtrData(data).targetType)
+    let d = CPtrData(data)
+    clearValueSlot(d.targetType)
+    clearValueSlot(d.library)
   of okCSlice:
     clearValueSlot(CSliceData(data).targetType)
   of okBuffer:
@@ -2152,6 +2264,8 @@ proc clearObjectEdges(data: GeneObjectData) =
   of okType:
     let d = TypeData(data)
     clearValueSlot(d.parent)
+    for witness in d.coreWitnesses.mitems:
+      clearValueSlot(witness)
     d.fields.setLen(0)
     d.bodyFields.setLen(0)
     d.scope = nil
@@ -2459,7 +2573,25 @@ proc rcRetain(bits: uint64) =
     GC_ref(data)
   of OBJECT_TAG:
     let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
-    if data.objKind == okType:
+    if data.objKind == okModule:
+      let module = ModuleData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr module.valueRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc module.valueRefs
+      else:
+        inc module.valueRefs
+    elif data.objKind == okProtocol:
+      let protocol = ProtocolData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr protocol.valueRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc protocol.valueRefs
+      else:
+        inc protocol.valueRefs
+    elif data.objKind == okType:
       let typ = TypeData(data)
       when threadedRc:
         if isSharedFlag(data.shared):
@@ -2523,10 +2655,20 @@ proc scopeOwnedReferences(owner: Scope, target: uint64): int =
   for value in owner.requiredImplTypes:
     count(value)
   for impl in owner.impls:
+    count(impl.protocol)
     count(impl.receiver)
+    for message in impl.messages:
+      count(message.message)
+      count(message.fn)
+    for message in impl.localMessages:
+      count(message.message)
+      count(message.fn)
     for binding in impl.selfBindings:
+      count(binding.protocol)
       count(binding.selfType)
     for source in impl.bodySources:
+      count(source.message)
+      count(source.protocol)
       count(source.receiver)
   var visited = initHashSet[uint64]()
   while true:
@@ -2551,8 +2693,12 @@ proc scopeOwnedReferences(owner: Scope, target: uint64): int =
           total = CellData(value).cycleRefs
       of OBJECT_TAG:
         let value = cast[GeneObjectData](cast[pointer](key and PAYLOAD_MASK))
-        if value.objKind == okType and not isSharedFlag(value.shared):
-          total = TypeData(value).valueRefs
+        if not isSharedFlag(value.shared):
+          case value.objKind
+          of okType: total = TypeData(value).valueRefs
+          of okProtocol: total = ProtocolData(value).valueRefs
+          of okModule: total = ModuleData(value).valueRefs
+          else: discard
       else: discard
       if owned == total:
         ready.add key
@@ -2600,6 +2746,48 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
     # nested release cannot revisit the scope field being destroyed.
     var retired = move typ.scope
     retired = nil
+
+proc kind*(v: Value): ValueKind {.inline, raises: [].}
+
+proc retireReleasedScalarModule(module: ModuleData, bits: uint64) =
+  ## A released scalar-only module can have the cycle
+  ## Scope.this_mod -> Module -> Namespace -> Scope as its final owners. It is
+  ## safe to sever only after the Module's last external boxed owner goes away.
+  ## Callable/Type/container exports might still use `this_mod` from an escaped
+  ## scope and remain rooted until their edges are modeled (VM-2).
+  if module == nil or module.valueRefs != 1 or
+      isSharedFlag(module.shared) or module.root.kind != vkNamespace:
+    return
+  let owner = NamespaceData(objData(module.root)).scope
+  if owner == nil or not owner.sandboxGenerationReleased or
+      owner.moduleRefs != nil or not owner.vars.hasKey("this_mod") or
+      owner.vars.mgetOrPut("this_mod", Value(bits: 0)).bits != bits:
+    return
+  template scalarTag(tag: uint64): bool =
+    tag < VOID_TAG or tag == VOID_TAG or tag == BOOL_TAG or
+      tag == INT_TAG or tag == CHAR_TAG or tag == FLOATZERO_TAG or
+      tag == SYMBOL_TAG or tag == STRING_TAG or tag == INT64_TAG
+  for name in owner.vars.keys:
+    if name notin ["this_mod", "this_pkg"]:
+      let tag = owner.vars.mgetOrPut(name, Value(bits: 0)).bits shr TAG_SHIFT
+      if not scalarTag(tag):
+        return
+  for i, name in owner.slotNames:
+    if name == "this_mod":
+      return
+    if name != "this_pkg" and i < owner.slots.len and
+        not scalarTag(owner.slots[i].bits shr TAG_SHIFT):
+      return
+  owner.vars.del("this_mod")
+
+proc retireReleasedModuleSelfBinding*(owner: Scope) =
+  if owner == nil or not owner.vars.hasKey("this_mod"):
+    return
+  let bits = owner.vars.mgetOrPut("this_mod", Value(bits: 0)).bits
+  if bits shr TAG_SHIFT == OBJECT_TAG:
+    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    if data.objKind == okModule:
+      retireReleasedScalarModule(ModuleData(data), bits)
 
 proc isPromotedBindingFunction(v: Value): bool {.inline.} =
   if v.bits shr TAG_SHIFT != FUNCTION_TAG:
@@ -2804,22 +2992,22 @@ proc rcRelease(bits: uint64) =
   of STRING_TAG:
     let p = cast[ptr GeneString](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneString)
   of INT64_TAG:
     let p = cast[ptr GeneInt64](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneInt64)
   of LIST_TAG:
     let p = cast[ptr GeneList](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneList)
       return
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       weakenEscapedListItems(p)
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneMap)
       return
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       weakenEscapedMapItems(p)
@@ -2828,7 +3016,7 @@ proc rcRelease(bits: uint64) =
     releaseManual(p):
       if p.resourceId != 0 and resourceReleaseHook != nil:
         resourceReleaseHook(p.resourceId)
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneNode)
       return
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       var candidates: FunctionCandidates
@@ -2849,7 +3037,7 @@ proc rcRelease(bits: uint64) =
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneFunction)
       return
     if p.weakable and p.scope != nil:
       var candidates: FunctionCandidates
@@ -2858,7 +3046,7 @@ proc rcRelease(bits: uint64) =
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
     releaseManual(p):
-      reset(p[]); dealloc(p); trackFree()
+      reset(p[]); dealloc(p); trackFree(GeneNativeFn)
   of CYCLE_OBJECT_TAG:
     let data = cast[GeneObjectData](cast[pointer](payload))
     var shouldTryCycle = false
@@ -2908,7 +3096,32 @@ proc rcRelease(bits: uint64) =
       tryCollectObjectCycle(data)
   of OBJECT_TAG:
     let data = cast[GeneObjectData](cast[pointer](payload))
-    if data.objKind == okType:
+    if data.objKind == okModule:
+      let module = ModuleData(data)
+      var newRefs: int
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          newRefs = atomicFetchSub(addr module.valueRefs, 1, ATOMIC_ACQ_REL) - 1
+        else:
+          dec module.valueRefs
+          newRefs = module.valueRefs
+      else:
+        dec module.valueRefs
+        newRefs = module.valueRefs
+      GC_unref(data)
+      if newRefs == 1:
+        retireReleasedScalarModule(module, bits)
+      return
+    elif data.objKind == okProtocol:
+      let protocol = ProtocolData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchSub(addr protocol.valueRefs, 1, ATOMIC_ACQ_REL)
+        else:
+          dec protocol.valueRefs
+      else:
+        dec protocol.valueRefs
+    elif data.objKind == okType:
       let typ = TypeData(data)
       when threadedRc:
         if isSharedFlag(data.shared):
@@ -4820,6 +5033,9 @@ proc closeCPtr*(v: Value) =
     cast[ForeignReleaseProc](data.foreignRelease)(data.address)
   data.address = nil
   data.closed = true
+  if data.library.kind == vkFfiLibrary:
+    releaseFfiLibraryBorrow(data.library)
+    data.library = NIL
 
 proc relinquishCPtr*(v: Value) =
   ## Mark an owned pointer closed *without* running its release callback.
@@ -4973,10 +5189,26 @@ proc closeFfiLibrary*(v: Value) =
   let data = ffiLibraryData(v)
   if data.closed:
     return
+  if data.nativeBorrows > 0:
+    raise newException(GeneError,
+      "ffi/Library has active native borrows")
   if data.close != nil and data.handle != nil:
     data.close(data.handle)
   data.handle = nil
   data.closed = true
+
+proc borrowFfiLibrary*(v: Value) =
+  let data = ffiLibraryData(v)
+  if data.closed or data.handle == nil:
+    raise newException(GeneError, "ffi/Library is closed")
+  inc data.nativeBorrows
+
+proc releaseFfiLibraryBorrow*(v: Value) =
+  let data = ffiLibraryData(v)
+  if data.nativeBorrows <= 0:
+    raise newException(GeneError,
+      "ffi/Library has no native borrow")
+  dec data.nativeBorrows
 
 proc typeName*(v: Value): string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
@@ -7003,16 +7235,29 @@ proc newCConstPtr*(address: pointer, targetType: Value = NIL): Value =
 
 proc newCOwnedPtr*(address: pointer, release: CPtrReleaseProc,
                    targetType: Value = NIL, mutable = true): Value =
-  boxObject(CPtrData(objKind: okCPtr, address: address,
-                     targetType: targetType, mutable: mutable,
-                     owned: true, release: release))
+  var data = allocateOwnedCPtr()
+  data.objKind = okCPtr
+  data.address = address
+  data.targetType = targetType
+  data.mutable = mutable
+  data.owned = true
+  data.release = release
+  boxObject(data)
 
 proc newCForeignOwnedPtr*(address: pointer, releaseAddress: pointer,
                           targetType: Value = NIL,
-                          mutable = true): Value =
-  boxObject(CPtrData(objKind: okCPtr, address: address,
-                     targetType: targetType, mutable: mutable,
-                     owned: true, foreignRelease: releaseAddress))
+                          mutable = true, library: Value = NIL): Value =
+  var data = allocateOwnedCPtr()
+  data.objKind = okCPtr
+  data.address = address
+  data.targetType = targetType
+  data.mutable = mutable
+  data.owned = true
+  data.foreignRelease = releaseAddress
+  if library.kind == vkFfiLibrary:
+    borrowFfiLibrary(library)
+    data.library = library
+  boxObject(data)
 
 proc newCSlice*(address: pointer, length: int, targetType: Value = NIL,
                 mutable = true): Value =
@@ -7181,8 +7426,12 @@ proc newFfiLibrary*(handle: pointer, path: string,
                     close: FfiLibraryCloseProc): Value =
   if handle == nil:
     raise newException(GeneError, "FFI library handle must not be nil")
-  boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
-                           path: path, close: close))
+  var data = allocateFfiLibrary()
+  data.objKind = okFfiLibrary
+  data.handle = handle
+  data.path = path
+  data.close = close
+  boxObject(data)
 
 proc newLogger*(name: string, routeId: int, payload: Value): Value =
   if name.len == 0:
@@ -7612,6 +7861,7 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     for id in inherited:
       matchIds.add id
   boxObject(TypeData(objKind: okType, name: name, parent: parent,
+                     coreWitnessesSealed: true,
                      repr: repr, nativeIdentity: nativeIdentity,
                      nativeAbiIdentity: nativeAbiIdentity,
                      nativeAbiFingerprint: nativeAbiFingerprint,
@@ -7734,6 +7984,31 @@ proc setTypeContractPending*(typ: Value, pending: bool) =
   if typ.tagOf != OBJECT_TAG or objData(typ).objKind != okType:
     raise newException(FieldDefect, "pending contract requires a nominal type")
   TypeData(objData(typ)).contractPending = pending
+
+proc typeCoreWitnessesSealed*(typ: Value): bool =
+  if typ.kind != vkType:
+    raise newException(FieldDefect, "core witnesses require a nominal type")
+  TypeData(objData(typ)).coreWitnessesSealed
+
+proc typeCoreWitnesses*(typ: Value): CoreValueWitnesses =
+  if not typ.typeCoreWitnessesSealed:
+    raise newException(GeneError, "ValueProtocolPending: " & typ.typeName)
+  TypeData(objData(typ)).coreWitnesses
+
+proc typeCoreWitness*(typ: Value, operation: CoreValueMethod): Value =
+  typ.typeCoreWitnesses[operation]
+
+proc markTypeCoreWitnessesPending*(typ: Value) =
+  if typ.kind != vkType or typ.isTypeAlias:
+    raise newException(FieldDefect, "core witnesses require a nominal type")
+  TypeData(objData(typ)).coreWitnessesSealed = false
+
+proc sealTypeCoreWitnesses*(typ: Value, witnesses: CoreValueWitnesses) =
+  if typ.kind != vkType or typ.isTypeAlias or typ.typeCoreWitnessesSealed:
+    raise newException(GeneError, "core witnesses are already sealed")
+  let data = TypeData(objData(typ))
+  data.coreWitnesses = witnesses
+  data.coreWitnessesSealed = true
 
 proc setTypeOwnMessages*(typ: Value, messages: sink Table[string, Value], ctor: Value) =
   ## Complete a fresh nominal declaration before publishing its binding.

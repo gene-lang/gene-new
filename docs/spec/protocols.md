@@ -48,6 +48,9 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   named properties are accepted.
 - Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
   there is no protocol or lexical fallback. Protocol sends use `P:msg`.
+  The native VM's selected equality, hash, numeric-index, size, and ordering
+  operations have sealed core witnesses; they do not change ordinary send
+  resolution. See [value operations](../proposals/value-operations.md).
 - Only protocols qualify messages. Type-direct messages are sent bare and use
   the reserved `Self:msg` spelling when a message value is required; `T:msg`
   is a `CallKindError` expecting `Protocol`.

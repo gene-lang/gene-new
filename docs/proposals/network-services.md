@@ -1,6 +1,6 @@
 # Gene Network Services
 
-**Status:** Implementation proposal; current source reviewed at `3b2bde9`.
+**Status:** NET-1 has an experimental owned Client with an Application-scoped libcurl multi service, reusable buffered requests, header-first streamed responses with bounded AsyncReader bodies, bounded AsyncReader uploads with known-length EOF checks or chunked framing, controlled GET/HEAD redirects, ordered response header pairs, binary bodies, captured CA files, proxy policy, cancellation, per-Client/per-origin caps, queue deadlines, and I/O byte-budget accounting on macOS arm64. Generic exclusive borrowing against direct caller reads and full platform/service qualification remain open. The IO-3 prerequisite has experimental raw TCP streams/listeners. NET-2 has experimental streamed request/response bodies, same-connection upload-to-response tests, a pinned Caddy HTTPS-to-loopback service fixture, and a tracked-cleanup shutdown report. The macOS 60-second service workload passes functionally, but one repeat exceeded its 250 ms host-loop heartbeat target (336 ms); performance stability, Linux runtime, and VM-3 qualification remain open. NET-3 now has an experimental PKG-2 OpenSSL adapter, direct `listen ^tls` transport, and Task-valued `Server.reload_tls`. The installed-package fixture passes HTTPS, plaintext and untrusted-server rejection, failed reload, and certificate rotation on macOS arm64; the C fixture covers required client authentication and old live sessions. Sustained service and Linux runtime qualification remain open. Design baseline `3b2bde9`.
 
 **Stages:** NET-1 (owned HTTP Client), NET-2 (streamed service/proxy deployment), NET-3 (direct TLS).
 
@@ -54,7 +54,7 @@ The streamed-response Task succeeds on final headers, not on complete body recei
 
 ## NET-2: server streaming and first HTTPS deployment
 
-Add `serve ^body_mode "stream"` alongside existing buffered mode. Parse/validate headers and acquire request admission before accepting an unbounded body. Stream-mode requests expose a reader implementing AsyncReader/IoResource; buffered-mode request/body retains today's shape. Responses may select Bytes or an AsyncReader body under explicit streaming response constructors, preserving existing text helpers.
+Add `serve ^body_mode "stream"` alongside existing buffered mode. Parse/validate headers and acquire request admission before accepting an unbounded body. Stream-mode requests expose a reader implementing AsyncReader/IoResource; buffered-mode request/body retains today's shape. `($net/http/stream reader)` or `($net/http/stream status reader ^content_length n ^max_bytes limit ^own_reader false)` selects a bounded AsyncReader response, using chunked framing when content length is unknown. Existing `bytes` and text response helpers retain their shapes.
 
 Bound incomplete headers, body bytes, request queue, and socket writes. Enforce monotonic header/body-idle/total deadlines. A slow socket parks its task rather than holding the root loop. Unexpected EOF and oversized input fail the request; partial output cannot be replaced with a fictional complete error response. Early body close either bounded-drains or closes the connection. WebSocket upgrade retains its existing validated handshake and queue rules and is not a generic body reader.
 

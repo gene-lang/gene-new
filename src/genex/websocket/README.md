@@ -21,6 +21,15 @@ python3 src/genex/websocket/tools/build.py --pkg-config-path "$(brew --prefix cu
 
 `nimble genex` builds all genex libraries and locates Homebrew curl automatically.
 
+The PKG-2 package regression in `tests/test_genex_package.py` copies this
+package into an isolated source tree, builds its existing generated FFI
+adapter, and records a target-specific `native_binary` recipe with the exact
+Gene runtime identity and libcurl system dependency. It then installs a Gene
+consumer and exchanges a binary frame through the installed launcher with
+the source tree, user artifact cache, and compiler unavailable. This local
+fixture leaves the source package manifest inert; published variants still
+need target/runtime-specific release records.
+
 `src/websocket.gene` exposes `load`, `connect`, `connect_protocol`, `send`, and
 `receive`. `connect_protocol` offers one subprotocol (`Sec-WebSocket-Protocol`)
 and fails unless the server selects exactly that protocol; a name outside

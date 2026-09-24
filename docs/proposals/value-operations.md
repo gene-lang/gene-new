@@ -1,6 +1,6 @@
 # VM Fallback Protocols for Values
 
-**Status:** Implementation proposal; reviewed against `3b2bde9`.
+**Status:** VAL-1–3 are implemented experimentally in the native VM: sealed witnesses, semantic equality/hash, indexed access, ValueOrder, and stable `gene/order` sorting. Conformance, RC, and threaded checks cover the native implementation; cross-backend qualification and remaining edge-case audit are open. Design baseline `3b2bde9`.
 
 **Stages:** VAL-1 (canonical witnesses), VAL-2 (equality/hash), VAL-3 (indexing/order).
 

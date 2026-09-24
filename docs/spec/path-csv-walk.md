@@ -1,0 +1,25 @@
+# Native path, CSV, and filesystem walk contract
+
+**Status:** APP-1 implemented for the native VM on POSIX hosts. APP-2 streaming CSV is experimental on macOS arm64, with focused ORC/AtomicArc tests and a 10/100 MiB data-profile probe. Direct parser-payload growth is zero at matching EOF checkpoints and peak observations; Linux qualification remains open.
+
+## Lexical paths
+
+`gene/path` is `$path`. Calls take Str and return Str; all reject embedded NUL and wrong arity/type with PathError. These functions do not query files, resolve symlinks, or change the working directory. `normalize` collapses repeated `/`, `.`, and reducible `..`; excess leading parents remain in a relative path and are clamped at an absolute root. Empty input normalizes to `.`. `join` requires at least one component, rejects an absolute later component, and normalizes the result. `parent` of `/` is `/`, and parent of `.` or a basename is `.`. `name` of `/` and `.` is empty. `extension` includes its leading dot, while `.bashrc` has no extension. `relative` requires both inputs to be absolute or both relative, rejects unresolved leading parents, and returns `.` for the same path. POSIX path rules are qualified first; drive and UNC handling is explicitly unsupported on Windows.
+
+## CSV
+
+`gene/csv` provides `parse_rows` and `encode_row`. Default delimiter is comma; an override is one ASCII byte other than quote or newline. Records end at LF or CRLF. Quoted fields accept delimiters, doubled quotes, and embedded newlines; unquoted quotes and bytes after a closing quote fail. A bare CR outside quotes fails. Decoded field bytes are strict UTF-8, and a single initial UTF-8 BOM is ignored. Empty input has zero rows; a blank line has one empty field; a final record need not end with a newline.
+
+`parse_rows` accepts one Str. Without headers, each row is a List of Str. With `^headers true`, the first row supplies nonempty distinct names and later rows are property maps of Str values; unequal row widths fail. No numeric or nil inference occurs. `encode_row` accepts a nonempty List of Str and returns Bytes ending in CRLF. It quotes fields only when required and doubles embedded quotes. Unsupported values fail before output is returned.
+
+Limits default to 16 MiB input, 1 MiB decoded field, 8 MiB record, and 4,096 columns. Named overrides are `^max_bytes`, `^max_field_bytes`, `^max_record_bytes`, and `^max_columns`, all positive and within the hard caps (64 MiB bytes, 16,384 columns). CsvError carries `message`, zero-based byte `offset`, and one-based `record` and `field`. A call failing on malformed input or a limit returns no partial row collection; unrelated prior actions are unaffected. The parser's byte-at-a-time row transition is reused by APP-2's streaming adapter.
+
+`($csv/reader source ^headers false ^own_reader false)` accepts an `AsyncReader` and returns a `CsvReader`. Its concrete `.next` returns a fresh Task yielding one List or header-keyed Map, then nil on EOF. It reads at most 64 KiB per upstream call and keeps only the unconsumed chunk and current record. Options include `^delimiter`, `^max_field_bytes`, `^max_record_bytes`, and `^max_columns`; there is no whole-input byte limit. One `.next` may be pending. `IoResource:close` cancels it; with `^own_reader true`, close also requests upstream close and `wait_closed` waits for its physical retirement. With the default unowned source, the caller still owns and closes that source. The wrapper needs exclusive upstream read use until it closes.
+
+`runtime/gc_stats` reports `csv_parser_retained_bytes` across live CSV readers and `csv_parser_peak_resource_bytes` for the largest single reader. These count retained parser payload string lengths (fields, header names, BOM prefix, and input chunk), not allocator capacity, object overhead, or upstream I/O buffers. The latter use `io_retained_bytes` and `io_peak_retained_bytes`.
+
+## Filesystem walk
+
+`$fs/walk root` returns a synchronous, lazy Stream. Relative roots resolve from the captured application launch directory; yielded `path` is absolute and `relative_path` uses `/`. Entries are depth-first preorder, excluding root and sorting children lexically within each directory. Each record has kind `file`, `directory`, or `symlink`; size is an Int for a regular file and nil otherwise. Depth 1 yields only immediate children.
+
+`^follow_symlinks` defaults false. When true, links to directories can be traversed; an ancestor identity repeated through a link is an FsError. It is traversal behavior, not filesystem confinement. Missing roots, disappeared entries, and I/O errors are FsError. `^max_depth` (64) deliberately stops descending after that depth while still yielding the boundary entry. `^max_entries_per_dir` (10,000) and `^max_entries_total` (1,000,000) raise FsLimitError when exceeded. No directory handle is retained across a yield: children are listed and sorted during the relevant pull, then the handle closes. Early Stream close releases retained frames. Walking can block its calling lane on filesystem I/O; IO-2 supplies an async adapter for services.

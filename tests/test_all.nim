@@ -9,6 +9,11 @@ include test_vterm
 include test_pty_process
 include test_terminal_session
 include test_values
+include test_io_lifecycle
+include test_io_scope
+include test_io_file
+include test_io_tcp
+include test_csv_stream
 include test_buffers
 include test_bound_call
 include test_callable_reflection

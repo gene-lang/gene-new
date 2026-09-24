@@ -1,0 +1,12 @@
+{^format 1
+ ^name "genex/tls"
+ ^version "0.1.0"
+ ^description "OpenSSL direct TLS transport for Gene native services"
+ ^library {^entry "src/tls.gene" ^uses ["native"]}
+ ^files {^include ["package.gene" "README.md" "src/**" "native/**"]}
+ ^system_dependencies {
+   ^openssl (system_library ^name "openssl" ^version ">=3.0.0 <4"
+     ^providers [pkg_config] ^linkage dynamic)}
+ ^build [(c_library "native" ^sources ["native/tls.c"]
+           ^system ["openssl"] ^cflags ["-pthread"] ^ldflags ["-pthread"]
+           ^linkage shared ^targets ["arm64-macosx" "amd64-linux"])]}

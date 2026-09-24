@@ -22,6 +22,42 @@ proc nativeModuleEnvelopeEcho(args: openArray[Value],
 
 var releasedPointers = 0
 var nativeLoggingCaptured {.threadvar.}: seq[string]
+var v5InitCalls = 0
+var ingressCalls = 0
+var ingressPayloads: seq[string]
+var ingressFirstTask = NIL
+var ingressReentrantSubscription: GeneIngressSubscription
+var ingressReentrantTask = NIL
+
+proc recordedIngress(args: openArray[Value]): Value {.nimcall.} =
+  inc ingressCalls
+  ingressPayloads.add args[0].bytesVal
+  if ingressCalls == 1:
+    ingressFirstTask = nativeNewAsyncTask()
+    return ingressFirstTask
+  NIL
+
+proc failingIngress(args: openArray[Value]): Value {.nimcall.} =
+  raise newException(GeneError, "native ingress handler failed")
+
+proc panickingIngress(args: openArray[Value]): Value {.nimcall.} =
+  raise newException(GenePanic, "native ingress handler panicked")
+
+proc cancellingIngress(args: openArray[Value]): Value {.nimcall.} =
+  raise newException(GeneCancel, "native ingress handler cancelled")
+
+proc reentrantClosingIngress(args: openArray[Value]): Value {.nimcall.} =
+  geneIngressRequestCloseSubscription(ingressReentrantSubscription)
+  ingressReentrantTask = nativeNewAsyncTask()
+  ingressReentrantTask
+
+proc initV5Probe(api: ptr GeneApiV5, module: pointer): cint {.cdecl.} =
+  inc v5InitCalls
+  if module == nil or api.version != GeneApiV5Version or
+      api.structSize != uint32(sizeof(GeneApiV5)) or
+      api.ingressEnqueue == nil:
+    return 7
+  0
 
 proc captureNativeLog(line: string) {.gcsafe.} =
   nativeLoggingCaptured.add line
@@ -501,12 +537,14 @@ suite "native api — roots and trampoline":
       "    (set self/handle (if borrowed (borrow_blob) (open_blob)))))"), scope)
     check run(compileSource("($head (new Blob))"), scope).print() ==
       "(type Blob)"
+    let releasedAfterOwned = releasedPointers
+    check releasedAfterOwned == 1 # abandoned successful owner now auto-retires
     # A borrowed pointer fails the declared field type, and the ctor's own
     # owned handle count is untouched because it never installed one.
     check "field 'handle' for Blob" in run(compileSource(
       "(try (new Blob ^borrowed true) catch TypeError $err/where)"),
       scope).print()
-    check releasedPointers == 0
+    check releasedPointers == releasedAfterOwned
 
   test "a failed ctor releases the owned handles it already installed":
     # §16.6: an in-progress instance is never published, so waiting for
@@ -546,6 +584,268 @@ suite "native api — roots and trampoline":
     let initialized = geneInitModule(initNativeSample, module, incompatible)
     check initialized.status == gsError
     check initialized.message.contains("native API version mismatch")
+
+  test "v5 uses a separate sized table and exact initializer path":
+    let module = newGeneModule("v5-probe")
+    var api = geneApiV5()
+    check api.version == 5
+    check api.structSize == uint32(sizeof(GeneApiV5))
+    check (api.featureBits and GeneApiV5IngressFeature) != 0
+    let before = v5InitCalls
+    api.structSize = api.structSize - 1
+    let short = geneInitModuleV5(initV5Probe, module, api)
+    check short.status == gsError
+    check short.message.contains("layout or feature mismatch")
+    check v5InitCalls == before
+    api = geneApiV5()
+    api.featureBits = 0
+    check geneInitModuleV5(initV5Probe, module, api).status == gsError
+    check v5InitCalls == before
+    check geneInitModuleV5(initV5Probe, module).status == gsOk
+    check v5InitCalls == before + 1
+    check geneLoadModuleVersioned(newInt(1), "bad", 6).status == gsError
+    check geneLoadModuleVersioned(newInt(1), "bad", 6).message.contains(
+      "unsupported native module ABI version")
+
+  test "v5 ingress copies bounded FIFO payloads and retains first failure":
+    let context = newGeneIngressContext(17, maxCount = 2,
+      maxBytes = 4, maxPayload = 3)
+    check geneIngressBegin(context, 16) == 0
+    check geneIngressBegin(context, 17) == 1
+    var first = "ab"
+    var second = "cd"
+    var extra = "z"
+    check geneIngressEnqueue(context, addr first[0], csize_t(first.len)) ==
+      GeneIngressAccepted
+    first[0] = 'X' # the queued notification owns its copy
+    check geneIngressEnqueue(context, addr second[0], csize_t(second.len)) ==
+      GeneIngressAccepted
+    check geneIngressEnqueue(context, addr extra[0], 1) ==
+      GeneIngressOverflow
+    geneIngressEnd(context)
+    var snapshot = geneIngressStats(context)
+    check snapshot.queuedCount == 2
+    check snapshot.queuedBytes == 4
+    check snapshot.received == 2
+    check snapshot.rejected == 1
+    check snapshot.firstFailure == GeneIngressOverflow
+    check snapshot.wakePending
+    var payload = ""
+    check geneIngressPop(context, payload)
+    check payload == "ab"
+    check geneIngressPop(context, payload)
+    check payload == "cd"
+    check not geneIngressPop(context, payload)
+    geneIngressFailNextAllocation(context)
+    check geneIngressBegin(context, 17) == 1
+    check geneIngressEnqueue(context, addr extra[0], 1) ==
+      GeneIngressAllocationFailed
+    geneIngressEnd(context)
+    snapshot = geneIngressStats(context)
+    check snapshot.firstFailure == GeneIngressOverflow
+    check snapshot.delivered == 2
+    check snapshot.queuedBytes == 0
+    check not geneIngressCanRetire(context)
+    geneIngressClose(context)
+    check geneIngressBegin(context, 17) == 0
+    geneIngressConfirmUnregistered(context)
+    check geneIngressCanRetire(context)
+    geneIngressDestroy(context)
+
+  test "v5 subscription roots its handler until physical retirement":
+    let scope = newGlobalScope()
+    let handler = run(compileSource("(fn on_notice [value] value)"), scope)
+    let baseline = nativeRootCount()
+    expect GeneError:
+      discard newGeneIngressSubscription(handler, scope, maxCount = 0)
+    check nativeRootCount() == baseline
+    let subscription = newGeneIngressSubscription(handler, scope)
+    check subscription.id > 0
+    check geneIngressHandler(subscription).bits == handler.bits
+    when defined(geneRcStats):
+      check nativeRootCount() == baseline + 1
+    expect GeneError:
+      geneIngressReleaseSubscription(subscription)
+    geneIngressClose(subscription.context)
+    geneIngressConfirmUnregistered(subscription.context)
+    geneIngressReleaseSubscription(subscription)
+    check subscription.released
+    check nativeRootCount() == baseline
+
+  test "v5 ingress nested C entries keep their contexts separate":
+    let outer = newGeneIngressContext(101)
+    let inner = newGeneIngressContext(102)
+    var data = "x"
+    check geneIngressBegin(outer, 101) == 1
+    check geneIngressBegin(inner, 102) == 1
+    check geneIngressEnqueue(outer, addr data[0], 1) ==
+      GeneIngressEntryMissing
+    check geneIngressEnqueue(inner, addr data[0], 1) ==
+      GeneIngressAccepted
+    geneIngressEnd(inner)
+    check geneIngressEnqueue(outer, addr data[0], 1) ==
+      GeneIngressAccepted
+    geneIngressEnd(outer)
+    for context in [inner, outer]:
+      geneIngressClose(context)
+      geneIngressConfirmUnregistered(context)
+      check geneIngressCanRetire(context)
+      geneIngressDestroy(context)
+
+  test "v5 root poll serializes handler Tasks and retains failures":
+    let scope = newGlobalScope()
+    ingressCalls = 0
+    ingressPayloads.setLen(0)
+    ingressFirstTask = NIL
+    let subscription = newGeneIngressSubscription(
+      newNativeFn("recorded_ingress", recordedIngress), scope)
+    var one = "one"
+    var two = "two"
+    check geneIngressBegin(subscription.context, subscription.id) == 1
+    check geneIngressEnqueue(subscription.context, addr one[0], 3) == 0
+    check geneIngressEnqueue(subscription.context, addr two[0], 3) == 0
+    geneIngressEnd(subscription.context)
+    check geneIngressPollSubscription(subscription) == 1
+    check ingressCalls == 1
+    check subscription.handled == 0
+    check geneIngressSubscriptionStatus(subscription).state == "active"
+    check geneIngressStats(subscription.context).queuedCount == 1
+    check geneIngressPollSubscription(subscription) == 0
+    check ingressCalls == 1
+    discard nativeTaskComplete(ingressFirstTask, NIL, scope)
+    check geneIngressPollSubscription(subscription) == 1
+    check ingressCalls == 2
+    check ingressPayloads == @["one", "two"]
+    check subscription.handled == 2
+    geneIngressRequestCloseSubscription(subscription)
+    geneIngressConfirmUnregistered(subscription.context)
+    check geneIngressSubscriptionStatus(subscription).state == "closing"
+    geneIngressReleaseSubscription(subscription)
+    check geneIngressSubscriptionStatus(subscription).state == "closed"
+
+    let failed = newGeneIngressSubscription(
+      newNativeFn("failing_ingress", failingIngress), scope)
+    let failedWait = geneIngressWaitClosed(failed, scope)
+    check geneIngressBegin(failed.context, failed.id) == 1
+    check geneIngressEnqueue(failed.context, addr one[0], 3) == 0
+    check geneIngressEnqueue(failed.context, addr two[0], 3) == 0
+    geneIngressEnd(failed.context)
+    check geneIngressPollSubscription(failed) == 1
+    check failed.terminalStatus == gsError
+    check failed.terminalMessage.contains("handler failed")
+    check geneIngressStats(failed.context).discarded == 1
+    geneIngressConfirmUnregistered(failed.context)
+    geneIngressReleaseSubscription(failed)
+    check failedWait.taskDone and failedWait.taskHasError
+
+    for (handler, expected) in [
+        (newNativeFn("panicking_ingress", panickingIngress), gsPanic),
+        (newNativeFn("cancelling_ingress", cancellingIngress), gsCancelled)]:
+      let typed = newGeneIngressSubscription(handler, scope)
+      let waiting = geneIngressWaitClosed(typed, scope)
+      check geneIngressBegin(typed.context, typed.id) == 1
+      check geneIngressEnqueue(typed.context, addr one[0], 3) == 0
+      geneIngressEnd(typed.context)
+      check geneIngressPollSubscription(typed) == 1
+      check typed.terminalStatus == expected
+      geneIngressConfirmUnregistered(typed.context)
+      geneIngressReleaseSubscription(typed)
+      check waiting.taskDone
+      let repeat = geneIngressWaitClosed(typed, scope)
+      check repeat.taskDone and repeat.bits != waiting.bits
+      if expected == gsPanic:
+        check waiting.taskHasPanic and repeat.taskHasPanic
+      else:
+        check waiting.taskCancelled and repeat.taskCancelled
+
+  test "v5 close cancels one active handler before retirement":
+    let scope = newGlobalScope()
+    ingressCalls = 0
+    ingressFirstTask = NIL
+    let subscription = newGeneIngressSubscription(
+      newNativeFn("recorded_ingress", recordedIngress), scope)
+    var byte = "c"
+    check geneIngressBegin(subscription.context, subscription.id) == 1
+    check geneIngressEnqueue(subscription.context, addr byte[0], 1) == 0
+    geneIngressEnd(subscription.context)
+    check geneIngressPollSubscription(subscription) == 1
+    check not geneIngressCanRetire(subscription.context)
+    geneIngressRequestCloseSubscription(subscription)
+    check ingressFirstTask.taskCancelled
+    discard geneIngressPollSubscription(subscription)
+    check subscription.terminalStatus == gsOk
+    geneIngressConfirmUnregistered(subscription.context)
+    geneIngressReleaseSubscription(subscription)
+
+    ingressCalls = 0
+    ingressFirstTask = NIL
+    let failedLate = newGeneIngressSubscription(
+      newNativeFn("recorded_ingress", recordedIngress), scope)
+    check geneIngressBegin(failedLate.context, failedLate.id) == 1
+    check geneIngressEnqueue(failedLate.context, addr byte[0], 1) == 0
+    geneIngressEnd(failedLate.context)
+    check geneIngressPollSubscription(failedLate) == 1
+    discard nativeTaskFail(ingressFirstTask, "late handler error", scope = scope)
+    geneIngressClose(failedLate.context)
+    geneIngressConfirmUnregistered(failedLate.context)
+    geneIngressReleaseSubscription(failedLate)
+    check failedLate.terminalStatus == gsError
+    check failedLate.terminalMessage.contains("late handler error")
+
+  test "v5 overflow cancels an awaiting handler and reentrant close is safe":
+    let scope = newGlobalScope()
+    ingressCalls = 0
+    ingressFirstTask = NIL
+    let overflowed = newGeneIngressSubscription(
+      newNativeFn("recorded_ingress", recordedIngress), scope,
+      maxCount = 1, maxBytes = 2, maxPayload = 1)
+    var byte = "x"
+    check geneIngressBegin(overflowed.context, overflowed.id) == 1
+    check geneIngressEnqueue(overflowed.context, addr byte[0], 1) == 0
+    geneIngressEnd(overflowed.context)
+    check geneIngressPollSubscription(overflowed) == 1
+    check geneIngressBegin(overflowed.context, overflowed.id) == 1
+    check geneIngressEnqueue(overflowed.context, addr byte[0], 1) == 0
+    check geneIngressEnqueue(overflowed.context, addr byte[0], 1) ==
+      GeneIngressOverflow
+    geneIngressEnd(overflowed.context)
+    discard geneIngressPollSubscription(overflowed)
+    check ingressFirstTask.taskCancelled
+    check overflowed.terminalStatus == gsError
+    check geneIngressStats(overflowed.context).discarded == 1
+    geneIngressConfirmUnregistered(overflowed.context)
+    geneIngressReleaseSubscription(overflowed)
+
+    ingressReentrantTask = NIL
+    let reentrant = newGeneIngressSubscription(
+      newNativeFn("reentrant_close", reentrantClosingIngress), scope)
+    ingressReentrantSubscription = reentrant
+    check geneIngressBegin(reentrant.context, reentrant.id) == 1
+    check geneIngressEnqueue(reentrant.context, addr byte[0], 1) == 0
+    geneIngressEnd(reentrant.context)
+    check geneIngressPollSubscription(reentrant) == 1
+    check reentrant.closeRequested
+    check ingressReentrantTask.taskCancelled
+    geneIngressConfirmUnregistered(reentrant.context)
+    geneIngressReleaseSubscription(reentrant)
+    ingressReentrantSubscription = nil
+
+  test "v5 scheduler completion poll dispatches queued notifications":
+    let scope = newGlobalScope()
+    ingressCalls = 1 # recordedIngress returns nil on the next call
+    ingressPayloads.setLen(0)
+    let subscription = newGeneIngressSubscription(
+      newNativeFn("recorded_ingress", recordedIngress), scope)
+    var byte = "z"
+    check geneIngressBegin(subscription.context, subscription.id) == 1
+    check geneIngressEnqueue(subscription.context, addr byte[0], 1) == 0
+    geneIngressEnd(subscription.context)
+    discard run(compileSource("($sleep 5)"), scope)
+    check ingressPayloads == @["z"]
+    check subscription.handled == 1
+    geneIngressRequestCloseSubscription(subscription)
+    geneIngressConfirmUnregistered(subscription.context)
+    geneIngressReleaseSubscription(subscription)
 
   test "dynamic native module loading requires an open library initializer":
     check geneLoadModule(newInt(1), "bad").status == gsError

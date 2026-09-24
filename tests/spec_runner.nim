@@ -4,7 +4,7 @@
 ## examples/style_guide.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[compiler, gir, package, printer,
+import gene/[compiler, gir, gir_codec, package, printer,
              reader, types, vm, web]
 # Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
@@ -3055,6 +3055,21 @@ int main(void) {
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
+  test "GIR round-trips only inert ffi/fn native stubs":
+    let chunk = compileSource(
+      "(ffi/fn marker ^symbol \"marker\" [] : C/Int)")
+    let copied = cloneCompiledChunk(chunk)
+    var found = false
+    for value in copied.constants:
+      if value.kind == vkNativeFn and value.nativeFnName == "marker":
+        found = true
+        check value.nativeImpl == nil
+        check value.nativeCallImpl == nil
+    check found
+    chunk.constants.add newNativeFn("active", nil, acceptsNamed = true)
+    expect ValueError:
+      discard cloneCompiledChunk(chunk)
+
   test "ffi/fn C wrappers marshal scalar, pointer, slice, and buffer ABI shapes":
     let source =
       "(ffi/fn c_abs ^symbol \"abs\" [x : C/Int] : C/Int) " &
@@ -4879,6 +4894,36 @@ suite "spec — Date/time type family":
                " (== 09:30 09:31) " &
                " (== ($hash 2026-07-04T09:30Z) ($hash 2026-07-04T09:30Z))]",
                "[true false true]")
+
+  test "temporal calendar days and elapsed durations have distinct rules":
+    check_eval("[($temporal/add_days 2024-02-28 2) " &
+               " ($temporal/add_days 2025-01-01 -1) " &
+               " ($temporal/add 2024-03-10T01:30:00-05:00[America/New_York] " &
+               "   ($duration 3600000000))]",
+               "[2024-03-01 2024-12-31 2024-03-10T02:30:00-05:00]")
+    check_eval_error("($temporal/add_days 9999-12-31 1)",
+                     "outside Date range")
+    check_eval_error("($temporal/add 9999-12-31T23:59:59Z " &
+                     "($duration 9223372036854775807))", "overflows Int64")
+
+  test "temporal instant operations require offsets and normalize UTC":
+    check_eval("[($temporal/to_utc 1970-01-01T00:30+01:00) " &
+               " ($temporal/difference 2024-01-01T01:00+01:00 " &
+               "   2024-01-01T00:00Z)]",
+               "[1969-12-31T23:30:00Z (duration 0)]")
+    check_eval_error("($temporal/to_utc ($datetime 2024 1 1 0 0))",
+                     "explicit UTC offset")
+
+  test "RFC3339 parsing and formatting use exact microseconds":
+    check_eval("($temporal/format_rfc3339 " &
+               " ($temporal/parse_rfc3339 \"2024-03-01t12:34:56.1234z\"))",
+               "\"2024-03-01T12:34:56.1234Z\"")
+    check_eval_error("($temporal/parse_rfc3339 " &
+                     "\"2024-03-01T12:34:60Z\")", "leap seconds")
+    check_eval_error("($temporal/parse_rfc3339 " &
+                     "\"2024-03-01T12:34:00-00:00\")", "UTC offset")
+    check_eval_error("($temporal/parse_rfc3339 " &
+                     "\"2024-03-01T12:34:00.1234567Z\")", "1..6 digits")
 
 suite "spec — implicit self in message bodies from design §10":
   test "self is implicit; the receiver leaves the parameter vector":
@@ -6884,6 +6929,13 @@ suite "spec — structured tasks from design":
                " (await t)]",
                "[42 42 42]")
 
+  test "Task/done? observes settlement after consuming await":
+    check_eval("(let task (spawn 7)) " &
+               "(let before (task .done?)) " &
+               "(let value (await task)) " &
+               "[before value (task .done?)]",
+               "[false 7 true]")
+
   test "Task/join turns recoverable errors and panics into outcomes":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -8195,6 +8247,720 @@ suite "spec — impl visibility across modules (design §10)":
       "(var r (use_cat (Cat ^name \"Zoe\")))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Zoe\""
+
+suite "spec — core value protocol admission":
+  test "Types seal an empty or selected witness set at unit completion":
+    let plainScope = newGlobalScope()
+    let plain = run(compileSource("(type Plain ^props {}) Plain"), plainScope)
+    check plain.typeCoreWitnessesSealed
+    check plain.typeCoreWitness(cvEqual).kind == vkNil
+    let selectedScope = newGlobalScope()
+    let selected = run(compileSource(
+      "(type UserId ^props {^text Str}) " &
+      "(impl ValueEq for UserId " &
+      " (message equal [other : UserId] : Bool (== self/text other/text))) " &
+      "(impl ValueHash for UserId " &
+      " (message hash [] : Int ($hash self/text))) UserId"), selectedScope)
+    check selected.typeCoreWitnessesSealed
+    check selected.typeCoreWitness(cvEqual).kind == vkFunction
+    check selected.typeCoreWitness(cvHash).kind == vkFunction
+
+  test "file-module activation seals all five core protocols together":
+    let dir = getTempDir() / "gene_spec_core_value_activation"
+    if dirExists(dir): removeDir(dir)
+    createDir(dir)
+    writeFile(dir / "value.gene",
+      "(type VectorBox ^props {}) " &
+      "(impl ValueEq for VectorBox " &
+      " (message equal [other : VectorBox] : Bool true)) " &
+      "(impl ValueHash for VectorBox (message hash [] : Int 1)) " &
+      "(impl ValueOrder for VectorBox " &
+      " (message compare [other : VectorBox] : Int 0)) " &
+      "(impl IndexRead for VectorBox " &
+      " (message size [] : Int 0) " &
+      " (message at [index : Int] : Any nil)) " &
+      "(impl IndexWrite for VectorBox " &
+      " (message put_at [index : Int value : Any] : Any value))")
+    let module = newApplication(dir).loadFileModule(dir / "value.gene")
+    let moduleScope = module.moduleRootNamespace.nsScope
+    moduleScope.materializeMirroredVars()
+    let typ = moduleScope.vars["VectorBox"]
+    check typ.typeCoreWitnessesSealed
+    for operation in CoreValueMethod:
+      check typ.typeCoreWitness(operation).kind == vkFunction
+
+  test "an eval unit may select witnesses only for its own Type":
+    let scope = newGlobalScope()
+    let typ = run(compileSource(
+      "(eval (quote (do " &
+      " (type EvalId ^props {}) " &
+      " (impl ValueEq for EvalId " &
+      "   (message equal [other : EvalId] : Bool true)) " &
+      " EvalId)) ^in (env))"), scope)
+    check typ.typeCoreWitnessesSealed
+    check typ.typeCoreWitness(cvEqual).kind == vkFunction
+
+  test "reload seals a fresh Type without changing the old witness":
+    let dir = getTempDir() / "gene_spec_core_value_reload"
+    if dirExists(dir): removeDir(dir)
+    createDir(dir)
+    let path = dir / "value.gene"
+    proc writeVersion(hashResult: int) =
+      writeFile(path,
+        "(type ReloadKey ^props {}) " &
+        "(impl ValueEq for ReloadKey " &
+        " (message equal [other : ReloadKey] : Bool true)) " &
+        "(impl ValueHash for ReloadKey " &
+        " (message hash [] : Int " & $hashResult & "))")
+    writeVersion(1)
+    let app = newApplication(dir)
+    var oldType = NIL
+    var oldHash = NIL
+    var oldInstance = NIL
+    block:
+      let oldModule = app.loadFileModule(path)
+      let oldScope = oldModule.moduleRootNamespace.nsScope
+      oldScope.materializeMirroredVars()
+      oldInstance = run(compileSource("(ReloadKey)"), oldScope)
+      oldType = oldScope.vars["ReloadKey"]
+      oldHash = oldType.typeCoreWitness(cvHash)
+    writeVersion(2)
+    let newModule = app.reloadFileModule(path)
+    let newScope = newModule.moduleRootNamespace.nsScope
+    newScope.materializeMirroredVars()
+    let newType = newScope.vars["ReloadKey"]
+    check oldType.bits != newType.bits
+    check newType.typeCoreWitnessesSealed
+    check oldType.typeCoreWitness(cvHash).fnIdentity == oldHash.fnIdentity
+    check newType.typeCoreWitness(cvHash).fnIdentity != oldHash.fnIdentity
+    let newInstance = run(compileSource("(ReloadKey)"), newScope)
+    check oldHash.call(@[oldInstance]).intVal == 1
+    check newType.typeCoreWitness(cvHash).call(@[newInstance]).intVal == 2
+
+  test "late core impls cannot alter an activated Type":
+    let scope = newGlobalScope()
+    discard run(compileSource("(type UserId ^props {^text Str})"), scope)
+    var rejected = false
+    try:
+      discard run(compileSource("(impl ValueEq for UserId " &
+        "(message equal [other : UserId] : Bool true))"), scope)
+    except GeneError as error:
+      rejected = true
+      check "after Type activation" in error.msg
+    check rejected
+
+  test "an unfinished same-unit core impl keeps earlier value use pending":
+    check_eval_error("(type PendingKey ^props {}) " &
+      "(== (PendingKey) (PendingKey)) " &
+      "(impl ValueEq for PendingKey " &
+      " (message equal [other : PendingKey] : Bool true))",
+      "ValueProtocolPending")
+    check_eval("(type PendingKey ^props {}) " &
+      "(var status (try (== (PendingKey) (PendingKey)) " &
+      " catch ValueProtocolPending $err/message)) " &
+      "(impl ValueEq for PendingKey " &
+      " (message equal [other : PendingKey] : Bool true)) status",
+      "\"PendingKey\"")
+
+  test "hash and indexed writes require their paired read contracts":
+    check_eval_error("(type Key ^props {}) " &
+      "(impl ValueHash for Key (message hash [] : Int 1))",
+      "ValueHash requires ValueEq")
+    check_eval_error("(type Buffer ^props {}) " &
+      "(impl IndexWrite for Buffer " &
+      " (message put_at [index : Int value : Any] : Any value))",
+      "IndexWrite requires IndexRead")
+
+  test "a derived protocol cannot implicitly extend a core VM fallback":
+    check_eval_error("(protocol CustomEq ^inherit [ValueEq] " &
+      "(message extra [] : Int))", "VM fallback protocol cannot be inherited")
+
+  test "child equality overrides invalidate an inherited hash":
+    let scope = newGlobalScope()
+    let child = run(compileSource(
+      "(type Parent ^props {}) " &
+      "(impl ValueEq for Parent " &
+      " (message equal [other : Parent] : Bool true)) " &
+      "(impl ValueHash for Parent (message hash [] : Int 1)) " &
+      "(type Child : Parent ^props {}) " &
+      "(impl ValueEq for Child " &
+      " (message equal [other : Parent] : Bool true)) Child"), scope)
+    check child.typeCoreWitness(cvEqual).kind == vkFunction
+    check child.typeCoreWitness(cvHash).kind == vkNil
+
+  test "core protocols use normal signatures and explicit sends":
+    check_eval("(type UserId ^props {^text Str}) " &
+      "(impl ValueEq for UserId " &
+      "  (message equal [other : UserId] : Bool (== self/text other/text))) " &
+      "(impl ValueHash for UserId " &
+      "  (message hash [] : Int ($hash self/text))) " &
+      "[((UserId ^text \"a\") .ValueEq:equal (UserId ^text \"a\")) " &
+      " (== ((UserId ^text \"a\") .ValueHash:hash) ($hash \"a\"))]",
+      "[true true]")
+
+  test "a function-local Type cannot add an implicit VM provider":
+    check_runtime_error("(fn add [] (type Local ^props {^text Str}) " &
+      " (impl ValueEq for Local " &
+      "   (message equal [other : Local] : Bool true))) (add)",
+      "requires a canonical impl")
+
+  test "a foreign module cannot supply a scoped core implementation":
+    let dir = getTempDir() / "gene_spec_core_value_impl"
+    if dirExists(dir): removeDir(dir)
+    createDir(dir)
+    writeFile(dir / "value.gene", "(type UserId ^props {^text Str})")
+    writeFile(dir / "foreign.gene",
+      "(import [UserId] ^from \"./value.gene\") " &
+      "(impl ValueEq for UserId " &
+      "  (message equal [other : UserId] : Bool true))")
+    var rejected = false
+    try:
+      discard newApplication(dir).loadFileModule(dir / "foreign.gene")
+    except GeneError as error:
+      rejected = true
+      check "requires a canonical impl" in error.msg
+    check rejected
+
+suite "spec — semantic equality and hashing":
+  test "strict error analysis keeps scalar equality pure and flags possible witnesses":
+    check_eval("(mod checked ^errors_mode strict) " &
+      "(fn scalar_eq [a : Int b : Int] : Bool ^errors [] (== a b)) " &
+      "(scalar_eq 1 1)", "true")
+    check_eval_error("(mod checked ^errors_mode strict) " &
+      "(type CheckKey ^props {}) " &
+      "(fn compare [a : CheckKey b : CheckKey] : Bool ^errors [] (== a b))",
+      "error checking")
+
+  test "custom witnesses apply recursively and to Set and general-map keys":
+    check_eval("(type Token ^props {^n Int}) " &
+      "(impl ValueEq for Token " &
+      " (message equal [other : Token] : Bool true)) " &
+      "(impl ValueHash for Token (message hash [] : Int 7)) " &
+      "(let a #(Token ^n 1)) (let b #(Token ^n 2)) " &
+      "(let eq ==) " &
+      "[(== a b) (eq a b) (!= a b) (== [a] [b]) " &
+      " (== {^item a} {^item b}) " &
+      " (== ($hash a) ($hash b)) " &
+      " (== ($hash #[a]) ($hash #[b])) " &
+      " ($hash a) " &
+      " ($set_size (Set a b)) ($set_has? (Set a) b) " &
+      " ({{a : 1}} .get b) (== {{a : 1}} {{b : 1}})]",
+      "[true true false true true true true 7 1 true 1 true]")
+
+  test "unrelated nominal Types do not use each other's equality witness":
+    check_eval("(type LeftKey ^props {}) (type RightKey ^props {}) " &
+      "(impl ValueEq for LeftKey " &
+      " (message equal [other : LeftKey] : Bool true)) " &
+      "(impl ValueEq for RightKey " &
+      " (message equal [other : RightKey] : Bool true)) " &
+      "(== (LeftKey) (RightKey))", "false")
+
+  test "a failed key callback leaves persistent map association unpublished":
+    check_eval("(type FailingKey ^props {^n Int}) " &
+      "(impl ValueEq for FailingKey " &
+      " (message equal [other : FailingKey] : Bool " &
+      "   (fail (RuntimeError ^message \"boom\")))) " &
+      "(impl ValueHash for FailingKey " &
+      " (message hash [] : Int 1)) " &
+      "(let a #(FailingKey ^n 1)) " &
+      "(let b #(FailingKey ^n 2)) " &
+      "(let values {{a : 1}}) " &
+      "[(try (values .assoc b 2) catch RuntimeError \"failed\") " &
+      " ($size values)]", "[\"failed\" 1]")
+
+  test "equality-only values and nested keys have no structural hash escape":
+    let declaration = "(type EqOnly ^props {^n Int}) " &
+      "(impl ValueEq for EqOnly " &
+      " (message equal [other : EqOnly] : Bool true)) "
+    check_eval_error(declaration & "($hash #(EqOnly ^n 1))",
+      "ValueNotHashable")
+    check_eval_error(declaration & "($hash #[#(EqOnly ^n 1)])",
+      "ValueNotHashable")
+    check_eval_error(declaration & "(Set #(EqOnly ^n 1))",
+      "ValueNotHashable")
+    check_eval(declaration &
+      "(try ($hash #(EqOnly ^n 1)) catch ValueNotHashable $err/message)",
+      "\"EqOnly implements ValueEq without ValueHash\"")
+
+  test "a witness cannot recursively compare or hash the same value":
+    check_eval_error("(type LoopEq ^props {}) " &
+      "(impl ValueEq for LoopEq " &
+      " (message equal [other : LoopEq] : Bool (== self other))) " &
+      "(let x (LoopEq)) (== x x)", "ValueOperationReentry")
+    check_eval_error("(type LoopHash ^props {}) " &
+      "(impl ValueEq for LoopHash " &
+      " (message equal [other : LoopHash] : Bool true)) " &
+      "(impl ValueHash for LoopHash " &
+      " (message hash [] : Int ($hash self))) " &
+      "($hash #(LoopHash))", "ValueOperationReentry")
+
+  test "a key witness cannot reenter the same collection lookup":
+    check_eval_error("(var held nil) " &
+      "(type ReenterKey ^props {^n Int}) " &
+      "(impl ValueEq for ReenterKey " &
+      " (message equal [other : ReenterKey] : Bool " &
+      "   ($set_has? held other))) " &
+      "(impl ValueHash for ReenterKey " &
+      " (message hash [] : Int 1)) " &
+      "(let a #(ReenterKey ^n 1)) " &
+      "(set held (Set a)) " &
+      "($set_has? held #(ReenterKey ^n 2))",
+      "ValueOperationReentry")
+
+suite "spec — indexed value witnesses":
+  let ringDecl = "(type Ring ^props {^items List}) " &
+    "(impl IndexRead for Ring " &
+    " (message size [] : Int ($size self/items)) " &
+    " (message at [index : Int] : Any self/items/%index)) " &
+    "(impl IndexWrite for Ring " &
+    " (message put_at [index : Int value : Any] : Any " &
+    "   (set self/items/%index value))) "
+
+  test "paths, selector calls, size, and set share IndexRead/Write":
+    check_eval(ringDecl &
+      "(var r (Ring ^items [10 20 30])) " &
+      "(var i 1.0) " &
+      "(var before [r/0 (/1 r) r/-1 r/%i ($size r)]) " &
+      "(var stored (set r/%i 99)) " &
+      "[before stored r/1 r/items/1]",
+      "[[10 20 30 20 3] 99 99 99]")
+    check_eval(ringDecl &
+      "(var r (Ring ^items [(quote (item ^n 1))])) " &
+      "(set r/0/n 9) r/0/n", "9")
+
+  test "huge and fractional reads are absent; invalid writes do not call put_at":
+    check_eval(ringDecl &
+      "(var r (Ring ^items [1 2])) " &
+      "(var huge 18446744073709551616) " &
+      "(var huge_float 1e300) " &
+      "(var negative -18446744073709551616) " &
+      "(var fractional 1.5) " &
+      "[r/%huge r/%huge_float r/%fractional r/-3 r/%negative " &
+      " (try (set r/%fractional 9) catch Any \"bad\") r/items]",
+      "[void void void void void \"bad\" [1 2]]")
+    check_eval("(type HugeIndex ^props {}) " &
+      "(impl IndexRead for HugeIndex " &
+      " (message size [] : Int 18446744073709551617) " &
+      " (message at [index : Int] : Any index)) " &
+      "(let h (HugeIndex)) (let i 18446744073709551616) " &
+      "[h/%i h/-1]",
+      "[18446744073709551616 18446744073709551616]")
+
+  test "read-only and immutable Nodes reject indexed writes":
+    let readOnly = "(type Snapshot ^body [Int...]) " &
+      "(impl IndexRead for Snapshot " &
+      " (message size [] : Int 1) " &
+      " (message at [index : Int] : Any 42)) "
+    check_eval(readOnly & "(let s (Snapshot 7)) [s/0 s/-1 ($size s)]",
+      "[42 42 1]")
+    check_eval_error(readOnly & "(var s (Snapshot 7)) (set s/0 9)",
+      "IndexWrite is required")
+    check_eval_error(ringDecl &
+      "(var r #(Ring ^items [1])) (set r/0 9)",
+      "cannot mutate immutable Node")
+
+  test "void normalizes to nil before the IndexWrite callback":
+    check_eval(ringDecl &
+      "(var r (Ring ^items [1])) (set r/0 void) r/items/0", "nil")
+
+  test "IndexRead size must be a nonnegative Int":
+    check_eval_error("(type BadSize ^props {}) " &
+      "(impl IndexRead for BadSize " &
+      " (message size [] : Int -1) " &
+      " (message at [index : Int] : Any 1)) " &
+      "(var b (BadSize)) b/0", "IndexRead:size must return a nonnegative Int")
+    check_eval("(type Hole ^props {}) " &
+      "(impl IndexRead for Hole " &
+      " (message size [] : Int 1) " &
+      " (message at [index : Int] : Any void)) " &
+      "(var h (Hole)) h/0", "void")
+
+  test "a recursive indexed read raises instead of exhausting the VM stack":
+    check_eval_error("(type LoopRead ^props {}) " &
+      "(impl IndexRead for LoopRead " &
+      " (message size [] : Int 1) " &
+      " (message at [index : Int] : Any self/%index)) " &
+      "(var r (LoopRead)) r/0", "ValueOperationReentry")
+    check_eval_error("(type AsyncIndex ^props {}) " &
+      "(impl IndexRead for AsyncIndex " &
+      " (message size [] : Int (await (spawn 1))) " &
+      " (message at [index : Int] : Any 1)) " &
+      "(var r (AsyncIndex)) r/0",
+      "cannot suspend or run the scheduler inside a value witness")
+
+suite "spec — value ordering and stable sort":
+  let rankedDecl = "(type Ranked ^props {^rank Int}) " &
+    "(impl ValueOrder for Ranked " &
+    " (message compare [other : Ranked] : Int " &
+    "   (if (< self/rank other/rank) -1 " &
+    "     (if (> self/rank other/rank) 1 0)))) "
+
+  test "numeric operators gain same-Type ValueOrder and built-in text order":
+    check_eval(rankedDecl &
+      "(let a (Ranked ^rank 1)) (let b (Ranked ^rank 2)) " &
+      "[(< a b) (<= a b) (> b a) (>= b a) " &
+      " ($order/compare a b) (< \"a\" \"b\") " &
+      " ($order/compare ($date 2025 1 1) ($date 2026 1 1)) " &
+      " ($order/compare ($duration 1) ($duration 2))]",
+      "[true true true true -1 true -1 -1]")
+
+  test "default sort is stable and sort_by evaluates each key once":
+    check_eval("(import gene/order [sort]) (sort [3 1 2])", "[1 2 3]")
+    check_eval("(import gene/order [sort_by]) " &
+      "(let rows [{^rank 2 ^name \"Ada\"} {^rank 1 ^name \"Bob\"} " &
+      "           {^rank 2 ^name \"Cy\"}]) " &
+      "(let sorted (sort_by rows /rank)) " &
+      "[sorted/0/name sorted/1/name sorted/2/name]",
+      "[\"Bob\" \"Ada\" \"Cy\"]")
+    check_eval("(var calls 0) " &
+      "(let rows [{^rank 2 ^id \"a\"} {^rank 1 ^id \"b\"} " &
+      "           {^rank 2 ^id \"c\"}]) " &
+      "(let sorted ($order/sort_by rows " &
+      " (fn [row] (set calls (+ calls 1)) row/rank))) " &
+      "[sorted/0/id sorted/1/id sorted/2/id calls rows/0/id]",
+      "[\"b\" \"a\" \"c\" 3 \"a\"]")
+    check_eval(rankedDecl &
+      "(let rows [(Ranked ^rank 3) (Ranked ^rank 1) (Ranked ^rank 2)]) " &
+      "(let sorted ($order/sort rows)) " &
+      "[sorted/0/rank sorted/1/rank sorted/2/rank]", "[1 2 3]")
+
+  test "an explicit comparator may choose descending order":
+    check_eval("($order/sort [1 3 2] ^compare " &
+      "(fn [a b] (if (< a b) 1 (if (> a b) -1 0))))",
+      "[3 2 1]")
+
+  test "invalid comparator results and mixed default keys raise OrderError":
+    check_eval_error("($order/sort [1 2.0])", "OrderError")
+    check_eval_error("($order/sort [1 2] ^compare (fn [a b] true))",
+      "comparator must return exactly -1, 0, or 1")
+    check_eval_error("($order/sort [1] ^compare nil)", "Callable")
+    check_eval_error("($order/sort_by [1] nil)", "Callable")
+    check_eval_error("($order/compare 1 \"1\")", "OrderError")
+    check_eval_error("($order/sort (Set 1 2))", "expects a finite List")
+    check_eval_error("(import $serde [read_data]) " &
+      "(let nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
+      "($order/sort [nanv 1.0])", "NaN has no default ordering")
+    check_eval("(import $serde [read_data]) " &
+      "(let nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
+      "(< nanv 1.0)", "false")
+    check_eval_error("(type BadOrder ^props {}) " &
+      "(impl ValueOrder for BadOrder " &
+      " (message compare [other : BadOrder] : Int 2)) " &
+      "(< (BadOrder) (BadOrder))",
+      "comparator must return exactly -1, 0, or 1")
+
+  test "a comparator cannot suspend the scheduler":
+    check_eval_error("($order/sort [2 1] ^compare " &
+      "(fn [a b] (await (spawn 1)) 0))",
+      "cannot suspend or run the scheduler inside a value witness")
+
+suite "spec — gene/io qualified contracts":
+  let fakeIoDecl = """
+    (import $io [AsyncReader AsyncWriter IoResource IoError IoBusy IoClosed])
+    (type FakeReader ^props {^data Bytes ^offset Cell ^closed Cell})
+    (impl AsyncReader for FakeReader
+      (message read [max_bytes : Int] : (Task Bytes? Error)
+        (if (self/closed .get)
+          (fail (IoClosed ^message "closed" ^operation "read")))
+        (if (< max_bytes 1)
+          (fail (IoError ^message "read max_bytes must be positive"
+                         ^operation "read")))
+        (if (> max_bytes 1048576)
+          (fail (IoError ^message "read max_bytes exceeds 1 MiB"
+                         ^operation "read")))
+        (spawn ^lane root
+          (do
+            (let offset (self/offset .get))
+            (let left (- ($binary/size self/data) offset))
+            (if (<= left 0)
+              nil
+              (do
+                (let n (if (< left max_bytes) left max_bytes))
+                (self/offset .set (+ offset n))
+                ($binary/slice self/data offset n)))))))
+    (impl IoResource for FakeReader
+      (message close [] : Nil (self/closed .set true) nil)
+      (message wait_closed [] : (Task Nil Error) (spawn ^lane root nil)))
+    (type FakeWriter ^props {^data Cell ^closed Cell})
+    (impl AsyncWriter for FakeWriter
+      (message write [data : Bytes] : (Task Int Error)
+        (if (self/closed .get)
+          (fail (IoClosed ^message "closed" ^operation "write")))
+        (spawn ^lane root
+          (do
+            (let length ($binary/size data))
+            (let n (if (> length 2) 2 length))
+            (self/data .set
+              ($binary/concat [(self/data .get) ($binary/slice data 0 n)]))
+            n)))
+      (message flush [] : (Task Nil Error) (spawn ^lane root nil)))
+    (impl IoResource for FakeWriter
+      (message close [] : Nil (self/closed .set true) nil)
+      (message wait_closed [] : (Task Nil Error) (spawn ^lane root nil)))
+  """
+
+  test "third-party adapters work without direct read or close messages":
+    check_eval(fakeIoDecl & """
+      (scope
+        (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                                ^closed ($cell false)))
+        (let count (await ($io/write_all writer ($binary/from_str "hello"))))
+        (await (writer .AsyncWriter:flush))
+        (let text ($binary/to_str (writer/data .get)))
+        (writer .IoResource:close)
+        (await (writer .IoResource:wait_closed))
+        (await (writer .IoResource:wait_closed))
+        [count text (try (writer .AsyncWriter:write ($binary/from_str "x"))
+                         false catch IoClosed true)])
+    """, "[5 \"hello\" true]")
+
+  test "bounded copy borrows both endpoints and stops at its limit":
+    check_eval(fakeIoDecl & """
+      (scope
+        (let reader (FakeReader ^data ($binary/from_str "abcdef")
+                                ^offset ($cell 0) ^closed ($cell false)))
+        (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                                ^closed ($cell false)))
+        (let count (await ($io/copy reader writer ^limit 5 ^chunk_bytes 2)))
+        [count ($binary/to_str (writer/data .get))
+         (reader/closed .get) (writer/closed .get)
+         (try (reader .read 1) false catch MessageError true)
+         (try ($io/copy reader writer ^limit -1) false
+              catch IoError true)])
+    """, "[5 \"abcde\" false false true true]")
+    check_eval(fakeIoDecl & """
+      (scope
+        (let reader (FakeReader ^data ($binary/from_str "abc")
+                                ^offset ($cell 0) ^closed ($cell false)))
+        (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                                ^closed ($cell false)))
+        (let count (await ($io/copy reader writer ^limit 99)))
+        [count ($binary/to_str (writer/data .get))
+         (await (reader .AsyncReader:read 1))])
+    """, "[3 \"abc\" nil]")
+
+  test "read size validation is synchronous and EOF Tasks remain fresh":
+    check_eval(fakeIoDecl & """
+      (let reader (FakeReader ^data ($binary/from_str "x")
+                              ^offset ($cell 0) ^closed ($cell false)))
+      [(try (reader .AsyncReader:read 0) false catch IoError true)
+       (try (reader .AsyncReader:read 1048577) false catch IoError true)
+       (await (reader .AsyncReader:read 1))
+       (await (reader .AsyncReader:read 1))
+       (await (reader .AsyncReader:read 1))]
+    """, "[true true #B16#78 nil nil]")
+
+  test "a stateful adapter rejects concurrent writes and waits for retirement":
+    check_eval(fakeIoDecl & """
+      (type BusyWriter ^props {^busy Cell ^closed Cell})
+      (impl AsyncWriter for BusyWriter
+        (message write [data : Bytes] : (Task Int Error)
+          (if (self/closed .get)
+            (fail (IoClosed ^message "closed" ^operation "write")))
+          (if (self/busy .get)
+            (fail (IoBusy ^message "busy" ^operation "write")))
+          (self/busy .set true)
+          (spawn ^lane root
+            (try (do ($sleep 1) ($binary/size data))
+              ensure (self/busy .set false))))
+        (message flush [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (impl IoResource for BusyWriter
+        (message close [] : Nil (self/closed .set true) nil)
+        (message wait_closed [] : (Task Nil Error)
+          (spawn ^lane root
+            (do (while (self/busy .get) ($sleep 0)) nil))))
+      (let writer (BusyWriter ^busy ($cell false) ^closed ($cell false)))
+      (let first (writer .AsyncWriter:write ($binary/from_str "x")))
+      (let busy (try (writer .AsyncWriter:write ($binary/from_str "y"))
+                     false catch IoBusy true))
+      (writer .IoResource:close)
+      (let closed (try (writer .AsyncWriter:write ($binary/from_str "z"))
+                       false catch IoClosed true))
+      (let retired (writer .IoResource:wait_closed))
+      [busy closed (await first) (await retired) (writer/busy .get)]
+    """, "[true true 1 nil false]")
+
+  test "scope exit waits for an unawaited write_all Task":
+    check_eval(fakeIoDecl & """
+      (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                              ^closed ($cell false)))
+      (scope ($io/write_all writer ($binary/from_str "abcd")) nil)
+      ($binary/to_str (writer/data .get))
+    """, "\"abcd\"")
+
+  test "Application-root helper Tasks retire from diagnostics on completion":
+    check_eval(fakeIoDecl & """
+      (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                              ^closed ($cell false)))
+      (let task ($io/write_all writer ($binary/from_str "abc")))
+      (let before ($runtime/gc_stats))
+      (let count (await task))
+      (let after ($runtime/gc_stats))
+      [(> before/io_root_tasks 0) count after/io_root_tasks]
+    """, "[true 3 0]")
+
+  test "zero-progress writers fail instead of looping forever":
+    check_eval(fakeIoDecl & """
+      (type StalledWriter ^props {})
+      (impl AsyncWriter for StalledWriter
+        (message write [data : Bytes] : (Task Int Error)
+          (spawn ^lane root 0))
+        (message flush [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (impl IoResource for StalledWriter
+        (message close [] : Nil nil)
+        (message wait_closed [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (try (await ($io/write_all (StalledWriter) ($binary/from_str "a")))
+        catch IoError $err/message)
+    """, "\"writer made no progress\"")
+    check_eval(fakeIoDecl & """
+      (type StalledWriter ^props {})
+      (impl AsyncWriter for StalledWriter
+        (message write [data : Bytes] : (Task Int Error)
+          (spawn ^lane root 0))
+        (message flush [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (impl IoResource for StalledWriter
+        (message close [] : Nil nil)
+        (message wait_closed [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (await ($io/write_all (StalledWriter) ($binary/from_str "")))
+    """, "0")
+
+  test "copy rejects empty Bytes and invalid chunk options":
+    check_eval(fakeIoDecl & """
+      (type EmptyReader ^props {})
+      (impl AsyncReader for EmptyReader
+        (message read [max_bytes : Int] : (Task Bytes? Error)
+          (spawn ^lane root ($binary/from_str ""))))
+      (impl IoResource for EmptyReader
+        (message close [] : Nil nil)
+        (message wait_closed [] : (Task Nil Error)
+          (spawn ^lane root nil)))
+      (let writer (FakeWriter ^data ($cell ($binary/from_str ""))
+                              ^closed ($cell false)))
+      [(try (await ($io/copy (EmptyReader) writer ^limit 2))
+         catch IoError $err/message)
+       (try ($io/copy (EmptyReader) writer ^limit 2 ^chunk_bytes 0)
+         catch IoError $err/message)]
+    """, "[\"reader returned empty Bytes\" \"copy chunk_bytes must be positive\"]")
+
+suite "spec — native I/O lifecycle adapter":
+  test "I/O diagnostics follow the caller's Application":
+    let firstScope = newGlobalScope(newApplication(getTempDir()))
+    let secondScope = newGlobalScope(newApplication(getTempDir()))
+    let resource = run(compileSource("($io/testing/new)"), firstScope)
+    let firstStats = run(compileSource("($runtime/gc_stats)"), firstScope)
+    let secondStats = run(compileSource("($runtime/gc_stats)"), secondScope)
+    check firstStats.mapEntries["io_open_resources"].intVal == 1
+    check secondStats.mapEntries["io_open_resources"].intVal == 0
+    firstScope.define("resource", resource)
+    discard run(compileSource("(let IoResource $io/IoResource) " &
+      "(resource .IoResource:close)"), firstScope)
+
+  test "read admission, busy direction, EOF, and repeatable close":
+    check_eval("(import $io [AsyncReader IoResource IoBusy]) " &
+      "(let reader ($io/testing/new)) " &
+      "(let first (reader .AsyncReader:read 3)) " &
+      "(let busy (try (reader .AsyncReader:read 1) false " &
+      "  catch IoBusy true)) " &
+      "(let reserved ($runtime/gc_stats)) " &
+      "($io/testing/complete_read reader ($binary/from_str \"ab\")) " &
+      "(let data (await first)) " &
+      "(let eof (reader .AsyncReader:read 2)) " &
+      "($io/testing/complete_read reader nil) " &
+      "(reader .IoResource:close) " &
+      "[busy reserved/io_retained_bytes reserved/io_open_resources " &
+      " ($binary/to_str data) " &
+      " (await eof) (await (reader .IoResource:wait_closed)) " &
+      " (await (reader .IoResource:wait_closed))]",
+      "[true 3 1 \"ab\" nil nil nil]")
+
+  test "close cancels the user Task but retains native bytes until completion":
+    check_eval("(import $io [AsyncWriter IoResource IoBusy]) " &
+      "(let writer ($io/testing/new)) " &
+      "(let operation (writer .AsyncWriter:write ($binary/from_str \"abc\"))) " &
+      "(let busy (try (writer .AsyncWriter:flush) false catch IoBusy true)) " &
+      "(writer .IoResource:close) " &
+      "(let closing ($io/testing/state writer)) " &
+      "(let before ($runtime/gc_stats)) " &
+      "(let waiter (writer .IoResource:wait_closed)) " &
+      "($io/testing/complete_write writer 2) " &
+      "(let after ($runtime/gc_stats)) " &
+      "[busy (match (operation .join) " &
+      "         (when TaskOutcome/cancelled true)) " &
+      " closing/phase before/io_cleanup_leases " &
+      " after/io_cleanup_leases after/io_open_resources (await waiter) " &
+      " ($binary/to_str ($io/testing/written writer))]",
+      "[true true \"iopClosing\" 2 0 0 nil \"ab\"]")
+    check_eval("(import $io [AsyncReader IoResource]) " &
+      "(let reader ($io/testing/new)) " &
+      "(let operation (reader .AsyncReader:read 3)) " &
+      "(reader .IoResource:close) " &
+      "(let before ($runtime/gc_stats)) " &
+      "($io/testing/complete_read reader ($binary/from_str \"a\")) " &
+      "(let after ($runtime/gc_stats)) " &
+      "[(match (operation .join) (when TaskOutcome/cancelled true)) " &
+      " before/io_cleanup_leases after/io_cleanup_leases]",
+      "[true 2 0]")
+
+  test "close errors remain attached to every fresh wait_closed Task":
+    check_eval("(import $io [IoResource IoError]) " &
+      "(let resource ($io/testing/new)) " &
+      "($io/testing/fail_close resource \"injected close failure\") " &
+      "(resource .IoResource:close) " &
+      "[(try (await (resource .IoResource:wait_closed)) " &
+      "   catch IoError $err/message) " &
+      " (try (await (resource .IoResource:wait_closed)) " &
+      "   catch IoError $err/message)]",
+      "[\"injected close failure\" \"injected close failure\"]")
+    check_eval("(import $io [AsyncWriter IoResource IoError]) " &
+      "(let resource ($io/testing/new)) " &
+      "($io/testing/fail_close resource \"late close failure\") " &
+      "(let operation (resource .AsyncWriter:write " &
+      "  ($binary/from_str \"x\"))) " &
+      "(resource .IoResource:close) " &
+      "(let first (resource .IoResource:wait_closed)) " &
+      "(let second (resource .IoResource:wait_closed)) " &
+      "($io/testing/complete_write resource 1) " &
+      "[(try (await first) catch IoError $err/message) " &
+      " (try (await second) catch IoError $err/message) " &
+      " (try (await (resource .IoResource:wait_closed)) " &
+      "   catch IoError $err/message)]",
+      "[\"late close failure\" \"late close failure\" \"late close failure\"]")
+
+  test "byte backpressure rejects before admission and close blocks new work":
+    check_eval("(import $io [AsyncWriter IoResource IoBackpressure IoClosed]) " &
+      "(let resource ($io/testing/new ^max_bytes 2)) " &
+      "(let blocked (try (resource .AsyncWriter:write " &
+      "  ($binary/from_str \"abc\")) false catch IoBackpressure true)) " &
+      "(let before ($runtime/gc_stats)) " &
+      "(resource .IoResource:close) " &
+      "[blocked before/io_retained_bytes " &
+      " (try (resource .AsyncWriter:write ($binary/from_str \"x\")) " &
+      "  false catch IoClosed true)]",
+      "[true 0 true]")
+
+  test "scope cleanup waits for a physically completed late write":
+    check_eval("(import $io [AsyncWriter IoResource]) " &
+      "(let resource ($io/testing/new)) " &
+      "(let release ($channel ^capacity 1)) " &
+      "(spawn ^lane root (do (release .recv) " &
+      "  ($io/testing/complete_write resource 2))) " &
+      "(try (scope " &
+      "  (let operation (resource .AsyncWriter:write " &
+      "    ($binary/from_str \"abc\"))) " &
+      "  (try (fail (RuntimeError ^message \"stop\")) " &
+      "    ensure (do (resource .IoResource:close) " &
+      "               (release .send 1)))) " &
+      " catch RuntimeError nil) " &
+      "(let after ($runtime/gc_stats)) " &
+      "(let state ($io/testing/state resource)) " &
+      "[after/io_cleanup_leases state/phase " &
+      " ($binary/to_str ($io/testing/written resource))]",
+      "[0 \"iopClosed\" \"ab\"]")
 
 suite "spec — stdlib namespaces from stdlib plan":
   test "gene/stream, gene/node, and gene/parse resolve as namespace imports":
@@ -9806,6 +10572,7 @@ suite "spec — documentation contract":
                  "docs/spec/calls.md", "docs/spec/types.md",
                  "docs/spec/protocols.md", "docs/spec/streams.md",
                  "docs/spec/concurrency.md", "docs/spec/modules.md",
+                 "docs/spec/path-csv-walk.md",
                  "docs/development.md"]:
       check fileExists(path)
 
@@ -9826,7 +10593,7 @@ suite "spec — documentation contract":
           check fileExists(referenced)
         at = max(stop, at + 1)
 
-  test "documented examples never call a pruned stdlib name bare":
+  test "user guide examples never call a pruned stdlib name bare":
     # The standard library moved under the `gene` root (design §2.1), so a bare
     # `(println …)` in a ```gene block no longer resolves. Catch that
     # mechanically: a lowercase call head that is not a special form, not kept
@@ -9840,6 +10607,11 @@ suite "spec — documentation contract":
                   "message", "in", "for", "from"])
     var offenders: seq[string]
     for path in documentationSources():
+      # Proposal fragments can refer to injected application bindings, such
+      # as Life's `store`; a name-only lint cannot classify those calls. Every
+      # proposal gene block is still parsed by the next test below.
+      if path.startsWith("docs/proposals/"):
+        continue
       let lines = readFile(path).splitLines()
       var blocks: seq[seq[string]]
       var cur: seq[string]
@@ -10484,6 +11256,87 @@ suite "spec — application event bus (docs/stdlib.md)":
     check_eval("(($event/Bus) .closed?)", "false")
     check_eval("(import gene/event [Bus]) ((Bus) .closed?)", "false")
     check_eval_error("(event/Bus)", "event")
+
+suite "spec — lexical path library":
+  test "joining and normalizing preserve relative parents":
+    check_eval("(import $path [join normalize]) " &
+               "[(join \"a\" \"b\" \"..\" \"c\") " &
+               " (normalize \"a//./b/../c\") " &
+               " (normalize \"../../a\") " &
+               " (normalize \"/../../a\")]",
+               "[\"a/c\" \"a/c\" \"../../a\" \"/a\"]")
+
+  test "components and relative paths are lexical":
+    check_eval("(import $path [parent name extension relative]) " &
+               "[(parent \"a/b\") (parent \"/\") " &
+               " (name \"a/b/\") (name \"/\") " &
+               " (extension \".bashrc\") (extension \"a.txt\") " &
+               " (relative \"/a/b/c\" \"/a/d\")]",
+               "[\"a\" \"/\" \"b\" \"\" \"\" \".txt\" \"../b/c\"]")
+
+  test "incompatible roots and absolute later components fail before work":
+    check_eval("(import $path [join relative PathError]) " &
+               "[(try (join \"a\" \"/b\") false catch PathError true) " &
+               " (try (relative \"a\" \"/a\") false catch PathError true) " &
+               " (try (relative \"../a\" \"b\") false catch PathError true)]",
+               "[true true true]")
+
+suite "spec — bounded filesystem walking":
+  test "ordered lazy traversal and depth bounds":
+    let dir = getTempDir() / ("gene-walk-spec-" & $getCurrentProcessId())
+    if dirExists(dir): removeDir(dir)
+    createDir(dir)
+    createDir(dir / "a")
+    writeFile(dir / "a" / "x.txt", "x")
+    writeFile(dir / "b.txt", "bb")
+    check_eval("(($fs/walk " & geneString(dir) & ") " &
+               " => /relative_path -> $into [])",
+               "[\"a\" \"a/x.txt\" \"b.txt\"]")
+    check_eval("(($fs/walk " & geneString(dir) & " ^max_depth 1) " &
+               " => /relative_path -> $into [])",
+               "[\"a\" \"b.txt\"]")
+    check_eval("(try ($fs/walk " & geneString(dir) &
+               " ^max_entries_per_dir 1) false catch FsLimitError true)",
+               "true")
+    check_eval("(try (($fs/walk " & geneString(dir) &
+               " ^max_entries_total 2) -> $into []) false " &
+               " catch FsLimitError true)", "true")
+    check_eval("(let s ($fs/walk " & geneString(dir) & ")) " &
+               "(s .next) (s .close) (s .has_next)", "false")
+
+  when defined(posix):
+    test "a followed link to an ancestor reports a cycle":
+      let dir = getTempDir() / ("gene-walk-cycle-spec-" & $getCurrentProcessId())
+      if dirExists(dir): removeDir(dir)
+      createDir(dir)
+      createDir(dir / "a")
+      createSymlink(dir, dir / "a" / "back")
+      check_eval("(try (($fs/walk " & geneString(dir) &
+                 " ^follow_symlinks true) -> $into []) false " &
+                 " catch FsError true)", "true")
+
+suite "spec — CSV data library":
+  test "headers and quoted records preserve only string field values":
+    check_eval("($csv/parse_rows \"name,count\\r\\nAda,3\\r\\n\" ^headers true)",
+               "[{^name \"Ada\" ^count \"3\"}]")
+    check_eval("($csv/parse_rows \"\\\"a,b\\\",\\\"c\\\"\\\"d\\\"\\n\\n\")",
+               "[[\"a,b\" \"c\\\"d\"] [\"\"]]")
+    check_eval("($csv/parse_rows \"\")", "[]")
+
+  test "CSV writer quotes only fields that need it":
+    check_eval("($binary/to_str ($csv/encode_row [\"a,b\" \"c\\\"d\"]))",
+               "\"\\\"a,b\\\",\\\"c\\\"\\\"d\\\"\\r\\n\"")
+
+  test "invalid quoting, headers and configured limits are typed failures":
+    check_eval("(try ($csv/parse_rows \"\\\"a\\\"x\") false " &
+               " catch CsvError [$err/offset $err/record $err/field])",
+               "[4 1 1]")
+    check_eval("(try ($csv/parse_rows \"a,a\\n1,2\" ^headers true) false " &
+               " catch CsvError true)", "true")
+    check_eval("(try ($csv/parse_rows \"abcd\" ^max_record_bytes 2) false " &
+               " catch CsvError true)", "true")
+    check_eval("(try ($csv/parse_rows \"a\\rb\") false " &
+               " catch CsvError true)", "true")
 
 suite "spec — naming convention":
   test "registered names use underscores and reserve trailing bang":

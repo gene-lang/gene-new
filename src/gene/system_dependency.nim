@@ -383,15 +383,6 @@ proc parseLinkFlags(resolver: SystemDependencyResolver, flags: string,
     else:
       result.linkOptions.add token
     inc i
-  for root in roots:
-    var known = false
-    for existing in result.libraryRoots:
-      if existing.path == root:
-        known = true
-        break
-    if not known:
-      result.libraryRoots.add PathDigest(
-        path: root, digest: "sha256:" & sha256Hex("search-root\0" & root))
   for path in absoluteLibraries:
     result.libraryFiles.add resolver.cachedPathDigest(path)
   for name in result.linkNames:
@@ -403,11 +394,35 @@ proc parseLinkFlags(resolver: SystemDependencyResolver, flags: string,
           break
       if found.len > 0:
         break
+    when defined(macosx):
+      # pkg-config may omit an SDK -L for system stubs such as pthread and m.
+      # Consult the selected SDK only for a name unresolved in explicit roots;
+      # otherwise unrelated libraries would change identity with SDKROOT.
+      if found.len == 0:
+        let sdkRoot = getEnv("SDKROOT")
+        if sdkRoot.len > 0:
+          let sdkLibraries = normalizedPath(absolutePath(sdkRoot / "usr/lib"))
+          if dirExists(sdkLibraries):
+            for candidate in libraryCandidates(sdkLibraries, name,
+                                               result.linkage):
+              if fileExists(candidate):
+                found = candidate
+                roots.addUnique(sdkLibraries)
+                break
     if found.len == 0:
       raiseSystemDependency(sdecLibraryMissing,
         "pkg_config named a library that was not found",
         ["library: " & name, "search roots: " & roots.join(", ")])
     result.libraryFiles.add resolver.cachedPathDigest(found)
+  for root in roots:
+    var known = false
+    for existing in result.libraryRoots:
+      if existing.path == root:
+        known = true
+        break
+    if not known:
+      result.libraryRoots.add PathDigest(
+        path: root, digest: "sha256:" & sha256Hex("search-root\0" & root))
 
 proc valueList(values: seq[string]): Value =
   var items: seq[Value]

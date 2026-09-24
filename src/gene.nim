@@ -12,8 +12,9 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, compiler, diagnostics, gir, package, printer, reader,
-             repl, system_dependency, types, vm, web]
+import gene/[build, compiler, diagnostics, gir, install, package, printer, reader,
+             registry_config, registry_publish, repl, system_dependency, types,
+             vm, web]
 import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
@@ -73,6 +74,11 @@ proc usage() =
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene build [target] [options] build a package product"
   echo "  gene build --all [options] build every workspace product"
+  echo "  gene install [target] --prefix dir [--package-root dir] [--registry-config path]"
+  echo "                              install a locked app"
+  echo "  gene pkg publish --registry-config path --signing-key file"
+  echo "                              sign and publish a local package release"
+  echo "  gene uninstall owner/name:target --prefix dir remove an installed app"
   echo "  gene build --target web [--out-dir dir] <file.gene> emit web ESM + types"
   echo "  gene test [files/dirs...] [--name text] run *_spec.gene examples"
   echo "  gene test --package [selector] build and run package test targets"
@@ -164,6 +170,7 @@ type RunCli = object
   args: seq[string]
   logConfig: string
   packageRoot: string
+  registryConfig: string
   debugging: bool
   reportTailFallbacks: bool
   targetTriple: string
@@ -191,7 +198,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
   while i <= paramCount() and result.path.len == 0:
     let arg = paramStr(i)
     case arg
-    of "--log-config", "--package-root", "--target", "--profile", "--mode",
+    of "--log-config", "--package-root", "--registry-config", "--target", "--profile", "--mode",
        "--debug_info", "--jobs", "--errors-mode":
       inc i
       if i > paramCount():
@@ -200,6 +207,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
       case arg
       of "--log-config": result.logConfig = value
       of "--package-root": result.packageRoot = value
+      of "--registry-config": result.registryConfig = value
       of "--errors-mode":
         if value notin ["dynamic", "warn", "strict"]:
           raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
@@ -234,6 +242,8 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         result.logConfig = arg[13 .. ^1]
       elif arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("--registry-config="):
+        result.registryConfig = arg[18 .. ^1]
       elif arg.startsWith("--errors-mode="):
         result.errorsMode = arg[14..^1]
         if result.errorsMode notin ["dynamic", "warn", "strict"]:
@@ -354,6 +364,7 @@ proc raiseMainReturnRangeError(scope: Scope) =
   raise e
 
 proc exitFromMain(scope: Scope, value: Value) =
+  scope.application().waitApplicationIoCleanup()
   case value.kind
   of vkNil:
     discard
@@ -410,14 +421,27 @@ proc cmdRun(path: string, args: openArray[string] = [],
     let scope = entryModule.moduleRootNamespace.nsScope
     replScope = scope
     invokeEntryMain(scope, args)
+    app.waitApplicationIoCleanup()
   except ReadError as e:
+    if app != nil:
+      try: app.waitApplicationIoCleanup()
+      except CatchableError as cleanup:
+        stderr.writeLine "Cleanup error: " & cleanup.msg
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(replScope, app)
     quit(1)
   except GenePanic as e:
+    if app != nil:
+      try: app.waitApplicationIoCleanup()
+      except CatchableError as cleanup:
+        stderr.writeLine "Cleanup error: " & cleanup.msg
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
+    if app != nil:
+      try: app.waitApplicationIoCleanup()
+      except CatchableError as cleanup:
+        stderr.writeLine "Cleanup error: " & cleanup.msg
     stderr.writeLine formatDiagnostic("Error",
       errorDiagnosticMessage(e, replFallbackScope(replScope, app)), e.loc)
     maybeReplOnError(replScope, app)
@@ -548,6 +572,7 @@ proc cmdBuildWeb(options: BuildWebCli) =
 type ProjectBuildCli = object
   product: string
   packageRoot: string
+  registryConfig: string
   targetTriple: string
   profile: string
   profileExplicit: bool
@@ -585,7 +610,7 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
     let arg = paramStr(i)
     case arg
     of "--target", "--profile", "--mode", "--debug_info", "--jobs",
-       "--package-root":
+       "--package-root", "--registry-config":
       inc i
       if i > paramCount():
         raise newException(ValueError, arg & " expects a value")
@@ -604,6 +629,7 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
       of "--debug_info": result.debugInfo = value
       of "--jobs": result.jobs = parseInt(value)
       of "--package-root": result.packageRoot = value
+      of "--registry-config": result.registryConfig = value
       else: discard
     of "--all": result.all = true
     of "--sealed": result.sealed = true
@@ -635,6 +661,8 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
         result.jobs = parseInt(arg[7 .. ^1])
       elif arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("--registry-config="):
+        result.registryConfig = arg[18 .. ^1]
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown " & label & " option: " & arg)
       elif result.product.len == 0:
@@ -658,12 +686,13 @@ proc parseProjectBuildCli(label = "build", first = 2): ProjectBuildCli =
     raise newException(ValueError, "--jobs cannot be negative")
 
 proc materializeProject(start: string, locked, offline,
-                        includeDevelopment: bool): MaterializedGraph =
+                        includeDevelopment: bool,
+                        registryConfig = ""): MaterializedGraph =
   let root = workspaceRootFor(start)
   if root.kind == pkAdHoc:
     raise newException(ValueError,
       "project build requires a package.gene; use gene run for an ad-hoc file")
-  let manager = newPackageManager()
+  let manager = packageManagerFromRegistryConfig(registryConfig)
   let resolution =
     if locked:
       manager.loadResolutionLock(start)
@@ -679,11 +708,30 @@ proc materializeProject(start: string, locked, offline,
   result.includeBuild = false
 
 proc projectBuildEngine(): BuildEngine =
+  let installedArtifacts = getEnv("GENE_INSTALLED_ARTIFACTS")
+  var systemPolicy = defaultSystemDependencyPolicy()
+  let configuredPkgConfig = getEnv("GENE_PKG_CONFIG_PATH")
+  if configuredPkgConfig.len > 0:
+    for path in configuredPkgConfig.split(PathSep):
+      if path.len == 0 or not path.isAbsolute or not dirExists(path):
+        raise newException(ValueError,
+          "GENE_PKG_CONFIG_PATH requires existing absolute directories")
+      systemPolicy.pkgConfig.searchPaths.add normalizedPath(path)
+  var sources: seq[ArtifactSource]
+  if installedArtifacts.len > 0:
+    sources.add ArtifactSource(name: "installed_generation",
+      root: normalizedPath(absolutePath(installedArtifacts)),
+      required: true)
   newBuildEngine(BuildEnvironment(
     artifactStore: newLocalArtifactStore(userArtifactStoreDir()),
     toolchains: newToolchainSet(runningCompilerIdentity(),
-                               hostCPU & "-" & hostOS),
-    systemDependencyProviders: newSystemDependencyResolver()))
+                               hostCPU & "-" & hostOS,
+                               getEnv("GENE_C_COMPILER"),
+                               (if installedArtifacts.len > 0:
+                                 getEnv("GENE_C_COMPILER_EVIDENCE")
+                                else: "")),
+    artifactSources: sources,
+    systemDependencyProviders: newSystemDependencyResolver(systemPolicy)))
 
 proc buildRequest(options: ProjectBuildCli, packageId, target: string):
                   BuildRequest =
@@ -708,6 +756,9 @@ proc childBuildArgs(options: ProjectBuildCli, packageRoot,
              "--jobs", "1"]
   if options.targetTriple.len > 0:
     result.add @["--target", options.targetTriple]
+  if options.registryConfig.len > 0:
+    result.add @["--registry-config",
+                 normalizedPath(absolutePath(options.registryConfig))]
   if options.debugInfo.len > 0:
     result.add @["--debug_info", options.debugInfo]
   if options.sealed: result.add "--sealed"
@@ -759,7 +810,8 @@ proc runParallelBuilds(options: ProjectBuildCli, graph: MaterializedGraph,
 proc cmdProjectBuild(options: ProjectBuildCli) =
   let start =
     if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
-  let graph = materializeProject(start, options.locked, options.offline, false)
+  let graph = materializeProject(start, options.locked, options.offline, false,
+                                 options.registryConfig)
   let engine = projectBuildEngine()
   var work: seq[tuple[packageId, target: string]]
   if options.all:
@@ -806,7 +858,7 @@ proc cmdProjectRun(options: RunCli) =
       raise newException(ValueError,
         "--errors-mode currently requires a source entry path; pass the application's .gene entry file")
     let graph = materializeProject(start, options.locked, options.offline,
-                                   false)
+                                   false, options.registryConfig)
     let pkg = graph.packagesById[graph.activePackageId]
     let application = selectedApplication(pkg, options.path)
     let engine = projectBuildEngine()
@@ -823,6 +875,18 @@ proc cmdProjectRun(options: RunCli) =
     let app = newApplication(executionGraph, executionPackage.root)
     reportingScope = newGlobalScope(app)
     for artifact in built.artifacts:
+      for resource in artifact.resources:
+        app.installPackageResource(artifact.packageId, resource.path,
+          resource.digest, resource.size,
+          (if resource.builtRelative.len > 0: artifact.objectPath else: ""),
+          (if resource.builtRelative.len > 0:
+            artifact.objectPath / resource.builtRelative else: ""))
+        if resource.nativeAlias.len > 0:
+          app.installPackageNativeBinary(artifact.packageId,
+            resource.nativeAlias, resource.nativeTarget,
+            resource.path, resource.digest,
+            resource.abiKind, resource.runtimeIdentity,
+            resource.abiVersion)
       app.installCompiledModules(artifact.compiledModules)
     let chunk = built.rootArtifact.compiledChunk
     if chunk == nil:
@@ -847,6 +911,72 @@ proc cmdProjectRun(options: RunCli) =
     stderr.writeLine "Error: " & error.msg
     quit(1)
 
+proc cmdInstall() =
+  var prefix = ""
+  var packageRoot = ""
+  var registryConfig = ""
+  var target = ""
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    case arg
+    of "--prefix", "--package-root", "--registry-config":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a directory")
+      if arg == "--prefix": prefix = paramStr(i)
+      elif arg == "--package-root": packageRoot = paramStr(i)
+      else: registryConfig = paramStr(i)
+    of "--locked", "--offline":
+      discard # Both are mandatory for the initial local install profile.
+    else:
+      if arg.startsWith("-") or target.len > 0:
+        raise newException(ValueError, "invalid gene install argument: " & arg)
+      target = arg
+    inc i
+  if prefix.len == 0:
+    raise newException(ValueError, "gene install requires --prefix")
+  let start = if packageRoot.len > 0: packageRoot else: getCurrentDir()
+  let graph = materializeProject(start, locked = true, offline = true,
+                                 includeDevelopment = false,
+                                 registryConfig = registryConfig)
+  let pkg = graph.packagesById[graph.activePackageId]
+  let application = selectedApplication(pkg, target)
+  let built = projectBuildEngine().build(BuildRequest(
+    rootPackageId: pkg.id, target: application.name,
+    profile: "release", mode: bmVm), graph)
+  let receipt = installLocal(graph, built, application, prefix,
+                             getAppFilename())
+  echo "Installed " & receipt.packageName & ":" & receipt.target &
+    " -> " & receipt.launcher
+
+proc cmdUninstall() =
+  var prefix = ""
+  var coordinate = ""
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    if arg == "--prefix":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, "--prefix expects a directory")
+      prefix = paramStr(i)
+    elif arg.startsWith("-") or coordinate.len > 0:
+      raise newException(ValueError, "invalid gene uninstall argument: " & arg)
+    else:
+      coordinate = arg
+    inc i
+  let sep = coordinate.rfind(':')
+  if prefix.len == 0 or sep < 0:
+    raise newException(ValueError,
+      "gene uninstall requires owner/name:target and --prefix")
+  let name = coordinate[0 ..< sep]
+  let target = coordinate[sep + 1 .. ^1]
+  let receipt = uninstallLocal(name, target, prefix)
+  echo "Uninstalled " & coordinate & " (" & $receipt.removedGenerations &
+    " generation(s) removed, " & $receipt.retainedGenerations &
+    " still in use)"
+
 proc cmdProjectTest(options: ProjectBuildCli) =
   var reportingScope: Scope
   try:
@@ -854,7 +984,8 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       raise newException(ValueError, "gene test does not accept --all")
     let start =
       if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
-    let graph = materializeProject(start, options.locked, options.offline, true)
+    let graph = materializeProject(start, options.locked, options.offline, true,
+                                   options.registryConfig)
     let pkg = graph.packagesById[graph.activePackageId]
     if not pkg.hasTests:
       raise newException(ValueError, pkg.name & " has no ^tests target")
@@ -885,6 +1016,18 @@ proc cmdProjectTest(options: ProjectBuildCli) =
       let app = newApplication(executionGraph, executionPackage.root)
       reportingScope = newGlobalScope(app)
       for artifact in built.artifacts:
+        for resource in artifact.resources:
+          app.installPackageResource(artifact.packageId, resource.path,
+            resource.digest, resource.size,
+            (if resource.builtRelative.len > 0: artifact.objectPath else: ""),
+            (if resource.builtRelative.len > 0:
+              artifact.objectPath / resource.builtRelative else: ""))
+          if resource.nativeAlias.len > 0:
+            app.installPackageNativeBinary(artifact.packageId,
+              resource.nativeAlias, resource.nativeTarget,
+              resource.path, resource.digest,
+              resource.abiKind, resource.runtimeIdentity,
+              resource.abiVersion)
         app.installCompiledModules(artifact.compiledModules)
       let chunk = built.rootArtifact.compiledChunk
       if chunk == nil:
@@ -1162,6 +1305,10 @@ type PkgCli = object
   offline: bool
   workspace: bool
   dependencyPath: string
+  registryConfig: string
+  signingKey: string
+  publishSigner: string
+  publishRegistry: string
   initKind: string
 
 proc parsePkgCli(): PkgCli =
@@ -1179,6 +1326,19 @@ proc parsePkgCli(): PkgCli =
       if i > paramCount():
         raise newException(ValueError, "--path expects a path")
       result.dependencyPath = paramStr(i)
+    of "--registry-config":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, "--registry-config expects a path")
+      result.registryConfig = paramStr(i)
+    of "--signing-key", "--signer", "--registry":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a value")
+      case arg
+      of "--signing-key": result.signingKey = paramStr(i)
+      of "--signer": result.publishSigner = paramStr(i)
+      else: result.publishRegistry = paramStr(i)
     of "--locked": result.locked = true
     of "--offline": result.offline = true
     of "--workspace": result.workspace = true
@@ -1192,6 +1352,14 @@ proc parsePkgCli(): PkgCli =
         result.packageRoot = arg[15 .. ^1]
       elif arg.startsWith("--path="):
         result.dependencyPath = arg[7 .. ^1]
+      elif arg.startsWith("--registry-config="):
+        result.registryConfig = arg[18 .. ^1]
+      elif arg.startsWith("--signing-key="):
+        result.signingKey = arg[14 .. ^1]
+      elif arg.startsWith("--signer="):
+        result.publishSigner = arg[9 .. ^1]
+      elif arg.startsWith("--registry="):
+        result.publishRegistry = arg[11 .. ^1]
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown pkg option: " & arg)
       elif result.action.len == 0:
@@ -1207,6 +1375,9 @@ proc parsePkgCli(): PkgCli =
 proc pkgStart(options: PkgCli): string =
   if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
 
+proc pkgManager(options: PkgCli): PackageManager =
+  packageManagerFromRegistryConfig(options.registryConfig)
+
 proc pkgResolution(manager: PackageManager, start: string): Resolution =
   let lockPath = packageLockPathFor(start)
   if fileExists(lockPath): manager.loadResolutionLock(start)
@@ -1214,7 +1385,7 @@ proc pkgResolution(manager: PackageManager, start: string): Resolution =
 
 proc cmdPkgResolve(options: PkgCli) =
   let start = options.pkgStart()
-  let manager = newPackageManager()
+  let manager = pkgManager(options)
   if options.action == "resolve" and options.arguments.len > 0:
     raise newException(ValueError, "'pkg resolve' accepts no arguments")
   if options.action == "update" and options.arguments.len > 1:
@@ -1241,7 +1412,7 @@ proc cmdPkgResolve(options: PkgCli) =
 
 proc cmdPkgSync(options: PkgCli): MaterializedGraph =
   let start = options.pkgStart()
-  let manager = newPackageManager()
+  let manager = pkgManager(options)
   let resolution = manager.loadResolutionLock(start)
   result = manager.sync(resolution,
     SyncPolicy(offline: options.offline, locked: options.locked))
@@ -1249,10 +1420,31 @@ proc cmdPkgSync(options: PkgCli): MaterializedGraph =
 
 proc cmdPkgVendor(options: PkgCli) =
   let graph = cmdPkgSync(options)
-  let manager = newPackageManager()
+  let manager = pkgManager(options)
   let receipt = manager.vendor(graph, VendorRequest())
   echo "Vendored " & $receipt.packagePaths.len & " immutable package object(s)"
   echo "Vendor root: " & receipt.root
+
+proc cmdPkgPublish(options: PkgCli) =
+  if options.arguments.len != 0 or options.registryConfig.len == 0 or
+      options.signingKey.len == 0 or options.offline:
+    raise newException(ValueError,
+      "usage: gene pkg publish --registry-config <path> --signing-key <raw-32-byte-file> [--signer owner|registry] [--registry name] [--package-root path]")
+  let root = findManifestDir(options.pkgStart())
+  if root.len == 0:
+    raise newException(ValueError, "pkg publish needs a package.gene")
+  let keyPath = normalizedPath(absolutePath(options.signingKey))
+  if not fileExists(keyPath) or symlinkExists(keyPath) or
+      getFileInfo(keyPath, followSymlink = false).isSpecial or
+      getFileSize(keyPath) != 32:
+    raise newException(ValueError,
+      "pkg publish signing key must be a regular raw 32-byte file")
+  let registry = configuredRegistryForPublish(options.registryConfig,
+                                              options.publishRegistry)
+  let pkg = loadPackageAt(root, poEntry)
+  let digest = publishPackage(registry, pkg, readFile(keyPath),
+    if options.publishSigner.len > 0: options.publishSigner else: "owner")
+  echo "Published " & pkg.name & "@" & pkg.version & " " & digest
 
 proc cmdPkgMembers(options: PkgCli) =
   let start = options.pkgStart()
@@ -1263,7 +1455,7 @@ proc cmdPkgMembers(options: PkgCli) =
 
 proc cmdPkgTree(options: PkgCli) =
   let start = options.pkgStart()
-  let manager = newPackageManager()
+  let manager = pkgManager(options)
   let resolution = manager.pkgResolution(start)
   var ids: seq[string]
   for id in resolution.packagesById.keys:
@@ -1284,7 +1476,7 @@ proc cmdPkgWhy(options: PkgCli) =
   if options.arguments.len != 1:
     raise newException(ValueError, "'pkg why' needs one package name or id")
   let needle = options.arguments[0]
-  let manager = newPackageManager()
+  let manager = pkgManager(options)
   let resolution = manager.pkgResolution(options.pkgStart())
   type PathItem = tuple[id, path: string]
   var pending: seq[PathItem]
@@ -1461,7 +1653,8 @@ proc rewriteDependencies(options: PkgCli, remove: bool) =
   manifestEntries["dependencies"] = newMap(dependencies)
   writeFile(manifestPath, newMap(manifestEntries).print() & "\n")
   try:
-    let resolution = newPackageManager().resolve(ResolveRequest(startDir: packageRoot))
+    let resolution = pkgManager(options).resolve(
+      ResolveRequest(startDir: packageRoot))
     discard resolution.writeResolutionLock()
   except CatchableError:
     writeFile(manifestPath, original)
@@ -1482,9 +1675,7 @@ proc cmdPkg() =
     of "members": cmdPkgMembers(options)
     of "tree": cmdPkgTree(options)
     of "why": cmdPkgWhy(options)
-    of "publish":
-      raise newException(ValueError,
-        "'pkg publish' requires a configured registry adapter")
+    of "publish": cmdPkgPublish(options)
     of "cache":
       if options.arguments != @["gc"]:
         raise newException(ValueError, "usage: gene pkg cache gc")
@@ -1600,8 +1791,26 @@ proc main() =
       stderr.writeLine "Error: 'clean' accepts no arguments"
       quit(1)
     cmdClean()
-  of "pack", "bundle", "inspect", "verify", "sign", "install",
-     "uninstall", "rollback", "installed":
+  of "install":
+    try:
+      cmdInstall()
+    except GeneError as e:
+      stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+      quit(1)
+    except CatchableError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+  of "uninstall":
+    try:
+      cmdUninstall()
+    except GeneError as e:
+      stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+      quit(1)
+    except CatchableError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+  of "pack", "bundle", "inspect", "verify", "sign",
+     "rollback", "installed":
     unavailableBuildFeature(cmd)
   of "doc":
     if paramCount() < 2:

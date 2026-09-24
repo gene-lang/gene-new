@@ -1,4 +1,14 @@
-# Genex native libraries
+# Genex optional libraries
+
+Pure Gene packages also live here. [tzdb](tzdb/README.md) carries pinned IANA
+zone resources and uses the standard `gene/temporal` arithmetic and TZif
+reader; it does not need the native-library build task below.
+
+[archive](archive/README.md) is a separate experimental PKG-2 zlib codec
+package with gzip I/O adapters and ZIP extraction.
+
+[tls](tls/README.md) is an experimental PKG-2 OpenSSL adapter for direct
+native-service TLS; its HTTP listener integration is pending.
 
 Build the SDL2/OpenGL and WebSocket libraries from the repository root:
 

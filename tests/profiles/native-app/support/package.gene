@@ -1,0 +1,2 @@
+{^format 1 ^name "gene/native_app_support" ^version "0.1.0"
+ ^library {^entry "src/index.gene"}}

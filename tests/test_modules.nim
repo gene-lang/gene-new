@@ -1700,3 +1700,18 @@ suite "modules — the sandbox loader (design §D5)":
       check app.moduleCompileHeaderCount() == beforeHeaders
       check app.moduleCompileArtifactCount() == beforeArtifacts
       check app.canonicalImplCount() == beforeImpls
+
+  test "released generation retains this_mod for an escaped function":
+    let root = modDir / "generation_retained_self"
+    createDir(root)
+    writeFile(root / "self.gene", "(fn identity [] this_mod)")
+    let scope = newGlobalScope(newApplication(modDir))
+    check run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation (tx .prepare {^dir \"" & root.replace("\\", "/") &
+      "\" ^entry \"self.gene\" ^grants [] ^shared [] ^label \"retained\" " &
+      "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var saved (generation .module)) " &
+      "(var identity saved/identity) " &
+      "(tx .commit) (generation .release) " &
+      "(same? (identity) saved)"), scope).boolVal

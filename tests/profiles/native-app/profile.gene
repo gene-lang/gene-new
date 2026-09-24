@@ -1,0 +1,66 @@
+{
+  ^profile_format 1
+  ^name "native-app"
+  ^target "vm"
+  ^stages {
+    ^profile_0 "implemented"
+    ^vm_0 "experimental"
+    ^vm_1 "experimental"
+    ^vm_2 "planned"
+    ^vm_3 "planned"
+    ^app_1 "implemented"
+    ^app_2 "experimental"
+    ^app_3 "experimental"
+    ^app_4 "experimental"
+    ^pkg_1 "implemented"
+    ^pkg_2 "experimental"
+    ^pkg_3 "experimental"
+    ^val_1 "experimental"
+    ^val_2 "experimental"
+    ^val_3 "experimental"
+    ^io_1 "experimental"
+    ^io_2 "experimental"
+    ^io_3 "experimental"
+    ^net_1 "experimental"
+    ^net_2 "experimental"
+    ^net_3 "experimental"
+    ^native_1 "experimental"
+    ^native_2 "experimental"
+    ^native_3 "experimental"
+  }
+  ^workloads [
+    {^id "script" ^package "tests/profiles/native-app/script"
+     ^entry "src/main.gene" ^driver "command" ^args []
+     ^required_stages ["app_1"] ^timeout_ms 15000
+     ^dataset_seed 17 ^dataset_sizes [4096]
+     ^budget {^max_stdout_bytes 65536}}
+    {^id "cli" ^package "tests/profiles/native-app/cli"
+     ^entry "src/main.gene" ^driver "install" ^args []
+     ^required_stages ["pkg_1" "pkg_2"] ^timeout_ms 30000
+     ^dataset_seed 17 ^dataset_sizes [0]
+     ^budget {^max_stdout_bytes 65536}}
+    {^id "service" ^package "tests/profiles/native-app/service"
+     ^entry "src/main.gene" ^driver "service" ^args []
+     ^required_stages ["io_3" "net_1" "net_2" "vm_3"] ^timeout_ms 90000
+     ^dataset_seed 17 ^dataset_sizes [0]
+     ^budget {^requests_per_second 30 ^duration_seconds 60 ^p95_ms 250}}
+    {^id "data" ^package "tests/profiles/native-app/data"
+     ^entry "src/main.gene" ^driver "data" ^args []
+     ^required_stages ["app_2" "val_3" "io_2"] ^timeout_ms 180000
+     ^dataset_seed 17 ^dataset_sizes [10485760 104857600]
+     ^budget {^max_growth_bytes 8388608 ^max_groups 100}}
+    {^id "lifetime" ^package "tests/profiles/native-app/lifetime"
+     ^entry "src/batches.gene" ^driver "command" ^args []
+     ^witness_entry "src/witnesses.gene"
+     ^cancellation_entry "src/cancellation.gene"
+     ^generation_entry "src/generation.gene"
+     ^generation_plugin "plugin"
+     ^retained_entry "src/generation_retained.gene"
+     ^retained_function_entry "src/generation_retained_function.gene"
+     ^retained_instance_entry "src/generation_retained_instance.gene"
+     ^required_stages ["vm_3"] ^timeout_ms 30000
+     ^dataset_seed 17 ^dataset_sizes [1 100 1000 10000]
+     ^budget {^max_stdout_bytes 65536 ^max_managed_growth 0
+              ^max_native_roots 0 ^max_io_cleanup_leases 0}}
+  ]
+}

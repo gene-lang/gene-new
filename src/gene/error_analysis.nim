@@ -236,6 +236,11 @@ proc builtinError(name: string): ErrorTypeSummary =
   case name
   of "MessageError", "CallKindError": result.ancestors = @["builtin:TypeError"]
   of "SelectorMissing": result.ancestors = @["builtin:MatchError"]
+  of "RuntimeLaneError", "ValueProtocolPending", "ValueNotHashable",
+     "ValueOperationReentry", "OrderError":
+    result.ancestors = @["builtin:RuntimeError"]
+  of "IoBusy", "IoClosed", "IoBackpressure":
+    result.ancestors = @["builtin:IoError"]
   else: discard
 
 proc oneError(name: string): ErrorEffectSummary =
@@ -461,9 +466,12 @@ proc newErrorAnalysis*(root: Chunk,
     byChunk: initTable[pointer, ErrorEnvironment](),
     types: initTable[string, AnalyzedType]())
   let builtins = newErrorEnvironment(nil, "builtin", "")
-  for name in ["RuntimeError", "TypeError", "ErrorContractViolation", "AssertionError",
+  for name in ["RuntimeError", "RuntimeLaneError", "TypeError",
+               "ErrorContractViolation", "AssertionError",
                "MatchError", "SelectorMissing", "CompileError", "CallKindError",
-               "MessageError", "ParseError",
+               "MessageError", "ParseError", "ValueProtocolPending",
+               "ValueNotHashable", "ValueOperationReentry", "OrderError",
+               "IoError", "IoBusy", "IoClosed", "IoBackpressure",
                "JsonError", "OsError", "DbError", "EndOfStream"]:
     let typ = AnalyzedType(info: builtinError(name), constructorKnown: true, methodsKnown: true,
       fields: initTable[string, Value](), methods: initTable[string, AnalyzedFunction]())
@@ -852,7 +860,17 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.errors.mergeErrors(subtractErrors(args[0].effectiveRow(), caught))
       result.value = AbstractValue(kind: avNode, caught: true,
         caughtErrors: args[0].effectiveRow())
-  of "==", "!=", "same?", "not", "nil?", "void?", "present?":
+  of "==", "!=":
+    # A nominal witness may run arbitrary synchronous Gene code, even when
+    # reached through a nested collection. Only scalar operands prove there
+    # is no such callback at this call site.
+    if args.len >= 2:
+      for arg in args:
+        if arg.kind != avScalar:
+          result.errors.open = true
+          break
+    result.value = scalarValue("Bool")
+  of "same?", "not", "nil?", "void?", "present?":
     result.value = scalarValue("Bool")
   of "+", "-", "*", "<", ">", "<=", ">=":
     var allNumeric = true
