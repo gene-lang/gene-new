@@ -54,11 +54,12 @@
      ^witness_entry "src/witnesses.gene"
      ^cancellation_entry "src/cancellation.gene"
      ^generation_entry "src/generation.gene"
+     ^generation_failure_entry "src/generation_failure.gene"
      ^generation_plugin "plugin"
      ^retained_entry "src/generation_retained.gene"
      ^retained_function_entry "src/generation_retained_function.gene"
      ^retained_instance_entry "src/generation_retained_instance.gene"
-     ^required_stages ["vm_3"] ^timeout_ms 30000
+     ^required_stages ["vm_3"] ^timeout_ms 120000
      ^dataset_seed 17 ^dataset_sizes [1 100 1000 10000]
      ^budget {^max_stdout_bytes 65536 ^max_managed_growth 0
               ^max_native_roots 0 ^max_io_cleanup_leases 0}}

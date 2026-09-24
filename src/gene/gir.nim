@@ -487,8 +487,10 @@ type
     ## `calleeBits` via `ownedValueFromBits`. `recvTypeBits == 0` marks an
     ## empty slot (a real type Value is never 0/nil). Guard = receiver type
     ## identity + message identity (0 for name-fixed unqualified sends) +
-    ## `Application.implEpoch`; every impl mutation bumps the epoch, so any
-    ## change to the visible impl set invalidates every entry.
+    ## the VM's dispatch epoch; every impl mutation and every released
+    ## generation retirement moves it, so any change to the visible impl set,
+    ## or a freed receiver Type whose address may be reused, invalidates every
+    ## entry.
     recvTypeBits*: uint64
     msgBits*: uint64
     epoch*: uint64

@@ -1862,7 +1862,7 @@ else:
       raiseHttpClientError("owned HTTP Client requires a threaded native VM",
                            scope, kind = "unavailable")
     except GeneError as error:
-      newFailedTask(error.msg, error.errVal, hasValue = true)
+      return newFailedTask(error.msg, error.errVal, hasValue = true)
 
   proc biOwnedHttpClientClose(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =

@@ -501,7 +501,7 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
-    sandboxGenerationReleased*: bool # explicit generation retired; self-edge audit
+    sandboxGenerationReleased*: bool # generation released or discarded; retirement root
     moduleBase*: Scope      # cached ancestor module root; roots identify self via moduleRoot
     moduleStatic*: bool     # unconditional module/namespace declaration scope
     moduleRefs*: ModuleRefTable
@@ -1470,6 +1470,12 @@ iterator values*(t: PropTable): Value =
   for i in 0 ..< t.data.len:
     yield t.data[i].val
 
+iterator borrowedValues(t: PropTable): lent Value =
+  ## `values` without the per-item copy, for walks that must not run release
+  ## hooks. The table must not change during the loop.
+  for i in 0 ..< t.data.len:
+    yield t.data[i].val
+
 iterator mvalues*(t: var PropTable): var Value =
   for i in 0 ..< t.data.len:
     yield t.data[i].val
@@ -1935,7 +1941,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
   of okModule:
     let d = ModuleData(data)
     emit(d.root)
-    for _, val in d.meta:
+    for val in d.meta.borrowedValues:
       emit(val)
   of okBigInt:
     discard
@@ -1959,11 +1965,11 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
     emit(d.initial)
     for stage in d.stages:
       emit(stage.head)
-      for _, val in stage.props:
+      for val in stage.props.borrowedValues:
         emit(val)
       for val in stage.body:
         emit(val)
-      for _, val in stage.meta:
+      for val in stage.meta.borrowedValues:
         emit(val)
   of okCallableView:
     let d = CallableViewData(data)
@@ -1972,7 +1978,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
   of okEnv:
     let d = EnvData(data)
     emit(d.parent)
-    for _, val in d.bindings:
+    for val in d.bindings.values:
       emit(val)
     for val in d.imports:
       emit(val)
@@ -2061,8 +2067,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
   of okType:
     let d = TypeData(data)
     emit(d.parent)
-    for witness in d.coreWitnesses:
-      emit(witness)
+    for m in CoreValueMethod:
+      emit(d.coreWitnesses[m])
     for field in d.fields:
       emit(field.typeExpr)
     for field in d.bodyFields:
@@ -2073,7 +2079,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
       emit(val)
     for val in d.deriveRequests:
       emit(val)
-    for _, val in d.messages:
+    for val in d.messages.values:
       emit(val)
     emit(d.ctorFn)
     emit(d.nativeCtor)
@@ -2083,11 +2089,11 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
     emit(d.backingType)
     for val in d.variants:
       emit(val)
-    for _, val in d.messages:
+    for val in d.messages.values:
       emit(val)
   of okProtocol:
     let d = ProtocolData(data)
-    for _, val in d.messages:
+    for val in d.messages.values:
       emit(val)
     emit(d.deriveFn)
     for val in d.parents:
@@ -2769,45 +2775,464 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
 
 proc kind*(v: Value): ValueKind {.inline, raises: [].}
 
-proc retireReleasedScalarModule(module: ModuleData, bits: uint64) =
-  ## A released scalar-only module can have the cycle
-  ## Scope.this_mod -> Module -> Namespace -> Scope as its final owners. It is
-  ## safe to sever only after the Module's last external boxed owner goes away.
-  ## Callable/Type/container exports might still use `this_mod` from an escaped
-  ## scope and remain rooted until their edges are modeled (VM-2).
-  if module == nil or module.valueRefs != 1 or
-      isSharedFlag(module.shared) or module.root.kind != vkNamespace:
-    return
-  let owner = NamespaceData(objData(module.root)).scope
-  if owner == nil or not owner.sandboxGenerationReleased or
-      owner.moduleRefs != nil or not owner.vars.hasKey("this_mod") or
-      owner.vars.mgetOrPut("this_mod", Value(bits: 0)).bits != bits:
-    return
-  template scalarTag(tag: uint64): bool =
-    tag < VOID_TAG or tag == VOID_TAG or tag == BOOL_TAG or
-      tag == INT_TAG or tag == CHAR_TAG or tag == FLOATZERO_TAG or
-      tag == SYMBOL_TAG or tag == STRING_TAG or tag == INT64_TAG
-  for name in owner.vars.keys:
-    if name notin ["this_mod", "this_pkg"]:
-      let tag = owner.vars.mgetOrPut(name, Value(bits: 0)).bits shr TAG_SHIFT
-      if not scalarTag(tag):
-        return
-  for i, name in owner.slotNames:
-    if name == "this_mod":
-      return
-    if name != "this_pkg" and i < owner.slots.len and
-        not scalarTag(owner.slots[i].bits shr TAG_SHIFT):
-      return
-  owner.vars.del("this_mod")
+# ---------------------------------------------------------------------------
+# Released sandbox generation retirement (VM-2)
+# ---------------------------------------------------------------------------
+#
+# A released generation's module root closes cycles that cross manual Value
+# counts and Nim refs, e.g. Scope.this_mod -> Module -> Namespace -> Scope and
+# Scope binding -> Type -> Type.scope. ORC cannot see through a boxed Value
+# (each box is a GC_ref), so such a graph survives after its last outside
+# owner is gone. Retirement is trial deletion over the graph reachable from
+# the pending generation roots: a node is internally owned when every counted
+# reference to it comes from an expanded node, and a scope is torn down only
+# when nothing externally owned reaches it through a strong or weak edge.
+#
+# Soundness depends on three rules. Every counted edge is a real owning
+# reference, counted once per owner. Totals are complete: manual counts for
+# boxed Values, and the ORC header count, which includes every box and every
+# Nim ref, for scopes and ORC objects. Anything not enumerated — chunk
+# constants, error evidence, `RootRef` state, other lanes — is left out, so its
+# targets look externally owned and stay alive.
 
-proc retireReleasedModuleSelfBinding*(owner: Scope) =
-  if owner == nil or not owner.vars.hasKey("this_mod"):
+# AtomicArc builds (which this repository compiles with gcOrc also defined) run
+# Gene worker lanes; shared graphs there are excluded until a threaded collector
+# is qualified, so retirement stays off. The wasm module has no sandbox
+# directories to load generations from, so it leaves the machinery out.
+when defined(gcOrc) and not defined(gcAtomicArc) and not defined(geneWasm) and
+    not (defined(nimArcDebug) or defined(nimArcIds) or
+         defined(nimOrcLeakDetector)):
+  type NimRefHeader = object
+    rc: int
+    rootIdx: int
+  const nimRefCountReadable = true
+else:
+  const nimRefCountReadable = false
+
+proc nimStrongRefs(p: pointer): int {.inline.} =
+  ## Owning references to an ORC object: boxes (GC_ref) plus Nim refs. Reads
+  ## the Nim 2.2 ORC header; `retirementSupported` verifies the layout.
+  when nimRefCountReadable:
+    (cast[ptr NimRefHeader](cast[int](p) -% sizeof(NimRefHeader)).rc shr 4) + 1
+  else:
+    high(int)
+
+var retirementLayout = 0 # 0 unchecked, 1 verified, -1 unsupported
+var generationRetiring = false
+
+proc retirementSupported(): bool =
+  if retirementLayout == 0:
+    retirementLayout = -1
+    when nimRefCountReadable:
+      let probe = Scope()
+      let address = cast[pointer](probe)
+      if nimStrongRefs(address) == 1:
+        GC_ref(probe)
+        let raised = nimStrongRefs(address)
+        GC_unref(probe)
+        if raised == 2 and nimStrongRefs(address) == 1:
+          retirementLayout = 1
+  retirementLayout == 1
+
+type
+  RetireNode = object
+    scope: pointer      # set for a Scope node; `bits` identifies a boxed Value
+    bits: uint64
+    total: int
+    internal: int
+    expanded: bool
+    weakScanned: bool   # a live, unexpanded node's weak edges were followed
+    pinned: bool        # an active native borrow keeps it alive
+    live: bool
+    edges: seq[int32]   # strong and weak successors, for liveness propagation
+
+  RetireGraph = object
+    nodes: seq[RetireNode]
+    scopeIndex: Table[uint64, int]
+    valueIndex: Table[uint64, int]
+    weakScopes: seq[tuple[source: int, target: uint64]]
+    weakValues: seq[tuple[source: int, target: uint64]]
+    ready: seq[int]
+
+proc retireValueTotal(bits: uint64): int =
+  # Retirement runs only without Gene worker lanes (see nimRefCountReadable), so
+  # a value marked shared by impl publication still has a stable exact count.
+  let payload = bits and PAYLOAD_MASK
+  template manual(T: typedesc): int =
+    block:
+      let p = cast[ptr T](payload)
+      when threadedRc:
+        atomicLoadN(addr p.refCount, ATOMIC_ACQUIRE)
+      else:
+        p.refCount
+  case bits shr TAG_SHIFT
+  of STRING_TAG: manual(GeneString)
+  of INT64_TAG: manual(GeneInt64)
+  of LIST_TAG: manual(GeneList)
+  of MAP_TAG: manual(GeneMap)
+  of NODE_TAG: manual(GeneNode)
+  of FUNCTION_TAG: manual(GeneFunction)
+  of NATIVE_FN_TAG: manual(GeneNativeFn)
+  of OBJECT_TAG, CYCLE_OBJECT_TAG:
+    nimStrongRefs(cast[pointer](payload))
+  else: high(int)
+
+proc valueNode(g: var RetireGraph, bits: uint64): int =
+  if bits shr TAG_SHIFT < MANAGED_MIN or (bits and PAYLOAD_MASK) == 0:
+    return -1
+  result = g.valueIndex.getOrDefault(bits, -1)
+  if result < 0:
+    result = g.nodes.len
+    g.nodes.add RetireNode(bits: bits, total: retireValueTotal(bits))
+    g.valueIndex[bits] = result
+
+proc scopeNode(g: var RetireGraph, scope: Scope): int =
+  if scope == nil:
+    return -1
+  let key = cast[uint64](cast[pointer](scope))
+  result = g.scopeIndex.getOrDefault(key, -1)
+  if result < 0:
+    result = g.nodes.len
+    g.nodes.add RetireNode(scope: cast[pointer](scope),
+                           total: nimStrongRefs(cast[pointer](scope)))
+    g.scopeIndex[key] = result
+
+proc strongEdge(g: var RetireGraph, source, target: int) =
+  if target < 0:
     return
-  let bits = owner.vars.mgetOrPut("this_mod", Value(bits: 0)).bits
-  if bits shr TAG_SHIFT == OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
-    if data.objKind == okModule:
-      retireReleasedScalarModule(ModuleData(data), bits)
+  inc g.nodes[target].internal
+  g.nodes[source].edges.add int32(target)
+  if not g.nodes[target].expanded and
+      g.nodes[target].internal == g.nodes[target].total:
+    g.ready.add target
+
+proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
+  ## `counting` expands an internally owned node: strong edges are counted
+  ## and discover their targets. Otherwise only weak edges are collected, for a
+  ## live node whose uncounted strong edges already make their targets live.
+  let s {.cursor.} = cast[Scope](g.nodes[idx].scope)
+  when counting:
+    g.nodes[idx].expanded = true
+  template value(v: Value) =
+    when counting:
+      g.strongEdge(idx, g.valueNode(v.bits))
+  template scopeRef(x: Scope) =
+    when counting:
+      g.strongEdge(idx, g.scopeNode(x))
+  template weakScope(p: pointer) =
+    if p != nil:
+      g.weakScopes.add (idx, cast[uint64](p))
+  when counting:
+    scopeRef(s.parent)
+    scopeRef(s.moduleBase)
+    for i in 0 ..< s.slots.len:
+      value(s.slots[i])
+    for v in s.vars.values:
+      value(v)
+    for fallback in s.wildcardFallbacks.values:
+      value(fallback.value)
+    value(s.annotationSelfType)
+    for i in 0 ..< s.requiredImplTypes.len:
+      value(s.requiredImplTypes[i])
+    for i in 0 ..< s.corePendingTypes.len:
+      value(s.corePendingTypes[i])
+    # moduleRefs entries are separate refs; their Values stay uncounted.
+    value(s.supervisorEvents)
+    value(s.supervisorDeadLetters)
+    for i in 0 ..< s.ownedTasks.len:
+      value(s.ownedTasks[i])
+    for i in 0 ..< s.ownedCleanupTasks.len:
+      value(s.ownedCleanupTasks[i])
+    for i in 0 ..< s.ownedActors.len:
+      value(s.ownedActors[i])
+  for i in 0 ..< s.slotTypes.len:
+    value(s.slotTypes[i].expr)
+    scopeRef(s.slotTypes[i].scope)
+    weakScope(s.slotTypes[i].weakScope)
+  for binding in s.varTypes.values:
+    value(binding.expr)
+    scopeRef(binding.scope)
+    weakScope(binding.weakScope)
+  for impl in s.impls:
+    when counting:
+      value(impl.protocol)
+      value(impl.receiver)
+      for message in impl.messages:
+        value(message.message)
+        value(message.fn)
+      for message in impl.localMessages:
+        value(message.message)
+        value(message.fn)
+      for binding in impl.selfBindings:
+        value(binding.protocol)
+        value(binding.selfType)
+      for source in impl.bodySources:
+        value(source.message)
+        value(source.protocol)
+        value(source.receiver)
+    scopeRef(impl.assemblyScope)
+    weakScope(impl.weakAssemblyScope)
+
+proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
+  let bits = g.nodes[idx].bits
+  let payload = bits and PAYLOAD_MASK
+  when counting:
+    g.nodes[idx].expanded = true
+  template value(v: Value) =
+    when counting:
+      g.strongEdge(idx, g.valueNode(v.bits))
+  template scopeRef(x: Scope) =
+    when counting:
+      g.strongEdge(idx, g.scopeNode(x))
+  template weakScope(p: pointer) =
+    if p != nil:
+      g.weakScopes.add (idx, cast[uint64](p))
+  template weakValue(target: uint64) =
+    if target != 0:
+      g.weakValues.add (idx, target)
+  case bits shr TAG_SHIFT
+  of LIST_TAG:
+    when counting:
+      let p = cast[ptr GeneList](payload)
+      for i in 0 ..< p.items.len:
+        value(p.items[i])
+  of MAP_TAG:
+    when counting:
+      let p = cast[ptr GeneMap](payload)
+      for i in 0 ..< p.entries.data.len:
+        value(p.entries.data[i].val)
+  of NODE_TAG:
+    # Error evidence is a separately owned ref; its edges stay uncounted.
+    when counting:
+      let p = cast[ptr GeneNode](payload)
+      value(p.head)
+      for i in 0 ..< p.props.data.len:
+        value(p.props.data[i].val)
+      for i in 0 ..< p.body.len:
+        value(p.body[i])
+      for i in 0 ..< p.meta.data.len:
+        value(p.meta.data[i].val)
+  of FUNCTION_TAG:
+    # Compiled code constants are not enumerated.
+    let p = cast[ptr GeneFunction](payload)
+    scopeRef(p.scope)
+    weakScope(p.weakScope)
+    when counting:
+      for i in 0 ..< p.errorTypes.len:
+        value(p.errorTypes[i])
+  of OBJECT_TAG, CYCLE_OBJECT_TAG:
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+    when counting:
+      forObjectEdges(data, child):
+        g.strongEdge(idx, g.valueNode(child))
+    case data.objKind
+    of okNamespace:
+      scopeRef(cast[NamespaceData](data).scope)
+    of okType:
+      let d {.cursor.} = cast[TypeData](data)
+      scopeRef(d.scope)
+      weakScope(d.weakScope)
+      for field in d.fields:
+        scopeRef(field.scope)
+        weakScope(field.weakScope)
+      for field in d.bodyFields:
+        scopeRef(field.scope)
+        weakScope(field.weakScope)
+    of okEnum:
+      let d {.cursor.} = cast[EnumData](data)
+      scopeRef(d.scope)
+      weakScope(d.weakScope)
+    of okProtocol:
+      weakScope(cast[ProtocolData](data).weakScope)
+    of okProtocolMessage:
+      weakValue(cast[ProtocolMessageData](data).protocolBits)
+    of okBoundMessage:
+      let d {.cursor.} = cast[BoundMessageData](data)
+      scopeRef(d.boundScope)
+      weakValue(d.protocolBits)
+    of okEnumVariant:
+      weakValue(cast[EnumVariantData](data).enumBits)
+    of okCell, okAtomicCell:
+      scopeRef(cast[CellData](data).valueScope)
+    of okEnv:
+      scopeRef(cast[EnvData](data).borrowedScope)
+    of okCallableView:
+      scopeRef(cast[CallableViewData](data).typeScope)
+    of okStream:
+      let d {.cursor.} = cast[StreamData](data)
+      scopeRef(d.itemScope)
+      scopeRef(d.generatorScope)
+    of okTask:
+      scopeRef(cast[TaskData](data).boundaryScope)
+    of okChannel:
+      scopeRef(cast[ChannelData](data).itemScope)
+    of okReplyTo:
+      scopeRef(cast[ReplyToData](data).resultScope)
+    of okBuffer:
+      scopeRef(cast[BufferData](data).elemScope)
+    of okCPtr:
+      if cast[CPtrData](data).activeBorrows > 0:
+        g.nodes[idx].pinned = true
+    of okFfiLibrary:
+      if cast[FfiLibraryData](data).nativeBorrows > 0:
+        g.nodes[idx].pinned = true
+    else:
+      discard
+  else:
+    discard
+
+type RetiredScopeBindings = object
+  vars: Table[string, Value]
+  wildcardFallbacks: Table[string, WildcardFallback]
+  slots: seq[Value]
+  slotTypes: seq[TypeBinding]
+  varTypes: Table[string, TypeBinding]
+  annotationSelfType: Value
+  impls: seq[ProtocolImpl]
+  requiredImplTypes: seq[Value]
+  corePendingTypes: seq[Value]
+  moduleRefs: ModuleRefTable
+  supervisorEvents: Value
+  supervisorDeadLetters: Value
+  ownedTasks: seq[Value]
+  ownedCleanupTasks: seq[Value]
+  ownedActors: seq[Value]
+
+proc takeRetiredBindings(s: Scope): RetiredScopeBindings =
+  result.vars = move s.vars
+  result.wildcardFallbacks = move s.wildcardFallbacks
+  result.slots = move s.slots
+  result.slotTypes = move s.slotTypes
+  result.varTypes = move s.varTypes
+  result.annotationSelfType = move s.annotationSelfType
+  result.impls = move s.impls
+  result.requiredImplTypes = move s.requiredImplTypes
+  result.corePendingTypes = move s.corePendingTypes
+  result.moduleRefs = move s.moduleRefs
+  result.supervisorEvents = move s.supervisorEvents
+  result.supervisorDeadLetters = move s.supervisorDeadLetters
+  result.ownedTasks = move s.ownedTasks
+  result.ownedCleanupTasks = move s.ownedCleanupTasks
+  result.ownedActors = move s.ownedActors
+  s.slotNames.setLen(0)
+  s.slotDefinedBits = 0
+  s.slotDefinedOverflow.setLen(0)
+  s.slotMirror = false
+  s.varsDirty = false
+
+proc moduleHeldOutside(root: Scope): bool =
+  ## A root's Module is owned by its `this_mod` binding. Any further owner keeps
+  ## the root alive through Module -> Namespace -> root, which is what the walk
+  ## would conclude, so a retained generation skips it.
+  var bits = 0'u64
+  root.vars.withValue("this_mod", binding):
+    bits = binding[].bits
+  if bits shr TAG_SHIFT != OBJECT_TAG:
+    return false
+  let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+  if data.objKind != okModule:
+    return false
+  let rootBits = cast[ModuleData](data).root.bits
+  if rootBits shr TAG_SHIFT != OBJECT_TAG:
+    return false
+  let namespace {.cursor.} =
+    cast[GeneObjectData](cast[pointer](rootBits and PAYLOAD_MASK))
+  namespace.objKind == okNamespace and
+    cast[NamespaceData](namespace).scope == root and
+    nimStrongRefs(cast[pointer](data)) > 1
+
+proc retireReleasedGenerations*(pending: var seq[Scope]): int =
+  ## Tears down released generation roots (and scopes they solely own) that
+  ## nothing outside reaches any more. `pending` owns one reference to each
+  ## root; retired roots are removed from it. Returns the number of scopes
+  ## torn down. Callers must be on the owning lane with scheduler workers
+  ## paused and no borrowed view into a pending generation, since counts are
+  ## read as stable totals and teardown runs its releases immediately.
+  when not nimRefCountReadable:
+    return 0
+  if pending.len == 0 or generationRetiring or not retirementSupported():
+    return 0
+  generationRetiring = true
+  try:
+    var g: RetireGraph
+    var roots: seq[int]
+    for root in pending:
+      if root == nil or not root.sandboxGenerationReleased or
+          root.moduleHeldOutside():
+        continue
+      let idx = g.scopeNode(root)
+      if g.nodes[idx].expanded:
+        continue
+      dec g.nodes[idx].total # the pending list's reference
+      roots.add idx
+      g.expandRetireScope(idx, counting = true)
+    while g.ready.len > 0:
+      let idx = g.ready.pop()
+      if g.nodes[idx].expanded:
+        continue
+      if g.nodes[idx].scope != nil:
+        g.expandRetireScope(idx, counting = true)
+      else:
+        g.expandRetireValue(idx, counting = true)
+    var queue: seq[int]
+    for i in 0 ..< g.nodes.len:
+      if g.nodes[i].internal > g.nodes[i].total:
+        return 0 # an over-count means the edge inventory is wrong: retire nothing
+      if not g.nodes[i].expanded or g.nodes[i].pinned or
+          g.nodes[i].internal < g.nodes[i].total:
+        g.nodes[i].live = true
+        queue.add i
+    template resolveWeakEdges(fromScope, fromValue: int) =
+      for i in fromScope ..< g.weakScopes.len:
+        let target = g.scopeIndex.getOrDefault(g.weakScopes[i].target, -1)
+        if target >= 0:
+          g.nodes[g.weakScopes[i].source].edges.add int32(target)
+      for i in fromValue ..< g.weakValues.len:
+        let target = g.valueIndex.getOrDefault(g.weakValues[i].target, -1)
+        if target >= 0:
+          g.nodes[g.weakValues[i].source].edges.add int32(target)
+    resolveWeakEdges(0, 0)
+    while queue.len > 0:
+      let idx = queue.pop()
+      if not g.nodes[idx].expanded and not g.nodes[idx].weakScanned:
+        # An externally owned node can still hold a non-owning pointer into a
+        # candidate (a Protocol's defining scope, a variant's Enum); that
+        # target must outlive it.
+        g.nodes[idx].weakScanned = true
+        let fromScope = g.weakScopes.len
+        let fromValue = g.weakValues.len
+        if g.nodes[idx].scope != nil:
+          g.expandRetireScope(idx, counting = false)
+        else:
+          g.expandRetireValue(idx, counting = false)
+        resolveWeakEdges(fromScope, fromValue)
+      for target in g.nodes[idx].edges:
+        if not g.nodes[target].live:
+          g.nodes[target].live = true
+          queue.add int(target)
+    var doomed: seq[Scope]
+    for i in 0 ..< g.nodes.len:
+      if g.nodes[i].scope != nil and g.nodes[i].expanded and not g.nodes[i].live:
+        doomed.add cast[Scope](g.nodes[i].scope)
+    if doomed.len == 0:
+      return 0
+    var kept: seq[Scope]
+    for root in pending:
+      var retired = false
+      for scope in doomed:
+        if scope == root:
+          retired = true
+          break
+      if not retired:
+        kept.add root
+    pending = kept
+    var held: seq[RetiredScopeBindings]
+    for scope in doomed:
+      held.add scope.takeRetiredBindings()
+    held.setLen(0)
+    result = doomed.len
+  finally:
+    generationRetiring = false
 
 proc isPromotedBindingFunction(v: Value): bool {.inline.} =
   if v.bits shr TAG_SHIFT != FUNCTION_TAG:
@@ -3015,7 +3440,22 @@ proc weakenEscapedMapItems(p: ptr GeneMap) =
   else:
     weakenOwnedFunctions(candidates)
 
+when compileOption("exceptions", "goto"):
+  proc nimErrorFlag(): ptr bool {.importc, nodecl, raises: [], gcsafe.}
+
 proc rcRelease(bits: uint64) =
+  when compileOption("exceptions", "goto"):
+    # Nim destroys a raising call's partially assigned result temporary before
+    # clearing the pending-exception flag. The error checks after this body's
+    # own calls would then return mid-release, skipping the free or GC_unref and
+    # leaking whatever the value owned. Run the release as if nothing were
+    # pending, then restore the flag.
+    let pending = nimErrorFlag()
+    if unlikely(pending[]):
+      pending[] = false
+      rcRelease(bits)
+      pending[] = true
+      return
   let payload = bits and PAYLOAD_MASK
   if payload == 0: return
   case bits shr TAG_SHIFT
@@ -3128,20 +3568,13 @@ proc rcRelease(bits: uint64) =
     let data = cast[GeneObjectData](cast[pointer](payload))
     if data.objKind == okModule:
       let module = ModuleData(data)
-      var newRefs: int
       when threadedRc:
         if isSharedFlag(data.shared):
-          newRefs = atomicFetchSub(addr module.valueRefs, 1, ATOMIC_ACQ_REL) - 1
+          discard atomicFetchSub(addr module.valueRefs, 1, ATOMIC_ACQ_REL)
         else:
           dec module.valueRefs
-          newRefs = module.valueRefs
       else:
         dec module.valueRefs
-        newRefs = module.valueRefs
-      GC_unref(data)
-      if newRefs == 1:
-        retireReleasedScalarModule(module, bits)
-      return
     elif data.objKind == okProtocol:
       let protocol = ProtocolData(data)
       when threadedRc:

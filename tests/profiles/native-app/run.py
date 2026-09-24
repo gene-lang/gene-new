@@ -87,14 +87,16 @@ def load_profile(gene: Path) -> dict:
             raise ValueError(f"missing package or entry for {wid}")
         if wid == "lifetime":
             for field in ("witness_entry", "cancellation_entry",
-                          "generation_entry", "retained_entry",
-                          "retained_function_entry", "retained_instance_entry"):
+                          "generation_entry", "generation_failure_entry",
+                          "retained_entry", "retained_function_entry",
+                          "retained_instance_entry"):
                 scenario_entry = contained(package, workload.get(field, ""))
                 if not scenario_entry.is_file():
                     raise ValueError(f"lifetime {field} is missing")
             plugin = contained(package, workload.get("generation_plugin", ""))
             if not plugin.is_dir() or any(not (plugin / filename).is_file()
-                    for filename in ("simple.gene", "retained_item.gene")):
+                    for filename in ("simple.gene", "plugin.gene",
+                                     "failing.gene", "retained_item.gene")):
                 raise ValueError("lifetime generation plugin is missing")
         required = workload.get("required_stages")
         if not isinstance(required, list) or not required or any(
@@ -328,7 +330,11 @@ def run_lifetime(workload: dict) -> dict:
                 ("witness", "witness_entry", [str(batches[-1])]),
                 ("cancellation", "cancellation_entry", [str(batches[-1])]),
                 ("generation", "generation_entry",
-                 [str(plugin), str(batches[-1]), "simple.gene"])):
+                 [str(plugin), str(batches[-1]), "simple.gene"]),
+                ("generation_rich", "generation_entry",
+                 [str(plugin), str(batches[-1]), "plugin.gene"]),
+                ("generation_failure", "generation_failure_entry",
+                 [str(plugin), str(batches[-1])])):
             scenario_entry = contained(package, workload[field])
             scenario_argv = [str(instrumented), "run", "--package-root",
                              str(package), str(scenario_entry), *scenario_args]
@@ -383,7 +389,7 @@ def run_lifetime(workload: dict) -> dict:
                 "sandbox_generation_records", "sandbox_transaction_records",
                 "module_cache_entries", "module_compile_headers",
                 "module_compile_artifacts", "canonical_impls", "base_scopes")
-            if label == "generation" and any(
+            if label.startswith("generation") and any(
                     not isinstance(scenario_baseline.get(counter), int)
                     for counter in generation_counters):
                 return {"outcome": "failure",
@@ -399,7 +405,7 @@ def run_lifetime(workload: dict) -> dict:
                         (label == "cancellation" and (
                             item.get("io_root_tasks") != 0 or
                             item.get("io_root_cleanup_tasks") != 0)) or
-                        (label == "generation" and any(
+                        (label.startswith("generation") and any(
                             item.get(counter) != scenario_baseline.get(counter)
                             for counter in generation_counters))):
                     return {"outcome": "failure",
@@ -437,6 +443,9 @@ def run_lifetime(workload: dict) -> dict:
                                 "escaped_type_witnesses",
                                 "cancelled_type_tasks",
                                 "released_scalar_modules",
+                                "released_type_protocol_impl_modules",
+                                "discarded_generations",
+                                "failed_generation_prepare",
                                 "retained_module_self",
                                 "retained_function_scope",
                                 "retained_instance_type"],

@@ -493,6 +493,15 @@ type
     implEpoch: uint64
     implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
     baseScopes: seq[Scope] # enumerable module/program bases for reload checks
+    # Released sandbox generation roots not yet proven unreachable. Each entry
+    # owns one reference; retirement tears a root down once nothing outside
+    # its graph reaches it (VM-2).
+    releasedGenerationScopes: seq[Scope]
+    # Advances whenever retirement frees generation objects. It joins the
+    # dispatch cache guard (not implEpoch, which also detects live-state change
+    # for open sandbox transactions), so a freed Type's reused address cannot
+    # match a cached send.
+    retireEpoch: uint64
     activeImplAssemblies: seq[ImplAssembly] # initialization only; overlays stay lexical
     # design §D5: sandboxed module loading. `sandboxRoots` caches one restricted
     # builtins root per grant set (keyed by the sorted grant list) so that two
@@ -7732,6 +7741,7 @@ proc biRuntimeGcStats(args: openArray[Value],
   newMap(entries, immutable = true)
 
 when defined(geneRcStats):
+  proc retirePendingGenerations(scope: Scope)
   proc biRuntimeTestCollect(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 0:
@@ -7742,6 +7752,7 @@ when defined(geneRcStats):
     if currentEventLane() != scheduler.rootLane:
       raise newException(GeneError,
         "runtime/test_collect requires the scheduler root lane")
+    retirePendingGenerations(scope)
     GC_fullCollect()
     NIL
 
@@ -14415,6 +14426,10 @@ const dispatchCacheEnabled = not (compileOption("threads") and defined(gcAtomicA
   ## everywhere.
 
 when dispatchCacheEnabled:
+  proc dispatchEpoch(app: Application): uint64 {.inline.} =
+    ## Cache guard epoch: any impl change or generation retirement moves it.
+    (app.retireEpoch shl 32) xor app.implEpoch
+
   proc chainHasTransientImpls(scope: Scope): bool {.inline.} =
     ## True when a scope strictly below the first stable base (module root or
     ## eval overlay root) carries impls. Those activation-local overlay impls
@@ -17342,7 +17357,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             when dispatchCacheEnabled:
               # site = this instruction's index (ip was advanced at loop top).
               let site = ip - 1
-              let epoch = scope.application().implEpoch
+              let epoch = scope.application().dispatchEpoch()
               let cacheable = not scope.chainHasTransientImpls()
               if cacheable:
                 callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
@@ -17400,7 +17415,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # per-site cache only has to guard the impl epoch (reload/overlay).
             when dispatchCacheEnabled:
               let site = ip - 1
-              let epoch = scope.application().implEpoch
+              let epoch = scope.application().dispatchEpoch()
               callee = chunk.dispatchCacheLookup(site, superType, 0'u64, epoch)
               if callee.kind == vkNil:
                 callee = readyTypeDirectMessage(superType, inst[].name)
@@ -18764,7 +18779,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let recvType = receiver.receiverType
             if recvType.kind == vkType and not scope.chainHasTransientImpls():
               let site = ip - 1
-              let epoch = scope.application().implEpoch
+              let epoch = scope.application().dispatchEpoch()
               let msgBits = message.bits
               callee = chunk.dispatchCacheLookup(site, recvType, msgBits, epoch)
               if callee.kind == vkNil:
@@ -18796,14 +18811,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if cacheable:
               callee = chunk.dispatchCacheLookup(ip - 1, recvType,
                                                  qualifier.bits,
-                                                 scope.application().implEpoch)
+                                                 scope.application().dispatchEpoch())
           if callee.kind == vkNil:
             callee = resolveQualifiedSend(scope, qualifier, inst[].name,
                                           receiver)
             when dispatchCacheEnabled:
               if cacheable and callee.kind != vkNil:
                 chunk.dispatchCacheFill(ip - 1, recvType, qualifier.bits,
-                                        scope.application().implEpoch, callee)
+                                        scope.application().dispatchEpoch(), callee)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           spush callee
@@ -29791,6 +29806,29 @@ proc biRuntimeSandboxTransaction(args: openArray[Value],
     release(resourceRecordLock)
   newRuntimeResourceHandle(scope, "SandboxTransaction", id)
 
+proc retireReleasedGenerationScopes(app: Application) =
+  ## Retire released generation roots nothing outside reaches any more (VM-2).
+  ## Callers pause scheduler workers.
+  if app.releasedGenerationScopes.len > 0 and
+      retireReleasedGenerations(app.releasedGenerationScopes) > 0:
+    inc app.retireEpoch
+
+when defined(geneRcStats):
+  proc retirePendingGenerations(scope: Scope) =
+    ## Test collection point: retire generations whose last outside owner went
+    ## away after their release.
+    if scope == nil or scope.application == nil:
+      return
+    let app = Application(scope.application)
+    if app.releasedGenerationScopes.len == 0:
+      return
+    let scheduler = schedulerForScope(scope)
+    pauseSchedulerWorkersForModuleMutation(scheduler)
+    try:
+      app.retireReleasedGenerationScopes()
+    finally:
+      resumeSchedulerWorkersAfterModuleMutation(scheduler)
+
 proc biSandboxTransactionPrepare(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -29851,6 +29889,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
   var scopes: seq[Scope]
   var canonicalImpls: seq[ProtocolImpl]
   var graph = NIL
+  var failedScopes: seq[Scope]
   pauseSchedulerWorkersForModuleMutation(scheduler)
   try:
     installSandboxAppState(app, working)
@@ -29889,6 +29928,13 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
           canonicalImpls.add pending
     graph = sandboxGraph(app, module.modulePath, sandboxDir, sandboxKey,
                          moduleKeys, compileKeys)
+  except CatchableError:
+    # A failed load leaves partially initialized module roots, with the same
+    # module cycles, only in the discarded working state.
+    for candidate in app.baseScopes:
+      if candidate.sandboxGenerationId == generationId:
+        failedScopes.add candidate
+    raise
   finally:
     activeSandboxCompileKey = savedCompileKey
     activeSandboxCompileDir = savedCompileDir
@@ -29896,6 +29942,12 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
     activeSandboxPolicy = savedPolicy
     activeSandboxCompileBudget = savedCompileBudget
     installSandboxAppState(app, live)
+    if failedScopes.len > 0:
+      for owned in failedScopes:
+        owned.sandboxGenerationReleased = true
+        app.releasedGenerationScopes.add owned
+      failedScopes.setLen(0)
+      app.retireReleasedGenerationScopes()
     resumeSchedulerWorkersAfterModuleMutation(scheduler)
   transaction.candidate = nextState
   transaction.generations.add generationId
@@ -29994,6 +30046,8 @@ proc biSandboxTransactionDiscard(args: openArray[Value],
       "cannot discard a committed SandboxTransaction")
   of stsOpen:
     discard
+  let app = transaction.application
+  var discarded: seq[Scope]
   acquire(resourceRecordLock)
   try:
     for generationId in transaction.generations:
@@ -30006,6 +30060,8 @@ proc biSandboxTransactionDiscard(args: openArray[Value],
         generation.moduleEntries.clear()
         generation.moduleKeys.setLen(0)
         generation.compileKeys.setLen(0)
+        for owned in generation.scopes:
+          discarded.add owned
         generation.scopes.setLen(0)
         generation.canonicalImpls.setLen(0)
   finally:
@@ -30013,6 +30069,18 @@ proc biSandboxTransactionDiscard(args: openArray[Value],
   transaction.state = stsDiscarded
   transaction.application = nil
   transaction.candidate = SandboxAppState()
+  if app != nil and discarded.len > 0:
+    # A prepared generation closes the same module cycles as a committed one.
+    for owned in discarded:
+      owned.sandboxGenerationReleased = true
+      app.releasedGenerationScopes.add owned
+    discarded.setLen(0)
+    let scheduler = schedulerForScope(scope)
+    pauseSchedulerWorkersForModuleMutation(scheduler)
+    try:
+      app.retireReleasedGenerationScopes()
+    finally:
+      resumeSchedulerWorkersAfterModuleMutation(scheduler)
   NIL
 
 proc biSandboxGenerationModule(args: openArray[Value],
@@ -30109,11 +30177,14 @@ proc biSandboxGenerationRelease(args: openArray[Value],
     generation.moduleEntries.clear()
     for owned in generation.scopes:
       owned.sandboxGenerationReleased = true
-      owned.retireReleasedModuleSelfBinding()
+      app.releasedGenerationScopes.add owned
     generation.moduleKeys.setLen(0)
     generation.compileKeys.setLen(0)
     generation.scopes.setLen(0)
     generation.canonicalImpls.setLen(0)
+    # Earlier generations whose last outside owner has gone since the previous
+    # release, and this one if the caller holds nothing from it.
+    app.retireReleasedGenerationScopes()
   finally:
     resumeSchedulerWorkersAfterModuleMutation(scheduler)
   NIL

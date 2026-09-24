@@ -87,6 +87,40 @@ The updated instrumented binary SHA-256 was
 `dc089ad9bbdd0ba5bb40a07b6be4cb7d7a6293ee10a62f24f0dc112678ef8f26`.
 This does not qualify the richer generation.
 
+Later the same day, VM-2 retirement replaced the scalar-only repair. A
+root-level trace of the Type/protocol/impl plugin accounted for every owner:
+the root Scope's two ORC refs came from its Namespace and its promoted Type;
+the Module, Protocol, Type, message, and method counts matched internal
+bindings exactly. No escaped Nim Scope reference exists; the graph is a closed
+cycle through boxed Values that ORC cannot trace. The earlier "extra boxed
+owner" readings match the extra copy a trace makes when it iterates with
+Table `pairs` or copies a `ProtocolImpl`. Released, discarded, and
+failed-prepare generation roots now wait for trial-deletion retirement
+(`retireReleasedGenerations`). The runner gained a Type/protocol/impl
+generation child and a discard/failed-prepare child and a 120-second child
+deadline. It returned `probe_pass` with warm and 1/100/1,000/10,000
+checkpoints at 881 (eval/failure), 822 (witnesses), 794 (cancelled Tasks),
+820 (scalar generations), 820 (Type/protocol/impl generations), and 822
+(discarded and failed generations). All retained module, function, and
+instance controls passed. The instrumented binary SHA-256 was
+`48d768187849538b134404eb2fdf64cd3dfe62f85ddd195a31397f9754e93eff`, and the
+sampled peak RSS was 100,712,448 bytes. Before the change the Type/protocol/impl
+child grew 15 managed values per release and the failure child 30 per iteration.
+
+The failed-prepare leak had a separate cause, found with an lldb watchpoint on
+the Module's ORC header. Nim destroys a raising call's assigned result
+temporary while the pending-exception flag is set, and `rcRelease` returned at
+its first internal error check without its `GC_unref`. `rcRelease` now clears
+and restores the flag; a new `test_rc` regression leaks 10 Types before the
+repair and none after. Retirement no longer bumps `implEpoch`, which open sandbox
+transactions compare at commit. It advances a separate dispatch-cache epoch
+component instead. It is off under AtomicArc and in the wasm module. Ten
+retention shapes, a two-module generation, and self-release ran clean under
+AddressSanitizer. A 10,800-node generation adds about 6 ms per release in the
+debug RC build. The wasm module, rebuilt after fixing a `--threads:off` compile
+error in `http_client_multi.nim`, passed all 39 ABI cases and is 9,860 bytes
+smaller than the same build of the previous commit.
+
 `nimble test`, `nimble spec`, and `nimble leakcheck` passed. Linux x86_64
 runtime qualification was unavailable on this host: the Docker daemon was
 not running, and no Podman or QEMU runner was installed. The native-app

@@ -14,7 +14,7 @@ The native VM currently supplies functions, modules, packages and locks, tasks, 
 | Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Linux qualification and cross-host native artifact policy |
 | Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one repeat missed the 250 ms heartbeat gate | Investigate the rare host-loop stall, Linux runtime qualification, and VM-3 lifetime gate |
 | Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Linux qualification and remaining VAL/IO release gates |
-| Long-lived VM | VM-0/1 experimental; an RC-enabled macOS arm64 batch probe holds identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes | Mixed ownership evidence, VM-2 cycles, cancellation/module/service gates, and Linux qualification |
+| Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and Linux qualification |
 
 Optional capabilities remain visible separately: experimental genex/tzdb (APP-3), experimental genex/archive (APP-4), direct TLS (NET-3), hosted publication (PKG-3), and experimental retained native notifications (NATIVE-3). Browser/C backend and AtomicArc worker support require their own qualification.
 
@@ -71,13 +71,17 @@ timeout. A third child cancelled parked Tasks after each had created a Type
 and ValueEq impl; it held 794 managed values and zero root Tasks at every
 batch checkpoint. Mixed ownership graphs, module generations, cancellation
 during selection, sustained service, and Linux runtime remain outside that
-narrow probe. A fourth child committed and released a fixed scalar-only module
-10,000 times with 820 managed values at every checkpoint and no generation
-records or module-cache growth. A retained function using `this_mod` still
-worked after release; separate function-only and instance/Type controls also
-remain callable without retaining the Module. A Type/protocol/impl module grows about 15
-managed values per release, so non-scalar generation ownership remains an
-explicit VM-2 blocker.
+narrow probe. Three generation children commit and release a scalar module
+and a Type/protocol/impl module, and discard a prepared generation after
+failing a second one, 10,000 times each. VM-2 retirement tears down each
+module root once nothing outside its graph reaches it. The children hold 820,
+820, and 822 managed values at every checkpoint, with no generation-record,
+module-cache, compile-artifact, or impl growth. Before retirement the
+Type/protocol/impl module grew 15 managed values per release and each
+discard-plus-failure iteration grew 30. Retained module, function-only, and
+instance/Type controls still execute after release. Retirement runs only at
+release, discard, failed preparation, and the test collection point, and is
+off under AtomicArc.
 
 The CLI probe now builds a selected `c_library`, calls its C ABI function,
 and repeats that call after installing the application with the source

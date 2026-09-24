@@ -628,17 +628,79 @@ when defined(geneRcStats):
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
 
-    test "released scalar sandbox module drops its self-binding":
+    proc sandboxOptions(entry: string): string =
       let directory = getCurrentDir() /
         "tests/profiles/native-app/lifetime/plugin"
-      let source = "(var tx ($runtime/sandbox_transaction)) " &
-        "(var generation (tx .prepare {^dir " & newStr(directory).print() &
-        " ^entry \"simple.gene\" ^grants [] ^shared [] ^label \"rc\" " &
-        " ^policy {^max_steps 1000 ^max_memory_mb 16 " &
-        " ^timeout_ms 1000}})) " &
-        "(tx .commit) (generation .release)"
-      discard leakedManaged(source) # prime the one grant-set builtins root
-      check leakedManaged(source) == 0
+      "{^dir " & newStr(directory).print() & " ^entry \"" & entry & "\" " &
+        "^grants [] ^shared [] ^label \"rc\" " &
+        "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}"
+
+    # Retirement is off where Gene worker lanes exist (AtomicArc).
+    when not defined(gcAtomicArc):
+      test "released sandbox generations retire their module cycles":
+        # Scalar exports, a Type/protocol/impl graph, a type-direct method, and a
+        # function capturing this_mod all close Module -> Namespace -> Scope.
+        for entry in ["simple.gene", "plugin.gene", "retained_item.gene",
+                      "self.gene"]:
+          let source = "(var tx ($runtime/sandbox_transaction)) " &
+            "(var generation (tx .prepare " & sandboxOptions(entry) & ")) " &
+            "(tx .commit) (generation .release)"
+          discard leakedManaged(source) # prime the one grant-set builtins root
+          check leakedManaged(source) == 0
+
+      test "discarded and failed sandbox preparations retire their module cycles":
+        let source = "(var tx ($runtime/sandbox_transaction)) " &
+          "(var generation (tx .prepare " & sandboxOptions("plugin.gene") & ")) " &
+          "(tx .discard) " &
+          "(var failed ($runtime/sandbox_transaction)) " &
+          "($assert (try (failed .prepare " & sandboxOptions("failing.gene") &
+          ") false catch Any true)) " &
+          "(failed .discard)"
+        discard leakedManaged(source)
+        check leakedManaged(source) == 0
+
+      test "a retained value keeps its released generation usable until dropped":
+        # Retirement runs at the second release while `item` still reaches the
+        # first generation; the instance's Type-direct method must still work.
+        let source = "(var tx ($runtime/sandbox_transaction)) " &
+          "(var generation (tx .prepare " & sandboxOptions("retained_item.gene") &
+          ")) " &
+          "(var m (generation .module)) " &
+          "(var item m/item) " &
+          "(set m nil) " &
+          "(tx .commit) (generation .release) " &
+          "(var next_tx ($runtime/sandbox_transaction)) " &
+          "(var next (next_tx .prepare " & sandboxOptions("plugin.gene") & ")) " &
+          "(next_tx .commit) (next .release) " &
+          "($assert (== (item .direct) 7)) " &
+          "(set item nil) " &
+          "($runtime/test_collect)"
+        discard leakedManaged(source)
+        check leakedManaged(source) == 0
+
+    test "a value destroyed while an exception unwinds is fully released":
+      # Nim destroys a raising call's assigned result temporary with the
+      # pending-exception flag still set; the release must still complete. A
+      # Type's release calls out before its GC_unref, so it used to leak the
+      # Type and its method.
+      proc raisingAfterResult(scope: Scope): Value =
+        result = run(compileSource(
+          "(type T ^props {} (message m [] : Int 1)) T"), scope)
+        raise newException(GeneError, "after result")
+      GC_fullCollect()
+      let before = liveManaged
+      block:
+        var scope = newGlobalScope()
+        var held = NIL
+        for i in 0 ..< 10:
+          try:
+            held = raisingAfterResult(scope)
+          except GeneError:
+            discard
+        check held.kind == vkNil
+        scope = nil
+      GC_fullCollect()
+      check liveManaged == before
 
     test "borrowed caller environments and snapshots are reclaimed":
       check leakedManaged(

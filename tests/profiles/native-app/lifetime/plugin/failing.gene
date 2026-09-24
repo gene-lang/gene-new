@@ -1,0 +1,5 @@
+(protocol Local (message value [] : Int))
+(type Item ^props {^n Int})
+(impl Local for Item (message value [] : Int self/n))
+(var item (Item ^n 7))
+(throw "failing plugin")
