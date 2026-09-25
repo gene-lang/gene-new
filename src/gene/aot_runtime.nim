@@ -9,8 +9,9 @@
 ## Helpers are `{.exportc, cdecl, dynlib.}` so they land in the host
 ## executable's dynamic symbol table. An AOT library built with
 ## `-undefined dynamic_lookup` (macOS) or plain `-shared` (ELF) resolves them
-## from the host at `dlopen` time. The host must be linked with
-## `-Wl,-export_dynamic`; see `nim.cfg`.
+## from the host at `dlopen` time. The host must export its dynamic symbols
+## (`-Wl,-export_dynamic` on macOS, `-Wl,--export-dynamic` on ELF); see
+## `nim.cfg`.
 ##
 ## Status codes mirror the generated `#define`s: 0 ok, 1 error, 2 panic.
 

@@ -9259,6 +9259,14 @@ proc packageForModule(app: Application, absPath: string): Package =
   if result == nil:
     result = app.appPackage
 
+proc ownedCopy[T](value: T): T {.inline.} =
+  ## A copy that owns its payload, for saving a field before reassigning it.
+  ## ORC can infer `let saved = app.field` as a non-owning cursor when `app`
+  ## comes from a closure environment; the reassignment then frees what the
+  ## cursor points at, and restoring it reads reused memory. A call result is
+  ## always owned. Check a suspect site with `--expandArc:<proc>`.
+  value
+
 proc currentApplication(): Application =
   if gApplication == nil:
     gApplication = newApplication(getCurrentDir())
@@ -28907,8 +28915,8 @@ proc checkModuleErrorGraph(app: Application, entryPath: string) =
     let artifact = compileModuleArtifactRaw(app, path)
     artifacts[path] = artifact
     pathStack.add path
-    let savedDir = app.currentModuleDir
-    let savedPackage = app.currentPackage
+    let savedDir = ownedCopy(app.currentModuleDir)
+    let savedPackage = ownedCopy(app.currentPackage)
     app.currentModuleDir = app.moduleSourceDir(path)
     app.currentPackage = app.packageForModule(path)
     try:
@@ -30338,14 +30346,8 @@ proc compileFileModuleBundle*(app: Application, path,
       # them here would turn transitive dependency source into a hidden input
       # and duplicate compiler work.
       return
-    # `savedDir` has to own its bytes. ORC infers a cursor for a `let` bound
-    # straight to a field, and the very next line reassigns that field and
-    # frees the buffer the cursor points at — restoring it in `finally` then
-    # reads memory that has already been reused. Built through a `var` so the
-    # copy survives the reassignment.
-    var savedDir = newStringOfCap(app.currentModuleDir.len)
-    savedDir.add app.currentModuleDir
-    let savedPackage = app.currentPackage
+    let savedDir = ownedCopy(app.currentModuleDir)
+    let savedPackage = ownedCopy(app.currentPackage)
     app.currentModuleDir = app.moduleSourceDir(absPath)
     app.currentPackage = owner
     try:

@@ -1260,8 +1260,17 @@ when compileOption("threads") and not defined(geneWasm) and
         retireOwnedPending(pending)
     for pending in streams:
       let transfer = pending.transfer
-      if transfer.redirectResponse and not pending.headersDelivered:
-        if atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE):
+      # One snapshot per pass, taken in reverse publication order. The worker
+      # sets redirectResponse, publishes headersReady, and publishes workerDone
+      # last; acquiring a later flag first makes every earlier one current.
+      # Reading them the other way round let a finished redirect pass for the
+      # final response (delivering its empty body) or for a transfer that
+      # ended before any headers.
+      let done = atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE)
+      let headersReady = atomicLoadN(addr transfer.headersReady, ATOMIC_ACQUIRE)
+      if headersReady and transfer.redirectResponse and
+          not pending.headersDelivered:
+        if done:
           if pending.client.phase == ocOpen and
               not pending.task.taskCancelled and
               followOwnedRedirect(pending):
@@ -1276,20 +1285,17 @@ when compileOption("threads") and not defined(geneWasm) and
           atomicStoreN(addr transfer.cancelRequested, true, ATOMIC_RELEASE)
           pending.client.service.ownedMultiWake()
         continue
-      if not pending.headersDelivered and
-          atomicLoadN(addr transfer.headersReady, ATOMIC_ACQUIRE):
+      if not pending.headersDelivered and headersReady:
         deliverOwnedStreamHeaders(pending)
-      if atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE) and
-          not pending.ownedUploadReady():
+      if done and not pending.ownedUploadReady():
         continue
-      if pending.uploadError.len > 0 and
-          atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE) and
+      if pending.uploadError.len > 0 and done and
           readSharedExecText(transfer.failure).len == 0:
         transfer.failure = sharedExecText(pending.uploadError)
       var retire = false
       if pending.headersDelivered:
         retire = pending.bodyRecord.drainOwnedBody()
-      elif atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE):
+      elif done:
         if not pending.task.taskCancelled:
           let reason = transfer.ownedStreamFailure()
           let message = "net/http_client Client stream failed before headers: " &
