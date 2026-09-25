@@ -71,6 +71,12 @@ var ioReadOwner {.threadvar.}: uint64
   ## caller read. Admission is synchronous, so a borrower sets it only around
   ## its own read call.
 
+proc currentIoReadOwner*(): uint64 =
+  ## The owner of the read being issued now, for a reader that keeps its own
+  ## borrow state instead of an IoLifecycle: refuse the read when another
+  ## owner holds the borrow, as admission does here.
+  ioReadOwner
+
 template withIoReadOwner*(owner: uint64, body: untyped) =
   ## Run `body` as `owner`'s own read: admission accepts it on a resource that
   ## `owner` borrowed and still refuses it on one borrowed by anyone else.

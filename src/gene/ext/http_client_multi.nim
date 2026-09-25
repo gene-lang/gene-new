@@ -99,6 +99,7 @@ when compileOption("threads") and not defined(geneWasm) and
       uploadReader, uploadReadTask: Value
       uploadBorrowKey: uint64
       uploadLifecycle: IoLifecycle # exclusive read borrow, when the reader has one
+      uploadBody: OwnedHttpBodyRecord # the same borrow on a Client response body
       uploadOwner: uint64
       uploadError: string
 
@@ -110,6 +111,7 @@ when compileOption("threads") and not defined(geneWasm) and
       transfer: ptr OwnedHttpTransfer # owned by OwnedHttpPending until retired
       readTask: Value
       readAmount: int
+      readBorrower: uint64 # an upload's exclusive read borrow, or 0
       lease: Value
       waiters: seq[Value]
       closing, closed, handleGone: bool
@@ -753,6 +755,10 @@ when compileOption("threads") and not defined(geneWasm) and
     if pending.uploadLifecycle != nil:
       pending.uploadLifecycle.releaseIoRead(pending.uploadOwner)
       pending.uploadLifecycle = nil
+    if pending.uploadBody != nil:
+      if pending.uploadBody.readBorrower == pending.uploadOwner:
+        pending.uploadBody.readBorrower = 0
+      pending.uploadBody = nil
     client.application.ioBudget.releaseIoBudgetBytes(pending.budgetReserved)
     if client.activeCount > 0: dec client.activeCount
     if pending.serviceQueued:
@@ -1439,6 +1445,15 @@ when compileOption("threads") and not defined(geneWasm) and
       raiseValueSemanticError("RuntimeLaneError",
         "HTTP body reader belongs to another lane")
 
+  proc uploadBodyRecord(value: Value, scope: Scope): OwnedHttpBodyRecord =
+    ## The Client response body an upload reads from, or nil for any other
+    ## reader.
+    let namespace = scope.application().stdlib.vars["net"].nsScope.vars[
+      "http_client"].nsScope
+    if value.kind == vkNode and
+        value.head.bits == namespace.vars["BodyReader"].bits:
+      result = ownedBodyRecord(value, scope, "upload")
+
   proc biOwnedHttpBodyRead(args: openArray[Value],
                            call: ptr NativeCall): Value {.nimcall.} =
     let scope = if call == nil: nil else: call[].dispatchScope
@@ -1460,6 +1475,9 @@ when compileOption("threads") and not defined(geneWasm) and
     if record.readTask.kind == vkTask and not record.readTask.taskDone:
       raiseIoTestingError(scope, "IoBusy", "read", record.id,
         "HTTP body reader already has a pending read")
+    if record.readBorrower != 0 and record.readBorrower != currentIoReadOwner():
+      raiseIoTestingError(scope, "IoBusy", "read", record.id,
+        "HTTP body reader is borrowed by an upload")
     result = newExternalTask()
     scope.registerIoTask(result)
     record.readTask = result
@@ -1741,6 +1759,7 @@ when compileOption("threads") and not defined(geneWasm) and
       client.caData.len
     let origin = ownedHttpOrigin(url, scope)
     var uploadLifecycle: IoLifecycle
+    var uploadBody: OwnedHttpBodyRecord
     var uploadOwner = 0'u64
     if uploadReader.kind != vkNil:
       withLock ownedMultiLock:
@@ -1763,9 +1782,27 @@ when compileOption("threads") and not defined(geneWasm) and
         else:
           raiseIoTestingError(scope, "IoBusy", "http_client/upload",
             client.id, "AsyncReader has a read in flight or another borrower")
+      else:
+        uploadBody = uploadBodyRecord(uploadReader, scope)
+        if uploadBody != nil:
+          # A Client response body has no I/O lifecycle, so its record holds
+          # the borrow, under the same rules as borrowIoRead.
+          if uploadBody.closing:
+            raiseIoTestingError(scope, "IoClosed", "http_client/upload",
+              client.id, "AsyncReader is closing or closed")
+          if uploadBody.readBorrower != 0 or
+              (uploadBody.readTask.kind == vkTask and
+               not uploadBody.readTask.taskDone):
+            raiseIoTestingError(scope, "IoBusy", "http_client/upload",
+              client.id, "AsyncReader has a read in flight or another borrower")
+          inc nextOwnedUploadOwner
+          uploadOwner = nextOwnedUploadOwner
+          uploadBody.readBorrower = uploadOwner
     if not client.application.ioBudget.reserveIoBudgetBytes(reserveBytes):
       if uploadLifecycle != nil:
         uploadLifecycle.releaseIoRead(uploadOwner)
+      if uploadBody != nil and uploadBody.readBorrower == uploadOwner:
+        uploadBody.readBorrower = 0
       raiseIoTestingError(scope, "IoBackpressure", "http_client/request",
         client.id, "Application I/O byte budget is full")
     let operation = nativeNewIoOperation(scope)
@@ -1818,7 +1855,8 @@ when compileOption("threads") and not defined(geneWasm) and
       streaming: streaming, uploadReader: uploadReader,
       uploadBorrowKey: (if uploadReader.kind != vkNil:
         uploadReader.bits else: 0'u64),
-      uploadLifecycle: uploadLifecycle, uploadOwner: uploadOwner)
+      uploadLifecycle: uploadLifecycle, uploadBody: uploadBody,
+      uploadOwner: uploadOwner)
     beginExternalNativeOp()
     pending.nativeActive = true
     inc client.activeCount

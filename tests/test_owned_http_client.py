@@ -485,6 +485,37 @@ class OwnedHttpClientTests(unittest.TestCase):
                                 "after_eof": True, "pending": 0,
                                 "leases": 0})
 
+    def test_response_body_upload_excludes_direct_caller_reads(self) -> None:
+        # A Client response body has no I/O lifecycle; its record holds the
+        # upload's borrow instead.
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (let IoBusy $io/IoBusy)
+  (let client (await ($net/http_client/open)))
+  (let source (await (client .stream ^url "{self.base}/stream")))
+  (let upload (client .request ^url "{self.base}/upload"
+    ^method "POST" ^body source/body))
+  # Before the upload issues any read of its own: only the borrow refuses it.
+  (let direct_busy (try (source/body .AsyncReader:read 16) false
+                     catch IoBusy true))
+  (let response (await upload))
+  (let after (await (source/body .AsyncReader:read 16)))
+  (source/body .IoResource:close)
+  (await (source/body .IoResource:wait_closed))
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {{^busy direct_busy ^status response/status
+      ^body ($binary/to_str response/body) ^after_eof ($nil? after)
+      ^pending stats/http_client_pending_requests
+      ^leases stats/io_cleanup_leases}}))
+""", timeout=12)
+        self.assertEqual(data, {"busy": True, "status": 202, "body": "abcdef",
+                                "after_eof": True, "pending": 0,
+                                "leases": 0})
+
     def test_large_async_upload_does_not_block_fast_request(self) -> None:
         path = pathlib.Path(self.temp.name) / "upload-large.bin"
         path.write_bytes(b"q" * (2 * 1024 * 1024 + 17))

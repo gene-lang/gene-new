@@ -150,9 +150,10 @@ buffered/streamed responses, bounded AsyncReader uploads, and controlled
 GET/HEAD redirects. Local tests cover duplicate headers, binary POST,
 known-length and chunked uploads, upload cancellation, cross-origin credential
 stripping, TLS trust, captured proxy settings, per-origin caps, queue
-deadlines, and byte-budget retirement under ORC, AtomicArc, and ASAN. Generic
-exclusive borrowing against caller-initiated reads and the full service
-profile remain open.
+deadlines, and byte-budget retirement under ORC, AtomicArc, and ASAN. An
+upload's exclusive read borrow now also covers Client response bodies.
+Borrowing a Gene-defined AsyncReader against caller-initiated reads, and the
+full service profile, remain open.
 
 The experimental CSV reader now uses those qualified I/O contracts. Focused
 tests cover one-byte UTF-8/quote/CRLF boundaries, malformed headers, pending
