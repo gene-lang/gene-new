@@ -303,6 +303,7 @@ when defined(geneRcStats):
     when compileOption("threads") and defined(posix):
       test "closed worker-backed file readers release handles and Tasks":
         let path = "tmp/gene-io-rc-reader.bin"
+        createDir(path.parentDir)   # tmp/ is ignored, so a fresh checkout lacks it
         writeFile(path, "abc")
         defer: removeFile(path)
         check leakedManaged("""
@@ -318,6 +319,7 @@ when defined(geneRcStats):
 
       test "closed worker-backed file writers release copied buffers":
         let path = "tmp/gene-io-rc-writer.bin"
+        createDir(path.parentDir)   # tmp/ is ignored, so a fresh checkout lacks it
         if fileExists(path): removeFile(path)
         defer:
           if fileExists(path): removeFile(path)

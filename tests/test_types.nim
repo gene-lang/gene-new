@@ -2222,7 +2222,7 @@ suite "types — function boundaries":
           if floatLibName == libName:
             lib
           else:
-            run(compileSource("($ffi/open native float-lib-name)"), scope)
+            run(compileSource("($ffi/open float-lib-name)"), scope)
         scope.define("float-lib", floatLib)
         let root = run(compileSource(
           "(($ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 9.0)"),

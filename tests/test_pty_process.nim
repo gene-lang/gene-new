@@ -114,13 +114,27 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       check process.exitStatus == 0
 
     test "exec child inherits no helper descriptors":
-      let process = spawnPty(
-        @["/bin/sh", "-c",
-          "for fd in 3 4 5 6 7 8 9; do [ -e /dev/fd/$fd ] && printf '%s ' $fd; done"],
-        environment = @["TERM=xterm-256color", "PATH=/usr/bin:/bin"])
-      defer: process.close()
+      # Rosetta for Linux gives every translated process descriptors 3-5 (its
+      # binary twice and the interpreter), so this needs native x86_64. The
+      # interpreter path is only visible through our own descriptor links.
+      var translated = false
+      when defined(linux):
+        for entry in walkDir("/proc/self/fd"):
+          try:
+            if expandSymlink(entry.path).startsWith("/run/rosetta/"):
+              translated = true
+          except OSError:
+            discard
+      if translated:
+        skip()
+      else:
+        let process = spawnPty(
+          @["/bin/sh", "-c",
+            "for fd in 3 4 5 6 7 8 9; do [ -e /dev/fd/$fd ] && printf '%s ' $fd; done"],
+          environment = @["TERM=xterm-256color", "PATH=/usr/bin:/bin"])
+        defer: process.close()
 
-      check process.collect().strip() == ""
+        check process.collect().strip() == ""
 
     test "stop terminates and reaps the whole foreground process group":
       let process = spawnPty(

@@ -1112,6 +1112,8 @@ def main() -> int:
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     gene = args.gene.resolve()
+    # Workload scratch lives under the ignored tmp/, which a fresh checkout lacks.
+    (ROOT / "tmp").mkdir(exist_ok=True)
     if not gene.is_file():
         parser.error(f"Gene executable is missing: {gene}")
     profile = load_profile(gene)
@@ -1119,14 +1121,18 @@ def main() -> int:
     known = {w["id"] for w in profile["workloads"]}
     if selected - known:
         parser.error(f"unknown workload(s): {', '.join(sorted(selected - known))}")
-    revision = subprocess.run(
+    # None when the tree is not a git checkout (e.g. a `git archive` copy);
+    # tools/linux-x86_64/run.sh records the revision beside the report.
+    head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
         text=True, check=False,
-    ).stdout.strip()
-    dirty = bool(subprocess.run(
+    )
+    revision = head.stdout.strip() if head.returncode == 0 else None
+    status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True,
         text=True, check=False,
-    ).stdout)
+    )
+    dirty = bool(status.stdout) if status.returncode == 0 else None
     report = {
         "profile": profile["name"], "profile_format": profile["profile_format"],
         "started_at": stamp(), "revision": revision,
