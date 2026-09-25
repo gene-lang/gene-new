@@ -908,6 +908,11 @@ def run_service(gene: Path, workload: dict) -> dict:
                             "gene_log": output[-8192:]}
                 heartbeat_gap = stopped.get("max_heartbeat_gap_ms")
                 tick_count = stopped.get("tick_count")
+                # What the root lane was doing just before the largest gap.
+                heartbeat_cause = {key: stopped.get("max_heartbeat_" + key)
+                                   for key in ("loop_work_ms",
+                                               "loop_work_cpu_ms",
+                                               "wait_overrun_ms")}
                 if (not isinstance(heartbeat_gap, int) or
                     not isinstance(tick_count, int) or
                     heartbeat_gap > 250 or tick_count < duration * 10):
@@ -919,6 +924,7 @@ def run_service(gene: Path, workload: dict) -> dict:
                                 "max_heartbeat_active_connections"),
                             "max_heartbeat_in_flight": stopped.get(
                                 "max_heartbeat_in_flight"),
+                            "heartbeat_cause": heartbeat_cause,
                             "max_db_ms": stopped.get("max_db_ms"),
                             "max_db_at_ms": stopped.get("max_db_at_ms"),
                             "tick_count": tick_count,
@@ -976,6 +982,7 @@ def run_service(gene: Path, workload: dict) -> dict:
                                                plain_baseline_ms, 2),
                     "max_heartbeat_gap_ms": heartbeat_gap,
                     "max_heartbeat_at_ms": stopped.get("max_heartbeat_at_ms"),
+                    "heartbeat_cause": heartbeat_cause,
                     "heap_slope": heap_slope,
                     "max_db_ms": stopped.get("max_db_ms"),
                     "max_db_at_ms": stopped.get("max_db_at_ms"),

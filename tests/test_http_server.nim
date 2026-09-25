@@ -1271,3 +1271,33 @@ suite "net/http server e2e":
     let output = p.outputStream.readAll()   # streams.readAll
     check "ws on_message error" in output
     check "undefined_function_in_handler" in output
+
+  test "status attributes a busy handler to serve-loop work":
+    # A handler runs inside a serve-loop iteration, so CPU-bound handler work
+    # shows as loop work rather than as a late kernel wakeup. The SERVICE
+    # heartbeat relies on that split to attribute a stall.
+    let p = startHttpServer("loop-timing.gene", """
+(import $net/http [listen serve status text])
+(var server (listen ^host "127.0.0.1" ^port 8214))
+(fn handle [req]
+  (if (== req/path "/spin")
+    (do
+      (let until_ms (+ ($os/monotonic_ms) 150))
+      (var spins 0)
+      (while (< ($os/monotonic_ms) until_ms)
+        (set spins (+ spins 1)))
+      (return (text "spun"))))
+  (let s (status server))
+  (text ($json/stringify [s/max_loop_work_ms s/loop_work_ms s/loop_work_cpu_ms
+                          s/wait_overrun_ms s/max_wait_overrun_ms])))
+(serve server ^handler handle ^max_requests 2)
+""")
+    defer: (p.terminate(); p.close())
+    check bodyOf(httpGet(8214, "/spin")) == "spun"
+    let fields = parseJson(bodyOf(httpGet(8214, "/status")))
+    check fields.len == 5
+    # pumpScheduler runs up to 128 instruction-budget slices per iteration,
+    # so the 150 ms spin may span iterations; an idle iteration is ~0-2 ms.
+    check fields[0].getInt >= 20
+    for field in fields:
+      check field.getInt >= 0

@@ -13,6 +13,12 @@
 (var max_tick_at_ms 0)
 (var max_tick_active_connections 0)
 (var max_tick_in_flight 0)
+# At the largest gap: the loop iteration before this tick (wall and CPU) and
+# how far this tick's select overslept. Wall far above CPU means the root
+# thread was blocked or descheduled rather than running Gene code.
+(var max_tick_loop_work_ms 0)
+(var max_tick_loop_work_cpu_ms 0)
+(var max_tick_wait_overrun_ms 0)
 # SQLite runs synchronously on the root lane; its slowest call is the first
 # suspect when the heartbeat stalls.
 (var max_db_ms 0)
@@ -34,7 +40,10 @@
           (set max_tick_at_ms now)
           (let snapshot (status server))
           (set max_tick_active_connections snapshot/active_connections)
-          (set max_tick_in_flight snapshot/in_flight_requests)))))
+          (set max_tick_in_flight snapshot/in_flight_requests)
+          (set max_tick_loop_work_ms snapshot/loop_work_ms)
+          (set max_tick_loop_work_cpu_ms snapshot/loop_work_cpu_ms)
+          (set max_tick_wait_overrun_ms snapshot/wait_overrun_ms)))))
   (set last_tick_ms now)
   (set tick_count (+ tick_count 1))
   (if (>= now next_sample_ms)
@@ -106,6 +115,9 @@
      ^max_heartbeat_at_ms max_tick_at_ms
      ^max_heartbeat_active_connections max_tick_active_connections
      ^max_heartbeat_in_flight max_tick_in_flight
+     ^max_heartbeat_loop_work_ms max_tick_loop_work_ms
+     ^max_heartbeat_loop_work_cpu_ms max_tick_loop_work_cpu_ms
+     ^max_heartbeat_wait_overrun_ms max_tick_wait_overrun_ms
      ^tick_count tick_count ^max_db_ms max_db_ms ^max_db_at_ms max_db_at_ms
      ^managed_samples managed_samples
      ^io_cleanup_leases stats/io_cleanup_leases

@@ -148,6 +148,37 @@ it: a run without the fixture's `gc_stats` sampling also failed, the
 `gc_stats` call costs under 1 ms idle, and the slowest SQLite call was
 4–11 ms. The stall is open.
 
+The leading suspect was an ORC cycle-collector pass, and it is ruled out. A
+scratch build whose Nim `collectCycles` logged each pass ran 1–2 passes per
+60 s SERVICE run. Each took 7–56 µs and touched 140–322 objects, and every pass
+fell within the first 225 ms, never during load. That held under full CPU
+load too. Six alternating rounds of the release build against one that calls
+`GC_disableOrc()` at startup, each server process profiled with macOS `sample`
+at 1 ms, produced no gap over 200 ms in either build. The one outlier, 103 ms
+on the ORC build, had no collector frames in its profile, and the root thread
+spent about 97% of its samples idle in `kevent`. Its blocking file syscalls
+were all SQLite commits, which the fixture already times.
+
+None of the other conditions tried reproduced it. With 14 busy processes
+saturating all 14 cores (load average 62), the server heartbeat stayed at
+65–70 ms, while the external client's completion gaps stretched to
+166–189 ms. Running the server with `taskpolicy -l 5 -t 5` or `-b` gave 53 and
+58 ms. The system log shows macOS purging caches because the system
+"urgently needs disk space" every few minutes in both the stalled window and
+the earlier clean window, so low disk alone does not separate them. Twenty
+runs in this session did not reproduce a stall.
+
+`(status server)` now attributes loop time: `loop_work_ms` and
+`loop_work_cpu_ms` cover the latest iteration, from one `select` returning to
+the next `select` (wall and root-thread CPU). `wait_overrun_ms` is how far that
+`select` returned past its requested timeout. The status also reports the
+maxima of the first and last. The SERVICE fixture snapshots
+these at its largest heartbeat gap, and the runner reports them as
+`heartbeat_cause`. Wall work well above CPU work means the root thread was
+blocked or descheduled. CPU work close to wall work means it was running code.
+An overrun means the kernel woke the loop late. In the first attributed
+run, an 81 ms maximum gap was a 30 ms `select` overrun after 0 ms of loop work.
+
 The SERVICE workload now also gates the managed heap. When `rc_stats?` is true,
 the fixture samples `live_managed` every 5 s, and the runner fails the workload
 with `service_heap_slope` if the minimum of the last third of the samples

@@ -368,6 +368,15 @@ type
     inFlight: int
     bytesRead: int
     bytesWritten: int
+    # Serve-loop timing, to attribute a late tick. Work runs from one select's
+    # return to the next select (wall time and root-thread CPU time); overrun
+    # is how far a select returned past its requested timeout. The loop keeps
+    # the latest iteration's values and the maxima.
+    loopWorkMs: int
+    loopWorkCpuMs: int
+    waitOverrunMs: int
+    maxLoopWorkMs: int
+    maxWaitOverrunMs: int
     # RFC 6455 delivery (slice C9). ws_send runs outside the serve closure,
     # so open sockets and their bounded outbound frame queues live on the
     # registered runtime; the loop drains the queues between event batches.
@@ -655,6 +664,11 @@ proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   props["bad_requests"] = newInt(rt.badRequests)
   props["bytes_read"] = newInt(rt.bytesRead)
   props["bytes_written"] = newInt(rt.bytesWritten)
+  props["loop_work_ms"] = newInt(rt.loopWorkMs)
+  props["loop_work_cpu_ms"] = newInt(rt.loopWorkCpuMs)
+  props["wait_overrun_ms"] = newInt(rt.waitOverrunMs)
+  props["max_loop_work_ms"] = newInt(rt.maxLoopWorkMs)
+  props["max_wait_overrun_ms"] = newInt(rt.maxWaitOverrunMs)
   newNode(newSym("Status"), props = props)
 
 proc pollHttpTlsReloadCompletions() =
@@ -2899,14 +2913,31 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       for conn in idle:
         closeConn(conn)
 
+    proc threadCpuNs(): int64 =
+      var ts: Timespec
+      discard clock_gettime(ClockId(CLOCK_THREAD_CPUTIME_ID), ts)
+      int64(ts.tv_sec) * 1_000_000_000 + int64(ts.tv_nsec)
+
     try:
       withScopedScheduler(scope):
+        var woke = getMonoTime()
+        var wokeCpuNs = threadCpuNs()
         while maxRequests < 0 or served < maxRequests:
           if rt.stopRequested and not draining:
             beginDrain()
           if draining and (conns.len == 0 or getMonoTime() > drainDeadline):
             break
-          let events = selector.select(selectTimeoutMs())
+          let timeoutMs = selectTimeoutMs()
+          let waitStart = getMonoTime()
+          rt.loopWorkMs = int((waitStart - woke).inMilliseconds)
+          rt.loopWorkCpuMs = int((threadCpuNs() - wokeCpuNs) div 1_000_000)
+          rt.maxLoopWorkMs = max(rt.maxLoopWorkMs, rt.loopWorkMs)
+          let events = selector.select(timeoutMs)
+          woke = getMonoTime()
+          wokeCpuNs = threadCpuNs()
+          rt.waitOverrunMs =
+            max(0, int((woke - waitStart).inMilliseconds) - timeoutMs)
+          rt.maxWaitOverrunMs = max(rt.maxWaitOverrunMs, rt.waitOverrunMs)
           # Before the events, so a busy socket cannot starve the tick — and
           # once per period rather than once per missed period, because a
           # server that fell behind should not then run the world at double
