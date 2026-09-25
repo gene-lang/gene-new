@@ -108,3 +108,95 @@ esac
         targetTriple: "x86_64-test-linux-gnu",
         toolchainIdentity: "cc:test"))
       check changed.headerRoots[0].digest != firstHeaderDigest
+
+  test "libc stub libraries resolve in pkg-config's system library dirs":
+    # glibc 2.34+ ships pthread, dl, rt, and util as empty archives, and
+    # pkg-config drops -L for its system library dirs, so libuv's
+    # `-L/usr/local/lib -luv -lpthread` names a library outside its -L roots.
+    when defined(linux):
+      let root = systemDependencyRoot()
+      let libraryDir = root / "lib"
+      let systemDir = root / "system"
+      createDir(libraryDir)
+      createDir(systemDir)
+      writeFile(libraryDir / "libuv.so", "test shared object bytes")
+      writeFile(systemDir / "libpthread.a", "!<arch>\n")
+      let executable = root / "pkg-config"
+      writeFile(executable, """#!/bin/sh
+case "$1" in
+  --modversion) printf '1.52.1\n' ;;
+  --cflags) printf '\n' ;;
+  --libs) printf '%s\n' "$TEST_LIBS" ;;
+  --variable=*) printf '\n' ;;
+  *) exit 2 ;;
+esac
+""")
+      setFilePermissions(executable,
+        {fpUserRead, fpUserWrite, fpUserExec})
+      var environment = initTable[string, string]()
+      environment["TEST_LIBS"] = "-L" & libraryDir & " -luv -lpthread"
+      let requirement = SystemLibraryRequirement(
+        alias: "uv", name: "libuv", version: ">=1.52.1 <1.53",
+        providers: @[spkPkgConfig], linkage: slDynamic)
+      proc resolveWith(systemDirs: seq[string]): SystemDependencyResult =
+        newSystemDependencyResolver(SystemDependencyPolicy(
+          providerOrder: @[spkPkgConfig],
+          pkgConfig: PkgConfigPolicy(executable: executable,
+            systemLibraryDirs: systemDirs,
+            environment: environment))).resolve(SystemDependencyRequest(
+              requirement: requirement,
+              targetTriple: "x86_64-test-linux-gnu",
+              toolchainIdentity: "cc:test"))
+
+      let resolved = resolveWith(@[systemDir])
+      check resolved.linkNames == @["uv", "pthread"]
+      check resolved.libraryFiles.len == 2
+      check resolved.libraryFiles[0].path == libraryDir / "libuv.so"
+      check resolved.libraryFiles[1].path == systemDir / "libpthread.a"
+
+      var code = sdecQueryFailed
+      try:
+        discard resolveWith(@[])
+      except SystemDependencyError as error:
+        code = error.code
+      check code == sdecLibraryMissing
+
+  test "a two-part pkg-config version satisfies a three-part constraint":
+    # zlib reports "1.3"; it is compared as 1.3.0 and recorded as reported.
+    when defined(posix):
+      let root = systemDependencyRoot()
+      let libraryDir = root / "lib"
+      createDir(libraryDir)
+      writeFile(libraryDir / "libz.a", "test archive bytes")
+      let executable = root / "pkg-config"
+      writeFile(executable, """#!/bin/sh
+case "$1" in
+  --modversion) printf '1.3\n' ;;
+  --cflags) printf '\n' ;;
+  --libs) printf '%s\n' "$TEST_LIBS" ;;
+  --variable=*) printf '\n' ;;
+  *) exit 2 ;;
+esac
+""")
+      setFilePermissions(executable,
+        {fpUserRead, fpUserWrite, fpUserExec})
+      var environment = initTable[string, string]()
+      environment["TEST_LIBS"] = "-L" & libraryDir & " -lz"
+      let resolver = newSystemDependencyResolver(SystemDependencyPolicy(
+        providerOrder: @[spkPkgConfig],
+        pkgConfig: PkgConfigPolicy(executable: executable,
+          environment: environment)))
+      proc resolveWithin(constraint: string): SystemDependencyResult =
+        resolver.resolve(SystemDependencyRequest(
+          requirement: SystemLibraryRequirement(alias: "zlib", name: "zlib",
+            version: constraint, providers: @[spkPkgConfig],
+            linkage: slStatic),
+          targetTriple: "x86_64-test-linux-gnu",
+          toolchainIdentity: "cc:test"))
+      check resolveWithin(">=1.2.11 <2").version == "1.3"
+      var code = sdecQueryFailed
+      try:
+        discard resolveWithin(">=1.3.1 <2")
+      except SystemDependencyError as error:
+        code = error.code
+      check code == sdecVersionMismatch

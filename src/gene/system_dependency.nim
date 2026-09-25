@@ -23,6 +23,10 @@ type
     sysroot*: string
     searchPaths*: seq[string]
     librarySearchPaths*: seq[string]
+    ## pkg-config's compiled `pc_system_libdirs`: directories it drops from
+    ## `-L` because the linker searches them by default. Queried with an empty
+    ## environment, so the executable digest in providerIdentity covers it.
+    systemLibraryDirs*: seq[string]
     environment*: Table[string, string]
 
   SystemDependencyPolicy* = object
@@ -114,6 +118,15 @@ proc defaultSystemDependencyPolicy*(): SystemDependencyPolicy =
         result.pkgConfig.librarySearchPaths = compiledSearchPath.split(PathSep)
     except OSError, IOError:
       discard
+    when defined(linux):
+      try:
+        let captured = runCaptured(result.pkgConfig.executable,
+          ["--variable=pc_system_libdirs", "pkg-config"], emptyEnvironment)
+        let systemDirs = captured.output.strip()
+        if captured.exitCode == 0 and systemDirs.len > 0:
+          result.pkgConfig.systemLibraryDirs = systemDirs.split(PathSep)
+      except OSError, IOError:
+        discard
 
 proc newSystemDependencyResolver*(policy = defaultSystemDependencyPolicy()):
                                   SystemDependencyResolver =
@@ -358,6 +371,17 @@ proc libraryCandidates(root, name: string,
     result.add dynamicNames
     result.add staticName
 
+proc constraintVersion(reported: string): string =
+  ## pkg-config versions are free-form, and zlib reports "1.3". Compare a
+  ## purely numeric one- or two-part version as x.y.0; compare anything else
+  ## as reported. The result keeps the reported text.
+  let parts = reported.split('.')
+  if parts.len in 1 .. 2 and
+      parts.allIt(it.len > 0 and it.allCharsInSet(Digits)):
+    reported & ".0".repeat(3 - parts.len)
+  else:
+    reported
+
 proc parseLinkFlags(resolver: SystemDependencyResolver, flags: string,
                     result: var SystemDependencyResult) =
   let tokens = parseCmdLine(flags)
@@ -409,6 +433,24 @@ proc parseLinkFlags(resolver: SystemDependencyResolver, flags: string,
                 found = candidate
                 roots.addUnique(sdkLibraries)
                 break
+    elif defined(linux):
+      # pkg-config omits -L for its system library directories, so a name such
+      # as pthread, dl, rt, or m resolves there, as it does for the linker.
+      # glibc 2.34+ merged pthread, dl, rt, and util into libc and ships only
+      # empty archives for them, so accept an archive here even for dynamic
+      # linkage; the linker makes the same choice.
+      if found.len == 0:
+        for dir in resolver.policy.pkgConfig.systemLibraryDirs:
+          if not dir.isAbsolute or not dirExists(dir):
+            continue
+          let systemLibraries = normalizedPath(dir)
+          for candidate in libraryCandidates(systemLibraries, name, slEither):
+            if fileExists(candidate):
+              found = candidate
+              roots.addUnique(systemLibraries)
+              break
+          if found.len > 0:
+            break
     if found.len == 0:
       raiseSystemDependency(sdecLibraryMissing,
         "pkg_config named a library that was not found",
@@ -486,7 +528,8 @@ proc resolvePkgConfig(resolver: SystemDependencyResolver,
       "pkg_config returned an empty version",
       ["library: " & request.requirement.name])
   result.version = versionOutput.splitLines()[0].strip()
-  if not matchesConstraint(result.version, request.requirement.version,
+  if not matchesConstraint(result.version.constraintVersion,
+                           request.requirement.version,
                            request.requirement.alias):
     raiseSystemDependency(sdecVersionMismatch,
       "system library version does not satisfy the manifest",
