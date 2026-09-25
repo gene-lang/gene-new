@@ -9267,6 +9267,15 @@ proc ownedCopy[T](value: T): T {.inline.} =
   ## always owned. Check a suspect site with `--expandArc:<proc>`.
   value
 
+proc retireReturnedCallScope(returning: Scope) {.noinline.} =
+  ## Tear down a returning, unrecycled call scope if only closures its own
+  ## bindings hold still reach it (callScopeMayCycle). A scope still owned from
+  ## outside is not revisited when that owner lets go. Out of line: the call
+  ## sits in the dispatch loop's return path.
+  if returning.application != nil and returning.callScopeMayCycle() and
+      retireReturningCallScope(returning) > 0:
+    inc Application(returning.application).retireEpoch
+
 proc currentApplication(): Application =
   if gApplication == nil:
     gApplication = newApplication(getCurrentDir())
@@ -15626,6 +15635,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     trimTailTraceFrames(frames.len)
+    # A call scope a closure captured is not recycled, and one kept alive only
+    # by closures its own bindings hold would otherwise never be reclaimed.
+    # `retValue` holds its own count, so a returned binding stays owned.
+    if unlikely(not recycleScope) and curFrameKind == fkNormal and
+        frames.len > 0:
+      retireReturnedCallScope(scope)
     releaseCurrentCallScope()
     if curFrameKind == fkNormal:
       if frames.len == 0:

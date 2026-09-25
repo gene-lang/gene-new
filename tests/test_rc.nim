@@ -724,6 +724,29 @@ when defined(geneRcStats):
       test "a value retained from a reloaded module keeps it usable until dropped":
         check retainedReloadLeak() == 0
 
+      test "a function escaping eval into its caller is reclaimed":
+        # The escaped function captures the eval scope, whose chain reaches the
+        # calling scope that binds it: a cycle only returned-call retirement
+        # breaks.
+        check leakedManaged("""
+          (fn body [] (let f (eval (quote (fn [] 2)) ^in (env))) (f))
+          (var i 0)
+          (while (< i 50) (body) (set i (+ i 1)))
+          ($runtime/test_collect)
+        """) == 0
+
+      test "an escaped eval function the caller keeps stays callable":
+        # Batches retire around it while it is owned from outside.
+        let scope = newGlobalScope()
+        check run(compileSource("""
+          (fn body [] (let f (eval (quote (fn [] 2)) ^in (env))) f)
+          (var kept (body))
+          (var i 0)
+          (while (< i 80) (body) (set i (+ i 1)))
+          ($runtime/test_collect)
+          (kept)
+        """), scope).intVal == 2
+
       test "released sandbox generations retire their module cycles":
         # Scalar exports, a Type/protocol/impl graph, a type-direct method, and a
         # function capturing this_mod all close Module -> Namespace -> Scope.

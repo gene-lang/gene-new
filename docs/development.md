@@ -23,8 +23,8 @@ Known limits worth carrying into design decisions:
   AOT protocol overlay guards are module-local; cross-module overlays are a
   known limitation. Loaded AOT libraries remain pinned for process lifetime.
 - A closure captured in a child scope (a `for` or `match` body, a mapper's
-  call scope, an `eval`) and stored, directly or in a container, in an
-  enclosing scope's binding is never reclaimed; see the
+  call scope) and stored, directly or in a container, in an enclosing scope's
+  binding is never reclaimed; functions escaping `eval` are. See the
   [lifetime ledger](../tests/lifetime/LEDGER.md). Other mixed scope/closure
   cycles may remain. AtomicArc has no ORC cycle collection. Do not infer
   complete lifetime safety from passing one suite.

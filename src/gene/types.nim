@@ -3196,13 +3196,10 @@ proc moduleHeldOutside(root: Scope): bool =
     cast[NamespaceData](namespace).scope == root and
     nimStrongRefs(cast[pointer](data)) > 1
 
-proc retireReleasedGenerations*(pending: var seq[Scope]): int =
-  ## Tears down released generation roots (and scopes they solely own) that
-  ## nothing outside reaches any more. `pending` owns one reference to each
-  ## root; retired roots are removed from it. Returns the number of scopes
-  ## torn down. Callers must be on the owning lane with scheduler workers
-  ## paused and no borrowed view into a pending generation, since counts are
-  ## read as stable totals and teardown runs its releases immediately.
+proc retirePendingScopes(pending: var seq[Scope], generations: bool,
+                         extraOwners = 0): int =
+  ## Trial deletion over `pending` roots; see retireReleasedGenerations.
+  ## `extraOwners` counts known references to each root beyond the list.
   when not nimRefCountReadable:
     return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
@@ -3212,13 +3209,15 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
     var g: RetireGraph
     var roots: seq[int]
     for root in pending:
-      if root == nil or not root.sandboxGenerationReleased or
-          root.moduleHeldOutside():
+      if root == nil:
+        continue
+      if generations and
+          (not root.sandboxGenerationReleased or root.moduleHeldOutside()):
         continue
       let idx = g.scopeNode(root)
       if g.nodes[idx].expanded:
         continue
-      dec g.nodes[idx].total # the pending list's reference
+      g.nodes[idx].total -= 1 + extraOwners # the pending list and known holders
       roots.add idx
       g.expandRetireScope(idx, counting = true)
     while g.ready.len > 0:
@@ -3289,6 +3288,96 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
     result = doomed.len
   finally:
     generationRetiring = false
+
+proc retireReleasedGenerations*(pending: var seq[Scope]): int =
+  ## Tears down released generation roots (and scopes they solely own) that
+  ## nothing outside reaches any more. `pending` owns one reference to each
+  ## root; retired roots are removed from it. Returns the number of scopes
+  ## torn down. Callers must be on the owning lane with scheduler workers
+  ## paused and no borrowed view into a pending generation, since counts are
+  ## read as stable totals and teardown runs its releases immediately.
+  retirePendingScopes(pending, generations = true)
+
+proc retireReturningCallScope*(scope: Scope): int =
+  ## Tears down a returning call scope that only its own closures still reach
+  ## (see callScopeMayCycle), leaving the Scope object to its frame. The
+  ## frame's register is its one other known owner. Same contract as
+  ## retireReleasedGenerations otherwise.
+  var pending = @[scope]
+  retirePendingScopes(pending, generations = false, extraOwners = 1)
+
+proc callScopeMayCycle*(scope: Scope): bool =
+  ## Whether a returning call scope may be kept alive only by a cycle through
+  ## its own bindings: something besides the returning frame still owns it,
+  ## and a binding reaches (directly or through containers) a closure that
+  ## captured a child scope of it. That child's parent edge closes
+  ## scope -> value -> closure -> child -> scope, which the weak captured-scope
+  ## edge does not cover. An oversized walk answers true; trial deletion
+  ## decides.
+  when not nimRefCountReadable:
+    return false
+  if scope == nil or not retirementSupported() or
+      nimStrongRefs(cast[pointer](scope)) <= 1:
+    return false
+  var budget = 4096
+  var seen: HashSet[uint64]
+  proc capturesChild(v: Value, owner: Scope, budget: var int,
+                     seen: var HashSet[uint64]): bool =
+    dec budget
+    if budget < 0:
+      return true
+    let bits = v.bits
+    case bits shr TAG_SHIFT
+    of FUNCTION_TAG:
+      let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+      var current = if p.scope != nil: p.scope.parent else: nil
+      if p.scope == owner:
+        return false
+      while current != nil:
+        if current == owner:
+          return true
+        current = current.parent
+      false
+    of LIST_TAG:
+      if seen.containsOrIncl(bits):
+        return false
+      let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
+      for i in 0 ..< p.items.len:
+        if capturesChild(p.items[i], owner, budget, seen):
+          return true
+      false
+    of MAP_TAG:
+      if seen.containsOrIncl(bits):
+        return false
+      let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
+      for i in 0 ..< p.entries.data.len:
+        if capturesChild(p.entries.data[i].val, owner, budget, seen):
+          return true
+      false
+    of NODE_TAG:
+      if seen.containsOrIncl(bits):
+        return false
+      let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
+      for i in 0 ..< p.props.data.len:
+        if capturesChild(p.props.data[i].val, owner, budget, seen):
+          return true
+      for i in 0 ..< p.body.len:
+        if capturesChild(p.body[i], owner, budget, seen):
+          return true
+      false
+    of OBJECT_TAG, CYCLE_OBJECT_TAG:
+      # Cells, streams, Tasks, and other objects: not walked. Their closures
+      # are left to the object-cycle path or stay retained.
+      false
+    else:
+      false
+  for i in 0 ..< scope.slots.len:
+    if capturesChild(scope.slots[i], scope, budget, seen):
+      return true
+  for v in scope.vars.values:
+    if capturesChild(v, scope, budget, seen):
+      return true
+  false
 
 proc isPromotedBindingFunction(v: Value): bool {.inline.} =
   if v.bits shr TAG_SHIFT != FUNCTION_TAG:
