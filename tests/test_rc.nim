@@ -669,6 +669,59 @@ when defined(geneRcStats):
         # than letting retirement switch itself off and leak generations.
         check generationRetirementAvailable()
 
+      proc reloadFixture(name: string): (Application, string) =
+        let dir = getTempDir() / name
+        createDir(dir)
+        let path = dir / "reloaded.gene"
+        writeFile(path, "(protocol Local (message value [] : Int)) " &
+          "(type Item ^props {^n Int} (message direct [] : Int self/n)) " &
+          "(impl Local for Item (message value [] : Int self/n)) " &
+          "(var item (Item ^n 7))")
+        (newApplication(dir), path)
+
+      proc reloadAndCollect(app: Application, path: string, times: int) =
+        for i in 0 ..< times:
+          discard app.reloadFileModule(path)
+        GC_fullCollect()
+
+      test "reloaded module roots retire once nothing reaches them":
+        # Each reload drains the roots earlier reloads queued, so an app that
+        # only reloads keeps at most one pending root.
+        let (app, path) = reloadFixture("gene-rc-reload")
+        discard app.loadFileModule(path)
+        app.reloadAndCollect(path, 2)
+        let before = liveManaged
+        app.reloadAndCollect(path, 5)
+        check liveManaged == before
+
+      proc runInt(scope: Scope, src: string): int =
+        run(compileSource(src), scope).intVal
+
+      proc retainedReloadLeak(): int =
+        ## Managed values left after an item retained across reloads is used
+        ## and dropped.
+        let (app, path) = reloadFixture("gene-rc-reload-retained")
+        let scope = newGlobalScope(app)
+        scope.define("item", NIL)
+        discard app.loadFileModule(path)
+        app.reloadAndCollect(path, 2)
+        let before = liveManaged
+        block:
+          # Nim keeps call temporaries to the end of the enclosing scope (hence
+          # also runInt). The module Value this lookup goes through must not
+          # outlive it, or it keeps the whole generation alive, not just item.
+          scope.assign("item",
+            app.loadFileModule(path).moduleRootNamespace.nsScope.lookup("item"))
+        app.reloadAndCollect(path, 3)
+        if scope.runInt("(item .direct)") != 7:
+          return -1
+        scope.assign("item", NIL)
+        app.reloadAndCollect(path, 2)
+        liveManaged - before
+
+      test "a value retained from a reloaded module keeps it usable until dropped":
+        check retainedReloadLeak() == 0
+
       test "released sandbox generations retire their module cycles":
         # Scalar exports, a Type/protocol/impl graph, a type-direct method, and a
         # function capturing this_mod all close Module -> Namespace -> Scope.

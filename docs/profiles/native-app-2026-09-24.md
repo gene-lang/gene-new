@@ -136,8 +136,27 @@ uploads now hold an exclusive read borrow in the reader's I/O lifecycle.
 After the serve-loop idle fix (`4c2e836`), ten consecutive release-binary
 SERVICE repeats returned `probe_pass`: maximum heartbeat gaps 53–73 ms, p95
 9.5–16.8 ms, p99 13.5–17.0 ms. The last six also recorded the fixture's slowest
-synchronous SQLite call at 2–4 ms. The earlier 336 ms gap did not recur and
-remains unexplained.
+synchronous SQLite call at 2–4 ms. The earlier 336 ms gap did not recur in
+those ten runs.
+
+Later repeats of the same release binary did stall. After the ten clean runs
+came gaps of 211, 238, 222, 364 (failing the 250 ms gate), and 219 ms; about
+40% of those later runs exceeded 200 ms. In the 219 ms run the external
+client's fast-request completions also stalled 236 ms at the same moment, so
+the whole root lane paused, not just the heartbeat timer. None of these explains
+it: a run without the fixture's `gc_stats` sampling also failed, the
+`gc_stats` call costs under 1 ms idle, and the slowest SQLite call was
+4–11 ms. The stall is open.
+
+The SERVICE workload now also gates the managed heap. When `rc_stats?` is true,
+the fixture samples `live_managed` every 5 s, and the runner fails the workload
+with `service_heap_slope` if the minimum of the last third of the samples
+exceeds the minimum of the first third by more than `^max_managed_slope` (256).
+A `-d:release -d:geneRcStats` build (SHA-256
+`6c2a8d41bd2b20458603f6db3a79142fe97ea9f4b57e943040ec23e90561a59b`) held 983
+managed values at all 13 samples of a 60 s, 30 req/s run with a 53 ms maximum
+heartbeat gap. A plain build reports `rc_stats?` false and skips the gate
+instead of reporting zero growth.
 
 `nimble test`, `nimble spec`, and `nimble leakcheck` passed. Linux x86_64
 runtime qualification was unavailable on this host: the Docker daemon was

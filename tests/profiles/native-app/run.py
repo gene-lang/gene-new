@@ -923,6 +923,24 @@ def run_service(gene: Path, workload: dict) -> dict:
                             "max_db_at_ms": stopped.get("max_db_at_ms"),
                             "tick_count": tick_count,
                             "load": load_metrics}
+                # Sustained-service heap slope (VM-3): only a geneRcStats build
+                # samples live_managed. Minimums of the first and last thirds
+                # filter out the requests in flight at each sample.
+                heap_samples = stopped.get("managed_samples")
+                heap_slope = None
+                if isinstance(heap_samples, list) and len(heap_samples) >= 6 and all(
+                        isinstance(x, int) for x in heap_samples):
+                    third = len(heap_samples) // 3
+                    heap_slope = {"samples": heap_samples,
+                                  "early_min": min(heap_samples[:third]),
+                                  "late_min": min(heap_samples[-third:])}
+                    heap_slope["growth"] = (heap_slope["late_min"] -
+                                            heap_slope["early_min"])
+                    if heap_slope["growth"] > workload["budget"].get(
+                            "max_managed_slope", 0):
+                        return {"outcome": "failure",
+                                "reason": "service_heap_slope",
+                                "heap_slope": heap_slope, "load": load_metrics}
                 cleanup = {key: stopped.get(key) for key in
                            ("io_cleanup_leases", "io_open_resources",
                             "io_retained_bytes")}
@@ -958,6 +976,7 @@ def run_service(gene: Path, workload: dict) -> dict:
                                                plain_baseline_ms, 2),
                     "max_heartbeat_gap_ms": heartbeat_gap,
                     "max_heartbeat_at_ms": stopped.get("max_heartbeat_at_ms"),
+                    "heap_slope": heap_slope,
                     "max_db_ms": stopped.get("max_db_ms"),
                     "max_db_at_ms": stopped.get("max_db_at_ms"),
                     "tick_count": tick_count, "cleanup": cleanup,

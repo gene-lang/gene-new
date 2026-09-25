@@ -17,6 +17,11 @@
 # suspect when the heartbeat stalls.
 (var max_db_ms 0)
 (var max_db_at_ms 0)
+# Managed-heap samples for the sustained-service slope. Only a geneRcStats
+# build counts live_managed (others report 0), so other builds leave the list
+# empty and the runner skips the gate.
+(var managed_samples [])
+(var next_sample_ms 0)
 
 (fn heartbeat []
   (let now ($os/monotonic_ms))
@@ -31,7 +36,13 @@
           (set max_tick_active_connections snapshot/active_connections)
           (set max_tick_in_flight snapshot/in_flight_requests)))))
   (set last_tick_ms now)
-  (set tick_count (+ tick_count 1)))
+  (set tick_count (+ tick_count 1))
+  (if (>= now next_sample_ms)
+    (do
+      (set next_sample_ms (+ now 5000))
+      (let stats ($runtime/gc_stats))
+      (if stats/rc_stats?
+        (managed_samples .push stats/live_managed)))))
 
 (fn handle [request]
   (if (== request/path "/health")
@@ -96,6 +107,7 @@
      ^max_heartbeat_active_connections max_tick_active_connections
      ^max_heartbeat_in_flight max_tick_in_flight
      ^tick_count tick_count ^max_db_ms max_db_ms ^max_db_at_ms max_db_at_ms
+     ^managed_samples managed_samples
      ^io_cleanup_leases stats/io_cleanup_leases
      ^io_open_resources stats/io_open_resources
      ^io_retained_bytes stats/io_retained_bytes ^shutdown shutdown}))

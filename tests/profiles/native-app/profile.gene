@@ -43,7 +43,8 @@
      ^entry "src/main.gene" ^driver "service" ^args []
      ^required_stages ["io_3" "net_1" "net_2" "vm_3"] ^timeout_ms 90000
      ^dataset_seed 17 ^dataset_sizes [0]
-     ^budget {^requests_per_second 30 ^duration_seconds 60 ^p95_ms 250}}
+     ^budget {^requests_per_second 30 ^duration_seconds 60 ^p95_ms 250
+              ^max_managed_slope 256}}
     {^id "data" ^package "tests/profiles/native-app/data"
      ^entry "src/main.gene" ^driver "data" ^args []
      ^required_stages ["app_2" "val_3" "io_2"] ^timeout_ms 180000

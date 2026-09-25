@@ -29157,6 +29157,8 @@ proc rebuildImplScopeIndex(app: Application) =
 proc implActivationEpoch*(app: Application): uint64 {.inline.} =
   app.implEpoch
 
+proc retireReleasedGenerationScopes(app: Application)
+
 proc reloadFileModule*(app: Application, path: string): Value =
   ## Compile and execute a replacement off to the side, then replace canonical
   ## registrations and explicit import_impl copies in one commit. Runtime
@@ -29181,6 +29183,15 @@ proc reloadFileModule*(app: Application, path: string): Value =
       "cannot reload a module during initialization: " & absPath)
   if not fileExists(absPath):
     raisePackageError(pecModuleNotFound, "module not found: " & absPath)
+  # Roots replaced by earlier reloads retire here once nothing outside reaches
+  # them; an app that never releases a sandbox generation has no other drain.
+  # This runs before the rollback copies below take their references.
+  let scheduler = app.schedulerState()
+  pauseSchedulerWorkersForModuleMutation(scheduler)
+  try:
+    app.retireReleasedGenerationScopes()
+  finally:
+    resumeSchedulerWorkersAfterModuleMutation(scheduler)
 
   let oldRootImpls = app.builtinsScope().impls
   let oldModuleCache = app.moduleCache
@@ -29281,6 +29292,12 @@ proc reloadFileModule*(app: Application, path: string): Value =
     app.serdeValueOrigins.clear()
     app.serdeOriginModules.clear()
     app.serdeOriginBuiltinsDone = false
+    # The replaced root keeps its this_mod cycle. Queue it for retirement,
+    # which frees it once nothing outside (the caller, an importer's old
+    # binding) still reaches it. This proc's rollback copies still hold it, so
+    # the next reload or sandbox release is the earliest drain.
+    oldScope.sandboxGenerationReleased = true
+    app.releasedGenerationScopes.add oldScope
     result = replacement
   except CatchableError:
     app.builtinsScope().impls = oldRootImpls
