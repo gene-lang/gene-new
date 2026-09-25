@@ -75,6 +75,13 @@ Additional checks depend on the change:
 
 The full verification surface has platform/toolchain prerequisites. Report
 which checks ran and distinguish a known baseline failure from a regression.
+
+`tools/linux-x86_64/run.sh OUT_DIR [COMMAND]` runs a command (default
+`nimble test`) against the tracked tree in a fresh linux/amd64 Docker
+container and writes `OUT_DIR/run.log`. Its Dockerfile lists the Linux build
+and runtime packages (ncurses headers, PCRE, libcurl, SQLite, OpenSSL, libuv,
+zlib). On Apple silicon the container runs under Rosetta, so timing results
+include emulation, and the PTY descriptor test skips there.
 See [AGENTS.md](../AGENTS.md) for workspace-specific contributor instructions.
 
 ## Documentation

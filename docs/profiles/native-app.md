@@ -3,18 +3,21 @@
 **Status:** PROFILE-0 exists; the overall native-app profile remains incomplete. This is a support ledger, not a release claim. The [manifest](../../tests/profiles/native-app/profile.gene) and [runner](../../tests/profiles/native-app/run.py) provide executable evidence; a planned stage never counts as passed.
 
 The [2026-09-24 macOS arm64 audit](native-app-2026-09-24.md) records all five
-workloads and four current-code 60-second service repeats. It leaves Linux
-and the incomplete stage gates open.
+workloads and four current-code 60-second service repeats. The
+[2026-09-25 Linux x86_64 run](native-app-2026-09-25-linux.md) passed the same
+five workloads and the full test suites in an Ubuntu 24.04 container under
+Rosetta. Timing gates still need native x86_64 hardware, and the incomplete
+stage gates remain open.
 
 The native VM currently supplies functions, modules, packages and locks, tasks, synchronous streams, JSON, files, HTTP, databases, and tests. Their existing specs cover those individual contracts. VAL-1–3 value witnesses, semantic equality/hash, indexed access, and stable sorting are experimental with native conformance and lifetime checks; cross-backend qualification remains open. The end-to-end Python replacement workloads have not yet passed their full release gates.
 
 | Workload | Current status | Required next stages |
 | --- | --- | --- |
-| Script | APP-1 implemented; passing macOS arm64 fixture and typed fault checks | Linux qualification and the full profile gates |
-| Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Linux qualification and cross-host native artifact policy |
-| Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one earlier repeat missed the 250 ms heartbeat gate, and ten repeats after the serve-loop idle fix passed with 53–73 ms maximum gaps | Investigate the rare host-loop stall, Linux runtime qualification, and VM-3 lifetime gate |
-| Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Linux qualification and remaining VAL/IO release gates |
-| Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and Linux qualification |
+| Script | APP-1 implemented; passing macOS arm64 fixture and typed fault checks | Native x86_64 Linux qualification and the full profile gates |
+| Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Native x86_64 Linux qualification and cross-host native artifact policy |
+| Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one earlier repeat missed the 250 ms heartbeat gate, and ten repeats after the serve-loop idle fix passed with 53–73 ms maximum gaps | Investigate the rare host-loop stall, native x86_64 Linux timing, and VM-3 lifetime gate |
+| Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Native x86_64 Linux qualification and remaining VAL/IO release gates |
+| Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and native x86_64 Linux qualification |
 
 Optional capabilities remain visible separately: experimental genex/tzdb (APP-3), experimental genex/archive (APP-4), direct TLS (NET-3), hosted publication (PKG-3), and experimental retained native notifications (NATIVE-3). Browser/C backend and AtomicArc worker support require their own qualification.
 
@@ -22,7 +25,9 @@ NET-3 has an experimental direct HTTPS listener and Task-valued certificate
 reload through the installed OpenSSL adapter. The macOS arm64 installed probe
 covers HTTPS dispatch, plaintext and untrusted-server rejection, failed
 reload, and rotation; the C fixture covers required client authentication and
-live old sessions. Sustained service and Linux runtime remain unqualified.
+live old sessions. The TLS adapter and installed package tests also pass on
+Linux x86_64 under Rosetta. Sustained service and native x86_64 Linux remain
+unqualified.
 
 PKG-3 has an experimental macOS arm64 client and CLI path for signed hosted
 releases. A local TLS registry fixture covers version-page commitments,
@@ -30,8 +35,9 @@ registry and delegated-owner signatures, bounded object download, online
 resolution and install, authenticated staged publication, idempotent repeat,
 version conflict, and offline cache/vendor signature replay. It rejects wrong
 keys, corrupted signatures, malformed responses, and fresh selection of
-yanked versions. A deployable registry service and Linux runtime qualification
-remain open; this fixture does not promote the native-app core profile.
+yanked versions. The fixture also passes on Linux x86_64 under Rosetta. A
+deployable registry service and native x86_64 Linux qualification remain open;
+this fixture does not promote the native-app core profile.
 
 APP-4 has a packaged zlib codec, gzip AsyncReader/AsyncWriter wrappers, and a
 ZIP extractor. The macOS arm64 installed probe verifies gzip binary streams,
@@ -40,22 +46,28 @@ finish, abortive close, blocked-read/write cancellation, ZIP store/deflate and
 CRC rejection, absent-destination publication, and normal CLI exit with an
 unawaited cleanup obligation. A focused RC probe and the installed package
 test verify abandoned codec stream retirement. Unicode-normalized path
-collision rejection passes C and installed package fixtures. Linux runtime
-qualification remains open; the VM and archive C sources compile for Linux.
+collision rejection passes C and installed package fixtures. The installed
+package and ZIP tests also pass on Linux x86_64 under Rosetta, given a
+utf8proc whose pkg-config version is at least 3.1.0. Native x86_64
+qualification remains open.
 
 APP-3's standard `$temporal` arithmetic/RFC3339 and optional IANA 2026d
 `genex/tzdb` package pass a macOS arm64 installed-app test with source and
 compiler unavailable. The TZif reader matches an independent offset oracle
 for all 597 packaged zones at six historical/current/future instants each;
-New York fold/gap and historical second-offset cases pass. Linux runtime
-qualification remains open.
+New York fold/gap and historical second-offset cases pass. The installed-app
+test also passes on Linux x86_64 under Rosetta; native x86_64 qualification
+remains open.
 
 The `genex/libuv_timer` package now passes a macOS arm64 installed-app probe
 with 10,000 create/notify/close lifetimes, repeated wait_closed calls, a hidden
 source checkout, and no compiler at launch. The package pins libuv 1.52.x and
 uses the v5 ingress queue. Live native contexts/handles return to zero after
 each close, 20,000 handle close callbacks are recorded, and native roots and
-materialized leases return to baseline. Linux runtime qualification remains open.
+materialized leases return to baseline. The installed-app test also passes on
+Linux x86_64 under Rosetta at its default 100 lifetimes, with libuv 1.52.1
+built from source (Ubuntu 24.04 ships 1.48). Native x86_64 qualification
+remains open.
 
 The VM-3 lifetime batch probe builds a separate ORC `geneRcStats` binary and
 uses a test-only collection safepoint. On macOS arm64, the fixed-vocabulary
@@ -70,8 +82,9 @@ binary and compiler identity, RSS, counters, and the last progress marker on
 timeout. A third child cancelled parked Tasks after each had created a Type
 and ValueEq impl; it held 794 managed values and zero root Tasks at every
 batch checkpoint. Mixed ownership graphs, module generations, cancellation
-during selection, sustained service, and Linux runtime remain outside that
-narrow probe. Three generation children commit and release a scalar module
+during selection, and sustained service remain outside that narrow probe. On
+Linux x86_64 under Rosetta, all eight children held the same counts as on
+macOS. Three generation children commit and release a scalar module
 and a Type/protocol/impl module, and discard a prepared generation after
 failing a second one, 10,000 times each. VM-2 retirement tears down each
 module root once nothing outside its graph reaches it. The children hold 820,
@@ -111,8 +124,8 @@ readiness; `io_waiting_readiness` counts parked jobs across the process. Async
 subprocess stdout and stderr now stream Bytes into consumed `io/pipe` writers, and stdin
 reads Bytes from a consumed `io/pipe` reader. Borrowed endpoints auto-close
 after worker completion. Experimental TCP streams/listeners now pass loopback,
-slow-peer, cancellation, and byte-budget tests; Linux runtime qualification
-remains open. The HTTP server's experimental stream mode now
+slow-peer, cancellation, and byte-budget tests on macOS and on Linux x86_64
+under Rosetta; native x86_64 qualification remains open. The HTTP server's experimental stream mode now
 delivers bounded Content-Length and chunked request bodies as an `AsyncReader`;
 slow-body, backpressure, truncation, framing-error, and buffered-mode parity
 tests pass. Experimental `http/stream` responses pass binary, chunked,
@@ -128,7 +141,9 @@ than a relaxed budget. The probe
 exercises streamed
 upload/response, SQLite file writes, eight concurrent clients, and repeated
 slow requests. The fixture is a probe because IO-3/NET-1/NET-2 remain
-experimental and VM-3 and Linux runtime qualification remain open. The
+experimental and VM-3 and native x86_64 Linux timing remain open. Under
+Rosetta on Linux x86_64 it passed with p95 11.73 ms and a 60 ms maximum
+heartbeat gap. The
 experimental owned Client
 reuses HTTP/1.1 connections on one Application transport and supports
 buffered/streamed responses, bounded AsyncReader uploads, and controlled
