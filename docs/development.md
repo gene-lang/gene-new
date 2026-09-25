@@ -22,8 +22,12 @@ Known limits worth carrying into design decisions:
 - Native C compilation and worker-thread execution remain experimental.
   AOT protocol overlay guards are module-local; cross-module overlays are a
   known limitation. Loaded AOT libraries remain pinned for process lifetime.
-- Some mixed scope/closure cycles are not reclaimed. AtomicArc has no ORC cycle
-  collection. Do not infer complete lifetime safety from passing one suite.
+- A closure captured in a child scope (a `for` or `match` body, a mapper's
+  call scope, an `eval`) and stored, directly or in a container, in an
+  enclosing scope's binding is never reclaimed; see the
+  [lifetime ledger](../tests/lifetime/LEDGER.md). Other mixed scope/closure
+  cycles may remain. AtomicArc has no ORC cycle collection. Do not infer
+  complete lifetime safety from passing one suite.
 - An existing hang can occur with eval-defined nominal types and methods;
   lifetime coverage currently uses functions and generators.
 - Arbitrary native code is trusted after admission; nothing confines its direct
