@@ -4517,6 +4517,21 @@ proc fnScope*(v: Value): Scope =
   else:
     cast[Scope](fn.weakScope)
 
+proc fnScopeAddr*(v: Value): pointer {.inline.} =
+  ## `fnScope` of a value known to be a function, borrowed: read it through a
+  ## `{.cursor.}` local. A counted Scope copy costs an ORC cycle-candidate
+  ## registration when released, on every call that asks.
+  let fn = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+  if fn.scope != nil: cast[pointer](fn.scope) else: fn.weakScope
+
+proc fnCodeAddr*(v: Value): pointer {.inline.} =
+  ## `fnCode` of a value known to be a function, borrowed like fnScopeAddr.
+  cast[pointer](cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).code)
+
+proc fnHasErrorLease*(v: Value): bool {.inline.} =
+  v.kind == vkFunction and
+    cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorLease != nil
+
 proc fnIdentity*(v: Value): int =
   ## Weak and strong capture clones of one closure are the same function.
   if v.tagOf != FUNCTION_TAG:
@@ -7848,6 +7863,13 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
   ## that copies nothing decides first whether the walk runs at all.
   if not v.isManaged:
     return v
+  if v.bits shr TAG_SHIFT == FUNCTION_TAG:
+    # mayNeedEscape for a function outside any holder, without setting up a
+    # walk: every return of a closure asks.
+    let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    if p.scope != nil or p.weakScope == nil or
+        weakScopeProtected(guard, p.weakScope):
+      return v
   var walk: EscapeWalk
   if not mayNeedEscape(v, guard, walk.visited, markHolder = false):
     return v

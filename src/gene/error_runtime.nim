@@ -365,8 +365,12 @@ proc strictInitializationLease(chunk: Chunk, scope: Scope): RootRef =
   lease
 
 proc installStrictErrorLease(value: Value, scope: Scope) {.nimcall.} =
-  if value.kind != vkFunction or not (value.fnCode of FunctionProto): return
-  let proto = FunctionProto(value.fnCode)
+  if value.kind != vkFunction:
+    return
+  # Borrowed: this runs for every function created, strict or not.
+  let code {.cursor.} = cast[FunctionCode](value.fnCodeAddr)
+  if not (code of FunctionProto): return
+  let proto {.cursor.} = FunctionProto(code)
   if proto.errorsMode != ecmStrict or proto.errorSummary == nil or
       proto.errorSummary.dependencies.len == 0: return
   let lease = StrictErrorLease()

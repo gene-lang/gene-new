@@ -2095,6 +2095,7 @@ proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string
 proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
 proc typeExprLabel(expr: Value): string
 proc moduleRootScope(scope: Scope): Scope
+proc moduleRootAddr(scope: Scope): pointer
 proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
                           receiver: Value): Value
 proc fileModulePath(scope: Scope): string
@@ -9480,22 +9481,22 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
   ## the callee's scope, a module execution policy or a bound-call policy
   ## installs a fresh budget, and a scope-free function gets a child scope so a
   ## depleted budget is never stored on a shared closure.
-  let calleeRoot =
-    if rootsKnown: calleeRootHint
-    elif lexicalScope != nil: lexicalScope.moduleRootScope()
-    else: nil
-  let callerRoot =
-    if rootsKnown: callerRootHint
-    elif callerScope != nil: callerScope.moduleRootScope()
-    else: nil
-  let crossesModule = calleeRoot != nil and calleeRoot != callerRoot
+  # Roots are borrowed (moduleRootAddr), and the caller's is needed only when
+  # the callee's module has an execution policy to enter.
+  let calleeRoot {.cursor.} = cast[Scope](
+    if rootsKnown: cast[pointer](calleeRootHint)
+    else: lexicalScope.moduleRootAddr())
+  let entersPolicy = calleeRoot != nil and
+    calleeRoot.moduleExecutionPolicy != nil and
+    cast[pointer](calleeRoot) != (
+      if rootsKnown: cast[pointer](callerRootHint)
+      else: callerScope.moduleRootAddr())
   let callerBudget =
     if callerScope != nil and callerScope.evalBudget != nil:
       callerScope.evalBudget
     elif activeVmBudget != nil:
       activeVmBudget[]
     else: nil
-  let entersPolicy = crossesModule and calleeRoot.moduleExecutionPolicy != nil
   let boundPolicy = if proto == nil: nil else: proto.boundExecutionPolicy
   if callerBudget != nil or entersPolicy or boundPolicy != nil:
     if boundScope == lexicalScope:
@@ -9524,8 +9525,8 @@ proc canBypassCallBudget(proto: FunctionProto, calleeScope,
   if proto == nil or proto.boundExecutionPolicy != nil or
       calleeScope == nil or callerScope == nil:
     return false
-  let calleeRoot = calleeScope.moduleRootScope()
-  calleeRoot != nil and calleeRoot == callerScope.moduleRootScope()
+  let calleeRoot = calleeScope.moduleRootAddr()
+  calleeRoot != nil and calleeRoot == callerScope.moduleRootAddr()
 
 proc builtinsScope*(app: Application): Scope =
   ## The single built-ins root scope for this application. Every module/program
@@ -10688,10 +10689,13 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
   ## its mutable module/REPL scope. Candidate-bearing functions are compiled
   ## with needsCallScope, so this never has to mutate the lexical parent.
   scope.varsDirty = false
-  if callee.fnErrorLease != nil:
+  if callee.kind != vkFunction:
+    return
+  if callee.fnHasErrorLease:
     scope.strictErrorLease = activateStrictErrorLease(callee, scope)
-  if callee.kind == vkFunction and callee.fnCode of FunctionProto:
-    let selfBits = FunctionProto(callee.fnCode).annotationSelfBits
+  let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+  if code of FunctionProto:
+    let selfBits = FunctionProto(code).annotationSelfBits
     if selfBits != 0:
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
@@ -11362,31 +11366,41 @@ proc parameterAdmitsNil(expr: Value, scope: Scope, depth = 0): bool =
 proc normalizeOptionalParameters(original: FunctionProto, scope: Scope): FunctionProto =
   ## Resolve alias-based nil admission at declaration time, using the same
   ## ParamDefault metadata as explicit defaults and syntactic T? parameters.
+  ## Runs on every closure creation: nothing is copied unless a type admits
+  ## nil, and an absent annotation (NIL) never does.
   result = original
-  var defaults = original.paramDefaults
-  defaults.setLen(original.params.len)
-  var named = original.namedParams
+  template admitsNil(expr: Value): bool =
+    expr.kind != vkNil and parameterAdmitsNil(expr, scope)
+  template positionalAdmitsNil(i: int): bool =
+    i < original.paramTypes.len and admitsNil(original.paramTypes[i]) and
+      not (i < original.paramDefaults.len and original.paramDefaults[i].optional)
   var changed = false
   var optional = false
   var required = 0
   for i in 0 ..< original.params.len:
-    if i < original.paramTypes.len and
-        parameterAdmitsNil(original.paramTypes[i], scope) and
-        not defaults[i].optional:
-      defaults[i].optional = true
-      changed = true
-    if defaults[i].optional: optional = true
+    let admits = positionalAdmitsNil(i)
+    changed = changed or admits
+    if admits or (i < original.paramDefaults.len and
+                  original.paramDefaults[i].optional):
+      optional = true
     elif optional:
       raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
     else: inc required
   if optional and original.restParam.len > 0:
     raise newException(GeneError, "rest parameter cannot follow an optional positional parameter")
-  for param in named.mitems:
-    if not param.defaultValue.optional and
-        parameterAdmitsNil(param.typeExpr, scope):
-      param.defaultValue.optional = true
+  for param in original.namedParams:
+    if not param.defaultValue.optional and admitsNil(param.typeExpr):
       changed = true
   if not changed: return
+  var defaults = original.paramDefaults
+  defaults.setLen(original.params.len)
+  for i in 0 ..< original.params.len:
+    if positionalAdmitsNil(i):
+      defaults[i].optional = true
+  var named = original.namedParams
+  for param in named.mitems:
+    if not param.defaultValue.optional and admitsNil(param.typeExpr):
+      param.defaultValue.optional = true
   result = FunctionProto()
   result[] = original[]
   result.paramDefaults = defaults
@@ -11530,6 +11544,24 @@ proc validateUniversalSelf(proto: FunctionProto, scope: Scope) =
       checkAnnotation(expr)
     checkChunk(fn.chunk)
   checkFunction(proto)
+
+proc moduleRootAddr(scope: Scope): pointer =
+  ## moduleRootScope, borrowed and without writing the cache: the call path
+  ## asks on every call, and each counted Scope result, or a cache entry a
+  ## short-lived call scope drops again, costs an ORC cycle-candidate
+  ## registration. The root outlives `scope`, which reaches it.
+  if scope == nil:
+    return nil
+  if scope.moduleRoot:
+    return cast[pointer](scope)
+  if scope.moduleBase != nil:
+    return cast[pointer](scope.moduleBase)
+  var current {.cursor.} = scope.parent
+  while current != nil:
+    if current.moduleRoot:
+      return cast[pointer](current)
+    current = current.parent
+  nil
 
 proc moduleRootScope(scope: Scope): Scope =
   if scope != nil:
@@ -13888,15 +13920,17 @@ proc isErrorType(scope: Scope, typ: Value): bool =
 proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
                           scope: Scope): seq[Value] =
   ## Pops below runLoop's sp register (the seq's len is working capacity
-  ## there, not the live top).
+  ## there, not the live top). Most functions declare no error types; they
+  ## skip normalizeErrorTypes, whose closure environment is a heap object.
+  if count == 0:
+    return
   result = newSeq[Value](count)
-  if count > 0:
-    for i in countdown(count - 1, 0):
-      dec sp
-      var typ = move stack[sp]
-      if typ.isTypeAlias or typ.isSymbol("Self"):
-        typ = closeTypeExpr(typ, scope)
-      result[i] = typ
+  for i in countdown(count - 1, 0):
+    dec sp
+    var typ = move stack[sp]
+    if typ.isTypeAlias or typ.isSymbol("Self"):
+      typ = closeTypeExpr(typ, scope)
+    result[i] = typ
   result = normalizeErrorTypes(scope, result)
 
 proc raiseFailedValue(value: Value) =
@@ -17264,17 +17298,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               scope.loadSlot(slot, inst[].name)
           if callee.kind == vkFunction:
-            let code = callee.fnCode
+            # Borrowed from `callee`, which this block holds: counted FunctionCode
+            # and Scope copies cost an ORC cycle-candidate registration per call.
+            let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+            let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
-              let proto = FunctionProto(code)
+              let proto {.cursor.} = FunctionProto(code)
               if proto.nativeOp != ncoNone and
-                  proto.canBypassCallBudget(callee.fnScope, scope):
+                  proto.canBypassCallBudget(calleeScope, scope):
                 let native = applyNativeCompiled(callee, proto, [], NamedArgs())
                 if native.handled:
                   spush native.value
                   continue
               if proto.scopelessChunk != nil and proto.params.len == 0 and
-                  proto.canBypassCallBudget(callee.fnScope, scope):
+                  proto.canBypassCallBudget(calleeScope, scope):
                 # Scopeless 0-arg call (see the direct-call site).
                 let callerScope = scope
                 enterBytecodeCall(proto.scopelessChunk, callerScope, false,
@@ -17290,17 +17327,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var callScope =
                   if proto.needsCallScope:
                     if proto.poolCallScope:
-                      acquireSimpleCallScope(gVmPools, callee.fnScope, proto.localNames,
+                      acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                         proto.callScopeNeedsSlotNames,
                         proto.callScopeNeedsSlotReset)
                     else:
-                      let fresh = newScope(callee.fnScope)
+                      let fresh = newScope(calleeScope)
                       fresh.prepareSlots(proto.localNames)
                       fresh
                 else:
-                    callee.fnScope
+                    calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
-                applyCallBudget(proto, callScope, callee.fnScope, scope)
+                applyCallBudget(proto, callScope, calleeScope, scope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, sp, inst[].tail,
@@ -17309,7 +17346,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
                 var bound = bindCallScope(callee, proto, [], NamedArgs())
-                applyCallBudget(proto, bound.scope, callee.fnScope, scope)
+                applyCallBudget(proto, bound.scope, calleeScope, scope)
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
@@ -17397,11 +17434,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # so it stays rejected.
             rejectMessageCall(callee, scope)
           if callee.kind == vkFunction:
-            let code = callee.fnCode
+            # Borrowed from `callee`, which this block holds: counted FunctionCode
+            # and Scope copies cost an ORC cycle-candidate registration per call.
+            let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+            let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
-              let proto = FunctionProto(code)
+              let proto {.cursor.} = FunctionProto(code)
               if proto.nativeOp != ncoNone and
-                  proto.canBypassCallBudget(callee.fnScope, scope):
+                  proto.canBypassCallBudget(calleeScope, scope):
                 let native =
                   if argCount == 0:
                     applyNativeCompiled(callee, proto, [], NamedArgs())
@@ -17413,7 +17453,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spush native.value
                   continue
               if proto.scopelessChunk != nil and argCount == proto.params.len and
-                  proto.canBypassCallBudget(callee.fnScope, scope) and
+                  proto.canBypassCallBudget(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or inst[].flag or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call: the args already on the shared stack become
@@ -17440,11 +17480,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireSimpleCallScope(gVmPools, callee.fnScope, proto.localNames,
+                        acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                           proto.callScopeNeedsSlotNames,
                           proto.callScopeNeedsSlotReset)
                       else:
-                        let fresh = newScope(callee.fnScope)
+                        let fresh = newScope(calleeScope)
                         fresh.prepareSlots(proto.localNames)
                         fresh
                     if argCount > 0:
@@ -17452,17 +17492,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         proto, stack.toOpenArray(argsStart, (sp - 1)))
                     created
                   else:
-                    callee.fnScope
+                    calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
-                applyCallBudget(proto, callScope, callee.fnScope, scope)
+                applyCallBudget(proto, callScope, calleeScope, scope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, argsStart, inst[].tail,
                   boundValuesMayCapture = callValuesMayCapture)
               elif argCount == 1 and proto.canFastBindUnaryInt and
                   proto.returnKnownBareInt and
-                  proto.canBypassCallBudget(callee.fnScope, scope) and
+                  proto.canBypassCallBudget(calleeScope, scope) and
                   (inst[].flag or stack[argsStart].kind == vkInt):
                 let callScope = bindUnaryIntCallScope(callee, proto,
                                                       stack[argsStart])
@@ -17473,7 +17513,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundValuesMayCapture = false)
               elif argCount > 1 and proto.canFastBindPositionalInt and
                   proto.returnKnownBareInt and argCount == proto.params.len and
-                  proto.canBypassCallBudget(callee.fnScope, scope) and
+                  proto.canBypassCallBudget(calleeScope, scope) and
                   inst[].flag:
                 let callScope = bindPositionalIntCallScope(callee, proto,
                   stack.toOpenArray(argsStart, (sp - 1)),
@@ -17510,7 +17550,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         stack.toOpenArray(argsStart, (sp - 1)), NamedArgs())
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                applyCallBudget(proto, boundScope, callee.fnScope, scope)
+                applyCallBudget(proto, boundScope, calleeScope, scope)
                 strunc(argsStart)
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
@@ -17846,11 +17886,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # carry their error boundary (translated by the loop's handler on throw);
           # only generators (which return a stream) still go through applyCall below.
           if callee.kind == vkFunction:
-            let code = callee.fnCode
+            # Borrowed from `callee`, which this block holds: counted FunctionCode
+            # and Scope copies cost an ORC cycle-candidate registration per call.
+            let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+            let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
-              let proto = FunctionProto(code)
+              let proto {.cursor.} = FunctionProto(code)
               if proto.nativeOp != ncoNone and
-                  proto.canBypassCallBudget(callee.fnScope, scope):
+                  proto.canBypassCallBudget(calleeScope, scope):
                 var nativeNamed: NamedArgs
                 if namedCount > 0:
                   nativeNamed = namedArgsFromStack(inst[].names, stack,
@@ -17868,7 +17911,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if namedCount == 0 and proto.scopelessChunk != nil and
                   argCount == proto.params.len and
-                  proto.canBypassCallBudget(callee.fnScope, scope) and
+                  proto.canBypassCallBudget(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call (see the direct-call site): shift the args
@@ -17895,11 +17938,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireSimpleCallScope(gVmPools, callee.fnScope, proto.localNames,
+                        acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                           proto.callScopeNeedsSlotNames,
                           proto.callScopeNeedsSlotReset)
                       else:
-                        let fresh = newScope(callee.fnScope)
+                        let fresh = newScope(calleeScope)
                         fresh.prepareSlots(proto.localNames)
                         fresh
                     if argCount > 0:
@@ -17907,10 +17950,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         proto, stack.toOpenArray(argsStart, (sp - 1)))
                     created
                 else:
-                  callee.fnScope
+                  calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
-                applyCallBudget(proto, callScope, callee.fnScope, scope)
+                applyCallBudget(proto, callScope, calleeScope, scope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, calleeIndex, inst[].tail,
@@ -17946,7 +17989,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                     stack.toOpenArray(argsStart, (sp - 1)), named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                  applyCallBudget(proto, boundScope, callee.fnScope, scope)
+                  applyCallBudget(proto, boundScope, calleeScope, scope)
                 let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
@@ -18111,11 +18154,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
           # frame stack (^errors included; only generators fall through to applyCall).
           if callee.kind == vkFunction:
-            let code = callee.fnCode
+            # Borrowed from `callee`, which this block holds: counted FunctionCode
+            # and Scope copies cost an ORC cycle-candidate registration per call.
+            let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+            let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
-              let fnProto = FunctionProto(code)
+              let fnProto {.cursor.} = FunctionProto(code)
               if fnProto.nativeOp != ncoNone and
-                  fnProto.canBypassCallBudget(callee.fnScope, scope):
+                  fnProto.canBypassCallBudget(calleeScope, scope):
                 let native = applyNativeCompiled(callee, fnProto, args, named)
                 if native.handled:
                   strunc(calleeIndex)
@@ -18127,21 +18173,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if fnProto.needsCallScope:
                     let created =
                       if fnProto.poolCallScope:
-                        acquireSimpleCallScope(gVmPools, callee.fnScope, fnProto.localNames,
+                        acquireSimpleCallScope(gVmPools, calleeScope, fnProto.localNames,
                           fnProto.callScopeNeedsSlotNames,
                           fnProto.callScopeNeedsSlotReset)
                       else:
-                        let fresh = newScope(callee.fnScope)
+                        let fresh = newScope(calleeScope)
                         fresh.prepareSlots(fnProto.localNames)
                         fresh
                     if args.len > 0:
                       created.bindSimpleCallSlots(fnProto, args)
                     created
                   else:
-                    callee.fnScope
+                    calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
-                applyCallBudget(fnProto, callScope, callee.fnScope, scope)
+                applyCallBudget(fnProto, callScope, calleeScope, scope)
                 enterBytecodeCall(fnProto.chunk, callScope,
                   fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
                   NIL, "", false, @[], callee.fnName, calleeIndex, inst[].tail,
@@ -18160,7 +18206,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   var bound = bindCallScope(callee, fnProto, args, named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                applyCallBudget(fnProto, boundScope, callee.fnScope, scope)
+                applyCallBudget(fnProto, boundScope, calleeScope, scope)
                 let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
