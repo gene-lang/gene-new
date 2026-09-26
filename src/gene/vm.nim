@@ -9290,6 +9290,78 @@ proc retireReturnedCallScope(returning: Scope, returned = NIL,
     else:
       discard watchReturnedCycle(returning, returned, owners)
 
+proc captureSourcePlain(scope: Scope): bool {.inline.} =
+  ## An activation scope whose captures can be copied: nothing is bound by
+  ## name, and no impl, type, task, or actor state is reached through it.
+  scope.vars.len == 0 and scope.impls.len == 0 and
+    scope.requiredImplTypes.len == 0 and scope.corePendingTypes.len == 0 and
+    scope.wildcardFallbacks.len == 0 and scope.implAssembly == nil and
+    scope.strictErrorLease == nil and not scope.ownsTasks and
+    not scope.ownsActors
+
+proc captureBoundary(scope: Scope): bool {.inline.} =
+  scope.slotMirror or scope.moduleRoot or scope.moduleStatic
+
+proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
+  ## The scope a new closure holds (CapturePlan): copies of the values it
+  ## reads from the activation scopes it is created in, above the first static
+  ## scope, with placeholders only where a static level is addressed by depth.
+  ## An enclosing closure's copies count as activation levels, and its top
+  ## marks where the region ends. Returns `source`, capturing by reference,
+  ## whenever a copy could differ from reading the live scope.
+  var levels: array[8, Scope]
+  if plan.activationLevels > levels.len:
+    return source
+  var count = 0
+  var current = source
+  while count < plan.activationLevels:
+    if current == nil or current.captureBoundary:
+      break
+    if not current.captureMirror and not current.captureSourcePlain:
+      return source
+    levels[count] = current
+    inc count
+    let top = current.captureTop
+    current = current.parent
+    if top:
+      break
+  let boundary = current
+  if boundary == nil or count < plan.mirrorLevels or
+      (plan.keepDepth and count < plan.activationLevels):
+    return source
+  # Weak scope-owned functions stay valid only under their owner; a copy may
+  # outlive every activation, so those owned by one are promoted.
+  var parent = boundary
+  if plan.keepDepth:
+    for i in countdown(count - 1, plan.mirrorLevels):
+      let placeholder = newScope(parent)
+      placeholder.captureMirror = true
+      placeholder.captureTop = parent == boundary
+      parent = placeholder
+  for i in countdown(plan.mirrorLevels - 1, 0):
+    let src = levels[i]
+    let slots {.cursor.} = plan.slots[i]
+    for slot in slots:
+      if slot >= src.slots.len or not src.slotDefined(slot):
+        return source
+    let copy = newScope(parent)
+    copy.captureMirror = true
+    copy.captureTop = parent == boundary
+    copy.evalBudget = src.evalBudget
+    copy.borrowedCallerEnv = src.borrowedCallerEnv
+    copy.annotationSelfType = src.annotationSelfType
+    let width = if slots.len > 0: slots[^1] + 1 else: 0
+    copy.slots = newSeq[Value](width)
+    if width > 64:
+      copy.slotDefinedOverflow = newSeq[bool](width - 64)
+    if plan.slotNames[i].len > 0:
+      copy.slotNames = plan.slotNames[i]
+    for slot in slots:
+      copy.slots[slot] = escapeWeakFunctions(src.slots[slot], boundary)
+      copy.markSlotDefined(slot)
+    parent = copy
+  parent
+
 proc drainReleasedCycles(scope: Scope) {.noinline.} =
   ## Recheck scopes whose watched returned value was released since the last
   ## check (drainCycleRechecks). Unpooled returns and each run's exit drain:
@@ -16141,7 +16213,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     returnLabel = nextReturnLabel
     curChecksErrors = nextChecksErrors
     curErrorTypes = nextErrorTypes
-    curFnName = nextFnName
+    # The register borrows: take the proto's name, which the chunk keeps
+    # alive, not the function value's copy. A tail-called closure that no
+    # longer holds its defining scope can be freed while it runs.
+    if nextChunk.owner != nil:
+      curFnName = nextChunk.owner.name
+    else:
+      curFnName = nextFnName
     curFrameKind = fkNormal
     evalBudget = executionBudget(nextScope)
     continue
@@ -16247,7 +16325,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     returnLabel = nextReturnLabel
     curChecksErrors = nextChecksErrors
     curErrorTypes = nextErrorTypes
-    curFnName = nextFnName
+    # The register borrows: take the proto's name, which the chunk keeps
+    # alive, not the function value's copy. A tail-called closure that no
+    # longer holds its defining scope can be freed while it runs.
+    if nextChunk.owner != nil:
+      curFnName = nextChunk.owner.name
+    else:
+      curFnName = nextFnName
     curFrameKind = fkNormal
     curInitializationLease = nil
     evalBudget = executionBudget(nextScope)
@@ -16607,7 +16691,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opMakeFn:
           let proto = normalizeOptionalParameters(chunk.functions[inst[].intArg], scope)
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
-          spush newFunction(proto.name, proto.params, proto, scope,
+          let captured =
+            if proto.capturePlan != nil:
+              closureCaptureScope(scope, proto.capturePlan)
+            else:
+              scope
+          spush newFunction(proto.name, proto.params, proto, captured,
                                 proto.checksErrors, errorTypes,
                                 syntaxFn = proto.isSyntaxFn)
         of opPreparePipelineCall:

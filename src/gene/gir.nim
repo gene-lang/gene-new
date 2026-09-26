@@ -324,8 +324,23 @@ type
     origins*: seq[ErrorOrigin]
     dependencies*: seq[ErrorProofDependency]
 
+  CapturePlan* = ref object
+    ## How a closure created inside function, loop, match, or catch
+    ## activations copies the values it reads instead of holding those
+    ## activation scopes (docs/proposals/vm-reliability.md, VM-2). Level 1 is
+    ## the scope the closure is created in; levels 1..activationLevels are
+    ## activations and the next one is static (module, program, namespace).
+    activationLevels*: int
+    mirrorLevels*: int          # levels 1..mirrorLevels get a copy
+    keepDepth*: bool            # a static level is addressed by depth
+    slots*: seq[seq[int]]       # captured slots per mirrored level
+    names*: seq[seq[string]]    # their names
+    slotNames*: seq[seq[string]] # per level, indexed by slot; empty unless a
+                                 # capture is read by name
+
   FunctionProto* {.acyclic.} = ref object of FunctionCode
     name*: string
+    capturePlan*: CapturePlan # nil: the closure holds its defining scope
     sourceLoc*: SourceLoc
     receiverSelfAnnotation*: bool # retain legacy [self : Self] provenance
     signatureErrorExprs*: seq[Value]
@@ -1275,6 +1290,12 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         header.add " type-params=" & formatNames(fn.typeParams)
       if fn.localNames.len > 0:
         header.add " locals=" & formatNames(fn.localNames)
+      if fn.capturePlan != nil:
+        var levels: seq[string]
+        for names in fn.capturePlan.names:
+          levels.add formatNames(names)
+        header.add " copies=" & levels.join("/") &
+          (if fn.capturePlan.keepDepth: " keep-depth" else: "")
       if fn.paramTypes.len > 0:
         var types: seq[string]
         for t in fn.paramTypes:

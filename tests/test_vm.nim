@@ -189,18 +189,33 @@ suite "VM — proper tail calls":
     check structuredStats.fallbackByReason[tfrStructuredFrame] >= 1
 
   test "a passed closure keeps its captured pooled caller scope alive":
+    # `x` is rebound, so `inner` reads it live and holds the caller's scope.
     beginTailCallStats()
     let value = runStr(
       "(var saved nil) " &
       "(fn retain [f] (set saved f) 0) " &
       "(fn outer [x] " &
       "  (var inner (fn [] x)) " &
+      "  (set x (+ x 0)) " &
       "  (retain inner)) " &
       "(outer 7) (saved)")
     let stats = finishTailCallStats()
     check value == newInt(7)
     check stats.fallbacks >= 1
     check stats.fallbackByReason[tfrCapturedScope] >= 1
+
+    # A closure that copies `x` holds no caller scope, so the call transfers.
+    beginTailCallStats()
+    let copied = runStr(
+      "(var saved nil) " &
+      "(fn retain [f] (set saved f) 0) " &
+      "(fn outer [x] " &
+      "  (var inner (fn [] x)) " &
+      "  (retain inner)) " &
+      "(outer 7) (saved)")
+    let copiedStats = finishTailCallStats()
+    check copied == newInt(7)
+    check copiedStats.fallbackByReason[tfrCapturedScope] == 0
 
     beginTailCallStats()
     let armValue = runStr(
@@ -210,6 +225,7 @@ suite "VM — proper tail calls":
       "  (match true " &
       "    (when true " &
       "      (var inner (fn [] x)) " &
+      "      (set x (+ x 0)) " &
       "      (retain inner)))) " &
       "(outer 9) (saved)")
     let armStats = finishTailCallStats()
@@ -1608,6 +1624,33 @@ suite "vm — functions and closures":
     ck "(var x 1) (var get (fn [] x)) (set x 2) (get)", "2"
   test "closures see updates to slot-backed locals":
     ck "(fn outer [x] (var get (fn [] x)) (set x 2) (get)) (outer 1)", "2"
+  test "closures copy stable values from the activations they are created in":
+    # A closure over loop, match, and function locals that are never rebound
+    # holds copies linked to the module scope instead of those activation
+    # scopes (vm-reliability.md, VM-2). Each iteration's closure keeps its own
+    # value; a module binding and a later local definition are still live.
+    ck "(fn run [] (var hs []) (for x in [1 2 3] (hs .push (fn [] x))) " &
+       "  [(hs/0) (hs/1) (hs/2)]) (run)", "[1 2 3]"
+    ck "(fn run [n] (var acc []) (for x in [1 2] (for y in [10 20] " &
+       "  (acc .push (fn [] (+ n x y))))) (acc .map (fn [f] (f)))) (run 100)",
+       "[111 121 112 122]"
+    ck "(fn outer [a] (fn [b] (fn [] (+ a b)))) (((outer 1) 2))", "3"
+    ck "(fn run [] (match [5 6] (when [a b] (fn [] (* a b))))) ((run))", "30"
+    ck "(var top 10) (fn run [a] (var g nil) " &
+       "  (for x in [1] (set g (fn [] (+ top a x)))) g) " &
+       "(var h (run 5)) (set top 20) (h)", "26"
+    ck "(fn run [] (var g (fn [] (later))) (fn later [] 42) (g)) (run)", "42"
+    ck "(fn run [] (var hs []) (try (for x in [1 2] (hs .push (fn [] x))) " &
+       "  catch Any nil) [(hs/0) (hs/1)]) (run)", "[1 2]"
+    ck "(fn run [] (fn helper [n] (* n 2)) (var g (fn [] (helper 5))) (g)) " &
+       "(run)", "10"
+
+  test "capture plans copy only bindings that are never rebound":
+    let unit = compileSource(
+      "(fn a [] (var f nil) (for x in [2] (set f (fn [] x))) f) " &
+      "(fn b [] (var q 1) (var g (fn [] q)) (set q 2) g)")
+    check unit.functions[0].chunk.forLoops[0].body.functions[0].capturePlan != nil
+    check unit.functions[1].chunk.functions[0].capturePlan == nil
   test "values returned to the owner of their functions keep identity":
     # Heap values compare by reference. A caller that still owns a function's
     # captured scope must receive the same function and containers, not copies.

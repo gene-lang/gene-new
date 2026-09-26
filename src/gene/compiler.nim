@@ -9308,6 +9308,268 @@ proc collectModuleRefNames(value: Value, names: var seq[string],
   else:
     discard
 
+# Closure capture planning (vm-reliability.md, VM-2). A closure created inside
+# function, loop, match, or catch activations copies the values it reads when
+# they are bound once and never rebound, and links the copy to the first
+# static scope (module, program, namespace). It then holds none of those
+# activation scopes, so storing it in one of their bindings closes no cycle.
+# The plan is computed from finished bytecode, where every outer reference is
+# visible; anything it cannot account for leaves the closure holding its
+# defining scope as before.
+
+type
+  CaptureLevel = object
+    activation: bool
+    unsafe: bool              # the scope may be reached by name or owns work
+    slotNames: seq[string]
+    byName: HashSet[string]   # bound by name here (try/ensure bodies)
+    loopSlots: HashSet[int]   # defined inside a loop that reuses this scope
+
+  CaptureRefs = object
+    slots: seq[tuple[level, slot: int]]
+    sets: seq[tuple[level, slot: int]]
+    names: HashSet[string]
+    setNames: HashSet[string]
+
+const
+  captureUnsafeOps = {opMakeEnv, opEval, opImport, opImportImpl, opMakeType,
+                      opMakeEnum, opMakeProtocol, opMakeImpl, opDeclareType,
+                      opTaskScope, opSupervisor}
+  captureDepthOps = {opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
+                     opCallParentLocal1, opCallOuterLocal1}
+  captureNameOps = {opLoadName, opCallName0, opCallName1, opCallNameN,
+                    opSetName, opDefineName}
+
+iterator nestedChunks(chunk: Chunk): tuple[body: Chunk, scoped: bool] =
+  ## Every chunk nested directly in `chunk`, and whether it runs in a scope of
+  ## its own (a try or ensure body shares the enclosing one).
+  for body in chunk.subchunks: yield (body, true)
+  for loop in chunk.forLoops: yield (loop.body, true)
+  for match in chunk.matches:
+    for clause in match.clauses: yield (clause.body, true)
+    if match.elseBody != nil: yield (match.elseBody, true)
+  for attempt in chunk.tries:
+    yield (attempt.body, false)
+    for clause in attempt.catches: yield (clause.body, true)
+    if attempt.ensureBody != nil: yield (attempt.ensureBody, false)
+  for proto in chunk.functions:
+    yield (proto.chunk, true)
+    for param in proto.paramDefaults:
+      if param.optional and param.defaultChunk != nil:
+        yield (param.defaultChunk, true)
+    for param in proto.namedParams:
+      if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+        yield (param.defaultValue.defaultChunk, true)
+
+proc collectSymbolNames(v: Value, names: var HashSet[string]) =
+  case v.kind
+  of vkSymbol: names.incl v.symVal
+  of vkList:
+    for item in v.listItems: collectSymbolNames(item, names)
+  of vkNode:
+    collectSymbolNames(v.head, names)
+    for _, item in v.props: collectSymbolNames(item, names)
+    for item in v.body: collectSymbolNames(item, names)
+  of vkMap:
+    for _, item in v.mapEntries: collectSymbolNames(item, names)
+  else: discard
+
+proc collectAnnotationNames(proto: FunctionProto, names: var HashSet[string]) =
+  ## Type annotations are resolved by name in the call scope's chain.
+  for expr in proto.paramTypes: collectSymbolNames(expr, names)
+  collectSymbolNames(proto.restType, names)
+  collectSymbolNames(proto.returnType, names)
+  for expr in proto.signatureErrorExprs: collectSymbolNames(expr, names)
+  for param in proto.namedParams: collectSymbolNames(param.typeExpr, names)
+
+proc collectCaptureRefs(chunk: Chunk, localDepth: int, refs: var CaptureRefs) =
+  ## Outer references of a closure body, as levels of its defining scope chain
+  ## (level 1 is the scope it is created in). Quoted syntax counts by name: an
+  ## fexpr argument or quoted code evaluates in the caller's scope.
+  if chunk == nil:
+    return
+  for inst in chunk.instructions:
+    if inst.op in captureDepthOps:
+      if inst.depth > localDepth:
+        refs.slots.add (inst.depth - localDepth, inst.intArg)
+    elif inst.op == opSetOuterLocal:
+      if inst.depth > localDepth:
+        refs.sets.add (inst.depth - localDepth, inst.intArg)
+    elif inst.op in captureNameOps:
+      refs.names.incl inst.name
+      if inst.op == opSetName:
+        refs.setNames.incl inst.name
+  for constant in chunk.constants:
+    collectSymbolNames(constant, refs.names)
+  for proto in chunk.functions:
+    collectAnnotationNames(proto, refs.names)
+  for (body, scoped) in nestedChunks(chunk):
+    collectCaptureRefs(body, localDepth + (if scoped: 1 else: 0), refs)
+
+proc chunkReachesScopesByName(chunk: Chunk,
+                              memo: var Table[pointer, bool]): bool =
+  ## Whether a chunk tree may reify, eval in, declare types or impls in, or
+  ## own tasks through the scopes above it. Copied captures cannot follow that.
+  if chunk == nil:
+    return false
+  let key = cast[pointer](chunk)
+  if memo.hasKey(key):
+    return memo[key]
+  memo[key] = false
+  var found = false
+  for inst in chunk.instructions:
+    if inst.op in captureUnsafeOps or
+        (inst.op in captureNameOps and
+         inst.name in ["eval", "env", "caller_env"]):
+      found = true
+      break
+  if not found:
+    for (body, scoped) in nestedChunks(chunk):
+      if chunkReachesScopesByName(body, memo):
+        found = true
+        break
+  memo[key] = found
+  found
+
+proc collectByNameBindings(chunk: Chunk, names: var HashSet[string]) =
+  ## Names a scope binds by name: its own chunk and the try and ensure bodies
+  ## that share it.
+  if chunk == nil:
+    return
+  for inst in chunk.instructions:
+    if inst.op == opDefineName:
+      names.incl inst.name
+  for attempt in chunk.tries:
+    collectByNameBindings(attempt.body, names)
+    collectByNameBindings(attempt.ensureBody, names)
+
+proc collectRebindNames(chunk: Chunk, names: var HashSet[string]) =
+  ## Every name any assignment in the unit targets, after macro expansion.
+  if chunk == nil:
+    return
+  for inst in chunk.instructions:
+    if inst.name.len > 0 and ($inst.op).startsWith("opSet"):
+      names.incl inst.name
+  for (body, scoped) in nestedChunks(chunk):
+    collectRebindNames(body, names)
+
+proc captureLevelFor(chunk: Chunk, activation, forceUnsafe: bool,
+                     memo: var Table[pointer, bool]): CaptureLevel =
+  result.activation = activation
+  result.unsafe = forceUnsafe or chunkReachesScopesByName(chunk, memo)
+  result.slotNames = chunk.localNames
+  collectByNameBindings(chunk, result.byName)
+  # A backward jump marks a loop that runs again in this same scope; a slot
+  # defined inside it is rebound on every pass.
+  for index, inst in chunk.instructions:
+    if ($inst.op).startsWith("opJump") and inst.intArg < index:
+      for i in inst.intArg .. index:
+        let target = chunk.instructions[i]
+        if ($target.op).contains("DefineLocal"):
+          result.loopSlots.incl target.intArg
+
+proc planCapture(proto: FunctionProto, levels: seq[CaptureLevel],
+                 rebound: HashSet[string]): CapturePlan =
+  if proto.isSyntaxFn:
+    return nil
+  var a = 0
+  while a < levels.len and levels[a].activation:
+    inc a
+  if a == 0:
+    return nil
+  for i in 0 ..< a:
+    if levels[i].unsafe:
+      return nil
+  var refs: CaptureRefs
+  collectAnnotationNames(proto, refs.names)
+  collectCaptureRefs(proto.chunk, 0, refs)
+  for param in proto.paramDefaults:
+    if param.optional and param.defaultChunk != nil:
+      collectCaptureRefs(param.defaultChunk, 0, refs)
+  for param in proto.namedParams:
+    if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+      collectCaptureRefs(param.defaultValue.defaultChunk, 0, refs)
+  var captured = newSeq[HashSet[int]](a)
+  var keepDepth = false
+  for (level, slot) in refs.sets:
+    if level <= a:
+      return nil
+    keepDepth = true
+  for (level, slot) in refs.slots:
+    if level <= a:
+      captured[level - 1].incl slot
+    else:
+      keepDepth = true
+  var byName = false
+  for name in refs.names:
+    for i in 0 ..< a:
+      if name in levels[i].byName:
+        return nil
+      let index = levels[i].slotNames.find(name)
+      if index >= 0:
+        if name in refs.setNames:
+          return nil
+        captured[i].incl index
+        byName = true
+  var mirrorLevels = 0
+  for i in 0 ..< a:
+    for slot in captured[i]:
+      if slot >= levels[i].slotNames.len or slot in levels[i].loopSlots or
+          levels[i].slotNames[slot] in rebound:
+        return nil
+    if captured[i].len > 0:
+      mirrorLevels = i + 1
+  result = CapturePlan(activationLevels: a, mirrorLevels: mirrorLevels,
+                       keepDepth: keepDepth)
+  for i in 0 ..< mirrorLevels:
+    var slots: seq[int]
+    for slot in captured[i]:
+      slots.add slot
+    slots.sort()
+    var names: seq[string]
+    for slot in slots:
+      names.add levels[i].slotNames[slot]
+    result.slots.add slots
+    result.names.add names
+    var slotNames: seq[string]
+    if byName and slots.len > 0:
+      slotNames.setLen(slots[^1] + 1)
+      for k, slot in slots:
+        slotNames[slot] = names[k]
+    result.slotNames.add slotNames
+
+proc planClosureCaptures(root: Chunk, rebound: HashSet[string]) =
+  var memo = initTable[pointer, bool]()
+  var allRebound = rebound
+  collectRebindNames(root, allRebound)
+  proc walk(chunk: Chunk, levels: seq[CaptureLevel])
+  proc visitScope(chunk: Chunk, activation, forceUnsafe: bool,
+                  outer: seq[CaptureLevel]) =
+    if chunk == nil:
+      return
+    walk(chunk, @[captureLevelFor(chunk, activation, forceUnsafe, memo)] & outer)
+  proc walk(chunk: Chunk, levels: seq[CaptureLevel]) =
+    for proto in chunk.functions:
+      proto.capturePlan = planCapture(proto, levels, allRebound)
+      visitScope(proto.chunk, true, false, levels)
+    for body in chunk.subchunks:
+      # Namespace bodies are static; other subchunks (task scopes,
+      # supervisors, spawned bodies) own work reached through the chain.
+      visitScope(body, not body.mirrorSlots, not body.mirrorSlots, levels)
+    for loop in chunk.forLoops:
+      visitScope(loop.body, true, false, levels)
+    for match in chunk.matches:
+      for clause in match.clauses:
+        visitScope(clause.body, true, false, levels)
+      visitScope(match.elseBody, true, false, levels)
+    for attempt in chunk.tries:
+      walk(attempt.body, levels)
+      for clause in attempt.catches:
+        visitScope(clause.body, true, false, levels)
+      if attempt.ensureBody != nil:
+        walk(attempt.ensureBody, levels)
+  visitScope(root, false, false, @[]) # a unit root is static
+
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
   # A top-level-form label only adds information for a multi-form source unit.
@@ -9355,6 +9617,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   for name in c.letNames: c.chunk.immutableBindings.add name
   c.chunk.immutableBindings.sort()
   c.chunk.rewriteSelfRecursiveCalls()
+  planClosureCaptures(c.chunk, c.mutableBindingNames)
   if c.errorModeOverride.len > 0:
     c.chunk.errorsMode = parseErrorMode(c.errorModeOverride)
   if c.chunk.errorsMode != ecmDynamic and not c.deferErrorChecks:

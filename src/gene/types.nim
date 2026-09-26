@@ -507,6 +507,8 @@ type
     slotMirror*: bool
     varsDirty*: bool  # mirrored slot writes pending materialization into vars
     simpleCallScope*: bool
+    captureMirror*: bool    # a closure's copy of values from an activation scope
+    captureTop*: bool       # the copy's parent is the first static scope
     typeBoundaryToken*: TypeBoundaryToken
     typeBoundarySnapshot*: bool
     annotationSelfType*: Value # lexical type context of the current method body
@@ -3352,6 +3354,14 @@ proc capturesScopeChain(v: Value, owner: Scope, budget: var int,
     let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
     if p.scope == owner:
       return nested or not p.weakable
+    # A closure that copied its captures holds no activation scope, but a
+    # copied value can still reach `owner`.
+    var copy {.cursor.} = p.scope
+    while copy != nil and copy.captureMirror:
+      for i in 0 ..< copy.slots.len:
+        if capturesScopeChain(copy.slots[i], owner, budget, seen, nested = true):
+          return true
+      copy = copy.parent
     var current = if p.scope != nil: p.scope.parent else: nil
     while current != nil:
       if current == owner:

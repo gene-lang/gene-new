@@ -22,9 +22,11 @@ Known limits worth carrying into design decisions:
 - Native C compilation and worker-thread execution remain experimental.
   AOT protocol overlay guards are module-local; cross-module overlays are a
   known limitation. Loaded AOT libraries remain pinned for process lifetime.
-- A closure held by the bindings of a scope it or a child scope captured is
-  reclaimed when that activation ends, or once a returned value that reaches
-  it is released. A cycle whose last outside owner is anything else (a global
+- A closure over bindings that are never reassigned copies them and holds no
+  activation scope, so it forms no scope cycle. One that reads a reassigned
+  binding captures by reference; if its scope's bindings hold it, the cycle is
+  reclaimed when that activation ends or once a returned value that reaches it
+  is released, and a cycle whose last outside owner is anything else (a global
   registry, a host holding a kept closure) is not revisited. See the
   [lifetime ledger](../tests/lifetime/LEDGER.md). Other mixed scope/closure
   cycles may remain. AtomicArc has no ORC cycle collection. Do not infer
