@@ -747,6 +747,92 @@ when defined(geneRcStats):
           (kept)
         """), scope).intVal == 2
 
+      proc repeatedBodyLeak(defs: string): int =
+        ## Managed values left after `(body)` from `defs` runs 30 times.
+        leakedManaged(defs & """
+          (var i 0)
+          (while (< i 30) (body) (set i (+ i 1)))
+          ($runtime/test_collect)
+        """)
+
+      test "child-scope closure cycles retire when their activation ends":
+        # A closure capturing a loop or match scope, stored in the enclosing
+        # scope's binding or in a container it binds, closes
+        # scope -> value -> closure -> child scope -> scope.
+        # Tail calls, including into the closure itself.
+        check repeatedBodyLeak(
+          "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (f))") == 0
+        check repeatedBodyLeak("(fn body [] (var hs []) " &
+          "(for x in [1 2 3] (hs .push (fn [] x))) (hs/0))") == 0
+        check repeatedBodyLeak("(fn body [] (var f nil) " &
+          "(match [3] (when [x] (set f (fn [] x)))) (f))") == 0
+        check repeatedBodyLeak("(fn other [a] (var b a) b) " &
+          "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (other 1))") == 0
+        # The Int fast return, an explicit return from inside the loop, and an
+        # error unwinding past the scope.
+        check repeatedBodyLeak(
+          "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) 5)") == 0
+        check repeatedBodyLeak("(fn body [] (var f nil) " &
+          "(for x in [2] (set f (fn [] x)) (return 1)) nil)") == 0
+        check repeatedBodyLeak("(fn inner [] (var f nil) " &
+          "(for x in [2] (set f (fn [] x))) (fail \"boom\")) " &
+          "(fn body [] (try (inner) catch Any nil) nil)") == 0
+        # A function a native calls back, and a spawned task body.
+        check repeatedBodyLeak("(fn body [] ([1] .map (fn [e] (var f nil) " &
+          "(for y in [1] (set f (fn [] y))) 1)) nil)") == 0
+        check repeatedBodyLeak("(fn body [] (scope (spawn (do (var f nil) " &
+          "(for x in [1] (set f (fn [] x))) (f))) 1) nil)") == 0
+        # Loop iterations whose own scope closes the cycle, and closures over
+        # the scope itself inside a container or Cell it binds.
+        check repeatedBodyLeak("(fn body [] (for x in [1 2] (var f nil) " &
+          "(for y in [2] (set f (fn [] y))) (if (== x 1) (continue) (break))) nil)") == 0
+        check repeatedBodyLeak(
+          "(fn body [] (for x in [1] (var hs [(fn [] x)])) nil)") == 0
+        check repeatedBodyLeak("(fn body [] (var hs [(fn [] 1)]) nil)") == 0
+        check repeatedBodyLeak(
+          "(fn body [] (var c ($cell nil)) (for x in [1] (c .set (fn [] x))) nil)") == 0
+
+      test "a returned value closing a closure cycle retires once released":
+        # The return check cannot retire a scope whose cycle the returned value
+        # still reaches; it watches the value until the caller lets it go.
+        check repeatedBodyLeak(
+          "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) f)") == 0
+        check repeatedBodyLeak("(fn body [] (var hs []) " &
+          "(for x in [1 2 3] (hs .push (fn [] x))) hs)") == 0
+        check repeatedBodyLeak(
+          "(fn body [] (let hs ([1 2 3] .map (fn [x] (fn [] x)))) hs)") == 0
+        check repeatedBodyLeak(
+          "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (fn [] f))") == 0
+        check repeatedBodyLeak("(fn body [] (var hs [(fn [] 1)]) hs)") == 0
+        check repeatedBodyLeak(
+          "(fn body [] (var c ($cell nil)) (for x in [1] (c .set (fn [] x))) c)") == 0
+        check repeatedBodyLeak("(fn body [] (scope (let t (spawn (do (var hs []) " &
+          "(for x in [1 2] (hs .push (fn [] x))) hs))) (await t)) nil)") == 0
+
+      test "values kept from retiring closure cycles stay callable":
+        let scope = newGlobalScope()
+        check print(run(compileSource("""
+          (fn make [] (var hs []) (for x in [1 2 3] (hs .push (fn [] x))) hs)
+          (fn pick [] (var h (make)) (var g h/2) g)
+          (fn counter [] (var f nil) (var n 0)
+            (for x in [1] (set f (fn [] (set n (+ n 1)) n))) f)
+          (var kept (make))
+          (var third (pick))
+          (var count (counter))
+          (count)
+          (var i 0)
+          (while (< i 40) (make) (pick) ((counter)) (set i (+ i 1)))
+          ($runtime/test_collect)
+          [(kept/0) (kept/1) (kept/2) (third) (count)]
+        """), scope)) == "[1 2 3 3 2]"
+
+      test "deep tail recursion binding loop closures stays flat":
+        # Each level's scope retires at its tail transfer; the final call into
+        # the closure keeps its frame so the last scope is checked on return.
+        check leakedManaged("(fn walk [n] (var f nil) " &
+          "(for x in [n] (set f (fn [] x))) (if (== n 0) (f) (walk (- n 1)))) " &
+          "(walk 2000)") == 0
+
       test "released sandbox generations retire their module cycles":
         # Scalar exports, a Type/protocol/impl graph, a type-direct method, and a
         # function capturing this_mod all close Module -> Namespace -> Scope.

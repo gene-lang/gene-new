@@ -7805,6 +7805,8 @@ when defined(geneRcStats):
       raise newException(GeneError,
         "runtime/test_collect requires the scheduler root lane")
     retirePendingGenerations(scope)
+    if drainCycleRechecks() > 0 and scope != nil and scope.application != nil:
+      inc Application(scope.application).retireEpoch
     GC_fullCollect()
     NIL
 
@@ -9267,14 +9269,74 @@ proc ownedCopy[T](value: T): T {.inline.} =
   ## always owned. Check a suspect site with `--expandArc:<proc>`.
   value
 
-proc retireReturnedCallScope(returning: Scope) {.noinline.} =
-  ## Tear down a returning, unrecycled call scope if only closures its own
-  ## bindings hold still reach it (callScopeMayCycle). A scope still owned from
-  ## outside is not revisited when that owner lets go. Out of line: the call
-  ## sits in the dispatch loop's return path.
-  if returning.application != nil and returning.callScopeMayCycle() and
-      retireReturningCallScope(returning) > 0:
-    inc Application(returning.application).retireEpoch
+proc retireReturnedCallScope(returning: Scope, returned = NIL,
+                              owners = 1) {.noinline.} =
+  ## Tear down a scope whose activation just ended (a return, a tail transfer,
+  ## an unwound frame, a native-invoked call, or a loop iteration) if only
+  ## closures its own bindings hold still reach it (callScopeMayCycle). The
+  ## ending register or local is its one known owner; callers test
+  ## scopeHasOtherOwners first. When the value a call returns is what still
+  ## reaches the cycle, that value is watched and the scope is rechecked once
+  ## the caller lets go (watchReturnedCycle); any other outside owner is not
+  ## revisited. Out of line: the checks sit on the dispatch loop's return,
+  ## transfer, and loop paths.
+  if returning.application == nil:
+    return
+  if returning.callScopeMayCycle():
+    if returned.returnedValueHoldsScope(returning):
+      discard watchReturnedCycle(returning, returned, owners)
+    elif retireReturningCallScope(returning, owners) > 0:
+      inc Application(returning.application).retireEpoch
+    else:
+      discard watchReturnedCycle(returning, returned, owners)
+
+proc drainReleasedCycles(scope: Scope) {.noinline.} =
+  ## Recheck scopes whose watched returned value was released since the last
+  ## check (drainCycleRechecks). Unpooled returns and each run's exit drain:
+  ## the exit is the last point the VM sees before its host resumes.
+  if drainCycleRechecks() > 0 and scope != nil and scope.application != nil:
+    inc Application(scope.application).retireEpoch
+
+proc finishUnpooledReturn(returning: Scope, returned = NIL) {.noinline.} =
+  ## The return of a call scope kept out of the pool: drain released watches,
+  ## then check the scope itself. Out of line so the return templates, which
+  ## the dispatch loop expands at several sites, grow by one call.
+  if cycleRecheckPending:
+    drainReleasedCycles(returning)
+  if returning.scopeHasOtherOwners:
+    retireReturnedCallScope(returning, returned)
+
+proc finishFiberRootReturn(fiber: Fiber, root: Scope,
+                           returned: Value) {.noinline.} =
+  ## A task body is its fiber's root activation, so no caller frame checks
+  ## its scope. An actor's scope outlives each message and is skipped. The
+  ## fiber's own field is a second known owner when it still names the root.
+  if fiber.actorOwner.kind == vkActorRef:
+    return
+  let owners = if fiber.scope == root: 2 else: 1
+  retireReturnedCallScope(root, returned, owners)
+
+proc calleeReaches(callee, current: Scope): bool {.inline.} =
+  var s {.cursor.} = callee
+  while s != nil:
+    if s == current:
+      return true
+    s = s.parent
+  false
+
+proc tailTransferStrandsCycle(current, callee: Scope): bool {.noinline.} =
+  ## Replacing the frame of an unrecycled scope that the callee still reaches
+  ## would skip the only check of that scope for a closure cycle: nothing looks
+  ## at it again once the callee lets go. Such a call keeps its frame. Callers
+  ## test scopeHasOtherOwners first.
+  current.application != nil and callee.calleeReaches(current) and
+    current.callScopeMayCycle()
+
+proc retireAbandonedCallScope(current, callee: Scope) {.noinline.} =
+  ## The tail-transfer counterpart of a return. A callee that reaches `current`
+  ## keeps it alive; tailTransferStrandsCycle already cleared that case.
+  if not callee.calleeReaches(current):
+    retireReturnedCallScope(current)
 
 proc currentApplication(): Application =
   if gApplication == nil:
@@ -15444,6 +15506,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseCallScope(gVmPools, scope)
       recycleScope = false
 
+  template retireUnwoundScope(target = false) =
+    # An error, panic, cancellation, or `return` unwinding past a function or
+    # loop activation ends it without a return: check its scope as a return
+    # would. A `return` target still gets its own return.
+    if unlikely(not recycleScope) and frames.len > 0 and not target and
+        curFrameKind in {fkNormal, fkForBody} and frames[^1].scope != scope and
+        scope.scopeHasOtherOwners:
+      retireReturnedCallScope(scope)
+
   proc scopeChainContains(start, target: Scope): bool {.inline.} =
     var current = start
     while current != nil:
@@ -15548,6 +15619,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if f.recycleScope:
       releaseCallScope(gVmPools, f.scope)
 
+  proc releaseUnwoundFrameScope(f: var Frame, owned: bool) =
+    ## A panic or cancellation discards every frame at once. An owned function
+    ## or loop scope is checked as its return would check it, innermost first;
+    ## dropping each frame's reference keeps an inner scope from pinning the
+    ## outer ones still to be checked. The root frame's scope belongs to the
+    ## runLoop caller.
+    releaseFrameCallScope(f)
+    if owned and not f.recycleScope and f.kind in {fkNormal, fkForBody} and
+        f.scope.scopeHasOtherOwners:
+      retireReturnedCallScope(f.scope)
+    f.scope = nil
+
   proc settleUnwoundOwnership(f: Frame, cancel: bool) =
     if f.extra == nil:
       return
@@ -15561,7 +15644,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     elif f.kind == fkSupervisorBody and f.extra.ownedScope != nil:
       f.extra.ownedScope.closeOwnedActors()
 
+  template retireEndingLoopScope() =
+    # Each iteration's scope ends here. Its bindings can hold closures that
+    # captured a nested loop's scope, a cycle nothing else checks.
+    if curFrameKind == fkForBody and scope.scopeHasOtherOwners:
+      retireReturnedCallScope(scope)
+
   template advanceForLoop() =
+    retireEndingLoopScope()
     if curForStream.kind == vkStream:
       if curForStream.streamHasNext:
         let item = checkedStreamNext(curForStream, "for item")
@@ -15622,6 +15712,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       spush NIL
 
   template breakForLoop() =
+    retireEndingLoopScope()
     if curForStream.kind == vkStream:
       curForStream.closeStream()
       curForStream = NIL
@@ -15636,14 +15727,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       scope.validateRequiredImpls()
     trimTailTraceFrames(frames.len)
     # A call scope a closure captured is not recycled, and one kept alive only
-    # by closures its own bindings hold would otherwise never be reclaimed.
+    # by closures its own bindings hold would otherwise never be reclaimed. A
+    # same-scope recursive call returns into a frame that still owns its scope.
     # `retValue` holds its own count, so a returned binding stays owned.
     if unlikely(not recycleScope) and curFrameKind == fkNormal and
-        frames.len > 0:
-      retireReturnedCallScope(scope)
+        frames.len > 0 and frames[^1].scope != scope:
+      finishUnpooledReturn(scope, retValue)
     releaseCurrentCallScope()
     if curFrameKind == fkNormal:
       if frames.len == 0:
+        if unlikely(cycleRecheckPending):
+          drainReleasedCycles(scope)
+        if fiber != nil and unlikely(not recycleScope) and
+            scope.scopeHasOtherOwners:
+          finishFiberRootReturn(fiber, scope, retValue)
         setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
         stackArg = move stack
         ipArg = ip
@@ -15745,6 +15842,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         loadFrameRegs(owner)
         spush retValue
     elif frames.len == 0:
+      if unlikely(cycleRecheckPending):
+        drainReleasedCycles(scope)
       setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
       stackArg = move stack
       ipArg = ip
@@ -15758,8 +15857,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   template finishFastNormalReturn(retValue: Value) =
     trimTailTraceFrames(frames.len)
+    if unlikely(not recycleScope) and frames.len > 0 and
+        frames[^1].scope != scope:
+      finishUnpooledReturn(scope)
     releaseCurrentCallScope()
     if frames.len == 0:
+      if unlikely(cycleRecheckPending):
+        drainReleasedCycles(scope)
+      if fiber != nil and unlikely(not recycleScope) and
+          scope.scopeHasOtherOwners:
+        finishFiberRootReturn(fiber, scope, retValue)
       setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
       stackArg = move stack
       ipArg = ip
@@ -15792,7 +15899,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## the outermost frame, return to runLoop's caller. A `try` body completing
     ## normally instead runs its ensure block and resumes the enclosing frame.
     var retValue: Value
-    if returnType.isStatementReturnType:
+    if curFrameKind == fkForBody:
+      # An iteration's value is discarded. Dropping it now keeps it from
+      # counting as an outside owner when the iteration's scope is checked.
+      discard rawValue
+    elif returnType.isStatementReturnType:
       # Declared `Nil`/`Void`: the frame yields the declared unit whatever the
       # body left behind. No trailing `nil`, and `(return)` needs no argument.
       retValue = if returnType.isBareNilType: NIL else: VOID
@@ -15922,7 +16033,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingCancel == nil and curPendingReturn == nil and
       (not boundValuesMayCapture or
        not scopeValuesCaptureScope(calleeScope, scope)) and
-      (not recycleScope or not scopeChainContains(calleeScope, scope))
+      (if recycleScope: not scopeChainContains(calleeScope, scope)
+       else: frames.len == 0 or not scope.scopeHasOtherOwners or
+         not tailTransferStrandsCycle(scope, calleeScope))
 
   template canCollapseTailExpressionFrames(calleeScope: Scope,
                                             operandBase: int,
@@ -16010,6 +16123,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           (int(tailTraceSummaries[traceDepth].start) + 1) mod tailTraceWindow)
         if tailTraceSummaries[traceDepth].omitted < high(uint64):
           inc tailTraceSummaries[traceDepth].omitted
+    # The replaced frame is this scope's return: check it for a closure cycle.
+    if unlikely(not recycleScope) and frames.len > 0 and
+        scope.scopeHasOtherOwners:
+      retireAbandonedCallScope(scope, nextScope)
     releaseCurrentCallScope()
     chunk = nextChunk
     scope = nextScope
@@ -16057,7 +16174,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
        tfrStructuredFrame
      elif (boundValuesMayCapture and
            scopeValuesCaptureScope(nextScope, scope)) or
-          (recycleScope and scopeChainContains(nextScope, scope)):
+          (recycleScope and scopeChainContains(nextScope, scope)) or
+          (not recycleScope and frames.len > 0 and
+           scope.scopeHasOtherOwners and
+           tailTransferStrandsCycle(scope, nextScope)):
        tfrCapturedScope
      else: tfrNotElidable)
 
@@ -18971,6 +19091,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
+      retireUnwoundScope()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -19034,6 +19155,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             closeCurrentForStream()
             err = translateErrorBoundary(curChecksErrors, curErrorTypes,
                                          curFnName, scope, err)
+            retireUnwoundScope()
             releaseCurrentCallScope()
         elif frames.len == 0:
           releaseFrameStack(gVmPools, frames)
@@ -19049,6 +19171,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           closeCurrentForStream()
           err = translateErrorBoundary(curChecksErrors, curErrorTypes,
                                        curFnName, scope, err)
+          retireUnwoundScope()
           releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
       # `while true`, re-entering dispatch with the catch result on the stack.
@@ -19058,6 +19181,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
+      retireUnwoundScope()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -19090,7 +19214,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for i in countdown(frames.high, 0):
         settleUnwoundOwnership(frames[i], true)
-        releaseFrameCallScope(frames[i])
+        releaseUnwoundFrameScope(frames[i], owned = i > 0)
       releaseFrameStack(gVmPools, frames)
       raise
     except GeneCancel as c:
@@ -19099,6 +19223,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
+      retireUnwoundScope()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -19131,7 +19256,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for i in countdown(frames.high, 0):
         settleUnwoundOwnership(frames[i], true)
-        releaseFrameCallScope(frames[i])
+        releaseUnwoundFrameScope(frames[i], owned = i > 0)
       releaseFrameStack(gVmPools, frames)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
@@ -19143,6 +19268,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
+      retireUnwoundScope(frames.len == r.targetDepth)
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -19177,6 +19303,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
           closeCurrentForStream()
+          retireUnwoundScope(frames.len == r.targetDepth)
           releaseCurrentCallScope()
         elif frames.len == r.targetDepth:
           frameReturn(r.value)
@@ -19192,6 +19319,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
           closeCurrentForStream()
+          retireUnwoundScope(frames.len == r.targetDepth)
           releaseCurrentCallScope()
       if cleanupStarted:
         continue
@@ -28037,13 +28165,25 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                       policyRoot, callerRoot, rootsKnown = true)
     else:
       applyCallBudget(proto, callScope, callee.fnScope, callerScope)
+    # The call's own scope ends with this native-invoked activation.
+    let ownsScope = not (proto.poolCallScope or policyPooledScope) and
+                    callScope != callee.fnScope
+    var checked = false
     try:
-      return statementCallResult(proto.returnType,
-        runPooled(proto.chunk, callScope,
-                  validateImplRequirements = proto.frameNeedsImplValidation))
+      let value = runPooled(proto.chunk, callScope,
+        validateImplRequirements = proto.frameNeedsImplValidation)
+      if ownsScope:
+        checked = true
+        if unlikely(cycleRecheckPending):
+          drainReleasedCycles(callScope)
+        if callScope.scopeHasOtherOwners:
+          retireReturnedCallScope(callScope, value)
+      return statementCallResult(proto.returnType, value)
     finally:
       if proto.poolCallScope or policyPooledScope:
         releaseCallScope(callScope)
+      elif ownsScope and not checked and callScope.scopeHasOtherOwners:
+        retireReturnedCallScope(callScope)
   var callScope: Scope
   var returnType: Value
   if named.len > 0 and proto.canFastBindRequiredNamed:
@@ -28060,6 +28200,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
   applyCallBudget(proto, callScope, callee.fnScope, callerScope)
+  var checked = false
   if proto.isGenerator:
     let fiber = Fiber(chunk: proto.chunk, scope: callScope)
     when defined(geneGeneratorStats):
@@ -28086,10 +28227,18 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     elif frameReturnType.kind != vkNil:
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   frameReturnType, resultValue, callScope)
+    if not proto.poolCallScope:
+      checked = true
+      if unlikely(cycleRecheckPending):
+        drainReleasedCycles(callScope)
+      if callScope.scopeHasOtherOwners:
+        retireReturnedCallScope(callScope, resultValue)
     resultValue
   finally:
     if proto.poolCallScope:
       releaseCallScope(callScope)
+    elif not checked and callScope.scopeHasOtherOwners:
+      retireReturnedCallScope(callScope)
 
 proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
   ## SyntaxCall envelope (design §3): the raw prop/body syntax nodes of the

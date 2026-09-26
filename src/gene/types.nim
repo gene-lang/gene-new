@@ -326,6 +326,7 @@ type
     immutable: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
+    cycleWatched: bool     # returned out of a closure cycle; recheck on release
     items: seq[Value]
 
   GeneMap = object
@@ -334,6 +335,7 @@ type
     immutable: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
+    cycleWatched: bool     # returned out of a closure cycle; recheck on release
     entries: PropTable
 
   HashMapEntry* = object
@@ -368,6 +370,7 @@ type
     deepFrozen: bool
     constructing: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
+    cycleWatched: bool     # returned out of a closure cycle; recheck on release
     resourceId: uint64
     errorEvidence: ErrorEvidence
     head: Value
@@ -704,6 +707,7 @@ type
     errorLease: RootRef
     identity: int            # shared by weak/strong capture clones of one closure
     weakable: bool           # a scope binding; may drop its scope edge again
+    cycleWatched: bool       # returned out of a closure cycle; recheck on release
 
   GeneNativeFn = object
     refCount: int
@@ -869,6 +873,7 @@ type
     valueType: Value
     valueScope: Scope
     holdsEscapedFn: bool      # holds a promoted binding function; recheck on release
+    cycleWatched: bool        # returned out of a closure cycle; recheck on release
 
   AtomicCellData = ref object of CellData
     ## Inherits CellData's layout (cycleRefs/value) so the shared cycle-
@@ -3197,9 +3202,14 @@ proc moduleHeldOutside(root: Scope): bool =
     nimStrongRefs(cast[pointer](data)) > 1
 
 proc retirePendingScopes(pending: var seq[Scope], generations: bool,
-                         extraOwners = 0): int =
+                         extraOwners = 0, assumed = 0'u64,
+                         assumedInternal: ptr int = nil): int =
   ## Trial deletion over `pending` roots; see retireReleasedGenerations.
   ## `extraOwners` counts known references to each root beyond the list.
+  ## A nonzero `assumed` is a dry run: that value is expanded as though its
+  ## outside references were gone, nothing is torn down, and the result is the
+  ## number of roots that would retire, with the value's inside references
+  ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
@@ -3220,6 +3230,9 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       g.nodes[idx].total -= 1 + extraOwners # the pending list and known holders
       roots.add idx
       g.expandRetireScope(idx, counting = true)
+    let assumedIdx = if assumed == 0: -1 else: g.valueNode(assumed)
+    if assumedIdx >= 0 and not g.nodes[assumedIdx].expanded:
+      g.expandRetireValue(assumedIdx, counting = true)
     while g.ready.len > 0:
       let idx = g.ready.pop()
       if g.nodes[idx].expanded:
@@ -3233,7 +3246,7 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       if g.nodes[i].internal > g.nodes[i].total:
         return 0 # an over-count means the edge inventory is wrong: retire nothing
       if not g.nodes[i].expanded or g.nodes[i].pinned or
-          g.nodes[i].internal < g.nodes[i].total:
+          (g.nodes[i].internal < g.nodes[i].total and i != assumedIdx):
         g.nodes[i].live = true
         queue.add i
     template resolveWeakEdges(fromScope, fromValue: int) =
@@ -3264,6 +3277,13 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
         if not g.nodes[target].live:
           g.nodes[target].live = true
           queue.add int(target)
+    if assumed != 0:
+      if assumedIdx >= 0 and assumedInternal != nil:
+        assumedInternal[] = g.nodes[assumedIdx].internal
+      for idx in roots:
+        if not g.nodes[idx].live:
+          inc result
+      return
     var doomed: seq[Scope]
     for i in 0 ..< g.nodes.len:
       if g.nodes[i].kind == rnkScope and g.nodes[i].expanded and
@@ -3298,22 +3318,96 @@ proc retireReleasedGenerations*(pending: var seq[Scope]): int =
   ## read as stable totals and teardown runs its releases immediately.
   retirePendingScopes(pending, generations = true)
 
-proc retireReturningCallScope*(scope: Scope): int =
+proc retireReturningCallScope*(scope: Scope, owners = 1): int =
   ## Tears down a returning call scope that only its own closures still reach
-  ## (see callScopeMayCycle), leaving the Scope object to its frame. The
-  ## frame's register is its one other known owner. Same contract as
-  ## retireReleasedGenerations otherwise.
+  ## (see callScopeMayCycle), leaving the Scope object to its frame. `owners`
+  ## counts its known holders: the frame's register, plus a finished fiber's
+  ## own field. Same contract as retireReleasedGenerations otherwise.
   var pending = @[scope]
-  retirePendingScopes(pending, generations = false, extraOwners = 1)
+  retirePendingScopes(pending, generations = false, extraOwners = owners)
+
+proc scopeHasOtherOwners*(scope: Scope): bool {.inline.} =
+  ## Whether something besides the caller's one reference owns `scope`: the
+  ## cheap first test before callScopeMayCycle, kept inline so a scope nothing
+  ## else holds costs one header load. Always false where ORC counts cannot be
+  ## read; callScopeMayCycle still checks the layout probe.
+  when nimRefCountReadable:
+    nimStrongRefs(cast[pointer](scope)) > 1
+  else:
+    false
+
+proc capturesScopeChain(v: Value, owner: Scope, budget: var int,
+                        seen: var HashSet[uint64], nested: bool): bool =
+  ## Whether `v` reaches, directly or through lists, maps, nodes, and Cells, a
+  ## closure that captured `owner` or one of its child scopes. At the top level
+  ## (`nested` false) a promoted binding capturing `owner` itself does not
+  ## count: it drops its edge again when its escaped copy is released. An
+  ## exhausted budget answers true.
+  dec budget
+  if budget < 0:
+    return true
+  let bits = v.bits
+  case bits shr TAG_SHIFT
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+    if p.scope == owner:
+      return nested or not p.weakable
+    var current = if p.scope != nil: p.scope.parent else: nil
+    while current != nil:
+      if current == owner:
+        return true
+      current = current.parent
+    false
+  of LIST_TAG:
+    if seen.containsOrIncl(bits):
+      return false
+    let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.items.len:
+      if capturesScopeChain(p.items[i], owner, budget, seen, nested = true):
+        return true
+    false
+  of MAP_TAG:
+    if seen.containsOrIncl(bits):
+      return false
+    let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.entries.data.len:
+      if capturesScopeChain(p.entries.data[i].val, owner, budget, seen,
+                            nested = true):
+        return true
+    false
+  of NODE_TAG:
+    if seen.containsOrIncl(bits):
+      return false
+    let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.props.data.len:
+      if capturesScopeChain(p.props.data[i].val, owner, budget, seen,
+                            nested = true):
+        return true
+    for i in 0 ..< p.body.len:
+      if capturesScopeChain(p.body[i], owner, budget, seen, nested = true):
+        return true
+    false
+  of CYCLE_OBJECT_TAG:
+    # A Cell's value is walked; trial deletion counts its edges. Envs,
+    # streams, Tasks, and other objects are not: their closures are left to
+    # the object-cycle path or stay retained.
+    if seen.containsOrIncl(bits):
+      return false
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    data.objKind == okCell and
+      capturesScopeChain(CellData(data).value, owner, budget, seen,
+                         nested = true)
+  else:
+    false
 
 proc callScopeMayCycle*(scope: Scope): bool =
-  ## Whether a returning call scope may be kept alive only by a cycle through
-  ## its own bindings: something besides the returning frame still owns it,
-  ## and a binding reaches (directly or through containers) a closure that
-  ## captured a child scope of it. That child's parent edge closes
-  ## scope -> value -> closure -> child -> scope, which the weak captured-scope
-  ## edge does not cover. An oversized walk answers true; trial deletion
-  ## decides.
+  ## Whether a scope whose activation ended may be kept alive only by a cycle
+  ## through its own bindings: something besides the ending register still
+  ## owns it, and a binding reaches a closure that captured it or one of its
+  ## child scopes. A child's parent edge, or a container's edge to a closure
+  ## over the scope itself, closes scope -> value -> closure -> scope; the weak
+  ## captured-scope edge covers only a function bound directly in the scope
+  ## that captured it. An oversized walk answers true; trial deletion decides.
   when not nimRefCountReadable:
     return false
   if scope == nil or not retirementSupported() or
@@ -3321,63 +3415,137 @@ proc callScopeMayCycle*(scope: Scope): bool =
     return false
   var budget = 4096
   var seen: HashSet[uint64]
-  proc capturesChild(v: Value, owner: Scope, budget: var int,
-                     seen: var HashSet[uint64]): bool =
-    dec budget
-    if budget < 0:
-      return true
-    let bits = v.bits
-    case bits shr TAG_SHIFT
-    of FUNCTION_TAG:
-      let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
-      var current = if p.scope != nil: p.scope.parent else: nil
-      if p.scope == owner:
-        return false
-      while current != nil:
-        if current == owner:
-          return true
-        current = current.parent
-      false
-    of LIST_TAG:
-      if seen.containsOrIncl(bits):
-        return false
-      let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
-      for i in 0 ..< p.items.len:
-        if capturesChild(p.items[i], owner, budget, seen):
-          return true
-      false
-    of MAP_TAG:
-      if seen.containsOrIncl(bits):
-        return false
-      let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
-      for i in 0 ..< p.entries.data.len:
-        if capturesChild(p.entries.data[i].val, owner, budget, seen):
-          return true
-      false
-    of NODE_TAG:
-      if seen.containsOrIncl(bits):
-        return false
-      let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
-      for i in 0 ..< p.props.data.len:
-        if capturesChild(p.props.data[i].val, owner, budget, seen):
-          return true
-      for i in 0 ..< p.body.len:
-        if capturesChild(p.body[i], owner, budget, seen):
-          return true
-      false
-    of OBJECT_TAG, CYCLE_OBJECT_TAG:
-      # Cells, streams, Tasks, and other objects: not walked. Their closures
-      # are left to the object-cycle path or stay retained.
-      false
-    else:
-      false
   for i in 0 ..< scope.slots.len:
-    if capturesChild(scope.slots[i], scope, budget, seen):
+    if capturesScopeChain(scope.slots[i], scope, budget, seen, nested = false):
       return true
   for v in scope.vars.values:
-    if capturesChild(v, scope, budget, seen):
+    if capturesScopeChain(v, scope, budget, seen, nested = false):
       return true
   false
+
+proc returnedValueHoldsScope*(returned: Value, scope: Scope): bool =
+  ## Whether a returned value holds a closure over `scope` or one of its child
+  ## scopes. The return register then owns part of any cycle through `scope`,
+  ## so retiring it now cannot succeed; watchReturnedCycle decides alone.
+  var budget = 4096
+  var seen: HashSet[uint64]
+  capturesScopeChain(returned, scope, budget, seen, nested = true)
+
+type
+  CycleWatch = object
+    root: Scope     # reached through the watched value, so this pins nothing new
+    internal: int   # the value's references from inside the cycle
+    queued: bool
+
+  CycleWatches = object
+    watches: Table[uint64, CycleWatch]
+    recheckBits: seq[uint64]  # watched values released to their inside references
+    recheckRoots: seq[Scope]  # roots whose watched value was freed
+
+# Never freed: a watch still open at exit holds Scopes whose Application the
+# VM module's globals have already destroyed.
+var cycleWatchState: ptr CycleWatches
+var cycleRecheckPending*: bool     # read by the VM on its return paths
+
+proc cycleWatchesState(): ptr CycleWatches {.inline.} =
+  if cycleWatchState == nil:
+    cycleWatchState = create(CycleWatches)
+  cycleWatchState
+
+proc watchableShared(bits: uint64): bool =
+  ## Whether `bits` is a watchable kind (list, map, node, function, Cell) that
+  ## stays on the owning lane.
+  let payload = bits and PAYLOAD_MASK
+  if payload == 0:
+    return false
+  case bits shr TAG_SHIFT
+  of LIST_TAG: not isSharedFlag(cast[ptr GeneList](payload).shared)
+  of MAP_TAG: not isSharedFlag(cast[ptr GeneMap](payload).shared)
+  of NODE_TAG: not isSharedFlag(cast[ptr GeneNode](payload).shared)
+  of FUNCTION_TAG: not isSharedFlag(cast[ptr GeneFunction](payload).shared)
+  of CYCLE_OBJECT_TAG:
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+    data.objKind == okCell and not isSharedFlag(data.shared)
+  else: false
+
+proc setCycleWatched(bits: uint64) =
+  let payload = bits and PAYLOAD_MASK
+  case bits shr TAG_SHIFT
+  of LIST_TAG: cast[ptr GeneList](payload).cycleWatched = true
+  of MAP_TAG: cast[ptr GeneMap](payload).cycleWatched = true
+  of NODE_TAG: cast[ptr GeneNode](payload).cycleWatched = true
+  of FUNCTION_TAG: cast[ptr GeneFunction](payload).cycleWatched = true
+  of CYCLE_OBJECT_TAG:
+    CellData(cast[GeneObjectData](cast[pointer](payload))).cycleWatched = true
+  else: discard
+
+proc watchReturnedCycle*(root: Scope, returned: Value, owners = 1): bool =
+  ## A returning call scope that failed retirement because the value it
+  ## returns still reaches its cycle (the value, or a closure or container in
+  ## it, is also bound there) retires once the caller lets that value go. A dry
+  ## run decides whether the scope would retire without the value's outside
+  ## references; if so, the value is watched and the scope is rechecked when
+  ## the value is released down to its references from inside the cycle, or
+  ## freed. `owners` counts `root`'s known holders, as for
+  ## retireReturningCallScope.
+  let bits = returned.bits
+  if not watchableShared(bits) or cycleWatchesState().watches.hasKey(bits):
+    return false
+  var internal = 0
+  var pending = @[root]
+  if retirePendingScopes(pending, generations = false, extraOwners = owners,
+                         assumed = bits, assumedInternal = addr internal) == 0:
+    return false
+  cycleWatchesState().watches[bits] = CycleWatch(root: root, internal: internal)
+  setCycleWatched(bits)
+  true
+
+proc noteWatchedRelease(bits: uint64, remaining: int) {.noinline.} =
+  ## A watched value was released; `remaining` is zero when it is being freed
+  ## (for a Cell, when no Value holds it any more).
+  ## The recheck waits for the VM's next return: a release can run anywhere,
+  ## including under a borrowed view into the candidate scope.
+  let state = cycleWatchesState()
+  if remaining == 0:
+    var watch: CycleWatch
+    if state.watches.pop(bits, watch):
+      state.recheckRoots.add move watch.root
+      cycleRecheckPending = true
+  else:
+    state.watches.withValue(bits, watch):
+      if not watch.queued and remaining <= watch.internal:
+        watch.queued = true
+        state.recheckBits.add bits
+        cycleRecheckPending = true
+
+proc drainCycleRechecks*(): int =
+  ## Retire the scopes of watched values released since the last drain and
+  ## return how many scopes were torn down. Callers are VM return paths with
+  ## the same contract as retireReturningCallScope.
+  if generationRetiring:
+    return 0
+  let state = cycleWatchesState()
+  while state.recheckRoots.len > 0 or state.recheckBits.len > 0:
+    # Each pending list holds exactly one reference of its own; a local copy
+    # would be moved into it on last use, so none is kept.
+    var pending: seq[Scope]
+    var extraOwners = 0
+    if state.recheckRoots.len > 0:
+      pending.add state.recheckRoots.pop()
+    else:
+      let bits = state.recheckBits.pop()
+      state.watches.withValue(bits, watch):
+        watch.queued = false
+        pending.add watch.root
+        extraOwners = 1 # the watch entry
+    if pending.len > 0:
+      result += retirePendingScopes(pending, generations = false,
+                                    extraOwners = extraOwners)
+  cycleRecheckPending = false
+
+proc cycleWatchCount*(): int =
+  ## Values currently watched for a returned closure cycle (diagnostics).
+  cycleWatchesState().watches.len
 
 proc isPromotedBindingFunction(v: Value): bool {.inline.} =
   if v.bits shr TAG_SHIFT != FUNCTION_TAG:
@@ -3613,24 +3781,30 @@ proc rcRelease(bits: uint64) =
   of LIST_TAG:
     let p = cast[ptr GeneList](payload)
     releaseManual(p):
+      if unlikely(p.cycleWatched): noteWatchedRelease(bits, 0)
       reset(p[]); dealloc(p); trackFree(GeneList)
       return
+    if unlikely(p.cycleWatched): noteWatchedRelease(bits, p.refCount)
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       weakenEscapedListItems(p)
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
     releaseManual(p):
+      if unlikely(p.cycleWatched): noteWatchedRelease(bits, 0)
       reset(p[]); dealloc(p); trackFree(GeneMap)
       return
+    if unlikely(p.cycleWatched): noteWatchedRelease(bits, p.refCount)
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       weakenEscapedMapItems(p)
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
     releaseManual(p):
+      if unlikely(p.cycleWatched): noteWatchedRelease(bits, 0)
       if p.resourceId != 0 and resourceReleaseHook != nil:
         resourceReleaseHook(p.resourceId)
       reset(p[]); dealloc(p); trackFree(GeneNode)
       return
+    if unlikely(p.cycleWatched): noteWatchedRelease(bits, p.refCount)
     if p.holdsEscapedFn and not isSharedFlag(p.shared):
       var candidates: FunctionCandidates
       collectPromotedBindingFunction(candidates, p.head)
@@ -3650,8 +3824,10 @@ proc rcRelease(bits: uint64) =
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     releaseManual(p):
+      if unlikely(p.cycleWatched): noteWatchedRelease(bits, 0)
       reset(p[]); dealloc(p); trackFree(GeneFunction)
       return
+    if unlikely(p.cycleWatched): noteWatchedRelease(bits, p.refCount)
     if p.weakable and p.scope != nil:
       var candidates: FunctionCandidates
       candidates.add bits
@@ -3694,6 +3870,7 @@ proc rcRelease(bits: uint64) =
             dec d.cycleRefs
           d.cycleRefs
       shouldTryCycle = newRefs > 0
+      if unlikely(d.cycleWatched): noteWatchedRelease(bits, newRefs)
       if newRefs > 0 and d.holdsEscapedFn and not isSharedFlag(data.shared):
         # The pending GC_unref below still pins this cell while scopes retire.
         var candidates: FunctionCandidates
