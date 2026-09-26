@@ -84,6 +84,13 @@ static void gene_io_file_block_sigpipe(void) {
   var ioFileThreads: seq[ref Thread[void]]
   var ioFileReadinessThread: ref Thread[void]
   var ioFileReadinessStarted = false
+  # Parking a job writes a byte here: the readiness thread polls a snapshot
+  # of the wait queue, so a job added while it slept went unwatched until the
+  # 100 ms poll timeout (96 ms extra per pipe read parked beside another
+  # wait). Cancelling a parked job writes one too, so its worker retires it
+  # (and releases its native buffer) without waiting out the same timeout.
+  var ioFileWakeRead: cint = -1
+  var ioFileWakeWrite: cint = -1
   var ioFileIdle = 0
   var ioFileRecords = initTable[uint64, IoFileRecord]()
   initLock(ioFileLock)
@@ -214,6 +221,17 @@ static void gene_io_file_block_sigpipe(void) {
         if posix.close(job.fd) != 0:
           job.errorCode = errno
 
+  proc wakeIoFileReadiness() {.raises: [].} =
+    if ioFileWakeWrite >= 0:
+      var signalByte = 1'u8
+      # Nonblocking: a full pipe already holds a pending wake.
+      discard posix.write(ioFileWakeWrite, addr signalByte, 1)
+
+  proc requestIoFileJobCancel(job: ptr IoFileJob) {.raises: [].} =
+    if not atomicLoadN(addr job.cancelRequested, ATOMIC_ACQUIRE):
+      atomicStoreN(addr job.cancelRequested, true, ATOMIC_RELEASE)
+      wakeIoFileReadiness()
+
   proc ioFileReadinessMain() {.thread.} =
     {.cast(gcsafe).}:
       while true:
@@ -224,19 +242,25 @@ static void gene_io_file_block_sigpipe(void) {
           # Copy pointer values: workers may append while poll is asleep.
           for job in ioFileWaitQueue:
             snapshot.add job
-        var descriptors = newSeq[TPollfd](snapshot.len)
+        # Slot 0 is the wake pipe; job i polls in slot i + 1.
+        var descriptors = newSeq[TPollfd](snapshot.len + 1)
+        descriptors[0] = TPollfd(fd: ioFileWakeRead, events: POLLIN)
         for i, jobPtr in snapshot:
           let job = cast[ptr IoFileJob](jobPtr)
-          descriptors[i] = TPollfd(fd: job.fd,
+          descriptors[i + 1] = TPollfd(fd: job.fd,
             events: if job.kind in {ifjRead, ifjTcpAccept}: POLLIN
                     else: POLLOUT)
         let ready = posix.poll(addr descriptors[0], Tnfds(descriptors.len), 100)
         let pollFailure = if ready < 0: errno else: 0
+        if ready > 0 and descriptors[0].revents != 0:
+          var drain: array[64, uint8]
+          while posix.read(ioFileWakeRead, addr drain[0], drain.len) > 0:
+            discard
         withLock ioFileLock:
           for i, jobPtr in snapshot:
             let job = cast[ptr IoFileJob](jobPtr)
             if not atomicLoadN(addr job.cancelRequested, ATOMIC_ACQUIRE) and
-                not (ready > 0 and descriptors[i].revents != 0) and
+                not (ready > 0 and descriptors[i + 1].revents != 0) and
                 not (ready < 0 and pollFailure != EINTR):
               continue
             for waiting in 0 ..< ioFileWaitQueue.len:
@@ -246,6 +270,19 @@ static void gene_io_file_block_sigpipe(void) {
                 signal(ioFileCond)
                 break
 
+  proc openIoFileWakePipe() =
+    ## Called once, before the readiness thread starts. Without the pipe the
+    ## watcher still works, on the poll timeout alone (slot 0 polls fd -1,
+    ## which poll(2) ignores).
+    var fds: array[2, cint]
+    if posix.pipe(fds) != 0:
+      return
+    for fd in fds:
+      discard fcntl(fd, F_SETFD, FD_CLOEXEC)
+      discard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) or O_NONBLOCK)
+    ioFileWakeRead = fds[0]
+    ioFileWakeWrite = fds[1]
+
   proc parkIoFileForReadiness(jobPtr: pointer) =
     var startWatcher = false
     withLock ioFileLock:
@@ -254,7 +291,9 @@ static void gene_io_file_block_sigpipe(void) {
         ioFileReadinessStarted = true
         startWatcher = true
       signal(ioFileReadyCond)
+    wakeIoFileReadiness()
     if startWatcher:
+      openIoFileWakePipe()
       try:
         var thread: ref Thread[void]
         new(thread)
@@ -675,7 +714,7 @@ static void gene_io_file_block_sigpipe(void) {
         let pending = ioFilePending[i]
         if pending.job.kind in {ifjRead, ifjWrite, ifjTcpAccept} and
             pending.task.kind == vkTask and pending.task.taskCancelled:
-          atomicStoreN(addr pending.job.cancelRequested, true, ATOMIC_RELEASE)
+          requestIoFileJobCancel(pending.job)
         if pending.ownerLane == currentEventLane() and
             atomicLoadN(addr pending.job.workerDone, ATOMIC_ACQUIRE):
           completed.add pending
@@ -706,12 +745,12 @@ static void gene_io_file_block_sigpipe(void) {
         discard nativeTaskCancel(record.readTask,
                                  record.application.builtinsScope())
       if record.readJob != nil:
-        atomicStoreN(addr record.readJob.cancelRequested, true, ATOMIC_RELEASE)
+        requestIoFileJobCancel(record.readJob)
       if record.writeTask.kind == vkTask:
         discard nativeTaskCancel(record.writeTask,
                                  record.application.builtinsScope())
       if record.writeJob != nil:
-        atomicStoreN(addr record.writeJob.cancelRequested, true, ATOMIC_RELEASE)
+        requestIoFileJobCancel(record.writeJob)
       if ready:
         # Last-resort GC close has no user-facing handle to await. Closing an
         # idle descriptor here prevents an abandoned resource from pinning the
@@ -1173,11 +1212,11 @@ static void gene_io_file_block_sigpipe(void) {
     if record.readTask.kind == vkTask:
       discard nativeTaskCancel(record.readTask, scope)
     if record.readJob != nil:
-      atomicStoreN(addr record.readJob.cancelRequested, true, ATOMIC_RELEASE)
+      requestIoFileJobCancel(record.readJob)
     if record.writeTask.kind == vkTask:
       discard nativeTaskCancel(record.writeTask, scope)
     if record.writeJob != nil:
-      atomicStoreN(addr record.writeJob.cancelRequested, true, ATOMIC_RELEASE)
+      requestIoFileJobCancel(record.writeJob)
     if ready:
       enqueueFileClose(record)
     NIL

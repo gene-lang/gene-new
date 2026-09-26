@@ -1,5 +1,5 @@
 import gene/[compiler, printer, types, vm]
-import std/[monotimes, os, strutils, times, unittest]
+import std/[algorithm, monotimes, os, strutils, times, unittest]
 
 when compileOption("threads") and defined(posix):
   suite "I/O file reader — worker-backed POSIX adapter":
@@ -319,6 +319,43 @@ when compileOption("threads") and defined(posix):
         [($binary/to_str fast) ($binary/to_str peer)]
       """), scope)
       check value.print() == "[\"fast\" \"p\"]"
+
+    test "a pipe wait parked beside another wait is watched at once":
+      # The readiness thread polls a snapshot of the parked waits. A wait
+      # parked while it slept went unnoticed until the 100 ms poll timeout:
+      # each trial took ~96 ms before the wake pipe, 2-3 ms after. The median
+      # of five keeps load noise out.
+      let value = run(compileSource("""
+        (let AsyncReader $io/AsyncReader)
+        (let AsyncWriter $io/AsyncWriter)
+        (let IoResource $io/IoResource)
+        (fn trial []
+          (let idle ($io/pipe))
+          (let busy ($io/pipe))
+          (let waiting (idle/0 .AsyncReader:read 1))
+          ($sleep 5)
+          (let started ($os/monotonic_ms))
+          (let pending (busy/0 .AsyncReader:read 1))
+          ($sleep 1)
+          (await (busy/1 .AsyncWriter:write ($binary/from_str "x")))
+          (await pending)
+          (let delivered (- ($os/monotonic_ms) started))
+          (waiting .cancel)
+          (waiting .join)
+          (for end in [idle/0 idle/1 busy/0 busy/1]
+            (end .IoResource:close)
+            (await (end .IoResource:wait_closed)))
+          delivered)
+        (var delivered [])
+        (repeat 5 (delivered .push (trial)))
+        delivered
+      """), newGlobalScope())
+      var sorted: seq[int64]
+      for item in value.listItems: sorted.add item.intVal
+      sorted.sort()
+      checkpoint "delivery times " & $sorted & " ms"
+      check sorted.len == 5
+      check sorted[2] < 50
 
     test "canceling a pipe read does not manufacture EOF":
       let value = run(compileSource("""
