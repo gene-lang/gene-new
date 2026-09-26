@@ -9309,23 +9309,25 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
   ## An enclosing closure's copies count as activation levels, and its top
   ## marks where the region ends. Returns `source`, capturing by reference,
   ## whenever a copy could differ from reading the live scope.
-  var levels: array[8, Scope]
+  # The walk borrows: `source` keeps every level alive, and a counted local
+  # Scope costs an ORC cycle-candidate registration on each release.
+  var levels {.noinit.}: array[MaxCaptureLevels, pointer]
   if plan.activationLevels > levels.len:
     return source
   var count = 0
-  var current = source
+  var current {.cursor.} = source
   while count < plan.activationLevels:
     if current == nil or current.captureBoundary:
       break
     if not current.captureMirror and not current.captureSourcePlain:
       return source
-    levels[count] = current
+    levels[count] = cast[pointer](current)
     inc count
     let top = current.captureTop
     current = current.parent
     if top:
       break
-  let boundary = current
+  let boundary {.cursor.} = current
   if boundary == nil or count < plan.mirrorLevels or
       (plan.keepDepth and count < plan.activationLevels):
     return source
@@ -9339,7 +9341,7 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
       placeholder.captureTop = parent == boundary
       parent = placeholder
   for i in countdown(plan.mirrorLevels - 1, 0):
-    let src = levels[i]
+    let src {.cursor.} = cast[Scope](levels[i])
     let slots {.cursor.} = plan.slots[i]
     for slot in slots:
       if slot >= src.slots.len or not src.slotDefined(slot):
@@ -9361,6 +9363,16 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
       copy.markSlotDefined(slot)
     parent = copy
   parent
+
+proc holdCallScope(scope: Scope, names: seq[string]) {.noinline.} =
+  ## A closure created in a pooled activation captured its call scope by
+  ## reference (closureCaptureScope fell back). The scope is no longer
+  ## recycled: it ends as an unpooled one does, checked for a closure cycle,
+  ## and keeps its slot names for closures that read by name.
+  scope.closureHeld = true
+  scope.simpleCallScope = false
+  if scope.slotNames.len == 0:
+    scope.slotNames = names
 
 proc drainReleasedCycles(scope: Scope) {.noinline.} =
   ## Recheck scopes whose watched returned value was released since the last
@@ -10740,7 +10752,7 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
                             keepSlotNames = true,
                             resetSlots = true): Scope =
   # Only simpleCall functions (no opDefineName/opSetName, no opTaskScope,
-  # no opSupervisor, no opSpawn, no opMakeFn that escapes the scope) reach
+  # no opSupervisor, no opSpawn, no closure holding the scope) reach
   # this path. That exclusion guarantees vars/varTypes/impls/ownsTasks/
   # ownedTasks/actor fields are never populated, so we skip their clearing
   # and only need to zero the slot array (done by resetCallScopeSlots).
@@ -11022,7 +11034,8 @@ proc clearDefinedCallSlots(scope: Scope) {.inline.} =
         scope.slotDefinedOverflow[i] = false
 
 proc releaseCallScope(pools: var VmPools, scope: Scope) =
-  if scope == nil:
+  # A closure holds a scope holdCallScope marked; it is never recycled.
+  if scope == nil or scope.closureHeld:
     return
   scope.strictErrorLease = nil
   scope.annotationSelfType = NIL
@@ -16696,6 +16709,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               closureCaptureScope(scope, proto.capturePlan)
             else:
               scope
+          # A pooled function's closures were planned to copy; one that fell
+          # back holds the call scope, which then must outlive this activation.
+          if captured == scope and chunk.owner != nil and
+              chunk.owner.poolCallScope and not scope.closureHeld:
+            scope.holdCallScope(chunk.localNames)
+            recycleScope = false
           spush newFunction(proto.name, proto.params, proto, captured,
                                 proto.checksErrors, errorTypes,
                                 syntaxFn = proto.isSyntaxFn)
@@ -28254,14 +28273,16 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                       policyRoot, callerRoot, rootsKnown = true)
     else:
       applyCallBudget(proto, callScope, callee.fnScope, callerScope)
-    # The call's own scope ends with this native-invoked activation.
-    let ownsScope = not (proto.poolCallScope or policyPooledScope) and
-                    callScope != callee.fnScope
+    # The call's own scope ends with this native-invoked activation. A pooled
+    # one a closure came to hold (holdCallScope) ends as an unpooled one.
+    let pooled = proto.poolCallScope or policyPooledScope
+    template ownsScope(): bool =
+      (not pooled or callScope.closureHeld) and callScope != callee.fnScope
     var checked = false
     try:
       let value = runPooled(proto.chunk, callScope,
         validateImplRequirements = proto.frameNeedsImplValidation)
-      if ownsScope:
+      if ownsScope():
         checked = true
         if unlikely(cycleRecheckPending):
           drainReleasedCycles(callScope)
@@ -28269,9 +28290,9 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
           retireReturnedCallScope(callScope, value)
       return statementCallResult(proto.returnType, value)
     finally:
-      if proto.poolCallScope or policyPooledScope:
+      if pooled and not callScope.closureHeld:
         releaseCallScope(callScope)
-      elif ownsScope and not checked and callScope.scopeHasOtherOwners:
+      elif ownsScope() and not checked and callScope.scopeHasOtherOwners:
         retireReturnedCallScope(callScope)
   var callScope: Scope
   var returnType: Value
@@ -28316,7 +28337,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     elif frameReturnType.kind != vkNil:
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   frameReturnType, resultValue, callScope)
-    if not proto.poolCallScope:
+    if not proto.poolCallScope or callScope.closureHeld:
       checked = true
       if unlikely(cycleRecheckPending):
         drainReleasedCycles(callScope)
@@ -28324,7 +28345,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         retireReturnedCallScope(callScope, resultValue)
     resultValue
   finally:
-    if proto.poolCallScope:
+    if proto.poolCallScope and not callScope.closureHeld:
       releaseCallScope(callScope)
     elif not checked and callScope.scopeHasOtherOwners:
       retireReturnedCallScope(callScope)

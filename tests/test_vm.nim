@@ -636,11 +636,18 @@ suite "compiler — GIR emission":
     check withLocal.functions[0].needsCallScope
     check withLocal.functions[0].poolCallScope
 
+    # A closure that copies what it reads holds no call scope, so the scope
+    # pools; one reading a rebound or not-yet-bound local holds it.
     let withClosure = compileSource("(fn [x] (fn [] x))")
     check withClosure.functions.len == 1
     check withClosure.functions[0].simpleCall
     check withClosure.functions[0].needsCallScope
-    check not withClosure.functions[0].poolCallScope
+    check withClosure.functions[0].poolCallScope
+    let rebound = compileSource("(fn [x] (var g (fn [] x)) (set x 2) g)")
+    check not rebound.functions[0].poolCallScope
+    let later = compileSource(
+      "(fn [] (var g (fn [] (h))) (fn h [] 1) g)")
+    check not later.functions[0].poolCallScope
 
   test "emits generic function type parameters":
     let chunk = compileSource("(fn (identity item) [x : item] : item x)")
@@ -1644,6 +1651,24 @@ suite "vm — functions and closures":
        "  catch Any nil) [(hs/0) (hs/1)]) (run)", "[1 2]"
     ck "(fn run [] (fn helper [n] (* n 2)) (var g (fn [] (helper 5))) (g)) " &
        "(run)", "10"
+
+  test "a pooled call scope a closure falls back on outlives its activation":
+    # `x` is bound on one branch only. A closure made while it is unbound
+    # captures the pooled call scope by reference, so that activation keeps
+    # its scope instead of recycling it for the next call.
+    let src = "(fn f [c n] (if c (var x 1) nil) (fn [] (if c x n))) "
+    check compileSource(src).functions[0].poolCallScope
+    ck src & "(var g (f false 5)) (f false 6) (f true 7) [(g) ((f true 8))]",
+       "[5 1]"
+    ck src & "(fn run [] (var g (f false 5)) (f false 6) (g)) (run)", "5"
+    # A native-invoked call releases its pooled scope itself.
+    ck "(var gs ([0 5 6] .map (fn [n] (if (== n 0) (var x 1) nil) " &
+       "  (fn [] (if (== n 0) x n))))) [(gs/0) (gs/1) (gs/2)]",
+       "[1 5 6]"
+    # A tail call from the activation that now holds its scope.
+    ck "(var saved nil) (fn retain [f] (set saved f) 0) " &
+       "(fn f [c n] (if c (var x 1) nil) (retain (fn [] (if c x n)))) " &
+       "(f false 5) (f false 6) (saved)", "6"
 
   test "capture plans copy only bindings that are never rebound":
     let unit = compileSource(

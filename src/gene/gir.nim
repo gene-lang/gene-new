@@ -13,6 +13,7 @@ const
   PipelineMessageName* = "\x00gene_prepared_message"
   PipelineArgumentsName* = "\x00gene_prepared_arguments"
   PipelineItemName* = "\x00gene_prepared_item"
+  MaxCaptureLevels* = 8 # activation levels a closure copies from (CapturePlan)
 
 type
   OpCode* = enum

@@ -509,6 +509,7 @@ type
     simpleCallScope*: bool
     captureMirror*: bool    # a closure's copy of values from an activation scope
     captureTop*: bool       # the copy's parent is the first static scope
+    closureHeld*: bool      # a closure holds this call scope; never pool it
     typeBoundaryToken*: TypeBoundaryToken
     typeBoundarySnapshot*: bool
     annotationSelfType*: Value # lexical type context of the current method body

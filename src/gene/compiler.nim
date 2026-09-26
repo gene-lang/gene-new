@@ -145,6 +145,9 @@ type
     namespacePath: seq[string]
     moduleMacroExports: ref Table[string, MacroDef]
     moduleSyntaxFnExports: ref HashSet[string]
+    # Functions whose call scope only their closures keep from pooling;
+    # planClosureCaptures decides them once every plan is known.
+    closurePoolCandidates: ref seq[FunctionProto]
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
@@ -912,6 +915,7 @@ proc childCompiler(c: Compiler): Compiler =
            namespacePath: c.namespacePath,
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
+           closurePoolCandidates: c.closurePoolCandidates,
            staticTopLevelImpls: c.staticTopLevelImpls,
            overlayImplMessages: c.overlayImplMessages,
            budget: c.budget)
@@ -1303,7 +1307,9 @@ proc chunkHasDeferredImplValidation(chunk: Chunk): bool =
       return true
   false
 
-proc chunkCanPoolCallScope(chunk: Chunk): bool =
+proc chunkCanPoolCallScope(chunk: Chunk, closures = false): bool =
+  ## Whether nothing made in `chunk` can hold its call scope. With `closures`,
+  ## the closures it makes are left to closuresCopyCaptures.
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
     return false
@@ -1314,7 +1320,10 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
       # immediately resolved send consumes that temporary without escape.
       if i + 1 == chunk.instructions.len or chunk.instructions[i + 1].op != opResolveQualifiedMessage:
         return false
-    of opMakeFn, opPreparePipelineCall, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
+    of opMakeFn:
+      if not closures:
+        return false
+    of opPreparePipelineCall, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
        opMakeImpl, opImport, opImportImpl, opMatch, opMatchBind,
        opMatchBindReplace,
        opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
@@ -3949,9 +3958,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       if p.defaultValue.optional:
         defaultsCanCapture = true
         break
-  let poolCallScope = needsCallScope and not defaultsCanCapture and
-                      not c.returnContractRetainsScope(returnType, typeParams) and
-                      chunkCanPoolCallScope(fnCompiler.chunk)
+  let poolableFrame = needsCallScope and not defaultsCanCapture and
+                      not c.returnContractRetainsScope(returnType, typeParams)
+  let poolCallScope = poolableFrame and chunkCanPoolCallScope(fnCompiler.chunk)
   let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
   let callScopeNeedsSlotReset =
     fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
@@ -4147,6 +4156,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          errorTypeCount: errorTypeCount,
                          chunk: fnCompiler.chunk)
   result.chunk.owner = result
+  if poolableFrame and not poolCallScope and c.closurePoolCandidates != nil and
+      fnCompiler.chunk.chunkCanPoolCallScope(closures = true):
+    c.closurePoolCandidates[].add result
   deriveScopelessChunk(result)
 
 proc nativeOwnership(value: Value, context: string): NativeOwnership =
@@ -9538,8 +9550,45 @@ proc planCapture(proto: FunctionProto, levels: seq[CaptureLevel],
         slotNames[slot] = names[k]
     result.slotNames.add slotNames
 
-proc planClosureCaptures(root: Chunk, rebound: HashSet[string]) =
+proc closuresCopyCaptures(proto: FunctionProto): bool =
+  ## Whether no closure `proto` makes is expected to hold its call scope: each
+  ## has a plan the VM can apply, the scope binds nothing by name, and every
+  ## call-scope slot a plan copies is bound before the closure is made. Only a
+  ## runtime fallback (holdCallScope) then keeps a pooled scope from recycling.
+  if proto.isSyntaxFn:
+    return false
+  let chunk = proto.chunk
+  var bound = initHashSet[int]()
+  for slot in proto.positionalSlots:
+    bound.incl slot
+  for slot in proto.namedSlots:
+    bound.incl slot
+  bound.incl proto.restSlot
+  for inst in chunk.instructions:
+    case inst.op
+    of opDefineName, opRedefineName:
+      return false
+    of opDefineLocal, opRedefineLocal:
+      bound.incl inst.intArg
+    of opMakeFn:
+      let plan = chunk.functions[inst.intArg].capturePlan
+      if plan == nil or plan.activationLevels > MaxCaptureLevels:
+        return false
+      if plan.mirrorLevels > 0:
+        for slot in plan.slots[0]:
+          if slot notin bound:
+            return false
+    else:
+      discard
+  true
+
+proc planClosureCaptures(root: Chunk, rebound: HashSet[string],
+                         poolCandidates: seq[FunctionProto]) =
   var memo = initTable[pointer, bool]()
+  # The candidates list holds each proto, so no other can share its address.
+  var candidates = initHashSet[pointer]()
+  for proto in poolCandidates:
+    candidates.incl cast[pointer](proto)
   var allRebound = rebound
   collectRebindNames(root, allRebound)
   proc walk(chunk: Chunk, levels: seq[CaptureLevel])
@@ -9552,6 +9601,9 @@ proc planClosureCaptures(root: Chunk, rebound: HashSet[string]) =
     for proto in chunk.functions:
       proto.capturePlan = planCapture(proto, levels, allRebound)
       visitScope(proto.chunk, true, false, levels)
+      # Its closures are planned now; if they copy, none holds the call scope.
+      if cast[pointer](proto) in candidates and proto.closuresCopyCaptures():
+        proto.poolCallScope = true
     for body in chunk.subchunks:
       # Namespace bodies are static; other subchunks (task scopes,
       # supervisors, spawned bodies) own work reached through the chain.
@@ -9572,6 +9624,8 @@ proc planClosureCaptures(root: Chunk, rebound: HashSet[string]) =
 
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
+  if c.closurePoolCandidates == nil:
+    new(c.closurePoolCandidates)
   # A top-level-form label only adds information for a multi-form source unit.
   # Keep the overwhelmingly common one-form compile path allocation-free.
   if forms.len > 1 and c.formLocs.len > 0:
@@ -9617,7 +9671,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   for name in c.letNames: c.chunk.immutableBindings.add name
   c.chunk.immutableBindings.sort()
   c.chunk.rewriteSelfRecursiveCalls()
-  planClosureCaptures(c.chunk, c.mutableBindingNames)
+  planClosureCaptures(c.chunk, c.mutableBindingNames, c.closurePoolCandidates[])
   if c.errorModeOverride.len > 0:
     c.chunk.errorsMode = parseErrorMode(c.errorModeOverride)
   if c.chunk.errorsMode != ecmDynamic and not c.deferErrorChecks:

@@ -792,6 +792,20 @@ when defined(geneRcStats):
         check repeatedBodyLeak(
           "(fn body [] (var c ($cell nil)) (for x in [1] (c .set (fn [] x))) nil)") == 0
 
+      test "a pooled call scope a closure came to hold retires like an unpooled one":
+        # `x` is unbound when the closure is made, so it captures the pooled
+        # call scope by reference, and a list the scope binds closes the
+        # cycle. That activation ends unpooled, through the VM, a native
+        # callback, and a tail call.
+        check repeatedBodyLeak(
+          "(fn body [] (if false (var x 1) nil) (var hs [(fn [] x)]) nil)") == 0
+        check repeatedBodyLeak("(fn mk [c] (if c (var x 1) nil) " &
+          "(var hs [(fn [] x)]) nil) (fn body [] (mk false))") == 0
+        check repeatedBodyLeak("(fn body [] ([0 1] .map (fn [n] " &
+          "(if (== n 0) (var x 1) nil) (var hs [(fn [] x)]) nil)) nil)") == 0
+        check repeatedBodyLeak("(fn other [a] a) (fn body [] " &
+          "(if false (var x 1) nil) (var hs [(fn [] x)]) (other 1))") == 0
+
       test "a returned value closing a closure cycle retires once released":
         # The return check cannot retire a scope whose cycle the returned value
         # still reaches; it watches the value until the caller lets it go.
