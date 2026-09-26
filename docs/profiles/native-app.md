@@ -100,6 +100,10 @@ between two impls of one eval unit and fails units after a partial selection;
 it holds 891 managed values with no open impl assemblies. An in-process
 service child serves and drives 10,000 HTTP request pairs through the native
 Client in one RC process and holds 866 values with no open I/O or requests.
+A cancellation service child cancels a held GET and aborts a streamed upload
+each iteration, so the server cancels that handler mid-body; it holds 968
+values through 10,000 iterations with no open I/O, Client, or in-flight
+requests (see the [lifetime ledger](../../tests/lifetime/LEDGER.md)).
 
 The CLI probe now builds a selected `c_library`, calls its C ABI function,
 and repeats that call after installing the application with the source

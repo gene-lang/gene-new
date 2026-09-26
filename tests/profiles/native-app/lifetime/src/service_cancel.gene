@@ -1,0 +1,118 @@
+(import $net/http [listen serve stop status text])
+
+(let AsyncReader $io/AsyncReader)
+(let AsyncWriter $io/AsyncWriter)
+(let IoResource $io/IoResource)
+
+(var server nil)
+# The driver and the handlers meet on these: a handler says it is running,
+# and a held handler waits until the driver has cancelled its client.
+(var hold_entered ($channel ^capacity 1))
+(var hold_release ($channel ^capacity 1))
+(var sink_entered ($channel ^capacity 1))
+
+(fn handle [req]
+  (if (== req/path "/hold")
+    (do
+      (hold_entered .send true)
+      (hold_release .recv)
+      (return (text 200 "held"))))
+  (if (== req/path "/sink")
+    (do
+      # A catch body declaring inside a repeating loop (the ledger's loop
+      # catch scope case), run by every handler the server later cancels.
+      (for attempt in [1 2]
+        (try (fail (AssertionError ^message "retry"))
+         catch Error
+           (var noted attempt)
+           nil))
+      # The server cancels this handler while it waits for the rest of the
+      # body the client aborted; it never reaches EOF.
+      (var total 0)
+      (var signalled false)
+      (while true
+        (let part (await (req/body .AsyncReader:read 65536)))
+        (if ($nil? part) (then (break)))
+        (set total (+ total ($binary/size part)))
+        (if (! signalled)
+          (do
+            (set signalled true)
+            (sink_entered .send true))))
+      (return (text 200 ($to_str total)))))
+  (text 404 "not found"))
+
+(fn checkpoint [phase count]
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  (let serving (status server))
+  ($println ($json/stringify
+    {^workload "service_cancel" ^phase phase ^iterations count
+     ^rc_stats stats/rc_stats? ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes
+     ^native_roots stats/native_roots
+     ^io_root_tasks stats/io_root_tasks
+     ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^io_open_resources stats/io_open_resources
+     ^http_client_open_resources stats/http_client_open_resources
+     ^http_client_pending_requests stats/http_client_pending_requests
+     ^in_flight_requests serving/in_flight_requests})))
+
+(fn settle []
+  # A cancelled transfer and the handler it strands finish on their own
+  # schedule; wait until neither side holds anything before going on.
+  (while (do
+           (let stats ($runtime/gc_stats))
+           (let serving (status server))
+           (|| (> serving/in_flight_requests 0)
+               (> serving/active_connections 0)
+               (> serving/pending_cleanup_tasks 0)
+               (> stats/http_client_pending_requests 0)
+               (> stats/io_open_resources 0)))
+    ($sleep 1)))
+
+(fn main [args] : Int
+  (let port ($parse/parse_int args/0))
+  (let count ($parse/parse_int (?? args/1 "10000")))
+  (let base $"http://127.0.0.1:${port}")
+  (set server (listen ^host "127.0.0.1" ^port port))
+  # Each iteration cancels two live requests on an owned Client, opened and
+  # closed per iteration. A held GET: its handler runs to completion after
+  # the client is gone and writes into a closed socket. A streamed upload:
+  # the client aborts mid-body, so the server fails the body and cancels the
+  # handler blocked reading it.
+  (fn one []
+    (let client (await ($net/http_client/open)))
+    (let held (client .request ^url $"${base}/hold"))
+    (hold_entered .recv)
+    (held .cancel)
+    (held .join)
+    (hold_release .send true)
+    (let endpoints ($io/pipe))
+    (let upload (client .request ^url $"${base}/sink" ^method "POST"
+                                 ^body endpoints/0))
+    (await (endpoints/1 .AsyncWriter:write ($binary/from_str "partial")))
+    (sink_entered .recv)
+    (upload .cancel)
+    (upload .join)
+    (endpoints/1 .IoResource:close)
+    (await (endpoints/1 .IoResource:wait_closed))
+    (endpoints/0 .IoResource:close)
+    (await (endpoints/0 .IoResource:wait_closed))
+    (client .IoResource:close)
+    (await (client .IoResource:wait_closed))
+    (settle))
+  (let driver (spawn ^lane root
+    # A failure must stop the server, or serve never returns to report it.
+    (try
+      (repeat 100 (one))
+      (checkpoint "warm" 100)
+      (for batch in [1 100 1000 count]
+        ($println ($json/stringify
+          {^workload "service_cancel" ^phase "starting" ^iterations batch}))
+        (repeat batch (one))
+        (checkpoint "after" batch))
+      0
+     ensure (stop server))))
+  (serve server ^handler handle ^body_mode "stream" ^drain_timeout_ms 5000)
+  (await driver)
+  0)

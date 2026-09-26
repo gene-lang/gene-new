@@ -375,6 +375,7 @@ type
     loopWorkMs: int
     loopWorkCpuMs: int
     waitOverrunMs: int
+    pendingCleanupTasks: int # close tasks the serve loop has not pruned yet
     maxLoopWorkMs: int
     maxWaitOverrunMs: int
     # RFC 6455 delivery (slice C9). ws_send runs outside the serve closure,
@@ -656,6 +657,7 @@ proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   props["workers"] = newInt(rt.workers)
   props["active_connections"] = newInt(rt.activeConnections)
   props["in_flight_requests"] = newInt(rt.inFlight)
+  props["pending_cleanup_tasks"] = newInt(rt.pendingCleanupTasks)
   props["accepted_connections"] = newInt(rt.acceptedConnections)
   props["completed_requests"] = newInt(rt.completedRequests)
   props["failed_requests"] = newInt(rt.failedRequests)
@@ -1733,6 +1735,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var remainingFileResources = 0
     var cleanupTasks: seq[Value]
     var cleanupTaskFailed = false
+    template trackCleanupTask(task: Value) =
+      cleanupTasks.add task
+      rt.pendingCleanupTasks = cleanupTasks.len
     # `on_tick` fires on a fixed period. `tickMs` of 0 with a handler present is
     # a mistake worth naming rather than a busy loop, so it is rejected at
     # `serve` rather than spun on here.
@@ -1795,13 +1800,13 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         if conn.bodyWriter.kind == vkNode:
           try:
             discard biIoFileClose([conn.bodyWriter], addr nativeCall)
-            cleanupTasks.add biIoFileWaitClosed([conn.bodyWriter], addr nativeCall)
+            trackCleanupTask biIoFileWaitClosed([conn.bodyWriter], addr nativeCall)
           except CatchableError:
             cleanupTaskFailed = true
         if conn.bodyReader.kind == vkNode:
           try:
             discard biIoFileClose([conn.bodyReader], addr nativeCall)
-            cleanupTasks.add biIoFileWaitClosed([conn.bodyReader], addr nativeCall)
+            trackCleanupTask biIoFileWaitClosed([conn.bodyReader], addr nativeCall)
           except CatchableError:
             cleanupTaskFailed = true
       conn.bodyWriter = NIL
@@ -1830,7 +1835,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                                               conn.responseReader)
           let closeTask = applyCall(waiter, [conn.responseReader],
                                     NamedArgs(), scope)
-          if closeTask.kind == vkTask: cleanupTasks.add closeTask
+          if closeTask.kind == vkTask: trackCleanupTask closeTask
           else: cleanupTaskFailed = true
         except CatchableError:
           cleanupTaskFailed = true
@@ -1851,6 +1856,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           cleanupTasks.delete(index)
         else:
           inc index
+      rt.pendingCleanupTasks = cleanupTasks.len
 
     proc closeConn(conn: HttpConn) =
       closeBodyResources(conn)

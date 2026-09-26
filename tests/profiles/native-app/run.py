@@ -88,7 +88,7 @@ def load_profile(gene: Path) -> dict:
         if wid == "lifetime":
             for field in ("witness_entry", "cancellation_entry",
                           "selection_entry", "service_entry",
-                          "generation_entry",
+                          "service_cancel_entry", "generation_entry",
                           "generation_failure_entry", "retained_entry",
                           "retained_function_entry", "retained_instance_entry"):
                 scenario_entry = contained(package, workload.get(field, ""))
@@ -333,6 +333,8 @@ def run_lifetime(workload: dict) -> dict:
                 ("selection", "selection_entry", [str(batches[-1])]),
                 ("service", "service_entry",
                  [str(free_loopback_port()), str(batches[-1])]),
+                ("service_cancel", "service_cancel_entry",
+                 [str(free_loopback_port()), str(batches[-1])]),
                 ("generation", "generation_entry",
                  [str(plugin), str(batches[-1]), "simple.gene"]),
                 ("generation_rich", "generation_entry",
@@ -412,7 +414,7 @@ def run_lifetime(workload: dict) -> dict:
                     for counter in selection_counters):
                 return {"outcome": "failure",
                         "reason": "selection_owners_unavailable"}
-            if label == "service" and any(
+            if label in ("service", "service_cancel") and any(
                     not isinstance(scenario_baseline.get(counter), int)
                     for counter in service_counters):
                 return {"outcome": "failure",
@@ -425,7 +427,8 @@ def run_lifetime(workload: dict) -> dict:
                         item.get("live_managed") != scenario_baseline[
                             "live_managed"] or
                         item.get("managed_classes") != scenario_classes or
-                        (label in ("cancellation", "selection", "service") and (
+                        (label in ("cancellation", "selection", "service",
+                                   "service_cancel") and (
                             item.get("io_root_tasks") != 0 or
                             item.get("io_root_cleanup_tasks") != 0)) or
                         (label.startswith("generation") and any(
@@ -434,7 +437,7 @@ def run_lifetime(workload: dict) -> dict:
                         (label == "selection" and any(
                             item.get(counter) != scenario_baseline.get(counter)
                             for counter in selection_counters)) or
-                        (label == "service" and any(
+                        (label in ("service", "service_cancel") and any(
                             item.get(counter) != 0
                             for counter in service_counters))):
                     return {"outcome": "failure",
@@ -801,7 +804,8 @@ def run_service(gene: Path, workload: dict) -> dict:
                 target_rate = workload["budget"]["requests_per_second"]
                 duration = workload["budget"]["duration_seconds"]
                 target_count = target_rate * duration
-                if target_rate < 1 or duration < 1 or target_count > 10_000:
+                if target_rate < 1 or duration < 1 or target_count > workload.get(
+                        "request_cap", 10_000):
                     return {"outcome": "failure", "reason": "invalid_service_budget"}
 
                 def load_one(index: int) -> tuple[str, float, float, bool]:
@@ -1110,6 +1114,10 @@ def main() -> int:
     parser.add_argument("--probe-blocked", action="store_true")
     parser.add_argument("--require-supported", action="store_true")
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--service-duration", type=int, metavar="SECONDS",
+        help="soak: run the service load for SECONDS instead of the profile's "
+             "duration_seconds (the report records the override)")
     args = parser.parse_args()
     gene = args.gene.resolve()
     # Workload scratch lives under the ignored tmp/, which a fresh checkout lacks.
@@ -1117,6 +1125,20 @@ def main() -> int:
     if not gene.is_file():
         parser.error(f"Gene executable is missing: {gene}")
     profile = load_profile(gene)
+    if args.service_duration is not None:
+        # A soak keeps the profile's rate and gates; only the load window, the
+        # workload deadline, and the request cap grow with it.
+        if not 1 <= args.service_duration <= 86_400:
+            parser.error("--service-duration must be 1..86400 seconds")
+        for workload in profile["workloads"]:
+            if workload["driver"] != "service":
+                continue
+            budget = workload["budget"]
+            extra = args.service_duration - budget["duration_seconds"]
+            budget["duration_seconds"] = args.service_duration
+            workload["timeout_ms"] += max(0, extra) * 1000
+            workload["request_cap"] = (budget["requests_per_second"] *
+                                       args.service_duration)
     selected = set(args.workload or [w["id"] for w in profile["workloads"]])
     known = {w["id"] for w in profile["workloads"]}
     if selected - known:
@@ -1140,6 +1162,7 @@ def main() -> int:
         "platform": {"system": platform.system(), "machine": platform.machine()},
         "gene": str(gene), "gene_sha256": hashlib.sha256(gene.read_bytes()).hexdigest(),
         "stages": profile["stages"], "workloads": [],
+        "service_duration_override": args.service_duration,
     }
     for workload in profile["workloads"]:
         if workload["id"] not in selected:

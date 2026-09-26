@@ -56,6 +56,7 @@
      ^cancellation_entry "src/cancellation.gene"
      ^selection_entry "src/selection.gene"
      ^service_entry "src/service.gene"
+     ^service_cancel_entry "src/service_cancel.gene"
      ^generation_entry "src/generation.gene"
      ^generation_failure_entry "src/generation_failure.gene"
      ^generation_plugin "plugin"
