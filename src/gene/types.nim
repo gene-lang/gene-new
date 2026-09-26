@@ -8792,6 +8792,15 @@ proc implForScopeStorage*(impl: ProtocolImpl, owner: Scope): ProtocolImpl =
     result.assemblyScope = source
     result.weakAssemblyScope = nil
 
+proc replaceScopeImpls*(scope: Scope, impls: sink seq[ProtocolImpl]) =
+  ## Install `impls` as the scope's impls, then release the previous ones.
+  ## Releasing an impl's values can walk this scope's references
+  ## (weakenOwnedTypeEnvironment -> scopeOwnedReferences). Assigning over the
+  ## field destroyed the old list in place, and that walk read it half freed.
+  var previous = move scope.impls
+  scope.impls = impls
+  previous.setLen(0)
+
 proc typeContractPending*(typ: Value): bool =
   typ.tagOf == OBJECT_TAG and objData(typ).objKind == okType and
     TypeData(objData(typ)).contractPending

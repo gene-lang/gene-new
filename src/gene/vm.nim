@@ -1196,7 +1196,7 @@ proc installSandboxAppState(app: Application, state: SandboxAppState) =
   app.moduleCompileArtifacts = state.moduleCompileArtifacts
   app.moduleCompileLoading = state.moduleCompileLoading
   app.implEpoch = state.implEpoch
-  app.builtinsScope().impls = state.rootImpls
+  app.builtinsScope().replaceScopeImpls(state.rootImpls)
   app.implScopeIndex = state.implScopeIndex
   app.baseScopes = state.baseScopes
   app.serdeOrigins = state.serdeOrigins
@@ -12140,11 +12140,13 @@ proc commitRecomposedImpls(app: Application,
   let root = app.builtinsScope()
   for impl in recomposed.canonical:
     markImplValuesShared(impl)
-  root.impls = @[]
-  for impl in recomposed.canonical: root.impls.add impl.implForScopeStorage(root)
+  var stored: seq[ProtocolImpl]
+  for impl in recomposed.canonical: stored.add impl.implForScopeStorage(root)
+  root.replaceScopeImpls(stored)
   for update in recomposed.scopes:
-    update.scope.impls = @[]
-    for impl in update.impls: update.scope.impls.add impl.implForScopeStorage(update.scope)
+    var scoped: seq[ProtocolImpl]
+    for impl in update.impls: scoped.add impl.implForScopeStorage(update.scope)
+    update.scope.replaceScopeImpls(scoped)
 
 proc publishImpl(scope: Scope, pending: ProtocolImpl) =
   let stage = scope.stagingRoot()
@@ -14498,9 +14500,10 @@ proc validateLookupImpls(scope: Scope) =
   changes.add local
   let recomposed = recomposeImplSets(app, root.impls,
     @[(scope: context, impls: context.impls)], changes)
-  context.impls = @[]
+  var stored: seq[ProtocolImpl]
   for impl in recomposed.scopes[0].impls:
-    context.impls.add impl.implForScopeStorage(context)
+    stored.add impl.implForScopeStorage(context)
+  context.replaceScopeImpls(stored)
   context.implValidationEpoch = app.implEpoch
 
 proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
@@ -29628,7 +29631,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
     app.releasedGenerationScopes.add oldScope
     result = replacement
   except CatchableError:
-    app.builtinsScope().impls = oldRootImpls
+    app.builtinsScope().replaceScopeImpls(oldRootImpls)
     app.moduleCache = oldModuleCache
     app.moduleCompileHeaders = oldHeaders
     app.moduleCompileArtifacts = oldArtifacts
