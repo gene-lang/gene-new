@@ -213,6 +213,11 @@ Values. The owner must review an additive managed-borrow API before public SDK
 ownership/access behavior changes. AAR-1 remains incomplete until that decision,
 integration and the borrow/collector race matrix are complete.
 
+[Native managed borrows](native-managed-borrows.md) provides the concrete owner
+decision, complete SDK-family inventory, recommended opaque-handle contract,
+legacy export policy and implementation/acceptance sequence. Review that API
+choice before replacing the current permanent publication pins.
+
 ### AAR-2: published generation graphs
 
 Replace permanent publication pins only where AAR-1 establishes a consistent
