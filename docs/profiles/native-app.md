@@ -211,3 +211,11 @@ their registry entries; isolated eval roots use complete trial deletion.
 The browser process/server/report driver is Gene. Other browser engines,
 workers and opaque ownership graphs remain unqualified; VAL stages stay
 experimental, AtomicArc retirement stays off, and native Linux stays deferred.
+
+The [AtomicArc experiment](native-app-2026-09-27-atomic.md) adds a separate
+private-generation qualification mode with independent header checks and
+worker/native-reader tests. It repairs nested worker pauses and acknowledges
+Fiber teardown before quiescence. Private scalar and Type generations are flat;
+published/canonical graphs stay pinned. Normal AtomicArc retirement remains off.
+The [staged design](../proposals/atomic-arc-retirement.md) defines the remaining
+native publication/fence and shared-generation gates.

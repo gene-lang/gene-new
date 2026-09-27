@@ -1,0 +1,3 @@
+(type Item ^props {^n Int} (message value [] : Int self/n))
+(var item (Item ^n 7))
+(var payload ["private"])

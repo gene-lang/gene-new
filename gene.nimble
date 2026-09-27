@@ -121,6 +121,7 @@ task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 
 task threadcheck, "Run threaded atomicArc smoke checks":
+  exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_atomic_generation_retirement.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_lifecycle.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_scope.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_io_file.nim"

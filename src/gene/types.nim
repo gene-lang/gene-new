@@ -1600,24 +1600,36 @@ when defined(geneRcStats):
     elif T is GeneNativeFn: managedNativeFunction
     else: {.error: "untracked manually managed type".}
   template trackAlloc(T: typedesc) =
-    inc liveManaged
-    inc liveManagedByKind[managedKind(T)]
+    when compileOption("threads"):
+      discard atomicFetchAdd(addr liveManaged, 1, ATOMIC_RELAXED)
+      discard atomicFetchAdd(addr liveManagedByKind[managedKind(T)], 1, ATOMIC_RELAXED)
+    else:
+      inc liveManaged
+      inc liveManagedByKind[managedKind(T)]
   template trackFree(T: typedesc) =
-    dec liveManaged
-    dec liveManagedByKind[managedKind(T)]
+    when compileOption("threads"):
+      discard atomicFetchSub(addr liveManaged, 1, ATOMIC_RELAXED)
+      discard atomicFetchSub(addr liveManagedByKind[managedKind(T)], 1, ATOMIC_RELAXED)
+    else:
+      dec liveManaged
+      dec liveManagedByKind[managedKind(T)]
 else:
   template trackAlloc(T: typedesc) = discard
   template trackFree(T: typedesc) = discard
 
 proc managedLiveCount*(): int =
   when defined(geneRcStats):
-    liveManaged
+    when compileOption("threads"): atomicLoadN(addr liveManaged, ATOMIC_ACQUIRE)
+    else: liveManaged
   else:
     0
 
 proc managedLiveByKind*(): array[ManagedKind, int] =
   when defined(geneRcStats):
-    liveManagedByKind
+    when compileOption("threads"):
+      for kind in ManagedKind:
+        result[kind] = atomicLoadN(addr liveManagedByKind[kind], ATOMIC_ACQUIRE)
+    else: result = liveManagedByKind
   else:
     default(array[ManagedKind, int])
 
@@ -2826,26 +2838,49 @@ proc kind*(v: Value): ValueKind {.inline, raises: [].}
 # Single-threaded wasm uses the same
 # layout-probed adapter for evaluation and activation scopes (not filesystem
 # sandbox qualification). `int` follows the target's ORC header word size.
-when defined(gcOrc) and not defined(gcAtomicArc) and
+when defined(geneAtomicGenerationRetirementProbe) and
+    (not defined(gcAtomicArc) or defined(gcOrc) or not defined(geneRcStats) or
+     not compileOption("threads")):
+  {.error: "geneAtomicGenerationRetirementProbe requires genuine AtomicArc and geneRcStats".}
+
+when (defined(gcOrc) and not defined(gcAtomicArc) or
+      defined(geneAtomicGenerationRetirementProbe)) and
     not (defined(nimArcDebug) or defined(nimArcIds) or
          defined(nimOrcLeakDetector)):
   type NimRefHeader = object
     rc: int
-    rootIdx: int
+    when defined(gcOrc):
+      rootIdx: int
   const nimRefCountReadable = true
 else:
   const nimRefCountReadable = false
 
 proc nimStrongRefs(p: pointer): int {.inline.} =
-  ## Owning references to an ORC object: boxes (GC_ref) plus Nim refs. Reads
-  ## the Nim 2.2 ORC header; `retirementSupported` verifies the layout.
+  ## Complete Nim object owners: boxes (GC_ref) plus Nim refs. The selected
+  ## Nim 2.2 memory-manager header is independently layout-probed below.
   when nimRefCountReadable:
-    (cast[ptr NimRefHeader](cast[int](p) -% sizeof(NimRefHeader)).rc shr 4) + 1
+    let header = cast[ptr NimRefHeader](cast[int](p) -% sizeof(NimRefHeader))
+    when defined(gcAtomicArc):
+      (atomicLoadN(addr header.rc, ATOMIC_ACQUIRE) shr 3) + 1
+    else:
+      (header.rc shr 4) + 1
   else:
     high(int)
 
-var retirementLayout = 0 # 0 unchecked, 1 verified, -1 unsupported
-var generationRetiring = false
+when defined(gcAtomicArc):
+  var retirementLayout {.threadvar.}: int
+  var generationRetiring {.threadvar.}: bool
+else:
+  var retirementLayout = 0 # 0 unchecked, 1 verified, -1 unsupported
+  var generationRetiring = false
+
+when defined(geneAtomicGenerationRetirementProbe):
+  var atomicGenerationRetirementBoundary {.threadvar.}: int
+  proc enterAtomicGenerationRetirementBoundary*() =
+    inc atomicGenerationRetirementBoundary
+  proc leaveAtomicGenerationRetirementBoundary*() =
+    doAssert atomicGenerationRetirementBoundary > 0
+    dec atomicGenerationRetirementBoundary
 
 proc retirementSupported(): bool =
   if retirementLayout == 0:
@@ -2862,8 +2897,8 @@ proc retirementSupported(): bool =
   retirementLayout == 1
 
 proc generationRetirementAvailable*(): bool =
-  ## Whether this build reads ORC counts and retires released generations. A
-  ## false result on an ORC build means the Nim header layout changed.
+  ## Whether this build has its count adapter. AtomicArc remains unavailable
+  ## without the qualification flag; a true probe result is not production support.
   retirementSupported()
 
 type
@@ -2892,8 +2927,8 @@ type
     ready: seq[int]
 
 proc retireValueTotal(bits: uint64): int =
-  # Retirement runs only without Gene worker lanes (see nimRefCountReadable), so
-  # a value marked shared by impl publication still has a stable exact count.
+  # ORC runs without Gene worker lanes. The AtomicArc experiment requires a
+  # paused-root boundary and pins published Values rather than trusting a snapshot.
   let payload = bits and PAYLOAD_MASK
   template manual(T: typedesc): int =
     block:
@@ -2914,6 +2949,22 @@ proc retireValueTotal(bits: uint64): int =
     nimStrongRefs(cast[pointer](payload))
   else: high(int)
 
+when defined(geneAtomicGenerationRetirementProbe):
+  proc retirementValuePublished(bits: uint64): bool =
+    let payload = bits and PAYLOAD_MASK
+    case bits shr TAG_SHIFT
+    of STRING_TAG: isSharedFlag(cast[ptr GeneString](payload).shared)
+    of INT64_TAG: isSharedFlag(cast[ptr GeneInt64](payload).shared)
+    of LIST_TAG: isSharedFlag(cast[ptr GeneList](payload).shared)
+    of MAP_TAG: isSharedFlag(cast[ptr GeneMap](payload).shared)
+    of NODE_TAG: isSharedFlag(cast[ptr GeneNode](payload).shared)
+    of FUNCTION_TAG: isSharedFlag(cast[ptr GeneFunction](payload).shared)
+    of NATIVE_FN_TAG: isSharedFlag(cast[ptr GeneNativeFn](payload).shared)
+    of OBJECT_TAG, CYCLE_OBJECT_TAG:
+      let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+      isSharedFlag(data.shared)
+    else: false
+
 proc valueNode(g: var RetireGraph, bits: uint64): int =
   if bits shr TAG_SHIFT < MANAGED_MIN or (bits and PAYLOAD_MASK) == 0:
     return -1
@@ -2921,6 +2972,8 @@ proc valueNode(g: var RetireGraph, bits: uint64): int =
   if result < 0:
     result = g.nodes.len
     g.nodes.add RetireNode(bits: bits, total: retireValueTotal(bits))
+    when defined(geneAtomicGenerationRetirementProbe):
+      g.nodes[result].pinned = retirementValuePublished(bits)
     g.valueIndex[bits] = result
 
 proc refNode(g: var RetireGraph, address: pointer,
@@ -3221,6 +3274,14 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
   ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
+  when defined(gcAtomicArc):
+    # Qualification-only: activation/returned-value collection has no worker
+    # barrier. Generation callers must enter the VM's paused-root boundary.
+    when defined(geneAtomicGenerationRetirementProbe):
+      if not generations or atomicGenerationRetirementBoundary == 0:
+        return 0
+    else:
+      return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
     return 0
   generationRetiring = true
@@ -3246,6 +3307,11 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       let idx = g.ready.pop()
       if g.nodes[idx].expanded:
         continue
+      when defined(geneAtomicGenerationRetirementProbe):
+        # A worker pause does not quiesce foreign native readers/mutators.
+        # Published Values stay live; do not inspect/count their mutable edges.
+        if g.nodes[idx].pinned:
+          continue
       case g.nodes[idx].kind
       of rnkScope: g.expandRetireScope(idx, counting = true)
       of rnkValue: g.expandRetireValue(idx, counting = true)
@@ -3351,7 +3417,7 @@ proc scopeHasOtherOwners*(scope: Scope): bool {.inline.} =
   ## cheap first test before callScopeMayCycle, kept inline so a scope nothing
   ## else holds costs one header load. Always false where ORC counts cannot be
   ## read; callScopeMayCycle still checks the layout probe.
-  when nimRefCountReadable:
+  when nimRefCountReadable and not defined(gcAtomicArc):
     nimStrongRefs(cast[pointer](scope)) > 1
   else:
     false
@@ -3436,7 +3502,7 @@ proc callScopeMayCycle*(scope: Scope): bool =
   ## over the scope itself, closes scope -> value -> closure -> scope; the weak
   ## captured-scope edge covers only a function bound directly in the scope
   ## that captured it. An oversized walk answers true; trial deletion decides.
-  when not nimRefCountReadable:
+  when not nimRefCountReadable or defined(gcAtomicArc):
     return false
   if scope == nil or not retirementSupported() or
       nimStrongRefs(cast[pointer](scope)) <= 1:

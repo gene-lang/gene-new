@@ -1,0 +1,46 @@
+# Native Gene orchestrates bounded native/ASAN qualification subprocesses.
+# Run from the repository root: gene run tests/qualify_atomic_retirement.gene [--asan] [--tsan]
+(fn main [args] : Int
+  (let modes ["disabled" "probe"])
+  (for option in args/body
+    ($assert (|| (== option "--asan") (== option "--tsan")) "expected --asan or --tsan")
+    (modes .push (if (== option "--asan") "asan" "tsan")))
+  ($fs/make_dir "tmp/atomic-retirement-qualification")
+  (let root ($fs/real_path "tmp/atomic-retirement-qualification"))
+  (var results [])
+  (for mode in modes
+    ($println ($json/stringify {^mode mode ^phase "build"}))
+    (let output $"${root}/${mode}")
+    (var command ["c" "--mm:atomicArc" "--threads:on" "-d:geneRcStats"
+      "--path:src" "--hints:off" $"--nimcache:${root}/cache-${mode}" $"-o:${output}"])
+    (if (!= mode "disabled") (command .push "-d:geneAtomicGenerationRetirementProbe"))
+    (if (== mode "asan")
+      (do
+        (command .push "--passC:-fsanitize=address")
+        (command .push "--passC:-fno-omit-frame-pointer")
+        (command .push "--passL:-fsanitize=address")))
+    (if (== mode "tsan")
+      (do
+        (command .push "--passC:-fsanitize=thread")
+        (command .push "--passC:-fno-omit-frame-pointer")
+        (command .push "--passL:-fsanitize=thread")))
+    (command .push "tests/test_atomic_generation_retirement.nim")
+    (let build (await ($os/exec_async ^cmd "nim" ^args command
+      ^timeout_ms 600000 ^max_bytes 1048576)))
+    ($fs/write_text $"${output}-build.log" ($ build/stdout build/stderr))
+    ($assert (&& (== build/status 0) (! build/truncated)) $"build failed: ${output}-build.log")
+    ($println ($json/stringify {^mode mode ^phase "run"}))
+    (let filters (if (== mode "tsan")
+      ["a real worker completes before nested retirement enters its barrier"
+       "a foreign native reader is protected by published-value pinning"] []))
+    (let run (await ($os/exec_async ^cmd output ^args filters
+      ^timeout_ms 180000 ^max_bytes 1048576)))
+    ($fs/write_text $"${output}-run.log" ($ run/stdout run/stderr))
+    (let sha ($crypto/sha256 ($fs/read_bytes output)))
+    (let ok (&& (== run/status 0) (! run/truncated) (! run/timed_out)))
+    (results .push {^mode mode ^ok ok ^sha256 sha ^status run/status
+      ^timed_out run/timed_out ^command command})
+    ($fs/write_text $"${root}/report.json" ($json/stringify results))
+    ($println ($json/stringify {^mode mode ^phase "finished" ^ok ok ^sha256 sha}))
+    ($assert ok $"qualification failed: ${output}-run.log"))
+  0)

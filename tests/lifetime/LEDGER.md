@@ -32,3 +32,27 @@ Next VM-0/3 work: closure cycles whose outside owner is not a returned value, an
 The owned Client and canonical AsyncReader dispatch share scheduler-owned reader/Task pins. Custom-reader RC tests require zero guards and a flat managed count after repeated completed reads. Owned-Client tests cover pending-read admission, held/dynamic/pipeline/inherited reads, delayed cancellation cleanup, budget rollback, and parent delegation; the AtomicArc case exercises worker-pool integration. Completed pins retire on the root lane outside its lock. Native physical tickets remain lifecycle-owned; custom convenience methods/backend aliases are outside the protocol guard. See [the borrowing audit](../../docs/profiles/native-app-2026-09-26-reader-borrowing.md).
 
 The borrowing continuation's full profile is `probe_pass`; the ten-child lifetime binary SHA is `af0cdfcd7494c7b9e6c762f56ebefd1ddaa283245f55d97a4d6eadb83c840088`. Mixed/HTTP baselines are 931/1046 and stay flat through 10,000 batches, with zero read guards and existing zero queue/byte/lease/readiness counters. Retained generation controls pass. The 60-second SERVICE run has heartbeat 54 ms and managed growth 0; sustained qualification remains separate.
+
+
+## AtomicArc generation experiment
+
+The [AAR-0 design](../../docs/proposals/atomic-arc-retirement.md) remains opt-in;
+normal AtomicArc generation/activation retirement is disabled. Independent
+one-word/three-bit header checks and a paused-root guard qualify private
+namespace/scalar generations through 10,000 retirements and private Type/direct
+method release/discard/failure through 1,000 batches. Per-class counts are flat;
+retained private/native roots and instances stay usable until dropped.
+
+Published Values stay pinned. Five canonical impl generations retain 63 managed
+Values and pending roots in the explicit `qualified: false` control; dropping
+a named reader cannot qualify shared collection. Foreign admission/borrow
+fences and arbitrary Nim ref transfers remain AAR-1/2 work.
+
+ThreadSanitizer exposed worker allocator access after an early inactive marker.
+Nested pause depth and teardown-aware retiring slots now acknowledge only after
+local/scheduler Fiber owners release, outside the scheduler lock. An owned copy
+and explicit reset avoid Nim's temporary overwrite; the existing typed-Task
+string lifetime case passes. Instrumented counters are atomic under threads.
+The Gene runner's disabled/probe/ASAN/TSAN modes pass; targeted TSAN covers running
+workers and a concurrently reading native thread. Default threadcheck, ORC
+leakcheck and spec pass. See [the audit](../../docs/profiles/native-app-2026-09-27-atomic.md).

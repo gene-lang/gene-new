@@ -342,10 +342,12 @@ type
       workerStop: bool
       workerCond: Cond
       activeWorkerFibers: seq[Fiber]
+      retiringWorkerFibers: seq[bool]
       asyncIoQueue: seq[AsyncIoRequest]
       asyncIoHead: int
       activeAsyncIoWorkers: int
       moduleMutationPaused: bool
+      moduleMutationPauseDepth: int
 
   SchedulerWorkerContext = ref object of RuntimeContext
     scheduler: SchedulerState
@@ -20342,24 +20344,39 @@ when compileOption("threads") and defined(gcAtomicArc):
     withSchedulerLock(s):
       s.workerStop
 
-  proc markSchedulerWorkerInactive(s: SchedulerState, slot: int, f: Fiber) =
+  proc markSchedulerWorkerInactive(s: SchedulerState, slot: int, address: pointer) =
+    var retired: Fiber
+    var retiredSlot = -1
     withSchedulerLock(s):
-      var cleared = false
       if slot >= 0 and slot < s.activeWorkerFibers.len and
-          s.activeWorkerFibers[slot] == f:
-        s.activeWorkerFibers[slot] = nil
-        cleared = true
+          cast[pointer](s.activeWorkerFibers[slot]) == address:
+        retiredSlot = slot
       else:
         for i in 0 ..< s.activeWorkerFibers.len:
-          if s.activeWorkerFibers[i] == f:
-            s.activeWorkerFibers[i] = nil
-            cleared = true
+          if cast[pointer](s.activeWorkerFibers[i]) == address:
+            retiredSlot = i
             break
-      if cleared:
-        broadcast(s.workerCond)
+      if retiredSlot >= 0:
+        s.retiringWorkerFibers[retiredSlot] = true
+        # Force an owning call result: Nim 2.2.4 can infer `move field` here
+        # as a cursor and lower the later nil assignment as a leaking overwrite.
+        retired = ownedCopy(s.activeWorkerFibers[retiredSlot])
+        s.activeWorkerFibers[retiredSlot] = nil
+    try:
+      # Destruction may invoke native cleanup: never do it under the scheduler
+      # lock. The retirement bit remains visible until every owning field drops.
+      reset(retired)
+    finally:
+      if retiredSlot >= 0:
+        withSchedulerLock(s):
+          s.retiringWorkerFibers[retiredSlot] = false
+          broadcast(s.workerCond)
 
   proc pauseSchedulerWorkersForModuleMutation(s: SchedulerState) =
+    if currentEventLane() != s.rootLane:
+      raise newException(GeneError, "module mutation requires the scheduler root lane")
     withSchedulerLock(s):
+      inc s.moduleMutationPauseDepth
       s.moduleMutationPaused = true
       broadcast(s.workerCond)
       while true:
@@ -20369,17 +20386,28 @@ when compileOption("threads") and defined(gcAtomicArc):
             active = true
             break
         if not active:
+          for retiring in s.retiringWorkerFibers:
+            if retiring:
+              active = true
+              break
+        if not active:
           break
         wait(s.workerCond, s.lock)
 
   proc resumeSchedulerWorkersAfterModuleMutation(s: SchedulerState) =
     withSchedulerLock(s):
-      s.moduleMutationPaused = false
-      broadcast(s.workerCond)
+      doAssert s.moduleMutationPauseDepth > 0
+      dec s.moduleMutationPauseDepth
+      if s.moduleMutationPauseDepth == 0:
+        s.moduleMutationPaused = false
+        broadcast(s.workerCond)
 
   proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
     if s.activeAsyncIoWorkers > 0 or s.pendingAsyncIoRequestsUnlocked() > 0:
       return true
+    for retiring in s.retiringWorkerFibers:
+      if retiring:
+        return true
     for f in s.activeWorkerFibers:
       if f != nil:
         return true
@@ -20519,7 +20547,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           finally:
             finishAsyncIoRequest(s)
           continue
-        let f = popRunnableFiber(workerOnly = true, activeWorkerSlot = ctx.slot)
+        var f = popRunnableFiber(workerOnly = true, activeWorkerSlot = ctx.slot)
         if f == nil:
           waitForSchedulerWorkerCandidate(s)
           continue
@@ -20529,13 +20557,19 @@ when compileOption("threads") and defined(gcAtomicArc):
           else:
             runFiber(f)
         finally:
-          markSchedulerWorkerInactive(s, ctx.slot, f)
+          # The scheduler slot stays a strong owner until the worker's local
+          # owner is gone. Clearing the slot releases its last Fiber/Scope/code
+          # owners before the pause can observe quiescence.
+          let address = cast[pointer](f)
+          f = nil
+          markSchedulerWorkerInactive(s, ctx.slot, address)
 
   proc growSchedulerWorkersUnlocked(s: SchedulerState, workerCount: int) =
     let oldCount = s.workers.len
     if workerCount <= oldCount:
       return
     s.activeWorkerFibers.setLen(workerCount)
+    s.retiringWorkerFibers.setLen(workerCount)
     s.workerContexts.setLen(workerCount)
     s.workers.setLen(workerCount)
     for i in oldCount ..< workerCount:
@@ -20578,6 +20612,7 @@ when compileOption("threads") and defined(gcAtomicArc):
         s.workerLeaseCount = 0
         s.workerStop = false
         s.activeWorkerFibers.setLen(0)
+        s.retiringWorkerFibers.setLen(0)
 
 else:
   proc pauseSchedulerWorkersForModuleMutation(s: SchedulerState) =
@@ -30337,9 +30372,45 @@ proc biRuntimeSandboxTransaction(args: openArray[Value],
 proc retireReleasedGenerationScopes(app: Application) =
   ## Retire released generation roots nothing outside reaches any more (VM-2).
   ## Callers pause scheduler workers.
+  when defined(geneAtomicGenerationRetirementProbe):
+    let scheduler = app.schedulerState()
+    doAssert currentEventLane() == scheduler.rootLane
+    withSchedulerLock(scheduler):
+      doAssert scheduler.moduleMutationPaused and scheduler.moduleMutationPauseDepth > 0
+      for fiber in scheduler.activeWorkerFibers:
+        doAssert fiber == nil
+      for retiring in scheduler.retiringWorkerFibers:
+        doAssert not retiring
+    enterAtomicGenerationRetirementBoundary()
+    defer: leaveAtomicGenerationRetirementBoundary()
   if app.releasedGenerationScopes.len > 0 and
       retireReleasedGenerations(app.releasedGenerationScopes) > 0:
     inc app.retireEpoch
+
+when defined(geneAtomicGenerationRetirementProbe):
+  proc testRetireAtomicGenerationRoots*(scope: Scope, pending: var seq[Scope],
+                                      nested = false): int =
+    ## Synthetic graph qualification through the actual scheduler barrier.
+    ## Test-only Nim entry point; no Gene or normal AtomicArc API is added.
+    let scheduler = schedulerForScope(scope)
+    if currentEventLane() != scheduler.rootLane:
+      raise newException(GeneError, "generation retirement requires the scheduler root lane")
+    pauseSchedulerWorkersForModuleMutation(scheduler)
+    try:
+      if nested: pauseSchedulerWorkersForModuleMutation(scheduler)
+      try:
+        withSchedulerLock(scheduler):
+          for fiber in scheduler.activeWorkerFibers: doAssert fiber == nil
+          for retiring in scheduler.retiringWorkerFibers: doAssert not retiring
+        enterAtomicGenerationRetirementBoundary()
+        try: result = retireReleasedGenerations(pending)
+        finally: leaveAtomicGenerationRetirementBoundary()
+      finally:
+        if nested: resumeSchedulerWorkersAfterModuleMutation(scheduler)
+      withSchedulerLock(scheduler):
+        doAssert scheduler.moduleMutationPaused and scheduler.moduleMutationPauseDepth == 1
+    finally:
+      resumeSchedulerWorkersAfterModuleMutation(scheduler)
 
 when defined(geneRcStats):
   proc retirePendingGenerations(scope: Scope) =
