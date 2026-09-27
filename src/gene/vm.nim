@@ -7,6 +7,8 @@ import ./[compiler, diagnostics, digest, equality, gir, package, printer, reader
 import ./[callable_reflection, error_analysis, gir_codec, native_errors]
 import ./io_lifecycle
 import ./pending_exception
+when defined(geneAtomicGenerationRetirementProbe):
+  import ./retirement_native_gate
 import ./ext/logging
 export type_contracts
 
@@ -13587,6 +13589,28 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenValues: var HashSet[uint64],
                                seenChunks: var HashSet[pointer])
 
+when defined(geneAtomicGenerationRetirementProbe):
+  proc publishErrorEffect(effect: ErrorEffectSummary,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64],
+                         seenChunks: var HashSet[pointer]) =
+    for error in effect.named:
+      publishSpawnValue(error.expr, seenScopes, seenValues, seenChunks)
+
+  proc publishErrorDependency(dependency: ErrorProofDependency,
+                             seenScopes: var HashSet[pointer],
+                             seenValues: var HashSet[uint64],
+                             seenChunks: var HashSet[pointer]) =
+    publishSpawnValue(dependency.target, seenScopes, seenValues, seenChunks)
+    publishErrorEffect(dependency.permitted, seenScopes, seenValues, seenChunks)
+
+  proc publishNativeRepr(repr: AotRepr, seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64],
+                         seenChunks: var HashSet[pointer]) =
+    if repr.nativeType != nil and repr.nativeType.abi != nil:
+      for field in repr.nativeType.abi.fields:
+        publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+
 proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
                        seenValues: var HashSet[uint64],
                        seenChunks: var HashSet[pointer]) =
@@ -13596,6 +13620,17 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
   if seenChunks.contains(key):
     return
   seenChunks.incl key
+  when defined(geneAtomicGenerationRetirementProbe):
+    publishSpawnValue(chunk.superType, seenScopes, seenValues, seenChunks)
+    publishErrorEffect(chunk.initializationErrors, seenScopes, seenValues, seenChunks)
+    for dependency in chunk.errorProofDependencies:
+      publishErrorDependency(dependency, seenScopes, seenValues, seenChunks)
+    for spec in chunk.monomorphizations:
+      for typ in spec.typeArgs:
+        publishSpawnValue(typ, seenScopes, seenValues, seenChunks)
+    for web in chunk.webModules:
+      for form in web.forms:
+        publishSpawnValue(form, seenScopes, seenValues, seenChunks)
   for value in chunk.constants:
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
   for _, site in chunk.callSites:
@@ -13615,10 +13650,17 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
   for attempt in chunk.tries:
     publishSpawnChunk(attempt.body, seenScopes, seenValues, seenChunks)
     for clause in attempt.catches:
+      when defined(geneAtomicGenerationRetirementProbe):
+        publishSpawnValue(clause.errorType, seenScopes, seenValues, seenChunks)
       publishSpawnValue(clause.pattern, seenScopes, seenValues, seenChunks)
       publishSpawnChunk(clause.body, seenScopes, seenValues, seenChunks)
     publishSpawnChunk(attempt.ensureBody, seenScopes, seenValues, seenChunks)
   for proto in chunk.typeProtos:
+    when defined(geneAtomicGenerationRetirementProbe):
+      publishSpawnFunctionProto(proto.ctorFn, seenScopes, seenValues, seenChunks)
+      if proto.nativeType != nil and proto.nativeType.abi != nil:
+        for field in proto.nativeType.abi.fields:
+          publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
     for field in proto.fields:
       publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
       publishSpawnScope(field.typeFieldScope(nil), seenScopes, seenValues, seenChunks)
@@ -13630,6 +13672,8 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     for inline in proto.inlineImpls:
+      when defined(geneAtomicGenerationRetirementProbe):
+        publishSpawnValue(inline.protocolExpr, seenScopes, seenValues, seenChunks)
       for message in inline.messages:
         publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for proto in chunk.enumProtos:
@@ -13641,6 +13685,8 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     for inline in proto.inlineImpls:
+      when defined(geneAtomicGenerationRetirementProbe):
+        publishSpawnValue(inline.protocolExpr, seenScopes, seenValues, seenChunks)
       for message in inline.messages:
         publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for proto in chunk.protocolProtos:
@@ -13648,9 +13694,16 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     publishSpawnFunctionProto(proto.deriveFn, seenScopes, seenValues, seenChunks)
   for proto in chunk.implProtos:
+    when defined(geneAtomicGenerationRetirementProbe):
+      publishSpawnValue(proto.protocolExpr, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(proto.receiverExpr, seenScopes, seenValues, seenChunks)
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for ffi in chunk.ffiFns:
+    when defined(geneAtomicGenerationRetirementProbe):
+      for repr in ffi.paramReprs:
+        publishNativeRepr(repr, seenScopes, seenValues, seenChunks)
+      publishNativeRepr(ffi.returnRepr, seenScopes, seenValues, seenChunks)
     for param in ffi.params:
       publishSpawnValue(param.typeExpr, seenScopes, seenValues, seenChunks)
     publishSpawnValue(ffi.returnType, seenScopes, seenValues, seenChunks)
@@ -13674,6 +13727,37 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenChunks: var HashSet[pointer]) =
   if proto == nil:
     return
+  when defined(geneAtomicGenerationRetirementProbe):
+    # Prototype/header edges can loop through summary targets or Scope bindings.
+    let key = cast[pointer](proto)
+    if seenChunks.contains(key): return
+    seenChunks.incl key
+    publishSpawnValue(ownedValueFromBits(proto.annotationSelfBits),
+                      seenScopes, seenValues, seenChunks)
+    publishSpawnValue(proto.restType, seenScopes, seenValues, seenChunks)
+    for value in proto.signatureErrorExprs:
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    for value in proto.declMetaValues:
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    for repr in proto.aotParamReprs:
+      publishNativeRepr(repr, seenScopes, seenValues, seenChunks)
+    for local in proto.aotLocals:
+      publishNativeRepr(local.repr, seenScopes, seenValues, seenChunks)
+    publishNativeRepr(proto.aotReturnRepr, seenScopes, seenValues, seenChunks)
+    let summary = proto.errorSummary
+    if summary != nil:
+      publishSpawnValue(summary.resultType, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(summary.inferredResultType, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(summary.receiverType.expr, seenScopes, seenValues, seenChunks)
+      for effect in [summary.declaredRow, summary.inferredRow,
+                     summary.producerRow, summary.resultErrors]:
+        publishErrorEffect(effect, seenScopes, seenValues, seenChunks)
+      for contract in summary.returnContracts:
+        publishSpawnValue(contract.valueType, seenScopes, seenValues, seenChunks)
+        publishErrorEffect(contract.errors, seenScopes, seenValues, seenChunks)
+      for dependency in summary.dependencies:
+        publishErrorDependency(dependency, seenScopes, seenValues, seenChunks)
+    publishSpawnChunk(proto.scopelessChunk, seenScopes, seenValues, seenChunks)
   for value in proto.paramTypes:
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
   for param in proto.namedParams:
@@ -13696,6 +13780,9 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     return
   seenValues.incl value.bits
   markSharedValue(value)
+  when defined(geneAtomicGenerationRetirementProbe):
+    for child in value.publicationValueChildren:
+      publishSpawnValue(child, seenScopes, seenValues, seenChunks)
   case value.kind
   of vkList:
     for item in value.listItems:
@@ -29117,6 +29204,9 @@ proc newNativeSyncCallback*(callee: Value, scope: Scope,
     requireNativeRootable(callee)
     let target = if signature.kind == vkNil: escapeWeakFunctions(callee)
                  else: adaptCallableView(signature, callee, scope)
+    when defined(geneAtomicGenerationRetirementProbe):
+      publishNativeRootForRetirement(target)
+      publishNativeScopeForRetirement(scope)
     NativeSyncCallback(ownerThread: nativeCallbackLane(), callee: target,
       scope: scope)
 
@@ -30430,6 +30520,8 @@ proc retireReleasedGenerationScopes(app: Application) =
         doAssert fiber == nil
       for retiring in scheduler.retiringWorkerFibers:
         doAssert not retiring
+    if not trySealRetirementNativeAccess(): return
+    defer: unsealRetirementNativeAccess()
     enterAtomicGenerationRetirementBoundary()
     defer: leaveAtomicGenerationRetirementBoundary()
   if app.releasedGenerationScopes.len > 0 and
@@ -30451,6 +30543,8 @@ when defined(geneAtomicGenerationRetirementProbe):
         withSchedulerLock(scheduler):
           for fiber in scheduler.activeWorkerFibers: doAssert fiber == nil
           for retiring in scheduler.retiringWorkerFibers: doAssert not retiring
+        if not trySealRetirementNativeAccess(): return 0
+        defer: unsealRetirementNativeAccess()
         enterAtomicGenerationRetirementBoundary()
         try: result = retireReleasedGenerations(pending)
         finally: leaveAtomicGenerationRetirementBoundary()

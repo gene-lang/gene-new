@@ -36,6 +36,8 @@
 import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
             unicode]
 import ./pending_exception
+when defined(geneAtomicGenerationRetirementProbe):
+  import ./retirement_native_gate
 
 when not defined(geneWasm):
   import std/re as nre
@@ -2473,6 +2475,7 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     of okNamespace: pin(NamespaceData(data).scope)
     of okType:
       let d {.cursor.} = TypeData(data)
+      markSharedBits(d.annotationRefBits, seen)
       pin(d.scope)
       pin(cast[Scope](d.weakScope))
       for field in d.fields:
@@ -2629,6 +2632,28 @@ proc markSharedValue*(value: Value) =
   ## M:N execution.
   var seen = initHashSet[uint64]()
   markSharedBits(value.bits, seen)
+
+when defined(geneAtomicGenerationRetirementProbe):
+  proc publicationValueChildren*(value: Value): seq[Value] =
+    ## Known object Value edges for the VM's code-publication walk. Call before
+    ## handoff under admission; this is not a shared-container snapshot adapter.
+    if value.tagOf == OBJECT_TAG or value.tagOf == CYCLE_OBJECT_TAG:
+      let data {.cursor.} = objData(value)
+      # Task/Channel/Actor snapshots already use their own locks in the VM walk.
+      if data.objKind notin {okTask, okChannel, okActorRef, okAtomicCell}:
+        forObjectEdges(data, bits):
+          rcRetain(bits)
+          result.add Value(bits: bits)
+      var weakBits = 0'u64
+      case data.objKind
+      of okType: weakBits = TypeData(data).annotationRefBits
+      of okProtocolMessage: weakBits = ProtocolMessageData(data).protocolBits
+      of okBoundMessage: weakBits = BoundMessageData(data).protocolBits
+      of okEnumVariant: weakBits = EnumVariantData(data).enumBits
+      else: discard
+      if weakBits != 0:
+        rcRetain(weakBits)
+        result.add Value(bits: weakBits)
 
 proc rcRetain(bits: uint64) =
   case bits shr TAG_SHIFT
@@ -3338,7 +3363,8 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     # Qualification-only: activation/returned-value collection has no worker
     # barrier. Generation callers must enter the VM's paused-root boundary.
     when defined(geneAtomicGenerationRetirementProbe):
-      if not generations or atomicGenerationRetirementBoundary == 0:
+      if not generations or atomicGenerationRetirementBoundary == 0 or
+          not retirementNativeAnalysisAdmitted():
         return 0
     else:
       return 0
@@ -3450,6 +3476,10 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     var held: seq[RetiredScopeBindings]
     for scope in doomed:
       held.add scope.takeRetiredBindings()
+    when defined(geneAtomicGenerationRetirementProbe):
+      # Scope edges are detached and pinned Values remain in `held`. Reopen
+      # native admission before invoking arbitrary last-owner cleanup.
+      finishRetirementNativeAnalysis()
     held.setLen(0)
     result = doomed.len
   finally:

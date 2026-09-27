@@ -52,6 +52,14 @@ Values and pending roots in the explicit `qualified: false` control; dropping
 a named reader cannot qualify shared collection. Foreign admission/borrow
 fences and arbitrary Nim ref transfers remain AAR-1/2 work.
 
+The [native admission continuation](../../docs/profiles/native-app-2026-09-27-native-admission.md)
+adds qualification-only entry leases for SDK roots and native modules. Counting
+requires a drained native boundary after the worker pause. Owner-dependent calls
+defer collection; native admission reopens after Scope edges detach and before
+cleanup, while a collector reservation prevents overlapping passes. Raw returned
+objects keep their permanent pins. Full managed borrows and other native API
+paths remain unqualified; this does not promote AAR-2 or production retirement.
+
 ThreadSanitizer exposed worker allocator access after an early inactive marker.
 Nested pause depth and teardown-aware retiring slots now acknowledge only after
 local/scheduler Fiber owners release, outside the scheduler lock. An owned copy

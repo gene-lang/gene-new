@@ -11,6 +11,17 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
 import ./ext/logging
 import ./[types, vm]
+when defined(geneAtomicGenerationRetirementProbe):
+  import ./retirement_native_gate
+
+template withRetirementNativeAdmission(mayNeedOwnerProgress: static[bool], body: untyped) =
+  when defined(geneAtomicGenerationRetirementProbe):
+    if not enterRetirementNativeAccess(mayNeedOwnerProgress):
+      raise newException(GeneError, "native access cannot enter generation analysis")
+    try: body
+    finally: leaveRetirementNativeAccess()
+  else:
+    body
 
 export vm.NativeSyncCallback, vm.newNativeSyncCallback,
        vm.beginNativeCallbackCall, vm.withNativeSyncCallback,
@@ -614,23 +625,26 @@ proc cancelResult(e: ref GeneCancel): GeneResult =
   GeneResult(status: gsCancelled, message: e.msg)
 
 proc geneRoot*(value: Value): GeneRoot =
-  vm.requireNativeRootable(value)
-  when defined(geneAtomicGenerationRetirementProbe):
-    vm.publishNativeRootForRetirement(value)
-  result = GeneRoot(value: value)
-  noteNativeRootCreated()
+  withRetirementNativeAdmission(true):
+    vm.requireNativeRootable(value)
+    when defined(geneAtomicGenerationRetirementProbe):
+      vm.publishNativeRootForRetirement(value)
+    result = GeneRoot(value: value)
+    noteNativeRootCreated()
 
 proc geneRootGet*(root: GeneRoot): Value =
-  if root == nil or root.released:
-    raise newException(GeneError, "native root has been released")
-  root.value
+  withRetirementNativeAdmission(false):
+    if root == nil or root.released:
+      raise newException(GeneError, "native root has been released")
+    result = root.value
 
 proc geneRootRelease*(root: GeneRoot) =
-  if root == nil or root.released:
-    return
-  root.value = NIL
-  root.released = true
-  noteNativeRootReleased()
+  withRetirementNativeAdmission(true):
+    if root == nil or root.released:
+      return
+    root.value = NIL
+    root.released = true
+    noteNativeRootReleased()
 
 proc newGeneIngressSubscription*(handler: Value, scope: Scope,
                                  maxCount = GeneIngressMaxCount,
@@ -1162,28 +1176,40 @@ installNativeIngressHandleReleaseHook(releaseIngressHandleRecord)
 
 proc newGeneModule*(name: string, path = "",
                     scope: Scope = nil): GeneModule =
-  let moduleScope =
-    if scope == nil: newGlobalScope()
-    else: scope
-  let moduleValue = bindThisModule(moduleScope, name, path)
-  GeneModule(value: moduleValue, scope: moduleScope)
+  withRetirementNativeAdmission(true):
+    let moduleScope =
+      if scope == nil: newGlobalScope()
+      else: scope
+    let moduleValue = bindThisModule(moduleScope, name, path)
+    when defined(geneAtomicGenerationRetirementProbe):
+      vm.publishNativeScopeForRetirement(moduleScope)
+    result = GeneModule(value: moduleValue, scope: moduleScope)
 
 proc geneModuleValue*(module: GeneModule): Value =
-  if module == nil:
-    raise newException(GeneError, "native module is nil")
-  module.value
+  withRetirementNativeAdmission(true):
+    if module == nil:
+      raise newException(GeneError, "native module is nil")
+    when defined(geneAtomicGenerationRetirementProbe):
+      vm.publishNativeRootForRetirement(module.value)
+    result = module.value
 
 proc geneModuleScope*(module: GeneModule): Scope =
-  if module == nil:
-    raise newException(GeneError, "native module is nil")
-  module.scope
+  withRetirementNativeAdmission(true):
+    if module == nil:
+      raise newException(GeneError, "native module is nil")
+    when defined(geneAtomicGenerationRetirementProbe):
+      vm.publishNativeScopeForRetirement(module.scope)
+    result = module.scope
 
 proc geneModuleDefine*(module: GeneModule, name: string,
                        value: Value): GeneResult =
   try:
-    module.geneModuleScope.define(name, value)
-    result.status = gsOk
-    result.value = value
+    withRetirementNativeAdmission(true):
+      when defined(geneAtomicGenerationRetirementProbe):
+        vm.publishNativeRootForRetirement(value)
+      module.geneModuleScope.define(name, value)
+      result.status = gsOk
+      result.value = value
   except GeneError as e:
     result = errorResult(e)
   except GenePanic as e:

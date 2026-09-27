@@ -4,6 +4,8 @@ when not defined(gcAtomicArc) or defined(gcOrc) or not defined(geneRcStats):
 
 import gene/[compiler, native_api, printer, types, vm]
 import std/[json, monotimes, os, strutils, tables, times, unittest]
+when defined(geneAtomicGenerationRetirementProbe):
+  import gene/[gir, retirement_native_gate]
 
 initModuleContext(getCurrentDir())
 let host = newGlobalScope()
@@ -93,6 +95,73 @@ when defined(geneAtomicGenerationRetirementProbe):
       if admitted == 1: geneIngressEnd(state.context)
   proc ingressHandler(args: openArray[Value]): Value {.nimcall.} = NIL
 
+  type NativeEntry = ref object
+    root: GeneRoot
+    started, finished, bad: int
+  proc drainingNativeEntry(state: NativeEntry) {.thread.} =
+    {.cast(gcsafe).}:
+      doAssert enterRetirementNativeAccess()
+      try:
+        atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+        os.sleep(100)
+        # A nested SDK operation must finish even after admission is sealed.
+        if geneRootGet(state.root).intVal != 42:
+          atomicStoreN(addr state.bad, 1, ATOMIC_RELEASE)
+        atomicStoreN(addr state.finished, 1, ATOMIC_RELEASE)
+      finally:
+        leaveRetirementNativeAccess()
+  proc lateNativeEntry(state: NativeEntry) {.thread.} =
+    {.cast(gcsafe).}:
+      atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+      if geneRootGet(state.root).intVal != 42:
+        atomicStoreN(addr state.bad, 1, ATOMIC_RELEASE)
+      atomicStoreN(addr state.finished, 1, ATOMIC_RELEASE)
+
+  var sdkCleanupCalls: int
+  proc sdkCleanup(address: pointer) {.nimcall.} =
+    doAssert not retirementNativeGateSnapshot().sealed
+    doAssert retirementNativeGateSnapshot().depth == 1
+    let root = geneRoot(newInt(42))
+    doAssert geneRootGet(root).intVal == 42
+    geneRootRelease(root)
+    inc sdkCleanupCalls
+
+  var ownerAcknowledged: int
+  proc dependentCleanup(address: pointer) {.nimcall.} =
+    let deadline = getMonoTime() + initDuration(seconds = 2)
+    while atomicLoadN(addr ownerAcknowledged, ATOMIC_ACQUIRE) == 0:
+      doAssert getMonoTime() < deadline, "collector blocked the cleanup's owning lane"
+      os.sleep(1)
+  proc dependentNativeEntry(state: NativeEntry) {.thread.} =
+    {.cast(gcsafe).}:
+      doAssert enterRetirementNativeAccess()
+      try:
+        atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while not retirementNativeGateSnapshot().sealed:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        # Upgrade a previously admitted entry after the collector starts draining.
+        geneRootRelease(state.root)
+        atomicStoreN(addr state.finished, 1, ATOMIC_RELEASE)
+      finally:
+        leaveRetirementNativeAccess()
+
+  var cleanupStarted, cleanupTimedOut: int
+  var cleanupEntry: NativeEntry
+  proc cleanupNativeEntry(state: NativeEntry) {.thread.} =
+    {.cast(gcsafe).}:
+      while atomicLoadN(addr cleanupStarted, ATOMIC_ACQUIRE) == 0: os.sleep(1)
+      lateNativeEntry(state)
+  proc foreignSdkCleanup(address: pointer) {.nimcall.} =
+    atomicStoreN(addr cleanupStarted, 1, ATOMIC_RELEASE)
+    let deadline = getMonoTime() + initDuration(seconds = 2)
+    while atomicLoadN(addr cleanupEntry.finished, ATOMIC_ACQUIRE) == 0:
+      if getMonoTime() >= deadline:
+        atomicStoreN(addr cleanupTimedOut, 1, ATOMIC_RELEASE)
+        return
+      os.sleep(1)
+
 suite "AtomicArc generation retirement qualification":
   test "activation retirement stays disabled":
     let root = privateRoot()
@@ -119,6 +188,144 @@ suite "AtomicArc generation retirement qualification":
       check roots.len == 1
       check testRetireAtomicGenerationRoots(host, roots) > 0
       check roots.len == 0
+
+    test "native admission drains existing entries before analysis":
+      let native = geneRoot(newInt(42))
+      for i in 0 ..< 10:
+        let state = NativeEntry(root: native)
+        var thread: Thread[NativeEntry]
+        createThread(thread, drainingNativeEntry, state)
+        try:
+          let deadline = getMonoTime() + initDuration(seconds = 2)
+          while atomicLoadN(addr state.started, ATOMIC_ACQUIRE) == 0:
+            doAssert getMonoTime() < deadline
+            os.sleep(1)
+          var roots = @[privateRoot()]
+          check testRetireAtomicGenerationRoots(host, roots) > 0
+          check atomicLoadN(addr state.finished, ATOMIC_ACQUIRE) == 1
+          check atomicLoadN(addr state.bad, ATOMIC_ACQUIRE) == 0
+        finally:
+          joinThread(thread)
+      geneRootRelease(native)
+      check retirementNativeGateSnapshot().active == 0
+      check not retirementNativeGateSnapshot().sealed
+
+    test "late SDK entry waits through nested collector seals":
+      let native = geneRoot(newInt(42))
+      let state = NativeEntry(root: native)
+      var roots = @[privateRoot()]
+      check trySealRetirementNativeAccess()
+      check trySealRetirementNativeAccess()
+      var thread: Thread[NativeEntry]
+      createThread(thread, lateNativeEntry, state)
+      try:
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while retirementNativeGateSnapshot().waiting == 0:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        check atomicLoadN(addr state.finished, ATOMIC_ACQUIRE) == 0
+        unsealRetirementNativeAccess()
+        check retirementNativeGateSnapshot().sealed
+        check retirementNativeGateSnapshot().depth == 1
+        check testRetireAtomicGenerationRoots(host, roots, nested = true) == 0
+        check retirementNativeGateSnapshot().sealed
+        check atomicLoadN(addr state.finished, ATOMIC_ACQUIRE) == 0
+      finally:
+        while retirementNativeGateSnapshot().depth > 0:
+          unsealRetirementNativeAccess()
+        joinThread(thread)
+      check atomicLoadN(addr state.finished, ATOMIC_ACQUIRE) == 1
+      check atomicLoadN(addr state.bad, ATOMIC_ACQUIRE) == 0
+      geneRootRelease(native)
+      check retirementNativeGateSnapshot().waiting == 0
+      check testRetireAtomicGenerationRoots(host, roots) > 0
+
+    test "owner dependent native cleanup defers a draining collector":
+      proc ownedResource(): GeneRoot =
+        let resource = newCOwnedPtr(cast[pointer](1), dependentCleanup)
+        geneRoot(resource)
+      atomicStoreN(addr ownerAcknowledged, 0, ATOMIC_RELEASE)
+      let state = NativeEntry(root: ownedResource())
+      var thread: Thread[NativeEntry]
+      createThread(thread, dependentNativeEntry, state)
+      var roots = @[privateRoot()]
+      try:
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while atomicLoadN(addr state.started, ATOMIC_ACQUIRE) == 0:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        check testRetireAtomicGenerationRoots(host, roots) == 0
+        check not retirementNativeGateSnapshot().sealed
+        check roots.len == 1
+      finally:
+        atomicStoreN(addr ownerAcknowledged, 1, ATOMIC_RELEASE)
+        joinThread(thread)
+      check atomicLoadN(addr state.finished, ATOMIC_ACQUIRE) == 1
+      check testRetireAtomicGenerationRoots(host, roots) > 0
+
+    test "collection inside a native entry defers without self deadlock":
+      var roots = @[privateRoot()]
+      check enterRetirementNativeAccess()
+      try:
+        check testRetireAtomicGenerationRoots(host, roots, nested = true) == 0
+        check roots.len == 1
+      finally:
+        leaveRetirementNativeAccess()
+      check testRetireAtomicGenerationRoots(host, roots) > 0
+
+    test "native admission unwinds failures and rejects analysis reentry":
+      expect GeneError: discard geneRootGet(nil)
+      check retirementNativeGateSnapshot().active == 0
+      check trySealRetirementNativeAccess()
+      try:
+        expect GeneError: discard geneRoot(newInt(1))
+        check retirementNativeGateSnapshot().active == 0
+      finally:
+        unsealRetirementNativeAccess()
+      let native = geneRoot(newInt(42))
+      geneRootRelease(native)
+      check enterRetirementNativeAccess(mayNeedOwnerProgress = true)
+      try:
+        check not trySealRetirementNativeAccess()
+      finally:
+        leaveRetirementNativeAccess()
+
+    test "last owner SDK cleanup runs outside the admission lock":
+      proc install(scope: Scope) =
+        # End the creator's temporary owner before collection starts.
+        let resource = newCOwnedPtr(cast[pointer](1), sdkCleanup)
+        scope.define("native", resource)
+      var roots = @[privateRoot()]
+      sdkCleanupCalls = 0
+      install(roots[0])
+      check testRetireAtomicGenerationRoots(host, roots) > 0
+      check sdkCleanupCalls == 1
+      check retirementNativeGateSnapshot().active == 0
+      check not retirementNativeGateSnapshot().sealed
+
+    test "foreign SDK callbacks can finish after Scope edges detach":
+      proc install(scope: Scope) =
+        let resource = newCOwnedPtr(cast[pointer](1), foreignSdkCleanup)
+        scope.define("native", resource)
+      let native = geneRoot(newInt(42))
+      cleanupEntry = NativeEntry(root: native)
+      atomicStoreN(addr cleanupStarted, 0, ATOMIC_RELEASE)
+      atomicStoreN(addr cleanupTimedOut, 0, ATOMIC_RELEASE)
+      var thread: Thread[NativeEntry]
+      createThread(thread, cleanupNativeEntry, cleanupEntry)
+      var roots = @[privateRoot()]
+      install(roots[0])
+      try:
+        check testRetireAtomicGenerationRoots(host, roots) > 0
+      finally:
+        atomicStoreN(addr cleanupStarted, 1, ATOMIC_RELEASE)
+        joinThread(thread)
+      check atomicLoadN(addr cleanupTimedOut, ATOMIC_ACQUIRE) == 0
+      check atomicLoadN(addr cleanupEntry.finished, ATOMIC_ACQUIRE) == 1
+      check atomicLoadN(addr cleanupEntry.bad, ATOMIC_ACQUIRE) == 0
+      geneRootRelease(native)
+      cleanupEntry = nil
+      check retirementNativeGateSnapshot().depth == 0
 
     test "private namespace cycles are flat through 10000 retirements":
       proc batch(count: int) =
@@ -189,6 +396,68 @@ suite "AtomicArc generation retirement qualification":
         check roots[0].scopePublishedForRetirement
         geneRootRelease(retained)
         proto.chunk.constants.setLen(0)
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
+      roots.setLen(0)
+
+    test "native Type method code publishes its constant environments":
+      var roots = @[privateRoot()]
+      block:
+        let proto = compileSource("(fn [] nil)").functions[0]
+        proto.chunk.constants.add roots[0].lookup("self")
+        let methodValue = newFunction("constant", @[], proto, host)
+        let typ = newType("NativeCode", NIL, @[], @[], host,
+                          messages = {"constant": methodValue}.toTable)
+        let native = geneRoot(typ)
+        check roots[0].scopePublishedForRetirement
+        geneRootRelease(native)
+        proto.chunk.constants.setLen(0)
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
+      roots.setLen(0)
+
+    test "code headers and error proof targets publish their environments":
+      for shape in ["metadata", "error_target", "constructor", "derived_chunk"]:
+        var roots = @[privateRoot()]
+        block:
+          let proto = compileSource("(fn [] nil)").functions[0]
+          let child = compileSource("(fn [] nil)").functions[0]
+          child.chunk.constants.add roots[0].lookup("self")
+          case shape
+          of "metadata":
+            proto.declMetaValues = @[newFunction("metadata", @[], child, host)]
+          of "error_target":
+            proto.errorSummary = CallableErrorSummary(dependencies: @[
+              ErrorProofDependency(target: newFunction("proof", @[], child, host))])
+          of "constructor":
+            proto.chunk.typeProtos.add TypeProto(name: "Nested", ctorFn: child)
+          of "derived_chunk":
+            proto.scopelessChunk = child.chunk
+          else: discard
+          let native = geneRoot(newFunction("header", @[], proto, host))
+          check roots[0].scopePublishedForRetirement
+          geneRootRelease(native)
+          child.chunk.constants.setLen(0)
+        check testRetireAtomicGenerationRoots(host, roots) == 0
+        roots[0].vars.clear()
+        roots.setLen(0)
+
+    test "native module Scope exposure stays pinned after its handle drops":
+      var roots = @[privateRoot()]
+      block:
+        let module = newGeneModule("native", scope = roots[0])
+        check geneModuleScope(module) == roots[0]
+        check roots[0].scopePublishedForRetirement
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
+      roots.setLen(0)
+
+    test "prepared synchronous native callback dispatch Scopes stay pinned":
+      var roots = @[privateRoot()]
+      block:
+        let callback = newNativeSyncCallback(newNativeFn("callback", ingressHandler), roots[0])
+        check callback != nil
+        check roots[0].scopePublishedForRetirement
       check testRetireAtomicGenerationRoots(host, roots) == 0
       roots[0].vars.clear()
       roots.setLen(0)

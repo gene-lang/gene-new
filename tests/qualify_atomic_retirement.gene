@@ -35,7 +35,12 @@
        "a foreign native reader is protected by published-value pinning"
        "a foreign Scope writer is never enumerated by retirement"
        "foreign retain drop transfers remain permanently pinned"
-       "late C ingress retains its Scope until physical retirement"] []))
+       "late C ingress retains its Scope until physical retirement"
+       "native admission drains existing entries before analysis"
+       "late SDK entry waits through nested collector seals"
+       "owner dependent native cleanup defers a draining collector"
+       "last owner SDK cleanup runs outside the admission lock"
+       "foreign SDK callbacks can finish after Scope edges detach"] []))
     (let run (await ($os/exec_async ^cmd output ^args filters
       ^timeout_ms 180000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-run.log" ($ run/stdout run/stderr))

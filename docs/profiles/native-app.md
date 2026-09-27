@@ -225,3 +225,8 @@ known Scope/ancestor/weak/code publication and excludes mutable published Scope
 tables from the experiment. SDK roots remain pinned after release; C ingress
 retains its existing physical-retirement fence. Native borrow quiescence and
 arbitrary Nim ownership transfers remain open. No stage is promoted.
+
+The [native entry admission audit](native-app-2026-09-27-native-admission.md)
+extends the experiment with SDK root/module entry fences, owner-progress
+deferral, cleanup after edge detachment and more code-publication edges.
+Escaped raw refs stay pinned; the full managed-borrow contract remains open.

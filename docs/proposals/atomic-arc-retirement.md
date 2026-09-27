@@ -2,6 +2,8 @@
 
 **Status:** AAR-0 and the conservative publication portion of AAR-1 are
 implemented. Native borrow quiescence and shared reclamation remain open.
+Selected SDK entry admission is also implemented in the qualification build;
+it does not cover raw returned references or the complete native API.
 Normal AtomicArc retirement remains disabled. This does not promote
 VM-2 or threaded lifetime support. The existing language and sandbox APIs remain
 unchanged.
@@ -119,7 +121,52 @@ environment and compiled-constant controls, mixed-batch retention, and late C
 ingress with physical-retirement rejection. These test permanent retention;
 they do not establish eventual reclamation or concurrent application table access.
 
-#### Remaining native quiescence (AAR-1b)
+#### Selected entry admission (AAR-1b, partial)
+
+`retirement_native_gate.nim` adds a qualification-only process-wide gate for
+SDK root create/get/release and native module create/value/Scope/define entry
+calls. Normal builds have no gate or SDK contract change. Its process-wide domain
+is deliberately conservative; unrelated applications can delay one another.
+
+The owning VM root pauses workers first, then seals native admission and drains
+owner-independent outer entries. SDK publication, module mutation and release
+can invoke cleanup requiring root-lane progress, so active calls in those classes
+defer collection. A nested call upgrading an already draining entry wakes the
+collector, reopens admission and defers its pass. An admitted entry may finish nested SDK calls
+while the gate drains; denying that nesting would deadlock the collector. Late
+foreign entries wait until the outermost collector seal exits. Nested seals keep
+admission closed; generation analysis defers inside an enclosing native seal.
+A competing collector defers, and a collector invoked from
+inside a native entry defers rather than waiting for its own lease.
+
+Generation analysis now also requires this drained native boundary. After all
+count/edge analysis finishes and candidate Scope edges are detached, native
+admission reopens before last-owner drops. This lets cleanup join a foreign SDK
+callback without keeping that callback behind its own fence. The collector
+reservation remains held through cleanup, preventing a competing collection.
+Last-owner drops execute outside the gate mutex. `finally`
+paths restore admission after a successful pass, conservative refusal or failure.
+An owning-thread SDK entry during analysis itself is rejected in the experiment.
+This phase distinction is internal to the qualification build.
+
+Root/module entry leases end when the API call returns. Independently retained
+raw Values and Scopes still require permanent publication pins; multiple SDK
+entries can run concurrently, so the gate is neither a shared-container lock nor
+permission for concurrent get/release of one handle. C byte ingress uses its own
+physical context fence and is not drained by this graph gate. Other native APIs,
+unmarked direct Nim refs, opaque cleanup/resurrection and arbitrary continuations
+are not qualified. Do not replace pins or enable shared reclamation on this evidence.
+
+Known code publication now follows object Value edges (including Type methods,
+constructors and witnesses), borrowed nominal identities, declaration metadata,
+rest/error annotations, error proof/return summaries, super identities, derived
+chunks, nested constructors/inline impl operands, monomorphization arguments,
+web forms and native layout field expressions. Synchronous native callback
+preparation also publishes its dispatch Scope and target graph. Publication
+requires live references and owner-confined/pre-handoff metadata; it is not a
+snapshot of concurrently mutating code or containers.
+
+#### Remaining full native quiescence
 
 Inventory every path that can expose a candidate Scope or Value outside its
 owning lane: worker snapshots, shared impl publication, C ingress/callbacks,
@@ -153,11 +200,14 @@ The implementation contract for a future participating native borrow is:
 4. Only after both domains quiesce may a participating graph be inspected. Raw
    `rootGet` results and direct Nim refs still pin their graph; wrapping just the
    API call does not fence the returned object's lifetime.
-5. Detach collectible Scope edges while owners remain pinned. Drop retained
-   objects and invoke native cleanup outside publication/collector locks, then
-   reopen admission in a `finally` path even after an analysis failure.
+5. Detach collectible Scope edges while owners remain pinned. Once no further
+   analysis can inspect them, reopen native admission before last-owner cleanup;
+   callbacks may need other native entries to finish. Keep a collector reservation
+   until cleanup ends, with no callbacks under publication/collector locks.
+   Failure/refusal paths must also restore admission in `finally`.
 
-This contract is specified, not implemented. Do not retrofit a lease lifetime onto
+The entry-call portion above is implemented; this full managed-borrow contract
+is still a design requirement. Do not retrofit a lease lifetime onto
 the existing SDK signatures or claim that ingress begin/end fences raw Gene
 Values. The owner must review an additive managed-borrow API before public SDK
 ownership/access behavior changes. AAR-1 remains incomplete until that decision,
