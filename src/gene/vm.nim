@@ -13703,6 +13703,22 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
   of vkMap:
     for _, item in value.mapEntries:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkSet:
+    for item in value.setItems:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      publishSpawnValue(entry.key, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(entry.val, seenScopes, seenValues, seenChunks)
+  of vkCallableView:
+    publishSpawnValue(value.callableViewTarget, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.callableViewSignature, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.callableViewScope, seenScopes, seenValues, seenChunks)
+  of vkCell:
+    publishSpawnValue(value.cellValue, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.cellValueScope, seenScopes, seenValues, seenChunks)
+  of vkAtomicCell:
+    publishSpawnValue(value.atomicCellValue, seenScopes, seenValues, seenChunks)
   of vkNode:
     publishSpawnValue(value.head, seenScopes, seenValues, seenChunks)
     let evidence = value.errorEvidence
@@ -13844,6 +13860,8 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       for item in value.typeDeriveRequests:
         publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkProtocol:
+    when defined(geneAtomicGenerationRetirementProbe):
+      publishSpawnScope(value.protocolScope, seenScopes, seenValues, seenChunks)
     for _, message in value.protocolMessages:
       publishSpawnValue(message, seenScopes, seenValues, seenChunks)
     publishSpawnValue(value.protocolDeriveFn, seenScopes, seenValues, seenChunks)
@@ -13872,6 +13890,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     if seenScopes.contains(key):
       return
     seenScopes.incl key
+    pinPublishedScope(current)
     var atBuiltins = false
     if current.application != nil:
       let app = Application(current.application)
@@ -13880,6 +13899,17 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
           return
         app.spawnBuiltinsPublished = true
         atBuiltins = true
+    when defined(geneAtomicGenerationRetirementProbe):
+      publishSpawnScope(current.moduleBase, seenScopes, seenValues, seenChunks)
+      for fallback in current.wildcardFallbacks.values:
+        publishSpawnValue(fallback.value, seenScopes, seenValues, seenChunks)
+      if current.moduleRefs != nil:
+        for entry in current.moduleRefs.entries.values:
+          publishSpawnValue(entry.value, seenScopes, seenValues, seenChunks)
+      for value in current.corePendingTypes:
+        publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+      for task in current.ownedCleanupTasks:
+        publishSpawnValue(task, seenScopes, seenValues, seenChunks)
     publishSpawnValue(current.annotationSelfType, seenScopes, seenValues, seenChunks)
     for i in 0 ..< current.slots.len:
       if current.slotDefined(i):
@@ -13899,6 +13929,9 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     # their Value edges for atomic RC, but do not recurse into a formatter's
     # defining scope: that would publish unrelated module state.
     for impl in current.impls:
+      when defined(geneAtomicGenerationRetirementProbe):
+        if not atBuiltins:
+          publishSpawnScope(impl.implAssemblyScope, seenScopes, seenValues, seenChunks)
       if atBuiltins:
         markImplValuesShared(impl)
       else:
@@ -13925,6 +13958,22 @@ proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
   var seenChunks = initHashSet[pointer]()
   publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
   publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
+
+when defined(geneAtomicGenerationRetirementProbe):
+  proc publishNativeScopeForRetirement*(scope: Scope) =
+    var seenScopes = initHashSet[pointer]()
+    var seenValues = initHashSet[uint64]()
+    var seenChunks = initHashSet[pointer]()
+    publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
+
+  proc publishNativeRootForRetirement*(value: Value) =
+    ## Existing SDK roots can return raw Values whose borrow lifetime is not
+    ## reported to the VM. The experiment therefore permanently pins their
+    ## known Scope/code graph before handoff, even after rootRelease.
+    var seenScopes = initHashSet[pointer]()
+    var seenValues = initHashSet[uint64]()
+    var seenChunks = initHashSet[pointer]()
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
 
 proc validateRequiredImplType(scope: Scope, typ: Value) =
   for protocol in typ.typeRequiredProtocols:

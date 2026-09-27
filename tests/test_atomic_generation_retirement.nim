@@ -51,6 +51,48 @@ when defined(geneAtomicGenerationRetirementProbe):
           atomicStoreN(addr reader.bad, 1, ATOMIC_RELEASE)
         discard atomicFetchAdd(addr reader.reads, 1, ATOMIC_RELAXED)
 
+  type ForeignMutation = ref object
+    value: Value
+    stop, started, writes: int
+  proc foreignMutation(state: ForeignMutation) {.thread.} =
+    {.cast(gcsafe).}:
+      atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+      # This lane alone owns the table while the root lane attempts collection.
+      # Changing its capacity also detects a collector enumerating stale data.
+      while atomicLoadN(addr state.stop, ATOMIC_ACQUIRE) == 0:
+        for i in 0 ..< 32:
+          state.value.nsScope.vars["foreign" & $i] = newInt(i)
+        for i in 0 ..< 32:
+          state.value.nsScope.vars.del("foreign" & $i)
+        discard atomicFetchAdd(addr state.writes, 1, ATOMIC_RELEASE)
+
+  type ForeignTransfer = ref object
+    values: array[2, Value]
+    stop, started, transfers, bad: int
+  proc foreignTransfer(state: ForeignTransfer) {.thread.} =
+    {.cast(gcsafe).}:
+      var held = state.values[0]
+      atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+      while atomicLoadN(addr state.stop, ATOMIC_ACQUIRE) == 0:
+        for value in state.values:
+          held = value
+          if held.fnScope.lookup("answer").intVal != 42:
+            atomicStoreN(addr state.bad, 1, ATOMIC_RELEASE)
+          discard atomicFetchAdd(addr state.transfers, 1, ATOMIC_RELAXED)
+
+  type ForeignIngress = ref object
+    context: pointer
+    generation: uint64
+    finish, started, admitted: int
+  proc foreignIngress(state: ForeignIngress) {.thread.} =
+    {.cast(gcsafe).}:
+      let admitted = geneIngressBegin(state.context, state.generation)
+      atomicStoreN(addr state.admitted, int(admitted), ATOMIC_RELEASE)
+      atomicStoreN(addr state.started, 1, ATOMIC_RELEASE)
+      while atomicLoadN(addr state.finish, ATOMIC_ACQUIRE) == 0: os.sleep(1)
+      if admitted == 1: geneIngressEnd(state.context)
+  proc ingressHandler(args: openArray[Value]): Value {.nimcall.} = NIL
+
 suite "AtomicArc generation retirement qualification":
   test "activation retirement stays disabled":
     let root = privateRoot()
@@ -103,7 +145,7 @@ suite "AtomicArc generation retirement qualification":
       check testRetireAtomicGenerationRoots(host, roots) > 0
       check roots.len == 0
 
-    test "a native root keeps an unshared private generation alive":
+    test "SDK root publication remains pinned after rootRelease":
       proc rootNamespace(scope: Scope): GeneRoot = geneRoot(scope.lookup("self"))
       proc rootedAnswer(root: GeneRoot): int64 =
         geneRootGet(root).nsScope.lookup("answer").intVal
@@ -112,7 +154,44 @@ suite "AtomicArc generation retirement qualification":
       check testRetireAtomicGenerationRoots(host, roots) == 0
       check rootedAnswer(retained) == 42
       geneRootRelease(retained)
-      check testRetireAtomicGenerationRoots(host, roots) > 0
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      check roots[0].scopePublishedForRetirement
+      roots[0].vars.clear() # explicit cleanup; published collection is not enabled
+      roots.setLen(0)
+
+    test "publication pins lexical ancestors and weak defining scopes":
+      var roots = @[privateRoot()]
+      block:
+        let nested = newScope(roots[0])
+        let protocol = newProtocol("Foreign", [], scope = nested)
+        markSharedValue(protocol)
+        check nested.scopePublishedForRetirement
+        check roots[0].scopePublishedForRetirement
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
+      roots.setLen(0)
+
+    test "a published candidate retains the whole mixed batch":
+      var roots = @[privateRoot(), privateRoot()]
+      markSharedValue(roots[0].lookup("self"))
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      check roots.len == 2
+      check roots[1].lookup("answer").intVal == 42
+      for root in roots: root.vars.clear()
+      roots.setLen(0)
+
+    test "native roots publish Scope edges in compiled constants":
+      var roots = @[privateRoot()]
+      block:
+        let proto = compileSource("(fn [] nil)").functions[0]
+        proto.chunk.constants.add roots[0].lookup("self")
+        let retained = geneRoot(newFunction("constant", @[], proto, host))
+        check roots[0].scopePublishedForRetirement
+        geneRootRelease(retained)
+        proto.chunk.constants.setLen(0)
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
+      roots.setLen(0)
 
     test "published namespace graphs stay pinned even after an owner drops":
       var roots = @[privateRoot()]
@@ -169,6 +248,87 @@ suite "AtomicArc generation retirement qualification":
         atomicStoreN(addr reader.stop, 1, ATOMIC_RELEASE)
         joinThread(thread)
       roots[0].vars.clear() # deliberate cleanup after the foreign thread exits
+      roots.setLen(0)
+
+    test "a foreign Scope writer is never enumerated by retirement":
+      var roots = @[privateRoot()]
+      let native = geneRoot(roots[0].lookup("self"))
+      let state = ForeignMutation(value: geneRootGet(native))
+      geneRootRelease(native)
+      var thread: Thread[ForeignMutation]
+      createThread(thread, foreignMutation, state)
+      try:
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while atomicLoadN(addr state.writes, ATOMIC_ACQUIRE) == 0:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        for i in 0 ..< 1000:
+          check testRetireAtomicGenerationRoots(host, roots) == 0
+        check atomicLoadN(addr state.writes, ATOMIC_ACQUIRE) > 0
+      finally:
+        atomicStoreN(addr state.stop, 1, ATOMIC_RELEASE)
+        joinThread(thread)
+      check roots[0].lookup("answer").intVal == 42
+      roots[0].vars.clear()
+      roots.setLen(0)
+
+    test "foreign retain drop transfers remain permanently pinned":
+      var roots = @[privateRoot(), privateRoot()]
+      var state: ForeignTransfer
+      block:
+        let first = geneRoot(newFunction("first", @[], nil, roots[0]))
+        let second = geneRoot(newFunction("second", @[], nil, roots[1]))
+        state = ForeignTransfer(values: [geneRootGet(first), geneRootGet(second)])
+        geneRootRelease(first)
+        geneRootRelease(second)
+      var thread: Thread[ForeignTransfer]
+      createThread(thread, foreignTransfer, state)
+      try:
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while atomicLoadN(addr state.transfers, ATOMIC_ACQUIRE) == 0:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        for i in 0 ..< 1000:
+          check testRetireAtomicGenerationRoots(host, roots) == 0
+        check atomicLoadN(addr state.transfers, ATOMIC_ACQUIRE) > 0
+        check atomicLoadN(addr state.bad, ATOMIC_ACQUIRE) == 0
+      finally:
+        atomicStoreN(addr state.stop, 1, ATOMIC_RELEASE)
+        joinThread(thread)
+      state.values = [NIL, NIL]
+      for root in roots: root.vars.clear()
+      roots.setLen(0)
+
+    test "late C ingress retains its Scope until physical retirement":
+      var roots = @[privateRoot()]
+      let subscription = newGeneIngressSubscription(
+        newNativeFn("ingress", ingressHandler), roots[0])
+      let state = ForeignIngress(context: subscription.context,
+                                 generation: subscription.id)
+      var thread: Thread[ForeignIngress]
+      createThread(thread, foreignIngress, state)
+      try:
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while atomicLoadN(addr state.started, ATOMIC_ACQUIRE) == 0:
+          doAssert getMonoTime() < deadline
+          os.sleep(1)
+        check atomicLoadN(addr state.admitted, ATOMIC_ACQUIRE) == 1
+        geneIngressRequestCloseSubscription(subscription)
+        geneIngressConfirmUnregistered(subscription.context)
+        check geneIngressBegin(subscription.context, subscription.id) == 0
+        check not geneIngressCanRetire(subscription.context)
+        expect GeneError: geneIngressReleaseSubscription(subscription)
+        for i in 0 ..< 1000:
+          check testRetireAtomicGenerationRoots(host, roots) == 0
+        check roots[0].lookup("answer").intVal == 42
+      finally:
+        atomicStoreN(addr state.finish, 1, ATOMIC_RELEASE)
+        joinThread(thread)
+      check geneIngressCanRetire(subscription.context)
+      geneIngressReleaseSubscription(subscription)
+      check subscription.released
+      check testRetireAtomicGenerationRoots(host, roots) == 0
+      roots[0].vars.clear()
       roots.setLen(0)
 
     test "actual scalar sandbox generations retire after release":

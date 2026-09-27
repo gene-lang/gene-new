@@ -615,6 +615,8 @@ proc cancelResult(e: ref GeneCancel): GeneResult =
 
 proc geneRoot*(value: Value): GeneRoot =
   vm.requireNativeRootable(value)
+  when defined(geneAtomicGenerationRetirementProbe):
+    vm.publishNativeRootForRetirement(value)
   result = GeneRoot(value: value)
   noteNativeRootCreated()
 
@@ -639,6 +641,8 @@ proc newGeneIngressSubscription*(handler: Value, scope: Scope,
                                  library: Value = NIL):
                                  GeneIngressSubscription =
   requireNativeRootLane(scope)
+  when defined(geneAtomicGenerationRetirementProbe):
+    vm.publishNativeScopeForRetirement(scope)
   ensureIngressWakePipe()
   let id = nextRuntimeResourceId()
   var rooted, libraryRoot: GeneRoot

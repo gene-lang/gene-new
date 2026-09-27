@@ -41,9 +41,13 @@ normal AtomicArc generation/activation retirement is disabled. Independent
 one-word/three-bit header checks and a paused-root guard qualify private
 namespace/scalar generations through 10,000 retirements and private Type/direct
 method release/discard/failure through 1,000 batches. Per-class counts are flat;
-retained private/native roots and instances stay usable until dropped.
+retained private roots and instances stay usable until dropped. The later
+[publication continuation](../../docs/profiles/native-app-2026-09-27-atomic-publication.md)
+conservatively pins SDK roots even after release because raw returned Values
+have no reported borrow lifetime.
 
-Published Values stay pinned. Five canonical impl generations retain 63 managed
+Published Values and known defining Scopes stay pinned. Published pending roots
+retain the whole batch without enumerating their mutable tables. Five canonical impl generations retain 63 managed
 Values and pending roots in the explicit `qualified: false` control; dropping
 a named reader cannot qualify shared collection. Foreign admission/borrow
 fences and arbitrary Nim ref transfers remain AAR-1/2 work.

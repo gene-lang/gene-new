@@ -32,7 +32,10 @@
     ($println ($json/stringify {^mode mode ^phase "run"}))
     (let filters (if (== mode "tsan")
       ["a real worker completes before nested retirement enters its barrier"
-       "a foreign native reader is protected by published-value pinning"] []))
+       "a foreign native reader is protected by published-value pinning"
+       "a foreign Scope writer is never enumerated by retirement"
+       "foreign retain drop transfers remain permanently pinned"
+       "late C ingress retains its Scope until physical retirement"] []))
     (let run (await ($os/exec_async ^cmd output ^args filters
       ^timeout_ms 180000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-run.log" ($ run/stdout run/stderr))

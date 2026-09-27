@@ -493,6 +493,8 @@ type
   ## `Scope -> Value(fn) -> Scope` cycle does not keep both sides alive. Function
   ## values escaping as run/eval results are cloned back to a strong capture.
   Scope* = ref object
+    when defined(geneAtomicGenerationRetirementProbe):
+      retirementPublished: int # permanent publication pin, acquire/release accessed
     application*: RuntimeContext
     strictErrorLease*: RootRef
     parent*: Scope
@@ -2439,6 +2441,22 @@ proc markObjectShared(data: GeneObjectData) {.inline.} =
   if data != nil:
     markSharedFlag(data.shared)
 
+proc pinPublishedScope*(scope: Scope) =
+  ## Qualification-only provenance. Record lexical ancestors before handing a
+  ## graph to another lane; never enumerate a published Scope during retirement.
+  ## This does not make concurrent Scope mutation or raw SDK refs safe.
+  when defined(geneAtomicGenerationRetirementProbe):
+    var current {.cursor.} = scope
+    while current != nil:
+      markSharedFlag(current.retirementPublished)
+      current = current.parent
+
+proc scopePublishedForRetirement*(scope: Scope): bool =
+  when defined(geneAtomicGenerationRetirementProbe):
+    scope != nil and isSharedFlag(scope.retirementPublished)
+  else:
+    false
+
 proc markSharedBits(bits: uint64, seen: var HashSet[uint64])
 
 proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
@@ -2449,6 +2467,42 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     return
   seen.incl key
   markObjectShared(data)
+  when defined(geneAtomicGenerationRetirementProbe):
+    template pin(scope: Scope) = pinPublishedScope(scope)
+    case data.objKind
+    of okNamespace: pin(NamespaceData(data).scope)
+    of okType:
+      let d {.cursor.} = TypeData(data)
+      pin(d.scope)
+      pin(cast[Scope](d.weakScope))
+      for field in d.fields:
+        pin(field.scope)
+        pin(cast[Scope](field.weakScope))
+      for field in d.bodyFields:
+        pin(field.scope)
+        pin(cast[Scope](field.weakScope))
+    of okEnum:
+      pin(EnumData(data).scope)
+      pin(cast[Scope](EnumData(data).weakScope))
+    of okProtocol: pin(cast[Scope](ProtocolData(data).weakScope))
+    of okProtocolMessage:
+      markSharedBits(ProtocolMessageData(data).protocolBits, seen)
+    of okBoundMessage:
+      pin(BoundMessageData(data).boundScope)
+      markSharedBits(BoundMessageData(data).protocolBits, seen)
+    of okEnumVariant:
+      markSharedBits(EnumVariantData(data).enumBits, seen)
+    of okCell, okAtomicCell: pin(CellData(data).valueScope)
+    of okEnv: pin(EnvData(data).borrowedScope)
+    of okCallableView: pin(CallableViewData(data).typeScope)
+    of okStream:
+      pin(StreamData(data).itemScope)
+      pin(StreamData(data).generatorScope)
+    of okTask: pin(TaskData(data).boundaryScope)
+    of okChannel: pin(ChannelData(data).itemScope)
+    of okReplyTo: pin(ReplyToData(data).resultScope)
+    of okBuffer: pin(BufferData(data).elemScope)
+    else: discard
   case data.objKind
   of okTask:
     let d = TaskData(data)
@@ -2542,6 +2596,7 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
       evidence = p.errorEvidence
     markSharedBits(p.head.bits, seen)
     if evidence != nil:
+      pinPublishedScope(evidence.environment)
       markSharedBits(evidence.protocol.bits, seen)
       markSharedBits(evidence.formatter.bits, seen)
       for _, item in evidence.diagnostics:
@@ -2554,6 +2609,8 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
       markSharedBits(item.bits, seen)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+    pinPublishedScope(p.scope)
+    pinPublishedScope(cast[Scope](p.weakScope))
     markManualShared(p)
     for item in p.errorTypes:
       markSharedBits(item.bits, seen)
@@ -2989,7 +3046,10 @@ proc refNode(g: var RetireGraph, address: pointer,
     g.refIndex[key] = result
 
 proc scopeNode(g: var RetireGraph, scope: Scope): int =
-  g.refNode(cast[pointer](scope), rnkScope)
+  result = g.refNode(cast[pointer](scope), rnkScope)
+  when defined(geneAtomicGenerationRetirementProbe):
+    if result >= 0 and scope.scopePublishedForRetirement:
+      g.nodes[result].pinned = true
 
 proc strongEdge(g: var RetireGraph, source, target: int) =
   if target < 0:
@@ -3284,6 +3344,12 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
     return 0
+  when defined(geneAtomicGenerationRetirementProbe):
+    # Do not even read a published root's tables. Keep the entire candidate
+    # batch: weak relationships hidden in those tables are not a snapshot.
+    for root in pending:
+      if root.scopePublishedForRetirement:
+        return 0
   generationRetiring = true
   try:
     var g = RetireGraph(complete: complete)
@@ -3337,6 +3403,11 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     while queue.len > 0:
       let idx = queue.pop()
       if not g.nodes[idx].expanded and not g.nodes[idx].weakScanned:
+        when defined(geneAtomicGenerationRetirementProbe):
+          if g.nodes[idx].kind == rnkScope and g.nodes[idx].pinned:
+            # Publication recorded weak/code relationships before handoff.
+            # A foreign lane may now be changing any of this Scope's tables.
+            continue
         # An externally owned node can still hold a non-owning pointer into a
         # candidate (a Protocol's defining scope, a variant's Enum); that
         # target must outlive it.

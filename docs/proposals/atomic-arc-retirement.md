@@ -1,7 +1,8 @@
 # AtomicArc generation retirement
 
-**Status:** qualification infrastructure and a private-generation experiment are
-implemented. Normal AtomicArc retirement remains disabled. This does not promote
+**Status:** AAR-0 and the conservative publication portion of AAR-1 are
+implemented. Native borrow quiescence and shared reclamation remain open.
+Normal AtomicArc retirement remains disabled. This does not promote
 VM-2 or threaded lifetime support. The existing language and sandbox APIs remain
 unchanged.
 
@@ -35,12 +36,18 @@ Nim 2.2.4 lowered a direct nil assignment of the temporary as an overwrite;
 the typed-Task string-lifetime regression detects a lost Fiber owner here.
 
 This pause does **not** stop foreign C/Nim threads. The experiment permanently
-pins Values marked published/shared and does not enumerate their mutable owning
-edges. Their uncounted strong references and followed weak references keep
-affected scopes alive. A published graph is retained even after the last named
-outside owner drops; this deliberate limit must remain visible in reports.
+pins Values marked published/shared and records Scope publication before handoff,
+including lexical ancestors and known weak defining environments. It does not
+enumerate published Scope tables or count published Value owning edges. If any
+pending root is published, the entire batch is retained: hidden weak relationships
+in a mutable table cannot be analyzed independently. A published graph is retained
+even after the last named outside owner drops; this deliberate limit must remain
+visible in reports. Publication recording is not a lock for application mutation.
 
-Outside-held private Values and native roots are also live roots. Unknown code,
+Outside-held private Values are also live roots. SDK roots are conservatively
+published in the experiment, including known compiled constants/default bodies;
+`rootRelease` cannot revoke raw Values previously returned by `rootGet`.
+Normal builds retain the existing SDK behavior. Unknown code,
 error-evidence and opaque ownership remain conservative. The experiment assumes
 unpublished candidates are confined to the owning lane; arbitrary unmarked
 foreign Nim refs or concurrent SDK mutation are not qualified by this matrix.
@@ -81,6 +88,39 @@ inactive acknowledgement; acknowledging after teardown makes both cases pass.
 
 ### AAR-1: publication provenance and native quiescence
 
+#### Implemented conservative publication (AAR-1a)
+
+The opt-in build adds an acquire/release Scope publication marker. The shared
+Value walker records strong and weak Scope relationships for namespaces,
+functions, Types/fields, Enums/variants, protocols/messages, cells, error
+environments, callable views, and typed async/container handles. Ancestor marking
+keeps an escaped nested environment's generation root pinned. Worker publication
+also marks its Scope snapshots. Ordinary builds do not add this marker or enable
+collection.
+
+SDK root creation uses the VM publication walker before handoff, covering known
+function code/constants, defaults, type expressions and Scope contents. Ingress
+subscription creation records its dispatch Scope separately: a native handler
+can have no lexical Scope. Neither releasing the SDK root nor physically retiring
+the ingress subscription clears publication. Opaque continuations and custom
+`FunctionCode` subclasses remain outside this qualified walk.
+
+| Exposure | Current ownership/admission | Retirement treatment and remaining gate |
+| --- | --- | --- |
+| Worker snapshots and results | `publishSpawnCapture` / shared Value handoff; scheduler pause includes teardown. | Known Scope/code relationships pinned; no worker-local activation collection. |
+| Canonical impl lookup | `markImplValuesShared` before publication; foreign lookup can retain entries. | Known defining Scopes pinned through Value edges; canonical generations remain unqualified. Impl/code inventory is not a native quiescence proof. |
+| SDK `GeneRoot`, callbacks | `geneRoot` owns a Value; `rootGet` returns an independently retainable raw Value. Synchronous callbacks are owner-thread-only. | Root graph permanently published in the opt-in build. Concurrent get/release on one handle is not qualified. |
+| C v5 ingress | Foreign threads enter a locked, byte-only context; begin/end count in-flight callbacks. Subscription owns handler/library roots, dispatch Scope and cleanup lease. | Scope pinned before registration. Close denies new admission; unregister plus zero in-flight/queued work permits physical retirement. No foreign Gene object access is allowed by this ABI. |
+| Native module, buffer/type, environment and direct Nim Scope/Value refs | Existing APIs expose owning refs or raw fields; there is no universal borrow report. | Explicit known publication is pinned. Arbitrary unmarked transfers/mutation are unsupported by the experiment; production collection remains disabled. |
+
+Qualification adds foreign Scope table growth/deletion during collection attempts,
+foreign function-reference retain/drop transfers after SDK roots release, weak
+environment and compiled-constant controls, mixed-batch retention, and late C
+ingress with physical-retirement rejection. These test permanent retention;
+they do not establish eventual reclamation or concurrent application table access.
+
+#### Remaining native quiescence (AAR-1b)
+
 Inventory every path that can expose a candidate Scope or Value outside its
 owning lane: worker snapshots, shared impl publication, C ingress/callbacks,
 `GeneRoot`, native scope/environment handles, and public Nim SDK refs. Associate
@@ -97,6 +137,31 @@ Acceptance: a foreign reader, a foreign retain/drop transfer between graph nodes
 and a callback arriving during collection either finish before analysis or pin
 the graph. Race-sensitive tests must run under a supported thread sanitizer.
 Reference counts read at different instants are not sufficient evidence.
+
+The implementation contract for a future participating native borrow is:
+
+1. Admission belongs to the same application/collector domain as its Scope graph.
+   A lease owns its root and reports every access, including retain/drop transfers
+   and cleanup. Admission and collector sealing use one synchronized state.
+2. The root lane closes worker admission, seals native admission, and waits for
+   previously admitted borrows to end. Re-entry by a lane holding a lease must
+   fail/defer collection instead of waiting for itself. Nested collection keeps
+   both gates sealed until the outermost exit.
+3. A sealed gate rejects or defers new native access; the exact public behavior
+   needs owner review. Foreign C byte ingress may continue because it never reads
+   Gene graphs; its existing context fence governs context retirement separately.
+4. Only after both domains quiesce may a participating graph be inspected. Raw
+   `rootGet` results and direct Nim refs still pin their graph; wrapping just the
+   API call does not fence the returned object's lifetime.
+5. Detach collectible Scope edges while owners remain pinned. Drop retained
+   objects and invoke native cleanup outside publication/collector locks, then
+   reopen admission in a `finally` path even after an analysis failure.
+
+This contract is specified, not implemented. Do not retrofit a lease lifetime onto
+the existing SDK signatures or claim that ingress begin/end fences raw Gene
+Values. The owner must review an additive managed-borrow API before public SDK
+ownership/access behavior changes. AAR-1 remains incomplete until that decision,
+integration and the borrow/collector race matrix are complete.
 
 ### AAR-2: published generation graphs
 

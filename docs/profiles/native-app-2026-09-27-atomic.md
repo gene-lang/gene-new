@@ -71,3 +71,9 @@ where a complete edge model and native/worker quiescence are proved. Public SDK
 ownership changes need owner review before implementation. Other continuations,
 worker-local activation cycles, Linux and the SERVICE heartbeat investigation
 remain separate gates. No profile stage is promoted.
+
+The subsequent [AAR-1a publication audit](native-app-2026-09-27-atomic-publication.md)
+records the mutable-Scope exclusion and expanded race controls. In that later
+experiment SDK roots stay pinned after release; the private/native-root release
+control above describes the earlier AAR-0 checkpoint. Native borrow quiescence
+and shared reclamation remain open.

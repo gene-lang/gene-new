@@ -219,3 +219,9 @@ Fiber teardown before quiescence. Private scalar and Type generations are flat;
 published/canonical graphs stay pinned. Normal AtomicArc retirement remains off.
 The [staged design](../proposals/atomic-arc-retirement.md) defines the remaining
 native publication/fence and shared-generation gates.
+
+The [publication continuation](native-app-2026-09-27-atomic-publication.md) records
+known Scope/ancestor/weak/code publication and excludes mutable published Scope
+tables from the experiment. SDK roots remain pinned after release; C ingress
+retains its existing physical-retirement fence. Native borrow quiescence and
+arbitrary Nim ownership transfers remain open. No stage is promoted.
