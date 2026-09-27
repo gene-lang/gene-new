@@ -86,7 +86,7 @@ def load_profile(gene: Path) -> dict:
         if not entry.is_file() or not (package / "package.gene").is_file():
             raise ValueError(f"missing package or entry for {wid}")
         if wid == "lifetime":
-            for field in ("witness_entry", "cancellation_entry",
+            for field in ("witness_entry", "cancellation_entry", "mixed_cancellation_entry",
                           "selection_entry", "service_entry",
                           "service_cancel_entry", "generation_entry",
                           "generation_failure_entry", "retained_entry",
@@ -223,7 +223,8 @@ def run_lifetime(workload: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="gene-vm3-lifetime-") as temp:
         instrumented = Path(temp) / "gene-rc"
         command = [nim, "c", "-d:geneRcStats", "--mm:orc", "--path:src",
-                   "--hints:off", f"-o:{instrumented}", "src/gene.nim"]
+                   "--hints:off", f"--nimcache:{Path(temp) / 'nimcache'}",
+                   f"-o:{instrumented}", "src/gene.nim"]
         try:
             built = subprocess.run(command, cwd=ROOT, env=build_env,
                                    capture_output=True, text=True,
@@ -330,6 +331,7 @@ def run_lifetime(workload: dict) -> dict:
         for label, field, scenario_args in (
                 ("witness", "witness_entry", [str(batches[-1])]),
                 ("cancellation", "cancellation_entry", [str(batches[-1])]),
+                ("mixed_cancellation", "mixed_cancellation_entry", [str(batches[-1])]),
                 ("selection", "selection_entry", [str(batches[-1])]),
                 ("service", "service_entry",
                  [str(free_loopback_port()), str(batches[-1])]),
@@ -421,13 +423,42 @@ def run_lifetime(workload: dict) -> dict:
                         "reason": "service_owners_unavailable"}
             scenario_checked = [item for item in scenario_snapshots
                                 if item["phase"] == "after"]
+            if label == "mixed_cancellation":
+                completed = 100
+                for item in [scenario_baseline, *scenario_checked]:
+                    if item["phase"] == "after":
+                        completed += item["iterations"]
+                    if (item.get("retained_control_checked") is not True or
+                            item.get("cleanup_runs") != completed * 3 or
+                            item.get("nested_cleanup_runs") != completed or
+                            any(item.get(counter) != 0 for counter in (
+                                "io_root_tasks", "io_root_cleanup_tasks",
+                                "io_open_resources", "scheduler_runnable_fibers",
+                                "scheduler_waiting_fibers", "io_cleanup_leases",
+                                "io_retained_bytes", "io_waiting_readiness"))):
+                        return {"outcome": "failure",
+                                "reason": "mixed_cancellation_cleanup_or_control",
+                                "snapshot": item}
+            if label == "service_cancel":
+                completed = 100
+                for item in [scenario_baseline, *scenario_checked]:
+                    if item["phase"] == "after":
+                        completed += item["iterations"]
+                    if (item.get("handler_graph_cleanups") != completed * 2 or
+                            any(item.get(counter) != 0 for counter in (
+                                "scheduler_runnable_fibers",
+                                "scheduler_waiting_fibers", "io_cleanup_leases",
+                                "io_retained_bytes", "io_waiting_readiness"))):
+                        return {"outcome": "failure",
+                                "reason": "service_cancel_graph_cleanup",
+                                "snapshot": item}
             for item in scenario_checked:
                 if (item.get("rc_stats") is not True or
                         item.get("native_roots") != 0 or
                         item.get("live_managed") != scenario_baseline[
                             "live_managed"] or
                         item.get("managed_classes") != scenario_classes or
-                        (label in ("cancellation", "selection", "service",
+                        (label in ("cancellation", "mixed_cancellation", "selection", "service",
                                    "service_cancel") and (
                             item.get("io_root_tasks") != 0 or
                             item.get("io_root_cleanup_tasks") != 0)) or
@@ -474,9 +505,11 @@ def run_lifetime(workload: dict) -> dict:
                                 "impl_failure_unwind", "compile_failure",
                                 "escaped_type_witnesses",
                                 "cancelled_type_tasks",
+                                "cancelled_mixed_mutable_graphs",
                                 "cancelled_partial_selection",
                                 "failed_partial_selection",
                                 "in_process_service_requests",
+                                "cancelled_service_handlers_mixed_graphs",
                                 "released_scalar_modules",
                                 "released_type_protocol_impl_modules",
                                 "discarded_generations",

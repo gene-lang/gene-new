@@ -9,6 +9,10 @@ five workloads and the full test suites in an Ubuntu 24.04 container under
 Rosetta. Timing gates still need native x86_64 hardware, and the incomplete
 stage gates remain open.
 
+The [mixed-cancellation continuation](native-app-2026-09-26-cancellation.md)
+records the stable-capture repair, the server Fiber-cancellation repair, and
+the ten-child ORC lifetime profile. Multi-hour SERVICE evidence is pending.
+
 The native VM currently supplies functions, modules, packages and locks, tasks, synchronous streams, JSON, files, HTTP, databases, and tests. Their existing specs cover those individual contracts. VAL-1–3 value witnesses, semantic equality/hash, indexed access, and stable sorting are experimental with native conformance and lifetime checks; cross-backend qualification remains open. The end-to-end Python replacement workloads have not yet passed their full release gates.
 
 | Workload | Current status | Required next stages |

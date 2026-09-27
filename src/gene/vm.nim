@@ -7783,6 +7783,8 @@ proc biRuntimeGcStats(args: openArray[Value],
   entries["csv_parser_peak_resource_bytes"] = newInt(csvPayload.peakResource)
   let scheduler = currentScheduler()
   withSchedulerLock(scheduler):
+    entries["scheduler_runnable_fibers"] = newInt(scheduler.runQueue.len)
+    entries["scheduler_waiting_fibers"] = newInt(scheduler.waiters.len)
     entries["supervisor_retry_pending"] =
       newInt(scheduler.supervisorRetries.len - scheduler.supervisorRetryHead)
     entries["supervisor_retry_capacity"] =
@@ -9300,6 +9302,14 @@ proc captureSourcePlain(scope: Scope): bool {.inline.} =
     scope.strictErrorLease == nil and not scope.ownsTasks and
     not scope.ownsActors
 
+proc captureInert(v: Value): bool {.inline.} =
+  ## A value a closure may copy: nothing reachable from it can come to hold
+  ## the closure, so the copy closes no cycle. A copied list, Cell, map, or
+  ## function could (`(c .set (fn [] c))` made Cell -> closure -> copy ->
+  ## Cell, which no activation end sees); those stay captured through their
+  ## activation scope, whose end retirement checks.
+  not v.isHeapBacked or v.kind in {vkString, vkSymbol}
+
 proc captureBoundary(scope: Scope): bool {.inline.} =
   scope.slotMirror or scope.moduleRoot or scope.moduleStatic
 
@@ -9332,8 +9342,8 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
   if boundary == nil or count < plan.mirrorLevels or
       (plan.keepDepth and count < plan.activationLevels):
     return source
-  # Weak scope-owned functions stay valid only under their owner; a copy may
-  # outlive every activation, so those owned by one are promoted.
+  # A copy may outlive every activation. Stable bindings can still name
+  # mutable reference graphs, so only inert slot values qualify below.
   var parent = boundary
   if plan.keepDepth:
     for i in countdown(count - 1, plan.mirrorLevels):
@@ -9345,7 +9355,8 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
     let src {.cursor.} = cast[Scope](levels[i])
     let slots {.cursor.} = plan.slots[i]
     for slot in slots:
-      if slot >= src.slots.len or not src.slotDefined(slot):
+      if slot >= src.slots.len or not src.slotDefined(slot) or
+          not src.slots[slot].captureInert:
         return source
     let copy = newScope(parent)
     copy.captureMirror = true

@@ -1,0 +1,18 @@
+# Fresh objects close List -> Map -> Node -> Cell -> Function -> Scope.
+# The closure's stable local binding still names a mutable list.
+(fn make_graph []
+  (let xs [])
+  (let m {^held nil})
+  (let n ($thaw (quote #(record ^held nil))))
+  (let c ($cell nil))
+  (xs .push m)
+  (m .put "held" n)
+  (set n/held c)
+  (c .set (fn [] xs))
+  xs)
+
+(fn graph_ok [graph]
+  (let m graph/0)
+  (let n (m .get "held"))
+  (let f (n/held .get))
+  (same? (f) graph))

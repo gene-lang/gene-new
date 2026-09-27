@@ -755,6 +755,40 @@ when defined(geneRcStats):
           ($runtime/test_collect)
         """)
 
+      test "mutable captures that later hold their closure retire with the activation":
+        # A stable binding can still name a mutable object. Copying it into a
+        # detached capture scope hides the cycle from activation retirement.
+        for body in [
+          "(let c ($cell nil)) (c .set (fn [] c))",
+          "(let xs []) (xs .push (fn [] xs))",
+          "(let m {^held nil}) (m .put \"held\" (fn [] m))",
+          "(let n ($thaw (quote #(record ^held nil)))) (set n/held (fn [] n))",
+          "(let c ($cell nil)) (let xs ($freeze_shallow [c])) " &
+            "(c .set (fn [] xs))",
+          "(let c ($cell nil)) (let get_c (fn [] c)) " &
+            "(c .set (fn [] get_c))",
+          "(let xs []) (let m {^held nil}) " &
+            "(let n ($thaw (quote #(record ^held nil)))) (let c ($cell nil)) " &
+            "(xs .push m) (m .put \"held\" n) (set n/held c) " &
+            "(c .set (fn [] xs))"
+        ]:
+          checkpoint body
+          check repeatedBodyLeak("(fn body [] " & body & " nil)") == 0
+
+      test "retained mutable captures keep their object identity and remain callable":
+        let scope = newGlobalScope()
+        check print(run(compileSource("""
+          (fn make []
+            (let c ($cell nil))
+            (c .set (fn [] c))
+            c)
+          (var kept (make))
+          (repeat 30 (make))
+          ($runtime/test_collect)
+          (let get_self (kept .get))
+          (same? (get_self) kept)
+        """), scope)) == "true"
+
       test "child-scope closure cycles retire when their activation ends":
         # A closure capturing a loop or match scope, stored in the enclosing
         # scope's binding or in a container it binds, closes

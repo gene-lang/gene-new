@@ -54,6 +54,7 @@
      ^entry "src/batches.gene" ^driver "command" ^args []
      ^witness_entry "src/witnesses.gene"
      ^cancellation_entry "src/cancellation.gene"
+     ^mixed_cancellation_entry "src/mixed_cancellation.gene"
      ^selection_entry "src/selection.gene"
      ^service_entry "src/service.gene"
      ^service_cancel_entry "src/service_cancel.gene"

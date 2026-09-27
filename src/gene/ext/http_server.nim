@@ -1733,11 +1733,21 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var forcedConnections = 0
     var remainingCleanupLeases = 0
     var remainingFileResources = 0
-    var cleanupTasks: seq[Value]
+    var cleanupTasks: seq[tuple[taskValue: Value, cancellationExpected: bool]]
     var cleanupTaskFailed = false
     template trackCleanupTask(task: Value) =
-      cleanupTasks.add task
+      cleanupTasks.add (taskValue: task, cancellationExpected: false)
       rt.pendingCleanupTasks = cleanupTasks.len
+    proc cancelTrackedTask(task: Value) =
+      # A Gene handler/read Task must unwind its Fiber, not merely acquire a
+      # terminal cancelled outcome. Keep it until its ensure/child cleanup
+      # settles, including after its connection has been removed.
+      if task.kind == vkTask and not task.taskDone:
+        withScopedScheduler(scope):
+          task.requestTaskCancellation()
+        if not task.taskDone:
+          cleanupTasks.add (taskValue: task, cancellationExpected: true)
+          rt.pendingCleanupTasks = cleanupTasks.len
     # `on_tick` fires on a fixed period. `tickMs` of 0 with a handler present is
     # a mistake worth naming rather than a busy loop, so it is rejected at
     # `serve` rather than spun on here.
@@ -1821,7 +1831,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     proc closeResponseResources(conn: HttpConn) =
       if conn.responseReadTask.kind == vkTask and
           not conn.responseReadTask.taskDone:
-        discard nativeTaskCancel(conn.responseReadTask, scope)
+        cancelTrackedTask(conn.responseReadTask)
       if conn.responseOwnReader and conn.responseReader.kind != vkNil:
         try:
           let ioScope = scope.application().stdlib.vars["io"].nsScope
@@ -1846,12 +1856,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     proc pruneCleanupTasks() =
       var index = 0
       while index < cleanupTasks.len:
-        let task = cleanupTasks[index]
+        let waiting = cleanupTasks[index]
+        let task = waiting.taskValue
         if task.kind != vkTask:
           cleanupTaskFailed = true
           cleanupTasks.delete(index)
         elif task.taskDone:
-          if task.taskHasError or task.taskHasPanic or task.taskCancelled:
+          if task.taskHasError or task.taskHasPanic or
+              (task.taskCancelled and not waiting.cancellationExpected):
             cleanupTaskFailed = true
           cleanupTasks.delete(index)
         else:
@@ -1863,7 +1875,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       closeResponseResources(conn)
       if conn.inFlightCounted:
         if conn.task.kind == vkTask and not conn.task.taskDone:
-          discard nativeTaskCancel(conn.task, scope)
+          cancelTrackedTask(conn.task)
         dec rt.inFlight
         conn.inFlightCounted = false
       if conn.phase == hcpWebSocket:
@@ -2265,7 +2277,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         return
       if conn.inFlightCounted:
         if conn.task.kind == vkTask and not conn.task.taskDone:
-          discard nativeTaskCancel(conn.task, scope)
+          cancelTrackedTask(conn.task)
         dec rt.inFlight
         conn.inFlightCounted = false
       respondCounted(conn, status,
@@ -2877,7 +2889,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           continue
         if conn.inFlightCounted:
           if conn.task.kind == vkTask and not conn.task.taskDone:
-            discard nativeTaskCancel(conn.task, scope)
+            cancelTrackedTask(conn.task)
           dec rt.inFlight
           conn.inFlightCounted = false
         respondCounted(conn, 408, "Request Timeout")

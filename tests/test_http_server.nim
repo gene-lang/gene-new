@@ -265,26 +265,53 @@ suite "net/http server e2e":
 
   test "truncated stream body never appears as successful EOF":
     let p = startHttpServer("stream_truncated.gene", """
-(import $net/http [Server serve text])
+(import $net/http [listen serve stop text])
 (let AsyncReader $io/AsyncReader)
+(var cleaned 0)
+(var entered false)
+(var srv (listen ^host "127.0.0.1" ^port 8194))
 (fn handle [req]
-  (var total 0)
-  (while true
-    (let part (await (req/body .AsyncReader:read 1024)))
-    (if ($nil? part) (then (break)))
-    (set total (+ total ($binary/size part))))
-  (text ($to_str total)))
-(serve (Server ^host "127.0.0.1" ^port 8194) handle
-  ^body_mode "stream" ^max_requests 1)
+  (if (== req/path "/ready") (return (text ($to_str entered))))
+  (if (== req/path "/cleaned") (return (text ($to_str cleaned))))
+  (if (== req/path "/stop") (do (stop srv) (return (text "stopping"))))
+  (try
+    (set entered true)
+    (var total 0)
+    (while true
+      (let part (await (req/body .AsyncReader:read 1024)))
+      (if ($nil? part) (then (break)))
+      (set total (+ total ($binary/size part))))
+    (text ($to_str total))
+   ensure (set cleaned (+ cleaned 1))))
+(serve srv handle ^body_mode "stream")
+($println $"handler-cleanups=${cleaned}")
 """)
-    defer: (p.terminate(); p.close())
+    defer:
+      try: p.terminate()
+      except OSError: discard
+      p.close()
     let s = httpConnect(8194)
     defer: s.close()
     sendHttpBounded(s, "POST /bad HTTP/1.1\r\nhost: t\r\n" &
                        "content-length: 100\r\n\r\nshort")
+    let startDeadline = getMonoTime() + initDuration(seconds = 2)
+    var entered = false
+    while not entered and getMonoTime() < startDeadline:
+      entered = bodyOf(httpGet(8194, "/ready")) == "true"
+      if not entered: sleep(5)
+    check entered
     discard s.getFd().shutdown(SHUT_WR)
     let response = readAllHttp(s, timeoutMs = 2000)
     check not response.contains("200 OK")
+    let cleanupDeadline = getMonoTime() + initDuration(seconds = 2)
+    var cleaned = false
+    while not cleaned and getMonoTime() < cleanupDeadline:
+      cleaned = bodyOf(httpGet(8194, "/cleaned")) == "1"
+      if not cleaned: sleep(5)
+    check cleaned
+    discard httpGet(8194, "/stop")
+    check p.waitForExit(5000) == 0
+    check "handler-cleanups=1" in p.outputStream.readAll()
 
   test "stream mode rejects conflicting framing and oversize before dispatch":
     let p = startHttpServer("stream_rejections.gene", """
@@ -565,14 +592,25 @@ suite "net/http server e2e":
     let p = startHttpServer("stream_response_timeout.gene", """
 (import $net/http [Server serve stream])
 (let AsyncReader $io/AsyncReader)
+(var cleaned 0)
 (type SlowReader ^props {})
 (impl AsyncReader for SlowReader
   (message read [self max_bytes : Int] : (Task Bytes? Error)
     (spawn ^lane root
-      (do ($sleep 1000) ($binary/from_str "late")))))
+      (do
+        (let c ($cell nil))
+        (c .set (fn [] c))
+        (try
+          ($sleep 1000)
+          ($binary/from_str "late")
+         ensure
+           (let get_self (c .get))
+           ($assert (same? (get_self) c))
+           (set cleaned (+ cleaned 1)))))))
 (fn handle [req] (stream 200 (SlowReader)))
 (serve (Server ^host "127.0.0.1" ^port 8210) handle
   ^request_timeout_ms 150 ^max_requests 1)
+($println $"reader-cleanups=${cleaned}")
 """)
     defer:
       if p.running: p.terminate()
@@ -584,6 +622,7 @@ suite "net/http server e2e":
     check not bodyOf(response).endsWith("0\r\n\r\n")
     check elapsed < 1000
     check p.waitForExit(3000) == 0
+    check "reader-cleanups=1" in p.outputStream.readAll()
 
   test "streamed response can echo an unfinished request body":
     let p = startHttpServer("stream_echo.gene", """
@@ -1135,13 +1174,17 @@ suite "net/http server e2e":
     let p = startHttpServer("stop-report.gene", """
 (import $net/http [listen serve stop text])
 (var srv (listen ^host "127.0.0.1" ^port 8222))
+(var cleaned 0)
 (let report (serve srv
   (fn [req]
-    (if (== req/path "/hold")
-      (do ($sleep 1000) (text 200 "late"))
-      (do (stop srv) (text 200 "stopping"))))
+    (try
+      (if (== req/path "/hold")
+        (do ($sleep 1000) (text 200 "late"))
+        (do (stop srv) (text 200 "stopping")))
+     ensure (set cleaned (+ cleaned 1))))
   ^body_mode "stream" ^drain_timeout_ms 100))
 ($println ($json/stringify report))
+($println $"handler-cleanups=${cleaned}")
 """)
     defer:
       try: p.terminate()
@@ -1161,6 +1204,7 @@ suite "net/http server e2e":
     check "\"cleanup_leases\":0" in output
     check "\"pending_cleanup_tasks\":0" in output
     check "\"close_failed\":false" in output
+    check "handler-cleanups=2" in output
 
   test "stop reports incomplete cleanup when an owned reader will not close":
     let p = startHttpServer("stop-incomplete.gene", """

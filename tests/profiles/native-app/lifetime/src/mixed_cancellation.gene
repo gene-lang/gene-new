@@ -1,0 +1,78 @@
+(import [make_graph graph_ok] ^from "./mixed_graph.gene")
+
+(var cleanups 0)
+(var nested_cleanups 0)
+
+(fn one [mode]
+  (let before cleanups)
+  (let nested_before nested_cleanups)
+  (scope
+    (let entered ($channel ^capacity 1))
+    (let blocker ($channel ^capacity 1))
+    (let task (spawn ^lane root
+      (do
+        (let graph (make_graph))
+        ($assert (graph_ok graph))
+        (try
+          (if (== mode 2)
+            (scope
+              (let nested_entered ($channel ^capacity 1))
+              (let nested (spawn ^lane root
+                (try
+                  (nested_entered .send true)
+                  (blocker .recv)
+                 ensure (set nested_cleanups (+ nested_cleanups 1)))))
+              (nested_entered .recv)
+              (entered .send true)
+              (await nested))
+            (do
+              (entered .send true)
+              (if (== mode 0) (blocker .recv) ($sleep 60000))))
+         ensure (set cleanups (+ cleanups 1))))))
+    (entered .recv)
+    (task .cancel)
+    (task .join))
+  ($assert (== cleanups (+ before 1)))
+  ($assert (== nested_cleanups (+ nested_before (if (== mode 2) 1 0)))))
+
+(fn iteration []
+  (for mode in [0 1 2] (one mode)))
+
+(fn managed_count []
+  ($runtime/test_collect)
+  (let stats ($runtime/gc_stats))
+  stats/live_managed)
+
+(fn checkpoint [phase count kept]
+  ($runtime/test_collect)
+  ($assert (graph_ok kept))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {^workload "mixed_cancellation" ^phase phase ^iterations count
+     ^rc_stats stats/rc_stats? ^live_managed stats/live_managed
+     ^managed_classes stats/managed_classes ^native_roots stats/native_roots
+     ^io_root_tasks stats/io_root_tasks
+     ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^io_open_resources stats/io_open_resources
+     ^io_cleanup_leases stats/io_cleanup_leases
+     ^io_retained_bytes stats/io_retained_bytes
+     ^io_waiting_readiness stats/io_waiting_readiness
+     ^scheduler_runnable_fibers stats/scheduler_runnable_fibers
+     ^scheduler_waiting_fibers stats/scheduler_waiting_fibers
+     ^retained_control_checked true ^cleanup_runs cleanups
+     ^nested_cleanup_runs nested_cleanups})))
+
+(fn main [args] : Int
+  (let count ($parse/parse_int (?? args/0 "10000")))
+  (repeat 100 (iteration))
+  (let before_control (managed_count))
+  (var kept (make_graph))
+  (checkpoint "warm" 100 kept)
+  (for batch in [1 100 1000 count]
+    ($println ($json/stringify
+      {^workload "mixed_cancellation" ^phase "starting" ^iterations batch}))
+    (repeat batch (iteration))
+    (checkpoint "after" batch kept))
+  (set kept nil)
+  ($assert (== (managed_count) before_control))
+  0)

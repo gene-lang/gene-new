@@ -1,4 +1,5 @@
 (import $net/http [listen serve stop status text])
+(import [make_graph graph_ok] ^from "./mixed_graph.gene")
 
 (let AsyncReader $io/AsyncReader)
 (let AsyncWriter $io/AsyncWriter)
@@ -10,36 +11,42 @@
 (var hold_entered ($channel ^capacity 1))
 (var hold_release ($channel ^capacity 1))
 (var sink_entered ($channel ^capacity 1))
+(var handler_graph_cleanups 0)
 
 (fn handle [req]
-  (if (== req/path "/hold")
-    (do
-      (hold_entered .send true)
-      (hold_release .recv)
-      (return (text 200 "held"))))
-  (if (== req/path "/sink")
-    (do
-      # A catch body declaring inside a repeating loop (the ledger's loop
-      # catch scope case), run by every handler the server later cancels.
-      (for attempt in [1 2]
-        (try (fail (AssertionError ^message "retry"))
-         catch Error
-           (var noted attempt)
-           nil))
-      # The server cancels this handler while it waits for the rest of the
-      # body the client aborted; it never reaches EOF.
-      (var total 0)
-      (var signalled false)
-      (while true
-        (let part (await (req/body .AsyncReader:read 65536)))
-        (if ($nil? part) (then (break)))
-        (set total (+ total ($binary/size part)))
-        (if (! signalled)
-          (do
-            (set signalled true)
-            (sink_entered .send true))))
-      (return (text 200 ($to_str total)))))
-  (text 404 "not found"))
+  (let graph (make_graph))
+  (try
+    (if (== req/path "/hold")
+      (do
+        (hold_entered .send true)
+        (hold_release .recv)
+        (return (text 200 "held"))))
+    (if (== req/path "/sink")
+      (do
+        # A catch body declaring inside a repeating loop (the ledger's loop
+        # catch scope case), run by every handler the server later cancels.
+        (for attempt in [1 2]
+          (try (fail (AssertionError ^message "retry"))
+           catch Error
+             (var noted attempt)
+             nil))
+        # The server cancels this handler while it waits for the rest of the
+        # body the client aborted; it never reaches EOF.
+        (var total 0)
+        (var signalled false)
+        (while true
+          (let part (await (req/body .AsyncReader:read 65536)))
+          (if ($nil? part) (then (break)))
+          (set total (+ total ($binary/size part)))
+          (if (! signalled)
+            (do
+              (set signalled true)
+              (sink_entered .send true))))
+        (return (text 200 ($to_str total)))))
+    (text 404 "not found")
+   ensure
+     ($assert (graph_ok graph))
+     (set handler_graph_cleanups (+ handler_graph_cleanups 1))))
 
 (fn checkpoint [phase count]
   ($runtime/test_collect)
@@ -52,10 +59,16 @@
      ^native_roots stats/native_roots
      ^io_root_tasks stats/io_root_tasks
      ^io_root_cleanup_tasks stats/io_root_cleanup_tasks
+     ^io_cleanup_leases stats/io_cleanup_leases
+     ^io_retained_bytes stats/io_retained_bytes
+     ^io_waiting_readiness stats/io_waiting_readiness
      ^io_open_resources stats/io_open_resources
      ^http_client_open_resources stats/http_client_open_resources
      ^http_client_pending_requests stats/http_client_pending_requests
-     ^in_flight_requests serving/in_flight_requests})))
+     ^in_flight_requests serving/in_flight_requests
+     ^scheduler_runnable_fibers stats/scheduler_runnable_fibers
+     ^scheduler_waiting_fibers stats/scheduler_waiting_fibers
+     ^handler_graph_cleanups handler_graph_cleanups})))
 
 (fn settle []
   # A cancelled transfer and the handler it strands finish on their own
