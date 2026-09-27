@@ -12,6 +12,17 @@ The VM has structured Tasks, one-consuming `await`, repeatable `Task:join`, and 
 
 Add `AsyncReader`, `AsyncWriter`, and `IoResource` protocols under `gene/io`. Invoke them with qualified messages; Gene does not route an arbitrary `.read` or `.close` to a protocol. Concrete adapters may expose direct convenience messages, but generic algorithms use protocol identities. Existing Stream pulls never suspend for I/O.
 
+The VM admits at most one pending `AsyncReader:read` per receiver identity,
+including Gene implementations and inherited protocol messages. A read returns
+its Task at admission; asynchronous work and cleanup belong to that Task.
+Owned Client uploads hold an exclusive borrow that also refuses caller reads
+through this protocol. A parent implementation invoked through `super` continues
+the admitted read. Completed admission records are released on the scheduler's
+root lane. This adds no syntax or protocol methods. Native adapters additionally
+track physical worker retirement in their I/O lifecycle; custom convenience
+methods and separate values aliasing the same backend must enforce backend
+exclusion themselves.
+
 ## Public surface
 
 The proposed declarations use current Gene syntax:

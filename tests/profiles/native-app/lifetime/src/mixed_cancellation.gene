@@ -57,6 +57,7 @@
      ^io_cleanup_leases stats/io_cleanup_leases
      ^io_retained_bytes stats/io_retained_bytes
      ^io_waiting_readiness stats/io_waiting_readiness
+     ^io_read_guards stats/io_read_guards
      ^scheduler_runnable_fibers stats/scheduler_runnable_fibers
      ^scheduler_waiting_fibers stats/scheduler_waiting_fibers
      ^retained_control_checked true ^cleanup_runs cleanups

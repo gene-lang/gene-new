@@ -122,7 +122,6 @@ when compileOption("threads") and not defined(geneWasm) and
   var ownedHttpClients = initTable[uint64, OwnedHttpClientRecord]()
   var ownedHttpBodies = initTable[uint64, OwnedHttpBodyRecord]()
   var ownedUploadBorrows = initHashSet[uint64]()
-  var nextOwnedUploadOwner = 0'u64
   var ownedHttpPending: seq[OwnedHttpPending]
   const OwnedHttpApplicationPendingLimit = 4096
   initLock(ownedMultiLock)
@@ -689,7 +688,8 @@ when compileOption("threads") and not defined(geneWasm) and
                     ATOMIC_RELEASE)
       if pending.uploadReadTask.kind == vkTask and
           not pending.uploadReadTask.taskDone:
-        discard nativeTaskCancel(pending.uploadReadTask, scope)
+        withScopedScheduler(scope):
+          pending.uploadReadTask.requestTaskCancellation()
       if pending.bodyRecord != nil:
         pending.bodyRecord.closing = true
         if pending.bodyRecord.readTask.kind == vkTask and
@@ -747,7 +747,10 @@ when compileOption("threads") and not defined(geneWasm) and
       discard nativeRetireIoCleanupLease(pending.lease, scope)
     if pending.uploadReadTask.kind == vkTask and
         not pending.uploadReadTask.taskDone:
-      discard nativeTaskCancel(pending.uploadReadTask, scope)
+      withScopedScheduler(scope):
+        pending.uploadReadTask.requestTaskCancellation()
+    if pending.uploadOwner != 0 and pending.uploadReader.kind != vkNil:
+      releaseProtocolRead(pending.uploadReader, pending.uploadOwner, scope)
     if pending.uploadBorrowKey != 0:
       withLock ownedMultiLock:
         ownedUploadBorrows.excl(pending.uploadBorrowKey)
@@ -795,14 +798,14 @@ when compileOption("threads") and not defined(geneWasm) and
     pending.client.service.ownedMultiWake()
     if pending.uploadReadTask.kind == vkTask and
         not pending.uploadReadTask.taskDone:
-      discard nativeTaskCancel(pending.uploadReadTask,
-        pending.client.application.builtinsScope())
+      withScopedScheduler(pending.client.application.builtinsScope()):
+        pending.uploadReadTask.requestTaskCancellation()
 
   proc pumpOwnedUpload(pending: OwnedHttpPending) =
     let transfer = pending.transfer
     if not transfer.uploading or pending.uploadError.len > 0:
       return
-    let scope = pending.client.application.builtinsScope()
+    let scope = pending.scope
     if pending.task.taskCancelled or pending.client.phase != ocOpen:
       pending.failOwnedUpload("upload was cancelled")
       return
@@ -893,10 +896,19 @@ when compileOption("threads") and not defined(geneWasm) and
     if not transfer.uploading or
         not atomicLoadN(addr transfer.workerDone, ATOMIC_ACQUIRE):
       return true
+    template cancelledReadSettled(): bool =
+      block:
+        if pending.uploadReadTask.kind == vkTask and
+            not pending.uploadReadTask.taskDone and
+            not pending.uploadReadTask.taskCancelRequested:
+          withScopedScheduler(pending.client.application.builtinsScope()):
+            pending.uploadReadTask.requestTaskCancellation()
+        pending.uploadReadTask.kind != vkTask or pending.uploadReadTask.taskDone
     if pending.uploadError.len > 0 or transfer.resultCode != CurlOk or
         readSharedExecText(transfer.failure).len > 0 or
         pending.task.taskCancelled:
-      return true
+      return cancelledReadSettled()
+    var incomplete = false
     withLock transfer.uploadLock:
       if transfer.uploadEof:
         if transfer.uploadExpected >= 0 and
@@ -907,11 +919,13 @@ when compileOption("threads") and not defined(geneWasm) and
           transfer.uploadReadBytes != transfer.uploadExpected or
           transfer.uploadSentBytes != transfer.uploadExpected:
         pending.uploadError = "server finished before upload completed"
-        return true
+        incomplete = true
+    if incomplete:
+      return cancelledReadSettled()
     if int((getMonoTime() - transfer.admittedAt).inMilliseconds) >=
         transfer.timeoutMs:
       pending.failOwnedUpload("upload EOF verification deadline expired")
-      return true
+      return cancelledReadSettled()
     false
 
   proc finishOwnedBody(record: OwnedHttpBodyRecord) =
@@ -1760,45 +1774,48 @@ when compileOption("threads") and not defined(geneWasm) and
     let origin = ownedHttpOrigin(url, scope)
     var uploadLifecycle: IoLifecycle
     var uploadBody: OwnedHttpBodyRecord
-    var uploadOwner = 0'u64
+    let uploadOwner = if uploadReader.kind != vkNil: nextRuntimeResourceId() else: 0'u64
     if uploadReader.kind != vkNil:
       withLock ownedMultiLock:
         if uploadReader.bits in ownedUploadBorrows:
           raiseIoTestingError(scope, "IoBusy", "http_client/upload",
             client.id, "AsyncReader already belongs to an owned upload")
-      # The upload takes exclusive read use for its whole life, so a direct
-      # read by the caller cannot take bytes the request body needs.
-      uploadLifecycle = ioFileReadLifecycle(uploadReader)
-      if uploadLifecycle == nil:
-        uploadLifecycle = ioTestingReadLifecycle(uploadReader)
-      if uploadLifecycle != nil:
-        inc nextOwnedUploadOwner
-        uploadOwner = nextOwnedUploadOwner
-        case uploadLifecycle.borrowIoRead(uploadOwner)
-        of iaNone: discard
-        of iaClosed:
-          raiseIoTestingError(scope, "IoClosed", "http_client/upload",
-            client.id, "AsyncReader is closing or closed")
-        else:
-          raiseIoTestingError(scope, "IoBusy", "http_client/upload",
-            client.id, "AsyncReader has a read in flight or another borrower")
-      else:
-        uploadBody = uploadBodyRecord(uploadReader, scope)
-        if uploadBody != nil:
-          # A Client response body has no I/O lifecycle, so its record holds
-          # the borrow, under the same rules as borrowIoRead.
-          if uploadBody.closing:
+      borrowProtocolRead(uploadReader, uploadOwner, scope)
+      try:
+        # The upload takes exclusive read use for its whole life, so a direct
+        # read by the caller cannot take bytes the request body needs.
+        uploadLifecycle = ioFileReadLifecycle(uploadReader)
+        if uploadLifecycle == nil:
+          uploadLifecycle = ioTestingReadLifecycle(uploadReader)
+        if uploadLifecycle != nil:
+          case uploadLifecycle.borrowIoRead(uploadOwner)
+          of iaNone: discard
+          of iaClosed:
             raiseIoTestingError(scope, "IoClosed", "http_client/upload",
               client.id, "AsyncReader is closing or closed")
-          if uploadBody.readBorrower != 0 or
-              (uploadBody.readTask.kind == vkTask and
-               not uploadBody.readTask.taskDone):
+          else:
             raiseIoTestingError(scope, "IoBusy", "http_client/upload",
               client.id, "AsyncReader has a read in flight or another borrower")
-          inc nextOwnedUploadOwner
-          uploadOwner = nextOwnedUploadOwner
-          uploadBody.readBorrower = uploadOwner
+        else:
+          uploadBody = uploadBodyRecord(uploadReader, scope)
+          if uploadBody != nil:
+            # A Client response body has no I/O lifecycle, so its record holds
+            # the borrow, under the same rules as borrowIoRead.
+            if uploadBody.closing:
+              raiseIoTestingError(scope, "IoClosed", "http_client/upload",
+                client.id, "AsyncReader is closing or closed")
+            if uploadBody.readBorrower != 0 or
+                (uploadBody.readTask.kind == vkTask and
+                 not uploadBody.readTask.taskDone):
+              raiseIoTestingError(scope, "IoBusy", "http_client/upload",
+                client.id, "AsyncReader has a read in flight or another borrower")
+            uploadBody.readBorrower = uploadOwner
+      except:
+        releaseProtocolRead(uploadReader, uploadOwner, scope)
+        raise
     if not client.application.ioBudget.reserveIoBudgetBytes(reserveBytes):
+      if uploadReader.kind != vkNil:
+        releaseProtocolRead(uploadReader, uploadOwner, scope)
       if uploadLifecycle != nil:
         uploadLifecycle.releaseIoRead(uploadOwner)
       if uploadBody != nil and uploadBody.readBorrower == uploadOwner:

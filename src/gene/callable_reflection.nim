@@ -100,6 +100,8 @@ proc reflectedRestType*(value: Value): Value =
 
 proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
                         options = ReflectionOptions()): Value =
+  if target.isIoReadCall:
+    return describeCallable(target.callableViewTarget, lookup, options)
   var props = initPropTable()
   props["format"] = newInt(1)
   props["shape_known"] = FALSE

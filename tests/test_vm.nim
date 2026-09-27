@@ -2708,6 +2708,12 @@ suite "vm — cooperative scheduler":
                      "  (var t (spawn ($sleep 1000))) " &
                      "  (t .cancel) " &
                      "  (await t))")
+  test "a running root task cancels itself only after its cleanup settles":
+    ck "(scope (let holder ($cell nil)) (let cleaned ($cell false)) " &
+       "(let t (spawn ^lane root " &
+       "  (try (let self (holder .get)) (self .cancel) ($sleep 0) nil " &
+       "   ensure ($sleep 10) (cleaned .set true)))) " &
+       "(holder .set t) (t .join) (cleaned .get))", "true"
   test "cancelling a task wakes fibers awaiting it":
     expect GeneCancel:
       discard runStr("(scope (var ch ($channel ^capacity 1)) " &

@@ -888,6 +888,8 @@ type
     target: Value
     signature: Value
     typeScope: Scope
+    ioReadCall: bool       # internal protocol-call admission, not a checked view
+    ioReadDelegate: bool   # super read can continue the current admitted read
 
   StreamPullResult* = object
     has*: bool
@@ -4852,10 +4854,20 @@ proc callableViewData(v: Value): CallableViewData =
 proc callableViewTarget*(v: Value): Value = v.callableViewData.target
 proc callableViewSignature*(v: Value): Value = v.callableViewData.signature
 proc callableViewScope*(v: Value): Scope = v.callableViewData.typeScope
+proc isIoReadCall*(v: Value): bool =
+  v.kind == vkCallableView and v.callableViewData.ioReadCall
+proc isIoReadDelegate*(v: Value): bool =
+  v.isIoReadCall and v.callableViewData.ioReadDelegate
 
-proc newCallableView*(target, signature: Value, typeScope: Scope): Value =
+proc newCallableView*(target, signature: Value, typeScope: Scope,
+                      ioReadCall = false, ioReadDelegate = false): Value =
   boxObject(CallableViewData(objKind: okCallableView, target: target,
-    signature: signature, typeScope: typeScope))
+    signature: signature, typeScope: typeScope, ioReadCall: ioReadCall,
+    ioReadDelegate: ioReadDelegate))
+
+proc newIoReadCall*(target: Value, delegated = false): Value =
+  newCallableView(target, Value(bits: 0), nil, ioReadCall = true,
+                  ioReadDelegate = delegated)
 
 proc streamData(v: Value): StreamData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okStream:
@@ -7013,7 +7025,8 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
       return newCallableView(target, v.callableViewSignature,
-        v.callableViewScope)
+        v.callableViewScope, ioReadCall = v.isIoReadCall,
+        ioReadDelegate = v.isIoReadDelegate)
   if v.kind == vkStream:
     # Same cycle, one hop removed: a lazy stream stored into the scope its
     # callables capture (scope -> stream -> callable -> scope). Weaken the
@@ -7352,7 +7365,8 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     if target.bits == v.callableViewTarget.bits:
       return v
     newCallableView(target, v.callableViewSignature,
-      v.callableViewScope)
+      v.callableViewScope, ioReadCall = v.isIoReadCall,
+      ioReadDelegate = v.isIoReadDelegate)
   of vkFunction:
     if v.fnHasWeakScope:
       let fnp = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)

@@ -32,8 +32,20 @@ headers, CR/LF injection, and duplicate options fail synchronously.
 `^body` also accepts an AsyncReader. The source remains caller-owned; the
 Client cancels an outstanding read on request cancellation or close, but does
 not close the source. A second owned upload using the same reader is rejected
-with IoBusy until the first transfer retires. The caller must not read the
-source concurrently outside the Client. The native upload queue is bounded
+with IoBusy until the first transfer retires. The VM also refuses caller
+reads through `AsyncReader:read` while the upload holds its borrow, including
+Gene implementations, held messages, dynamic sends, pipelines, and inherited
+messages. An already pending read refuses upload admission. A `super` read
+continues the current admitted operation. Native convenience reads and shared
+native handles additionally enforce their I/O lifecycle borrow; custom
+convenience APIs and distinct aliases of a backend must enforce that backend's
+concurrency policy themselves.
+
+Cancellation requests cancellation of the upload's Gene read Task and retains
+the borrow and cleanup lease until its ensure/child cleanup settles and the
+transport retires. Native adapters retain their physical read slot until the
+worker ticket retires, even if its Task has already settled. Failed request
+admission releases any acquired borrows. The native upload queue is bounded
 to 64 KiB; an empty queue pauses only that transfer, and the multi worker
 resumes it after a root-lane AsyncReader read supplies Bytes. Unknown length
 uses HTTP/1.1 chunked framing. With `^content_length`, the Client verifies

@@ -5565,6 +5565,19 @@ suite "spec — implicit self in message bodies from design §10":
       "(type T ^props {} (message m [] (fn f [self] self) (f 42)))",
       "cannot be rebound in a message body")
 
+  test "super keeps its parent through task and control-flow sub-bodies":
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^props {} (message m [] : Str \"B\")) " &
+               "(fn make [p] (type C : p ^props {} " &
+               "  (message up [] : (Task Str Error) " &
+               "    (spawn ^lane root (do (var out \"\") " &
+               "      (for x in [1] (try " &
+               "        (match x (when 1 (set out (super .m)))) ensure nil)) " &
+               "      out)))) C) " &
+               "(let C1 (make A)) (let C2 (make B)) " &
+               "[(await ((C1) .up)) (await ((C2) .up)) (await ((C1) .up))]",
+               "[\"A\" \"B\" \"A\"]")
+
   test "a qualified send with no visible impl raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) (type T ^props {}) " &
                "(try ((T) .P:m) catch MessageError $err/protocol)",

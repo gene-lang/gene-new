@@ -222,8 +222,12 @@ class OwnedHttpClientTests(unittest.TestCase):
         self.thread.join(timeout=3)
 
     def run_gene(self, statements: str, timeout: float = 10,
-                 extra_env: dict[str, str] | None = None) -> tuple[dict, float]:
+                 extra_env: dict[str, str] | None = None,
+                 root_driver: bool = False) -> tuple[dict, float]:
         script = pathlib.Path(self.temp.name) / "case.gene"
+        if root_driver:
+            statements = ("(scope (let driver (spawn ^lane root (do\n" +
+                          statements + "\nnil))) (await driver))")
         script.write_text(f"(fn main [args] : Int\n{statements}\n  0)\n")
         started = time.monotonic()
         result = subprocess.run([str(self.gene), "run", str(script)],
@@ -515,6 +519,228 @@ class OwnedHttpClientTests(unittest.TestCase):
         self.assertEqual(data, {"busy": True, "status": 202, "body": "abcdef",
                                 "after_eof": True, "pending": 0,
                                 "leases": 0})
+
+    def test_custom_reader_upload_excludes_held_and_direct_reads(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (let IoBusy $io/IoBusy)
+  (protocol MoreReader ^inherit [AsyncReader])
+  (type Waiting ^props {{}})
+  (impl AsyncReader for Waiting
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root (do ($sleep 1000) nil))))
+  (let reader (Waiting))
+  (let held AsyncReader:read)
+  (let client (await ($net/http_client/open)))
+  (let upload (client .request ^url "{self.base}/upload"
+                               ^method "POST" ^body reader))
+  (fn blocked [f]
+    (try
+      (let unexpected (f reader 16))
+      (unexpected .cancel)
+      (unexpected .join)
+      false
+     catch IoBusy true))
+  (let held_busy (blocked held))
+  (let shape ($runtime/signature held reader))
+  (let direct_busy (try
+    (let unexpected (reader .AsyncReader:read 16))
+    (unexpected .cancel)
+    (unexpected .join)
+    false
+   catch IoBusy true))
+  (let dynamic_busy (try
+    (let unexpected (reader .%held 16))
+    (unexpected .cancel)
+    (unexpected .join)
+    false
+   catch IoBusy true))
+  (let pipeline_busy (try
+    (let unexpected ([reader] => held 16 -> $into []))
+    (unexpected/0 .cancel)
+    (unexpected/0 .join)
+    false
+   catch IoBusy true))
+  (let inherited_busy (try
+    (let unexpected (reader .MoreReader:read 16))
+    (unexpected .cancel)
+    (unexpected .join)
+    false
+   catch IoBusy true))
+  (upload .cancel)
+  (upload .join)
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let after (await (held reader 16)))
+  ($println ($json/stringify
+    {{^held_busy held_busy ^direct_busy direct_busy ^dynamic_busy dynamic_busy
+      ^pipeline_busy pipeline_busy ^shape_known shape/shape_known
+      ^inherited_busy inherited_busy
+      ^after_eof ($nil? after)}}))
+""", timeout=12, root_driver=True)
+        self.assertEqual(data, {"held_busy": True, "direct_busy": True,
+                                "dynamic_busy": True, "pipeline_busy": True,
+                                "shape_known": True,
+                                "inherited_busy": True,
+                                "after_eof": True})
+
+    def test_custom_reader_super_delegation_keeps_one_read_admission(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (type Base ^props {{}})
+  (type Inline : Base ^props {{}})
+  (type Deferred : Base ^props {{}})
+  (impl AsyncReader for Base
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root nil)))
+  (impl AsyncReader for Inline
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (super .AsyncReader:read max_bytes)))
+  (impl AsyncReader for Deferred
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root (await (super .AsyncReader:read max_bytes)))))
+  ($assert ($nil? (await ((Inline) .AsyncReader:read 16))))
+  ($assert ($nil? (await ((Deferred) .AsyncReader:read 16))))
+  (let client (await ($net/http_client/open)))
+  (let statuses [])
+  (for reader in [(Inline) (Deferred)]
+    (let response (await (client .request ^url "{self.base}/upload"
+      ^method "POST" ^body reader)))
+    (statuses .push response/status))
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify {{^statuses statuses ^guards stats/io_read_guards}}))
+""", timeout=12, root_driver=True)
+        self.assertEqual(data, {"statuses": [202, 202], "guards": 0})
+
+    def test_custom_reader_pending_read_refuses_upload_admission(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (let IoBusy $io/IoBusy)
+  (type Waiting ^props {{}})
+  (impl AsyncReader for Waiting
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root (do ($sleep 1000) nil))))
+  (let reader (Waiting))
+  (let client (await ($net/http_client/open)))
+  (let prior (reader .AsyncReader:read 16))
+  (let busy (try
+    (let unexpected (client .request ^url "{self.base}/upload"
+      ^method "POST" ^body reader))
+    (unexpected .cancel)
+    (unexpected .join)
+    false
+   catch IoBusy true))
+  (prior .cancel)
+  (prior .join)
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  ($println ($json/stringify {{^busy busy}}))
+""", timeout=12, root_driver=True)
+        self.assertEqual(data, {"busy": True})
+
+    def test_custom_reader_borrow_rolls_back_when_byte_budget_refuses_request(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (let IoBackpressure $io/IoBackpressure)
+  (type Empty ^props {{}})
+  (impl AsyncReader for Empty
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root nil)))
+  (let client (await ($net/http_client/open ^max_connections 1
+                                          ^max_connections_per_origin 1)))
+  (let queued [])
+  (repeat 7
+    (queued .push (client .request ^url "{self.base}/upload"
+      ^method "POST" ^body (Empty))))
+  (let refused (Empty))
+  (let full (try
+    (client .request ^url "{self.base}/upload" ^method "POST" ^body refused)
+    false
+   catch IoBackpressure true))
+  (let eof (await (refused .AsyncReader:read 16)))
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {{^full full ^eof ($nil? eof) ^guards stats/io_read_guards
+      ^pending stats/http_client_pending_requests ^leases stats/io_cleanup_leases}}))
+""", timeout=12, root_driver=True)
+        self.assertEqual(data, {"full": True, "eof": True, "guards": 0,
+                                "pending": 0, "leases": 0})
+
+    def test_custom_reader_upload_waits_for_cancel_cleanup_before_release(self) -> None:
+        data, _ = self.run_gene(f"""
+  (let AsyncReader $io/AsyncReader)
+  (let IoResource $io/IoResource)
+  (let IoBusy $io/IoBusy)
+  (let started ($channel ^capacity 1))
+  (let cleanup_started ($channel ^capacity 1))
+  (let release_cleanup ($channel ^capacity 1))
+  (var cleaned 0)
+  (type Waiting ^props {{}})
+  (impl AsyncReader for Waiting
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn ^lane root
+        (try
+          (started .send true)
+          ($sleep 60000)
+          nil
+         ensure
+          (cleanup_started .send true)
+          (release_cleanup .recv)
+          (set cleaned (+ cleaned 1))))))
+  (let reader (Waiting))
+  (let client (await ($net/http_client/open)))
+  (let upload (client .request ^url "{self.base}/upload"
+                               ^method "POST" ^body reader))
+  (started .recv)
+  (upload .cancel)
+  (upload .join)
+  (cleanup_started .recv)
+  (let busy (try
+    (let unexpected (reader .AsyncReader:read 16))
+    (unexpected .cancel)
+    (unexpected .join)
+    false
+   catch IoBusy true))
+  (release_cleanup .send true)
+  (client .IoResource:close)
+  (await (client .IoResource:wait_closed))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify
+    {{^busy busy ^cleaned cleaned ^pending stats/http_client_pending_requests
+      ^leases stats/io_cleanup_leases}}))
+""", timeout=12, root_driver=True)
+        self.assertEqual(data, {"busy": True, "cleaned": 1,
+                                "pending": 0, "leases": 0})
+
+    def test_custom_reader_worker_read_retires_its_root_lane_pin(self) -> None:
+        if not ATOMIC_ARC:
+            self.skipTest("Gene worker lanes require AtomicArc")
+        data, _ = self.run_gene("""
+  (let AsyncReader $io/AsyncReader)
+  (type Empty ^props {})
+  (impl AsyncReader for Empty
+    (message read [max_bytes : Int] : (Task Bytes? Error)
+      (spawn nil)))
+  (let reader ($freeze (Empty)))
+  (scope
+    (let worker (spawn
+      (do
+        (repeat 20 (await (reader .AsyncReader:read 16)))
+        nil)))
+    (repeat 200000 (+ 1 1))
+    (await worker))
+  (let stats ($runtime/gc_stats))
+  ($println ($json/stringify {^guards stats/io_read_guards}))
+""", timeout=12, extra_env={"GENE_WORKERS": "2"})
+        self.assertEqual(data, {"guards": 0})
 
     def test_large_async_upload_does_not_block_fast_request(self) -> None:
         path = pathlib.Path(self.temp.name) / "upload-large.bin"

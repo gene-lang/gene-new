@@ -79,5 +79,19 @@ A short release/RC SERVICE check passed at 30 requests/s: p95 5.78 ms,
 55 ms maximum heartbeat gap, zero managed-value slope, and completed cleanup.
 Its binary SHA-256 was
 `cafa3db629f1cba31189be3cd888360a26672dee9915ff2cc01e68660cbacc06`.
-The two-hour run remains pending; no multi-hour qualification follows from
-this short check.
+The earlier Claude baseline completed its two-hour run on revision `2439442`,
+binary SHA-256
+`1ed47a3b2bd427205ef7c76533febc64427c6f95b0b8890a4b4e5832a1bb7804`.
+It returned `probe_pass` for 216,000 requests at 30/s: p95 5.56 ms, p99
+6.99 ms, maximum heartbeat gap 112 ms, and managed minimum 995 in both
+sampling windows (growth 0). Sampled peak RSS was 20,070,400 bytes. Graceful
+shutdown completed with zero pending cleanup Tasks, cleanup leases, open I/O
+resources, and retained bytes. The load driver's 362.51 ms fast-completion
+gap is a distinct measurement from the server heartbeat. Its preserved report
+is `tmp/service-2h-claude-baseline.json`.
+
+That baseline predates the capture/cancellation repair. The two-hour run on
+`b7057b1`, binary SHA-256
+`59b133742b351a90f9800884c26067da4bbc76c7deca89b769042a0dfbedfaee`,
+remains pending. Its report is `tmp/service-2h-mixed-cancellation.json`.
+Neither result promotes experimental/planned stages or qualifies native Linux.

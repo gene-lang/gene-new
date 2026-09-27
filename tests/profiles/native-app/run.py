@@ -435,7 +435,8 @@ def run_lifetime(workload: dict) -> dict:
                                 "io_root_tasks", "io_root_cleanup_tasks",
                                 "io_open_resources", "scheduler_runnable_fibers",
                                 "scheduler_waiting_fibers", "io_cleanup_leases",
-                                "io_retained_bytes", "io_waiting_readiness"))):
+                                "io_retained_bytes", "io_waiting_readiness",
+                                "io_read_guards"))):
                         return {"outcome": "failure",
                                 "reason": "mixed_cancellation_cleanup_or_control",
                                 "snapshot": item}
@@ -448,7 +449,8 @@ def run_lifetime(workload: dict) -> dict:
                             any(item.get(counter) != 0 for counter in (
                                 "scheduler_runnable_fibers",
                                 "scheduler_waiting_fibers", "io_cleanup_leases",
-                                "io_retained_bytes", "io_waiting_readiness"))):
+                                "io_retained_bytes", "io_waiting_readiness",
+                                "io_read_guards"))):
                         return {"outcome": "failure",
                                 "reason": "service_cancel_graph_cleanup",
                                 "snapshot": item}

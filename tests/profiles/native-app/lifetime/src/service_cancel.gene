@@ -62,6 +62,7 @@
      ^io_cleanup_leases stats/io_cleanup_leases
      ^io_retained_bytes stats/io_retained_bytes
      ^io_waiting_readiness stats/io_waiting_readiness
+     ^io_read_guards stats/io_read_guards
      ^io_open_resources stats/io_open_resources
      ^http_client_open_resources stats/http_client_open_resources
      ^http_client_pending_requests stats/http_client_pending_requests

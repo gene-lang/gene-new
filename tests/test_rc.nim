@@ -456,6 +456,24 @@ when defined(geneRcStats):
           ($runtime/gc_stats)
         """) == 0
 
+    test "completed custom AsyncReader calls release their admission roots":
+      let source = """
+        (let AsyncReader $io/AsyncReader)
+        (fn one []
+          (scope
+            (type Reader ^props {})
+            (impl AsyncReader for Reader
+              (message read [max_bytes : Int] : (Task Bytes? Error)
+                (spawn ^lane root nil)))
+            (let reader (Reader))
+            (await (reader .AsyncReader:read 16))
+            (let stats ($runtime/gc_stats))
+            ($assert (== stats/io_read_guards 0))))
+        (repeat 40 (one))
+        ($runtime/test_collect)
+      """
+      check leakedManaged(source) == 0
+
     test "released error witnesses reclaim their formatter environments":
       check leakedManaged("""
         (fn raise_local []

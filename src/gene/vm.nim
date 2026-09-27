@@ -312,11 +312,20 @@ type
     csmSend
     csmWorker
 
+  IoReadGuard = ref object
+    reader: Value
+    pending: Value
+    borrower: uint64
+    admitting: bool
+    id: uint64
+
   SchedulerState* = ref object of RuntimeContext
     lock: Lock
     rootLane: int
     runQueue: seq[Fiber]
     waiters: seq[Fiber]
+    ioReadGuards: Table[uint64, IoReadGuard]
+    ioReadRetiredTasks: seq[Value] # release completed pins on the root lane
     askTimeouts: seq[AskTimeout]
     supervisorRetries: seq[SupervisorFailureRetry]
     supervisorRetryHead: int
@@ -1258,6 +1267,9 @@ proc drainSupervisorFailures()
 
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
+proc pruneIoReadGuards(s: SchedulerState)
+proc borrowProtocolRead(reader: Value, owner: uint64, scope: Scope)
+proc releaseProtocolRead(reader: Value, owner: uint64, scope: Scope)
 
 when compileOption("threads"):
   import std/atomics
@@ -7706,6 +7718,7 @@ proc biRuntimeGcStats(args: openArray[Value],
                       call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "runtime/gc_stats expects no arguments")
+  pruneIoReadGuards(currentScheduler())
   var entries = initPropTable()
   entries["live_managed"] = newInt(managedLiveCount())
   entries["rc_stats?"] =
@@ -7785,6 +7798,7 @@ proc biRuntimeGcStats(args: openArray[Value],
   withSchedulerLock(scheduler):
     entries["scheduler_runnable_fibers"] = newInt(scheduler.runQueue.len)
     entries["scheduler_waiting_fibers"] = newInt(scheduler.waiters.len)
+    entries["io_read_guards"] = newInt(scheduler.ioReadGuards.len)
     entries["supervisor_retry_pending"] =
       newInt(scheduler.supervisorRetries.len - scheduler.supervisorRetryHead)
     entries["supervisor_retry_capacity"] =
@@ -13821,12 +13835,18 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       publishSpawnValue(message, seenScopes, seenValues, seenChunks)
     publishSpawnValue(value.protocolDeriveFn, seenScopes, seenValues, seenChunks)
   of vkProtocolMessage:
-    publishSpawnValue(value.protocolMessageProtocol, seenScopes, seenValues,
-                      seenChunks)
-    publishSpawnValue(value.protocolMessageSignatureFn, seenScopes, seenValues,
-                      seenChunks)
-    publishSpawnValue(value.protocolMessageDefaultFn, seenScopes, seenValues,
-                      seenChunks)
+    if value.protocolMessageIsBound:
+      publishSpawnValue(value.protocolMessageQualifier, seenScopes, seenValues,
+                        seenChunks)
+      publishSpawnScope(value.protocolMessageScope, seenScopes, seenValues,
+                        seenChunks)
+    else:
+      publishSpawnValue(value.protocolMessageProtocol, seenScopes, seenValues,
+                        seenChunks)
+      publishSpawnValue(value.protocolMessageSignatureFn, seenScopes, seenValues,
+                        seenChunks)
+      publishSpawnValue(value.protocolMessageDefaultFn, seenScopes, seenValues,
+                        seenChunks)
   else:
     discard
 
@@ -14057,6 +14077,7 @@ proc nativeTaskCancel*(task: Value, scope: Scope): bool =
 
 include ./ext/io_testing
 include ./ext/io_file
+include ./io_read_guard
 
 proc taskBoundaryScopeOr(task: Value, fallback: Scope = nil): Scope =
   let boundaryScope = task.taskBoundaryScope
@@ -14401,6 +14422,20 @@ proc collectProtocolMatches(scope: Scope, recvType, message: Value,
         matches.setLen(0)
       matches.add entry.fn
 
+iterator superBodyChunks(chunk: Chunk): Chunk =
+  for body in chunk.subchunks: yield body
+  for loop in chunk.forLoops: yield loop.body
+  for match in chunk.matches:
+    for clause in match.clauses: yield clause.body
+    if match.elseBody != nil: yield match.elseBody
+  for attempt in chunk.tries:
+    yield attempt.body
+    for clause in attempt.catches: yield clause.body
+    if attempt.ensureBody != nil: yield attempt.ensureBody
+
+proc superChunkConflicts(chunk: Chunk, parent: Value,
+                         seen: var HashSet[pointer]): bool
+
 proc superStampConflicts(proto: FunctionProto, parent: Value,
                          seen: var HashSet[pointer]): bool =
   ## True when this body tree already carries a *different* nominal parent, i.e.
@@ -14410,13 +14445,17 @@ proc superStampConflicts(proto: FunctionProto, parent: Value,
   if proto == nil:
     return false
   for chunk in [proto.chunk, proto.scopelessChunk]:
-    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
-      continue
-    if chunk.superType.kind != vkNil and not same(chunk.superType, parent):
-      return true
-    for nested in chunk.functions:
-      if superStampConflicts(nested, parent, seen):
-        return true
+    if superChunkConflicts(chunk, parent, seen): return true
+  false
+
+proc superChunkConflicts(chunk: Chunk, parent: Value,
+                         seen: var HashSet[pointer]): bool =
+  if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)): return false
+  if chunk.superType.kind != vkNil and not same(chunk.superType, parent): return true
+  for nested in chunk.functions:
+    if superStampConflicts(nested, parent, seen): return true
+  for body in superBodyChunks(chunk):
+    if superChunkConflicts(body, parent, seen): return true
   false
 
 proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
@@ -14450,19 +14489,52 @@ proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
   result.owner = owner
   result.superType = NIL
   result.dispatchCache = @[]     # sites are per-chunk; the copy starts cold
+  template childOwner(body: Chunk): FunctionProto =
+    (if body == nil or body.owner == nil: nil
+     elif body.owner == chunk.owner: owner
+     else: body.owner)
   for i in 0 ..< result.functions.len:
     result.functions[i] = cloneSuperProto(result.functions[i], cloned)
+  for i, body in chunk.subchunks:
+    result.subchunks[i] = cloneSuperChunk(body, childOwner(body), cloned)
+  for i, loop in chunk.forLoops:
+    result.forLoops[i] = ForProto(pattern: loop.pattern,
+      body: cloneSuperChunk(loop.body, childOwner(loop.body), cloned))
+  for i, match in chunk.matches:
+    var clauses: seq[MatchClause]
+    for clause in match.clauses:
+      clauses.add MatchClause(pattern: clause.pattern,
+        body: cloneSuperChunk(clause.body, childOwner(clause.body), cloned))
+    result.matches[i] = MatchProto(clauses: clauses, tailResult: match.tailResult,
+      elseBody: cloneSuperChunk(match.elseBody, childOwner(match.elseBody), cloned))
+  for i, attempt in chunk.tries:
+    var catches: seq[CatchClause]
+    for clause in attempt.catches:
+      catches.add CatchClause(errorType: clause.errorType, pattern: clause.pattern,
+        body: cloneSuperChunk(clause.body, childOwner(clause.body), cloned))
+    result.tries[i] = TryProto(
+      body: cloneSuperChunk(attempt.body, childOwner(attempt.body), cloned),
+      catches: catches, ensureBody: cloneSuperChunk(attempt.ensureBody,
+        childOwner(attempt.ensureBody), cloned))
+
+proc stampSuperChunkInPlace(chunk: Chunk, parent: Value,
+                            seen: var HashSet[pointer])
 
 proc stampSuperTypeInPlace(proto: FunctionProto, parent: Value,
                            seen: var HashSet[pointer]) =
   if proto == nil:
     return
   for chunk in [proto.chunk, proto.scopelessChunk]:
-    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
-      continue
-    chunk.superType = parent
-    for nested in chunk.functions:
-      stampSuperTypeInPlace(nested, parent, seen)
+    stampSuperChunkInPlace(chunk, parent, seen)
+
+proc stampSuperChunkInPlace(chunk: Chunk, parent: Value,
+                            seen: var HashSet[pointer]) =
+  if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)): return
+  chunk.superType = parent
+  for nested in chunk.functions:
+    stampSuperTypeInPlace(nested, parent, seen)
+  for body in superBodyChunks(chunk):
+    stampSuperChunkInPlace(body, parent, seen)
 
 proc stampSuperType(proto: FunctionProto, parent: Value): FunctionProto =
   ## Record a type-direct message body's nominal parent on its chunk, and on every
@@ -14592,6 +14664,9 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
       raiseMessageError(name, superType.typeName, scope,
                         protocol = qualifier.protocolName, missingImpl = true,
                         protocolValue = qualifier, receiverValue = superType)
+    if isIoReadMessage(scope, message.protocolMessageProtocol,
+                       message.protocolMessageName):
+      result = newIoReadCall(result, delegated = true)
   else:
     raiseCallKindError("super send", "Protocol",
                        freezeRejectName(qualifier), qualifier, scope)
@@ -14635,7 +14710,7 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
     raiseCallKindError("message send", "Protocol",
                        freezeRejectName(qualifier), qualifier, scope)
 
-proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
+proc resolveProtocolMessageRaw(scope: Scope, message, receiver: Value): Value =
   if scope == nil:
     raise newException(GeneError,
       "protocol message '" & message.protocolMessageName &
@@ -14662,6 +14737,11 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
                       protocol = protocol.protocolName, missingImpl = true,
                       protocolValue = protocol, receiverValue = recvType)
 
+proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
+  result = resolveProtocolMessageRaw(scope, message, receiver)
+  if isIoReadMessage(scope, message.protocolMessageProtocol,
+                     message.protocolMessageName):
+    result = newIoReadCall(result)
 
 
 # --------------------------------------------------------------------------
@@ -14740,7 +14820,8 @@ when dispatchCacheEnabled:
     ## non-owning; it is re-materialized only while the guard (epoch) still
     ## holds, and an unchanged epoch implies the resolving impl — hence the
     ## callee — is still registered and alive.
-    if site < 0:
+    # Read-admission calls are temporary wrappers, not registry-owned code.
+    if site < 0 or callee.isIoReadCall:
       return
     if chunk.dispatchCache.len != chunk.instructions.len:
       chunk.dispatchCache.setLen(chunk.instructions.len)
@@ -16407,7 +16488,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## A source-level custom call is protocol dispatch to Callable/apply. Keep
     ## that bytecode implementation on the same explicit VM frame stack rather
     ## than hiding it inside a nested applyCall/runLoop invocation.
-    if calleeValue.kind == vkCallableView:
+    if calleeValue.kind == vkCallableView and not calleeValue.isIoReadCall:
       let checkedView = calleeValue
       let callPayload = callableViewPayload(checkedView, originalArgs,
         originalNamed, callSite, instructionLocAt(chunk, ip - 1))
@@ -19145,7 +19226,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # A message value is first-class, so one site can see several; its
             # identity joins the guard (msgBits), as in the opCall path.
             let recvType = receiver.receiverType
-            if recvType.kind == vkType and not scope.chainHasTransientImpls():
+            if recvType.kind == vkType and not scope.chainHasTransientImpls() and
+                not isIoReadMessage(scope, message.protocolMessageProtocol,
+                                    message.protocolMessageName):
               let site = ip - 1
               let epoch = scope.application().dispatchEpoch()
               let msgBits = message.bits
@@ -19175,7 +19258,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # Guard: receiver type + qualifier identity + impl epoch. The
             # message name is fixed per call site, so it needs no bits.
             cacheable = recvType.kind == vkType and
-              not scope.chainHasTransientImpls()
+              not scope.chainHasTransientImpls() and
+              not isIoReadMessage(scope, qualifier, inst[].name)
             if cacheable:
               callee = chunk.dispatchCacheLookup(ip - 1, recvType,
                                                  qualifier.bits,
@@ -19903,6 +19987,7 @@ proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
   wakeAllChannelWaitersIn(currentScheduler(), channel, wakeSenders)
 
 proc wakeTaskWaitersIn(s: SchedulerState, task: Value) =
+  pruneIoReadGuards(s)
   ## Move every fiber parked in `await` on `task` onto the run queue. A completed
   ## task wakes all of its awaiters (unlike a channel, which wakes one
   ## counterpart). Foreign-thread safe: rc-free move transfer, same discipline
@@ -20508,6 +20593,7 @@ proc schedulerWorkerLeaseHasProgress(lease: SchedulerWorkerLease): bool =
     false
 
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
+  pruneIoReadGuards(currentScheduler())
   pollOsExecAsyncCompletions()
   pollNativeIngressHook()
   if schedulerRunOne(skipWorkerSafe = lease.active):
@@ -20526,6 +20612,7 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
 
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool =
+  pruneIoReadGuards(currentScheduler())
   pollOsExecAsyncCompletions()
   pollNativeIngressHook()
   if schedulerRunOneUntil(deadline, skipWorkerSafe = lease.active):
@@ -20601,6 +20688,9 @@ proc cancelScheduledTask(task: Value): bool =
   ## after the task finally settles.
   let s = currentScheduler()
   withSchedulerLock(s):
+    if currentFiberActive and activeTask.kind == vkTask and
+        activeTask.taskSharesState(task):
+      result = true # the running root Fiber is neither queued nor parked
     var i = 0
     while i < s.runQueue.len:
       if s.runQueue[i].task.taskSharesState(task):
@@ -21188,7 +21278,9 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkPipeline:
     newSym("Any")
   of vkFunction: newSym(if value.isSyntaxFn: "Fexpr" else: "Fn")
-  of vkCallableView: value.callableViewSignature
+  of vkCallableView:
+    if value.isIoReadCall: runtimeTypeExpr(value.callableViewTarget)
+    else: value.callableViewSignature
   of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
@@ -28771,6 +28863,14 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                loc = SourceLoc()): Value =
   case callee.kind
   of vkCallableView:
+    if callee.isIoReadCall:
+      let caller =
+        if dispatchScope != nil: dispatchScope
+        elif activeVmScope != nil: activeVmScope[]
+        else: currentApplication().builtinsScope()
+      withScopedScheduler(caller):
+        return applyIoReadCall(callee.callableViewTarget, args, named,
+                               caller, site, loc, callee.isIoReadDelegate)
     let caller =
       if dispatchScope != nil: dispatchScope
       elif activeVmScope != nil: activeVmScope[]

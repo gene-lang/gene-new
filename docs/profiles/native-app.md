@@ -159,9 +159,11 @@ GET/HEAD redirects. Local tests cover duplicate headers, binary POST,
 known-length and chunked uploads, upload cancellation, cross-origin credential
 stripping, TLS trust, captured proxy settings, per-origin caps, queue
 deadlines, and byte-budget retirement under ORC, AtomicArc, and ASAN. An
-upload's exclusive read borrow now also covers Client response bodies.
-Borrowing a Gene-defined AsyncReader against caller-initiated reads, and the
-full service profile, remain open.
+upload's exclusive read borrow covers native and Gene-defined AsyncReaders,
+including held/dynamic sends, pipelines, inherited reads, pending-read admission,
+failed-admission rollback, and cancellation through ensure cleanup. Native
+backend aliases retain their lifecycle enforcement; custom convenience APIs
+need their own backend policy. Full platform qualification remains open.
 
 The experimental CSV reader now uses those qualified I/O contracts. Focused
 tests cover one-byte UTF-8/quote/CRLF boundaries, malformed headers, pending
@@ -179,3 +181,9 @@ cross-platform release result.
 Run `python3 tests/profiles/native-app/run.py` for a machine-readable audit. `--probe-blocked` runs existing fixture code even when prerequisites are planned and records a probe result; it does not promote a workload. `--require-supported` fails unless every required workload has authoritative passing evidence. Reports go under `tmp/native-app-profile/` and record the Gene binary, platform, revision, stage state, and workload result. APP-1's path, walk, and CSV spec cases pass, and the script fixture exercises normal and three failed inputs. `nimble spec` passes after the catch-scope fix and the proposal-aware documentation lint. A future stage promotion must add conformance evidence and update both this ledger and the manifest.
 
 Implementation order and the release gates are in [the profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order).
+
+The [2026-09-26 reader-borrowing audit](native-app-2026-09-26-reader-borrowing.md)
+records the generic protocol admission and final four-gate/full-profile results.
+SCRIPT passes; CLI/SERVICE/DATA/LIFETIME remain probe passes. The 60-second
+SERVICE result has a 54 ms maximum heartbeat gap, managed growth 0, and clean
+shutdown; it does not substitute for the independent sustained-service gate.
