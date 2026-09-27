@@ -83,3 +83,21 @@ Use stable O(n log n) merge sort over a copied finite List. Validate comparator 
 | VAL-3 | Selector/staticLookup/set/size seams, ordering natives and new order module | Read-only sequence writes fail, negative/F64/huge indices, void normalization, immutable/native wrappers, sort stability/key-call counts, custom callbacks cannot await. |
 
 Extend existing protocol, spec, mutation, and RC suites. The web/C backends must either implement a listed fallback with shared tests or reject it before execution; an accepted nominal type must not silently fall back to structural equality on another backend. Custom worker fallback is separately qualified later.
+
+## Backend audit — 2026-09-27
+
+The existing native specs and six shared semantic samples pass. A freshly built
+wasm VM agrees on those samples (45 total ABI cases), including held/recursive
+equality, semantic keys, missing hash, indexed reads/writes and huge/F64 bounds,
+ordering, and nominal sorting. The emitted web backend rejects the five tested
+canonical witness declaration combinations before emission; typed-native C
+rejects the five tested witness-bearing native-wrapper operations before
+emission. These boundaries are executable in
+`tests/test_value_backend_boundaries.nim`, and VM/wasm samples share
+`tests/fixtures/value_operations.json`. Explicit ordinary protocols keep their
+existing contracts; they do not opt into these implicit canonical operations.
+
+This is sampled parity/refusal evidence, not full backend promotion. Wasm
+error/reentry/activation/lifetime and browser-host qualification, web/C witness
+implementation, custom worker support, and native Linux remain separate gates.
+See [the dated audit](../profiles/native-app-2026-09-27-distribution.md).

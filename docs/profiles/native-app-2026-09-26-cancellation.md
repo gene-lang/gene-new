@@ -93,5 +93,12 @@ is `tmp/service-2h-claude-baseline.json`.
 That baseline predates the capture/cancellation repair. The two-hour run on
 `b7057b1`, binary SHA-256
 `59b133742b351a90f9800884c26067da4bbc76c7deca89b769042a0dfbedfaee`,
-remains pending. Its report is `tmp/service-2h-mixed-cancellation.json`.
+returned `probe_failure` (`host_loop_stall`) after 216,000 requests at 30/s.
+The maximum heartbeat gap was 319 ms against the unchanged 250 ms gate:
+269 ms wait overrun, 0 ms loop work/CPU, and zero active connections and
+in-flight requests at that heartbeat sample. p95 was 11.46 ms, p99 14.42 ms,
+and peak sampled RSS 20,004,864 bytes. The runner stopped its evidence record
+at the failed heartbeat gate, so this report supplies no managed-slope or
+shutdown-cleanup evidence. Its report is
+`tmp/service-2h-mixed-cancellation.json`.
 Neither result promotes experimental/planned stages or qualifies native Linux.

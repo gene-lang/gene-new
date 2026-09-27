@@ -70,6 +70,7 @@ Retained Module/function/instance controls pass. Report:
 `tmp/read-borrow-profile.json`, recorded against parent revision `b7057b1`
 with the continuation worktree marked dirty.
 
-The prior cancellation-repaired binary's two-hour soak is independent and
-still running; see [the cancellation audit](native-app-2026-09-26-cancellation.md).
+The prior cancellation-repaired binary's independent two-hour soak finished
+with a 319 ms idle heartbeat wait-overrun failure against the 250 ms gate;
+see [the cancellation audit](native-app-2026-09-26-cancellation.md).
 The earlier baseline's passing two-hour result does not qualify this new build.

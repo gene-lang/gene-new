@@ -455,3 +455,45 @@ suite "build engine — pure Gene targets":
       check symlinkExists(concurrent.projectView / "metadata.gene")
       check "acme/concurrent" in
         readFile(concurrent.projectView / "metadata.gene")
+
+  test "environment-dependent C artifacts are scoped to the build host":
+    when defined(posix):
+      let root = buildTestRoot()
+      let triple = hostCPU & "-" & hostOS
+      writeBuildFile(root / "package.gene",
+        "{^format 1 ^name \"acme/native_host\" ^version \"1.0.0\" " &
+        "^applications [(application \"app\" ^entry \"src/main.gene\" ^uses [\"bridge\"])] " &
+        "^files {^include [\"package.gene\" \"src/**\" \"native/**\"]} " &
+        "^build [(c_library \"bridge\" ^sources [\"native/bridge.c\"] ^linkage shared " &
+        "^targets [\"" & triple & "\"]) ]}")
+      writeBuildFile(root / "src/main.gene", "(fn main [] 0)")
+      writeBuildFile(root / "native/bridge.c", "int gene_bridge(void) { return 42; }\n")
+      let manager = newPackageManager(root / "packages")
+      let resolution = manager.resolve(ResolveRequest(startDir: root))
+      let graph = manager.sync(resolution,
+        SyncPolicy(offline: true, userStoreRoot: root / "packages"))
+      let shared = root / "shared-artifacts"
+      proc engine(host: string, evidence = "", required = false): BuildEngine =
+        newBuildEngine(BuildEnvironment(
+          artifactStore: newLocalArtifactStore(shared),
+          toolchains: newToolchainSet("gene-test-compiler", triple,
+            cCompilerEvidenceOverride = evidence, nativeHostIdentity = host),
+          artifactSources: (if required:
+            @[ArtifactSource(name: "installed", root: shared, required: true)]
+            else: @[])))
+      let request = BuildRequest(rootPackageId: graph.activePackageId,
+        target: "app", profile: "dev", mode: bmVm)
+      let first = engine("host-one").build(request, graph).rootArtifact
+      let same = engine("host-one").build(request, graph).rootArtifact
+      let other = engine("host-two").build(request, graph).rootArtifact
+      check not first.cacheHit
+      check same.cacheHit
+      check first.derivationId == same.derivationId
+      check not other.cacheHit
+      check first.derivationId != other.derivationId
+      let evidence = first.resources[0].compilerEvidence
+      check raisedBuildCode(proc () =
+        discard engine("host-two", evidence).build(request, graph)) == becRecipeUnavailable
+      let installed = engine("host-two", evidence, true).build(request, graph).rootArtifact
+      check installed.cacheHit
+      check installed.artifactDigest == first.artifactDigest

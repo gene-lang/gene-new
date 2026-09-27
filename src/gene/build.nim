@@ -1,7 +1,7 @@
 ## Deterministic pure-Gene target planning and artifact construction.
 
 import std/[algorithm, os, osproc, sets, strutils, tables]
-import ./[digest, gir, gir_codec, package, printer, process_lock, reader,
+import ./[build_host, digest, gir, gir_codec, package, printer, process_lock, reader,
           system_dependency, types, vm]
 import ./native_api
 
@@ -37,6 +37,7 @@ type
     hostTargetTriple*: string
     cCompilerPath*: string
     cCompilerEvidenceOverride*: string
+    nativeHostIdentity*: string # injected only by an explicit build environment
 
   BuildPolicy* = object
     ## Phase-1 pure Gene compilation requests no ambient authority. Later
@@ -132,12 +133,14 @@ proc defaultSourceSnapshot(pkg: Package, snapshotRoot: string): Package
 
 proc newToolchainSet*(compilerIdentity, hostTargetTriple: string,
                      cCompilerPath = "",
-                     cCompilerEvidenceOverride = ""): ToolchainSet =
+                     cCompilerEvidenceOverride = "",
+                     nativeHostIdentity = ""): ToolchainSet =
   ToolchainSet(compilerIdentity: compilerIdentity,
                hostTargetTriple: hostTargetTriple,
                cCompilerPath: (if cCompilerPath.len > 0: cCompilerPath
                                else: findExe("cc")),
-               cCompilerEvidenceOverride: cCompilerEvidenceOverride)
+               cCompilerEvidenceOverride: cCompilerEvidenceOverride,
+               nativeHostIdentity: nativeHostIdentity)
 
 proc newLocalArtifactStore*(root: string): ArtifactStore =
   ArtifactStore(root: normalizedPath(absolutePath(root)))
@@ -802,7 +805,11 @@ proc cCompilerEvidence(toolchains: ToolchainSet): string =
   if path.len == 0 or not fileExists(path):
     raiseBuild(becRecipeUnavailable,
       "c_library requires a configured C compiler")
-  let input = normalizedPath(absolutePath(path)) & "\0" &
+  let hostIdentity =
+    if toolchains.nativeHostIdentity.len > 0: toolchains.nativeHostIdentity
+    else: nativeBuildHostIdentity()
+  let input = "gene-local-c-compiler-v2\0" & hostIdentity & "\0" &
+    normalizedPath(absolutePath(path)) & "\0" &
     sha256File(path) & "\0" & getEnv("SDKROOT") & "\0" &
     getEnv("MACOSX_DEPLOYMENT_TARGET") & "\0" & getEnv("SYSROOT")
   "environment-dependent:sha256:" & sha256Hex(input)
@@ -923,40 +930,6 @@ proc selectedResources(engine: BuildEngine, request: BuildRequest,
       result.add BuildResource(path: relative, builtRelative: relative,
         nativeAlias: alias, nativeTarget: triple,
         abiKind: "c_abi", abiVersion: 1,
-        compilerEvidence: cCompilerEvidence(engine.environment.toolchains),
-        systemEvidence: evidence)
-      continue
-    if recipeKind == "c_library":
-      if triple != engine.environment.toolchains.hostTargetTriple:
-        raiseBuild(becRecipeUnavailable,
-          "c_library needs a configured compiler for this target",
-          [pkg.name, alias, triple])
-      var recipe: CLibraryRecipe
-      try:
-        recipe = pkg.cLibraryRecipe(alias, triple)
-      except PackageError as error:
-        raiseBuild(becRequestInvalid, error.msg, [pkg.name, alias])
-      let relative = "native/" & sha256Hex(alias)[0 .. 31] & ".bin"
-      if relative in seen:
-        raiseBuild(becRequestInvalid,
-          "native output is selected more than once", [pkg.name, alias])
-      seen.incl relative
-      let identity = engine.environment.toolchains.compilerIdentity
-      var evidence: seq[string]
-      for systemAlias in recipe.systemAliases:
-        if engine.environment.systemDependencyProviders == nil:
-          raiseBuild(becRecipeUnavailable,
-            "c_library requires a system dependency resolver",
-            [pkg.name, alias, systemAlias])
-        let resolved = engine.environment.systemDependencyProviders.resolve(
-          SystemDependencyRequest(
-            requirement: pkg.systemDependencies[systemAlias],
-            targetTriple: triple, toolchainIdentity: identity))
-        evidence.add systemAlias & "=" & resolved.canonicalDigest
-      evidence.sort()
-      result.add BuildResource(path: relative,
-        builtRelative: relative, nativeAlias: alias,
-        nativeTarget: triple, abiKind: "c_abi", abiVersion: 1,
         compilerEvidence: cCompilerEvidence(engine.environment.toolchains),
         systemEvidence: evidence)
       continue
@@ -1109,8 +1082,15 @@ proc loadCachedArtifact(engine: BuildEngine, request: BuildRequest,
   let indexPath = derivationIndexPath(artifactRoot, result.derivationId)
   var selectedRoot = artifactRoot
   var cachedDigest = ""
+  var installedNativeEvidence = false
+  if engine.environment.toolchains.cCompilerEvidenceOverride.len > 0:
+    for resource in result.resources:
+      if resource.builtRelative.len > 0: installedNativeEvidence = true
   for source in engine.environment.artifactSources:
     if source.root.len == 0: continue
+    # Imported compiler evidence is replay authority only for the required
+    # installed closure, never for optional or ambient cache lookup.
+    if installedNativeEvidence and not source.required: continue
     let candidate = activeArtifact(derivationIndexPath(
       source.root, result.derivationId))
     if source.required and candidate.len == 0:
@@ -1122,6 +1102,9 @@ proc loadCachedArtifact(engine: BuildEngine, request: BuildRequest,
       cachedDigest = candidate
       break
   if cachedDigest.len == 0:
+    if installedNativeEvidence:
+      raiseBuild(becRecipeUnavailable,
+        "installed native evidence requires a verified required artifact source")
     cachedDigest = activeArtifact(indexPath)
   if cachedDigest.len == 0:
     return

@@ -8,7 +8,14 @@
 // gene_result_free. No raw Gene value ever crosses to JS — only i32 handles and
 // UTF-8 byte ranges.
 
-import GeneModule from '../web/gene.js';
+import {readFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {resolve} from 'node:path';
+
+const moduleUrl = process.env.GENE_WASM_MODULE
+  ? pathToFileURL(resolve(process.env.GENE_WASM_MODULE))
+  : new URL('../web/gene.js', import.meta.url);
+const {default: GeneModule} = await import(moduleUrl.href);
 
 const M = await GeneModule();
 
@@ -136,6 +143,14 @@ const cases = [
       "  while reading '(' opened at 1:1; expected ')'",
     ""],
 ];
+
+if (process.env.GENE_WASM_VALUE_CASES === '1') {
+  const fixtures = JSON.parse(readFileSync(
+    new URL('./fixtures/value_operations.json', import.meta.url), 'utf8'));
+  for (const fixture of fixtures.cases) {
+    cases.push([fixture.source, 0, fixture.text, '']);
+  }
+}
 
 let failed = 0;
 for (const [src, wantStatus, wantText, wantOut] of cases) {

@@ -38,6 +38,14 @@ authenticated source snapshot. `^include_dirs`, `^system`, `^cflags`, and
 argv directly, without a shell. The build captures the C compiler binary
 digest plus SDK environment inputs as environment-dependent evidence and
 resolves declared system dependencies before the derivation is selected.
+An environment-dependent C derivation also includes a build-host identity:
+the hostname and a random per-user build-installation token outside artifact
+stores (`~/.gene/native-build-host-id`). Copying or sharing an artifact store
+therefore cannot authorize C reuse on another build installation. Reusing
+that identity file on another host is outside this policy. Missing unpinned
+SDK/default-header/linker inputs still make this environment-dependent, not
+a hermetic derivation. Same-host cache reuse retains the current input checks;
+there is no cross-host C derivation promotion in this format.
 Shared output is a loadable library; static output is an archive of pure C
 objects. Static recipes currently reject link flags and system-library
 aliases because there is no downstream native link step to consume them.
@@ -47,7 +55,19 @@ hits verify both GIR and the sidecar; `--verify-reproducible` rebuilds both.
 `gene install` copies the exact artifact closure into its generation and
 preflights that closure with `cc` unavailable. The launcher requires the
 bundled derivation indexes, so an ambient cache cannot silently replace a
-missing or corrupt installed artifact. A CLI regression loads a compiled C
+missing or corrupt installed artifact.
+
+Imported compiler evidence authorizes only replay from a required, verified
+installed artifact source. It cannot select an optional/ambient C cache or
+authorize a rebuild. Installed bundles carry exact artifact bytes, target/ABI,
+runtime identity, and declared system evidence; this does not establish their
+compatibility with an unqualified destination host. Publisher-supplied
+`native_binary` variants remain explicit target/ABI/system contracts, verified
+as package bytes, rather than a claim that a C recipe was reproduced elsewhere.
+Tests simulate distinct build-host identities against one shared cache and
+retain compiler-free replay of the required installed closure.
+
+A CLI regression loads a compiled C
 library through `ffi/open` after hiding the source checkout, emptying the
 user artifact cache, and removing compiler availability. The install manifest
 records each selected native alias, target, ABI, digest, and system-dependency

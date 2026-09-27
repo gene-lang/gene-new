@@ -24,6 +24,7 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Experimental direct TLS](tls-adapter.md)
 - [Local package resources and installation](package-install.md)
 - [Experimental release index and signatures](package-release.md)
+- [Experimental persistent signed registry](registry-service.md)
 
 `tests/spec_runner.nim` is the executable contract. If implemented prose and
 those tests disagree, resolve the discrepancy explicitly. Historical design

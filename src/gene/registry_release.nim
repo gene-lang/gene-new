@@ -238,7 +238,7 @@ proc releaseSignatureEnvelope*(signer, keyId, signature: string): Value =
   fields["signature"] = newStr(base64.encode(signature))
   newMap(fields)
 
-proc verifyReleaseMaterial(crypto: ReleaseCrypto, trust: ReleaseTrust,
+proc verifyReleaseMaterial*(crypto: ReleaseCrypto, trust: ReleaseTrust,
                            indexDigest, indexText, envelopeText, ownerText,
                            ownerSignature: string): VerifiedRelease =
   requireDigest(indexDigest, "release index digest")

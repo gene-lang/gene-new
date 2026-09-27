@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "cases": [
+    {
+      "id": "semantic_keys",
+      "source": "(type Token ^props {^n Int}) (impl ValueEq for Token (message equal [other : Token] : Bool true)) (impl ValueHash for Token (message hash [] : Int 7)) (let a #(Token ^n 1)) (let b #(Token ^n 2)) (let eq ==) [(== a b) (eq a b) (!= a b) (== [a] [b]) (== {^item a} {^item b}) (== ($hash a) ($hash b)) (== ($hash #[a]) ($hash #[b])) ($hash a) ($set_size (Set a b)) ($set_has? (Set a) b) ({{a : 1}} .get b) (== {{a : 1}} {{b : 1}})]",
+      "text": "[true true false true true true true 7 1 true 1 true]"
+    },
+    {
+      "id": "missing_hash",
+      "source": "(type EqOnly ^props {}) (impl ValueEq for EqOnly (message equal [other : EqOnly] : Bool true)) (try ($hash #(EqOnly)) false catch ValueNotHashable true)",
+      "text": "true"
+    },
+    {
+      "id": "indexed_access",
+      "source": "(type Ring ^props {^items List}) (impl IndexRead for Ring (message size [] : Int ($size self/items)) (message at [index : Int] : Any self/items/%index)) (impl IndexWrite for Ring (message put_at [index : Int value : Any] : Any (set self/items/%index value))) (var r (Ring ^items [10 20 30])) (var i 1.0) (var before [r/0 (/1 r) r/-1 r/%i ($size r)]) (var stored (set r/%i 99)) [before stored r/1 r/items/1]",
+      "text": "[[10 20 30 20 3] 99 99 99]"
+    },
+    {
+      "id": "index_bounds",
+      "source": "(type Ring ^props {^items List}) (impl IndexRead for Ring (message size [] : Int ($size self/items)) (message at [index : Int] : Any self/items/%index)) (impl IndexWrite for Ring (message put_at [index : Int value : Any] : Any (set self/items/%index value))) (var r (Ring ^items [1 2])) (var huge 18446744073709551616) (var huge_float 1e300) (var negative -18446744073709551616) (var fractional 1.5) [r/%huge r/%huge_float r/%fractional r/-3 r/%negative (try (set r/%fractional 9) catch Any \"bad\") r/items]",
+      "text": "[void void void void void \"bad\" [1 2]]"
+    },
+    {
+      "id": "nominal_order",
+      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 (if (> self/rank other/rank) 1 0)))) (let a (Ranked ^rank 1)) (let b (Ranked ^rank 2)) [(< a b) (<= a b) (> b a) (>= b a) ($order/compare a b)]",
+      "text": "[true true true true -1]"
+    },
+    {
+      "id": "stable_sort",
+      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 (if (> self/rank other/rank) 1 0)))) (let rows [(Ranked ^rank 3) (Ranked ^rank 1) (Ranked ^rank 2)]) (let sorted ($order/sort rows)) [sorted/0/rank sorted/1/rank sorted/2/rank]",
+      "text": "[1 2 3]"
+    }
+  ]
+}

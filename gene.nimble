@@ -12,10 +12,11 @@ binDir        = "bin"
 # structural index, and the viewer out of every Gene process; `gene fmt|lsp|view`
 # exec the sibling binary. namedBin maps the Nim module name (no hyphens
 # allowed) to the hyphenated executable the CLI looks for.
-bin           = @["gene", "gene_fmt", "gene_lsp", "gene_viewer"]
+bin           = @["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry"]
 namedBin["gene_fmt"] = "gene-fmt"
 namedBin["gene_lsp"] = "gene-lsp"
 namedBin["gene_viewer"] = "gene-viewer"
+namedBin["gene_registry"] = "gene-registry"
 
 # Dependencies
 
@@ -71,7 +72,9 @@ task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_release_crypto.nim"
   exec "nim c -r --path:src --hints:off tests/test_package_release.nim"
   exec "python3 tests/test_registry_https.py"
+  exec "python3 tests/test_registry_service.py"
   exec "nim c -r --path:src --hints:off tests/test_tzif.nim"
+  exec "nim c -r --path:src --hints:off tests/test_value_backend_boundaries.nim"
   exec "python3 tests/test_owned_http_client.py"
   exec "python3 tests/test_genex_package.py"
   exec "python3 tests/test_genex_libuv_timer.py"

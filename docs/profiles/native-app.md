@@ -18,7 +18,7 @@ The native VM currently supplies functions, modules, packages and locks, tasks, 
 | Workload | Current status | Required next stages |
 | --- | --- | --- |
 | Script | APP-1 implemented; passing macOS arm64 fixture and typed fault checks | Native x86_64 Linux qualification and the full profile gates |
-| Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Native x86_64 Linux qualification and cross-host native artifact policy |
+| Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Native x86_64 Linux qualification (deferred) and destination-host compatibility |
 | Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one earlier repeat missed the 250 ms heartbeat gate, and ten repeats after the serve-loop idle fix passed with 53–73 ms maximum gaps | Investigate the rare host-loop stall, native x86_64 Linux timing, and VM-3 lifetime gate |
 | Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Native x86_64 Linux qualification and remaining VAL/IO release gates |
 | Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and native x86_64 Linux qualification |
@@ -39,8 +39,10 @@ registry and delegated-owner signatures, bounded object download, online
 resolution and install, authenticated staged publication, idempotent repeat,
 version conflict, and offline cache/vendor signature replay. It rejects wrong
 keys, corrupted signatures, malformed responses, and fresh selection of
-yanked versions. The fixture also passes on Linux x86_64 under Rosetta. A
-deployable registry service and native x86_64 Linux qualification remain open;
+yanked versions. The fixture also passes on Linux x86_64 under Rosetta. The
+persistent registry service now has a real Caddy/CLI fixture, complete-tree
+admission, durable version selection, bounded staging, and offline key provisioning.
+Sustained registry operation and native x86_64 Linux qualification remain open;
 this fixture does not promote the native-app core profile.
 
 APP-4 has a packaged zlib codec, gzip AsyncReader/AsyncWriter wrappers, and a
@@ -187,3 +189,16 @@ records the generic protocol admission and final four-gate/full-profile results.
 SCRIPT passes; CLI/SERVICE/DATA/LIFETIME remain probe passes. The 60-second
 SERVICE result has a 54 ms maximum heartbeat gap, managed growth 0, and clean
 shutdown; it does not substitute for the independent sustained-service gate.
+
+PKG-2 environment-dependent C derivations now carry a per-build-installation
+host identity outside artifact stores. A shared/copied store cannot authorize
+reuse on another build installation; imported compiler evidence can only replay
+a required verified installed closure. This conservative policy does not claim
+hermetic C builds or compatibility with an unqualified destination. PKG-3
+deployment and recovery are specified in [registry-service.md](../spec/registry-service.md).
+Linux work is deferred at the user's request; profile stages remain unchanged.
+
+The [2026-09-27 distribution audit](native-app-2026-09-27-distribution.md) records
+the native cache policy, persistent registry, and sampled value-backend outcomes.
+Six native/wasm semantic samples agree; unsupported web/C witness probes refuse
+execution. Full VAL backend/worker/lifetime qualification remains open.

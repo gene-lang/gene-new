@@ -117,5 +117,9 @@ signature under `/v1/staging/<owner>/<name>/<version>/`, then POSTs the
 index digest to `/v1/publish/<owner>/<name>/<version>`. It rechecks the local
 source before commit and verifies the published index afterward. The local
 TLS fixture models atomic version selection: the same digest is idempotent,
-while a different digest for that version returns a conflict. A deployable
-hosted registry service and Linux runtime qualification remain open.
+while a different digest for that version returns a conflict. The experimental
+[persistent registry service](registry-service.md) now implements these routes,
+complete signature/tree admission, durable atomic version selection, owner
+authentication, and bounded staging, with an actual Caddy/CLI installation
+fixture. Native Linux, sustained operation, and broader release qualification
+remain open.
