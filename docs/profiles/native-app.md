@@ -202,3 +202,12 @@ The [2026-09-27 distribution audit](native-app-2026-09-27-distribution.md) recor
 the native cache policy, persistent registry, and sampled value-backend outcomes.
 Six native/wasm semantic samples agree; unsupported web/C witness probes refuse
 execution. Full VAL backend/worker/lifetime qualification remains open.
+
+The [wasm qualification audit](native-app-2026-09-27-wasm.md) extends this to
+30 shared native/wasm error, reentry and activation cases. Optimized wasm passes
+70 Node ABI cases and the shared semantic/lifetime checks in Chromium, including
+flat occupied guest heap across separate host inputs. Result handles reclaim
+their registry entries; isolated eval roots use complete trial deletion.
+The browser process/server/report driver is Gene. Other browser engines,
+workers and opaque ownership graphs remain unqualified; VAL stages stay
+experimental, AtomicArc retirement stays off, and native Linux stays deferred.

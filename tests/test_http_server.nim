@@ -9,7 +9,7 @@ import std/[json, monotimes, net, os, osproc, streams, strutils, times,
             unittest]
 when defined(posix):
   import std/[nativesockets, posix]
-import gene/[repl, vm]
+import gene/[compiler, repl, types, vm]
 
 let httpTestDir = getTempDir() / "gene_http_tests"
 let httpGeneExe = httpTestDir / "gene-http-test-bin"
@@ -126,6 +126,22 @@ proc geneQuotedPath(path: string): string =
   "\"" & path.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
 suite "net/http server e2e":
+  test "ephemeral listeners report their actual reserved ports":
+    let ports = run(compileSource("""
+      (import $net/http [listen status stop])
+      (let a (listen ^host "127.0.0.1" ^port 0))
+      (let b (listen ^host "127.0.0.1" ^port 0))
+      (let a_status (status a))
+      (let b_status (status b))
+      (try [a/port a_status/port b/port b_status/port]
+        ensure (stop a) (stop b))
+    """), newGlobalScope())
+    check ports.listItems.len == 4
+    check ports.listItems[0].intVal > 0
+    check ports.listItems[0] == ports.listItems[1]
+    check ports.listItems[2] == ports.listItems[3]
+    check ports.listItems[0] != ports.listItems[2]
+
   setup:
     createDir(httpTestDir)
 

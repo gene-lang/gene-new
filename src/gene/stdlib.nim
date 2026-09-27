@@ -2571,6 +2571,23 @@ when compileOption("threads"):
   # pointers and never touch the pending Task/Channel Value owners.
   var osExecAsyncPending: seq[OsExecPending]
 
+  proc requestOsExecCancellation(task: Value): bool =
+    ## The adapter owns settlement until the child has been reaped and its
+    ## pipes/channel have closed. `join` must not outrun physical cleanup.
+    withLock osExecAsyncLock:
+      for pending in osExecAsyncPending:
+        if pending.ctx != nil and pending.ctx.taskBits == task.bits:
+          atomicStoreN(addr pending.ctx.cancelRequested, true, ATOMIC_RELEASE)
+          return true
+
+  proc reapStoppedOsExec(process: Process) =
+    ## terminate was already requested. A child ignoring it must not strand
+    ## cancellation or a configured execution timeout indefinitely.
+    discard process.waitForExit(1000)
+    if process.running:
+      process.kill()
+      discard process.waitForExit()
+
   proc pollOsExecAsyncCompletions() =
     ## Materialize Gene values and release completed jobs on the scheduler
     ## thread. Worker threads publish only native strings/ints; allocating a
@@ -2583,10 +2600,11 @@ when compileOption("threads"):
         let ctx = pending.ctx
         var task {.cursor.}: Value
         task.bits = ctx.taskBits
-        let taskCancelled = task.taskCancelled
+        let taskCancelled = task.taskCancelled or task.taskCancelRequested
         if taskCancelled:
           atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
-        let cancelling = ctx.resultCancelled or taskCancelled
+        let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
+        let cancelling = taskCancelled or (workerDone and ctx.resultCancelled)
         var lineHead, lineTail: ptr SharedExecLine
         withLock ctx.lineLock:
           lineHead = ctx.lineHead
@@ -2623,7 +2641,6 @@ when compileOption("threads"):
             ctx.lineHead = lineHead
             if ctx.lineTail == nil:
               ctx.lineTail = lineTail
-        let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
         if workerDone and not channelBlocked:
           if pending.pipeBorrow.resourceId != 0:
             finishIoPipeOutputBorrow(pending.pipeBorrow, pending.pipeScope)
@@ -2638,7 +2655,7 @@ when compileOption("threads"):
             let scheduler = cast[SchedulerState](ctx.schedulerPtr)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = false)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = true)
-          if not ctx.resultCancelled and not task.taskCancelled:
+          if not cancelling:
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
               if tryFailTask(task, failure):
@@ -2662,6 +2679,8 @@ when compileOption("threads"):
             discard consumeSharedExecText(ctx.resultStdout)
             discard consumeSharedExecText(ctx.resultStderr)
             discard consumeSharedExecText(ctx.resultFailure)
+            if tryCancelTask(task):
+              wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
           endExternalNativeOp()
           pending.ctx = nil
           freeOsExecCtx(ctx)
@@ -2837,7 +2856,7 @@ when compileOption("threads"):
                 break
               os.sleep(osExecPollMs)
             if cancelled:
-              discard process.waitForExit()
+              reapStoppedOsExec(process)
               ctx.resultCancelled = true
             else:
               ctx.resultStatus = process.waitForExit()
@@ -2944,7 +2963,7 @@ when compileOption("threads"):
               os.sleep(osExecPollMs)
             exitCode = if timedOut or cancelled or stdoutPipeFailed or
                           stderrPipeFailed or stdinPipeFailed:
-                         (discard process.waitForExit(); -1)
+                         (reapStoppedOsExec(process); -1)
                        else:
                          process.waitForExit()
             drainAvailable(outFd, true)
@@ -2961,7 +2980,7 @@ when compileOption("threads"):
                 break
               os.sleep(osExecPollMs)
             exitCode = if timedOut or cancelled:
-                         (discard process.waitForExit(); -1)
+                         (reapStoppedOsExec(process); -1)
                        else:
                          process.waitForExit()
             handleStdoutChunk(process.outputStream.readAll())
@@ -3030,6 +3049,8 @@ when compileOption("threads"):
         osExecAsyncThreads.add tr
 
 else:
+  proc requestOsExecCancellation(task: Value): bool = false
+
   proc pollOsExecAsyncCompletions() =
     pollIoFileCompletions()
     pollHttpClientCompletions()
@@ -7846,8 +7867,11 @@ proc sha256Hex(data: string): string =
 
 proc biCryptoSha256(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("crypto/sha256", args)
-  requireStr("crypto/sha256", args[0])
-  newStr(sha256Hex(args[0].strVal))
+  case args[0].kind
+  of vkString: newStr(sha256Hex(args[0].strVal))
+  of vkBytes: newStr(sha256Hex(args[0].bytesVal))
+  else:
+    raise newException(GeneError, "crypto/sha256 expects a Str or Bytes")
 
 proc biCryptoRandomHex(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("crypto/random_hex", args)

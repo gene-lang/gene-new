@@ -42,6 +42,8 @@ task wasm, "Build the wasm host-ABI module (docs/workflows.md §A.4) via Emscrip
        "'_gene_result_free','_malloc','_free']\" " &
        "--passL:\"-s EXPORTED_RUNTIME_METHODS=['HEAPU8']\" " &
        "--passL:\"-s ALLOW_MEMORY_GROWTH=1\" " &
+       "--passL:\"-s STACK_SIZE=8388608\" " &
+       "--passL:\"-s STACK_OVERFLOW_CHECK=2\" " &
        "--passL:\"-s MODULARIZE=1 -s EXPORT_NAME=GeneModule\" " &
        "-o:web/gene.js src/gene_wasm.nim"
   exec "node tests/test_wasm.mjs"

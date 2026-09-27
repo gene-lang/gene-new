@@ -6,6 +6,7 @@
 ## the strings until `gene_result_free`. Build with the `wasm` nimble task.
 
 import gene/[compiler, printer, types, vm]
+import std/tables
 
 type
   GeneResult = ref object
@@ -13,7 +14,8 @@ type
     text: string          # rendered result value, or the error message
     output: string        # captured print/println output
 
-var results: seq[GeneResult] = @[]   # handle = index + 1 (0 is reserved / OOM)
+var results: Table[cint, GeneResult]
+var nextResultHandle: cint = 0 # never recycle an identity; stale handles stay stale
 
 proc geneEvalSource(src: string): GeneResult =
   # Install the host log writer on first eval, not at module-init (see
@@ -27,7 +29,7 @@ proc geneEvalSource(src: string): GeneResult =
   let capture = new(string)
   geneWasmCapture = capture
   defer: geneWasmCapture = nil
-  let chunk =
+  var chunk =
     try:
       compileSource(src)
     except CatchableError as e:
@@ -47,6 +49,17 @@ proc geneEvalSource(src: string): GeneResult =
       result.text = e.msg
       result.output = capture[]
       return
+  # A host input is an isolated eval unit, not a loaded application module.
+  # Registering its providers in the application's base indexes would pin
+  # every completed root despite no Value ever crossing the host boundary.
+  scope.implOverlayRoot = true
+  scope.moduleRoot = false
+  scope.moduleStatic = false
+  defer:
+    # Constants/closed annotations in executable code are outside owners in
+    # trial deletion. The host has rendered everything before relinquishing it.
+    chunk = nil
+    retireWasmEvaluationScope(scope)
   try:
     let value = run(chunk, scope)
     result.status = 0
@@ -78,12 +91,14 @@ proc geneEval(srcPtr: pointer, srcLen: cint): cint {.exportc: "gene_eval".} =
   if srcLen < 0 or (srcLen > 0 and srcPtr == nil): return 0
   var src = newString(srcLen)
   if srcLen > 0: copyMem(addr src[0], srcPtr, srcLen)
-  results.add geneEvalSource(src)
-  cint(results.len)               # handle = index + 1
+  if nextResultHandle == high(cint): return 0
+  let evaluated = geneEvalSource(src)
+  inc nextResultHandle
+  results[nextResultHandle] = evaluated
+  nextResultHandle
 
 proc resultAt(handle: cint): GeneResult =
-  if handle >= 1 and handle.int <= results.len: results[handle.int - 1]
-  else: nil
+  results.getOrDefault(handle)
 
 proc geneResultStatus(handle: cint): cint {.exportc: "gene_result_status".} =
   let r = resultAt(handle)
@@ -106,13 +121,20 @@ proc geneResultOutLen(handle: cint): cint {.exportc: "gene_result_out_len".} =
   if r == nil: 0 else: cint(r.output.len)
 
 proc geneResultFree(handle: cint) {.exportc: "gene_result_free".} =
-  ## Release the result's rooted strings. The slot is kept (handles stay stable)
-  ## but emptied so its memory is reclaimable.
-  let r = resultAt(handle)
-  if r != nil:
-    r.text = ""
-    r.output = ""
-    results[handle.int - 1] = nil
+  ## Release the result and its strings. Identity is monotonic while registry
+  ## storage follows only live handles, so long-running hosts stay bounded.
+  results.del(handle)
+
+when defined(geneRcStats):
+  proc geneTestHeapBytes(): cint {.exportc: "gene_test_heap_bytes".} =
+    GC_fullCollect()
+    cint(getOccupiedMem())
+
+  proc geneTestResultHandles(): cint {.exportc: "gene_test_result_handles".} =
+    cint(results.len)
+
+  proc geneTestScopeRetirement(): cint {.exportc: "gene_test_scope_retirement".} =
+    cint(generationRetirementAvailable())
 
 # Nim's module init (`NimMain`) runs global `let` initializers — including the
 # `TRUE`/`FALSE`/`VOID` singletons. It must execute before any export is called,

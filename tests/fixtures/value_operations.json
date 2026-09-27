@@ -30,6 +30,164 @@
       "id": "stable_sort",
       "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 (if (> self/rank other/rank) 1 0)))) (let rows [(Ranked ^rank 3) (Ranked ^rank 1) (Ranked ^rank 2)]) (let sorted ($order/sort rows)) [sorted/0/rank sorted/1/rank sorted/2/rank]",
       "text": "[1 2 3]"
+    },
+    {
+      "id": "nominal_identity",
+      "category": "activation",
+      "source": "(var called 0) (type Left ^props {}) (type Right ^props {}) (impl ValueEq for Left (message equal [other : Left] : Bool (set called (+ called 1)) true)) (impl ValueEq for Right (message equal [other : Right] : Bool (set called (+ called 1)) true)) [(== (Left) (Right)) called]",
+      "text": "[false 0]"
+    },
+    {
+      "id": "failed_association_unpublished",
+      "category": "errors",
+      "source": "(type Key ^props {^n Int}) (impl ValueEq for Key (message equal [other : Key] : Bool (fail (RuntimeError ^message \"boom\")))) (impl ValueHash for Key (message hash [] : Int 1)) (let a #(Key ^n 1)) (let b #(Key ^n 2)) (let values {{a : 1}}) [(try (values .assoc b 2) catch RuntimeError \"failed\") ($size values)]",
+      "text": "[\"failed\" 1]"
+    },
+    {
+      "id": "nested_missing_hash",
+      "category": "errors",
+      "source": "(type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool true)) [(try ($hash #[#(Key)]) false catch ValueNotHashable true) (try (Set #(Key)) false catch ValueNotHashable true)]",
+      "text": "[true true]"
+    },
+    {
+      "id": "equality_reentry",
+      "category": "reentry",
+      "source": "(type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool (== self other))) (let k (Key)) (== k k)",
+      "status": 1,
+      "contains": "ValueOperationReentry"
+    },
+    {
+      "id": "hash_reentry",
+      "category": "reentry",
+      "source": "(type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool true)) (impl ValueHash for Key (message hash [] : Int ($hash self))) ($hash #(Key))",
+      "status": 1,
+      "contains": "ValueOperationReentry"
+    },
+    {
+      "id": "collection_reentry",
+      "category": "reentry",
+      "source": "(var held nil) (type Key ^props {^n Int}) (impl ValueEq for Key (message equal [other : Key] : Bool ($set_has? held other))) (impl ValueHash for Key (message hash [] : Int 1)) (set held (Set #(Key ^n 1))) ($set_has? held #(Key ^n 2))",
+      "status": 1,
+      "contains": "ValueOperationReentry"
+    },
+    {
+      "id": "equality_guard_recovery",
+      "category": "reentry",
+      "source": "(var recurse true) (type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool (if recurse (== self other) true))) (let k (Key)) (let refused (try (== k k) false catch ValueOperationReentry true)) (set recurse false) [refused (== k k)]",
+      "text": "[true true]"
+    },
+    {
+      "id": "index_reentry",
+      "category": "reentry",
+      "source": "(type Key ^props {}) (impl IndexRead for Key (message size [] : Int 1) (message at [index : Int] : Any self/%index)) (let k (Key)) k/0",
+      "status": 1,
+      "contains": "ValueOperationReentry"
+    },
+    {
+      "id": "readonly_index",
+      "category": "errors",
+      "source": "(type Key ^body [Int...]) (impl IndexRead for Key (message size [] : Int 1) (message at [index : Int] : Any 42)) (var k (Key 7)) (set k/0 9)",
+      "status": 1,
+      "contains": "IndexWrite is required"
+    },
+    {
+      "id": "immutable_index",
+      "category": "errors",
+      "source": "(type Ring ^props {^items List}) (impl IndexRead for Ring (message size [] : Int ($size self/items)) (message at [index : Int] : Any self/items/%index)) (impl IndexWrite for Ring (message put_at [index : Int value : Any] : Any (set self/items/%index value))) (var r #(Ring ^items [1])) (set r/0 9)",
+      "status": 1,
+      "contains": "cannot mutate immutable Node"
+    },
+    {
+      "id": "void_write",
+      "category": "errors",
+      "source": "(type Ring ^props {^items List}) (impl IndexRead for Ring (message size [] : Int ($size self/items)) (message at [index : Int] : Any self/items/%index)) (impl IndexWrite for Ring (message put_at [index : Int value : Any] : Any (set self/items/%index value))) (var r (Ring ^items [1])) (set r/0 void) r/items/0",
+      "text": "nil"
+    },
+    {
+      "id": "negative_size",
+      "category": "errors",
+      "source": "(type Key ^props {}) (impl IndexRead for Key (message size [] : Int -1) (message at [index : Int] : Any 1)) (let k (Key)) k/0",
+      "status": 1,
+      "contains": "IndexRead:size must return a nonnegative Int"
+    },
+    {
+      "id": "void_read",
+      "category": "errors",
+      "source": "(type Key ^props {}) (impl IndexRead for Key (message size [] : Int 1) (message at [index : Int] : Any void)) (let k (Key)) k/0",
+      "text": "void"
+    },
+    {
+      "id": "invalid_order",
+      "category": "errors",
+      "source": "(type Key ^props {}) (impl ValueOrder for Key (message compare [other : Key] : Int 2)) (< (Key) (Key))",
+      "status": 1,
+      "contains": "comparator must return exactly -1, 0, or 1"
+    },
+    {
+      "id": "mixed_default_sort",
+      "category": "errors",
+      "source": "($order/sort [1 2.0])",
+      "status": 1,
+      "contains": "OrderError"
+    },
+    {
+      "id": "stable_keys_once",
+      "category": "errors",
+      "source": "(var calls 0) (let rows [{^rank 2 ^id \"a\"} {^rank 1 ^id \"b\"} {^rank 2 ^id \"c\"}]) (let sorted ($order/sort_by rows (fn [row] (set calls (+ calls 1)) row/rank))) [sorted/0/id sorted/1/id sorted/2/id calls rows/0/id]",
+      "text": "[\"b\" \"a\" \"c\" 3 \"a\"]"
+    },
+    {
+      "id": "index_cannot_suspend",
+      "category": "errors",
+      "source": "(type Key ^props {}) (impl IndexRead for Key (message size [] : Int (await (spawn 1))) (message at [index : Int] : Any 1)) (let k (Key)) k/0",
+      "status": 1,
+      "contains": "cannot suspend or run the scheduler inside a value witness"
+    },
+    {
+      "id": "sort_cannot_suspend",
+      "category": "errors",
+      "source": "($order/sort [2 1] ^compare (fn [a b] (await (spawn 1)) 0))",
+      "status": 1,
+      "contains": "cannot suspend or run the scheduler inside a value witness"
+    },
+    {
+      "id": "pending_activation",
+      "category": "activation",
+      "source": "(type Key ^props {}) (let pending (try (== (Key) (Key)) false catch ValueProtocolPending true)) (impl ValueEq for Key (message equal [other : Key] : Bool true)) [pending (== (Key) (Key))]",
+      "text": "[true true]"
+    },
+    {
+      "id": "hash_requires_equal",
+      "category": "activation",
+      "source": "(type Key ^props {}) (impl ValueHash for Key (message hash [] : Int 1))",
+      "status": 1,
+      "contains": "ValueHash requires ValueEq"
+    },
+    {
+      "id": "write_requires_read",
+      "category": "activation",
+      "source": "(type Key ^props {}) (impl IndexWrite for Key (message put_at [index : Int value : Any] : Any value))",
+      "status": 1,
+      "contains": "IndexWrite requires IndexRead"
+    },
+    {
+      "id": "derived_core_rejected",
+      "category": "activation",
+      "source": "(protocol Extra ^inherit [ValueEq] (message extra [] : Int))",
+      "status": 1,
+      "contains": "VM fallback protocol cannot be inherited"
+    },
+    {
+      "id": "child_hash_not_inherited",
+      "category": "activation",
+      "source": "(type Parent ^props {}) (impl ValueEq for Parent (message equal [other : Parent] : Bool true)) (impl ValueHash for Parent (message hash [] : Int 1)) (type Child : Parent ^props {}) (impl ValueEq for Child (message equal [other : Parent] : Bool true)) (try ($hash #(Child)) false catch ValueNotHashable true)",
+      "text": "true"
+    },
+    {
+      "id": "eval_generation_identity",
+      "category": "activation",
+      "source": "(let form (quote (do (type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool true)) (impl ValueHash for Key (message hash [] : Int 7)) Key))) (let A (eval form ^in (env))) (let B (eval form ^in (env))) (let a #(A)) (let b #(B)) [(== a a) (== a b) ($hash a) ($hash b)]",
+      "text": "[true false 7 7]"
     }
   ]
 }

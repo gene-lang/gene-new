@@ -16,6 +16,13 @@ suites in `tests/test_vm.nim`.
 - `Task/done?` is a non-consuming readiness check. It stays true after the
   task's result has been consumed by `await`; it does not wait or inspect the
   outcome.
+- Cancelling an `os/exec_async`, `exec_stream_async`, or `exec_stdio_async`
+  Task requests subprocess termination. Its cancelled outcome is published
+  after the direct child is reaped and its adapter-owned pipes/channel are
+  closed, so `join` waits for that cleanup. If the child ignores termination,
+  the adapter escalates to kill after a one-second grace period. A configured
+  execution timeout uses the same bounded termination/reaping path. This
+  contract covers the direct child, not arbitrary descendant process trees.
 - `spawn ^lane root` enqueues and returns its `Task` before the child body can
   begin. `$runtime/require_root_lane` returns `nil` on that lane and raises the
   typed `RuntimeLaneError` everywhere else.

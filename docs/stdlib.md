@@ -26,6 +26,14 @@ UTF-8 (so bytes from a binary WebSocket frame meet the same decoder as a text
 frame), and bounds nesting. Unsupported values, cycles, and non-finite floats are rejected.
 Use explicit conversion when crossing the web backend's Int/bigint boundary.
 
+`($crypto/sha256 input)` hashes the stored bytes of a Str or Bytes and returns
+a lowercase hexadecimal digest. Use Bytes for binary files and payloads:
+
+```gene
+($crypto/sha256 ($binary/from_list [0 255 128 97]))
+# "79301df919df82d717f591339d85235fb8bb8683b2c74680306959327d4a4464"
+```
+
 ## Files
 
 This recipe writes a file under the launch directory:

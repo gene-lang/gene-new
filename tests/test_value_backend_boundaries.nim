@@ -1,5 +1,5 @@
 ## Shared VM/wasm semantic samples and refusal at unsupported compiler boundaries.
-import gene/[compiler, gir, printer, vm, web]
+import gene/[compiler, gir, printer, types, vm, web]
 import std/[json, strutils, unittest]
 
 suite "value operations — backend boundaries":
@@ -7,9 +7,27 @@ suite "value operations — backend boundaries":
     let manifest = parseFile("tests/fixtures/value_operations.json")
     for fixture in manifest["cases"]:
       let scope = newGlobalScope()
-      let actual = run(compileSource(fixture["source"].getStr()), scope).print()
+      var actual = ""
+      var status = 0
+      var chunk: Chunk
+      try: chunk = compileSource(fixture["source"].getStr())
+      except CatchableError as error:
+        status = 3
+        actual = error.msg
+      if status == 0:
+        try: actual = run(chunk, scope).print()
+        except GenePanic as error:
+          status = 2
+          actual = error.msg
+        except CatchableError as error:
+          status = 1
+          actual = error.msg
       checkpoint fixture["id"].getStr()
-      check actual == fixture["text"].getStr()
+      check status == fixture{"status"}.getInt(0)
+      if fixture.hasKey("contains"):
+        check fixture["contains"].getStr() in actual
+      else:
+        check actual == fixture["text"].getStr()
 
   let eq = "(impl ValueEq for Key (message equal [other : Key] : Bool true)) "
   let indexed = "(impl IndexRead for Key (message size [] : Int 1) " &

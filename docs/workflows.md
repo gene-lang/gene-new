@@ -233,6 +233,12 @@ The build uses a hosted startup that keeps Nim globals alive after initializatio
 Run `nimble wasm` after changing value lifetimes or VM startup; it also exercises
 the exported ABI through Node.
 
+For a fresh isolated artifact with shared value-operation and lifetime checks,
+follow the [wasm qualification audit](profiles/native-app-2026-09-27-wasm.md).
+Its browser driver is Gene; the same host-side checks run in Node and Chromium.
+This leaves the tracked playground artifact untouched until it is regenerated
+deliberately with `nimble wasm`.
+
 ## Native interop
 
 Call-scoped synchronous callbacks use typed native shims on the owning root

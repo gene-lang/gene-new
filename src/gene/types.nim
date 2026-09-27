@@ -2821,11 +2821,12 @@ proc kind*(v: Value): ValueKind {.inline, raises: [].}
 # constants, error evidence, `RootRef` state, other lanes — is left out, so its
 # targets look externally owned and stay alive.
 
-# AtomicArc builds (which this repository compiles with gcOrc also defined) run
-# Gene worker lanes; shared graphs there are excluded until a threaded collector
-# is qualified, so retirement stays off. The wasm module has no sandbox
-# directories to load generations from, so it leaves the machinery out.
-when defined(gcOrc) and not defined(gcAtomicArc) and not defined(geneWasm) and
+# AtomicArc builds run Gene worker lanes. Shared graphs there are excluded
+# until a threaded collector is qualified, so retirement stays off there.
+# Single-threaded wasm uses the same
+# layout-probed adapter for evaluation and activation scopes (not filesystem
+# sandbox qualification). `int` follows the target's ORC header word size.
+when defined(gcOrc) and not defined(gcAtomicArc) and
     not (defined(nimArcDebug) or defined(nimArcIds) or
          defined(nimOrcLeakDetector)):
   type NimRefHeader = object
@@ -2882,6 +2883,7 @@ type
     edges: seq[int32]   # strong and weak successors, for liveness propagation
 
   RetireGraph = object
+    complete: bool
     nodes: seq[RetireNode]
     refIndex: Table[uint64, int]  # Scopes and `#Ref` tables/entries
     valueIndex: Table[uint64, int]
@@ -2942,7 +2944,8 @@ proc strongEdge(g: var RetireGraph, source, target: int) =
   inc g.nodes[target].internal
   g.nodes[source].edges.add int32(target)
   if not g.nodes[target].expanded and
-      g.nodes[target].internal == g.nodes[target].total:
+      (g.nodes[target].internal == g.nodes[target].total or
+       g.complete):
     g.ready.add target
 
 proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
@@ -3208,7 +3211,8 @@ proc moduleHeldOutside(root: Scope): bool =
 
 proc retirePendingScopes(pending: var seq[Scope], generations: bool,
                          extraOwners = 0, assumed = 0'u64,
-                         assumedInternal: ptr int = nil): int =
+                         assumedInternal: ptr int = nil,
+                         complete = false): int =
   ## Trial deletion over `pending` roots; see retireReleasedGenerations.
   ## `extraOwners` counts known references to each root beyond the list.
   ## A nonzero `assumed` is a dry run: that value is expanded as though its
@@ -3221,7 +3225,7 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     return 0
   generationRetiring = true
   try:
-    var g: RetireGraph
+    var g = RetireGraph(complete: complete)
     var roots: seq[int]
     for root in pending:
       if root == nil:
@@ -3330,6 +3334,17 @@ proc retireReturningCallScope*(scope: Scope, owners = 1): int =
   ## own field. Same contract as retireReleasedGenerations otherwise.
   var pending = @[scope]
   retirePendingScopes(pending, generations = false, extraOwners = owners)
+
+proc retireEvaluationScope*(scope: Scope): int =
+  ## A host relinquishing an isolated evaluation root needs the complete
+  ## reachable graph: a Type returned by nested eval can hold child scopes
+  ## whose bindings supply its remaining owners. Waiting for all owners before
+  ## expanding that Type would mistake this closed cycle for outside ownership.
+  ## Live outside owners still seed liveness and keep everything they reach.
+  ## The ordinary activation retirement path keeps its smaller, cheaper walk.
+  var pending = @[scope]
+  retirePendingScopes(pending, generations = false, extraOwners = 1,
+                      complete = true)
 
 proc scopeHasOtherOwners*(scope: Scope): bool {.inline.} =
   ## Whether something besides the caller's one reference owns `scope`: the

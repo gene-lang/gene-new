@@ -689,6 +689,74 @@ when defined(geneRcStats):
         # than letting retirement switch itself off and leak generations.
         check generationRetirementAvailable()
 
+      test "compiling numeric and dynamic paths releases partial spelling lists":
+        # The Value counters cannot see leaked Nim seq/string allocations.
+        # Exercise successful compilation independently of runtime failures.
+        const source = "(let xs [1]) (let i 0) [xs/0 xs/%i]"
+        proc compileOnce() =
+          discard compileSource(source)
+        for i in 0 ..< 20:
+          compileOnce()
+        GC_fullCollect()
+        let before = getOccupiedMem()
+        for i in 0 ..< 100:
+          compileOnce()
+        GC_fullCollect()
+        let after = getOccupiedMem()
+        check after == before
+
+      const isolatedWitnessSource = """
+        (let T (eval (quote (do
+          (type Key ^props {^n Int})
+          (impl ValueEq for Key
+            (message equal [other : Key] : Bool (== self/n other/n)))
+          (impl ValueHash for Key (message hash [] : Int self/n))
+          Key)) ^in (env)))
+        T
+      """
+
+      proc isolatedWitnessEvaluation() =
+        let scope = newGlobalScope()
+        scope.implOverlayRoot = true
+        scope.moduleRoot = false
+        scope.moduleStatic = false
+        var chunk = compileSource(isolatedWitnessSource)
+        block:
+          let value = run(chunk, scope)
+          check value.kind == vkType
+        chunk = nil
+        check retireEvaluationScope(scope) > 0
+
+      test "isolated host retirement discovers nested eval Type cycles":
+        isolatedWitnessEvaluation()
+        GC_fullCollect()
+        let before = liveManaged
+        for i in 0 ..< 30:
+          isolatedWitnessEvaluation()
+        GC_fullCollect()
+        check liveManaged == before
+
+      test "isolated host retirement preserves externally held Types":
+        GC_fullCollect()
+        let before = liveManaged
+        block:
+          let scope = newGlobalScope()
+          scope.implOverlayRoot = true
+          scope.moduleRoot = false
+          scope.moduleStatic = false
+          var chunk = compileSource(isolatedWitnessSource)
+          var retained = run(chunk, scope)
+          chunk = nil
+          check retireEvaluationScope(scope) == 0
+          block:
+            let consumer = newGlobalScope()
+            consumer.define("Saved", retained)
+            check run(compileSource("(== (Saved ^n 7) (Saved ^n 7))"), consumer) == TRUE
+          retained = NIL
+          check retireEvaluationScope(scope) > 0
+        GC_fullCollect()
+        check liveManaged == before
+
       proc reloadFixture(name: string): (Application, string) =
         let dir = getTempDir() / name
         createDir(dir)

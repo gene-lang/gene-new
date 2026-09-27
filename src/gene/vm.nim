@@ -1335,6 +1335,7 @@ proc pollHttpClientCompletions()
 proc pollOwnedHttpClientCompletions()
 proc pollCursesInputCompletions()
 proc pollOsExecAsyncCompletions()
+proc requestOsExecCancellation(task: Value): bool
 proc pollIoFileCompletions()
 var nativeIngressPollHook: proc(scheduler: SchedulerState) {.nimcall.}
 var nativeIngressSleepHook: proc(timeoutMs: int): bool {.nimcall.}
@@ -1455,7 +1456,8 @@ proc requestTaskCancellation(task: Value) =
     return
   task.cancelTask()
   let scheduled = cancelScheduledTask(task)
-  if not scheduled and not task.taskDone:
+  if not scheduled and not task.taskDone and
+      not requestOsExecCancellation(task):
     task.finishTaskCancel()
     wakeTaskWaiters(task)
 
@@ -9306,6 +9308,15 @@ proc retireReturnedCallScope(returning: Scope, returned = NIL,
       inc Application(returning.application).retireEpoch
     else:
       discard watchReturnedCycle(returning, returned, owners)
+
+when defined(geneWasm):
+  proc retireWasmEvaluationScope*(scope: Scope) =
+    ## The text-only host has rendered its result and relinquished this root.
+    ## Do not change `run`'s SDK contract: native callers may reuse its scope.
+    ## Trial deletion retains anything still reached by an outside owner.
+    if scope != nil and scope.scopeHasOtherOwners() and
+        retireEvaluationScope(scope) > 0:
+      inc Application(scope.application).retireEpoch
 
 proc captureSourcePlain(scope: Scope): bool {.inline.} =
   ## An activation scope whose captures can be copied: nothing is bound by

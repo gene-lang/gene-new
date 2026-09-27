@@ -148,14 +148,20 @@ if (process.env.GENE_WASM_VALUE_CASES === '1') {
   const fixtures = JSON.parse(readFileSync(
     new URL('./fixtures/value_operations.json', import.meta.url), 'utf8'));
   for (const fixture of fixtures.cases) {
-    cases.push([fixture.source, 0, fixture.text, '']);
+    cases.push([fixture.source, fixture.status ?? 0,
+                fixture.text ?? {contains: fixture.contains}, '']);
   }
+  // The Gene artifact builder uses the same byte-native digest API.
+  cases.push(['($crypto/sha256 ($binary/from_list [0 255 128 97]))', 0,
+    '"79301df919df82d717f591339d85235fb8bb8683b2c74680306959327d4a4464"', '']);
 }
 
 let failed = 0;
 for (const [src, wantStatus, wantText, wantOut] of cases) {
   const r = geneEval(src);
-  const ok = r.status === wantStatus && r.text === wantText && r.out === wantOut;
+  const textMatches = typeof wantText === 'string' ? r.text === wantText :
+    r.text.includes(wantText.contains);
+  const ok = r.status === wantStatus && textMatches && r.out === wantOut;
   if (!ok) {
     failed++;
     console.error(`FAIL ${src}`);

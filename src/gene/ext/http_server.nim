@@ -555,7 +555,8 @@ proc registerHttpRuntime(host: string, port: int, listener: Socket,
                          listening: bool, tls: HttpTlsNative = nil,
                          tlsServer: pointer = nil): HttpServerRuntime =
   inc gHttpServerNextId
-  result = HttpServerRuntime(id: gHttpServerNextId, host: host, port: port,
+  let boundPort = if port == 0: int(listener.getLocalAddr()[1]) else: port
+  result = HttpServerRuntime(id: gHttpServerNextId, host: host, port: boundPort,
                              listener: listener, listening: listening,
                              tls: tls, tlsServer: tlsServer)
   gHttpServerRegistry[result.id] = result
@@ -617,7 +618,7 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
                                  tls = tls, tlsServer = tlsServer)
     var props = initPropTable()
     props["host"] = newStr(host)
-    props["port"] = newInt(port)
+    props["port"] = newInt(rt.port)
     props["listener"] = newInt(rt.id)
     let head = httpNamespaceBinding(scope, "Server")
     let server = newNode(if head.kind == vkType: head else: newSym("Server"),

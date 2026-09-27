@@ -12,6 +12,8 @@ import gene/[compiler, gir, gir_codec, package, printer,
 import gene/aot_runtime
 import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables,
             times, unittest]
+when defined(posix):
+  import std/posix
 
 ## Observation points for the release-isolation spec below. Exported into this
 ## binary's dynamic symbol table the same way the AOT helpers are, so a dlopened
@@ -9193,6 +9195,10 @@ suite "spec — store persistence protocol":
     check_eval("(import $crypto [sha256]) (sha256 \"abc\")",
                "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"")
 
+  test "crypto sha256 hashes raw Bytes including NUL and non-UTF8 octets":
+    check_eval("($crypto/sha256 ($binary/from_list [0 255 128 97]))",
+               "\"79301df919df82d717f591339d85235fb8bb8683b2c74680306959327d4a4464\"")
+
   test "crypto random_hex returns the requested number of random bytes":
     check_eval("(import $crypto [random_hex]) " &
                "(import $str [byte_size]) " &
@@ -9968,6 +9974,30 @@ suite "spec — os and json from ai-agent plan":
                "  \"cancelled\")",
                "\"cancelled\"")
     check getMonoTime() - started < initDuration(milliseconds = 1200)
+
+  when defined(posix) and compileOption("threads"):
+    test "async exec join waits for reaping even when the child ignores TERM":
+      let started = getMonoTime()
+      let observed = run(compileSource("""
+        (let ch ($channel ^capacity 1))
+        (let task ($os/exec_stream_async ^cmd "sh"
+          ^args ["-c" "trap '' TERM; printf '%s\\n' $$; while :; do :; done"]
+          ^stdout_chan ch ^timeout_ms 5000))
+        (let pid ($parse/parse_int (ch .recv)))
+        (task .cancel)
+        (let premature (task .done?))
+        (let cancelled (match (task .join)
+          (when TaskOutcome/cancelled true) (else false)))
+        [pid premature cancelled]
+      """), newGlobalScope())
+      check observed.listItems.len == 3
+      check observed.listItems[1] == FALSE
+      check observed.listItems[2] == TRUE
+      # kill(pid, 0) also finds an unreaped zombie. The child must be absent,
+      # not just represented by a terminal Task in Gene.
+      check posix.kill(Pid(observed.listItems[0].intVal), 0) == -1
+      check osLastError() == OSErrorCode(ESRCH)
+      check getMonoTime() - started < initDuration(milliseconds = 3000)
 
   test "scheduler stays live while an async exec child runs":
     # The whole point of the async variants (docs/stdlib.md, `$os` async exec):

@@ -1,0 +1,75 @@
+# Native Gene owns the browser process, bounded loopback server and report.
+# Only the browser ABI adapter and browser-executed checks need JavaScript.
+# Run from the repository root with a threads-enabled Gene binary:
+# gene run tests/test_wasm_browser.gene BUILD_DIR CHROMIUM REPORT_JSON
+(import $net/http [listen serve stop Response text])
+
+(fn main [args] : Int
+  ($assert (== ($size args/body) 3) "expected BUILD_DIR CHROMIUM REPORT_JSON")
+  (let build ($fs/real_path args/0))
+  (let browser ($fs/real_path args/1))
+  (let report_path args/2)
+  (let version ($os/exec ^cmd browser ^args ["--version"] ^timeout_ms 5000))
+  ($assert (== version/status 0) version/stderr)
+  # Preserve the isolated profile alongside its report for failure diagnosis.
+  # It never opens or modifies the user's ordinary browser profile.
+  (let profile_id ($crypto/random_hex 8))
+  (let profile $"${build}/browser-profile-${profile_id}")
+  ($fs/make_dir profile)
+  (var assets {})
+  (for entry in [
+    ["/" "tests/wasm_browser.html" "text/html"]
+    ["/runner.mjs" "tests/wasm_browser_runner.mjs" "text/javascript"]
+    ["/gene.js" $"${build}/gene.js" "text/javascript"]
+    ["/gene.wasm" $"${build}/gene.wasm" "application/wasm"]
+    ["/wasm_host.mjs" "tests/wasm_host.mjs" "text/javascript"]
+    ["/wasm_value_checks.mjs" "tests/wasm_value_checks.mjs" "text/javascript"]
+    ["/fixtures/value_operations.json" "tests/fixtures/value_operations.json" "application/json"]]
+    # Snapshot bytes once: a concurrent rebuild cannot mix JS and wasm images.
+    (assets .put entry/0 {^body ($binary/to_str ($fs/read_bytes entry/1)) ^mime entry/2}))
+  (let server (listen ^host "127.0.0.1" ^port 0))
+  (var report nil)
+  (var progress "starting")
+  (let deadline (+ ($os/monotonic_ms) 180000))
+  (let task ($os/exec_async ^cmd browser ^args [
+    "--headless=new" "--no-first-run" "--disable-gpu"
+    "--no-default-browser-check" "--disable-background-networking"
+    "--disable-component-update" "--disable-extensions"
+    $"--user-data-dir=${profile}" $"http://127.0.0.1:${server/port}/"]
+    ^timeout_ms 185000 ^max_bytes 1048576))
+  (fn tick []
+    (if (|| (>= ($os/monotonic_ms) deadline) (task .done?)) (stop server)))
+  (fn handle [request]
+    (if (== request/method "POST")
+      (do
+        (if (== request/path "/progress")
+          (do (set progress request/body) (return (text 200 ""))))
+        (if (== request/path "/report")
+          (do
+            (set report ($json/parse request/body))
+            (stop server)
+            (return (text 200 ""))))
+        (return (text 404 "not found"))))
+    (if (!= request/method "GET") (return (text 405 "method not allowed")))
+    (let asset (assets .get request/path))
+    (if ($absent? asset) (return (text 404 "not found")))
+    (Response ^status 200 ^headers {^content-type asset/mime ^cache-control "no-store"}
+      ^body asset/body))
+  (var shutdown nil)
+  (try
+    (set shutdown (serve server ^handler handle ^max_body_bytes 1048576
+      ^on_tick tick ^tick_ms 50 ^drain_timeout_ms 5000))
+    ensure
+      (if (! (task .done?)) (task .cancel))
+      (match (task .join)
+        (when (TaskOutcome/ok process)
+          ($fs/write_text $"${build}/browser.stderr.log" process/stderr))
+        (else nil)))
+  (if (== report nil)
+    (set report {^ok false ^error "browser did not complete" ^progress progress}))
+  (set report/browser version/stdout)
+  (set report/profile profile)
+  (set report/shutdown shutdown)
+  ($fs/write_text report_path ($json/stringify report))
+  ($println ($json/stringify report))
+  (if (&& report/ok shutdown/complete) 0 1))

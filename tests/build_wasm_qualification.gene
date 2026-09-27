@@ -1,0 +1,65 @@
+# Run from the repository root with a native threads-enabled Gene binary.
+# Nim/Emscripten are external compiler tools; orchestration and metadata are Gene.
+(fn main [args] : Int
+  (var directory "tmp/wasm-qualification")
+  (var debug false)
+  (var production false)
+  (var defines [])
+  (var i 0)
+  (let raw args/body)
+  (while (< i ($size raw))
+    (let option raw/%i)
+    (if (== option "--debug")
+      (then (set debug true))
+      (elif (== option "--production") (set production true))
+      (elif (|| (== option "--build-dir") (== option "--define"))
+        (do
+          (set i (+ i 1))
+          ($assert (< i ($size raw)) $"${option} requires a value")
+          (if (== option "--build-dir")
+            (then (set directory raw/%i))
+            (else (defines .push raw/%i)))))
+      (else ($assert false $"unknown option: ${option}")))
+    (set i (+ i 1)))
+  ($fs/make_dir directory)
+  (let output ($fs/real_path directory))
+  ($fs/write_text $"${output}/package.json" "{\"type\":\"commonjs\"}\n")
+  (var exports ["_main" "_gene_alloc" "_gene_free" "_gene_eval"
+    "_gene_result_status" "_gene_result_text_ptr" "_gene_result_text_len"
+    "_gene_result_out_ptr" "_gene_result_out_len" "_gene_result_free"
+    "_malloc" "_free"])
+  (if (! production)
+    (do
+      (exports .push "_gene_test_heap_bytes")
+      (exports .push "_gene_test_result_handles")
+      (exports .push "_gene_test_scope_retirement")))
+  (var command ["c"])
+  (for define in defines (command .push $"-d:${define}"))
+  (if (! production) (command .push "-d:geneRcStats"))
+  (if debug
+    (then (command .push "--passC:-g") (command .push "--passL:-g"))
+    (else (command .push "-d:release")))
+  (let export_json ($json/stringify exports))
+  (for option in ["--os:linux" "--cpu:wasm32" "-d:emscripten" "-d:geneWasm"
+    "--mm:orc" "--threads:off" "--noMain" "--cc:clang"
+    "--clang.exe:emcc" "--clang.linkerexe:emcc" "--path:src" "--hints:off"
+    $"--nimcache:${output}/cache"
+    $"--passL:-s EXPORTED_FUNCTIONS=${export_json}"
+    "--passL:-s EXPORTED_RUNTIME_METHODS=[\"HEAPU8\"]"
+    "--passL:-s ALLOW_MEMORY_GROWTH=1" "--passL:-s STACK_SIZE=8388608"
+    "--passL:-s STACK_OVERFLOW_CHECK=2"
+    "--passL:-s MODULARIZE=1 -s EXPORT_NAME=GeneModule"
+    $"-o:${output}/gene.js" "src/gene_wasm.nim"]
+    (command .push option))
+  (let process (await ($os/exec_async ^cmd "nim" ^args command
+    ^timeout_ms 600000 ^max_bytes 1048576)))
+  ($fs/write_text $"${output}/build.log" ($ process/stdout process/stderr))
+  ($assert (== process/status 0) $"wasm build failed; see ${output}/build.log")
+  ($assert (! process/truncated) "wasm build output exceeded its capture bound")
+  (let artifact ($fs/read_bytes $"${output}/gene.wasm"))
+  (let manifest {^debug debug ^rc_stats (! production)
+    ^sha256 ($crypto/sha256 artifact) ^size_bytes ($binary/size artifact)
+    ^executable "nim" ^command command})
+  ($fs/write_text $"${output}/build.json" ($json/stringify manifest))
+  ($println ($json/stringify manifest))
+  0)

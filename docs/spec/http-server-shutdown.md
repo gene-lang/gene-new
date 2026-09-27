@@ -1,5 +1,9 @@
 # Experimental HTTP server shutdown
 
+`($net/http/listen ^host "127.0.0.1" ^port 0)` reserves an ephemeral port.
+The returned Server's `port` and the `port` field of `($net/http/status server)`
+report the actual reserved port; the listener stays open until serve/stop closes it.
+
 `($net/http/stop server)` requests a graceful stop and returns nil. The
 `serve` loop closes admission, allows active requests up to
 `^drain_timeout_ms` (5,000 by default), then closes any remaining sockets and
