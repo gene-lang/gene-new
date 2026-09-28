@@ -4,6 +4,9 @@
 implemented. Native borrow quiescence and shared reclamation remain open.
 Selected SDK entry admission is also implemented in the qualification build;
 it does not cover raw returned references or the complete native API.
+The [foreign handle allocator decision](native-foreign-handle-allocation.md)
+is a concrete AAR-1 blocker: default AtomicArc cannot safely transfer a
+foreign-created registry ID to the root after the foreign thread exits.
 Normal AtomicArc retirement remains disabled. This does not promote
 VM-2 or threaded lifetime support. The existing language and sandbox APIs remain
 unchanged.
@@ -213,6 +216,9 @@ the existing SDK signatures or claim that ingress begin/end fences raw Gene
 Values. That SDK choice has been reviewed; further public ownership/access
 changes still need explicit design review. AAR-1 remains incomplete until full
 integration and the borrow/collector race matrix are complete.
+In particular, the default AtomicArc allocator cannot safely release a
+foreign-grown managed root registry after the creating thread exits; see the
+[allocator decision](native-foreign-handle-allocation.md).
 
 [Native managed borrows](native-managed-borrows.md) records the owner-selected
 opaque-handle contract, SDK-family inventory, legacy export policy and remaining

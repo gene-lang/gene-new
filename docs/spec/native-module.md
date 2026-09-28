@@ -73,6 +73,11 @@ Nil, Bool, Int, Text, Bytes or Float. Float additionally requires
 `GENE_API_FLOAT_FEATURE`. The root lane constructs the Gene value and
 settles the Task; `task_submit_copy` reports queue admission, not whether the
 user Task accepted the eventual result.
+The default AtomicArc allocator does not qualify an owning ID newly created
+on an attached C thread for transfer to the root after that thread exits;
+see the [allocator decision](../proposals/native-foreign-handle-allocation.md).
+Worker-computed values should use the copied-result handoff until that
+ownership policy is selected and qualified.
 The installed macOS arm64 fixture
 in `tests/test_genex_native_module.py` checks source-built and prebuilt selected
 `gene_api` images, compiler-free launch, ABI-kind refusal, initializer rollback,

@@ -21,6 +21,9 @@ qualification remain open. This is the remaining native ownership program for
 AAR-1 in [AtomicArc generation retirement](atomic-arc-retirement.md). Direct
 Nim native helpers and Gene syntax stay unchanged. Production/shared retirement
 remains disabled.
+Foreign-created owning IDs need the
+[AtomicArc allocator policy](native-foreign-handle-allocation.md) before
+cross-lane transfer or registry growth can be qualified.
 The additive installed-extension contract is specified in
 [Managed native extension ABI](native-managed-extension-abi.md).
 

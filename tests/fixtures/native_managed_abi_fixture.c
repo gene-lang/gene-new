@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sched.h>
@@ -74,6 +75,62 @@ int gene_test_api_try_foreign(void) {
                                    NULL) == GENE_API_OK;
   saved_map = 0;
   return read.ok && released && map_released ? 0 : 3;
+}
+
+typedef struct TransferMany {
+  GeneHandle source;
+  GeneHandle *ids;
+  uint32_t count;
+  int ok;
+} TransferMany;
+
+static void *retain_many_on_foreign_lane(void *raw) {
+  TransferMany *state = raw;
+  const GeneApi *api = saved_api;
+  uint64_t attachment = 0;
+  state->ok = api->attach_thread(api->runtime_context, &attachment, NULL) ==
+    GENE_API_OK;
+  if (state->ok) {
+    for (uint32_t i = 0; i < state->count; ++i) {
+      if (api->retain(api->runtime_context, state->source,
+                      &state->ids[i], NULL) != GENE_API_OK) {
+        state->ok = 0;
+        break;
+      }
+    }
+    if (api->detach_thread(api->runtime_context, attachment, NULL) !=
+        GENE_API_OK) state->ok = 0;
+  }
+  return NULL;
+}
+
+int gene_test_api_transfer_many(uint32_t count) {
+  if (!saved_api || count == 0 || count > 10000) return 1;
+  GeneHandle source = 0;
+  if (saved_api->new_i64(saved_api->runtime_context, 77, &source,
+                          NULL) != GENE_API_OK) return 2;
+  TransferMany state = {0};
+  state.source = source;
+  state.count = count;
+  state.ids = calloc(count, sizeof(*state.ids));
+  if (!state.ids) {
+    saved_api->release(saved_api->runtime_context, source, NULL);
+    return 3;
+  }
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) state.ok = 0;
+  else pthread_join(thread, NULL);
+  uint32_t released = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!state.ids[i]) continue;
+    if (saved_api->release(saved_api->runtime_context, state.ids[i],
+                            NULL) == GENE_API_OK) ++released;
+  }
+  free(state.ids);
+  int source_released = saved_api->release(saved_api->runtime_context,
+                                           source, NULL) == GENE_API_OK;
+  return state.ok && released == count && source_released ? 0 : 4;
 }
 
 int gene_test_api_attachment_limits(void) {

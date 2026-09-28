@@ -5,6 +5,7 @@ type
   SetMode = proc(value: uint32) {.cdecl.}
   ReadCalls = proc(): uint32 {.cdecl.}
   TryForeign = proc(): cint {.cdecl.}
+  TransferMany = proc(count: uint32): cint {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -114,6 +115,10 @@ suite "managed native extension ABI":
               discard newSym("abi_race_key_" & $i)
             check endReader() == 0
           check foreign() == 0
+          when defined(useMalloc):
+            let transferMany = cast[TransferMany](symAddr(handle,
+              "gene_test_api_transfer_many"))
+            check transferMany != nil and transferMany(2048) == 0
           check limits() == 0
           check geneManagedStats(domain).attachments == 0
         geneManagedRelease(loaded.value)

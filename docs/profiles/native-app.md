@@ -275,6 +275,10 @@ handoff remain disabled. Managed Actor worker execution stays root-only
 pending the demonstrated worker allocator-lifetime fix. Mutable shared
 Buffers/graphs, arbitrary direct Nim ownership transfers, unmodeled callbacks,
 and native cleanup requiring Gene worker progress remain outside the model.
+Foreign-created managed IDs crossing an exiting C thread are also unqualified
+with the default AtomicArc allocator; the
+[allocator decision](../proposals/native-foreign-handle-allocation.md) records
+the ASAN failure and passing `useMalloc` experiment.
 After the ingress migration, the AAR runner again passes
 disabled/probe/ASAN/TSAN at 2/30/30/10 cases. Its late C-entry case now proves
 that the handler Scope retires after physical release; the current mode hashes
