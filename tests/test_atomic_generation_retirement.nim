@@ -2,7 +2,8 @@
 when not defined(gcAtomicArc) or defined(gcOrc) or not defined(geneRcStats):
   {.error: "this suite requires genuine AtomicArc and geneRcStats".}
 
-import gene/[compiler, native_api, printer, types, vm]
+import gene/[compiler, native_api, native_managed, printer, types, vm]
+# native_managed installs the owned ingress adapter for the late C-entry gate.
 import std/[json, monotimes, os, strutils, tables, times, unittest]
 when defined(geneAtomicGenerationRetirementProbe):
   import gene/[gir, retirement_native_gate]
@@ -568,7 +569,7 @@ suite "AtomicArc generation retirement qualification":
       for root in roots: root.vars.clear()
       roots.setLen(0)
 
-    test "late C ingress retains its Scope until physical retirement":
+    test "late C ingress releases its managed Scope after physical retirement":
       var roots = @[privateRoot()]
       let subscription = newGeneIngressSubscription(
         newNativeFn("ingress", ingressHandler), roots[0])
@@ -596,9 +597,8 @@ suite "AtomicArc generation retirement qualification":
       check geneIngressCanRetire(subscription.context)
       geneIngressReleaseSubscription(subscription)
       check subscription.released
-      check testRetireAtomicGenerationRoots(host, roots) == 0
-      roots[0].vars.clear()
-      roots.setLen(0)
+      check testRetireAtomicGenerationRoots(host, roots) > 0
+      check roots.len == 0
 
     test "actual scalar sandbox generations retire after release":
       let directory = getCurrentDir() / "tests/profiles/native-app/lifetime/plugin"

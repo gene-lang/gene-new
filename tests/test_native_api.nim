@@ -1,5 +1,6 @@
 import gene/ext/logging
-import gene/[compiler, native_api, printer, types, vm]
+import gene/[compiler, native_api, native_managed, printer, types, vm]
+# native_managed installs the owned ingress adapter exercised below.
 import std/[strutils, tables, unittest]
 
 proc nativeInc(args: openArray[Value]): Value {.nimcall.} =
@@ -590,7 +591,7 @@ suite "native api — roots and trampoline":
     check geneIngressCanRetire(context)
     geneIngressDestroy(context)
 
-  test "ingress subscription roots its handler until physical retirement":
+  test "ingress subscription mediates its handler until physical retirement":
     let scope = newGlobalScope()
     let handler = run(compileSource("(fn on_notice [value] value)"), scope)
     let baseline = nativeRootCount()
@@ -599,9 +600,8 @@ suite "native api — roots and trampoline":
     check nativeRootCount() == baseline
     let subscription = newGeneIngressSubscription(handler, scope)
     check subscription.id > 0
-    check geneIngressHandler(subscription).bits == handler.bits
     when defined(geneRcStats):
-      check nativeRootCount() == baseline + 1
+      check nativeRootCount() == baseline
     expect GeneError:
       geneIngressReleaseSubscription(subscription)
     geneIngressClose(subscription.context)
@@ -609,6 +609,24 @@ suite "native api — roots and trampoline":
     geneIngressReleaseSubscription(subscription)
     check subscription.released
     check nativeRootCount() == baseline
+
+  test "managed ingress ownership retires across repeated subscriptions":
+    let scope = newGlobalScope()
+    let handler = run(compileSource("(fn [payload] nil)"), scope)
+    let baselineRoots = nativeRootCount()
+    when defined(geneRcStats):
+      var warmManaged = -1
+    for i in 0 ..< 1000:
+      let subscription = newGeneIngressSubscription(handler, scope)
+      geneIngressRequestCloseSubscription(subscription)
+      geneIngressConfirmUnregistered(subscription.context)
+      geneIngressReleaseSubscription(subscription)
+      if i in [0, 1, 99, 999]:
+        discard run(compileSource("nil"), scope)
+        when defined(geneRcStats):
+          if i == 0: warmManaged = liveManaged
+          else: check liveManaged == warmManaged
+    check nativeRootCount() == baselineRoots
 
   test "nested C ingress entries keep their contexts separate":
     let outer = newGeneIngressContext(101)
@@ -764,6 +782,7 @@ suite "native api — roots and trampoline":
     check geneIngressPollSubscription(reentrant) == 1
     check reentrant.closeRequested
     check ingressReentrantTask.taskCancelled
+    check reentrant.terminalStatus == gsOk
     geneIngressConfirmUnregistered(reentrant.context)
     geneIngressReleaseSubscription(reentrant)
     ingressReentrantSubscription = nil

@@ -29,6 +29,14 @@ type
     closeRequested, retiring, retired: bool
     waiters: seq[Value]
 
+  GeneManagedIngressOwner = ref object of RootObj
+    domain: GeneManagedDomain
+    handler: GeneManagedRoot
+    environment: GeneManagedEnvironment
+    library: GeneManagedRoot
+    activeTask: GeneManagedRoot
+    borrowedLibrary, released: bool
+
   ManagedLoadFrame = object
     library: Value
     environment: uint64
@@ -2197,3 +2205,131 @@ proc geneManagedStats*(domain: GeneManagedDomain):
               domain.closed, domain.nextId)
   finally:
     release(domain.lock)
+
+proc managedIngressSettle(raw: RootRef): GeneIngressManagedResult {.nimcall.} =
+  let owner = GeneManagedIngressOwner(raw)
+  if owner == nil or owner.released:
+    raise newException(GeneError, "managed ingress owner is unavailable")
+  if owner.activeTask == nil:
+    return
+  let task = owner.domain.liveRootValue(owner.activeTask)
+  if not task.taskDone:
+    result.pending = true
+    return
+  var outcome: GeneManagedResult
+  try:
+    outcome = geneWithNativeBorrow(owner.activeTask,
+      proc(b: GeneNativeBorrow): GeneManagedResult =
+        geneManagedTaskOutcome(b, owner.environment))
+  except CatchableError as error:
+    geneManagedRelease(owner.activeTask)
+    owner.activeTask = nil
+    return GeneIngressManagedResult(completed: true, status: gsError,
+                                    message: error.msg)
+  geneManagedRelease(owner.activeTask)
+  owner.activeTask = nil
+  if outcome.value != nil: geneManagedRelease(outcome.value)
+  if outcome.error != nil: geneManagedRelease(outcome.error)
+  result.completed = true
+  result.status = outcome.status
+  result.message = outcome.message
+
+proc managedIngressCancel(raw: RootRef) {.nimcall.} =
+  let owner = GeneManagedIngressOwner(raw)
+  if owner == nil or owner.released:
+    raise newException(GeneError, "managed ingress owner is unavailable")
+  if owner.activeTask == nil: return
+  let task = owner.domain.liveRootValue(owner.activeTask)
+  if task.kind == vkTask and not task.taskDone:
+    let scope = owner.domain.environmentScope(owner.environment)
+    discard vm.nativeTaskCancel(task, scope)
+
+proc managedIngressRelease(raw: RootRef) {.nimcall.} =
+  let owner = GeneManagedIngressOwner(raw)
+  if owner == nil or owner.released: return
+  if owner.activeTask != nil and managedIngressSettle(raw).pending:
+    raise newException(GeneError,
+      "managed ingress handler Task has not settled")
+  if owner.library != nil:
+    if owner.borrowedLibrary:
+      let library = owner.domain.liveRootValue(owner.library)
+      releaseFfiLibraryBorrow(library)
+    geneManagedRelease(owner.library)
+    owner.library = nil
+    owner.borrowedLibrary = false
+  if owner.environment != nil:
+    geneManagedEnvironmentRelease(owner.environment)
+    owner.environment = nil
+  if owner.handler != nil:
+    geneManagedRelease(owner.handler)
+    owner.handler = nil
+  if owner.domain != nil:
+    if not geneManagedClose(owner.domain):
+      raise newException(GeneError,
+        "managed ingress owner has outstanding handles")
+    owner.domain = nil
+  owner.released = true
+
+proc managedIngressOpen(handler: Value, scope: Scope,
+                        library: Value): RootRef {.nimcall.} =
+  # Some VM dispatch scopes inherit their Application through the active
+  # scheduler rather than a field. Freeze that identity for this native owner;
+  # later scheduler turns may run another Application on the same root lane.
+  let stableScope = newScope(scope,
+    application = RuntimeContext(vm.application(scope)))
+  let owner = GeneManagedIngressOwner(domain: geneNewManagedDomain(stableScope))
+  try:
+    owner.handler = geneManagedRootFromVm(owner.domain, stableScope, handler)
+    owner.environment = geneNewManagedEnvironment(owner.domain, stableScope)
+    if library.kind != vkNil:
+      owner.library = geneManagedRootFromVm(owner.domain, stableScope, library)
+      borrowFfiLibrary(library)
+      owner.borrowedLibrary = true
+    result = RootRef(owner)
+  except CatchableError:
+    managedIngressRelease(RootRef(owner))
+    raise
+
+proc managedIngressDispatch(raw: RootRef,
+                            payload: string): GeneIngressManagedResult
+                            {.nimcall.} =
+  let owner = GeneManagedIngressOwner(raw)
+  if owner == nil or owner.released or owner.activeTask != nil:
+    raise newException(GeneError,
+      "managed ingress handler is unavailable")
+  let scope = owner.domain.environmentScope(owner.environment)
+  let input = geneManagedRootFromVm(owner.domain, scope, newBytes(payload))
+  try:
+    let called = geneWithNativeBorrow(owner.handler,
+      proc(b: GeneNativeBorrow): GeneManagedResult =
+        geneManagedCall(b, [input], owner.environment))
+    result.status = called.status
+    result.message = called.message
+    var valueRoot = called.value
+    try:
+      if called.error != nil: geneManagedRelease(called.error)
+      if called.status != gsOk:
+        return
+      if valueRoot == nil:
+        result.completed = true
+        return
+      let kind = geneWithNativeBorrow(valueRoot,
+        proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b))
+      if kind == vkTask:
+        owner.activeTask = valueRoot
+        valueRoot = nil # the owner keeps the Task through settlement
+        result = managedIngressSettle(raw)
+        if not result.completed: result.pending = true
+      else:
+        result.completed = true
+    finally:
+      if valueRoot != nil: geneManagedRelease(valueRoot)
+  finally:
+    geneManagedRelease(input)
+
+installNativeIngressManagedHooks(GeneIngressManagedHooks(
+  open: managedIngressOpen,
+  dispatch: managedIngressDispatch,
+  settle: managedIngressSettle,
+  cancel: managedIngressCancel,
+  release: managedIngressRelease))

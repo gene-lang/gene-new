@@ -121,6 +121,7 @@ task perf, "Run release-mode core benchmarks":
 
 task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
+  exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_native_api.nim"
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_native_managed_orc.nim"
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_native_callback_abi.nim"
 

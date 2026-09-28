@@ -12,9 +12,10 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, compiler, diagnostics, gir, install, package, printer, reader,
-             registry_config, registry_publish, repl, system_dependency, types,
-             vm, web]
+import gene/[build, compiler, diagnostics, gir, install, native_managed, package,
+             printer, reader, registry_config, registry_publish, repl,
+             system_dependency, types, vm, web]
+# native_managed installs the owned byte-ingress adapter for this executable.
 import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this

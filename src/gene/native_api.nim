@@ -97,14 +97,11 @@ type
   GeneIngressSubscription* = ref object
     id*: uint64
     context*: GeneIngressContext
-    scope*: Scope
     application: Application
     ownerLane*: int
-    handlerRoot: GeneRoot
-    libraryRoot: GeneRoot
+    managedOwner: RootRef
     released*: bool
     closeRequested*: bool
-    activeTask*: Value
     handled*: uint64
     terminalStatus*: GeneStatus
     terminalMessage*: string
@@ -129,6 +126,17 @@ type
     terminalStatus*: GeneStatus
     terminalMessage*: string
     unregisterPending*: bool
+  GeneIngressManagedResult* = object
+    status*: GeneStatus
+    message*: string
+    pending*, completed*: bool
+  GeneIngressManagedHooks* = object
+    open*: proc(handler: Value, scope: Scope, library: Value): RootRef {.nimcall.}
+    dispatch*: proc(owner: RootRef, payload: string):
+                    GeneIngressManagedResult {.nimcall.}
+    settle*: proc(owner: RootRef): GeneIngressManagedResult {.nimcall.}
+    cancel*: proc(owner: RootRef) {.nimcall.}
+    release*: proc(owner: RootRef) {.nimcall.}
 
   GeneUnregisterJob = object
     callback: GeneIngressUnregisterProc
@@ -200,6 +208,7 @@ var ingressHandleLock: Lock
 initLock(ingressHandleLock)
 var ingressPollCursor: uint64
 var ingressPollActive: bool
+var ingressManagedHooks: GeneIngressManagedHooks
 var unregisterService: ptr GeneUnregisterService
 var unregisterThread: ref Thread[void]
 var ingressWakeRead = -1.cint
@@ -208,6 +217,14 @@ var ingressWakeWrite = -1.cint
 proc cMalloc(size: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
 proc cFree(value: pointer) {.importc: "free", header: "<stdlib.h>".}
 proc signalIngressWake() {.gcsafe.}
+
+proc installNativeIngressManagedHooks*(hooks: GeneIngressManagedHooks) =
+  ## Installed by native_managed at startup; the lower-level byte queue does
+  ## not import the managed registry back through a circular dependency.
+  if hooks.open == nil or hooks.dispatch == nil or hooks.settle == nil or
+      hooks.cancel == nil or hooks.release == nil:
+    raise newException(GeneError, "native ingress managed hooks are incomplete")
+  ingressManagedHooks = hooks
 
 proc nativeUnregisterWorker() {.thread.} =
   {.cast(gcsafe).}:
@@ -572,23 +589,19 @@ proc newGeneIngressSubscription*(handler: Value, scope: Scope,
                                  library: Value = NIL):
                                  GeneIngressSubscription =
   requireNativeRootLane(scope)
-  when defined(geneAtomicGenerationRetirementProbe):
-    vm.publishNativeScopeForRetirement(scope)
+  if ingressManagedHooks.open == nil:
+    raise newException(GeneError,
+      "native ingress requires the managed owner adapter")
   ensureIngressWakePipe()
   let id = nextRuntimeResourceId()
-  var rooted, libraryRoot: GeneRoot
-  var borrowed = false
+  let application = scope.application()
+  var managedOwner: RootRef
   try:
-    if library.kind != vkNil:
-      borrowFfiLibrary(library)
-      borrowed = true
-      libraryRoot = geneRoot(library)
-    rooted = geneRoot(handler)
+    managedOwner = ingressManagedHooks.open(handler, scope, library)
     result = GeneIngressSubscription(id: id,
       context: newGeneIngressContext(id, maxCount, maxBytes, maxPayload),
-      scope: scope, application: scope.application(),
-      ownerLane: currentEventLane(), handlerRoot: rooted,
-      libraryRoot: libraryRoot,
+      application: application,
+      ownerLane: currentEventLane(), managedOwner: managedOwner,
       unregisterProc: unregisterProc)
     result.unregisterContext = if unregisterContext == nil:
       cast[pointer](result.context) else: unregisterContext
@@ -601,20 +614,11 @@ proc newGeneIngressSubscription*(handler: Value, scope: Scope,
       geneIngressDestroy(result.context)
     if result != nil and result.cleanupLease.kind == vkTask:
       discard nativeRetireIoCleanupLease(result.cleanupLease, scope)
-    geneRootRelease(rooted)
-    geneRootRelease(libraryRoot)
-    if borrowed:
-      releaseFfiLibraryBorrow(library)
+    if managedOwner != nil:
+      ingressManagedHooks.release(managedOwner)
     if ingressSubscriptions.len == 0:
       closeIngressWakePipe()
     raise
-
-proc geneIngressHandler*(subscription: GeneIngressSubscription): Value =
-  if subscription == nil or subscription.released or
-      subscription.ownerLane != currentEventLane():
-    raise newException(GeneError,
-      "native subscription handler is unavailable on this lane")
-  geneRootGet(subscription.handlerRoot)
 
 proc settleIngressHandler(subscription: GeneIngressSubscription): bool
 
@@ -687,25 +691,15 @@ proc geneIngressReleaseSubscription*(subscription: GeneIngressSubscription) =
       "native subscription handler is still active")
   subscription.advanceIngressUnregistration()
   if subscription.unregisterJob != nil or
-      not geneIngressCanRetire(subscription.context) or
-      (subscription.activeTask.kind == vkTask and
-       not subscription.activeTask.taskDone):
+      not geneIngressCanRetire(subscription.context):
     raise newException(GeneError,
       "native subscription cannot release before physical retirement")
   subscription.finalContextStats = geneIngressStats(subscription.context)
-  geneRootRelease(subscription.handlerRoot)
-  if subscription.libraryRoot != nil:
-    let library = geneRootGet(subscription.libraryRoot)
-    releaseFfiLibraryBorrow(library)
-    geneRootRelease(subscription.libraryRoot)
-    subscription.libraryRoot = nil
+  ingressManagedHooks.release(subscription.managedOwner)
+  subscription.managedOwner = nil
   if subscription.cleanupLease.kind == vkTask:
-    discard nativeRetireIoCleanupLease(subscription.cleanupLease,
-                                        subscription.scope)
+    discard nativeRetireIoCleanupLease(subscription.cleanupLease)
     subscription.cleanupLease = NIL
-  for waiter in subscription.waiters:
-    subscription.settleIngressWaiter(waiter)
-  subscription.waiters.setLen(0)
   geneIngressDestroy(subscription.context)
   ingressSubscriptions.del(subscription.id)
   if subscription.handleId != 0 and
@@ -716,9 +710,10 @@ proc geneIngressReleaseSubscription*(subscription: GeneIngressSubscription) =
     stopUnregisterWorker()
     closeIngressWakePipe()
   subscription.context = nil
-  subscription.scope = nil
-  subscription.activeTask = NIL
   subscription.released = true
+  for waiter in subscription.waiters:
+    subscription.settleIngressWaiter(waiter)
+  subscription.waiters.setLen(0)
 
 proc geneIngressRequestCloseSubscription*(
     subscription: GeneIngressSubscription) =
@@ -729,9 +724,7 @@ proc geneIngressRequestCloseSubscription*(
   if not subscription.closeRequested:
     subscription.closeRequested = true
     geneIngressClose(subscription.context)
-    if subscription.activeTask.kind == vkTask and
-        not subscription.activeTask.taskDone:
-      discard nativeTaskCancel(subscription.activeTask, subscription.scope)
+    ingressManagedHooks.cancel(subscription.managedOwner)
   subscription.advanceIngressUnregistration()
 
 proc geneIngressSubscriptionStatus*(subscription: GeneIngressSubscription):
@@ -963,22 +956,18 @@ proc failIngressHandler(subscription: GeneIngressSubscription,
   subscription.geneIngressRequestCloseSubscription()
 
 proc settleIngressHandler(subscription: GeneIngressSubscription): bool =
-  let task = subscription.activeTask
-  if task.kind != vkTask:
-    return true
-  if not task.taskDone:
+  let settled = ingressManagedHooks.settle(subscription.managedOwner)
+  if settled.pending:
     return false
-  subscription.activeTask = NIL
-  if task.taskHasPanic:
-    subscription.failIngressHandler(gsPanic, task.taskPanicMsg)
-  elif task.taskCancelled:
-    if not subscription.closeRequested:
-      subscription.failIngressHandler(gsCancelled,
-        "native notification handler was cancelled")
-  elif task.taskHasError:
-    subscription.failIngressHandler(gsError, task.taskErrorMsg)
-  else:
-    inc subscription.handled
+  if settled.completed:
+    case settled.status
+    of gsOk: inc subscription.handled
+    of gsCancelled:
+      if not subscription.closeRequested:
+        subscription.failIngressHandler(gsCancelled,
+          "native notification handler was cancelled")
+    else:
+      subscription.failIngressHandler(settled.status, settled.message)
   true
 
 proc geneIngressPollSubscription*(subscription: GeneIngressSubscription,
@@ -1006,31 +995,31 @@ proc geneIngressPollSubscription*(subscription: GeneIngressSubscription,
       break
     inc result
     subscription.dispatching = true
-    var called: GeneResult
+    var called: GeneIngressManagedResult
     try:
-      called = geneCall(geneRootGet(subscription.handlerRoot),
-        GeneCall(args: @[newBytes(payload)],
-                 dispatchScope: subscription.scope))
+      called = ingressManagedHooks.dispatch(subscription.managedOwner, payload)
+    except GenePanic as error:
+      called = GeneIngressManagedResult(status: gsPanic, message: error.msg)
+    except GeneCancel as error:
+      called = GeneIngressManagedResult(status: gsCancelled, message: error.msg)
     except CatchableError as error:
-      called = GeneResult(status: gsError, message: error.msg)
+      called = GeneIngressManagedResult(status: gsError, message: error.msg)
     finally:
       subscription.dispatching = false
     if subscription.released:
       break
     if called.status != gsOk:
-      subscription.failIngressHandler(called.status, called.message)
+      if called.status != gsCancelled or not subscription.closeRequested:
+        subscription.failIngressHandler(called.status, called.message)
       break
-    if called.value.kind == vkTask:
-      subscription.activeTask = called.value
-      if subscription.closeRequested and
-          not subscription.activeTask.taskDone:
-        discard nativeTaskCancel(subscription.activeTask,
-                                 subscription.scope)
+    if called.pending:
+      if subscription.closeRequested:
+        ingressManagedHooks.cancel(subscription.managedOwner)
       if not subscription.settleIngressHandler():
         break
       if subscription.closeRequested:
         break
-    else:
+    elif called.completed:
       inc subscription.handled
 
 proc pollGeneIngressSubscriptions(scheduler: SchedulerState) {.nimcall.} =
@@ -1052,7 +1041,7 @@ proc pollGeneIngressSubscriptions(scheduler: SchedulerState) {.nimcall.} =
       if not ingressSubscriptions.hasKey(id): continue
       let subscription = ingressSubscriptions[id]
       if subscription.ownerLane != currentEventLane() or
-          subscription.released or subscription.scope == nil or
+          subscription.released or subscription.managedOwner == nil or
           not schedulerOwnsApplication(scheduler, subscription.application):
         continue
       if subscription.autoRetire and
@@ -1063,10 +1052,9 @@ proc pollGeneIngressSubscriptions(scheduler: SchedulerState) {.nimcall.} =
         min(4, remaining))
       if subscription.autoRetire and subscription.closeRequested and
           not subscription.dispatching and
-          (subscription.activeTask.kind != vkTask or
-           subscription.activeTask.taskDone) and
           geneIngressCanRetire(subscription.context):
-        geneIngressReleaseSubscription(subscription)
+        if subscription.settleIngressHandler():
+          geneIngressReleaseSubscription(subscription)
   finally:
     ingressPollActive = false
 

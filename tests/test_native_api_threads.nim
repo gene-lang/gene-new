@@ -1,5 +1,6 @@
 import gene/ext/logging
-import gene/[compiler, gir, native_api, printer, types, vm]
+import gene/[compiler, gir, native_api, native_managed, printer, types, vm]
+# native_managed installs the owned ingress adapter exercised below.
 import std/[atomics, dynlib, monotimes, os, osproc, strtabs, streams,
             strutils, tables, times]
 import std/unittest
