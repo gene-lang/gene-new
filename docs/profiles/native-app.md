@@ -332,7 +332,10 @@ producer reports physical completion. The concurrent C control passes 10,000
 Tasks under AtomicArc RC tracking and 1,000 each under ASAN and TSAN, mixing
 user cancellation with four attached C workers after domain close. All
 producer and attachment counts return to zero before library close. The count
-is configurable for longer soaks.
+is configurable for longer soaks. Fresh worker-computed Str/Bytes results
+still need a root-lane handoff; the
+[copied-result proposal](../proposals/native-task-result-handoff.md) specifies
+that addition without permitting cross-thread Nim allocations.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [package-module specification](../spec/native-module.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all

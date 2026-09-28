@@ -63,6 +63,10 @@ or `task_retire`; `task_cancel` only cancels the user Task. Module close waits
 for that physical token even after the callback registration retires or the
 user Task is cancelled. See the
 [C ABI producer contract](../proposals/native-managed-extension-abi.md#native-callback-registration).
+The current attached-lane completion takes `nil` or an already-rooted,
+deep-frozen payload ID. Fresh worker-computed Str/Bytes results require a
+root-lane handoff; the [copied-result design](../proposals/native-task-result-handoff.md)
+is not yet implemented.
 The installed macOS arm64 fixture
 in `tests/test_genex_native_module.py` checks source-built and prebuilt selected
 `gene_api` images, compiler-free launch, ABI-kind refusal, initializer rollback,

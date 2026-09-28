@@ -187,6 +187,11 @@ environment and library-borrow release is performed on the runtime root
 lane, including after attached-lane settlement. This lets module close wait
 for physical completion even when the user Task was cancelled or its callback
 registration retired.
+An attached worker cannot create a fresh Str or Bytes ID with the current
+root-lane constructors. For a result computed only after the callback
+returns, use byte ingress to hand work to a root-lane handler, or the proposed
+[copied Task result handoff](native-task-result-handoff.md). Do not move Nim
+string/object allocation to an attached lane merely to fill this gap.
 On registration failure ownership of `user_context` stays with the caller; on
 success it transfers to the runtime and the retirement callback runs exactly
 once after physical close. No callback or retirement function runs under a
