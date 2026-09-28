@@ -12,6 +12,10 @@ type
   ReleaseSaved = proc() {.cdecl.}
   TaskAction = proc(accepted: ptr uint8): uint32 {.cdecl.}
   TaskComplete = proc(value: int64, accepted: ptr uint8): uint32 {.cdecl.}
+  StressCount = proc(count: uint32): uint32 {.cdecl.}
+  StressRelease = proc() {.cdecl.}
+  StressJoin = proc(completed, retired, accepted,
+                    late: ptr uint32): uint32 {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -45,6 +49,94 @@ proc buildFixture(): string =
       "native callback C fixture failed to compile: " & diagnostics)
 
 suite "managed native C callback registration":
+  test "concurrent C producers retire after mixed user cancellation":
+    when not (defined(gcAtomicArc) and compileOption("threads")):
+      skip()
+    else:
+      let path = buildFixture()
+      if path.len == 0:
+        skip()
+      else:
+        let count = parseInt(getEnv("GENE_NATIVE_TASK_STRESS_COUNT", "128"))
+        doAssert count > 0 and count <= 200000
+        let handle = loadLib(path)
+        check handle != nil
+        let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+        let host = newGlobalScope()
+        discard run(compileSource("nil"), host)
+        let domain = geneNewManagedDomain(host)
+        let environment = geneNewManagedEnvironment(domain, host)
+        let libraryRoot = geneManagedRootFromVm(domain, host, library)
+        let loaded = geneManagedLoadModule(domain, libraryRoot,
+          environment, "stress-fixture",
+          GeneApiCallbackFeature or GeneApiTaskProducerFeature or
+            GeneApiAttachedFeature)
+        check loaded.status == gsOk
+        let setMode = cast[SetMode](symAddr(handle,
+          "gene_test_api_set_callback_mode"))
+        let prepare = cast[StressCount](symAddr(handle,
+          "gene_test_api_stress_prepare"))
+        let start = cast[StressCount](symAddr(handle,
+          "gene_test_api_stress_start"))
+        let releaseWorkers = cast[StressRelease](symAddr(handle,
+          "gene_test_api_stress_release"))
+        let joinWorkers = cast[StressJoin](symAddr(handle,
+          "gene_test_api_stress_join"))
+        let close = cast[ReadStatus](symAddr(handle, "gene_test_api_close"))
+        let waitClosed = cast[ReadStatus](symAddr(handle,
+          "gene_test_api_wait"))
+        let releaseSaved = cast[ReleaseSaved](symAddr(handle,
+          "gene_test_api_release_saved"))
+        let legacy = geneWithNativeBorrow(loaded.value,
+          proc(b: GeneNativeBorrow): GeneRoot = geneExportManagedRoot(b))
+        let callScope = newScope(host)
+        callScope.define("native_mod", geneRootGet(legacy))
+        callScope.define("stress_index", newInt(0))
+        let invocation = compileSource(
+          "(native_mod/native_plus_one stress_index)")
+        check prepare(uint32(count)) == 0
+        setMode(10)
+        var tasks = newSeq[Value](count)
+        for i in 0 ..< count:
+          callScope.assign("stress_index", newInt(int64(i)))
+          tasks[i] = run(invocation, callScope)
+          check tasks[i].kind == vkTask and not tasks[i].taskDone
+        check geneManagedStats(domain).producers == count
+        var preCancelled = 0
+        for i in 0 ..< count:
+          if i mod 4 == 0:
+            check nativeTaskCancel(tasks[i], callScope)
+            inc preCancelled
+        check close() == 0 and waitClosed() == 0
+        check not geneManagedClose(domain)
+        expect GeneError:
+          library.closeFfiLibrary()
+        check start(4) == 0 # all workers attach after close and wait
+        releaseWorkers()
+        for i in 0 ..< count:
+          if i mod 5 == 0:
+            discard nativeTaskCancel(tasks[i], callScope)
+        var completed, retired, accepted, late: uint32
+        check joinWorkers(addr completed, addr retired,
+                          addr accepted, addr late) == 0
+        check completed + retired == uint32(count)
+        check retired == uint32((count + 10) div 11)
+        check accepted + late == uint32(count)
+        check late >= uint32(preCancelled)
+        for task in tasks:
+          check task.taskDone
+        tasks.setLen(0)
+        let drained = geneManagedStats(domain)
+        check drained.producers == 0 and drained.attachments == 0
+        check not geneManagedClose(domain)
+        releaseSaved()
+        geneRootRelease(legacy)
+        geneManagedRelease(loaded.value)
+        geneManagedRelease(libraryRoot)
+        geneManagedEnvironmentRelease(environment)
+        library.closeFfiLibrary()
+        check geneManagedClose(domain)
+
   test "C Task producer outlives cancellation and callback registration":
     let path = buildFixture()
     if path.len == 0:

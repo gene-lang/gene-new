@@ -328,8 +328,11 @@ The C ABI now has an opaque Task producer family. Its callback fixture proves
 success, failure, cancellation followed by late completion, stale-token
 rejection, and attached-lane completion after domain close. A selected
 installed package also holds `NativeModule` close pending until a Task
-producer reports physical completion. Longer concurrent cancellation stress
-remains to qualify.
+producer reports physical completion. The concurrent C control passes 10,000
+Tasks under AtomicArc RC tracking and 1,000 each under ASAN and TSAN, mixing
+user cancellation with four attached C workers after domain close. All
+producer and attachment counts return to zero before library close. The count
+is configurable for longer soaks.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [package-module specification](../spec/native-module.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
@@ -348,8 +351,8 @@ emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
 utf8proc, and libcurl were older than the genex pins; the probe built pinned
 versions from source. Linux work is deferred by the owner.
 
-Next implementation work is broader native-producer use and concurrent
-cancellation qualification.
+Next implementation work is broader native-producer use and the remaining
+shared ownership gates.
 The SERVICE heartbeat investigation,
 Linux native timing, broader shared ownership, and profile promotion remain
 deferred or gated as described above. The

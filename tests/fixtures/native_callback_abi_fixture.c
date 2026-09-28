@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include "native_api.h"
 
 typedef struct CallbackState { int marker; } CallbackState;
@@ -15,6 +17,18 @@ static GeneHandle last_temporary_environment;
 static GeneRegistration registration;
 static GeneHandle waiter_task;
 static GeneProducer task_producer;
+static GeneProducer *stress_producers;
+static pthread_t *stress_threads;
+static uint32_t stress_count;
+static uint32_t stress_workers;
+static atomic_uint stress_next;
+static atomic_uint stress_attached;
+static atomic_uint stress_go;
+static atomic_uint stress_failures;
+static atomic_uint stress_completed;
+static atomic_uint stress_retired;
+static atomic_uint stress_accepted;
+static atomic_uint stress_late;
 static uint32_t callback_mode;
 static uint32_t fail_initializer;
 static uint32_t duplicate_registration;
@@ -109,6 +123,13 @@ static uint32_t callback(const GeneApi *table, void *raw,
     return table->new_task(table->runtime_context, invocation_environment,
                            out_value, &task_producer, diagnostic);
   }
+  if (callback_mode == 10) {
+    if (!stress_producers || input < 0 ||
+        (uint64_t)input >= stress_count || stress_producers[input])
+      return GENE_API_ERROR;
+    return table->new_task(table->runtime_context, invocation_environment,
+                           out_value, &stress_producers[input], diagnostic);
+  }
   return table->new_i64(table->runtime_context, input + 1,
                         out_value, diagnostic);
 }
@@ -128,6 +149,114 @@ uint32_t gene_test_api_close_inside_status(void) { return close_inside_status; }
 uint32_t gene_test_api_retire_reentry_status(void) { return retire_reentry_status; }
 uint32_t gene_test_api_pending_wait_status(void) { return pending_wait_status; }
 uint64_t gene_test_api_registration_id(void) { return registration; }
+
+uint32_t gene_test_api_stress_prepare(uint32_t count) {
+  if (count == 0 || count > 200000 || stress_producers ||
+      !api->attach_thread || !api->detach_thread) return GENE_API_ERROR;
+  stress_producers = calloc(count, sizeof(*stress_producers));
+  if (!stress_producers) return GENE_API_ERROR;
+  stress_count = count;
+  atomic_store(&stress_next, 0);
+  atomic_store(&stress_attached, 0);
+  atomic_store(&stress_go, 0);
+  atomic_store(&stress_failures, 0);
+  atomic_store(&stress_completed, 0);
+  atomic_store(&stress_retired, 0);
+  atomic_store(&stress_accepted, 0);
+  atomic_store(&stress_late, 0);
+  return GENE_API_OK;
+}
+
+static void *stress_worker(void *unused) {
+  (void)unused;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  uint32_t status = api->attach_thread(api->runtime_context, &attachment,
+                                        &diagnostic);
+  if (status != GENE_API_OK) atomic_fetch_add(&stress_failures, 1);
+  atomic_fetch_add(&stress_attached, 1);
+  while (!atomic_load(&stress_go)) sched_yield();
+  if (status != GENE_API_OK) return NULL;
+  for (;;) {
+    uint32_t index = atomic_fetch_add(&stress_next, 1);
+    if (index >= stress_count) break;
+    uint8_t accepted = 0;
+    if (index % 11 == 0) {
+      status = api->task_retire(api->runtime_context,
+                                stress_producers[index], &accepted,
+                                &diagnostic);
+      if (status == GENE_API_OK) atomic_fetch_add(&stress_retired, 1);
+    } else {
+      status = api->task_complete(api->runtime_context,
+                                  stress_producers[index], 0, &accepted,
+                                  &diagnostic);
+      if (status == GENE_API_OK) atomic_fetch_add(&stress_completed, 1);
+    }
+    if (status != GENE_API_OK) atomic_fetch_add(&stress_failures, 1);
+    else {
+      stress_producers[index] = 0;
+      if (accepted) atomic_fetch_add(&stress_accepted, 1);
+      else atomic_fetch_add(&stress_late, 1);
+    }
+    if ((index & 7u) == 0) sched_yield();
+  }
+  if (api->detach_thread(api->runtime_context, attachment,
+                          &diagnostic) != GENE_API_OK)
+    atomic_fetch_add(&stress_failures, 1);
+  return NULL;
+}
+
+uint32_t gene_test_api_stress_start(uint32_t workers) {
+  if (!stress_producers || stress_threads || workers == 0 || workers > 32)
+    return GENE_API_ERROR;
+  for (uint32_t i = 0; i < stress_count; ++i)
+    if (!stress_producers[i]) return GENE_API_ERROR;
+  stress_threads = calloc(workers, sizeof(*stress_threads));
+  if (!stress_threads) return GENE_API_ERROR;
+  for (uint32_t i = 0; i < workers; ++i) {
+    if (pthread_create(&stress_threads[i], NULL, stress_worker, NULL) != 0) {
+      stress_workers = i;
+      atomic_store(&stress_go, 1);
+      for (uint32_t j = 0; j < i; ++j) pthread_join(stress_threads[j], NULL);
+      free(stress_threads);
+      stress_threads = NULL;
+      return GENE_API_ERROR;
+    }
+  }
+  stress_workers = workers;
+  while (atomic_load(&stress_attached) != workers) sched_yield();
+  return atomic_load(&stress_failures) == 0 ? GENE_API_OK : GENE_API_ERROR;
+}
+
+void gene_test_api_stress_release(void) {
+  atomic_store(&stress_go, 1);
+}
+
+uint32_t gene_test_api_stress_join(uint32_t *completed, uint32_t *retired,
+                                  uint32_t *accepted, uint32_t *late) {
+  if (!stress_threads || !completed || !retired || !accepted || !late)
+    return GENE_API_ERROR;
+  atomic_store(&stress_go, 1);
+  for (uint32_t i = 0; i < stress_workers; ++i)
+    pthread_join(stress_threads[i], NULL);
+  free(stress_threads);
+  stress_threads = NULL;
+  *completed = atomic_load(&stress_completed);
+  *retired = atomic_load(&stress_retired);
+  *accepted = atomic_load(&stress_accepted);
+  *late = atomic_load(&stress_late);
+  GeneOutBytes diagnostic = {0};
+  for (uint32_t i = 0; i < stress_count; ++i) {
+    if (!stress_producers[i]) continue;
+    uint8_t ignored = 0;
+    api->task_retire(api->runtime_context, stress_producers[i],
+                     &ignored, &diagnostic);
+  }
+  free(stress_producers);
+  stress_producers = NULL;
+  stress_count = 0;
+  return atomic_load(&stress_failures) == 0 ? GENE_API_OK : GENE_API_ERROR;
+}
 
 uint32_t gene_test_api_new_task_outside_callback(void) {
   GeneOutBytes diagnostic = {0};

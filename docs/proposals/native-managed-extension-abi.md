@@ -240,15 +240,22 @@ initializer failure, and closes an abandoned owner without
 making an escaped Module callable jump into unloaded C code. The exact
 Gene-facing contract is in [Packaged managed native modules](../spec/native-module.md).
 
-## Remaining implementation gates
+## Qualification and remaining gates
 
-1. Qualify longer concurrent producer cancellation stress. The installed
-   package close path passes a pending Task producer control. The C callback
-   and producer fixture passes default ORC, AtomicArc, ASAN, and TSAN with
-   initializer rollback, typed outcomes, re-entry, and repeated
-   close/wait; the RC-enabled standalone probe reaches 10,000 lifetimes.
-   Shared reclamation remains disabled until the managed
-   ownership and exposure inventory is complete.
+The installed package close path passes a pending Task producer control. The
+C callback and producer fixture passes default ORC, AtomicArc, ASAN, and TSAN
+with initializer rollback, typed outcomes, re-entry, and repeated close/wait.
+Its concurrent control creates 10,000 Tasks under AtomicArc with RC tracking,
+cancels a quarter before worker release, races more user cancellation against
+four attached C workers, and closes the domain before those workers attach.
+It verifies every Task is terminal, every producer and attachment retires,
+and the library closes after root-lane release. The same control passes with
+1,000 Tasks under ASAN and TSAN. `GENE_NATIVE_TASK_STRESS_COUNT` sets the
+count for longer runs (maximum 200,000 per run); the normal threaded gate uses
+128. The separate RC-enabled callback registration probe reaches 10,000
+lifetimes. Shared reclamation remains disabled until the managed ownership
+and exposure inventory is complete. Late callback registration outside
+`gene_module_init` remains a separate design choice.
 
 Direct Nim helper functions still serve in-repo runtime code; there is no
 second native module ABI or versioned loader.
