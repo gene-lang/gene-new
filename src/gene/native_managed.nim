@@ -39,6 +39,7 @@ type
     registerCallback*: pointer
     requestClose*: pointer
     waitClosed*: pointer
+    lookup*: pointer
 
   GeneModuleInitV6Proc* = proc(api: ptr GeneApiV6, environment: uint64,
                                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.}
@@ -416,6 +417,24 @@ proc geneManagedDefine*(environment: GeneManagedEnvironment,
       scope.define(name, stored)
       result.status = gsOk
       result.value = domain.addRoot(stored)
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+
+proc geneManagedLookup*(environment: GeneManagedEnvironment,
+                       name: string): GeneManagedResult =
+  if environment == nil or environment.root == nil:
+    raise newException(GeneError, "managed native environment is nil")
+  let domain = environment.root.domain
+  withManagedProgress:
+    try:
+      domain.requireOpen()
+      let scope = domain.environmentScope(environment)
+      result.value = geneManagedRootFromVm(domain, scope, scope.lookup(name))
+      result.status = gsOk
     except GeneError as e:
       result.status = gsError
       result.message = e.msg
@@ -1053,6 +1072,7 @@ proc geneExportManagedRoot*(borrow: GeneNativeBorrow): GeneRoot =
 const
   GeneApiV6IdentityFeature* = 1'u64
   GeneApiV6ScalarFeature* = 2'u64
+  GeneApiV6CallDefineFeature* = 4'u64
   GeneApiV6MaxCopyBytes* = 64 * 1024 * 1024
 
 proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
@@ -1345,15 +1365,116 @@ proc v6NewBytes(context: pointer, data: ptr uint8, length: csize_t,
     v6Diagnostic(diagnostic, e.msg)
     result = 1
 
+proc v6CopiedName(data: ptr uint8, length: csize_t): string =
+  result = v6CopiedInput(data, length)
+  if result.len == 0 or validateUtf8(result) != -1:
+    raise newException(GeneError, "native v6 name must be nonempty UTF-8")
+
+proc v6Result(managed: GeneManagedResult, output, error: ptr uint64,
+              diagnostic: ptr GeneOutBytesV6): uint32 =
+  if output != nil and managed.value != nil:
+    output[] = managed.value.id
+  if error != nil and managed.error != nil:
+    error[] = managed.error.id
+  v6Diagnostic(diagnostic, managed.message)
+  uint32(ord(managed.status))
+
+proc v6Lookup(context: pointer, environment: uint64,
+              name: ptr uint8, nameLength: csize_t,
+              output: ptr uint64,
+              diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 lookup output is nil")
+    let domain = v6Domain(context)
+    let env = GeneManagedEnvironment(
+      root: GeneManagedRoot(domain: domain, id: environment))
+    result = v6Result(geneManagedLookup(env,
+      v6CopiedName(name, nameLength)), output, nil, diagnostic)
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6Define(context: pointer, environment: uint64,
+              name: ptr uint8, nameLength: csize_t, value: uint64,
+              output: ptr uint64,
+              diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 define output is nil")
+    let domain = v6Domain(context)
+    let env = GeneManagedEnvironment(
+      root: GeneManagedRoot(domain: domain, id: environment))
+    let input = GeneManagedRoot(domain: domain, id: value)
+    if domain.liveRootEntry(input).scopes.len > 0:
+      raise newException(GeneError,
+        "native v6 define of scope-bearing values needs binding tickets")
+    result = v6Result(geneManagedDefine(env,
+      v6CopiedName(name, nameLength), input), output, nil, diagnostic)
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6Call(context: pointer, callable: uint64,
+            arguments: ptr uint64, argumentCount: csize_t,
+            environment: uint64, output, error: ptr uint64,
+            diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  if error != nil: error[] = 0
+  try:
+    if output == nil or error == nil:
+      raise newException(GeneError, "native v6 call outputs are nil")
+    if argumentCount > 4096 or
+        (argumentCount > 0 and arguments == nil):
+      raise newException(GeneError, "native v6 call arguments are invalid")
+    let domain = v6Domain(context)
+    var roots = newSeq[GeneManagedRoot](int(argumentCount))
+    let ids = cast[ptr UncheckedArray[uint64]](arguments)
+    for i in 0 ..< roots.len:
+      roots[i] = GeneManagedRoot(domain: domain, id: ids[i])
+    let env = GeneManagedEnvironment(
+      root: GeneManagedRoot(domain: domain, id: environment))
+    let callee = GeneManagedRoot(domain: domain, id: callable)
+    let called = geneWithNativeBorrow(callee,
+      proc(b: GeneNativeBorrow): GeneManagedResult =
+        geneManagedCall(b, roots, env))
+    result = v6Result(called, output, error, diagnostic)
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
 proc configureV6Api(domain: GeneManagedDomain) =
   domain.v6Api = GeneApiV6(version: 6'u32,
                            structSize: uint32(sizeof(GeneApiV6)),
                            featureBits: GeneApiV6IdentityFeature or
-                                        GeneApiV6ScalarFeature,
+                                        GeneApiV6ScalarFeature or
+                                        GeneApiV6CallDefineFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](v6Retain),
                            release: cast[pointer](v6Release),
                            kind: cast[pointer](v6Kind),
+                           call: cast[pointer](v6Call),
+                           define: cast[pointer](v6Define),
                            copyBool: cast[pointer](v6CopyBool),
                            copyI64: cast[pointer](v6CopyI64),
                            copyText: cast[pointer](v6CopyText),
@@ -1362,6 +1483,7 @@ proc configureV6Api(domain: GeneManagedDomain) =
                            newI64: cast[pointer](v6NewI64))
   domain.v6Api.newText = cast[pointer](v6NewText)
   domain.v6Api.newBytes = cast[pointer](v6NewBytes)
+  domain.v6Api.lookup = cast[pointer](v6Lookup)
 
 const GeneModuleInitV6Symbol* = "gene_module_init_v6"
 

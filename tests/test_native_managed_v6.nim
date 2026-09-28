@@ -41,6 +41,9 @@ proc buildFixture(noInit = false): string =
 initModuleContext(getCurrentDir())
 let host = newGlobalScope()
 discard run(compileSource("nil"), host)
+host.define("v6_plus_one", run(compileSource("(fn [x] (+ x 1))"), host))
+host.define("v6_fail", run(compileSource(
+  "(fn [] (fail (AssertionError ^message \"v6\")))"), host))
 
 suite "managed native extension ABI v6":
   test "exact layout and feature negotiation preserve opaque module entry":
@@ -60,13 +63,13 @@ suite "managed native extension ABI v6":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_v6_set_mode"))
         check calls != nil and setMode != nil
         let unavailable = geneManagedLoadModuleV6(domain, libraryRoot,
-          environment, "need-future", requiredFeatures = 4'u64)
+          environment, "need-future", requiredFeatures = 8'u64)
         check unavailable.status == gsError
         check unavailable.message.contains("required feature bits")
         check calls() == 0
         let loaded = geneManagedLoadModuleV6(domain, libraryRoot,
                                                environment, "v6-fixture",
-                                               requiredFeatures = 3'u64)
+                                               requiredFeatures = 7'u64)
         check loaded.status == gsOk and loaded.value != nil
         check geneWithNativeBorrow(loaded.value,
           proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkModule

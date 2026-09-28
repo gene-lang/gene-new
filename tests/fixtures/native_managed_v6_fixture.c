@@ -23,6 +23,9 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
       !api->new_text || !api->copy_text ||
       !api->new_bytes || !api->copy_bytes)
     return GENE_API_V6_ERROR;
+  if (!(api->feature_bits & GENE_API_V6_CALL_DEFINE_FEATURE) ||
+      !api->lookup || !api->call || !api->define)
+    return GENE_API_V6_ERROR;
   if (mode == 1) {
     const char message[] = "rejected";
     if (diagnostic) {
@@ -106,6 +109,57 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
                      GENE_API_V6_MAX_COPY_BYTES + 1,
                      &invalid_id, &operation_diag) != GENE_API_V6_ERROR ||
       invalid_id != 0 || operation_diag.required == 0)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t callable_name[] = "v6_plus_one";
+  const uint8_t rejected_name[] = "bad_function";
+  GeneHandleV6 callable = 0, arg = 0, returned = 0, error = 0;
+  GeneHandleV6 rejected_definition = 0;
+  int64_t answer = 0;
+  if (api->lookup(api->runtime_context, environment, callable_name,
+                  sizeof(callable_name) - 1, &callable, NULL) != GENE_API_V6_OK ||
+      api->new_i64(api->runtime_context, 41, &arg, NULL) != GENE_API_V6_OK ||
+      api->call(api->runtime_context, callable, &arg, 1, environment,
+                &returned, &error, NULL) != GENE_API_V6_OK ||
+      !returned || error ||
+      api->copy_i64(api->runtime_context, returned, &answer, NULL) != GENE_API_V6_OK ||
+      answer != 42 ||
+      api->define(api->runtime_context, environment, rejected_name,
+                  sizeof(rejected_name) - 1, callable,
+                  &rejected_definition, &operation_diag) != GENE_API_V6_ERROR ||
+      rejected_definition != 0 || operation_diag.required == 0 ||
+      api->release(api->runtime_context, callable, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, arg, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, returned, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t failing_name[] = "v6_fail";
+  GeneHandleV6 failing = 0;
+  returned = 0;
+  error = 0;
+  if (api->lookup(api->runtime_context, environment, failing_name,
+                  sizeof(failing_name) - 1,
+                  &failing, NULL) != GENE_API_V6_OK ||
+      api->call(api->runtime_context, failing, NULL, 0, environment,
+                &returned, &error, &operation_diag) != GENE_API_V6_ERROR ||
+      returned || !error || operation_diag.required == 0 ||
+      api->release(api->runtime_context, failing, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, error, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t export_name[] = "native_answer";
+  GeneHandleV6 stored = 0, defined = 0, found = 0;
+  if (api->new_i64(api->runtime_context, 7, &stored, NULL) != GENE_API_V6_OK ||
+      api->define(api->runtime_context, environment, export_name,
+                  sizeof(export_name) - 1, stored,
+                  &defined, NULL) != GENE_API_V6_OK ||
+      api->lookup(api->runtime_context, environment, export_name,
+                  sizeof(export_name) - 1, &found, NULL) != GENE_API_V6_OK ||
+      api->copy_i64(api->runtime_context, found, &answer, NULL) != GENE_API_V6_OK ||
+      answer != 7 ||
+      api->release(api->runtime_context, stored, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, defined, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, found, NULL) != GENE_API_V6_OK)
     return GENE_API_V6_ERROR;
   if (diagnostic) diagnostic->required = 0;
   return GENE_API_V6_OK;

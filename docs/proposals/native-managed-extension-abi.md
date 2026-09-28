@@ -1,9 +1,10 @@
 # Managed native extension ABI
 
 **Status:** the ABI 6 layout, exact loader negotiation and a root-lane
-identity/Int64 and copied scalar/Bytes features are implemented against a
-compiled C fixture. Frozen traversal, calls, definitions, callbacks and ingress
-remain unimplemented and their feature bits are not advertised. The owner
+identity/Int64, copied scalar/Bytes and root-lane lookup/call/scalar-definition
+features are implemented against a compiled C fixture. Frozen traversal,
+Scope-bearing definitions, callbacks and ingress remain unimplemented and
+their feature bits are not advertised. The owner
 selected opaque managed handles in [Native managed borrows](native-managed-borrows.md).
 Qualification evidence is in
 [the ABI 6 loader audit](../profiles/native-app-2026-09-27-native-managed-v6.md).
@@ -58,6 +59,11 @@ copies, copied Str/Bytes reads and Bool/Str/Bytes constructors. Incoming text
 must be valid UTF-8; Bytes may contain any octets. One copied input is bounded
 to 64 MiB, and both output reads support a length probe with a zero-capacity
 buffer. Neither feature exposes a Gene pointer.
+Feature bit 2 (`GENE_API_V6_CALL_DEFINE_FEATURE = 4`) adds root-lane environment
+lookup, positional call and definition of values with no external Scope/code
+provenance. Calls accept at most 4,096 positional IDs and return separate
+owning value/error IDs with copied status. Definition of Scope-bearing values
+waits for per-binding Scope tickets; the current entry rejects them.
 
 ```c
 #include <stddef.h>
@@ -120,6 +126,8 @@ typedef struct GeneApiV6 {
   uint32_t (*request_close)(void *, GeneRegistrationV6, GeneOutBytesV6 *);
   uint32_t (*wait_closed)(void *, GeneRegistrationV6, GeneHandleV6 *,
                           GeneOutBytesV6 *); /* owned Task handle */
+  uint32_t (*lookup)(void *, GeneHandleV6, const uint8_t *, size_t,
+                     GeneHandleV6 *, GeneOutBytesV6 *);
 } GeneApiV6;
 typedef uint32_t (*GeneModuleInitV6)(const GeneApiV6 *, GeneHandleV6,
                                       GeneOutBytesV6 *);
@@ -150,6 +158,7 @@ Gene memory survives a call.
 | Frozen traversal | ID and index/key; returns a new owning ID. | Only deep-frozen List/Map/Node values; no raw container pointer. |
 | `call` | Callable ID, owning argument IDs, environment ID; returns owned value or typed error ID. | Root lane; callback runs under owner-dependent admission. |
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
+| `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
 | `new_task`, `complete`, `fail`, `cancel`, `retire` | Opaque Task producer ticket and payload/error IDs. | Physical producer owner survives user cancellation until completion/retire. Typed foreign errors require a root-lane dispatch adapter before enabled. |
 | `register_callback`, `request_close`, `wait_closed` | C callback/context, environment ID, registration token. | Runtime owns the context and library lease through unregister confirmation, zero in-flight calls and result settlement. |
 
@@ -220,8 +229,9 @@ extension's actual use, not by this ABI.
    release, copied scalar/Bytes reads, frozen traversal, call and define. A
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
    without exposing raw Gene bits. Root-lane identity and copied scalar/Bytes
-   operations are advertised as separate feature bits. Attached-lane use,
-   frozen traversal, call and define are still pending.
+   operations and positional call/scalar-definition are advertised as separate
+   feature bits. Attached-lane use, frozen traversal and Scope-bearing
+   definitions are still pending.
 3. Add callback registration and copied arguments/results. Test nested call,
    typed error/panic/cancel propagation, close during callback, context cleanup
    re-entry and library unload refusal until physical retirement.

@@ -12,6 +12,7 @@
 #define GENE_API_V6_PENDING UINT32_C(4)
 #define GENE_API_V6_IDENTITY_FEATURE UINT64_C(1)
 #define GENE_API_V6_SCALAR_FEATURE UINT64_C(2)
+#define GENE_API_V6_CALL_DEFINE_FEATURE UINT64_C(4)
 #define GENE_API_V6_MAX_COPY_BYTES (64u * 1024u * 1024u)
 
 typedef uint64_t GeneHandleV6;
@@ -75,6 +76,8 @@ typedef struct GeneApiV6 {
   uint32_t (*request_close)(void *, GeneRegistrationV6, GeneOutBytesV6 *);
   uint32_t (*wait_closed)(void *, GeneRegistrationV6, GeneHandleV6 *,
                           GeneOutBytesV6 *);
+  uint32_t (*lookup)(void *, GeneHandleV6, const uint8_t *, size_t,
+                     GeneHandleV6 *, GeneOutBytesV6 *);
 } GeneApiV6;
 
 typedef uint32_t (*GeneModuleInitV6)(const GeneApiV6 *api,
