@@ -6,7 +6,9 @@ only supported native extension version. The managed loader, opaque handles,
 copied scalar reads, frozen traversal, call/define, and AtomicArc attached-lane
 admission are implemented against a compiled C fixture. Synchronous retained
 C callback registration now has temporary argument IDs, typed outcomes,
-root-lane close, and physical library/context retirement. Byte ingress is
+root-lane close, and physical library/context retirement. Its Task producer
+family holds an independent library borrow until physical settlement or
+retirement. Byte ingress is
 present in this same layout and powers `genex/libuv_timer`; subscriptions now
 keep handler, environment, active Task and library ownership through managed
 IDs until physical release. Package-native module loading now uses
@@ -35,8 +37,8 @@ function pointers later. Both paths obey feature-bit negotiation. The ingress
 bridge retains its library through physical unregister, zero in-flight entries,
 and handler settlement. The managed loader borrows its library through
 initialization; each successful callback registration keeps an independent
-borrow until its C context retires. Future producer registrations need the
-same lease. A native shim cannot use its table or context after physical
+borrow until its C context retires. Each C Task producer has its own library
+borrow. A native shim cannot use its table or context after physical
 retirement.
 
 The handle representation is an unsigned 64-bit ID, never a cast Gene pointer.
@@ -44,7 +46,9 @@ ID zero is invalid. Each call also carries `runtime_context`, so lookup checks
 the owning Application/domain before touching Gene memory. IDs are monotonic
 and never reused during a domain lifetime. Releasing a handle removes its
 registry entry; a stale ID fails even when the native library still stores the
-number. Domain close rejects new admission and reports pending while mediated
+number. Domain close rejects new handles and callbacks but admits an attached
+lane while a C producer token is live so it can finish the producer. It
+reports pending while mediated
 handles, borrows, producers, callback tokens, or C attachment tokens remain.
 Domain close requests callback closure and reports pending until token waiters
 consume the registrations and other owners release.
@@ -108,6 +112,8 @@ families. Null slots must never be called.
 Feature bit 6 (`GENE_API_CALLBACK_FEATURE = 64`) is advertised by the managed
 loader for synchronous retained callbacks. The ingress-only table does not
 advertise it.
+Feature bit 7 (`GENE_API_TASK_PRODUCER_FEATURE = 128`) advertises the five
+Task producer entries appended after ingress. It requires the callback feature.
 
 `length`, `copy_key` and `traverse` use selectors `0=List item`, `1=Map
 entry`, `2=Node body`, `3=Node prop`, `4=Node head`. `copy_key` applies only to
@@ -115,9 +121,9 @@ Map entry and Node prop. The index selects an element after a copied length
 check; Node head has length one. `traverse` returns Map/Node property values,
 while `copy_key` copies their keys. All traversed containers must be deeply
 frozen; an unfrozen container returns a typed error instead of a pointer.
-Byte-ingress entries follow `lookup` in the current layout. Future task
-producer operations may append new slots; callers check both `struct_size`
-and the feature bit before reading an optional slot.
+Byte-ingress entries follow `lookup`; Task producer entries follow ingress.
+Callers check both `struct_size` and the feature bit before reading an
+optional slot.
 
 The first table version has the following operation families. Each returns a
 small status code; `GeneStatus` categories remain distinct (`ok`, error, panic,
@@ -134,7 +140,7 @@ Gene memory survives a call.
 | `call` | Callable ID, owning argument IDs, environment ID; returns owned value or typed error ID. | Root lane; callback runs under owner-dependent admission. |
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
 | `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
-| `new_task`, `complete`, `fail`, `cancel`, `retire` | Opaque Task producer ticket and payload/error IDs. | Physical producer owner survives user cancellation until completion/retire. Typed foreign errors require a root-lane dispatch adapter before enabled. |
+| `new_task`, `task_complete`, `task_fail`, `task_cancel`, `task_retire` | Owning Task ID, distinct opaque producer token, and payload/error IDs. | New Task on the root lane during a registered callback; settlement on root or attached lane. The physical owner survives user cancellation until completion, failure or retirement. Typed foreign errors require a root-lane dispatch adapter before enabled. |
 | `register_callback`, `request_close`, `wait_closed` | C callback/context, initializer environment ID, registration token. | Root lane; context and library borrow retire after close and zero in-flight calls. `wait_closed` consumes the token and returns an owning Task ID. |
 
 The table's `struct_size` permits appending new function pointers in a later
@@ -158,9 +164,29 @@ otherwise it must be an owning ID. On failure, `out_value` must be zero and
 `out_error` may be an owning typed error ID. The runtime consumes each owning
 output exactly once. Returning a temporary argument/environment ID without
 retaining it is rejected. Native code may not return a pointer to transient
-argument bytes as a result. This callback family is synchronous: returning a
-Task is rejected; asynchronous notifications use byte ingress, and a future
-producer feature will need its own result-lifetime contract.
+argument bytes as a result. The callback itself is synchronous, but it may
+return an owning Task ID. `new_task` is admitted only inside an active
+registered callback after module initialization has completed, and only for
+that callback's environment. It returns the
+Task ID and a distinct producer token. The runtime consumes the callback's
+returned Task ID; the token keeps an independent Task owner, environment ID,
+runtime pin and library borrow. The callback can return while native work is
+still active. `task_complete` accepts a live payload ID or zero for `nil`;
+`task_fail` copies a message and accepts zero or a live typed error ID.
+Both consume the token and report whether the user Task accepted the outcome.
+Invalid inputs are rejected before token consumption; once settlement is
+admitted, the token retires even if the VM reports an error.
+`task_cancel` requests user cancellation and reports acceptance but retains
+the token. `task_retire` consumes it after physical cleanup and cancels the
+Task if still pending. Stale tokens fail. The C caller retains ownership of
+any payload/error IDs it owns and releases them separately. Attached lanes
+must first use `attach_thread`, including when a domain is closing with a
+live producer. An attached-lane result payload must be deep-frozen, and
+typed failure IDs are restricted to the root lane. Final
+environment and library-borrow release is performed on the runtime root
+lane, including after attached-lane settlement. This lets module close wait
+for physical completion even when the user Task was cancelled or its callback
+registration retired.
 On registration failure ownership of `user_context` stays with the caller; on
 success it transfers to the runtime and the retirement callback runs exactly
 once after physical close. No callback or retirement function runs under a
@@ -216,9 +242,10 @@ Gene-facing contract is in [Packaged managed native modules](../spec/native-modu
 
 ## Remaining implementation gates
 
-1. Qualify future producer/Task-return paths. The
-   synchronous callback C fixture passes default ORC, AtomicArc, ASAN, and
-   TSAN with initializer rollback, typed outcomes, re-entry, and repeated
+1. Qualify longer concurrent producer cancellation stress. The installed
+   package close path passes a pending Task producer control. The C callback
+   and producer fixture passes default ORC, AtomicArc, ASAN, and TSAN with
+   initializer rollback, typed outcomes, re-entry, and repeated
    close/wait; the RC-enabled standalone probe reaches 10,000 lifetimes.
    Shared reclamation remains disabled until the managed
    ownership and exposure inventory is complete.

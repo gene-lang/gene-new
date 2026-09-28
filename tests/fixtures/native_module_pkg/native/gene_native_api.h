@@ -17,6 +17,7 @@
 #define GENE_API_ATTACHED_FEATURE UINT64_C(16)
 #define GENE_API_INGRESS_FEATURE UINT64_C(32)
 #define GENE_API_CALLBACK_FEATURE UINT64_C(64)
+#define GENE_API_TASK_PRODUCER_FEATURE UINT64_C(128)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
 #define GENE_LIST_ITEM UINT32_C(0)
 #define GENE_MAP_ENTRY UINT32_C(1)
@@ -26,6 +27,7 @@
 
 typedef uint64_t GeneHandle;
 typedef uint64_t GeneRegistration;
+typedef uint64_t GeneProducer;
 
 typedef struct GeneOutBytes {
   uint8_t *data;
@@ -52,7 +54,8 @@ typedef void (*GeneContextRetire)(void *user_context);
  * retain an ID before storing it. On OK, out_value 0 means Gene nil,
  * otherwise it is an owning ID. On failure, out_value must be 0 and
  * out_error may contain an owning typed error ID. Callback results cannot
- * be pending Tasks. Registration is available during module initialization.
+ * be pending Tasks. Native work behind a Task must keep a producer ticket
+ * until physical retirement. Registration is available during module initialization.
  * request_close denies new calls and may return PENDING during an active call.
  * wait_closed consumes the registration token and returns an owning Task ID;
  * the Task settles after user_context retirement and library release. */
@@ -99,6 +102,14 @@ typedef struct GeneApi {
   int32_t (*ingress_begin)(void *context, uint64_t generation);
   int32_t (*ingress_enqueue)(void *context, const void *data, size_t length);
   void (*ingress_end)(void *context);
+  uint32_t (*new_task)(void *, GeneHandle, GeneHandle *, GeneProducer *,
+                       GeneOutBytes *);
+  uint32_t (*task_complete)(void *, GeneProducer, GeneHandle, uint8_t *,
+                            GeneOutBytes *);
+  uint32_t (*task_fail)(void *, GeneProducer, const uint8_t *, size_t,
+                        GeneHandle, uint8_t *, GeneOutBytes *);
+  uint32_t (*task_cancel)(void *, GeneProducer, uint8_t *, GeneOutBytes *);
+  uint32_t (*task_retire)(void *, GeneProducer, uint8_t *, GeneOutBytes *);
 } GeneApi;
 
 #define GENE_INGRESS_ACCEPTED 0

@@ -55,8 +55,15 @@ back registrations and all IDs created during initialization, then closes
 the library and lease without publishing a module handle.
 
 This does not add Gene syntax or a second C ABI. C callback registration is
-currently admitted during `gene_module_init`; late registration and Task
-results need separate ownership contracts. The installed macOS arm64 fixture
+currently admitted during `gene_module_init`; late registration remains a
+separate design. A registered callback may create and return a Task using
+`new_task`, which returns an owning Task ID and an opaque producer token. The
+token holds an independent library borrow until `task_complete`, `task_fail`,
+or `task_retire`; `task_cancel` only cancels the user Task. Module close waits
+for that physical token even after the callback registration retires or the
+user Task is cancelled. See the
+[C ABI producer contract](../proposals/native-managed-extension-abi.md#native-callback-registration).
+The installed macOS arm64 fixture
 in `tests/test_genex_native_module.py` checks source-built and prebuilt selected
 `gene_api` images, compiler-free launch, ABI-kind refusal, initializer rollback,
 re-entrant close from an active C callback, repeated physical close,

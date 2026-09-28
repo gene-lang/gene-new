@@ -9,7 +9,10 @@ adapter owns message tickets through the mailbox and parked handler Fiber,
 and transfers returned-state provenance into the Actor. Managed Actor handlers
 remain on the root lane until AAR-3 worker allocation lifetimes are qualified.
 Synchronous C callback registration now holds its library and environment
-through physical retirement. Byte-ingress subscriptions now own their handler,
+through physical retirement. Registered callbacks can return a Task backed by
+an opaque C producer ticket; its independent library borrow survives user
+cancellation until physical completion or retirement. Byte-ingress
+subscriptions now own their handler,
 environment, active Task and library through mediated IDs. Source-built
 `gene_api` packages now load through an owned `NativeModule` IoResource; the
 installed fixture passes 10,000 compiler-free lifetimes. Complete shared
@@ -109,16 +112,17 @@ Nim helpers in `src/gene/native_api.nim`, and the VM callback APIs.
 | Buffer new/len/get/set | Raw buffer/items and typed Scope input. | Copy scalar storage or return item handles; mutation observes both borrow admission and existing type checks. |
 | Channel trySend/tryRecv and actor trySend | Root-based input but raw outputs/Scope arguments; only nested root accesses currently fenced. | Enqueue owned handles/Values under admission; native queue owns them until physical dequeue/drop. Receive returns handles. Preserve Send/type/queue policies. |
 | Async Task create/complete/fail/cancel | Raw Tasks/results and native completion lifetimes. | Task/result/error handles retained through physical completion; cancellation does not prematurely end ownership. |
-| Module initialization and ingress subscriptions | Selected source-built and prebuilt `gene_api` packages load through an owned `NativeModule`; the C callback registry and byte ingress own mediated handles and library borrows until physical close. | Qualify producer/Task-return semantics separately. |
+| Module initialization and ingress subscriptions | Selected source-built and prebuilt `gene_api` packages load through an owned `NativeModule`; C callbacks, Task producers and byte ingress own mediated handles and library borrows until physical close. | C producer tickets outlive user cancellation; attached-lane settlement defers final library release to the root lane. |
 | Thread attach/detach and logging | No direct Gene graph returned by these entries. | Associate leases with attached lanes; copied diagnostic payloads require no Gene borrow. |
 | Direct Nim VM/Scope/Value APIs and custom `FunctionCode`/continuations | Arbitrary unmarked refs remain outside qualification. | Keep legacy accesses published/unqualified. Require explicit adapters and complete edge models before admitting any additional graph class. |
 
 The single C ABI now has bounded, monotonic attachment tokens on threaded AtomicArc.
 Attached C lanes may use mediated read/retain/release and frozen traversal;
 wrong-lane detach fails without consuming a token. Domain close reports pending
-while a token exists, and release/detach still work during closure. C callback
-invocation stays on the root lane; producer settlement and mutable graph access on an attached lane remain
-separate qualification work.
+while a token exists, and release/detach still work during closure. A C
+producer can attach during closure while its ticket remains live, then settle
+or retire it and detach. C callback invocation stays on the root lane;
+mutable graph access on an attached lane remains separate qualification work.
 
 The initial Actor adapter is `geneManagedNewActor(environment, capacity,
 state, handler, messageType?)`, `geneManagedActorTrySend(actor, message,

@@ -10,6 +10,8 @@ type
   ReadStatus = proc(): uint32 {.cdecl.}
   ReadId = proc(): uint64 {.cdecl.}
   ReleaseSaved = proc() {.cdecl.}
+  TaskAction = proc(accepted: ptr uint8): uint32 {.cdecl.}
+  TaskComplete = proc(value: int64, accepted: ptr uint8): uint32 {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -23,7 +25,7 @@ proc buildFixture(): string =
                         else: "callback.so")
   var args = when defined(macosx): @["-dynamiclib", "-fPIC"]
              else: @["-shared", "-fPIC"]
-  args.add @["-std=c11", "-Isrc/gene",
+  args.add @["-std=c11", "-pthread", "-Isrc/gene",
              "tests/fixtures/native_callback_abi_fixture.c", "-o", result]
   when defined(geneNativeAsan): args.add "-fsanitize=address"
   when defined(geneNativeTsan): args.add "-fsanitize=thread"
@@ -43,6 +45,116 @@ proc buildFixture(): string =
       "native callback C fixture failed to compile: " & diagnostics)
 
 suite "managed native C callback registration":
+  test "C Task producer outlives cancellation and callback registration":
+    let path = buildFixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+      let host = newGlobalScope()
+      discard run(compileSource("nil"), host)
+      let domain = geneNewManagedDomain(host)
+      let environment = geneNewManagedEnvironment(domain, host)
+      let libraryRoot = geneManagedRootFromVm(domain, host, library)
+      let loaded = geneManagedLoadModule(domain, libraryRoot,
+        environment, "task-fixture",
+        GeneApiCallbackFeature or GeneApiTaskProducerFeature)
+      check loaded.status == gsOk
+      let setMode = cast[SetMode](symAddr(handle,
+        "gene_test_api_set_callback_mode"))
+      let complete = cast[TaskComplete](symAddr(handle,
+        "gene_test_api_task_complete"))
+      let completeAttached = cast[TaskComplete](symAddr(handle,
+        "gene_test_api_task_complete_attached"))
+      let completeNil = cast[TaskAction](symAddr(handle,
+        "gene_test_api_task_complete_nil"))
+      let completeNilAttached = cast[TaskAction](symAddr(handle,
+        "gene_test_api_task_complete_nil_attached"))
+      let taskFail = cast[TaskAction](symAddr(handle,
+        "gene_test_api_task_fail"))
+      let cancel = cast[TaskAction](symAddr(handle,
+        "gene_test_api_task_cancel"))
+      let retire = cast[TaskAction](symAddr(handle,
+        "gene_test_api_task_retire"))
+      let close = cast[ReadStatus](symAddr(handle, "gene_test_api_close"))
+      let outside = cast[ReadStatus](symAddr(handle,
+        "gene_test_api_new_task_outside_callback"))
+      let waitClosed = cast[ReadStatus](symAddr(handle, "gene_test_api_wait"))
+      let releaseSaved = cast[ReleaseSaved](symAddr(handle,
+        "gene_test_api_release_saved"))
+      let legacy = geneWithNativeBorrow(loaded.value,
+        proc(b: GeneNativeBorrow): GeneRoot = geneExportManagedRoot(b))
+      let callScope = newScope(host)
+      callScope.define("native_mod", geneRootGet(legacy))
+      check outside() == 1
+      setMode(9)
+      var accepted: uint8
+      let first = run(compileSource("(native_mod/native_plus_one 1)"),
+                      callScope)
+      check first.kind == vkTask and not first.taskDone
+      check geneManagedStats(domain).producers == 1
+      check complete(42, addr accepted) == 0 and accepted == 1
+      check first.taskDone and first.taskResult.intVal == 42
+      check geneManagedStats(domain).producers == 0
+      check retire(addr accepted) == 1 # consumed ticket is stale
+
+      let second = run(compileSource("(native_mod/native_plus_one 2)"),
+                       callScope)
+      check nativeTaskCancel(second, callScope)
+      check cancel(addr accepted) == 0 and accepted == 0
+      check second.taskCancelled
+      check geneManagedStats(domain).producers == 1
+      check complete(99, addr accepted) == 0 and accepted == 0
+      check geneManagedStats(domain).producers == 0
+
+      let third = run(compileSource("(native_mod/native_plus_one 3)"),
+                      callScope)
+      check taskFail(addr accepted) == 0 and accepted == 1
+      check third.taskHasError and third.taskErrorMsg ==
+        "native producer failure"
+
+      let fourth = run(compileSource("(native_mod/native_plus_one 4)"),
+                       callScope)
+      check cancel(addr accepted) == 0 and accepted == 1
+      check geneManagedStats(domain).producers == 1
+      check retire(addr accepted) == 0 and accepted == 0
+      check fourth.taskCancelled
+
+      let retiredPending = run(compileSource(
+        "(native_mod/native_plus_one 7)"), callScope)
+      check retire(addr accepted) == 0 and accepted == 1
+      check retiredPending.taskCancelled
+
+      when defined(gcAtomicArc) and compileOption("threads"):
+        let attached = run(compileSource(
+          "(native_mod/native_plus_one 6)"), callScope)
+        check completeAttached(66, addr accepted) == 0 and accepted == 1
+        check attached.taskDone and attached.taskResult.intVal == 66
+        check geneManagedStats(domain).producers == 0
+
+      let fifth = run(compileSource("(native_mod/native_plus_one 5)"),
+                      callScope)
+      check close() == 0 and waitClosed() == 0
+      expect GeneError:
+        library.closeFfiLibrary()
+      check geneManagedStats(domain).producers == 1
+      check not geneManagedClose(domain)
+      when defined(gcAtomicArc) and compileOption("threads"):
+        check completeNilAttached(addr accepted) == 0 and accepted == 1
+      else:
+        check completeNil(addr accepted) == 0 and accepted == 1
+      check fifth.taskDone and fifth.taskResult.kind == vkNil
+      check not geneManagedClose(domain) # drains attached-lane library release
+      releaseSaved()
+      geneRootRelease(legacy)
+      geneManagedRelease(loaded.value)
+      geneManagedRelease(libraryRoot)
+      geneManagedEnvironmentRelease(environment)
+      library.closeFfiLibrary()
+      check geneManagedClose(domain)
+
   test "temporary IDs, typed outcomes, reentrant close and library retirement":
     let path = buildFixture()
     if path.len == 0:

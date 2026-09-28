@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include "native_api.h"
 
 typedef struct CallbackState { int marker; } CallbackState;
@@ -13,6 +14,7 @@ static GeneHandle last_temporary_argument;
 static GeneHandle last_temporary_environment;
 static GeneRegistration registration;
 static GeneHandle waiter_task;
+static GeneProducer task_producer;
 static uint32_t callback_mode;
 static uint32_t fail_initializer;
 static uint32_t duplicate_registration;
@@ -100,6 +102,13 @@ static uint32_t callback(const GeneApi *table, void *raw,
     *out_value = args[0]; /* illegal borrowed return, checked by host */
     return GENE_API_OK;
   }
+  if (callback_mode == 9) {
+    if (!(table->feature_bits & GENE_API_TASK_PRODUCER_FEATURE) ||
+        !table->new_task || !table->task_complete || !table->task_fail ||
+        !table->task_cancel || !table->task_retire) return GENE_API_ERROR;
+    return table->new_task(table->runtime_context, invocation_environment,
+                           out_value, &task_producer, diagnostic);
+  }
   return table->new_i64(table->runtime_context, input + 1,
                         out_value, diagnostic);
 }
@@ -119,6 +128,106 @@ uint32_t gene_test_api_close_inside_status(void) { return close_inside_status; }
 uint32_t gene_test_api_retire_reentry_status(void) { return retire_reentry_status; }
 uint32_t gene_test_api_pending_wait_status(void) { return pending_wait_status; }
 uint64_t gene_test_api_registration_id(void) { return registration; }
+
+uint32_t gene_test_api_new_task_outside_callback(void) {
+  GeneOutBytes diagnostic = {0};
+  GeneHandle task = 0;
+  GeneProducer producer = 0;
+  return api->new_task(api->runtime_context, environment, &task,
+                       &producer, &diagnostic);
+}
+
+uint32_t gene_test_api_task_complete(int64_t value, uint8_t *accepted) {
+  GeneOutBytes diagnostic = {0};
+  GeneHandle payload = 0;
+  uint32_t status = api->new_i64(api->runtime_context, value, &payload,
+                                  &diagnostic);
+  if (status != GENE_API_OK) return status;
+  status = api->task_complete(api->runtime_context, task_producer, payload,
+                              accepted, &diagnostic);
+  api->release(api->runtime_context, payload, &diagnostic);
+  return status;
+}
+
+typedef struct TaskThreadResult {
+  GeneHandle payload;
+  uint32_t status;
+  uint8_t accepted;
+} TaskThreadResult;
+
+static void *complete_on_attached_thread(void *raw) {
+  TaskThreadResult *result = raw;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  result->status = api->attach_thread(api->runtime_context, &attachment,
+                                       &diagnostic);
+  if (result->status == GENE_API_OK) {
+    result->status = api->task_complete(api->runtime_context, task_producer,
+                                        result->payload, &result->accepted,
+                                        &diagnostic);
+    if (result->payload)
+      api->release(api->runtime_context, result->payload, &diagnostic);
+    if (api->detach_thread(api->runtime_context, attachment,
+                           &diagnostic) != GENE_API_OK)
+      result->status = GENE_API_ERROR;
+  }
+  return NULL;
+}
+
+uint32_t gene_test_api_task_complete_attached(int64_t value,
+                                               uint8_t *accepted) {
+  if (!api->attach_thread || !api->detach_thread) return GENE_API_ERROR;
+  GeneOutBytes diagnostic = {0};
+  TaskThreadResult result = {0};
+  result.status = api->new_i64(api->runtime_context, value, &result.payload,
+                                &diagnostic);
+  if (result.status != GENE_API_OK) return result.status;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, complete_on_attached_thread,
+                     &result) != 0) {
+    api->release(api->runtime_context, result.payload, &diagnostic);
+    return GENE_API_ERROR;
+  }
+  pthread_join(thread, NULL);
+  *accepted = result.accepted;
+  return result.status;
+}
+
+uint32_t gene_test_api_task_complete_nil(uint8_t *accepted) {
+  GeneOutBytes diagnostic = {0};
+  return api->task_complete(api->runtime_context, task_producer, 0,
+                            accepted, &diagnostic);
+}
+
+uint32_t gene_test_api_task_complete_nil_attached(uint8_t *accepted) {
+  if (!api->attach_thread || !api->detach_thread) return GENE_API_ERROR;
+  TaskThreadResult result = {0};
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, complete_on_attached_thread,
+                     &result) != 0) return GENE_API_ERROR;
+  pthread_join(thread, NULL);
+  *accepted = result.accepted;
+  return result.status;
+}
+
+uint32_t gene_test_api_task_fail(uint8_t *accepted) {
+  const uint8_t message[] = "native producer failure";
+  GeneOutBytes diagnostic = {0};
+  return api->task_fail(api->runtime_context, task_producer, message,
+                        sizeof(message) - 1, 0, accepted, &diagnostic);
+}
+
+uint32_t gene_test_api_task_cancel(uint8_t *accepted) {
+  GeneOutBytes diagnostic = {0};
+  return api->task_cancel(api->runtime_context, task_producer,
+                          accepted, &diagnostic);
+}
+
+uint32_t gene_test_api_task_retire(uint8_t *accepted) {
+  GeneOutBytes diagnostic = {0};
+  return api->task_retire(api->runtime_context, task_producer,
+                          accepted, &diagnostic);
+}
 
 uint32_t gene_module_init(const GeneApi *table, GeneHandle env,
                           GeneOutBytes *diagnostic) {

@@ -67,6 +67,7 @@ type
     ingressBegin*: GeneIngressBeginProc
     ingressEnqueue*: GeneIngressEnqueueProc
     ingressEnd*: GeneIngressEndProc
+    newTask*, taskComplete*, taskFail*, taskCancel*, taskRetire*: pointer
   GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
                                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,

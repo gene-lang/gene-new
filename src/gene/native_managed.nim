@@ -61,6 +61,17 @@ type
     environment: uint64
     registrations: seq[uint64]
 
+  ManagedCProducer = ref object
+    task: GeneManagedTask
+    environment: GeneManagedEnvironment
+    library: Value
+    releaseNode: ManagedProducerRelease
+
+  ManagedProducerRelease = ref object
+    environment: GeneManagedEnvironment
+    library: Value
+    next: ManagedProducerRelease
+
   GeneManagedDomain* = ref object
     application: RuntimeContext
     rootLane: int
@@ -74,10 +85,14 @@ type
     attachments: array[256, ManagedAttachment]
     producers: int
     producerEntries: Table[uint64, ManagedEntry]
+    nextProducerId: uint64
+    cProducers: Table[uint64, ManagedCProducer]
+    pendingProducerReleases: ManagedProducerRelease
     nextRegistrationId: uint64
     liveRegistrations: int
     registrations: Table[uint64, GeneManagedRegistration]
     loadFrames: seq[ManagedLoadFrame]
+    activeCallbacks: seq[GeneManagedRegistration]
     closed: bool
     apiTable: GeneApi
 
@@ -160,6 +175,7 @@ proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
   result.rootScope = scope
   result.roots = initTable[uint64, ManagedEntry]()
   result.producerEntries = initTable[uint64, ManagedEntry]()
+  result.cProducers = initTable[uint64, ManagedCProducer]()
   result.registrations = initTable[uint64, GeneManagedRegistration]()
   initLock(result.lock)
   result.configureApiTable()
@@ -1112,6 +1128,7 @@ const
   GeneApiFrozenFeature* = 8'u64
   GeneApiAttachedFeature* = 16'u64
   GeneApiCallbackFeature* = 64'u64
+  GeneApiTaskProducerFeature* = 128'u64
   GeneApiMaxCopyBytes* = 64 * 1024 * 1024
 
 proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
@@ -1154,11 +1171,17 @@ proc apiAttachThread(context: pointer, output: ptr uint64,
       raise newException(GeneError,
         "native ABI foreign attachment requires threaded AtomicArc")
     let domain = cast[GeneManagedDomain](context)
-    domain.requireOpen()
+    domain.requireDomain()
+    acquire(domain.lock)
+    try:
+      if domain.closed and domain.cProducers.len == 0:
+        raise newException(GeneError, "managed native domain is closed")
+    finally:
+      release(domain.lock)
     ticket = geneAttachThread()
     acquire(domain.lock)
     try:
-      if domain.closed:
+      if domain.closed and domain.cProducers.len == 0:
         raise newException(GeneError, "managed native domain is closed")
       if domain.nextAttachmentId == high(uint64):
         raise newException(GeneError, "native ABI attachment IDs are exhausted")
@@ -1836,11 +1859,16 @@ proc invokeRegisteredCallback(context: RootRef, arguments: openArray[Value],
       var bytes: array[512, uint8]
       var diagnostic = GeneOutBytes(data: addr bytes[0],
                                     capacity: csize_t(bytes.len))
-      let code = callback(addr domain.apiTable, userContext,
-        (if argumentIds.len == 0: nil else: addr argumentIds[0]),
-        csize_t(argumentIds.len),
-        (if named.len == 0: nil else: addr named[0]), csize_t(named.len),
-        environmentRoot.id, addr outputId, addr errorId, addr diagnostic)
+      domain.activeCallbacks.add registration
+      var code: uint32
+      try:
+        code = callback(addr domain.apiTable, userContext,
+          (if argumentIds.len == 0: nil else: addr argumentIds[0]),
+          csize_t(argumentIds.len),
+          (if named.len == 0: nil else: addr named[0]), csize_t(named.len),
+          environmentRoot.id, addr outputId, addr errorId, addr diagnostic)
+      finally:
+        domain.activeCallbacks.setLen(domain.activeCallbacks.len - 1)
       let count = if diagnostic.required > csize_t(bytes.len): bytes.len
                   else: int(diagnostic.required)
       var message = "native callback returned " & $code
@@ -1866,9 +1894,6 @@ proc invokeRegisteredCallback(context: RootRef, arguments: openArray[Value],
         if errorId != 0:
           raise newException(GeneError,
             "native callback returned an error handle on success")
-        if output.kind == vkTask:
-          raise newException(GeneError,
-            "native callback cannot return a Task")
         result = output
       of 1'u32:
         let failure = newException(GeneError, message)
@@ -2041,6 +2066,273 @@ proc apiWaitClosed(context: pointer, token: uint64, output: ptr uint64,
     apiDiagnostic(diagnostic, e.msg)
     result = 1
 
+proc drainCProducerReleases(domain: GeneManagedDomain) =
+  domain.requireRootLane()
+  var pending: ManagedProducerRelease
+  acquire(domain.lock)
+  try:
+    pending = move(domain.pendingProducerReleases)
+  finally:
+    release(domain.lock)
+  while pending != nil:
+    let release = move(pending)
+    pending = move(release.next)
+    try:
+      geneManagedEnvironmentRelease(release.environment)
+    finally:
+      try:
+        release.library.releaseFfiLibraryBorrow()
+      finally:
+        GC_unref(domain)
+
+proc finishCProducer(domain: GeneManagedDomain,
+                     producer: ManagedCProducer) =
+  acquire(domain.lock)
+  try:
+    producer.releaseNode.next = move(domain.pendingProducerReleases)
+    domain.pendingProducerReleases = producer.releaseNode
+  finally:
+    release(domain.lock)
+  if currentEventLane() == domain.rootLane:
+    drainCProducerReleases(domain)
+
+proc takeCProducer(domain: GeneManagedDomain,
+                   token: uint64): ManagedCProducer =
+  acquire(domain.lock)
+  try:
+    result = domain.cProducers.getOrDefault(token)
+    if result == nil:
+      raise newException(GeneError, "native Task producer token is unavailable")
+    domain.cProducers.del(token)
+  finally:
+    release(domain.lock)
+
+proc apiNewTask(context: pointer, environment: uint64,
+                output, producerToken: ptr uint64,
+                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  if producerToken != nil: producerToken[] = 0
+  var task: GeneManagedTask
+  var ownedEnvironment: GeneManagedEnvironment
+  var library = NIL
+  var borrowed = false
+  var admitted = false
+  try:
+    let domain = apiDomain(context)
+    if output == nil or producerToken == nil:
+      raise newException(GeneError, "native Task outputs are nil")
+    if domain.activeCallbacks.len == 0:
+      raise newException(GeneError,
+        "native Task creation requires an active registered callback")
+    if domain.loadFrames.len != 0:
+      raise newException(GeneError,
+        "native Task creation requires completed module initialization")
+    let registration = domain.activeCallbacks[^1]
+    let supplied = GeneManagedEnvironment(
+      root: GeneManagedRoot(domain: domain, id: environment))
+    let scope = domain.environmentScope(supplied)
+    if scope != domain.environmentScope(
+        GeneManagedEnvironment(root: registration.environmentRoot)):
+      raise newException(GeneError,
+        "native Task environment belongs to another callback")
+    let source = domain.liveRootEntry(supplied.root)
+    ownedEnvironment = GeneManagedEnvironment(
+      root: domain.addRoot(source.value, source.scopes))
+    library = registration.library
+    library.borrowFfiLibrary()
+    borrowed = true
+    task = geneManagedNewTask(ownedEnvironment)
+    acquire(domain.lock)
+    try:
+      if domain.nextProducerId == high(uint64):
+        raise newException(GeneError, "native Task producer IDs are exhausted")
+      inc domain.nextProducerId
+      let token = domain.nextProducerId
+      let releaseNode = ManagedProducerRelease(
+        environment: ownedEnvironment, library: library)
+      domain.cProducers[token] = ManagedCProducer(
+        task: task, environment: ownedEnvironment, library: library,
+        releaseNode: releaseNode)
+      GC_ref(domain) # C token keeps the runtime alive until physical retirement
+      producerToken[] = token
+      output[] = task.root.id
+      admitted = true
+    finally:
+      release(domain.lock)
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if not admitted:
+      if task != nil:
+        discard geneManagedTaskRetire(task, ownedEnvironment)
+        geneManagedRelease(task.root)
+      if borrowed: library.releaseFfiLibraryBorrow()
+      if ownedEnvironment != nil:
+        geneManagedEnvironmentRelease(ownedEnvironment)
+
+proc apiTaskComplete(context: pointer, token, value: uint64,
+                     accepted: ptr uint8,
+                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if accepted != nil: accepted[] = 0
+  var producer: ManagedCProducer
+  var domain: GeneManagedDomain
+  try:
+    domain = apiDomain(context, rootOnly = false, allowClosed = true)
+    if accepted == nil:
+      raise newException(GeneError, "native Task acceptance output is nil")
+    if value != 0:
+      withManagedProgress:
+        let payload = domain.liveRootEntry(
+          GeneManagedRoot(domain: domain, id: value))
+        if currentEventLane() != domain.rootLane and
+            not payload.value.isDeepFrozen:
+          raise newException(GeneError,
+            "foreign Task payload must be deep-frozen")
+    producer = takeCProducer(domain, token)
+    let nilPayload = if value == 0: domain.addRoot(NIL, allowClosed = true)
+                     else: nil
+    let payload = if nilPayload == nil:
+      GeneManagedRoot(domain: domain, id: value)
+      else: nilPayload
+    var ack: GeneManagedAck
+    try:
+      ack = geneManagedTaskComplete(producer.task, payload,
+                                    producer.environment)
+    finally:
+      if nilPayload != nil: geneManagedRelease(nilPayload)
+    if ack.status != gsOk:
+      raise newException(GeneError, ack.message)
+    accepted[] = uint8(ord(ack.accepted))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if producer != nil:
+      if not producer.task.settled:
+        discard geneManagedTaskRetire(producer.task, producer.environment)
+      finishCProducer(domain, producer)
+
+proc apiTaskFail(context: pointer, token: uint64,
+                 message: ptr uint8, messageLength: csize_t, error: uint64,
+                 accepted: ptr uint8,
+                 diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if accepted != nil: accepted[] = 0
+  var producer: ManagedCProducer
+  var domain: GeneManagedDomain
+  try:
+    domain = apiDomain(context, rootOnly = false, allowClosed = true)
+    if accepted == nil:
+      raise newException(GeneError, "native Task acceptance output is nil")
+    let copiedMessage = apiCopiedInput(message, messageLength)
+    if error != 0:
+      if currentEventLane() != domain.rootLane:
+        raise newException(GeneError,
+          "typed foreign Task failure needs a root-lane adapter")
+      discard domain.liveRootEntry(GeneManagedRoot(domain: domain, id: error))
+    producer = takeCProducer(domain, token)
+    let errorRoot = if error == 0: nil
+                    else: GeneManagedRoot(domain: domain, id: error)
+    let ack = geneManagedTaskFail(producer.task, producer.environment,
+                                  copiedMessage, errorRoot)
+    if ack.status != gsOk:
+      raise newException(GeneError, ack.message)
+    accepted[] = uint8(ord(ack.accepted))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if producer != nil:
+      if not producer.task.settled:
+        discard geneManagedTaskRetire(producer.task, producer.environment)
+      finishCProducer(domain, producer)
+
+proc apiTaskCancel(context: pointer, token: uint64,
+                   accepted: ptr uint8,
+                   diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if accepted != nil: accepted[] = 0
+  try:
+    let domain = apiDomain(context, rootOnly = false, allowClosed = true)
+    if accepted == nil:
+      raise newException(GeneError, "native Task acceptance output is nil")
+    var producer: ManagedCProducer
+    acquire(domain.lock)
+    try:
+      producer = domain.cProducers.getOrDefault(token)
+    finally:
+      release(domain.lock)
+    if producer == nil:
+      raise newException(GeneError, "native Task producer token is unavailable")
+    let ack = geneManagedTaskCancel(producer.task, producer.environment)
+    if ack.status != gsOk:
+      raise newException(GeneError, ack.message)
+    accepted[] = uint8(ord(ack.accepted))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
+proc apiTaskRetire(context: pointer, token: uint64,
+                   accepted: ptr uint8,
+                   diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if accepted != nil: accepted[] = 0
+  var producer: ManagedCProducer
+  var domain: GeneManagedDomain
+  try:
+    domain = apiDomain(context, rootOnly = false, allowClosed = true)
+    if accepted == nil:
+      raise newException(GeneError, "native Task acceptance output is nil")
+    producer = takeCProducer(domain, token)
+    let ack = geneManagedTaskRetire(producer.task, producer.environment)
+    if ack.status != gsOk:
+      raise newException(GeneError, ack.message)
+    accepted[] = uint8(ord(ack.accepted))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if producer != nil:
+      finishCProducer(domain, producer)
+
 proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable = GeneApi(version: GeneApiVersion,
                            structSize: uint32(sizeof(GeneApi)),
@@ -2049,7 +2341,8 @@ proc configureApiTable(domain: GeneManagedDomain) =
                                         GeneApiCallDefineFeature or
                                         GeneApiFrozenFeature or
                                         GeneApiIngressFeature or
-                                        GeneApiCallbackFeature,
+                                        GeneApiCallbackFeature or
+                                        GeneApiTaskProducerFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](apiRetain),
                            release: cast[pointer](apiRelease),
@@ -2068,6 +2361,11 @@ proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable.registerCallback = cast[pointer](apiRegisterCallback)
   domain.apiTable.requestClose = cast[pointer](apiRequestClose)
   domain.apiTable.waitClosed = cast[pointer](apiWaitClosed)
+  domain.apiTable.newTask = cast[pointer](apiNewTask)
+  domain.apiTable.taskComplete = cast[pointer](apiTaskComplete)
+  domain.apiTable.taskFail = cast[pointer](apiTaskFail)
+  domain.apiTable.taskCancel = cast[pointer](apiTaskCancel)
+  domain.apiTable.taskRetire = cast[pointer](apiTaskRetire)
   domain.apiTable.ingressBegin = geneIngressBegin
   domain.apiTable.ingressEnqueue = geneIngressEnqueue
   domain.apiTable.ingressEnd = geneIngressEnd
@@ -2206,6 +2504,7 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
   domain.requireDomain()
   if currentEventLane() != domain.rootLane:
     raise newException(GeneError, "managed native close requires the root lane")
+  drainCProducerReleases(domain)
   var registrations: seq[GeneManagedRegistration]
   acquire(domain.lock)
   try:
@@ -2220,7 +2519,9 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
   try:
     result = domain.roots.len == 0 and domain.borrows == 0 and
              domain.producers == 0 and domain.attachmentCount == 0 and
-             domain.registrations.len == 0 and domain.liveRegistrations == 0
+             domain.registrations.len == 0 and domain.liveRegistrations == 0 and
+             domain.cProducers.len == 0 and
+             domain.pendingProducerReleases == nil
   finally:
     release(domain.lock)
 

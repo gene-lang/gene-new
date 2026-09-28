@@ -96,6 +96,8 @@ class NativeModulePackageTests(unittest.TestCase):
                          [] C/UInt32))
   (let retired ($ffi/bind diagnostic_library "gene_test_module_retired_contexts"
                             [] C/UInt32))
+  (let complete_task ($ffi/bind diagnostic_library "gene_test_module_complete_task"
+                                  [] C/UInt32))
   (var successful 0)
   (repeat __LIFETIMES__
     (var owner (open))
@@ -114,6 +116,20 @@ class NativeModulePackageTests(unittest.TestCase):
             (== (/state (owner .status)) "closed"))
       (set successful (+ successful 1)))
     (set owner nil))
+  (var producer_owner (open))
+  (let producer_exports (producer_owner .module))
+  (let produced_task (producer_exports/increment 98))
+  (producer_owner .IoResource:close)
+  (let producer_waiting
+    (== (/state (producer_owner .status)) "closing"))
+  (let producer_completed (== (complete_task) 0))
+  (await produced_task)
+  (await (producer_owner .IoResource:wait_closed))
+  (let producer_close_ok
+    (&& producer_waiting producer_completed
+        (== (/state (producer_owner .status)) "closed")
+        (== (live) 0)))
+  (set producer_owner nil)
   (fn escape_module []
     (let owner (open))
     (owner .module))
@@ -146,6 +162,7 @@ class NativeModulePackageTests(unittest.TestCase):
      ^refused_plain refused ^failure_clean failure_clean
      ^prebuilt_ok prebuilt_ok
      ^abandoned_closed abandoned_closed ^reentrant_closed reentrant_closed
+     ^producer_close_ok producer_close_ok
      ^baseline_roots baseline_roots
      ^remaining_roots (/native_roots ($runtime/gc_stats))
      ^native_module_records (/native_module_records ($runtime/gc_stats))
@@ -201,12 +218,13 @@ class NativeModulePackageTests(unittest.TestCase):
                              launched.stdout + launched.stderr)
             report = json.loads(launched.stdout.strip().splitlines()[-1])
             self.assertEqual(report["successful"], lifetimes)
-            self.assertEqual(report["retired"], 2 * lifetimes + 4)
+            self.assertEqual(report["retired"], 2 * lifetimes + 6)
             self.assertTrue(report["refused_plain"])
             self.assertTrue(report["failure_clean"])
             self.assertTrue(report["prebuilt_ok"])
             self.assertTrue(report["abandoned_closed"])
             self.assertTrue(report["reentrant_closed"])
+            self.assertTrue(report["producer_close_ok"])
             self.assertEqual(report["live"], 0)
             self.assertEqual(report["remaining_roots"], report["baseline_roots"])
             self.assertEqual(report["native_module_records"], 0)

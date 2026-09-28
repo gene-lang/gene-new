@@ -9,6 +9,20 @@ typedef struct ModuleContext {
 } ModuleContext;
 static atomic_uint live_contexts;
 static atomic_uint retired_contexts;
+static const GeneApi *pending_api;
+static GeneProducer pending_producer;
+
+uint32_t gene_test_module_complete_task(void) {
+  if (!pending_api || !pending_producer) return GENE_API_ERROR;
+  GeneOutBytes diagnostic = {0};
+  uint8_t accepted = 0;
+  uint32_t status = pending_api->task_complete(pending_api->runtime_context,
+                                               pending_producer, 0,
+                                               &accepted, &diagnostic);
+  pending_api = NULL;
+  pending_producer = 0;
+  return status == GENE_API_OK && accepted ? GENE_API_OK : GENE_API_ERROR;
+}
 
 uint32_t gene_test_module_live_contexts(void) {
   return atomic_load(&live_contexts);
@@ -43,6 +57,14 @@ static uint32_t module_callback(const GeneApi *api, void *raw,
   if (status != GENE_API_OK) return status;
   if ((value != 99 || context->operation != 1) && arg_count != 1)
     return GENE_API_ERROR;
+  if (value == 98 && context->operation == 1) {
+    if (pending_producer) return GENE_API_ERROR;
+    status = api->new_task(api->runtime_context, environment, out_value,
+                            &pending_producer, diagnostic);
+    if (status != GENE_API_OK) return status;
+    pending_api = api;
+    return GENE_API_OK;
+  }
   if (value == 99 && context->operation == 1) {
     if (arg_count != 2) return GENE_API_ERROR;
     GeneHandle output = 0, error = 0;
@@ -63,6 +85,9 @@ uint32_t gene_module_init(const GeneApi *api, GeneHandle environment,
       api->struct_size != sizeof(GeneApi) || !environment ||
       !(api->feature_bits & GENE_API_CALLBACK_FEATURE) ||
       !api->register_callback || !api->request_close || !api->wait_closed)
+    return GENE_API_ERROR;
+  if (!(api->feature_bits & GENE_API_TASK_PRODUCER_FEATURE) ||
+      !api->new_task || !api->task_complete)
     return GENE_API_ERROR;
   ModuleContext *context = calloc(1, sizeof(*context));
   if (!context) return GENE_API_ERROR;

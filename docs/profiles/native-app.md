@@ -323,7 +323,13 @@ retirement counts, and native-root,
 `c_abi` metadata, rolls back a failed initializer after two registrations,
 loads a selected prebuilt GeneApi variant, closes re-entrantly from an active
 C callback, and auto-closes an abandoned owner. An escaped Module value then
-refuses its unloaded callback safely. Producer/Task-result semantics remain open.
+refuses its unloaded callback safely.
+The C ABI now has an opaque Task producer family. Its callback fixture proves
+success, failure, cancellation followed by late completion, stale-token
+rejection, and attached-lane completion after domain close. A selected
+installed package also holds `NativeModule` close pending until a Task
+producer reports physical completion. Longer concurrent cancellation stress
+remains to qualify.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [package-module specification](../spec/native-module.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
@@ -342,7 +348,8 @@ emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
 utf8proc, and libcurl were older than the genex pins; the probe built pinned
 versions from source. Linux work is deferred by the owner.
 
-Next implementation work is the separate native producer/Task-result contract.
+Next implementation work is broader native-producer use and concurrent
+cancellation qualification.
 The SERVICE heartbeat investigation,
 Linux native timing, broader shared ownership, and profile promotion remain
 deferred or gated as described above. The
