@@ -1,7 +1,8 @@
 # Managed native extension ABI
 
-**Status:** the ABI 6 layout, zero-feature loader, exact negotiation and C
-fixture are implemented. Handle operations, callbacks and ingress remain
+**Status:** the ABI 6 layout, exact loader negotiation and a root-lane
+identity/Int64 feature are implemented against a compiled C fixture. Copied
+text/Bytes, frozen traversal, calls, definitions, callbacks and ingress remain
 unimplemented and their feature bits are not advertised. The owner
 selected opaque managed handles in [Native managed borrows](native-managed-borrows.md).
 Qualification evidence is in
@@ -48,6 +49,10 @@ never NUL-dependent.
 The first wire kind values are `0=nil`, `1=Bool`, `2=Int`, `3=Str`, `4=Bytes`,
 `5=List`, `6=Map`, `7=Node`, `8=callable`, `9=Task`, `10=Channel`,
 `11=ActorRef`, `255=other`; they are not Nim `ValueKind` ordinals.
+Feature bit 0 (`GENE_API_V6_IDENTITY_FEATURE = 1`) currently permits only
+root-lane `retain`, `release`, `kind` and `new_i64`. The future attached-lane
+feature will make the same operations available to an explicitly attached
+foreign lane; the table currently leaves attach/detach null.
 
 ```c
 #include <stddef.h>
@@ -209,7 +214,9 @@ extension's actual use, not by this ABI.
 2. Back IDs with the existing managed-domain registry; implement retain,
    release, copied scalar/Bytes reads, frozen traversal, call and define. A
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
-   without exposing raw Gene bits.
+   without exposing raw Gene bits. Root-lane retain/release/kind/new-Int64 is
+   the first advertised feature bit; attached-lane use and the other operations
+   are still pending.
 3. Add callback registration and copied arguments/results. Test nested call,
    typed error/panic/cancel propagation, close during callback, context cleanup
    re-entry and library unload refusal until physical retirement.

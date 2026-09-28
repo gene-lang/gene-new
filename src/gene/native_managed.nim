@@ -50,6 +50,7 @@ type
   GeneManagedDomain* = ref object
     application: RuntimeContext
     rootLane: int
+    rootScope: Scope
     lock: Lock
     nextId: uint64
     roots: Table[uint64, ManagedEntry]
@@ -124,17 +125,18 @@ proc requireBorrow(borrow: GeneNativeBorrow): ManagedEntry =
     raise newException(GeneError, "managed native borrow has ended")
   borrow.entry
 
+proc configureV6Api(domain: GeneManagedDomain)
+
 proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
   vm.requireNativeRootLane(scope)
   new(result)
   result.application = scope.application
   result.rootLane = currentEventLane()
+  result.rootScope = scope
   result.roots = initTable[uint64, ManagedEntry]()
   result.producerEntries = initTable[uint64, ManagedEntry]()
   initLock(result.lock)
-  result.v6Api = GeneApiV6(version: 6'u32,
-                           structSize: uint32(sizeof(GeneApiV6)),
-                           runtimeContext: cast[pointer](result))
+  result.configureV6Api()
 
 proc addRoot(domain: GeneManagedDomain, value: Value,
              scopes: seq[Scope] = @[]): GeneManagedRoot =
@@ -1048,13 +1050,128 @@ proc geneExportManagedRoot*(borrow: GeneNativeBorrow): GeneRoot =
     vm.publishNativeRootForRetirement(entry.value)
   result = geneRoot(entry.value) # irreversible raw publication
 
+const GeneApiV6IdentityFeature* = 1'u64
+
+proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
+  if output == nil: return
+  output.required = csize_t(message.len)
+  if output.data == nil or output.capacity == 0: return
+  let count = if output.capacity > csize_t(message.len): message.len
+              else: int(output.capacity)
+  if count > 0:
+    copyMem(output.data, unsafeAddr message[0], count)
+
+proc v6Domain(context: pointer): GeneManagedDomain =
+  if context == nil:
+    raise newException(GeneError, "native v6 runtime context is nil")
+  result = cast[GeneManagedDomain](context)
+  result.requireRootLane()
+  result.requireOpen()
+
+proc v6Retain(context: pointer, id: uint64, output: ptr uint64,
+              diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 retain output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let copied = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedRetain(b))
+    output[] = copied.id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+
+proc v6Release(context: pointer, id: uint64,
+               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  try:
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    discard domain.liveRootEntry(root) # stale IDs fail rather than no-op
+    geneManagedRelease(root)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+
+proc v6Kind(context: pointer, id: uint64, output: ptr uint32,
+            diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 255'u32
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 kind output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let kind = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b))
+    output[] = case kind
+      of vkNil: 0'u32
+      of vkBool: 1'u32
+      of vkInt: 2'u32
+      of vkString: 3'u32
+      of vkBytes: 4'u32
+      of vkList: 5'u32
+      of vkMap: 6'u32
+      of vkNode: 7'u32
+      of vkFunction, vkNativeFn: 8'u32
+      of vkTask: 9'u32
+      of vkChannel: 10'u32
+      of vkActorRef: 11'u32
+      else: 255'u32
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+
+proc v6NewI64(context: pointer, value: int64, output: ptr uint64,
+              diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 Int output is nil")
+    let domain = v6Domain(context)
+    output[] = geneManagedRootFromVm(domain, domain.rootScope,
+                                      newInt(value)).id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+
+proc configureV6Api(domain: GeneManagedDomain) =
+  domain.v6Api = GeneApiV6(version: 6'u32,
+                           structSize: uint32(sizeof(GeneApiV6)),
+                           featureBits: GeneApiV6IdentityFeature,
+                           runtimeContext: cast[pointer](domain),
+                           retain: cast[pointer](v6Retain),
+                           release: cast[pointer](v6Release),
+                           kind: cast[pointer](v6Kind),
+                           newI64: cast[pointer](v6NewI64))
+
 const GeneModuleInitV6Symbol* = "gene_module_init_v6"
 
 proc geneManagedLoadModuleV6*(domain: GeneManagedDomain,
     library: GeneManagedRoot, environment: GeneManagedEnvironment,
     name: string, requiredFeatures = 0'u64): GeneManagedResult =
-  ## Initial ABI 6 loader slice. The table advertises no callable features
-  ## yet; a library requiring any operation is rejected before its initializer.
+  ## Initial ABI 6 loader slice. Only root-lane identity/Int construction is
+  ## advertised; other operations remain unavailable until they are qualified.
   ## v4/v5 continue through their original versioned loader unchanged.
   withManagedProgress:
     var moduleEnvironment: GeneManagedEnvironment

@@ -15,6 +15,9 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
   if (!api || api->version != GENE_API_V6_VERSION ||
       api->struct_size != sizeof(GeneApiV6) ||
       !api->runtime_context || !environment) return GENE_API_V6_ERROR;
+  if (!(api->feature_bits & GENE_API_V6_IDENTITY_FEATURE) ||
+      !api->new_i64 || !api->kind || !api->retain || !api->release)
+    return GENE_API_V6_ERROR;
   if (mode == 1) {
     const char message[] = "rejected";
     if (diagnostic) {
@@ -24,6 +27,24 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
     }
     return GENE_API_V6_ERROR;
   }
+  GeneHandleV6 original = 0, retained = 0;
+  uint32_t kind = 255;
+  uint8_t message[64];
+  GeneOutBytesV6 operation_diag = {message, sizeof(message), 99};
+  if (api->new_i64(api->runtime_context, 42, &original,
+                   &operation_diag) != GENE_API_V6_OK ||
+      operation_diag.required != 0 ||
+      !original ||
+      api->kind(api->runtime_context, original, &kind, NULL) != GENE_API_V6_OK ||
+      kind != 2 ||
+      api->retain(api->runtime_context, original, &retained, NULL) != GENE_API_V6_OK ||
+      !retained || retained == original ||
+      api->release(api->runtime_context, original, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, retained, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, original,
+                   &operation_diag) != GENE_API_V6_ERROR ||
+      operation_diag.required == 0)
+    return GENE_API_V6_ERROR;
   if (diagnostic) diagnostic->required = 0;
   return GENE_API_V6_OK;
 }

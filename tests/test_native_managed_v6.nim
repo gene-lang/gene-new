@@ -60,12 +60,13 @@ suite "managed native extension ABI v6":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_v6_set_mode"))
         check calls != nil and setMode != nil
         let unavailable = geneManagedLoadModuleV6(domain, libraryRoot,
-          environment, "need-core", requiredFeatures = 1'u64)
+          environment, "need-future", requiredFeatures = 2'u64)
         check unavailable.status == gsError
         check unavailable.message.contains("required feature bits")
         check calls() == 0
         let loaded = geneManagedLoadModuleV6(domain, libraryRoot,
-                                               environment, "v6-fixture")
+                                               environment, "v6-fixture",
+                                               requiredFeatures = 1'u64)
         check loaded.status == gsOk and loaded.value != nil
         check geneWithNativeBorrow(loaded.value,
           proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkModule
