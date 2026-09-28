@@ -18,6 +18,7 @@
 #define GENE_API_INGRESS_FEATURE UINT64_C(32)
 #define GENE_API_CALLBACK_FEATURE UINT64_C(64)
 #define GENE_API_TASK_PRODUCER_FEATURE UINT64_C(128)
+#define GENE_API_TASK_COPY_FEATURE UINT64_C(256)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
 #define GENE_LIST_ITEM UINT32_C(0)
 #define GENE_MAP_ENTRY UINT32_C(1)
@@ -28,6 +29,24 @@
 typedef uint64_t GeneHandle;
 typedef uint64_t GeneRegistration;
 typedef uint64_t GeneProducer;
+
+#define GENE_COPY_NIL UINT32_C(0)
+#define GENE_COPY_BOOL UINT32_C(1)
+#define GENE_COPY_I64 UINT32_C(2)
+#define GENE_COPY_TEXT UINT32_C(3)
+#define GENE_COPY_BYTES UINT32_C(4)
+
+typedef struct GeneCopiedResult {
+  uint32_t kind;
+  int64_t scalar;
+  const uint8_t *data;
+  size_t length;
+} GeneCopiedResult;
+
+/* task_submit_copy copies Text/Bytes before return and consumes its producer
+ * only on queue admission. OK means queued, not user Task acceptance. A failed
+ * admission leaves the producer token valid. The runtime builds the Gene
+ * value and retires the producer on its root lane. */
 
 typedef struct GeneOutBytes {
   uint8_t *data;
@@ -110,6 +129,8 @@ typedef struct GeneApi {
                         GeneHandle, uint8_t *, GeneOutBytes *);
   uint32_t (*task_cancel)(void *, GeneProducer, uint8_t *, GeneOutBytes *);
   uint32_t (*task_retire)(void *, GeneProducer, uint8_t *, GeneOutBytes *);
+  uint32_t (*task_submit_copy)(void *, GeneProducer,
+                               const GeneCopiedResult *, GeneOutBytes *);
 } GeneApi;
 
 #define GENE_INGRESS_ACCEPTED 0

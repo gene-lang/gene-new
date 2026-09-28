@@ -116,7 +116,7 @@ static uint32_t callback(const GeneApi *table, void *raw,
     *out_value = args[0]; /* illegal borrowed return, checked by host */
     return GENE_API_OK;
   }
-  if (callback_mode == 9) {
+  if (callback_mode == 9 || callback_mode == 11) {
     if (!(table->feature_bits & GENE_API_TASK_PRODUCER_FEATURE) ||
         !table->new_task || !table->task_complete || !table->task_fail ||
         !table->task_cancel || !table->task_retire) return GENE_API_ERROR;
@@ -337,6 +337,87 @@ uint32_t gene_test_api_task_complete_nil_attached(uint8_t *accepted) {
   pthread_join(thread, NULL);
   *accepted = result.accepted;
   return result.status;
+}
+
+typedef struct CopyThreadResult {
+  GeneCopiedResult value;
+  uint32_t status;
+} CopyThreadResult;
+
+static void *submit_copy_on_attached_thread(void *raw) {
+  CopyThreadResult *result = raw;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  result->status = api->attach_thread(api->runtime_context, &attachment,
+                                      &diagnostic);
+  if (result->status == GENE_API_OK) {
+    result->status = api->task_submit_copy(api->runtime_context,
+                                           task_producer, &result->value,
+                                           &diagnostic);
+    if (api->detach_thread(api->runtime_context, attachment,
+                           &diagnostic) != GENE_API_OK)
+      result->status = GENE_API_ERROR;
+  }
+  return NULL;
+}
+
+uint32_t gene_test_api_task_submit_copy(uint32_t kind, int64_t scalar,
+                                         const uint8_t *data, size_t length,
+                                         uint8_t attached) {
+  if (!api->task_submit_copy ||
+      !(api->feature_bits & GENE_API_TASK_COPY_FEATURE)) return GENE_API_ERROR;
+  CopyThreadResult result = {{kind, scalar, data, length}, GENE_API_ERROR};
+  if (!attached) {
+    GeneOutBytes diagnostic = {0};
+    return api->task_submit_copy(api->runtime_context, task_producer,
+                                  &result.value, &diagnostic);
+  }
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, submit_copy_on_attached_thread,
+                     &result) != 0) return GENE_API_ERROR;
+  pthread_join(thread, NULL);
+  return result.status;
+}
+
+static pthread_t copy_async_thread;
+static uint32_t copy_async_status;
+static uint32_t copy_async_running;
+
+static void *submit_async_copy(void *unused) {
+  (void)unused;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  copy_async_status = api->attach_thread(api->runtime_context, &attachment,
+                                          &diagnostic);
+  if (copy_async_status == GENE_API_OK) {
+    const uint8_t text[] = "async-copy";
+    GeneCopiedResult value = {GENE_COPY_TEXT, 0, text, sizeof(text) - 1};
+    copy_async_status = api->task_submit_copy(api->runtime_context,
+                                               task_producer, &value,
+                                               &diagnostic);
+    if (api->detach_thread(api->runtime_context, attachment,
+                           &diagnostic) != GENE_API_OK)
+      copy_async_status = GENE_API_ERROR;
+  }
+  return NULL;
+}
+
+uint32_t gene_test_api_start_async_copy(void) {
+  if (copy_async_running) return GENE_API_ERROR;
+  copy_async_running = 1;
+  copy_async_status = GENE_API_ERROR;
+  if (pthread_create(&copy_async_thread, NULL, submit_async_copy, NULL) != 0) {
+    copy_async_running = 0;
+    return GENE_API_ERROR;
+  }
+  return GENE_API_OK;
+}
+
+uint32_t gene_test_api_join_async_copy(void) {
+  if (!copy_async_running) return GENE_API_ERROR;
+  pthread_join(copy_async_thread, NULL);
+  copy_async_running = 0;
+  return copy_async_status;
 }
 
 uint32_t gene_test_api_task_fail(uint8_t *accepted) {

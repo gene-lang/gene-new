@@ -1,6 +1,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include "gene_native_api.h"
 
 typedef struct ModuleContext {
@@ -10,7 +11,39 @@ typedef struct ModuleContext {
 static atomic_uint live_contexts;
 static atomic_uint retired_contexts;
 static const GeneApi *pending_api;
+static uint32_t worker_supported;
 static GeneProducer pending_producer;
+
+typedef struct CopyWorker {
+  const GeneApi *api;
+  GeneProducer producer;
+} CopyWorker;
+
+uint32_t gene_test_module_supports_copy_worker(void) {
+  return worker_supported;
+}
+
+static void *submit_copy_worker(void *raw) {
+  CopyWorker *worker = raw;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  if (worker->api->attach_thread(worker->api->runtime_context,
+                                  &attachment, &diagnostic) == GENE_API_OK) {
+    const uint8_t text[] = "worker-copy";
+    GeneCopiedResult value = {GENE_COPY_BYTES, 0, text, sizeof(text) - 1};
+    uint32_t status = worker->api->task_submit_copy(
+      worker->api->runtime_context, worker->producer, &value, &diagnostic);
+    if (status != GENE_API_OK) {
+      uint8_t ignored = 0;
+      worker->api->task_retire(worker->api->runtime_context,
+                               worker->producer, &ignored, &diagnostic);
+    }
+    worker->api->detach_thread(worker->api->runtime_context, attachment,
+                               &diagnostic);
+  }
+  free(worker);
+  return NULL;
+}
 
 uint32_t gene_test_module_complete_task(void) {
   if (!pending_api || !pending_producer) return GENE_API_ERROR;
@@ -22,6 +55,20 @@ uint32_t gene_test_module_complete_task(void) {
   pending_api = NULL;
   pending_producer = 0;
   return status == GENE_API_OK && accepted ? GENE_API_OK : GENE_API_ERROR;
+}
+
+uint32_t gene_test_module_submit_copy(void) {
+  if (!pending_api || !pending_producer) return GENE_API_ERROR;
+  const uint8_t text[] = "installed-copy";
+  GeneCopiedResult value = {GENE_COPY_TEXT, 0, text, sizeof(text) - 1};
+  GeneOutBytes diagnostic = {0};
+  uint32_t status = pending_api->task_submit_copy(
+    pending_api->runtime_context, pending_producer, &value, &diagnostic);
+  if (status == GENE_API_OK) {
+    pending_api = NULL;
+    pending_producer = 0;
+  }
+  return status;
 }
 
 uint32_t gene_test_module_live_contexts(void) {
@@ -57,7 +104,36 @@ static uint32_t module_callback(const GeneApi *api, void *raw,
   if (status != GENE_API_OK) return status;
   if ((value != 99 || context->operation != 1) && arg_count != 1)
     return GENE_API_ERROR;
-  if (value == 98 && context->operation == 1) {
+  if (value == 96 && context->operation == 1) {
+    if (!(api->feature_bits & GENE_API_ATTACHED_FEATURE))
+      return GENE_API_ERROR;
+    GeneProducer producer = 0;
+    status = api->new_task(api->runtime_context, environment, out_value,
+                            &producer, diagnostic);
+    if (status != GENE_API_OK) return status;
+    CopyWorker *worker = calloc(1, sizeof(*worker));
+    if (!worker) {
+      uint8_t ignored = 0;
+      api->task_retire(api->runtime_context, producer, &ignored, diagnostic);
+      api->release(api->runtime_context, *out_value, diagnostic);
+      *out_value = 0;
+      return GENE_API_ERROR;
+    }
+    worker->api = api;
+    worker->producer = producer;
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, submit_copy_worker, worker) != 0) {
+      free(worker);
+      uint8_t ignored = 0;
+      api->task_retire(api->runtime_context, producer, &ignored, diagnostic);
+      api->release(api->runtime_context, *out_value, diagnostic);
+      *out_value = 0;
+      return GENE_API_ERROR;
+    }
+    pthread_detach(thread);
+    return GENE_API_OK;
+  }
+  if ((value == 97 || value == 98) && context->operation == 1) {
     if (pending_producer) return GENE_API_ERROR;
     status = api->new_task(api->runtime_context, environment, out_value,
                             &pending_producer, diagnostic);
@@ -87,8 +163,10 @@ uint32_t gene_module_init(const GeneApi *api, GeneHandle environment,
       !api->register_callback || !api->request_close || !api->wait_closed)
     return GENE_API_ERROR;
   if (!(api->feature_bits & GENE_API_TASK_PRODUCER_FEATURE) ||
-      !api->new_task || !api->task_complete)
+      !(api->feature_bits & GENE_API_TASK_COPY_FEATURE) ||
+      !api->new_task || !api->task_complete || !api->task_submit_copy)
     return GENE_API_ERROR;
+  worker_supported = (api->feature_bits & GENE_API_ATTACHED_FEATURE) ? 1 : 0;
   ModuleContext *context = calloc(1, sizeof(*context));
   if (!context) return GENE_API_ERROR;
   context->marker = 0x72;

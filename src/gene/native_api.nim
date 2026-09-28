@@ -48,6 +48,11 @@ type
     name*: ptr uint8
     nameLen*: csize_t
     value*: uint64
+  GeneCopiedResult* {.bycopy.} = object
+    kind*: uint32
+    scalar*: int64
+    data*: ptr uint8
+    length*: csize_t
   GeneNativeCallbackProc* = proc(api: ptr GeneApi, userContext: pointer,
       arguments: ptr uint64, argumentCount: csize_t,
       named: ptr GeneNamedArg, namedCount: csize_t,
@@ -68,6 +73,7 @@ type
     ingressEnqueue*: GeneIngressEnqueueProc
     ingressEnd*: GeneIngressEndProc
     newTask*, taskComplete*, taskFail*, taskCancel*, taskRetire*: pointer
+    taskSubmitCopy*: pointer
   GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
                                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,
@@ -214,6 +220,7 @@ var unregisterService: ptr GeneUnregisterService
 var unregisterThread: ref Thread[void]
 var ingressWakeRead = -1.cint
 var ingressWakeWrite = -1.cint
+var nativeWakeUsers: int # root-lane producer owners sharing the ingress wake pipe
 
 proc cMalloc(size: csize_t): pointer {.importc: "malloc", header: "<stdlib.h>".}
 proc cFree(value: pointer) {.importc: "free", header: "<stdlib.h>".}
@@ -311,6 +318,7 @@ proc ensureIngressWakePipe() =
     ingressWakeWrite = fds[1]
 
 proc closeIngressWakePipe() =
+  if nativeWakeUsers > 0: return
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if ingressWakeRead >= 0: discard posix.close(ingressWakeRead)
     if ingressWakeWrite >= 0: discard posix.close(ingressWakeWrite)
@@ -323,8 +331,23 @@ proc signalIngressWake() {.gcsafe.} =
       var byte = 'w'
       discard posix.write(ingressWakeWrite, addr byte, 1)
 
+proc geneHoldNativeWake*() =
+  ## Root-lane ownership; C producers keep the pipe open after ingress closes.
+  ensureIngressWakePipe()
+  inc nativeWakeUsers
+
+proc geneReleaseNativeWake*() =
+  if nativeWakeUsers <= 0:
+    raise newException(GeneError, "native wake owner is unavailable")
+  dec nativeWakeUsers
+  if nativeWakeUsers == 0 and ingressSubscriptions.len == 0:
+    closeIngressWakePipe()
+
+proc geneSignalNativeWake*() {.gcsafe.} =
+  signalIngressWake()
+
 proc waitIngressWake(timeoutMs: int): bool {.nimcall.} =
-  if ingressSubscriptions.len == 0:
+  if ingressSubscriptions.len == 0 and nativeWakeUsers == 0:
     os.sleep(timeoutMs)
     return false
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):

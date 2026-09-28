@@ -1,15 +1,14 @@
 # Copied results for native Task producers
 
-**Status:** implementation design. The current `GeneApi` Task producer family
-supports an attached worker completing with `nil` or a value ID created earlier
-on the root lane. It cannot publish a newly computed Str or Bytes result from
-that worker: `new_text` and `new_bytes` are root-lane operations. This is a
-real allocator lifetime boundary. A short-lived attached thread must not
-allocate a Nim string, Bytes object, or managed root that the runtime may
-release later on the root lane. The existing direct completion API and its
-physical producer ownership remain unchanged.
+**Status:** implemented in the single `GeneApi` table. The earlier Task
+producer family still supports direct completion with `nil` or an ID created
+on the root lane. Its `new_text` and `new_bytes` constructors remain root-lane
+operations: a short-lived attached thread must not allocate a Nim string,
+Bytes object, or managed root that the runtime may release later on the root
+lane. The copied submission path below handles fresh worker-computed values
+without crossing that allocator boundary.
 
-The recommended addition is one copied-result submission entry. It transfers
+The added entry transfers
 plain C bytes to a bounded runtime queue; the root lane constructs the Gene
 value and settles the existing Task. There is no Gene syntax change, new
 module loader, or second C ABI. Arbitrary Gene graphs still use the existing
@@ -18,8 +17,9 @@ payload and call `task_complete` with an owning ID.
 
 ## C surface
 
-Append this optional entry after `task_retire` in the one `GeneApi` table.
-Keep numeric `GENE_API_VERSION = 6`; require both `struct_size` and a new
+The optional entry follows `task_retire` in the one `GeneApi` table.
+Numeric `GENE_API_VERSION = 6` remains unchanged; callers require both
+`struct_size` and the new
 `GENE_API_TASK_COPY_FEATURE = 256` bit before calling it. The feature depends
 on the existing callback and Task producer bits.
 
@@ -63,9 +63,10 @@ copied `task_fail` entry; this addition is for successful values.
 
 ## Queue, ownership, and scheduling
 
-Each C producer allocates one empty queue node on the root lane at `new_task`.
-An attached thread fills that node with plain fields under the domain lock,
-copies a Text/Bytes span into `malloc`-owned memory, and links the node into
+Each C producer is allocated on the root lane at `new_task` and doubles as
+its queue node. An attached thread reserves queue count/bytes under the
+domain lock, copies a Text/Bytes span into `malloc`-owned memory, then fills
+the preallocated producer and links it into
 the domain's FIFO. It allocates no Nim object or sequence on the attached
 lane. The queue admits at most 256 submissions and 64 MiB of copied payload
 per domain; admission reserves both budgets atomically. A failed reservation
@@ -83,29 +84,28 @@ the completion reports `accepted = false`; physical ownership still retires.
 The callback registration may have retired before this drain. Module close
 waits for queued and in-flight producer counts before unloading the image.
 
-Install a managed-Task poll and active-resource hook beside the existing
-native module/ingress hooks in `vm.nim`. Register a domain on the root lane
-when its first C producer opens, and remove it only after its final producer
-and queued release retire. The active hook keeps an awaited external Task
-from being classified as deadlocked while a producer is live. Initialize the
-existing native wake pipe on the root lane when that first producer opens;
-the attached submitter writes its nonblocking wake byte after enqueue. The
-wake wait must observe producer interest as well as ingress subscriptions,
-so a result does not wait for the unrelated 100 ms polling timeout. Direct
-Nim embedders may call an explicit `geneManagedPoll(domain)` in their own
-root event loop; the installed `NativeModule` path uses the VM hook.
-
-The global poll registry holds domains strongly only while C producers or
-queued releases exist. It is mutated on root lanes under its lock. Foreign
-submitters touch only their domain's preallocated nodes and lock, so no Nim
-container storage crosses an exiting thread's allocator boundary. Never run
-C callbacks, Gene constructors, last-owner drops, or `ffi/Library` release
-under a registry lock.
+The installed `NativeModule` owner already has a scheduler poll and active
+hook. That poll calls `geneManagedPoll(domain)` before advancing module close;
+the active hook keeps an awaited external Task from being classified as
+deadlocked while a producer or copied result is live. Direct Nim embedders
+call `geneManagedPoll(domain)` in their own root event loop. Each C producer
+holds one reference to the existing native wake pipe. An attached submitter
+writes its nonblocking wake byte while holding the domain lock, before the
+root can drain and release the final producer. Direct foreign completion,
+retirement and cancellation signal the same pipe, so they do not inherit its
+100 ms fallback wait. The wake wait observes producer interest as well as
+ingress subscriptions. The package record owns its domain;
+a direct embedder owns the domain it created. No global domain registry or
+second scheduler queue is needed. Foreign submitters touch only their
+domain's preallocated producer and lock, so no Nim container storage crosses
+an exiting thread's allocator boundary. No C callback, Gene constructor,
+last-owner drop, or `ffi/Library` release runs under a registry lock.
 
 ## Acceptance
 
-1. A C worker computes fresh Int, Text, and Bytes after its callback returns;
-   Gene awaits the three Tasks and gets exact values. The text test includes
+1. The C fixture submits fresh Int, Text, and Bytes after its callback returns;
+   the root poll yields exact values. The installed AtomicArc package awaits a
+   worker-produced Bytes Task without manual polling. The text test includes
    non-ASCII UTF-8 and an invalid-UTF-8 error. Existing `task_complete`
    continues to accept already-rooted deep-frozen payload IDs.
 2. Cancellation before submission and after enqueue discards the result but
@@ -118,13 +118,16 @@ under a registry lock.
 4. The installed source-built GeneApi package launches without source or a
    compiler, awaits a worker-produced Bytes result, and returns all native
    roots, producers, attachments, queue bytes, library borrows, and artifact
-   leases to baseline. Focused ORC and threaded AtomicArc tests plus ASAN and
-   TSAN exercise worker exit before root drain and 1/100/1,000/10,000
-   lifetimes.
+   leases to baseline. Focused ORC and threaded AtomicArc tests exercise
+   worker exit before root drain. The queue control reaches 10,280 lifetimes
+   in one domain by setting `GENE_NATIVE_TASK_COPY_ROUNDS=40` for the C
+   callback suite. The focused suite passes under ASAN and TSAN, including
+   root polling concurrent with attached submission after domain close.
 
-Implement the queue and copied entry in `src/gene/native_managed.nim`, the
-public layout in `src/gene/native_api.h` and `src/gene/native_api.nim`, and
-the wake/poll hooks in `src/gene/native_api.nim` and `src/gene/vm.nim`.
-Keep the two checked-in C header copies byte-identical with the canonical
-header. Extend the existing C ABI fixture and installed native-module fixture
-instead of adding a second loader or test-only runtime path.
+The implementation is in `src/gene/native_managed.nim`, the public layout in
+`src/gene/native_api.h` and `src/gene/native_api.nim`, and native wake sharing
+in `src/gene/native_api.nim`. The two checked-in C header copies remain
+byte-identical with the canonical header. The existing C ABI fixture and
+installed native-module fixture cover the new entry; there is no second
+loader or test-only runtime path. Test-only allocation and byte-budget probes
+are compiled only for their qualification runs.

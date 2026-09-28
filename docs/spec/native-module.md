@@ -19,8 +19,11 @@ runtime image.
 message returns the Gene Module value produced by `gene_module_init` while the
 owner is active. It implements `IoResource:close` and
 `IoResource:wait_closed`, and `.status` reports active, closing, or closed
-plus managed root/registration counts and a terminal category. Package Gene
-code retains the owner for as long as it exposes native functions:
+plus managed root/registration/producer counts, copied-result queue count and
+bytes, and a terminal category. The queue fields are `copied_queued`, `copied_bytes`,
+`copied_reserved`, and `copied_reserved_bytes`; the reservation fields count
+concurrent submissions that have not yet reached the queue. Package Gene code
+retains the owner for as long as it exposes native functions:
 
 ```gene
 (import $io [IoResource])
@@ -64,9 +67,11 @@ for that physical token even after the callback registration retires or the
 user Task is cancelled. See the
 [C ABI producer contract](../proposals/native-managed-extension-abi.md#native-callback-registration).
 The current attached-lane completion takes `nil` or an already-rooted,
-deep-frozen payload ID. Fresh worker-computed Str/Bytes results require a
-root-lane handoff; the [copied-result design](../proposals/native-task-result-handoff.md)
-is not yet implemented.
+deep-frozen payload ID. A worker can instead use the
+[copied-result handoff](../proposals/native-task-result-handoff.md) to submit
+Nil, Bool, Int, Text or Bytes. The root lane constructs the Gene value and
+settles the Task; `task_submit_copy` reports queue admission, not whether the
+user Task accepted the eventual result.
 The installed macOS arm64 fixture
 in `tests/test_genex_native_module.py` checks source-built and prebuilt selected
 `gene_api` images, compiler-free launch, ABI-kind refusal, initializer rollback,

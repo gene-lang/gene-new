@@ -39,6 +39,7 @@ class NativeModulePackageTests(unittest.TestCase):
             self.skipTest("pinned macOS SDK is unavailable")
         env["SDKROOT"] = sdk
         lifetimes = int(os.environ.get("GENE_NATIVE_MODULE_LIFETIMES", "100"))
+        atomic = os.environ.get("GENE_NATIVE_MODULE_ATOMIC") == "1"
         self.assertGreater(lifetimes, 0)
         with tempfile.TemporaryDirectory(prefix="gene-native-module-") as tmp:
             base = pathlib.Path(tmp)
@@ -98,6 +99,11 @@ class NativeModulePackageTests(unittest.TestCase):
                             [] C/UInt32))
   (let complete_task ($ffi/bind diagnostic_library "gene_test_module_complete_task"
                                   [] C/UInt32))
+  (let submit_copy ($ffi/bind diagnostic_library "gene_test_module_submit_copy"
+                                [] C/UInt32))
+  (let supports_worker
+    ($ffi/bind diagnostic_library "gene_test_module_supports_copy_worker"
+      [] C/UInt32))
   (var successful 0)
   (repeat __LIFETIMES__
     (var owner (open))
@@ -130,6 +136,40 @@ class NativeModulePackageTests(unittest.TestCase):
         (== (/state (producer_owner .status)) "closed")
         (== (live) 0)))
   (set producer_owner nil)
+  (var copy_owner (open))
+  (let copy_exports (copy_owner .module))
+  (let copied_task (copy_exports/increment 97))
+  (let copied_submitted (== (submit_copy) 0))
+  (let copied_queued (== (/copied_queued (copy_owner .status)) 1))
+  (let copied_value (await copied_task))
+  (copy_owner .IoResource:close)
+  (await (copy_owner .IoResource:wait_closed))
+  (let copied_ok
+    (&& copied_submitted copied_queued
+        (== copied_value "installed-copy")
+        (== (/state (copy_owner .status)) "closed")
+        (== (/producers (copy_owner .status)) 0)
+        (== (/copied_bytes (copy_owner .status)) 0)
+        (== (live) 0)))
+  (set copy_owner nil)
+  (let worker_ok
+    (if (== (supports_worker) 1)
+      (do
+        (var worker_owner (open))
+        (let worker_exports (worker_owner .module))
+        (let worker_task (worker_exports/increment 96))
+        (let worker_value (await worker_task))
+        (worker_owner .IoResource:close)
+        (await (worker_owner .IoResource:wait_closed))
+        (let ready
+          (&& (== ($binary/to_str worker_value) "worker-copy")
+              (== (/state (worker_owner .status)) "closed")
+              (== (/producers (worker_owner .status)) 0)
+              (== (/copied_bytes (worker_owner .status)) 0)
+              (== (live) 0)))
+        (set worker_owner nil)
+        ready)
+      true))
   (fn escape_module []
     (let owner (open))
     (owner .module))
@@ -162,7 +202,8 @@ class NativeModulePackageTests(unittest.TestCase):
      ^refused_plain refused ^failure_clean failure_clean
      ^prebuilt_ok prebuilt_ok
      ^abandoned_closed abandoned_closed ^reentrant_closed reentrant_closed
-     ^producer_close_ok producer_close_ok
+     ^producer_close_ok producer_close_ok ^copied_ok copied_ok
+     ^worker_ok worker_ok
      ^baseline_roots baseline_roots
      ^remaining_roots (/native_roots ($runtime/gc_stats))
      ^native_module_records (/native_module_records ($runtime/gc_stats))
@@ -171,7 +212,10 @@ class NativeModulePackageTests(unittest.TestCase):
   0)
 '''.replace("__LIFETIMES__", str(lifetimes)))
             gene = base / "gene"
-            built = invoke(["nim", "c", "-d:geneRcStats", "--path:src", "--hints:off",
+            build_args = ["nim", "c", "-d:geneRcStats", "--path:src", "--hints:off"]
+            if atomic:
+                build_args += ["--mm:atomicArc", "--threads:on"]
+            built = invoke(build_args + [
                             f"--nimcache:{base / 'nimcache'}", f"-o:{gene}",
                             "src/gene.nim"], env)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
@@ -218,13 +262,16 @@ class NativeModulePackageTests(unittest.TestCase):
                              launched.stdout + launched.stderr)
             report = json.loads(launched.stdout.strip().splitlines()[-1])
             self.assertEqual(report["successful"], lifetimes)
-            self.assertEqual(report["retired"], 2 * lifetimes + 6)
+            self.assertEqual(report["retired"],
+                             2 * lifetimes + 8 + (2 if atomic else 0))
             self.assertTrue(report["refused_plain"])
             self.assertTrue(report["failure_clean"])
             self.assertTrue(report["prebuilt_ok"])
             self.assertTrue(report["abandoned_closed"])
             self.assertTrue(report["reentrant_closed"])
             self.assertTrue(report["producer_close_ok"])
+            self.assertTrue(report["copied_ok"])
+            self.assertTrue(report["worker_ok"])
             self.assertEqual(report["live"], 0)
             self.assertEqual(report["remaining_roots"], report["baseline_roots"])
             self.assertEqual(report["native_module_records"], 0)

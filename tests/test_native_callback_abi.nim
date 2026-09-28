@@ -16,6 +16,8 @@ type
   StressRelease = proc() {.cdecl.}
   StressJoin = proc(completed, retired, accepted,
                     late: ptr uint32): uint32 {.cdecl.}
+  SubmitCopy = proc(kind: uint32, scalar: int64, data: ptr uint8,
+                    length: csize_t, attached: uint8): uint32 {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -49,6 +51,209 @@ proc buildFixture(): string =
       "native callback C fixture failed to compile: " & diagnostics)
 
 suite "managed native C callback registration":
+  test "copied Task queue bounds preserve a retryable producer":
+    let path = buildFixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+      let host = newGlobalScope()
+      discard run(compileSource("nil"), host)
+      let domain = geneNewManagedDomain(host)
+      let environment = geneNewManagedEnvironment(domain, host)
+      let libraryRoot = geneManagedRootFromVm(domain, host, library)
+      let loaded = geneManagedLoadModule(domain, libraryRoot,
+        environment, "copy-queue-fixture", GeneApiTaskCopyFeature)
+      check loaded.status == gsOk
+      let setMode = cast[SetMode](symAddr(handle,
+        "gene_test_api_set_callback_mode"))
+      let submit = cast[SubmitCopy](symAddr(handle,
+        "gene_test_api_task_submit_copy"))
+      let close = cast[ReadStatus](symAddr(handle, "gene_test_api_close"))
+      let waitClosed = cast[ReadStatus](symAddr(handle,
+        "gene_test_api_wait"))
+      let releaseSaved = cast[ReleaseSaved](symAddr(handle,
+        "gene_test_api_release_saved"))
+      let legacy = geneWithNativeBorrow(loaded.value,
+        proc(b: GeneNativeBorrow): GeneRoot = geneExportManagedRoot(b))
+      let callScope = newScope(host)
+      callScope.define("native_mod", geneRootGet(legacy))
+      let invocation = compileSource("(native_mod/native_plus_one 1)")
+      setMode(11)
+      let rounds = parseInt(getEnv("GENE_NATIVE_TASK_COPY_ROUNDS", "1"))
+      doAssert rounds > 0 and rounds <= 1000
+      for _ in 0 ..< rounds:
+        var tasks: seq[Value]
+        for _ in 0 ..< 256:
+          tasks.add run(invocation, callScope)
+          check submit(0, 0, nil, 0, 0) == 0
+        let retry = run(invocation, callScope)
+        check submit(0, 0, nil, 0, 0) == 1
+        check geneManagedStats(domain).producers == 257
+        check geneManagedStats(domain).copiedQueued == 256
+        check geneManagedPoll(domain) == 32
+        check geneManagedStats(domain).copiedQueued == 224
+        check submit(0, 0, nil, 0, 0) == 0
+        tasks.add retry
+        for _ in 0 ..< 8:
+          discard geneManagedPoll(domain)
+        check geneManagedStats(domain).producers == 0
+        check geneManagedStats(domain).copiedQueued == 0
+        check geneManagedStats(domain).copiedReserved == 0
+        for task in tasks:
+          check task.taskDone and task.taskResult.kind == vkNil
+      when defined(geneNativeCopyBudgetProbe):
+        block:
+          let largeTask = run(invocation, callScope)
+          var large = newString(GeneApiMaxCopyBytes)
+          check submit(4, 0, cast[ptr uint8](addr large[0]),
+                       csize_t(large.len), 0) == 0
+          let smallTask = run(invocation, callScope)
+          var small = "x"
+          check submit(4, 0, cast[ptr uint8](addr small[0]), 1, 0) == 1
+          check geneManagedStats(domain).copiedBytes == GeneApiMaxCopyBytes
+          check geneManagedPoll(domain) == 1
+          check largeTask.taskResult.bytesVal.len == GeneApiMaxCopyBytes
+          check submit(4, 0, cast[ptr uint8](addr small[0]), 1, 0) == 0
+          check geneManagedPoll(domain) == 1
+          check smallTask.taskResult.bytesVal == "x"
+      check close() == 0 and waitClosed() == 0
+      releaseSaved()
+      geneRootRelease(legacy)
+      geneManagedRelease(loaded.value)
+      geneManagedRelease(libraryRoot)
+      geneManagedEnvironmentRelease(environment)
+      library.closeFfiLibrary()
+      check geneManagedClose(domain)
+
+  test "copied C Task results construct on the root lane":
+    let path = buildFixture()
+    if path.len == 0:
+      skip()
+    else:
+      let handle = loadLib(path)
+      check handle != nil
+      let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+      let host = newGlobalScope()
+      discard run(compileSource("nil"), host)
+      let domain = geneNewManagedDomain(host)
+      let environment = geneNewManagedEnvironment(domain, host)
+      let libraryRoot = geneManagedRootFromVm(domain, host, library)
+      let loaded = geneManagedLoadModule(domain, libraryRoot,
+        environment, "copy-fixture",
+        GeneApiCallbackFeature or GeneApiTaskProducerFeature or
+          GeneApiTaskCopyFeature)
+      check loaded.status == gsOk
+      let setMode = cast[SetMode](symAddr(handle,
+        "gene_test_api_set_callback_mode"))
+      let submit = cast[SubmitCopy](symAddr(handle,
+        "gene_test_api_task_submit_copy"))
+      let startAsync = cast[ReadStatus](symAddr(handle,
+        "gene_test_api_start_async_copy"))
+      let joinAsync = cast[ReadStatus](symAddr(handle,
+        "gene_test_api_join_async_copy"))
+      let close = cast[ReadStatus](symAddr(handle, "gene_test_api_close"))
+      let waitClosed = cast[ReadStatus](symAddr(handle,
+        "gene_test_api_wait"))
+      let releaseSaved = cast[ReleaseSaved](symAddr(handle,
+        "gene_test_api_release_saved"))
+      let legacy = geneWithNativeBorrow(loaded.value,
+        proc(b: GeneNativeBorrow): GeneRoot = geneExportManagedRoot(b))
+      let callScope = newScope(host)
+      callScope.define("native_mod", geneRootGet(legacy))
+      let invocation = compileSource("(native_mod/native_plus_one 1)")
+      setMode(11)
+      when defined(gcAtomicArc) and compileOption("threads"):
+        const attachedMode = 1'u8
+      else:
+        const attachedMode = 0'u8
+
+      let number = run(invocation, callScope)
+      check submit(2, 812, nil, 0, 0) == 0
+      check submit(2, 813, nil, 0, 0) == 1 # queue admission consumed token
+      check not number.taskDone
+      check geneManagedPoll(domain) == 1
+      check number.taskResult.intVal == 812
+
+      var word = "naïve"
+      let textTask = run(invocation, callScope)
+      check submit(3, 0, cast[ptr uint8](addr word[0]),
+                   csize_t(word.len), attachedMode) == 0
+      word[0] = 'X' # the C span no longer owns the queued bytes
+      check geneManagedStats(domain).copiedBytes == 6
+      check geneManagedPoll(domain) == 1
+      check geneManagedStats(domain).copiedBytes == 0
+      check textTask.taskResult.strVal == "naïve"
+
+      var octets = "a\0b"
+      let bytesTask = run(invocation, callScope)
+      check submit(4, 0, cast[ptr uint8](addr octets[0]),
+                   csize_t(octets.len), attachedMode) == 0
+      octets[0] = 'X'
+      check geneManagedPoll(domain) == 1
+      check bytesTask.taskResult.bytesVal == "a\0b"
+
+      let boolean = run(invocation, callScope)
+      check submit(1, 1, nil, 0, 0) == 0
+      check geneManagedPoll(domain) == 1
+      check boolean.taskResult.boolVal
+
+      var invalid = "\xFF"
+      let invalidTask = run(invocation, callScope)
+      check submit(3, 0, cast[ptr uint8](addr invalid[0]), 1, 0) == 0
+      check geneManagedPoll(domain) == 1
+      check invalidTask.taskHasError
+      check invalidTask.taskErrorMsg.contains("UTF-8")
+
+      let canceled = run(invocation, callScope)
+      check nativeTaskCancel(canceled, callScope)
+      check submit(1, 1, nil, 0, 0) == 0
+      check geneManagedPoll(domain) == 1
+      check canceled.taskCancelled
+
+      let queuedCanceled = run(invocation, callScope)
+      check submit(2, 9, nil, 0, 0) == 0
+      check nativeTaskCancel(queuedCanceled, callScope)
+      check geneManagedPoll(domain) == 1
+      check queuedCanceled.taskCancelled
+
+      let retry = run(invocation, callScope)
+      check submit(4, 0, nil, 1, 0) == 1 # failed validation keeps token
+      check submit(4, 0, cast[ptr uint8](addr invalid[0]),
+                   csize_t(GeneApiMaxCopyBytes + 1), 0) == 1
+      when defined(geneNativeCopyAllocationProbe):
+        geneFailNextNativeCopyAllocation()
+        check submit(4, 0, cast[ptr uint8](addr invalid[0]), 1, 0) == 1
+        check geneManagedStats(domain).copiedReserved == 0
+      check submit(0, 0, nil, 0, 0) == 0
+      check geneManagedPoll(domain) == 1
+      check retry.taskResult.kind == vkNil
+
+      when defined(gcAtomicArc) and compileOption("threads"):
+        let afterClose = run(invocation, callScope)
+        check close() == 0 and waitClosed() == 0
+        check not geneManagedClose(domain)
+        check startAsync() == 0
+        var polls = 0
+        while not afterClose.taskDone and polls < 1000:
+          discard geneManagedPoll(domain)
+          os.sleep(1)
+          inc polls
+        check joinAsync() == 0
+        check afterClose.taskDone
+        check afterClose.taskResult.strVal == "async-copy"
+      else:
+        check close() == 0 and waitClosed() == 0
+      check geneManagedStats(domain).producers == 0
+      releaseSaved()
+      geneRootRelease(legacy)
+      geneManagedRelease(loaded.value)
+      geneManagedRelease(libraryRoot)
+      geneManagedEnvironmentRelease(environment)
+      library.closeFfiLibrary()
+      check geneManagedClose(domain)
+
   test "concurrent C producers retire after mixed user cancellation":
     when not (defined(gcAtomicArc) and compileOption("threads")):
       skip()
