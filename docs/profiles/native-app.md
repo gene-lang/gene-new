@@ -1,239 +1,313 @@
-# Native application profile status
+# Native application qualification
 
-**Status:** PROFILE-0 exists; the overall native-app profile remains incomplete. This is a support ledger, not a release claim. The [manifest](../../tests/profiles/native-app/profile.gene) and [runner](../../tests/profiles/native-app/run.py) provide executable evidence; a planned stage never counts as passed.
+**Status (2026-09-28):** PROFILE-0 is implemented; the full native application
+profile is **not qualified for release**. The executable authority is the
+[profile manifest](../../tests/profiles/native-app/profile.gene) and
+[runner](../../tests/profiles/native-app/run.py). This report consolidates the
+former dated `native-app-*` audits. A probe pass is evidence for its stated
+workload and platform, not promotion of a planned dependency or the whole
+profile. Historical intermediate measurements remain in Git history through
+`ab9c5ae`; the decisive results and known failures are retained below.
 
-The [2026-09-24 macOS arm64 audit](native-app-2026-09-24.md) records all five
-workloads and four current-code 60-second service repeats. The
-[2026-09-25 Linux x86_64 run](native-app-2026-09-25-linux.md) passed the same
-five workloads and the full test suites in an Ubuntu 24.04 container under
-Rosetta. Timing gates still need native x86_64 hardware, and the incomplete
-stage gates remain open.
+## Current gate ledger
 
-The [mixed-cancellation continuation](native-app-2026-09-26-cancellation.md)
-records the stable-capture repair, the server Fiber-cancellation repair, and
-the ten-child ORC lifetime profile. Multi-hour SERVICE evidence is pending.
-
-The native VM currently supplies functions, modules, packages and locks, tasks, synchronous streams, JSON, files, HTTP, databases, and tests. Their existing specs cover those individual contracts. VAL-1–3 value witnesses, semantic equality/hash, indexed access, and stable sorting are experimental with native conformance and lifetime checks; cross-backend qualification remains open. The end-to-end Python replacement workloads have not yet passed their full release gates.
-
-| Workload | Current status | Required next stages |
+| Workload | Latest supported claim | Remaining gate |
 | --- | --- | --- |
-| Script | APP-1 implemented; passing macOS arm64 fixture and typed fault checks | Native x86_64 Linux qualification and the full profile gates |
-| Installed CLI | PKG-1 local install and experimental PKG-2 source-built C binding pass the macOS arm64 offline probe; a separate installed genex WebSocket fixture passes | Native x86_64 Linux qualification (deferred) and destination-host compatibility |
-| Service | macOS arm64 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s; one earlier repeat missed the 250 ms heartbeat gate, and ten repeats after the serve-loop idle fix passed with 53–73 ms maximum gaps | Investigate the rare host-loop stall, native x86_64 Linux timing, and VM-3 lifetime gate |
-| Data transformation | Experimental 10/100 MiB macOS arm64 probe passes, including typed group/record limit faults; parser payload is 13 bytes at EOF and peaks at 66,570 bytes for both sizes | Native x86_64 Linux qualification and remaining VAL/IO release gates |
-| Long-lived VM | VM-0/1 experimental; VM-2 retirement of released, discarded, and failed sandbox generations is implemented; RC-enabled macOS arm64 probes hold identical managed-class counts through 10,000 fixed-vocabulary eval/closure/cell/failure lifetimes and 10,000 scalar, Type/protocol/impl, and discarded/failed generations | Other mixed-cycle classes, cancellation/service gates, AtomicArc, and native x86_64 Linux qualification |
+| SCRIPT | APP-1 fixture and typed fault checks pass on macOS arm64; Rosetta Linux probe passes. | Native x86_64 Linux qualification and full profile gates. |
+| Installed CLI | Offline source-built C binding, locked resource, update, and failed-update rollback pass on macOS arm64; Rosetta Linux probe passes. | PKG-2 destination-host qualification and native Linux. |
+| SERVICE | 60-second HTTPS proxy/stream/SQLite probes pass functionally at 30 requests/s. A two-hour run on the repaired binary failed the unchanged 250 ms heartbeat gate. | Explain and resolve the rare idle wait overrun, repeat sustained retention/cleanup proof, and native Linux timing. |
+| DATA | 10/100 MiB CSV group probes and typed limit failures pass on macOS arm64; Rosetta Linux probe passes. | APP-2, VAL-3, IO-2 release gates and native Linux. |
+| LIFETIME | Ten bounded ORC/RC children hold flat class counts through 1/100/1,000/10,000 batches on macOS arm64 and Rosetta Linux. | Arbitrary mixed ownership, shared AtomicArc reclamation, installed native ownership, sustained service, and native Linux. |
 
-Optional capabilities remain visible separately: experimental genex/tzdb (APP-3), experimental genex/archive (APP-4), direct TLS (NET-3), hosted publication (PKG-3), and experimental retained native notifications (NATIVE-3). Browser/C backend and AtomicArc worker support require their own qualification.
+Optional packages remain separate experimental evidence: `genex/tzdb`,
+`genex/archive`, `genex/libuv_timer`, direct TLS, hosted registry publication,
+and the owned HTTP Client. They do not promote the five core workloads. Wasm,
+web/C value operations, and AtomicArc workers have independent gates.
 
-NET-3 has an experimental direct HTTPS listener and Task-valued certificate
-reload through the installed OpenSSL adapter. The macOS arm64 installed probe
-covers HTTPS dispatch, plaintext and untrusted-server rejection, failed
-reload, and rotation; the C fixture covers required client authentication and
-live old sessions. The TLS adapter and installed package tests also pass on
-Linux x86_64 under Rosetta. Sustained service and native x86_64 Linux remain
-unqualified.
+## Reproduce and interpret results
 
-PKG-3 has an experimental macOS arm64 client and CLI path for signed hosted
-releases. A local TLS registry fixture covers version-page commitments,
-registry and delegated-owner signatures, bounded object download, online
-resolution and install, authenticated staged publication, idempotent repeat,
-version conflict, and offline cache/vendor signature replay. It rejects wrong
-keys, corrupted signatures, malformed responses, and fresh selection of
-yanked versions. The fixture also passes on Linux x86_64 under Rosetta. The
-persistent registry service now has a real Caddy/CLI fixture, complete-tree
-admission, durable version selection, bounded staging, and offline key provisioning.
-Sustained registry operation and native x86_64 Linux qualification remain open;
-this fixture does not promote the native-app core profile.
+From the repository root:
 
-APP-4 has a packaged zlib codec, gzip AsyncReader/AsyncWriter wrappers, and a
-ZIP extractor. The macOS arm64 installed probe verifies gzip binary streams,
-concatenated members, corrupt/truncated/trailing data rejection, flush versus
-finish, abortive close, blocked-read/write cancellation, ZIP store/deflate and
-CRC rejection, absent-destination publication, and normal CLI exit with an
-unawaited cleanup obligation. A focused RC probe and the installed package
-test verify abandoned codec stream retirement. Unicode-normalized path
-collision rejection passes C and installed package fixtures. The installed
-package and ZIP tests also pass on Linux x86_64 under Rosetta, given a
-utf8proc whose pkg-config version is at least 3.1.0. Native x86_64
-qualification remains open.
+```sh
+python3 tests/profiles/native-app/run.py --gene /path/to/gene --probe-blocked
+nimble test
+nimble spec
+nimble leakcheck
+nimble threadcheck
+```
 
-APP-3's standard `$temporal` arithmetic/RFC3339 and optional IANA 2026d
-`genex/tzdb` package pass a macOS arm64 installed-app test with source and
-compiler unavailable. The TZif reader matches an independent offset oracle
-for all 597 packaged zones at six historical/current/future instants each;
-New York fold/gap and historical second-offset cases pass. The installed-app
-test also passes on Linux x86_64 under Rosetta; native x86_64 qualification
-remains open.
+`--probe-blocked` executes available fixtures even when a prerequisite stage
+remains planned. `--require-supported` rejects an incomplete profile. Reports
+under `tmp/native-app-profile/` record platform, revision, binary, stage state,
+and workload outcomes. RC claims require `-d:geneRcStats`; a plain build reports
+`rc_stats?` false and skips the managed-slope gate. The runner's
+`service_heap_slope` compares the minimum of the first and last thirds of
+five-second samples against a 256-Value limit. A test-only collection safepoint
+supports bounded lifetime children; it does not enable general collection.
 
-The `genex/libuv_timer` package now passes a macOS arm64 installed-app probe
-with 10,000 create/notify/close lifetimes, repeated wait_closed calls, a hidden
-source checkout, and no compiler at launch. The package pins libuv 1.52.x and
-uses the v5 ingress queue. Live native contexts/handles return to zero after
-each close, 20,000 handle close callbacks are recorded, and native roots and
-materialized leases return to baseline. The installed-app test also passes on
-Linux x86_64 under Rosetta at its default 100 lifetimes, with libuv 1.52.1
-built from source (Ubuntu 24.04 ships 1.48). Native x86_64 qualification
-remains open.
+The four standard gates passed at several checkpoints, including the
+reader-borrowing and later AtomicArc/native SDK continuations. Each table or
+hash below identifies a bounded build; evidence from one build must not be
+silently transferred to another. The last native ABI consolidation passed the
+broad `test_all` suite before deletion of the obsolete Nim function table;
+its focused suite passed and the full suite passed `nim check` afterward.
 
-The VM-3 lifetime batch probe builds a separate ORC `geneRcStats` binary and
-uses a test-only collection safepoint. On macOS arm64, the fixed-vocabulary
-eval/closure/cell/self-cycle/impl-failure/compile-failure workload held 881
-managed values after warm-up and batches of 1, 100, 1,000, and 10,000. All
-seven managed-class counts matched exactly, native roots and I/O leases
-remained zero, and the retained closure still executed. A second child
-process held 822 managed values and identical per-class counts while releasing
-10,000 selected
-ValueEq/Hash/Order Types; its retained Type still executed. The runner records
-binary and compiler identity, RSS, counters, and the last progress marker on
-timeout. A third child cancelled parked Tasks after each had created a Type
-and ValueEq impl; it held 794 managed values and zero root Tasks at every
-batch checkpoint. Mixed ownership graphs, module generations, cancellation
-during selection, and sustained service remain outside that narrow probe. On
-Linux x86_64 under Rosetta, all eight children held the same counts as on
-macOS. Three generation children commit and release a scalar module
-and a Type/protocol/impl module, and discard a prepared generation after
-failing a second one, 10,000 times each. VM-2 retirement tears down each
-module root once nothing outside its graph reaches it. The children hold 820,
-820, and 822 managed values at every checkpoint, with no generation-record,
-module-cache, compile-artifact, or impl growth. Before retirement the
-Type/protocol/impl module grew 15 managed values per release and each
-discard-plus-failure iteration grew 30. Retained module, function-only, and
-instance/Type controls still execute after release. Retirement runs only at
-release, discard, failed preparation, and the test collection point, and is
-off under AtomicArc.
-Two more children cover VM-3 gaps. A selection child cancels a Task parked
-between two impls of one eval unit and fails units after a partial selection;
-it holds 891 managed values with no open impl assemblies. An in-process
-service child serves and drives 10,000 HTTP request pairs through the native
-Client in one RC process and holds 866 values with no open I/O or requests.
-A cancellation service child cancels a held GET and aborts a streamed upload
-each iteration, so the server cancels that handler mid-body; it holds 968
-values through 10,000 iterations with no open I/O, Client, or in-flight
-requests (see the [lifetime ledger](../../tests/lifetime/LEDGER.md)).
+## Core workloads
 
-The CLI probe now builds a selected `c_library`, calls its C ABI function,
-and repeats that call after installing the application with the source
-checkout hidden, an empty artifact cache, and no C compiler. It also checks
-the locked dependency/resource, update generation, and failed-update
-rollback. On macOS arm64 the fixture pins the available 26.5 SDK in
-`tests/profiles/native-app/cli-toolchain.lock.json`; the host's current
-default 27 SDK cannot link this C library with the installed linker. This
-pin is recorded in the audit rather than silently changing the gate.
+### SCRIPT and installed CLI
 
-`gene/io` now exposes experimental qualified `AsyncReader`, `AsyncWriter`, and
-`IoResource` contracts plus `write_all` and bounded `copy`. Third-party Gene
-fakes exercise partial writes, EOF, repeatable wait_closed Tasks, and structured
-scope settlement. The admission/retirement core has bounded byte budgets and
-threaded tests; separate cleanup Tasks now survive user Task cancellation and
-nested-scope unwind. `gene/io/testing` exercises the native admission and
-late-completion path deterministically. Worker-backed POSIX file readers and
-writers and `io/pipe` pairs now pass bounded read/write/copy, blocked-peer,
-full-worker-pool fairness, EOF, and close tests on macOS. Blocked `io/pipe`
-adapter operations park in a kernel `poll(2)` watcher while waiting for
-readiness; `io_waiting_readiness` counts parked jobs across the process. Async
-subprocess stdout and stderr now stream Bytes into consumed `io/pipe` writers, and stdin
-reads Bytes from a consumed `io/pipe` reader. Borrowed endpoints auto-close
-after worker completion. Experimental TCP streams/listeners now pass loopback,
-slow-peer, cancellation, and byte-budget tests on macOS and on Linux x86_64
-under Rosetta; native x86_64 qualification remains open. The HTTP server's experimental stream mode now
-delivers bounded Content-Length and chunked request bodies as an `AsyncReader`;
-slow-body, backpressure, truncation, framing-error, and buffered-mode parity
-tests pass. Experimental `http/stream` responses pass binary, chunked,
-known-length, reader failure, slow-peer, and same-socket upload echo tests.
-The pinned Caddy 2.11.2 fixture now terminates HTTPS, overwrites incoming
-forwarding headers, and proxies to a loopback Gene streaming service. A
-60-second macOS arm64 probes completed 1,800 requests at about 30 requests/s,
-with p95 between 14.57 and 16.83 ms in four current release-binary repeats
-and zero tracked I/O leases/resources after graceful stop. Their maximum
-host-loop heartbeat gaps were 52–63 ms. An earlier repeat observed a 336 ms
-gap against the 250 ms target; that miss remains a qualification gap rather
-than a relaxed budget. The probe
-exercises streamed
-upload/response, SQLite file writes, eight concurrent clients, and repeated
-slow requests. The fixture is a probe because IO-3/NET-1/NET-2 remain
-experimental and VM-3 and native x86_64 Linux timing remain open. Under
-Rosetta on Linux x86_64 it passed with p95 11.73 ms and a 60 ms maximum
-heartbeat gap. The
-experimental owned Client
-reuses HTTP/1.1 connections on one Application transport and supports
-buffered/streamed responses, bounded AsyncReader uploads, and controlled
-GET/HEAD redirects. Local tests cover duplicate headers, binary POST,
-known-length and chunked uploads, upload cancellation, cross-origin credential
-stripping, TLS trust, captured proxy settings, per-origin caps, queue
-deadlines, and byte-budget retirement under ORC, AtomicArc, and ASAN. An
-upload's exclusive read borrow covers native and Gene-defined AsyncReaders,
-including held/dynamic sends, pipelines, inherited reads, pending-read admission,
-failed-admission rollback, and cancellation through ensure cleanup. Native
-backend aliases retain their lifecycle enforcement; custom convenience APIs
-need their own backend policy. Full platform qualification remains open.
+SCRIPT checks golden JSON, CSV, tree, process, and API output. Bad CSV, API
+errors, and child failures produce typed errors without publishing output.
+The macOS full audit used release binary SHA-256
+`d2eec8b1338fd972b19d55f0c3f01d036886c083a926b0e7e15b699965b9405a`.
 
-The experimental CSV reader now uses those qualified I/O contracts. Focused
-tests cover one-byte UTF-8/quote/CRLF boundaries, malformed headers, pending
-read cancellation, owned and unowned close, and a 10 MiB file. The DATA profile
-fixture passed deterministic 10 MiB and 100 MiB inputs with 32 groups on macOS
-arm64, plus typed failures for group and record limits. At matching EOF
-checkpoints the parser retained 13 payload bytes for either input and its
-per-reader peak was 66,570 bytes for either input, below the 8 MiB growth
-budget. Upstream I/O retained zero bytes at EOF and peaked at 65,536 bytes.
-The sampled process RSS peak was also unchanged in the latest run. Parser
-payload counters exclude allocator capacity and object overhead, so the RSS
-sample remains complementary evidence. This is a macOS probe, not a
-cross-platform release result.
+The CLI fixture builds a selected `c_library`, calls its C function, installs
+from a locked package, hides the source checkout, empties the artifact cache,
+and launches without a C compiler from another working directory. Updating
+changes the generation; a failed update leaves the previous installation
+current. The macOS fixture pins `MacOSX26.5.sdk` through
+[`cli-toolchain.lock.json`](../../tests/profiles/native-app/cli-toolchain.lock.json)
+because the host's default 27 SDK cannot link that C library with the installed
+linker. PKG-2 C derivations now include a per-build-installation host identity
+outside copied artifact stores. Imported compiler evidence permits only the
+required verified installed closure, never an ambient cache hit or rebuild.
+This is conservative local reuse, not a hermetic or destination-host claim.
 
-Run `python3 tests/profiles/native-app/run.py` for a machine-readable audit. `--probe-blocked` runs existing fixture code even when prerequisites are planned and records a probe result; it does not promote a workload. `--require-supported` fails unless every required workload has authoritative passing evidence. Reports go under `tmp/native-app-profile/` and record the Gene binary, platform, revision, stage state, and workload result. APP-1's path, walk, and CSV spec cases pass, and the script fixture exercises normal and three failed inputs. `nimble spec` passes after the catch-scope fix and the proposal-aware documentation lint. A future stage promotion must add conformance evidence and update both this ledger and the manifest.
+### SERVICE and cancellation
 
-Implementation order and the release gates are in [the profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order).
+The service probe uses Caddy 2.11.2 as an HTTPS proxy to a loopback Gene
+streaming service. It covers forwarded-header/trust checks, streamed uploads
+and responses, SQLite writes, eight clients, slow requests, and graceful stop.
+The 2026-09-24 full audit served 1,800 requests at 30/s with p95 14.83 ms,
+p99 47.92 ms, a 59 ms maximum heartbeat gap, and zero tracked I/O resources
+and leases. Three repeats of the same release binary had 52–63 ms maximum
+gaps. A serve-loop fix removed a 50 ms idle-select delay for in-process Client
+transfers; ten later 60-second repeats had 53–73 ms gaps and p95 9.5–16.8 ms.
+These passes do not cancel the later sustained failure.
 
-The [2026-09-26 reader-borrowing audit](native-app-2026-09-26-reader-borrowing.md)
-records the generic protocol admission and final four-gate/full-profile results.
-SCRIPT passes; CLI/SERVICE/DATA/LIFETIME remain probe passes. The 60-second
-SERVICE result has a 54 ms maximum heartbeat gap, managed growth 0, and clean
-shutdown; it does not substitute for the independent sustained-service gate.
+A two-hour baseline at revision `2439442` passed 216,000 requests at 30/s,
+p95 5.56 ms, p99 6.99 ms, a 112 ms maximum heartbeat gap, and zero managed
+slope (995 early/late minimum). It predates the stable-capture and
+cancellation repairs. The independent two-hour run on repaired revision
+`b7057b1` served the same 216,000 requests but returned `probe_failure`:
+**319 ms maximum heartbeat gap against the 250 ms gate**. The failing sample
+had 269 ms kernel wait overrun, zero loop work/CPU, no active connection, and
+no in-flight request. Its p95 was 11.46 ms; the runner stopped at the failed
+heartbeat gate, so that report cannot establish heap slope or shutdown
+cleanup. Reports are `tmp/service-2h-claude-baseline.json` and
+`tmp/service-2h-mixed-cancellation.json`.
 
-PKG-2 environment-dependent C derivations now carry a per-build-installation
-host identity outside artifact stores. A shared/copied store cannot authorize
-reuse on another build installation; imported compiler evidence can only replay
-a required verified installed closure. This conservative policy does not claim
-hermetic C builds or compatibility with an unqualified destination. PKG-3
-deployment and recovery are specified in [registry-service.md](../spec/registry-service.md).
-Linux work is deferred at the user's request; profile stages remain unchanged.
+Shorter runs later showed 211, 238, 222, 364, and 219 ms gaps, including one
+more gate failure. `gc_stats` sampling and SQLite calls did not explain them.
+Instrumented ORC collection took only 7–56 µs near process start, not during
+the stalls. CPU saturation and scheduler-priority experiments did not reproduce
+the failure. `(status server)` now separates loop wall/CPU work from select
+wait overrun. The cause remains open, and the owner deferred this investigation.
 
-The [2026-09-27 distribution audit](native-app-2026-09-27-distribution.md) records
-the native cache policy, persistent registry, and sampled value-backend outcomes.
-Six native/wasm semantic samples agree; unsupported web/C witness probes refuse
-execution. Full VAL backend/worker/lifetime qualification remains open.
+Stable closure capture now copies only immediate, Str, and Sym values; mutable
+reference-bearing captures use the activation Scope so a later object → closure
+cycle stays visible to retirement. Cancellation of server handlers requests
+scheduler unwind, preserving exactly-once `ensure` and waiting for read/handler
+cleanup. The ten-child mixed ownership fixture checks channel/timer/nested Task
+cancellation, retained graph usability, zero Fiber/readiness/I/O counters, and
+flat managed counts. The cancellation-repaired lifetime binary SHA-256 was
+`7f464e079911c9c2d37b140158771df7d70af27948bfbaeb04b39fe1bd816162`;
+its mixed and HTTP children held 929 and 1,044 managed Values. The later
+reader-borrowing checkpoint held 931 and 1,046 after adding read guards, with
+zero guards at every checkpoint.
 
-The [wasm qualification audit](native-app-2026-09-27-wasm.md) extends this to
-30 shared native/wasm error, reentry and activation cases. Optimized wasm passes
-70 Node ABI cases and the shared semantic/lifetime checks in Chromium, including
-flat occupied guest heap across separate host inputs. Result handles reclaim
-their registry entries; isolated eval roots use complete trial deletion.
-The browser process/server/report driver is Gene. Other browser engines,
-workers and opaque ownership graphs remain unqualified; VAL stages stay
-experimental, AtomicArc retirement stays off, and native Linux stays deferred.
+### DATA and long-lived VM
 
-The [AtomicArc experiment](native-app-2026-09-27-atomic.md) adds a separate
-private-generation qualification mode with independent header checks and
-worker/native-reader tests. It repairs nested worker pauses and acknowledges
-Fiber teardown before quiescence. Private scalar and Type generations are flat;
-published/canonical graphs stay pinned. Normal AtomicArc retirement remains off.
-The [staged design](../proposals/atomic-arc-retirement.md) defines the remaining
-native publication/fence and shared-generation gates.
+The DATA fixture processes deterministic 10 and 100 MiB CSV inputs into the
+same 32 groups, and rejects group/record limits with typed errors. At matching
+EOF checkpoints, parser payload retention is 13 bytes for either input; peak
+payload is 66,570 bytes for either size, below the 8 MiB growth budget.
+Upstream I/O retains zero bytes at EOF and peaks at 65,536 bytes. The counters
+exclude allocator capacity/object overhead; sampled RSS is complementary.
 
-The [publication continuation](native-app-2026-09-27-atomic-publication.md) records
-known Scope/ancestor/weak/code publication and excludes mutable published Scope
-tables from the experiment. SDK roots remain pinned after release; C ingress
-retains its existing physical-retirement fence. Native borrow quiescence and
-arbitrary Nim ownership transfers remain open. No stage is promoted.
+VM-2 retires released, discarded, and failed sandbox generations through
+trial deletion when no outside owner reaches their closed graph. Earlier
+Type/protocol/impl generations grew 15 Values per release and a
+failed-prepare pair grew 30 per iteration. The final bounded profile holds
+flat counts through 10,000 iterations and keeps retained Module, function,
+instance, and Type controls callable. The reader-borrowing ten-child baseline
+is:
 
-The [native entry admission audit](native-app-2026-09-27-native-admission.md)
-extends the experiment with SDK root/module entry fences, owner-progress
-deferral, cleanup after edge detachment and more code-publication edges.
-Escaped raw refs stay pinned; the full managed-borrow contract remains open.
+| Child | Warm/final managed Values |
+| --- | ---: |
+| Eval/failure; ValueEq/Hash/Order witnesses; Type cancellation | 881; 822; 794 |
+| Mixed cancellation; partial selection; in-process service; HTTP cancellation | 931; 891; 866; 1,046 |
+| Scalar; Type/protocol/impl; discarded/failed generations | 824; 824; 826 |
 
-The owner-selected [opaque managed SDK audit](native-app-2026-09-27-native-managed.md)
-adds mediated roots/results/environments, scoped borrows, wrapper/resource/
-Buffer/Task/Channel adapters and explicit legacy export. Managed-only private
-generation controls are flat, while legacy handoffs remain pinned. Actor,
-installed-extension, mutable shared and canonical graph gates remain open;
-no stage is promoted.
+The lifetime binary SHA-256 for that ten-child checkpoint was
+`af0cdfcd7494c7b9e6c762f56ebefd1ddaa283245f55d97a4d6eadb83c840088`.
+Each child matches every managed-class baseline after 1/100/1,000/10,000
+batches, with zero native roots and relevant Task/I/O/read-guard counters.
+Selected cancellation children also passed ASAN through 1,301 iterations;
+ASAN leak detection was disabled, so RC counters remain the managed-leak
+oracle. VM-2 retirement is off under AtomicArc and in wasm except where a
+separate host-specific path is explicitly qualified.
+
+## Async I/O and borrowing
+
+`gene/io` has experimental `AsyncReader`, `AsyncWriter`, and `IoResource`
+contracts. The owned Client's exclusive upload borrow and a scheduler-owned
+pending protocol-read admission cover canonical `AsyncReader:read` dispatch,
+including Gene implementations, held/dynamic sends, pipelines, inheritance,
+and `super`. A pending read refuses upload admission; an upload refuses caller
+reads with `IoBusy`. Client cancellation retains the borrow and cleanup lease
+until the read Task's `ensure` and transport cleanup settle. Completed pins
+retire on the root lane outside scheduler locks. Native adapters keep their own
+physical lifecycle; custom convenience methods or backend aliases need their
+own backend policy.
+
+The owned-Client suite passed 41 AtomicArc cases and 40 ORC cases (one worker
+case skipped), five custom-reader ASAN cases, and the RC zero-guard control.
+The full five-workload probe after this repair returned SCRIPT `pass` and four
+`probe_pass` results. SERVICE served 1,800 requests at 30/s, p95 5.69 ms,
+p99 9.10 ms, 54 ms maximum gap, zero managed slope (995 early/late minimum),
+and zero cleanup Tasks, leases, resources, and retained bytes. Its release/RC
+binary SHA-256 was
+`8cb5e0164e844f94e84f248e11e3fd6fe8d5b9512b9c392c3262f7365020b9ed`.
+The separate two-hour repaired-binary heartbeat failure remains authoritative.
+
+Worker-backed file I/O, pipe readiness, subprocess streams, TCP, streamed HTTP
+bodies/responses, gzip and ZIP adapters, direct TLS, and the owned Client have
+focused tests. The native application profile is not promoted by those
+component checks. The [I/O contracts](../proposals/async-io.md) and
+[lifetime ledger](../../tests/lifetime/LEDGER.md) track their physical owners.
+
+## Distribution and value operations
+
+PKG-3's `gene-registry` service admits complete signed trees before durable
+version selection. The real Caddy/CLI fixture publishes, resolves, syncs,
+installs, then launches a hosted dependency with source, registry, compiler,
+and user caches unavailable. Eight service tests pass normally and under
+ASAN, covering forged/corrupt objects, owner scoping, conflict/idempotence,
+yank persistence, storage/admission limits, writer exclusion, and restart
+recovery after test-only hard exits. Sustained registry operation, clustering,
+automatic published-object GC, power-loss qualification, and native Linux
+remain open. The [registry storage contract](../spec/registry-service.md)
+contains current implementation details.
+
+VAL-1–3 semantic equality/hash, indexed access, stable sorting, and nominal
+witnesses have native conformance and lifetime checks. The shared
+[value fixture](../../tests/fixtures/value_operations.json) exercises 30
+native/wasm error, reentry, activation, and witness cases. Unsupported
+implicit-witness combinations are refused before emitted web JS/TS or
+experimental typed-native C execution; sampled refusal is not backend parity.
+The [value proposal](../proposals/value-operations.md) keeps release criteria.
+
+The initial distribution checkpoint's CLI binary SHA-256 was
+`09c81f452900b7d37354f73f7161b32bde99e2ab4cc1d512742b4009e5a5fc0d`.
+Its six-sample fresh wasm binary SHA-256 was
+`0bfe460feaf66418a2a0d8582f973a83ece755d7ad88bffab89974ef497c09ce`.
+Those hashes describe that checkpoint, not the later expanded wasm fixture.
+
+## Wasm and backend parity
+
+The expanded shared fixture covers 30 cases, including recursive equality,
+indexed reentry, missing/invalid witness results, forbidden suspension,
+inheritance, separately evaluated Type identities, and failed publication.
+A guest trap fails the test rather than counting as a Gene error. The optimized
+RC-instrumented wasm audit passed 70 Node ABI cases and the same 30 semantic
+and lifetime controls in Chrome for Testing. Across 1/100/1,000 host inputs,
+all seven managed counts and occupied guest heap stayed flat; occupied heap
+was 3,362,256 bytes after warm-up. A retained Type/instance remained callable
+and returned to baseline after drop; 128 simultaneous result handles remained
+readable, stale/repeated free was safe, and live handles ended at zero.
+
+The audited optimized RC wasm SHA-256 was
+`7178cdba3f900cb37ff969442469556a8e43ccb03e34dd59eb7a9ca6ea274e59`;
+production without RC instrumentation was
+`3a8434f4fe8cca7ea0076f2b8f225f9ab4d31983102d774d7622a2dfa5f1784a`.
+A later managed-SDK/source checkpoint rebuilt wasm as
+`3e36b387797807ed21b6ca8c5998e1785746c97d606306458f938bbe4a45bf1c`:
+70 Node ABI cases and 30 Chrome shared/lifetime controls passed. The tracked
+`web/gene.js` and `web/gene.wasm` were not replaced. The browser driver and
+wasm build orchestration are Gene; Emscripten remains an external compiler.
+Other browsers, workers, opaque code/error graphs, and broader shared mutable
+ownership are unqualified. The [wasm harness](../../tests/test_wasm_browser.gene)
+and [workflow](../workflows.md) document reproduction.
+
+## AtomicArc retirement
+
+AAR-0 introduced an opt-in AtomicArc generation-retirement probe, not a normal
+runtime switch. AAR-1 added publication guards and native entry admission.
+Published Scope tables are not enumerated by the collector; known ancestors,
+weak defining scopes, compiled code edges, and native handoffs are marked
+before exposure. Direct raw Nim references remain permanently published.
+The native admission gate drains selected outer SDK entries before analysis,
+allows nested entries, defers owner-dependent work, and reopens admission
+before final-owner cleanup. It does not turn a raw `Value` returned by a Nim
+helper into a tracked borrow.
+
+The owner selected opaque managed handles in
+[the managed-borrow design](../proposals/native-managed-borrows.md). The
+mediated registry gives each root a monotonic ID, scoped admission, copied
+scalar/Bytes reads, frozen-container traversal, environment lookup/call/define,
+and Task/Channel/Actor/resource adapters. Weak/code Scope tickets follow
+qualified child and binding edges. Under the opt-in collector, private
+namespace, Type, Channel, Actor, and definition cycles return to flat managed
+counts through bounded 1/100/1,000/10,000 controls. Retained handles keep
+those graphs live until release; explicit export to a raw `GeneRoot` pins them
+irreversibly.
+
+The current managed qualification runner passes disabled/probe/ASAN/targeted
+TSAN at 1/39/39/10 cases; the AAR-0 compatibility runner passes 2/30/30/10.
+Their build commands and binary hashes are in
+`tmp/native-managed-qualification/report.json` and
+`tmp/atomic-retirement-qualification/report.json`. Normal AtomicArc
+retirement, AAR-2 shared/canonical reclamation, and AAR-3 activation/worker
+handoff remain disabled. Managed Actor worker execution stays root-only
+pending the demonstrated worker allocator-lifetime fix. Mutable shared
+Buffers/graphs, arbitrary direct Nim ownership transfers, opaque callbacks,
+and native cleanup requiring Gene worker progress remain outside the model.
+
+## Native ownership and C ABI
+
+There is now **one public C extension layout** in
+[`native_api.h`](../../src/gene/native_api.h), with unversioned `GeneApi` and
+`gene_module_init` names. Its numeric layout version is 6. The former v4 Nim
+function table, v5 ingress table, versioned loaders, and v5/v6 headers were
+removed. Direct Nim helpers remain for in-repo runtime code.
+
+The managed loader accepts opaque environment IDs and advertises only
+implemented feature bits. Its compiled C fixture checks layout, feature
+negotiation, copied reads, stale handles, call/define, frozen traversal, and
+AtomicArc attached-lane tokens. An ingress-only view of the same C layout
+powers `$native/ingress/open`; its C callback thread copies bytes and never
+touches Gene objects. `genex/libuv_timer` preserves the physical unregister
+proof: no future callbacks, zero in-flight entries, then handler settlement.
+The installed macOS arm64 timer app passed **10,000** create/notify/close
+lifetimes with source hidden and compiler unavailable, zero live C contexts
+and libuv handles after each close, 20,000 handle close callbacks, and native
+root/materialized-lease baselines.
+
+General retained C callback registration, a managed library lease spanning
+registrations, and migration of ingress's internally rooted Gene handler/Scope
+to mediated IDs remain open. The [native ABI design](../proposals/native-managed-extension-abi.md)
+and [ingress specification](../spec/native-ingress.md) define those gates.
+A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
+ingress tests pass; unchanged `538764d` reproduces the same failure. The
+supported AtomicArc threaded ingress suite passes.
+
+## Linux probe and open decisions
+
+An Ubuntu 24.04 `linux/amd64` Docker container under Apple-silicon Rosetta
+passed the five profile workloads and `nimble test`, `spec`, `leakcheck`, and
+AtomicArc `threadcheck` (1,538/775/64/521 cases at that checkpoint). SERVICE
+served 1,800 requests at 30/s with p95 11.73 ms and a 60 ms maximum heartbeat
+gap; the RC build held 995 managed Values at all 13 samples. The eight
+lifetime children matched macOS counts. This is probe evidence under
+emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
+utf8proc, and libcurl were older than the genex pins; the probe built pinned
+versions from source. Linux work is deferred by the owner.
+
+Next implementation work is general retained C callback registration with
+physical context/library retirement, then managed ingress handler ownership
+and managed package-loader integration. The SERVICE heartbeat investigation,
+Linux native timing, broader shared ownership, and profile promotion remain
+deferred or gated as described above. The
+[profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order)
+sets the wider release sequence.

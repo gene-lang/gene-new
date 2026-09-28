@@ -9,7 +9,7 @@ close callbacks. The consolidated adapter passed a 10,000-lifetime macOS
 installed-app probe with its source checkout hidden and compiler unavailable;
 native roots and materialized leases returned to baseline. Linux runtime
 qualification remains open. The current validation record is the
-[single native C ABI audit](../profiles/native-app-2026-09-28-native-abi-consolidation.md).
+[native ABI evidence](../profiles/native-app.md#native-ownership-and-c-abi).
 
 **Stages:** NATIVE-1 (native ingress/ABI), NATIVE-2 (subscription/binding), NATIVE-3 (package qualification).
 

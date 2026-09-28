@@ -100,4 +100,4 @@ existing contracts; they do not opt into these implicit canonical operations.
 This is sampled parity/refusal evidence, not full backend promotion. Wasm
 error/reentry/activation/lifetime and browser-host qualification, web/C witness
 implementation, custom worker support, and native Linux remain separate gates.
-See [the dated audit](../profiles/native-app-2026-09-27-distribution.md).
+See [the consolidated profile evidence](../profiles/native-app.md#distribution-and-value-operations).

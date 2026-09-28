@@ -10,7 +10,7 @@ is still rooted by the existing subscription implementation. General retained
 C callback registration and full managed ownership for ingress subscriptions
 remain to be implemented. The owner selected opaque handles in
 [Native managed borrows](native-managed-borrows.md). Current qualification is
-recorded in the [single native C ABI audit](../profiles/native-app-2026-09-28-native-abi-consolidation.md).
+recorded in the [consolidated native ABI evidence](../profiles/native-app.md#native-ownership-and-c-abi).
 
 ## Boundary and entry point
 
