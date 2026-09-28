@@ -39,6 +39,7 @@
        "foreign attached lane traverses handles while collector defers"
        "a released handle cannot invalidate an admitted borrow"
        "attached foreign lane completes a managed Task"
+       "managed definitions transfer weak Scope tickets to binding and result"
        "managed Actor keeps message provenance while its handler is parked"
        "managed Actor stays on root until worker allocations are qualified"
        "owner-dependent borrow callback never blocks its collecting lane"

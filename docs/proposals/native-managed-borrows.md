@@ -128,6 +128,14 @@ provenance it returns. `upgrade` and implicit `ActorRef T` contract narrowing
 replace managed ownership tickets on the root lane; these mutations reject a
 worker-lane call until worker-produced graph ownership is qualified.
 
+Managed environment definitions now transfer their known weak/code Scope
+provenance into a per-name binding ticket on the target Scope and independently
+into the returned handle. Gene `set`/redefinition releases the previous ticket
+after replacing the Value, including mirrored-slot writes. The retirement
+graph counts those Scope-to-Scope edges and detaches tickets with the retired
+bindings. Direct Nim mutation of `Scope.vars` bypasses this mediated contract
+and remains outside managed qualification.
+
 Do not mechanically classify every SDK function as a blocking drainable borrow.
 Constructors, mutation, trampoline execution and release can invoke cleanup or
 need root/worker progress. The collector must defer for those active operations.

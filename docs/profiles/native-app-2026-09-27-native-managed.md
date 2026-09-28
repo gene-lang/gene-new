@@ -71,6 +71,17 @@ found that a worker-created Actor field could survive after its worker's Nim
 allocator exited and be destroyed on the root lane. Keeping only parked Fibers
 alive did not solve the Actor-state case; worker execution remains an AAR-3 gate.
 
+Managed environment definitions now transfer weak/code Scope tickets to the
+target binding and independently to the returned root. Assignment and
+redefinition release the old ticket after replacing the stored Value; mirrored
+slot writes update their reflection before doing so. The retirement graph
+counts binding ticket edges and detaches them with retired Scope bindings.
+A weak Protocol survives either owner and then retires after both release;
+10,000 self-referential definition cycles return to a flat managed baseline
+under the opt-in collector. The default ORC control also retires 1/100/1,000
+cycles without managed-class growth.
+Direct Nim writes to `Scope.vars` remain outside this mediated contract.
+
 AtomicCell publication snapshots its current Value under the cell lock.
 Shared stores, swaps and CAS publish replacement Values before handoff, and
 last-owner cleanup runs after releasing the lock.
@@ -81,15 +92,15 @@ last-owner cleanup runs after releasing the lock.
 children with bounded deadlines and records hashes/commands/logs in
 `tmp/native-managed-qualification/`. Normal AtomicArc runs a disabled-retirement
 SDK control; the final fixed-source run passes disabled (one control), opt-in
-(35 cases), ASAN (35) and targeted TSAN (eight), without timeout or truncated
+(37 cases), ASAN (37) and targeted TSAN (nine), without timeout or truncated
 output. Binary SHA-256 values:
 
 | Mode | SHA-256 |
 | --- | --- |
-| Disabled | `d9355e87460643a1df1194d0cf9168213b48111f31a4193651a3fabcff860973` |
-| Opt-in | `fc31b1b19a1efb89dea7bc60b06089de6c91cb01aced88ad0ca36da8c1136be7` |
-| ASAN | `03dbd0c3ac35c4019f40a4b2da3221bb0a3aa6a4169d3701e5151b28b77e5dbf` |
-| TSAN | `085f77cf25c1f6b55afa612ba4d8e5c1eb841730eb229925e8180ea075566ad7` |
+| Disabled | `62827dad2934eda395cc4c4fad731a46e0e2db1bf11c7c3eebf594ac203d9176` |
+| Opt-in | `4379c3d27f82e2153652188b58ad9ecdf522c6c8291d9a18c7714b7d48c6a0e8` |
+| ASAN | `053cf9e22d9b11167e9a4c7b6a1a78d5765f5df7473766d2e14778af4cc6efb1` |
+| TSAN | `d70e4be7dfa344c6c0f8429605baaff480a7f61f5650a4d8da5f9e733c3a9ed0` |
 
 The opt-in controls check 1,000
 released/repeated IDs, wrong lane/runtime, copied binary data, nested handle
@@ -106,24 +117,23 @@ The separate qualification report is the evidence for this new SDK. The AAR-0
 retirement runner also passes on this tree: disabled (2), probe (30), ASAN (30)
 and targeted TSAN (10). Its current hashes and commands are under
 `tmp/atomic-retirement-qualification/` (disabled
-`863999d1c52ce3d12cacbe551f1e75dda60b9aab743076e4ab3edcd54504ec53`,
-probe `a7e7a26662555761961577037177510a921b137952f92d537daa8d6324b72564`,
-ASAN `687b29326175b866a3691ba73e204c87351513d1369137a56e4ff7ae5e328605`,
-TSAN `50772b2c420bfb55cd667278be68848da48be014fe121177099686481ae8b571`).
-The default ORC RC leak suite, executable specs and broad `nimble test` pass.
-Full `nimble threadcheck` passed on the Actor core; after
-a final Actor teardown-order adjustment, the managed and AAR-0 sanitizer
-runners and the ORC leak suite reran on the final source. Native ingress,
-workers, owned Client and the standard RC suite are covered by threadcheck.
+`d2fe3aa2fca340488b62fd43e3e0f9db2b6a0081c5853ccb5b98133ba8324202`,
+probe `393465373c80c5b5557150e94a8a350d98d40da11aa054f308669a1232288604`,
+ASAN `af1c5dd4b19614a4a19633f543829c4e9d911120bb3f74039bb03cfe6247df08`,
+TSAN `eae2a84aeffaa04e06d7f7732c8b814faf071524d5598ef15e9bd278a8c062c8`).
+The default ORC RC leak suite, executable specs and broad `nimble test` pass. Full
+`nimble threadcheck` passes on the binding-ticket core, including the ABI 6 C
+fixture, native ingress, workers, owned Client and the standard RC suite.
+The managed and AAR-0 sanitizer runners also pass on this core source.
 
-A fresh instrumented wasm build from the Actor core source has SHA-256
-`6f26bb79ca933b7bf418608cdef18b67d17cc4e0f9073766622370cb14861861`.
+A fresh instrumented wasm build from the binding-ticket core source has SHA-256
+`2e6ff9da5a3d1c0787ccd402ec88a78c304f13d80d61002b0e24253853b87414`.
 Node passes all 70 ABI cases. Google Chrome for Testing 147.0.7727.15 passes
 the 30 shared browser cases and lifetime controls: all managed classes and
 occupied heap are flat at sampled checkpoints, stale handles are rejected,
 live handles finish at zero, and the server shuts down gracefully with no
 pending cleanup, resource, lease or forced-connection count. Artifacts/reports
-are under `tmp/wasm-managed-actor-qualification/`; tracked `web/gene.js` and
+are under `tmp/wasm-managed-binding-qualification/`; tracked `web/gene.js` and
 `web/gene.wasm` were not regenerated. The managed Nim SDK itself is not linked
 into this wasm artifact.
 

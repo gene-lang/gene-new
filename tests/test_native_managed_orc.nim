@@ -86,3 +86,28 @@ suite "managed native ORC legacy handoff":
     check retireReleasedGenerations(pending) == 0
     check pending[0].lookup("answer").intVal == 42
     pending[0].vars.clear()
+
+  test "managed weak binding cycle retires after its handles release":
+    proc batch(count: int) =
+      for i in 0 ..< count:
+        var pending: seq[Scope]
+        block:
+          let scope = newGlobalScope()
+          scope.sandboxGenerationReleased = true
+          scope.define("answer", newInt(42))
+          pending = @[scope]
+          let protocol = newProtocol("BoundP", [], scope = scope)
+          let input = geneManagedRootFromVm(domain, host, protocol)
+          let environment = geneNewManagedEnvironment(domain, scope)
+          let defined = geneManagedDefine(environment, "self", input)
+          check defined.status == gsOk and defined.value != nil
+          geneManagedRelease(input)
+          geneManagedRelease(defined.value)
+          geneManagedEnvironmentRelease(environment)
+        check retireReleasedGenerations(pending) > 0
+    batch(1)
+    when defined(geneRcStats):
+      let baseline = liveManaged
+      for count in [100, 1000]:
+        batch(count)
+        check liveManaged == baseline

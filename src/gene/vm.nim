@@ -1742,6 +1742,12 @@ proc raiseUndefinedSymbol(name: string) {.noReturn.} =
   error.errorDetail = name
   raise error
 
+proc clearManagedBindingPins(scope: Scope, name: string) =
+  if scope.managedBindingPins.hasKey(name):
+    var retired = scope.managedBindingPins[name]
+    scope.managedBindingPins.del(name)
+    reset(retired) # after the former Value slot has been replaced
+
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool, permitRedefine = false) =
   scope.checkSlot(index, name)
@@ -1758,7 +1764,9 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
   checkStrictBindingUpdate(scope, name, stored)
   scope.slots[index] = stored
   if scope.slotMirror:
-    if scope.vars.hasKey(name) and scope.vars[name].fnErrorLease != nil:
+    if scope.vars.hasKey(name) and
+        (scope.vars[name].fnErrorLease != nil or
+         scope.managedBindingPins.hasKey(name)):
       # A stale reflection mirror must not keep a retired strict executable's
       # proof lease alive after the binding and its escaped values are gone.
       scope.vars[name] = stored
@@ -1766,6 +1774,7 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
     # reads .vars; materializeMirroredVars settles the hash on demand.
     scope.varsDirty = true
   scope.markSlotDefined(index)
+  scope.clearManagedBindingPins(name)
 
 proc scopeAtDepth(scope: Scope, depth: int, name: string): Scope =
   result = scope
@@ -1843,7 +1852,10 @@ proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
     checkStrictBindingUpdate(scope, name, v)
     scope.slots[index] = v
     if scope.slotMirror:
+      if scope.managedBindingPins.hasKey(name) and scope.vars.hasKey(name):
+        scope.vars[name] = v
       scope.varsDirty = true
+    scope.clearManagedBindingPins(name)
     return
   scope.storeSlot(index, name, v, requireExisting = true)
 
@@ -1936,6 +1948,7 @@ proc define*(scope: Scope, name: string, v: Value) =
     raise newException(GeneError, "duplicate binding: " & name)
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
+  scope.clearManagedBindingPins(name)
 
 proc redefine*(scope: Scope, name: string, v: Value) =
   ## `define` for a loop body's `var` and for the compiler's own pipeline
@@ -1949,12 +1962,14 @@ proc redefine*(scope: Scope, name: string, v: Value) =
     return
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = functionForScopeStorage(v, scope, binding = true)
+  scope.clearManagedBindingPins(name)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
   ## Internal overlay write for Env materialization: child Env bindings should
   ## shadow copied parent bindings without acting like source declarations.
   checkStrictBindingUpdate(scope, name, v)
   scope.vars[name] = v
+  scope.clearManagedBindingPins(name)
 
 proc assign*(scope: Scope, name: string, v: Value) =
   var s = scope
@@ -1969,6 +1984,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
       checkStrictBindingUpdate(s, name, stored)
       s.vars[name] = stored
       s.syncSlot(name, stored)
+      s.clearManagedBindingPins(name)
       return
     if s.wildcardFallbacks.hasKey(name):
       raise newException(GeneError,

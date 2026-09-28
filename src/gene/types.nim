@@ -505,6 +505,7 @@ type
     strictErrorLease*: RootRef
     parent*: Scope
     vars*: Table[string, Value]
+    managedBindingPins*: Table[string, seq[Scope]]
     wildcardFallbacks*: Table[string, WildcardFallback]
     exportExcludedNames*: HashSet[string]
     slots*: seq[Value]
@@ -3161,6 +3162,9 @@ proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
       value(s.slots[i])
     for v in s.vars.values:
       value(v)
+    for pins in s.managedBindingPins.values:
+      for source in pins:
+        scopeRef(source)
     for fallback in s.wildcardFallbacks.values:
       value(fallback.value)
     value(s.annotationSelfType)
@@ -3388,6 +3392,7 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
 
 type RetiredScopeBindings = object
   vars: Table[string, Value]
+  managedBindingPins: Table[string, seq[Scope]]
   wildcardFallbacks: Table[string, WildcardFallback]
   slots: seq[Value]
   slotTypes: seq[TypeBinding]
@@ -3405,6 +3410,7 @@ type RetiredScopeBindings = object
 
 proc takeRetiredBindings(s: Scope): RetiredScopeBindings =
   result.vars = move s.vars
+  result.managedBindingPins = move s.managedBindingPins
   result.wildcardFallbacks = move s.wildcardFallbacks
   result.slots = move s.slots
   result.slotTypes = move s.slotTypes

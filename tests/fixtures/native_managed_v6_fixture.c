@@ -112,9 +112,9 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
     return GENE_API_V6_ERROR;
 
   const uint8_t callable_name[] = "v6_plus_one";
-  const uint8_t rejected_name[] = "bad_function";
+  const uint8_t function_name[] = "module_function";
   GeneHandleV6 callable = 0, arg = 0, returned = 0, error = 0;
-  GeneHandleV6 rejected_definition = 0;
+  GeneHandleV6 function_definition = 0;
   int64_t answer = 0;
   if (api->lookup(api->runtime_context, environment, callable_name,
                   sizeof(callable_name) - 1, &callable, NULL) != GENE_API_V6_OK ||
@@ -124,13 +124,23 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
       !returned || error ||
       api->copy_i64(api->runtime_context, returned, &answer, NULL) != GENE_API_V6_OK ||
       answer != 42 ||
-      api->define(api->runtime_context, environment, rejected_name,
-                  sizeof(rejected_name) - 1, callable,
-                  &rejected_definition, &operation_diag) != GENE_API_V6_ERROR ||
-      rejected_definition != 0 || operation_diag.required == 0 ||
+      api->define(api->runtime_context, environment, function_name,
+                  sizeof(function_name) - 1, callable,
+                  &function_definition, &operation_diag) != GENE_API_V6_OK ||
+      !function_definition || operation_diag.required != 0 ||
       api->release(api->runtime_context, callable, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, function_definition,
+                   NULL) != GENE_API_V6_OK ||
       api->release(api->runtime_context, arg, NULL) != GENE_API_V6_OK ||
       api->release(api->runtime_context, returned, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  GeneHandleV6 exported_fn = 0;
+  if (api->lookup(api->runtime_context, environment, function_name,
+                  sizeof(function_name) - 1, &exported_fn,
+                  NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, exported_fn,
+                   NULL) != GENE_API_V6_OK)
     return GENE_API_V6_ERROR;
 
   const uint8_t failing_name[] = "v6_fail";

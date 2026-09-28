@@ -413,10 +413,15 @@ proc geneManagedDefine*(environment: GeneManagedEnvironment,
     try:
       domain.requireOpen()
       let scope = domain.environmentScope(environment)
-      let stored = domain.liveRootValue(value)
+      let entry = domain.liveRootEntry(value)
+      let stored = entry.value
+      var pins = ownedCopy(entry.scopes)
+      pins.add vm.publishManagedRootForRetirement(stored)
       scope.define(name, stored)
+      if pins.len > 0:
+        scope.managedBindingPins[name] = pins
       result.status = gsOk
-      result.value = domain.addRoot(stored)
+      result.value = geneManagedRootFromVm(domain, scope, stored)
     except GeneError as e:
       result.status = gsError
       result.message = e.msg
@@ -1414,9 +1419,6 @@ proc v6Define(context: pointer, environment: uint64,
     let env = GeneManagedEnvironment(
       root: GeneManagedRoot(domain: domain, id: environment))
     let input = GeneManagedRoot(domain: domain, id: value)
-    if domain.liveRootEntry(input).scopes.len > 0:
-      raise newException(GeneError,
-        "native v6 define of scope-bearing values needs binding tickets")
     result = v6Result(geneManagedDefine(env,
       v6CopiedName(name, nameLength), input), output, nil, diagnostic)
   except GeneError as e:

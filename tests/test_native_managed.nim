@@ -282,6 +282,55 @@ suite "managed native handles":
     geneManagedRelease(defined.value)
     geneManagedEnvironmentRelease(environment)
 
+  test "managed definitions transfer weak Scope tickets to binding and result":
+    let target = newGlobalScope()
+    let environment = geneNewManagedEnvironment(domain, target)
+    var first = privateWeakProtocol()
+    let defined = geneManagedDefine(environment, "plugin", first.root)
+    check defined.status == gsOk and defined.value != nil
+    geneManagedRelease(first.root)
+    check testRetireAtomicGenerationRoots(host, first.roots) == 0
+    target.assign("plugin", newInt(1))
+    check testRetireAtomicGenerationRoots(host, first.roots) == 0
+    geneManagedRelease(defined.value)
+    check testRetireAtomicGenerationRoots(host, first.roots) > 0
+
+    var second = privateWeakProtocol()
+    let another = geneManagedDefine(environment, "plugin2", second.root)
+    check another.status == gsOk and another.value != nil
+    geneManagedRelease(second.root)
+    geneManagedRelease(another.value)
+    check testRetireAtomicGenerationRoots(host, second.roots) == 0
+    target.assign("plugin2", newInt(2))
+    check testRetireAtomicGenerationRoots(host, second.roots) > 0
+    geneManagedEnvironmentRelease(environment)
+
+  test "managed weak definition cycles retire after every owner drops":
+    proc batch(count: int) =
+      for i in 0 ..< count:
+        var roots: seq[Scope]
+        block:
+          let scope = newGlobalScope()
+          scope.sandboxGenerationReleased = true
+          scope.define("answer", newInt(42))
+          roots = @[scope]
+          let protocol = newProtocol("DefinedP", [], scope = scope)
+          let input = geneManagedRootFromVm(domain, host, protocol)
+          let environment = geneNewManagedEnvironment(domain, scope)
+          let defined = geneManagedDefine(environment, "self", input)
+          check defined.status == gsOk and defined.value != nil
+          geneManagedRelease(input)
+          geneManagedRelease(defined.value)
+          geneManagedEnvironmentRelease(environment)
+        check testRetireAtomicGenerationRoots(host, roots) > 0
+    batch(1)
+    let baseline = liveManaged
+    let classes = managedLiveByKind()
+    for count in [100, 1000, 10000]:
+      batch(count)
+      check liveManaged == baseline
+      check managedLiveByKind() == classes
+
   test "private managed buffers keep typed item ownership":
     let environment = geneNewManagedEnvironment(domain, host)
     let initial = geneManagedRootFromVm(domain, host, newInt(41))
