@@ -2,7 +2,7 @@
 ## unchanged. No raw Value or Scope is returned by this module except through
 ## the explicitly irreversible legacy export.
 
-import std/[dynlib, locks, tables]
+import std/[dynlib, locks, tables, unicode]
 import ./[native_api, types, vm]
 when defined(geneAtomicGenerationRetirementProbe):
   import ./retirement_native_gate
@@ -1050,7 +1050,10 @@ proc geneExportManagedRoot*(borrow: GeneNativeBorrow): GeneRoot =
     vm.publishNativeRootForRetirement(entry.value)
   result = geneRoot(entry.value) # irreversible raw publication
 
-const GeneApiV6IdentityFeature* = 1'u64
+const
+  GeneApiV6IdentityFeature* = 1'u64
+  GeneApiV6ScalarFeature* = 2'u64
+  GeneApiV6MaxCopyBytes* = 64 * 1024 * 1024
 
 proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
   if output == nil: return
@@ -1087,6 +1090,9 @@ proc v6Retain(context: pointer, id: uint64, output: ptr uint64,
   except GenePanic as e:
     v6Diagnostic(diagnostic, e.msg)
     result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
 
 proc v6Release(context: pointer, id: uint64,
                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
@@ -1103,6 +1109,9 @@ proc v6Release(context: pointer, id: uint64,
   except GenePanic as e:
     v6Diagnostic(diagnostic, e.msg)
     result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
 
 proc v6Kind(context: pointer, id: uint64, output: ptr uint32,
             diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
@@ -1136,6 +1145,9 @@ proc v6Kind(context: pointer, id: uint64, output: ptr uint32,
   except GenePanic as e:
     v6Diagnostic(diagnostic, e.msg)
     result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
 
 proc v6NewI64(context: pointer, value: int64, output: ptr uint64,
               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
@@ -1154,16 +1166,202 @@ proc v6NewI64(context: pointer, value: int64, output: ptr uint64,
   except GenePanic as e:
     v6Diagnostic(diagnostic, e.msg)
     result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6CopiedInput(data: ptr uint8, length: csize_t): string =
+  if length > csize_t(GeneApiV6MaxCopyBytes):
+    raise newException(GeneError, "native v6 byte input exceeds limit")
+  if length > 0 and data == nil:
+    raise newException(GeneError, "native v6 byte input is nil")
+  result = newString(int(length))
+  if length > 0:
+    copyMem(addr result[0], data, int(length))
+
+proc v6CopyText(context: pointer, id: uint64, output: ptr GeneOutBytesV6,
+                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 text output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let copied = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): string = geneManagedText(b))
+    if validateUtf8(copied) != -1:
+      raise newException(GeneError, "managed native Str is not valid UTF-8")
+    output.required = csize_t(copied.len)
+    if output.data != nil and output.capacity > 0 and copied.len > 0:
+      let count = if output.capacity > csize_t(copied.len): copied.len
+                  else: int(output.capacity)
+      copyMem(output.data, unsafeAddr copied[0], count)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6CopyBytes(context: pointer, id: uint64, output: ptr GeneOutBytesV6,
+                 diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 Bytes output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let copied = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): seq[byte] = geneManagedBytes(b))
+    output.required = csize_t(copied.len)
+    if output.data != nil and output.capacity > 0 and copied.len > 0:
+      let count = if output.capacity > csize_t(copied.len): copied.len
+                  else: int(output.capacity)
+      copyMem(output.data, unsafeAddr copied[0], count)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6CopyBool(context: pointer, id: uint64, output: ptr uint8,
+                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 Bool output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    output[] = if geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): bool = geneManagedBool(b)): 1'u8 else: 0'u8
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6CopyI64(context: pointer, id: uint64, output: ptr int64,
+               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 Int output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    output[] = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): int64 = geneManagedInt64(b))
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6NewBool(context: pointer, value: uint8, output: ptr uint64,
+               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil or value > 1:
+      raise newException(GeneError, "native v6 Bool input or output is invalid")
+    let domain = v6Domain(context)
+    output[] = geneManagedRootFromVm(domain, domain.rootScope,
+                                      newBool(value == 1)).id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6NewText(context: pointer, data: ptr uint8, length: csize_t,
+               output: ptr uint64,
+               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 text output is nil")
+    let domain = v6Domain(context)
+    let copied = v6CopiedInput(data, length)
+    if validateUtf8(copied) != -1:
+      raise newException(GeneError, "native v6 text is not valid UTF-8")
+    output[] = geneManagedRootFromVm(domain, domain.rootScope,
+                                      newStr(copied)).id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6NewBytes(context: pointer, data: ptr uint8, length: csize_t,
+                output: ptr uint64,
+                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 Bytes output is nil")
+    let domain = v6Domain(context)
+    output[] = geneManagedRootFromVm(domain, domain.rootScope,
+                                      newBytes(v6CopiedInput(data, length))).id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
 
 proc configureV6Api(domain: GeneManagedDomain) =
   domain.v6Api = GeneApiV6(version: 6'u32,
                            structSize: uint32(sizeof(GeneApiV6)),
-                           featureBits: GeneApiV6IdentityFeature,
+                           featureBits: GeneApiV6IdentityFeature or
+                                        GeneApiV6ScalarFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](v6Retain),
                            release: cast[pointer](v6Release),
                            kind: cast[pointer](v6Kind),
+                           copyBool: cast[pointer](v6CopyBool),
+                           copyI64: cast[pointer](v6CopyI64),
+                           copyText: cast[pointer](v6CopyText),
+                           copyBytes: cast[pointer](v6CopyBytes),
+                           newBool: cast[pointer](v6NewBool),
                            newI64: cast[pointer](v6NewI64))
+  domain.v6Api.newText = cast[pointer](v6NewText)
+  domain.v6Api.newBytes = cast[pointer](v6NewBytes)
 
 const GeneModuleInitV6Symbol* = "gene_module_init_v6"
 

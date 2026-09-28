@@ -11,6 +11,8 @@
 #define GENE_API_V6_CANCELLED UINT32_C(3)
 #define GENE_API_V6_PENDING UINT32_C(4)
 #define GENE_API_V6_IDENTITY_FEATURE UINT64_C(1)
+#define GENE_API_V6_SCALAR_FEATURE UINT64_C(2)
+#define GENE_API_V6_MAX_COPY_BYTES (64u * 1024u * 1024u)
 
 typedef uint64_t GeneHandleV6;
 typedef uint64_t GeneRegistrationV6;

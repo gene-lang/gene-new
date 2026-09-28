@@ -3,10 +3,11 @@
 The owner-selected opaque extension path now has an additive C layout in
 `src/gene/native_api_v6.h` and an initial loader in
 `src/gene/native_managed.nim`. The v4/v5 API tables, symbols and versioned
-loader are unchanged. The ABI 6 table advertises only the root-lane
-`GENE_API_V6_IDENTITY_FEATURE`: opaque-ID retain/release, kind and Int64
-construction. All other operation pointers remain null. Attached-lane calls,
-callbacks and ingress are not qualified.
+loader are unchanged. The ABI 6 table advertises root-lane
+`GENE_API_V6_IDENTITY_FEATURE` for opaque-ID retain/release, kind and Int64
+construction, and `GENE_API_V6_SCALAR_FEATURE` for copied Bool/Int64/Str/Bytes
+reads plus Bool/Str/Bytes constructors. Other operation pointers remain null.
+Attached-lane calls, callbacks and ingress are not qualified.
 
 `geneManagedLoadModuleV6` requires a live managed library and environment on
 the root lane. It rejects unavailable required feature bits before invoking C,
@@ -20,22 +21,27 @@ is not registered as a permanent base scope in this slice.
 `tests/fixtures/native_managed_v6_fixture.c` compiles against the public C
 header and checks the exact version, structure size, runtime context and
 environment ID. It exercises Int64 creation, kind, retain, release and stale-ID
-rejection through the C table. `tests/test_native_managed_v6.nim` covers accepted init,
+rejection through the C table. It also checks copied scalar reads, embedded-NUL
+UTF-8 text, arbitrary binary octets, two-call output length probing and invalid
+UTF-8 rejection. `tests/test_native_managed_v6.nim` covers accepted init,
 pre-init feature rejection, copied C failure diagnostics, 100 repeated failed
-inits, released library handles and a library without the v6 symbol. Both
-normal ORC, disabled AtomicArc and genuine AtomicArc probe pass two cases;
-ASAN passes the same two
-without a reported memory error. The existing 35-case managed SDK probe also
+inits, released library handles and a library without the v6 symbol. The C
+fixture also rejects an input claiming more than the 64 MiB copy limit before
+reading its one-byte source; its source SHA-256 is
+`45d3a84fb6688c95b611a97c928165d1e58f146c22fd15fb91d4150135ca7c62`.
+Normal ORC, disabled AtomicArc and genuine AtomicArc probe pass two cases;
+ASAN passes the same two without a reported memory error. The existing
+35-case managed SDK probe also
 passes after the domain-table change. Binary SHA-256 values:
 
 | Mode | SHA-256 |
 | --- | --- |
-| ORC | `1e962bf3fb6c65128c866f26b31abe1ab7c85d275e1586e6868c66552f3b23b5` |
-| AtomicArc disabled | `a2efaaacdd5ac725a4a7130e4fca052bfb97816b525fa55fa92ab989a212ed90` |
-| AtomicArc probe | `cdb5873135501a11ac7bfa2dd24c5854374ee08f1c5129df66e68d2fa1abc0a6` |
-| ASAN probe | `dcf62b79b19f376eaf8b27cebfa761e7e6190e7fa5d3984d0897787b5637952a` |
+| ORC | `f70770a75e87111b1c301824cddb8fd0ad7ed601641497fdf22caa8ea8e951c0` |
+| AtomicArc disabled | `968ef0c4a4366cccc0d5f4441c2a55a14cee3647ed7027cfc29e7fefabead7fc` |
+| AtomicArc probe | `03a4417c025b57aab33e21a72b7a18992406e8f792299320b968bd0bc5790815` |
+| ASAN probe | `5e14cd06f3f19f3fb06a77e3787286443fcfad19af9ba66969da2b5e11b3fdcb` |
 
-Next are copied text/Bytes, frozen traversal, call/define, attached-lane
+Next are frozen traversal, call/define, attached-lane
 admission, callback registration and
 physical library/context retirement, then ABI 6 byte-ingress linkage and
 package metadata dispatch. The one-feature table does not qualify installed

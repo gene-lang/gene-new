@@ -1,9 +1,9 @@
 # Managed native extension ABI
 
 **Status:** the ABI 6 layout, exact loader negotiation and a root-lane
-identity/Int64 feature are implemented against a compiled C fixture. Copied
-text/Bytes, frozen traversal, calls, definitions, callbacks and ingress remain
-unimplemented and their feature bits are not advertised. The owner
+identity/Int64 and copied scalar/Bytes features are implemented against a
+compiled C fixture. Frozen traversal, calls, definitions, callbacks and ingress
+remain unimplemented and their feature bits are not advertised. The owner
 selected opaque managed handles in [Native managed borrows](native-managed-borrows.md).
 Qualification evidence is in
 [the ABI 6 loader audit](../profiles/native-app-2026-09-27-native-managed-v6.md).
@@ -53,6 +53,11 @@ Feature bit 0 (`GENE_API_V6_IDENTITY_FEATURE = 1`) currently permits only
 root-lane `retain`, `release`, `kind` and `new_i64`. The future attached-lane
 feature will make the same operations available to an explicitly attached
 foreign lane; the table currently leaves attach/detach null.
+Feature bit 1 (`GENE_API_V6_SCALAR_FEATURE = 2`) adds root-lane Bool/Int64
+copies, copied Str/Bytes reads and Bool/Str/Bytes constructors. Incoming text
+must be valid UTF-8; Bytes may contain any octets. One copied input is bounded
+to 64 MiB, and both output reads support a length probe with a zero-capacity
+buffer. Neither feature exposes a Gene pointer.
 
 ```c
 #include <stddef.h>
@@ -214,9 +219,9 @@ extension's actual use, not by this ABI.
 2. Back IDs with the existing managed-domain registry; implement retain,
    release, copied scalar/Bytes reads, frozen traversal, call and define. A
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
-   without exposing raw Gene bits. Root-lane retain/release/kind/new-Int64 is
-   the first advertised feature bit; attached-lane use and the other operations
-   are still pending.
+   without exposing raw Gene bits. Root-lane identity and copied scalar/Bytes
+   operations are advertised as separate feature bits. Attached-lane use,
+   frozen traversal, call and define are still pending.
 3. Add callback registration and copied arguments/results. Test nested call,
    typed error/panic/cancel propagation, close during callback, context cleanup
    re-entry and library unload refusal until physical retirement.
