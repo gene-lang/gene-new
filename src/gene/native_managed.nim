@@ -2,12 +2,47 @@
 ## unchanged. No raw Value or Scope is returned by this module except through
 ## the explicitly irreversible legacy export.
 
-import std/[locks, tables]
+import std/[dynlib, locks, tables]
 import ./[native_api, types, vm]
 when defined(geneAtomicGenerationRetirementProbe):
   import ./retirement_native_gate
 
 type
+  GeneOutBytesV6* {.bycopy.} = object
+    data*: ptr uint8
+    capacity*: csize_t
+    required*: csize_t
+
+  GeneApiV6* {.bycopy.} = object
+    version*: uint32
+    structSize*: uint32
+    featureBits*: uint64
+    runtimeContext*: pointer
+    attachThread*: pointer
+    detachThread*: pointer
+    retain*: pointer
+    release*: pointer
+    kind*: pointer
+    copyBool*: pointer
+    copyI64*: pointer
+    copyText*: pointer
+    copyBytes*: pointer
+    newBool*: pointer
+    newI64*: pointer
+    newText*: pointer
+    newBytes*: pointer
+    length*: pointer
+    copyKey*: pointer
+    traverse*: pointer
+    call*: pointer
+    define*: pointer
+    registerCallback*: pointer
+    requestClose*: pointer
+    waitClosed*: pointer
+
+  GeneModuleInitV6Proc* = proc(api: ptr GeneApiV6, environment: uint64,
+                               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.}
+
   ManagedEntry = ref object
     scopes: seq[Scope] # strong known Scope/code provenance until physical release
     value: Value
@@ -22,6 +57,7 @@ type
     producers: int
     producerEntries: Table[uint64, ManagedEntry]
     closed: bool
+    v6Api: GeneApiV6
 
   GeneManagedRoot* = ref object
     domain: GeneManagedDomain
@@ -96,6 +132,9 @@ proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
   result.roots = initTable[uint64, ManagedEntry]()
   result.producerEntries = initTable[uint64, ManagedEntry]()
   initLock(result.lock)
+  result.v6Api = GeneApiV6(version: 6'u32,
+                           structSize: uint32(sizeof(GeneApiV6)),
+                           runtimeContext: cast[pointer](result))
 
 proc addRoot(domain: GeneManagedDomain, value: Value,
              scopes: seq[Scope] = @[]): GeneManagedRoot =
@@ -1008,6 +1047,73 @@ proc geneExportManagedRoot*(borrow: GeneNativeBorrow): GeneRoot =
   when defined(geneAtomicGenerationRetirementProbe):
     vm.publishNativeRootForRetirement(entry.value)
   result = geneRoot(entry.value) # irreversible raw publication
+
+const GeneModuleInitV6Symbol* = "gene_module_init_v6"
+
+proc geneManagedLoadModuleV6*(domain: GeneManagedDomain,
+    library: GeneManagedRoot, environment: GeneManagedEnvironment,
+    name: string, requiredFeatures = 0'u64): GeneManagedResult =
+  ## Initial ABI 6 loader slice. The table advertises no callable features
+  ## yet; a library requiring any operation is rejected before its initializer.
+  ## v4/v5 continue through their original versioned loader unchanged.
+  withManagedProgress:
+    var moduleEnvironment: GeneManagedEnvironment
+    try:
+      domain.requireOpen()
+      let parentScope = domain.environmentScope(environment)
+      let lib = domain.liveRootValue(library)
+      if lib.kind != vkFfiLibrary or lib.ffiLibraryClosed:
+        raise newException(GeneError,
+          "managed v6 module load requires an open ffi/Library")
+      if name.len == 0:
+        raise newException(GeneError, "managed v6 module name is empty")
+      if (requiredFeatures and not domain.v6Api.featureBits) != 0:
+        raise newException(GeneError,
+          "native v6 required feature bits are unavailable")
+      let symbol = symAddr(cast[LibHandle](lib.ffiLibraryHandle),
+                           GeneModuleInitV6Symbol)
+      if symbol == nil:
+        raise newException(GeneError,
+          "native v6 initializer not found: " & GeneModuleInitV6Symbol)
+      let moduleScope = newScope(parentScope)
+      moduleScope.moduleRoot = true
+      moduleScope.moduleBase = nil
+      moduleScope.moduleStatic = true
+      moduleEnvironment = geneNewManagedEnvironment(domain, moduleScope)
+      var bytes: array[512, uint8]
+      var diagnostic = GeneOutBytesV6(data: addr bytes[0],
+                                      capacity: csize_t(bytes.len))
+      let initializer = cast[GeneModuleInitV6Proc](symbol)
+      let code = initializer(addr domain.v6Api, moduleEnvironment.root.id,
+                             addr diagnostic)
+      if code != 0:
+        let count = if diagnostic.required > csize_t(bytes.len): bytes.len
+                    else: int(diagnostic.required)
+        var message = "native v6 initializer returned " & $code
+        if count > 0:
+          message.add ": "
+          for i in 0 ..< count:
+            message.add char(bytes[i])
+        result.status = case code
+          of 2'u32: gsPanic
+          of 3'u32: gsCancelled
+          else: gsError
+        result.message = message
+        return
+      let root = newNamespace(name, moduleScope, lib.ffiLibraryPath,
+                              moduleRoot = true)
+      let moduleValue = newModule(name, root, lib.ffiLibraryPath)
+      result.value = geneManagedRootFromVm(domain, parentScope, moduleValue)
+      result.status = gsOk
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+    finally:
+      if moduleEnvironment != nil:
+        geneManagedEnvironmentRelease(moduleEnvironment)
 
 proc geneManagedClose*(domain: GeneManagedDomain): bool =
   domain.requireDomain()

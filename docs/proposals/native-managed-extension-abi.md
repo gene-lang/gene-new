@@ -1,7 +1,11 @@
 # Managed native extension ABI
 
-**Status:** implementation contract for the next AAR-1 increment. The owner
+**Status:** the ABI 6 layout, zero-feature loader, exact negotiation and C
+fixture are implemented. Handle operations, callbacks and ingress remain
+unimplemented and their feature bits are not advertised. The owner
 selected opaque managed handles in [Native managed borrows](native-managed-borrows.md).
+Qualification evidence is in
+[the ABI 6 loader audit](../profiles/native-app-2026-09-27-native-managed-v6.md).
 This ABI adds a versioned C-facing extension path. Existing v4 `GeneApi` and v5
 byte-ingress layouts, symbols, packages and lifetime rules stay unchanged.
 
@@ -200,6 +204,8 @@ extension's actual use, not by this ABI.
 1. Add the isolated v6 table and exact loader branch with a C fixture that
    checks layout/version/feature negotiation. Keep v4/v5 fixture outputs
    unchanged. Establish domain/context ownership before loading a module.
+   The initial `geneManagedLoadModuleV6` implements this slice as an additive
+   Nim entry; package metadata dispatch is still pending.
 2. Back IDs with the existing managed-domain registry; implement retain,
    release, copied scalar/Bytes reads, frozen traversal, call and define. A
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
