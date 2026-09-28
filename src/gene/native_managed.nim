@@ -68,6 +68,7 @@ type
     releaseNode: ManagedProducerRelease
     copyKind: uint32
     copyScalar: int64
+    copyReal: float64
     copyData: pointer
     copyLength: int
     copyNext: ManagedCProducer
@@ -157,6 +158,7 @@ const
   GeneCopiedI64 = 2'u32
   GeneCopiedText = 3'u32
   GeneCopiedBytes = 4'u32
+  GeneCopiedF64 = 5'u32
   GeneCopiedQueueCount = 256
   GeneCopiedQueueBytes = 64 * 1024 * 1024
 
@@ -398,6 +400,12 @@ proc geneManagedInt64*(borrow: GeneNativeBorrow): int64 =
   if value.kind != vkInt or not value.intFitsInt64:
     raise newException(GeneError, "managed native Int does not fit in int64")
   value.intVal
+
+proc geneManagedFloat64*(borrow: GeneNativeBorrow): float64 =
+  let value = borrow.requireBorrow().value
+  if value.kind != vkFloat:
+    raise newException(GeneError, "managed native value is not a Float")
+  value.floatVal
 
 proc geneManagedText*(borrow: GeneNativeBorrow): string =
   let value = borrow.requireBorrow().value
@@ -1156,6 +1164,7 @@ const
   GeneApiCallbackFeature* = 64'u64
   GeneApiTaskProducerFeature* = 128'u64
   GeneApiTaskCopyFeature* = 256'u64
+  GeneApiFloatFeature* = 512'u64
   GeneApiMaxCopyBytes* = 64 * 1024 * 1024
 
 proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
@@ -1379,6 +1388,27 @@ proc apiNewI64(context: pointer, value: int64, output: ptr uint64,
     apiDiagnostic(diagnostic, e.msg)
     result = 1
 
+proc apiNewF64(context: pointer, value: float64, output: ptr uint64,
+               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native ABI Float output is nil")
+    let domain = apiDomain(context)
+    output[] = geneManagedRootFromVm(domain, domain.rootScope,
+                                      newFloat(value)).id
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
 proc apiCopiedInput(data: ptr uint8, length: csize_t): string =
   if length > csize_t(GeneApiMaxCopyBytes):
     raise newException(GeneError, "native ABI byte input exceeds limit")
@@ -1474,6 +1504,28 @@ proc apiCopyI64(context: pointer, id: uint64, output: ptr int64,
     let root = GeneManagedRoot(domain: domain, id: id)
     output[] = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): int64 = geneManagedInt64(b))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
+proc apiCopyF64(context: pointer, id: uint64, output: ptr float64,
+                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native ABI Float output is nil")
+    let domain = apiDomain(context, rootOnly = false)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    output[] = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): float64 = geneManagedFloat64(b))
     apiDiagnostic(diagnostic, "")
     result = 0
   except GeneError as e:
@@ -2381,16 +2433,19 @@ proc apiTaskSubmitCopy(context: pointer, token: uint64,
     if source == nil:
       raise newException(GeneError, "native copied Task result is nil")
     let item = source[]
-    if item.kind > GeneCopiedBytes:
+    if item.kind > GeneCopiedF64:
       raise newException(GeneError, "native copied Task kind is invalid")
     if item.kind == GeneCopiedText or item.kind == GeneCopiedBytes:
-      if item.scalar != 0 or item.length > csize_t(GeneApiMaxCopyBytes) or
+      if item.scalar != 0 or item.real != 0 or
+          item.length > csize_t(GeneApiMaxCopyBytes) or
           (item.length > 0 and item.data == nil):
         raise newException(GeneError, "native copied Task span is invalid")
       length = int(item.length)
     elif item.length != 0 or item.data != nil or
         (item.kind == GeneCopiedNil and item.scalar != 0) or
-        (item.kind == GeneCopiedBool and item.scalar notin [0'i64, 1'i64]):
+        (item.kind == GeneCopiedBool and item.scalar notin [0'i64, 1'i64]) or
+        (item.kind == GeneCopiedF64 and item.scalar != 0) or
+        (item.kind != GeneCopiedF64 and item.real != 0):
       raise newException(GeneError, "native copied Task scalar is invalid")
     acquire(domain.lock)
     try:
@@ -2421,6 +2476,7 @@ proc apiTaskSubmitCopy(context: pointer, token: uint64,
         raise newException(GeneError, "native Task producer token is unavailable")
       producer.copyKind = item.kind
       producer.copyScalar = item.scalar
+      producer.copyReal = item.real
       producer.copyData = copied
       producer.copyLength = length
       if domain.copyTail == nil:
@@ -2487,6 +2543,7 @@ proc geneManagedPoll*(domain: GeneManagedDomain): int =
         of GeneCopiedNil: NIL
         of GeneCopiedBool: newBool(producer.copyScalar == 1)
         of GeneCopiedI64: newInt(producer.copyScalar)
+        of GeneCopiedF64: newFloat(producer.copyReal)
         of GeneCopiedText, GeneCopiedBytes:
           var bytes = newString(producer.copyLength)
           if bytes.len > 0:
@@ -2535,7 +2592,8 @@ proc configureApiTable(domain: GeneManagedDomain) =
                                         GeneApiIngressFeature or
                                         GeneApiCallbackFeature or
                                         GeneApiTaskProducerFeature or
-                                        GeneApiTaskCopyFeature,
+                                        GeneApiTaskCopyFeature or
+                                        GeneApiFloatFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](apiRetain),
                            release: cast[pointer](apiRelease),
@@ -2560,6 +2618,8 @@ proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable.taskCancel = cast[pointer](apiTaskCancel)
   domain.apiTable.taskRetire = cast[pointer](apiTaskRetire)
   domain.apiTable.taskSubmitCopy = cast[pointer](apiTaskSubmitCopy)
+  domain.apiTable.copyF64 = cast[pointer](apiCopyF64)
+  domain.apiTable.newF64 = cast[pointer](apiNewF64)
   domain.apiTable.ingressBegin = geneIngressBegin
   domain.apiTable.ingressEnqueue = geneIngressEnqueue
   domain.apiTable.ingressEnd = geneIngressEnd

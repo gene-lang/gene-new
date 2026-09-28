@@ -18,6 +18,9 @@ type
                     late: ptr uint32): uint32 {.cdecl.}
   SubmitCopy = proc(kind: uint32, scalar: int64, data: ptr uint8,
                     length: csize_t, attached: uint8): uint32 {.cdecl.}
+  SubmitCopyF64 = proc(value: cdouble, attached: uint8): uint32 {.cdecl.}
+  FloatRoundtrip = proc(value: cdouble, output: ptr cdouble,
+                        attached: uint8): uint32 {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -143,12 +146,16 @@ suite "managed native C callback registration":
       let loaded = geneManagedLoadModule(domain, libraryRoot,
         environment, "copy-fixture",
         GeneApiCallbackFeature or GeneApiTaskProducerFeature or
-          GeneApiTaskCopyFeature)
+          GeneApiTaskCopyFeature or GeneApiFloatFeature)
       check loaded.status == gsOk
       let setMode = cast[SetMode](symAddr(handle,
         "gene_test_api_set_callback_mode"))
       let submit = cast[SubmitCopy](symAddr(handle,
         "gene_test_api_task_submit_copy"))
+      let submitFloat = cast[SubmitCopyF64](symAddr(handle,
+        "gene_test_api_task_submit_copy_f64"))
+      let floatRoundtrip = cast[FloatRoundtrip](symAddr(handle,
+        "gene_test_api_f64_roundtrip"))
       let startAsync = cast[ReadStatus](symAddr(handle,
         "gene_test_api_start_async_copy"))
       let joinAsync = cast[ReadStatus](symAddr(handle,
@@ -168,6 +175,9 @@ suite "managed native C callback registration":
         const attachedMode = 1'u8
       else:
         const attachedMode = 0'u8
+      var copiedFloat: cdouble
+      check floatRoundtrip(3.25, addr copiedFloat, attachedMode) == 0
+      check copiedFloat == 3.25
 
       let number = run(invocation, callScope)
       check submit(2, 812, nil, 0, 0) == 0
@@ -198,6 +208,11 @@ suite "managed native C callback registration":
       check submit(1, 1, nil, 0, 0) == 0
       check geneManagedPoll(domain) == 1
       check boolean.taskResult.boolVal
+
+      let fractional = run(invocation, callScope)
+      check submitFloat(-12.75, attachedMode) == 0
+      check geneManagedPoll(domain) == 1
+      check fractional.taskResult.floatVal == -12.75
 
       var invalid = "\xFF"
       let invalidTask = run(invocation, callScope)

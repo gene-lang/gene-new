@@ -339,7 +339,9 @@ bounded queue and root-lane settlement; the installed AtomicArc fixture awaits
 a worker-produced Bytes Task with source and compiler unavailable at launch.
 The direct C fixture passes 10,280 copied Task lifetimes in one domain,
 plus 64 MiB queue and forced allocation probes. Focused ASAN/TSAN runs cover
-worker exit before root drain and concurrent root polling.
+worker exit before root drain and concurrent root polling. The optional C
+Float feature adds root-lane construction, attached-lane reads, and copied
+Task results without introducing a second ABI or Gene syntax.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [package-module specification](../spec/native-module.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all

@@ -9,7 +9,7 @@ lane. The copied submission path below handles fresh worker-computed values
 without crossing that allocator boundary.
 
 The added entry transfers
-plain C bytes to a bounded runtime queue; the root lane constructs the Gene
+plain C data to a bounded runtime queue; the root lane constructs the Gene
 value and settles the existing Task. There is no Gene syntax change, new
 module loader, or second C ABI. Arbitrary Gene graphs still use the existing
 byte-ingress handler on the root lane, where Gene code may decode a copied
@@ -22,6 +22,9 @@ Numeric `GENE_API_VERSION = 6` remains unchanged; callers require both
 `struct_size` and the new
 `GENE_API_TASK_COPY_FEATURE = 256` bit before calling it. The feature depends
 on the existing callback and Task producer bits.
+Float uses the additional `GENE_API_FLOAT_FEATURE = 512` bit and the appended
+`new_f64`/`copy_f64` entries. A module using copied Float results checks both
+bits; other copied kinds do not require Float support.
 
 ```c
 #define GENE_COPY_NIL   UINT32_C(0)
@@ -29,10 +32,12 @@ on the existing callback and Task producer bits.
 #define GENE_COPY_I64   UINT32_C(2)
 #define GENE_COPY_TEXT  UINT32_C(3)
 #define GENE_COPY_BYTES UINT32_C(4)
+#define GENE_COPY_F64   UINT32_C(5)
 
 typedef struct GeneCopiedResult {
   uint32_t kind;
   int64_t scalar;         /* Bool is 0 or 1; Int is signed 64-bit. */
+  double real;            /* Float is IEEE-754 binary64. */
   const uint8_t *data;   /* Only Text and Bytes use this span. */
   size_t length;
 } GeneCopiedResult;
@@ -52,9 +57,10 @@ remain valid for the call. `task_submit_copy` may be called on the root lane
 or an attached lane, including while the domain is closing and the token is
 live. It never calls Gene, blocks on root-lane progress, or runs a C callback.
 
-Nil, Bool, and Int require `data == NULL` and `length == 0`; Nil also requires
-`scalar == 0`, and Bool requires `scalar` to be 0 or 1. Text and Bytes require
-`scalar == 0`; a zero-length span may have `data == NULL`. The maximum span
+Nil, Bool, Int and Float require `data == NULL` and `length == 0`; Nil also
+requires `scalar == 0`, Bool requires `scalar` to be 0 or 1, and Float uses
+`real` with `scalar == 0`. Other kinds require `real == 0`. Text and Bytes
+require `scalar == 0`; a zero-length span may have `data == NULL`. The maximum span
 is `GENE_API_MAX_COPY_BYTES` (64 MiB). Text is validated as UTF-8 on the
 root lane. Invalid UTF-8 after successful submission settles the Task with a
 typed ordinary error and still retires the producer. The C worker can choose
@@ -103,7 +109,7 @@ last-owner drop, or `ffi/Library` release runs under a registry lock.
 
 ## Acceptance
 
-1. The C fixture submits fresh Int, Text, and Bytes after its callback returns;
+1. The C fixture submits fresh Int, Float, Text, and Bytes after its callback returns;
    the root poll yields exact values. The installed AtomicArc package awaits a
    worker-produced Bytes Task without manual polling. The text test includes
    non-ASCII UTF-8 and an invalid-UTF-8 error. Existing `task_complete`

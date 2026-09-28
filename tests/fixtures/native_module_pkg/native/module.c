@@ -30,7 +30,8 @@ static void *submit_copy_worker(void *raw) {
   if (worker->api->attach_thread(worker->api->runtime_context,
                                   &attachment, &diagnostic) == GENE_API_OK) {
     const uint8_t text[] = "worker-copy";
-    GeneCopiedResult value = {GENE_COPY_BYTES, 0, text, sizeof(text) - 1};
+    GeneCopiedResult value = {
+      .kind = GENE_COPY_BYTES, .data = text, .length = sizeof(text) - 1};
     uint32_t status = worker->api->task_submit_copy(
       worker->api->runtime_context, worker->producer, &value, &diagnostic);
     if (status != GENE_API_OK) {
@@ -60,7 +61,8 @@ uint32_t gene_test_module_complete_task(void) {
 uint32_t gene_test_module_submit_copy(void) {
   if (!pending_api || !pending_producer) return GENE_API_ERROR;
   const uint8_t text[] = "installed-copy";
-  GeneCopiedResult value = {GENE_COPY_TEXT, 0, text, sizeof(text) - 1};
+  GeneCopiedResult value = {
+    .kind = GENE_COPY_TEXT, .data = text, .length = sizeof(text) - 1};
   GeneOutBytes diagnostic = {0};
   uint32_t status = pending_api->task_submit_copy(
     pending_api->runtime_context, pending_producer, &value, &diagnostic);

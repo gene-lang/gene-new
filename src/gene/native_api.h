@@ -19,6 +19,7 @@
 #define GENE_API_CALLBACK_FEATURE UINT64_C(64)
 #define GENE_API_TASK_PRODUCER_FEATURE UINT64_C(128)
 #define GENE_API_TASK_COPY_FEATURE UINT64_C(256)
+#define GENE_API_FLOAT_FEATURE UINT64_C(512)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
 #define GENE_LIST_ITEM UINT32_C(0)
 #define GENE_MAP_ENTRY UINT32_C(1)
@@ -35,10 +36,12 @@ typedef uint64_t GeneProducer;
 #define GENE_COPY_I64 UINT32_C(2)
 #define GENE_COPY_TEXT UINT32_C(3)
 #define GENE_COPY_BYTES UINT32_C(4)
+#define GENE_COPY_F64 UINT32_C(5)
 
 typedef struct GeneCopiedResult {
   uint32_t kind;
   int64_t scalar;
+  double real;
   const uint8_t *data;
   size_t length;
 } GeneCopiedResult;
@@ -72,8 +75,8 @@ typedef void (*GeneContextRetire)(void *user_context);
 /* Callback arguments and environment are valid only during the C call;
  * retain an ID before storing it. On OK, out_value 0 means Gene nil,
  * otherwise it is an owning ID. On failure, out_value must be 0 and
- * out_error may contain an owning typed error ID. Callback results cannot
- * be pending Tasks. Native work behind a Task must keep a producer ticket
+ * out_error may contain an owning typed error ID. A callback may return a
+ * Task; native work behind it must keep a producer ticket
  * until physical retirement. Registration is available during module initialization.
  * request_close denies new calls and may return PENDING during an active call.
  * wait_closed consumes the registration token and returns an owning Task ID;
@@ -131,6 +134,8 @@ typedef struct GeneApi {
   uint32_t (*task_retire)(void *, GeneProducer, uint8_t *, GeneOutBytes *);
   uint32_t (*task_submit_copy)(void *, GeneProducer,
                                const GeneCopiedResult *, GeneOutBytes *);
+  uint32_t (*copy_f64)(void *, GeneHandle, double *, GeneOutBytes *);
+  uint32_t (*new_f64)(void *, double, GeneHandle *, GeneOutBytes *);
 } GeneApi;
 
 #define GENE_INGRESS_ACCEPTED 0

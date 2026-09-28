@@ -366,7 +366,9 @@ uint32_t gene_test_api_task_submit_copy(uint32_t kind, int64_t scalar,
                                          uint8_t attached) {
   if (!api->task_submit_copy ||
       !(api->feature_bits & GENE_API_TASK_COPY_FEATURE)) return GENE_API_ERROR;
-  CopyThreadResult result = {{kind, scalar, data, length}, GENE_API_ERROR};
+  CopyThreadResult result = {
+    {.kind = kind, .scalar = scalar, .data = data, .length = length},
+    GENE_API_ERROR};
   if (!attached) {
     GeneOutBytes diagnostic = {0};
     return api->task_submit_copy(api->runtime_context, task_producer,
@@ -377,6 +379,69 @@ uint32_t gene_test_api_task_submit_copy(uint32_t kind, int64_t scalar,
                      &result) != 0) return GENE_API_ERROR;
   pthread_join(thread, NULL);
   return result.status;
+}
+
+uint32_t gene_test_api_task_submit_copy_f64(double value, uint8_t attached) {
+  if (!api->task_submit_copy ||
+      !(api->feature_bits & GENE_API_FLOAT_FEATURE)) return GENE_API_ERROR;
+  CopyThreadResult result = {
+    {.kind = GENE_COPY_F64, .real = value}, GENE_API_ERROR};
+  if (!attached) {
+    GeneOutBytes diagnostic = {0};
+    return api->task_submit_copy(api->runtime_context, task_producer,
+                                  &result.value, &diagnostic);
+  }
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, submit_copy_on_attached_thread,
+                     &result) != 0) return GENE_API_ERROR;
+  pthread_join(thread, NULL);
+  return result.status;
+}
+
+typedef struct FloatRead {
+  GeneHandle root;
+  double value;
+  uint32_t status;
+} FloatRead;
+
+static void *copy_f64_on_attached_thread(void *raw) {
+  FloatRead *read = raw;
+  GeneOutBytes diagnostic = {0};
+  uint64_t attachment = 0;
+  read->status = api->attach_thread(api->runtime_context, &attachment,
+                                    &diagnostic);
+  if (read->status == GENE_API_OK) {
+    read->status = api->copy_f64(api->runtime_context, read->root,
+                                 &read->value, &diagnostic);
+    if (api->detach_thread(api->runtime_context, attachment,
+                           &diagnostic) != GENE_API_OK)
+      read->status = GENE_API_ERROR;
+  }
+  return NULL;
+}
+
+uint32_t gene_test_api_f64_roundtrip(double input, double *output,
+                                      uint8_t attached) {
+  if (!api->new_f64 || !api->copy_f64 ||
+      !(api->feature_bits & GENE_API_FLOAT_FEATURE) || !output)
+    return GENE_API_ERROR;
+  GeneOutBytes diagnostic = {0};
+  FloatRead read = {0};
+  read.status = api->new_f64(api->runtime_context, input, &read.root,
+                              &diagnostic);
+  if (read.status != GENE_API_OK) return read.status;
+  if (attached) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, copy_f64_on_attached_thread,
+                       &read) != 0) read.status = GENE_API_ERROR;
+    else pthread_join(thread, NULL);
+  } else {
+    read.status = api->copy_f64(api->runtime_context, read.root,
+                                &read.value, &diagnostic);
+  }
+  api->release(api->runtime_context, read.root, &diagnostic);
+  *output = read.value;
+  return read.status;
 }
 
 static pthread_t copy_async_thread;
@@ -391,7 +456,8 @@ static void *submit_async_copy(void *unused) {
                                           &diagnostic);
   if (copy_async_status == GENE_API_OK) {
     const uint8_t text[] = "async-copy";
-    GeneCopiedResult value = {GENE_COPY_TEXT, 0, text, sizeof(text) - 1};
+    GeneCopiedResult value = {
+      .kind = GENE_COPY_TEXT, .data = text, .length = sizeof(text) - 1};
     copy_async_status = api->task_submit_copy(api->runtime_context,
                                                task_producer, &value,
                                                &diagnostic);

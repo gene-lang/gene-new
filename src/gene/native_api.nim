@@ -51,6 +51,7 @@ type
   GeneCopiedResult* {.bycopy.} = object
     kind*: uint32
     scalar*: int64
+    real*: float64
     data*: ptr uint8
     length*: csize_t
   GeneNativeCallbackProc* = proc(api: ptr GeneApi, userContext: pointer,
@@ -74,6 +75,7 @@ type
     ingressEnd*: GeneIngressEndProc
     newTask*, taskComplete*, taskFail*, taskCancel*, taskRetire*: pointer
     taskSubmitCopy*: pointer
+    copyF64*, newF64*: pointer
   GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
                                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,

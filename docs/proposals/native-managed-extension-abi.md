@@ -9,7 +9,7 @@ C callback registration now has temporary argument IDs, typed outcomes,
 root-lane close, and physical library/context retirement. Its Task producer
 family holds an independent library borrow until physical settlement or
 retirement. The copied-result entry lets attached workers submit fresh
-Nil/Bool/Int/Text/Bytes while the root lane constructs Gene values. Byte
+Nil/Bool/Int/Float/Text/Bytes while the root lane constructs Gene values. Byte
 ingress is
 present in this same layout and powers `genex/libuv_timer`; subscriptions now
 keep handler, environment, active Task and library ownership through managed
@@ -118,6 +118,8 @@ Feature bit 7 (`GENE_API_TASK_PRODUCER_FEATURE = 128`) advertises the five
 Task producer entries appended after ingress. It requires the callback feature.
 Feature bit 8 (`GENE_API_TASK_COPY_FEATURE = 256`) advertises
 `task_submit_copy` after the producer entries. It requires the producer bit.
+Feature bit 9 (`GENE_API_FLOAT_FEATURE = 512`) advertises `copy_f64` and
+`new_f64` after `task_submit_copy`, and enables the copied Float result kind.
 
 `length`, `copy_key` and `traverse` use selectors `0=List item`, `1=Map
 entry`, `2=Node body`, `3=Node prop`, `4=Node head`. `copy_key` applies only to
@@ -126,7 +128,7 @@ check; Node head has length one. `traverse` returns Map/Node property values,
 while `copy_key` copies their keys. All traversed containers must be deeply
 frozen; an unfrozen container returns a typed error instead of a pointer.
 Byte-ingress entries follow `lookup`; Task producer entries follow ingress,
-then `task_submit_copy`.
+then `task_submit_copy` and the Float entries.
 Callers check both `struct_size` and the feature bit before reading an
 optional slot.
 
@@ -146,7 +148,8 @@ Gene memory survives a call.
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
 | `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
 | `new_task`, `task_complete`, `task_fail`, `task_cancel`, `task_retire` | Owning Task ID, distinct opaque producer token, and payload/error IDs. | New Task on the root lane during a registered callback; settlement on root or attached lane. The physical owner survives user cancellation until completion, failure or retirement. Typed foreign errors require a root-lane dispatch adapter before enabled. |
-| `task_submit_copy` | Producer token and copied Nil/Bool/Int/Text/Bytes source; status means queue admission. | Root or attached lane; the root poll constructs the Gene value and consumes the producer. Bounds and cancellation behavior are in [copied Task results](native-task-result-handoff.md). |
+| `task_submit_copy` | Producer token and copied Nil/Bool/Int/Float/Text/Bytes source; status means queue admission. | Root or attached lane; the root poll constructs the Gene value and consumes the producer. Float additionally requires its feature bit. Bounds and cancellation behavior are in [copied Task results](native-task-result-handoff.md). |
+| `copy_f64`, `new_f64` | Double precision Float read or new owning ID. | Read on an attached lane; construction on the root lane. `task_submit_copy` accepts a Float source when this feature is advertised. |
 | `register_callback`, `request_close`, `wait_closed` | C callback/context, initializer environment ID, registration token. | Root lane; context and library borrow retire after close and zero in-flight calls. `wait_closed` consumes the token and returns an owning Task ID. |
 
 The table's `struct_size` permits appending new function pointers in a later
@@ -196,7 +199,8 @@ registration retired.
 An attached worker cannot create a fresh Str or Bytes ID with the root-lane
 constructors. For a result computed only after the callback returns, the
 [copied Task result handoff](native-task-result-handoff.md) accepts Nil, Bool,
-Int, Text or Bytes through feature bit 8 (`GENE_API_TASK_COPY_FEATURE = 256`).
+Int, Text or Bytes through feature bit 8 (`GENE_API_TASK_COPY_FEATURE = 256`),
+and Float when feature bit 9 is also present.
 It copies the payload and queues root-lane construction without exposing a
 Gene pointer or changing `task_complete` acceptance semantics. More complex
 graphs use byte ingress and a root-lane Gene handler.

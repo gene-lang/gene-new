@@ -69,7 +69,8 @@ user Task is cancelled. See the
 The current attached-lane completion takes `nil` or an already-rooted,
 deep-frozen payload ID. A worker can instead use the
 [copied-result handoff](../proposals/native-task-result-handoff.md) to submit
-Nil, Bool, Int, Text or Bytes. The root lane constructs the Gene value and
+Nil, Bool, Int, Text, Bytes or Float. Float additionally requires
+`GENE_API_FLOAT_FEATURE`. The root lane constructs the Gene value and
 settles the Task; `task_submit_copy` reports queue admission, not whether the
 user Task accepted the eventual result.
 The installed macOS arm64 fixture

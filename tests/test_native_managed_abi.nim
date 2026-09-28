@@ -79,11 +79,11 @@ suite "managed native extension ABI":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_api_set_mode"))
         check calls != nil and setMode != nil
         when defined(gcAtomicArc) and compileOption("threads"):
-          const unavailableFeature = 512'u64
-          const availableFeatures = 511'u64
+          const unavailableFeature = 1024'u64
+          const availableFeatures = 1023'u64
         else:
-          const unavailableFeature = 512'u64
-          const availableFeatures = 495'u64
+          const unavailableFeature = 1024'u64
+          const availableFeatures = 1007'u64
         let unavailable = geneManagedLoadModule(domain, libraryRoot,
           environment, "need-future", requiredFeatures = unavailableFeature)
         check unavailable.status == gsError
