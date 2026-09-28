@@ -7,9 +7,9 @@ copied scalar reads, frozen traversal, call/define, and AtomicArc attached-lane
 admission are implemented against a compiled C fixture. Synchronous retained
 C callback registration now has temporary argument IDs, typed outcomes,
 root-lane close, and physical library/context retirement. Byte ingress is
-present in this same layout and powers `genex/libuv_timer`; its Gene handler
-is still rooted by the existing subscription implementation. Managed ingress
-ownership and package-native loader integration remain open. The owner
+present in this same layout and powers `genex/libuv_timer`; subscriptions now
+keep handler, environment, active Task and library ownership through managed
+IDs until physical release. Package-native loader integration remains open. The owner
 selected opaque handles in
 [Native managed borrows](native-managed-borrows.md). Current qualification is
 recorded in the [consolidated native ABI evidence](../profiles/native-app.md#native-ownership-and-c-abi).
@@ -190,12 +190,16 @@ order. The queue copies bytes. Close waits for a physical no-future-callback
 unregister acknowledgment, zero in-flight C entries, and active Gene handler
 settlement before freeing context or releasing the library lease.
 
-The implemented subscription still holds a legacy rooted Gene handler and
-Scope. The remaining migration is to store owning handler/environment IDs and
-have the root lane invoke them through the managed registry. Only then can the
-handler's raw publication pin be removed. This change must keep the byte queue
-and the three physical retirement proofs intact. The Gene-side syntax
-`$native/ingress/open` remains unchanged.
+Each subscription has a dedicated managed owner. It stores owning handler,
+dispatch-environment, active Task and optional library IDs; the root lane
+invokes the handler through a managed borrow. A stable child Scope records the
+Application at opening even when the VM's dispatch Scope inherits that identity
+from the active scheduler. The subscription itself keeps no raw handler,
+dispatch Scope, library root or active Task. Its waiters still own their caller
+Scopes through the existing I/O Task leases. The handler's former permanent
+raw-publication pin is gone; release of the managed IDs follows all three
+physical retirement proofs. The byte queue and `$native/ingress/open` syntax
+are unchanged.
 
 The managed loader currently exists as `geneManagedLoadModule` in Nim. Package
 binary selection validates numeric ABI version 6, but invoking this loader
@@ -203,12 +207,9 @@ through every package-native path remains integration work.
 
 ## Remaining implementation gates
 
-1. Migrate ingress subscription handler/Scope ownership to managed IDs without
-   changing `$native/ingress/open` or C byte entry. Prove cancellation,
-   unregister delay, queued overflow, and 1/100/1,000/10,000 lifetimes.
-2. Wire the managed loader into package-native module loading and retain its
+1. Wire the managed loader into package-native module loading and retain its
    domain, table, and library until all registrations and producers retire.
-3. Qualify installed packages and future producer/Task-return paths. The
+2. Qualify future producer/Task-return paths. The
    synchronous callback C fixture passes default ORC, AtomicArc, ASAN, and
    TSAN with initializer rollback, typed outcomes, re-entry, and repeated
    close/wait; the RC-enabled standalone probe reaches 10,000 lifetimes.

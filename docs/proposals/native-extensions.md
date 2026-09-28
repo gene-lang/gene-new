@@ -42,7 +42,12 @@ returns. Native code may call only entries whose feature bits are present.
 
 ## Native ingress contract
 
-Creation on the root lane roots the selected callable and records its Application, code/scope references, a monotonic subscription ID/generation, and native context. The C entrypoint always queues, including calls made on the root thread. It may copy a declared bounded payload and signal the scheduler; it never allocates Gene values, touches a Scope, invokes Gene, or pumps the scheduler.
+Creation on the root lane gives the selected callable and dispatch environment
+owning managed IDs, records a stable Application identity and monotonic
+subscription ID/generation, and creates the native byte context. The C
+entrypoint always queues, including calls made on the root thread. It may
+copy a declared bounded payload and signal the scheduler; it never allocates
+Gene values, touches a Scope, invokes Gene, or pumps the scheduler.
 
 Each subscription has a bounded FIFO: default 256 notifications, 1 MiB total payload, 64 KiB maximum one payload. Queue admission must atomically reserve count and bytes. Copy failures or overflow reject the incoming notification and record a counter plus the first failure; the binding returns its declared C rejection code. The root lane then fails and unregisters the subscription. The queue has no silent drop-oldest or generic coalescing. A notification-only library that cannot observe rejection still produces a visible subscription failure.
 
@@ -58,7 +63,7 @@ Package wrappers implement `IoResource` from [async I/O](async-io.md):
 
 State is active, closing, closed, with a retained terminal error. Explicit close rejects new notification admission, discards queued notifications with an observable count, cancels the running handler, and initiates native unregistration. An already-running handler may have performed effects; close does not reverse them.
 
-**Native retirement needs two proofs:** the foreign library has confirmed that no future callbacks can begin, and the in-flight C-entry count has reached zero. Only then may the shim free the native context. Callable roots and the wrapper's cleanup lease additionally wait for the active Gene handler to settle; wait_closed reports full retirement only after all three obligations. Every C entry increments/decrements that count while the context is valid. A generation check rejects stale notifications in a live context; it cannot protect a pointer after that context has been freed.
+**Native retirement needs two proofs:** the foreign library has confirmed that no future callbacks can begin, and the in-flight C-entry count has reached zero. Only then may the shim free the native context. Managed handler/environment/Task IDs and the wrapper's cleanup lease additionally wait for the active Gene handler to settle; wait_closed reports full retirement only after all three obligations. Every C entry increments/decrements that count while the context is valid. A generation check rejects stale notifications in a live context; it cannot protect a pointer after that context has been freed.
 
 Unregistration that blocks runs on a bounded native worker. Cancelling wait_closed does not cancel the unregistration obligation. The Application retains cleanup leases through shutdown as specified by IO-1. A library that cannot provide the no-future-callback guarantee cannot use this mode. Keep its context pinned and report failure; do not guess that a timeout makes freeing it safe.
 

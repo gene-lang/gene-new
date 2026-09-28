@@ -268,6 +268,10 @@ handoff remain disabled. Managed Actor worker execution stays root-only
 pending the demonstrated worker allocator-lifetime fix. Mutable shared
 Buffers/graphs, arbitrary direct Nim ownership transfers, unmodeled callbacks,
 and native cleanup requiring Gene worker progress remain outside the model.
+After the ingress migration, the AAR runner again passes
+disabled/probe/ASAN/TSAN at 2/30/30/10 cases. Its late C-entry case now proves
+that the handler Scope retires after physical release; the current mode hashes
+are in `tmp/atomic-retirement-qualification/report.json`.
 
 ## Native ownership and C ABI
 
@@ -291,17 +295,20 @@ manual Value counts.
 It passes under ORC, AtomicArc, ASAN, and TSAN. A library borrow prevents unload
 until its C retirement callback runs outside registry locks.
 
-An ingress-only view of the same C layout
-powers `$native/ingress/open`; its C callback thread copies bytes and never
-touches Gene objects. `genex/libuv_timer` preserves the physical unregister
+An ingress-only view of the same C layout powers `$native/ingress/open`; its
+C callback thread copies bytes and never touches Gene objects. Each subscription
+now owns its handler, dispatch environment, active Task and library through
+managed IDs rather than permanent raw handler/Scope publication. The
+AtomicArc private-generation probe keeps a late admitted C entry live, then
+retires the handler Scope after physical release. `genex/libuv_timer` preserves the physical unregister
 proof: no future callbacks, zero in-flight entries, then handler settlement.
 The installed macOS arm64 timer app passed **10,000** create/notify/close
 lifetimes with source hidden and compiler unavailable, zero live C contexts
 and libuv handles after each close, 20,000 handle close callbacks, and native
 root/materialized-lease baselines.
 
-Installed-package integration, producer/Task-result semantics, and migration
-of ingress's internally rooted Gene handler/Scope to mediated IDs remain open.
+Managed module-loader integration with packaged extensions and producer/Task-result
+semantics remain open.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [ingress specification](../spec/native-ingress.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
@@ -320,8 +327,8 @@ emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
 utf8proc, and libcurl were older than the genex pins; the probe built pinned
 versions from source. Linux work is deferred by the owner.
 
-Next implementation work is managed ingress handler ownership and managed
-package-loader integration. The SERVICE heartbeat investigation,
+Next implementation work is managed package-loader integration. The SERVICE
+heartbeat investigation,
 Linux native timing, broader shared ownership, and profile promotion remain
 deferred or gated as described above. The
 [profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order)

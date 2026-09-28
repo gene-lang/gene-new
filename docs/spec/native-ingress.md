@@ -7,13 +7,26 @@ version 6, but its public names and entry symbol are unversioned.
 bit and `ingress_begin`, `ingress_enqueue`, and `ingress_end` entries.
 A registration shim must copy this table if it needs it after registration.
 
-The root lane creates a subscription record that roots its handler and owns a
-raw shared ingress context. C code receives only that context pointer and its
-generation. A callback calls `ingress_begin` before touching the context,
-queues a copied payload with `ingress_enqueue`, then calls `ingress_end`.
+The root lane creates a subscription record with an opaque managed handler ID,
+an owning dispatch-environment ID, an optional managed library ID and an
+independent library borrow. A per-subscription managed domain keeps these
+owners until physical retirement. The C-facing ingress context remains raw
+and byte-only; C code receives only its pointer and generation. A callback
+calls `ingress_begin` before touching the context, queues a copied payload
+with `ingress_enqueue`, then calls `ingress_end`.
 Generation mismatch or logical close rejects entry. These C-callable helpers
 use raw locks, `malloc`, and byte copies; they do not create Gene Values or
 enter a Gene Scope on the foreign thread.
+
+The managed owner snapshots the opening Application in a child Scope. This
+keeps root-lane dispatch stable when the VM's caller Scope inherited its
+Application from the active scheduler. A closure's known weak/code Scope
+provenance follows its managed handler ID; a returned handler Task has its own
+managed ID until settlement. The subscription itself has no raw handler,
+dispatch Scope, library root, or active Task field.
+The Gene CLI links the managed adapter at startup; a Nim embedder using
+`native_api` directly must also import `native_managed` before opening an
+ingress subscription.
 
 The initial FIFO accepts at most 256 notifications, 1 MiB queued bytes, and
 64 KiB per payload. Smaller per-subscription limits are allowed. Admission
@@ -42,7 +55,8 @@ also use this wake path while a subscription is active; they cannot enter an
 indefinite condition wait that prevents root-lane unregistration completion.
 
 Close rejects new notifications and discards queued bytes. The root may
-destroy a context and release the handler root only after the foreign library
+destroy a context and release the managed handler/environment/library IDs only
+after the foreign library
 confirms no future callbacks and the in-flight entry count reaches zero.
 The real C fixture exercises foreign-thread entry and an entry held across
 close. It does not invoke a pointer after release.
@@ -105,3 +119,8 @@ then joins the thread and frees its context. The installed-app fixture covers
 It verifies zero live contexts/handles after each close, 20,000 handle close
 callbacks overall, and native-root/materialized-lease baselines. Linux runtime
 qualification remains open.
+
+The RC ingress control holds manual Value counts flat through 1,000
+subscription lifetimes. The opt-in AtomicArc retirement control keeps a
+private Scope live while a C entry is admitted and retires it after physical
+subscription release.
