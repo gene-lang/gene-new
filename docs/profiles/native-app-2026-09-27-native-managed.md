@@ -59,6 +59,18 @@ Values and Scope pins are modeled by the collector, allowing flat closed-cycle
 batches. A legacy VM receive permanently pins affected released roots. That
 handoff is an explicit raw publication, including on default ORC.
 
+Managed Actor construction, try-send, state/status reads and close use opaque
+handles. Accepted messages own defining Scope tickets through the mailbox and
+through a parked handler Fiber; a continuing handler transfers its returned
+state provenance into the Actor before dropping the message ticket. State
+reads copy the Value and tickets under the Actor lock. Gene-facing `snapshot`
+is an explicit raw handoff and permanently pins affected weak state; Gene
+`upgrade` and typed `ActorRef` narrowing replace managed tickets on the root
+lane. Managed handlers stay on that lane for now. An ASAN worker experiment
+found that a worker-created Actor field could survive after its worker's Nim
+allocator exited and be destroyed on the root lane. Keeping only parked Fibers
+alive did not solve the Actor-state case; worker execution remains an AAR-3 gate.
+
 AtomicCell publication snapshots its current Value under the cell lock.
 Shared stores, swaps and CAS publish replacement Values before handoff, and
 last-owner cleanup runs after releasing the lock.
@@ -69,55 +81,60 @@ last-owner cleanup runs after releasing the lock.
 children with bounded deadlines and records hashes/commands/logs in
 `tmp/native-managed-qualification/`. Normal AtomicArc runs a disabled-retirement
 SDK control; the final fixed-source run passes disabled (one control), opt-in
-(28 cases), ASAN (28) and targeted TSAN (six), without timeout or truncated
+(35 cases), ASAN (35) and targeted TSAN (eight), without timeout or truncated
 output. Binary SHA-256 values:
 
 | Mode | SHA-256 |
 | --- | --- |
-| Disabled | `1fc39c3eeb04d676c2af4727884662e10867187a969e0bc254b63a5aa8782f6e` |
-| Opt-in | `829029a486b1b7cd98bc29bce9ae2eea68fd70e5dfcef21af73eb7bed3a97955` |
-| ASAN | `41257a2dae63515ce659e3ecf7f4eafc61ed145e2facba7a1b18b6a19d0f0fea` |
-| TSAN | `b7f6f933a3ca3f1d25f799c44974bd443affbadc8966cdf89bfa00cbd4c97d4e` |
+| Disabled | `d9355e87460643a1df1194d0cf9168213b48111f31a4193651a3fabcff860973` |
+| Opt-in | `fc31b1b19a1efb89dea7bc60b06089de6c91cb01aced88ad0ca36da8c1136be7` |
+| ASAN | `03dbd0c3ac35c4019f40a4b2da3221bb0a3aa6a4169d3701e5151b28b77e5dbf` |
+| TSAN | `085f77cf25c1f6b55afa612ba4d8e5c1eb841730eb229925e8180ea075566ad7` |
 
 The opt-in controls check 1,000
 released/repeated IDs, wrong lane/runtime, copied binary data, nested handle
 survival, managed call result and typed error handles, frozen traversal, failure
 unwinding, physical cleanup outside locks, Task producer/cancellation/foreign
-completion, wrapper/pointer/Buffer ownership, Channel ticket transfer and
-shutdown. Private namespace and closed managed Channel cycles have flat
-managed-class counts after warm-up at 1/100/1,000/10,000
-lifetimes; a retained handle keeps the graph live until it releases. The legacy
-export control remains retained and explicitly tears down its test-owned graph.
+completion, wrapper/pointer/Buffer ownership, Channel and Actor ticket transfer,
+Actor close/upgrade/type narrowing and shutdown. Private namespace, closed
+managed Channel and managed Actor/Scope cycles have flat managed-class counts
+after warm-up at 1/100/1,000/10,000 lifetimes; a retained handle keeps the graph
+live until it releases. The legacy export control remains retained and
+explicitly tears down its test-owned graph.
 
-The separate qualification report is the evidence for this new SDK. The earlier
-AtomicArc retirement runner was also rerun on this tree and passes disabled (2),
-probe (30), ASAN (30) and targeted TSAN (10) controls. Its final report is under
-`tmp/atomic-retirement-qualification/`; old binary hashes do not describe this
-source. The default ORC RC leak suite, executable specs and broad `nimble test`
-pass. The full AtomicArc `threadcheck` passed before the last SDK-only borrow
-callback classification; the final SDK probe/ASAN/TSAN and normal-mode control
-were rerun after that change. Native ingress, workers, owned Client and the
-standard RC suite are covered by the earlier full threadcheck.
+The separate qualification report is the evidence for this new SDK. The AAR-0
+retirement runner also passes on this tree: disabled (2), probe (30), ASAN (30)
+and targeted TSAN (10). Its current hashes and commands are under
+`tmp/atomic-retirement-qualification/` (disabled
+`863999d1c52ce3d12cacbe551f1e75dda60b9aab743076e4ab3edcd54504ec53`,
+probe `a7e7a26662555761961577037177510a921b137952f92d537daa8d6324b72564`,
+ASAN `687b29326175b866a3691ba73e204c87351513d1369137a56e4ff7ae5e328605`,
+TSAN `50772b2c420bfb55cd667278be68848da48be014fe121177099686481ae8b571`).
+The default ORC RC leak suite, executable specs and broad `nimble test` pass.
+Full `nimble threadcheck` passed on the Actor core; after
+a final Actor teardown-order adjustment, the managed and AAR-0 sanitizer
+runners and the ORC leak suite reran on the final source. Native ingress,
+workers, owned Client and the standard RC suite are covered by threadcheck.
 
-A fresh instrumented wasm build from the same core source has SHA-256
-`e06473b2089aef2206ed564c274c72678c6ec58d79da80f685a2cb19edd0da3e`.
+A fresh instrumented wasm build from the Actor core source has SHA-256
+`6f26bb79ca933b7bf418608cdef18b67d17cc4e0f9073766622370cb14861861`.
 Node passes all 70 ABI cases. Google Chrome for Testing 147.0.7727.15 passes
 the 30 shared browser cases and lifetime controls: all managed classes and
 occupied heap are flat at sampled checkpoints, stale handles are rejected,
 live handles finish at zero, and the server shuts down gracefully with no
 pending cleanup, resource, lease or forced-connection count. Artifacts/reports
-are under `tmp/wasm-managed-qualification/`; tracked `web/gene.js` and
+are under `tmp/wasm-managed-actor-qualification/`; tracked `web/gene.js` and
 `web/gene.wasm` were not regenerated. The managed Nim SDK itself is not linked
 into this wasm artifact.
 
 ## Unqualified paths
 
 The managed API is not yet a replacement for all 35 legacy `GeneApi` entries.
-Managed Actor queues, typed foreign Task failures, installed extensions and
-arbitrary direct Nim APIs require managed adapters and race/lifetime controls.
-Mutable shared Buffers and Gene worker/actor handoffs lack complete snapshot
-and ownership policy. Raw VM
-input before `geneManagedRootFromVm` is trusted to be owner-confined; an arbitrary
+Managed Actor worker execution, typed foreign Task failures, installed
+extensions and arbitrary direct Nim APIs require further managed adapters and
+race/lifetime controls. Mutable shared Buffers and Gene worker handoffs lack a
+complete snapshot and ownership policy. Raw VM input before
+`geneManagedRootFromVm` is trusted to be owner-confined; an arbitrary
 pre-existing foreign Nim ref cannot gain a retrospectively tracked lifetime.
 Code subclasses, opaque continuations, native cleanup requiring Gene worker
 progress and mutable shared graph snapshots remain excluded. No profile stage

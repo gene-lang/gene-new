@@ -4,9 +4,13 @@
 The additive ownership/borrow, copied-read, frozen-container, managed-call,
 environment and explicit legacy-export core is implemented in
 `src/gene/native_managed.nim`. Initial managed wrapper/owned-pointer, private
-Buffer, Channel and external Task adapters are implemented. Managed Actor and
-installed-extension integration, complete shared mutation/worker handoff policy,
-and AAR-2 qualification remain open. This is the remaining
+Buffer, Channel, Actor and external Task adapters are implemented. The Actor
+adapter owns message tickets through the mailbox and parked handler Fiber,
+and transfers returned-state provenance into the Actor. Managed Actor handlers
+remain on the root lane until AAR-3 worker allocation lifetimes are qualified.
+Installed-extension integration,
+complete shared mutation/worker handoff policy, and AAR-2 qualification remain
+open. This is the remaining
 native ownership program for AAR-1 in
 [AtomicArc generation retirement](atomic-arc-retirement.md). Existing SDK v4/v5
 and Gene syntax stay unchanged. Production/shared retirement remains disabled.
@@ -102,6 +106,25 @@ its separately exported module/ingress and VM callback APIs.
 | Module init/load/versioned and v5 ingress subscriptions | Legacy module pointers; ingress owns rooted handlers/libraries and dispatch Scope. | Initializer/export environment handles; callback/registration contexts own handles until physical unregistration and zero in-flight work. Byte-only ingress remains separate. |
 | Thread attach/detach and logging | No direct Gene graph returned by these entries. | Associate leases with attached lanes; copied diagnostic payloads require no Gene borrow. |
 | Direct Nim VM/Scope/Value APIs and custom `FunctionCode`/continuations | Arbitrary unmarked refs remain outside qualification. | Keep legacy accesses published/unqualified. Require explicit adapters and complete edge models before admitting any additional graph class. |
+
+The initial Actor adapter is `geneManagedNewActor(environment, capacity,
+state, handler, messageType?)`, `geneManagedActorTrySend(actor, message,
+environment)`, `geneManagedActorState(actor, environment)`, copied
+`geneManagedActorStatus`, and `geneManagedActorClose`. Its handler uses
+the existing Gene `ActorStep` return convention. The constructor retains
+state, handler and optional contract provenance; accepted messages own Scope
+tickets while queued and while a handler Fiber is running or parked. On
+`$actor/continue`, the new state obtains its own ticket before the message
+ticket drops. State reads snapshot the Value and ticket under the Actor lock
+before creating an opaque result. The existing Send, capacity and closed checks
+still apply. Close drains queued messages and rejects new sends; an already
+running handler completes under the existing Actor lifecycle rule. A complete
+policy for arbitrary shared mutable Actor graphs and safe worker-produced Value
+ownership is still needed before this family is considered fully migrated.
+Gene-facing `snapshot` is a raw export and permanently pins any weak state
+provenance it returns. `upgrade` and implicit `ActorRef T` contract narrowing
+replace managed ownership tickets on the root lane; these mutations reject a
+worker-lane call until worker-produced graph ownership is qualified.
 
 Do not mechanically classify every SDK function as a blocking drainable borrow.
 Constructors, mutation, trampoline execution and release can invoke cleanup or

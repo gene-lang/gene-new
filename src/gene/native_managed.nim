@@ -54,6 +54,12 @@ type
     value*: GeneManagedRoot
     message*: string
 
+  GeneManagedActorStatus* = object
+    closed*: bool
+    mailbox*: int
+    processing*: bool
+    idle*: bool
+
   GeneManagedResult* = object
     status*: GeneStatus
     message*: string
@@ -646,6 +652,125 @@ proc geneManagedChannelTryRecv*(channel: GeneManagedRoot,
         result.value = geneManagedRootFromVm(domain, scope, received.item)
         reset(pins)
         result.hasValue = true
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+
+proc geneManagedNewActor*(environment: GeneManagedEnvironment,
+    capacity: int, state, handler: GeneManagedRoot,
+    messageType: GeneManagedRoot = nil): GeneManagedResult =
+  if environment == nil or environment.root == nil:
+    raise newException(GeneError, "managed Actor requires an environment")
+  let domain = environment.root.domain
+  withManagedProgress:
+    try:
+      domain.requireOpen()
+      let scope = domain.environmentScope(environment)
+      if capacity <= 0:
+        raise newException(GeneError, "managed Actor capacity must be positive")
+      let stateEntry = domain.liveRootEntry(state)
+      let handlerEntry = domain.liveRootEntry(handler)
+      let contractEntry = if messageType == nil: nil
+                          else: domain.liveRootEntry(messageType)
+      let contract = if contractEntry == nil: newSym("Any")
+                     else: contractEntry.value
+      let actor = newActorRef(capacity, stateEntry.value, handlerEntry.value,
+                              contract,
+                              messageTypeExplicit = contractEntry != nil)
+      var statePins = ownedCopy(stateEntry.scopes)
+      statePins.add vm.publishManagedRootForRetirement(stateEntry.value)
+      var handlerPins = ownedCopy(handlerEntry.scopes)
+      handlerPins.add vm.publishManagedRootForRetirement(handlerEntry.value)
+      var contractPins: seq[Scope]
+      if contractEntry != nil:
+        contractPins = ownedCopy(contractEntry.scopes)
+        contractPins.add vm.publishManagedRootForRetirement(contract)
+      actor.configureManagedActor(statePins, handlerPins, contractPins)
+      result.status = gsOk
+      result.value = geneManagedRootFromVm(domain, scope, actor)
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+
+proc geneManagedActorTrySend*(actor, message: GeneManagedRoot,
+    environment: GeneManagedEnvironment): GeneManagedAck =
+  if actor == nil or actor.domain == nil:
+    raise newException(GeneError, "managed Actor is nil")
+  let domain = actor.domain
+  withManagedProgress:
+    try:
+      domain.requireOpen()
+      let scope = domain.environmentScope(environment)
+      let actorEntry = domain.liveRootEntry(actor)
+      let messageEntry = domain.liveRootEntry(message)
+      result.accepted = vm.nativeActorTrySendManaged(actorEntry.value,
+        messageEntry.value, messageEntry.scopes, scope)
+      result.status = gsOk
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+
+proc geneManagedActorState*(actor: GeneManagedRoot,
+    environment: GeneManagedEnvironment): GeneManagedResult =
+  if actor == nil or actor.domain == nil:
+    raise newException(GeneError, "managed Actor is nil")
+  let domain = actor.domain
+  withManagedProgress:
+    try:
+      domain.requireOpen()
+      let scope = domain.environmentScope(environment)
+      let actorValue = domain.liveRootValue(actor)
+      if actorValue.kind != vkActorRef:
+        raise newException(GeneError, "managed Actor state requires an ActorRef")
+      let snapshot = actorValue.actorManagedStateSnapshot()
+      result.value = geneManagedRootFromVm(domain, scope, snapshot.state)
+      result.status = gsOk
+    except GeneError as e:
+      result.status = gsError
+      result.message = e.msg
+    except GenePanic as e:
+      result.status = gsPanic
+      result.message = e.msg
+
+proc geneManagedActorStatus*(actor: GeneManagedRoot,
+    environment: GeneManagedEnvironment): GeneManagedActorStatus =
+  if actor == nil or actor.domain == nil:
+    raise newException(GeneError, "managed Actor is nil")
+  let domain = actor.domain
+  withManagedProgress:
+    domain.requireOpen()
+    discard domain.environmentScope(environment)
+    let value = domain.liveRootValue(actor)
+    if value.kind != vkActorRef or not value.actorManaged:
+      raise newException(GeneError, "managed status requires a managed Actor")
+    let snapshot = value.actorSnapshotFields()
+    result.closed = snapshot.closed
+    result.mailbox = snapshot.mailbox
+    result.processing = snapshot.processing
+    result.idle = snapshot.idle
+
+proc geneManagedActorClose*(actor: GeneManagedRoot,
+    environment: GeneManagedEnvironment): GeneManagedAck =
+  if actor == nil or actor.domain == nil:
+    raise newException(GeneError, "managed Actor is nil")
+  let domain = actor.domain
+  withManagedProgress:
+    try:
+      domain.requireOpen()
+      let scope = domain.environmentScope(environment)
+      let value = domain.liveRootValue(actor)
+      vm.nativeActorCloseManaged(value, scope)
+      result.status = gsOk
+      result.accepted = true
     except GeneError as e:
       result.status = gsError
       result.message = e.msg

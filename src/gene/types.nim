@@ -986,6 +986,7 @@ type
     message*: Value
     reply*: Value
     workerAllowed*: bool
+    pins*: seq[Scope]
 
   ActorLifecycle = ref object
     closed: bool
@@ -998,6 +999,10 @@ type
     reservedMessages: int
     processing: bool
     state: Value
+    managed: bool
+    statePins: seq[Scope]
+    handlerPins: seq[Scope]
+    contractPins: seq[Scope]
     restartInit: Value
     handler: Value
     messageType: Value
@@ -2265,6 +2270,9 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.failureDeadLetters)
     clearValueSlot(d.parentFailureEvents)
     clearValueSlot(d.parentFailureDeadLetters)
+    d.statePins.setLen(0)
+    d.handlerPins.setLen(0)
+    d.contractPins.setLen(0)
   of okActorContext:
     clearValueSlot(ActorContextData(data).actor)
   of okActorStep:
@@ -3351,6 +3359,18 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
       when counting:
         g.strongEdge(idx, g.refNode(cast[pointer](channel.state),
                                     rnkChannelState))
+    of okActorRef:
+      when counting:
+        let actor {.cursor.} = cast[ActorData](data)
+        for scope in actor.statePins:
+          scopeRef(scope)
+        for scope in actor.handlerPins:
+          scopeRef(scope)
+        for scope in actor.contractPins:
+          scopeRef(scope)
+        for item in actor.queue:
+          for scope in item.pins:
+            scopeRef(scope)
     of okReplyTo:
       scopeRef(cast[ReplyToData](data).resultScope)
     of okBuffer:
@@ -5756,6 +5776,8 @@ proc setActorState*(v, state: Value) =
   let stored = escapeWeakFunctions(state)
   let data = actorData(v)
   withActorLock(data):
+    if data.managed:
+      raise newException(GeneError, "managed Actor state needs an ownership ticket")
     data.state = stored
 
 proc actorHandler*(v: Value): Value =
@@ -5767,6 +5789,8 @@ proc setActorHandler*(v, handler: Value) =
   let stored = escapeWeakFunctions(handler)
   let data = actorData(v)
   withActorLock(data):
+    if data.managed:
+      raise newException(GeneError, "managed Actor handler needs an ownership ticket")
     data.handler = stored
 
 proc actorSnapshotFields*(v: Value): tuple[state: Value, mailbox: int,
@@ -5788,6 +5812,44 @@ proc finishActorContinue*(v, state: Value) =
     data.state = stored
     data.processing = false
 
+proc configureManagedActor*(v: Value, statePins, handlerPins,
+                            contractPins: seq[Scope]) =
+  let data = actorData(v)
+  withActorLock(data):
+    data.managed = true
+    data.statePins = statePins
+    data.handlerPins = handlerPins
+    data.contractPins = contractPins
+
+proc actorManaged*(v: Value): bool =
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.managed
+
+proc actorManagedStateSnapshot*(v: Value): tuple[state: Value,
+                                                 pins: seq[Scope]] =
+  let data = actorData(v)
+  withActorLock(data):
+    if not data.managed:
+      raise newException(GeneError, "managed state requires a managed Actor")
+    result.state = data.state
+    result.pins = data.statePins
+
+proc finishActorContinueManaged*(v, state: Value, pins: seq[Scope]) =
+  let stored = escapeWeakFunctions(state)
+  let data = actorData(v)
+  var oldState: Value
+  var oldPins: seq[Scope]
+  withActorLock(data):
+    doAssert data.managed
+    oldState = move(data.state)
+    oldPins = move(data.statePins)
+    data.state = stored
+    data.statePins = pins
+    data.processing = false
+  reset(oldState)
+  reset(oldPins)
+
 proc tryUpgradeIdleActor*(v, state, handler: Value): bool =
   let storedState = escapeWeakFunctions(state)
   let storedHandler = escapeWeakFunctions(handler)
@@ -5798,6 +5860,32 @@ proc tryUpgradeIdleActor*(v, state, handler: Value): bool =
     data.state = storedState
     data.handler = storedHandler
     result = true
+
+proc tryUpgradeIdleManagedActor*(v, state, handler: Value,
+    statePins, handlerPins: seq[Scope]): bool =
+  let storedState = escapeWeakFunctions(state)
+  let storedHandler = escapeWeakFunctions(handler)
+  let data = actorData(v)
+  var oldState, oldHandler: Value
+  var oldStatePins, oldHandlerPins: seq[Scope]
+  withActorLock(data):
+    if not data.managed:
+      raise newException(GeneError, "managed upgrade requires a managed Actor")
+    if data.processing or data.queue.len > 0 or data.reservedMessages > 0:
+      return false
+    oldState = move(data.state)
+    oldHandler = move(data.handler)
+    oldStatePins = move(data.statePins)
+    oldHandlerPins = move(data.handlerPins)
+    data.state = storedState
+    data.handler = storedHandler
+    data.statePins = statePins
+    data.handlerPins = handlerPins
+    result = true
+  reset(oldState)
+  reset(oldHandler)
+  reset(oldStatePins)
+  reset(oldHandlerPins)
 
 proc actorRestartInit*(v: Value): Value =
   let data = actorData(v)
@@ -5863,7 +5951,24 @@ proc actorParentFailureDeadLetters*(v: Value): Value =
 proc setActorMessageType*(v, messageType: Value) =
   let data = actorData(v)
   withActorLock(data):
+    if data.managed:
+      raise newException(GeneError, "managed Actor contract needs an ownership ticket")
     data.messageType = messageType
+
+proc setManagedActorMessageType*(v, messageType: Value,
+                                 pins: seq[Scope]) =
+  let data = actorData(v)
+  var oldType: Value
+  var oldPins: seq[Scope]
+  withActorLock(data):
+    if not data.managed:
+      raise newException(GeneError, "managed contract requires a managed Actor")
+    oldType = move(data.messageType)
+    oldPins = move(data.contractPins)
+    data.messageType = messageType
+    data.contractPins = pins
+  reset(oldType)
+  reset(oldPins)
 
 proc actorClosed*(v: Value): bool =
   let data = actorData(v)
@@ -5949,6 +6054,24 @@ proc tryPushActorMessage*(v, message: Value,
     else:
       data.queue.add ActorMessage(message: stored, reply: NIL,
                                   workerAllowed: workerAllowed)
+      result.pushed = true
+
+proc tryPushManagedActorMessage*(v, message: Value,
+                                 pins: seq[Scope]): tuple[pushed: bool,
+                                                          closed: bool,
+                                                          full: bool] =
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    if not data.managed:
+      raise newException(GeneError, "managed send requires a managed Actor")
+    if data.lifecycle.closed:
+      result.closed = true
+    elif data.queue.len + data.reservedMessages >= data.capacity:
+      result.full = true
+    else:
+      data.queue.add ActorMessage(message: stored, reply: NIL,
+                                  workerAllowed: true, pins: pins)
       result.pushed = true
 
 proc tryPushActorMessage*(v, message, reply: Value): tuple[pushed: bool,

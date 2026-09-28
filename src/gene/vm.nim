@@ -263,6 +263,7 @@ type
     actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
     actorAskReply: Value   # ReplyTo for actor/ask messages, or NIL for sends
     actorMessage: Value    # current actor mailbox message, for failure events
+    actorMessagePins: seq[Scope] # managed ticket while queued handler is active
     waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
     waitIsSend: bool       # parked on send (vs recv)
     waitSendValue: Value   # value to deliver when a parked send resumes
@@ -3891,6 +3892,26 @@ proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
     scheduleActor(actor, scope)
     true
 
+proc nativeActorTrySendManaged*(actor, message: Value,
+                                sourceScopes: seq[Scope], scope: Scope): bool =
+  withScopedScheduler(scope):
+    requireActor("managed native actor try_send", actor)
+    let state = actor.actorSendState()
+    if state.closed or state.full:
+      return false
+    let messageType = actor.actorMessageType
+    let stored = if messageType.kind == vkNil: message else:
+      adaptBoundary("managed native actor message", messageType, message, scope)
+    if not isSendableValue(stored, scope):
+      raiseTypeError("managed native actor message", "Send", stored, scope)
+    var pins = sourceScopes
+    pins.add publishManagedRootForRetirement(stored)
+    let pushed = actor.tryPushManagedActorMessage(stored, pins)
+    if not pushed.pushed:
+      return false
+    scheduleActor(actor, scope)
+    true
+
 proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "actor/ask expects 2 arguments, got " & $args.len)
@@ -3967,8 +3988,19 @@ proc biActorSnapshot(args: openArray[Value]): Value {.nimcall.} =
   let snapshot = actor.actorSnapshotFields()
   if not snapshot.idle:
     raise newException(GeneError, "actor/snapshot requires an idle actor")
+  var stateValue = snapshot.state
+  if actor.actorManaged:
+    if activeWorkerThread:
+      raise newException(GeneError,
+        "managed Actor snapshot requires the root lane")
+    # This Gene-facing snapshot returns a raw Value. Unlike the mediated SDK
+    # state getter, its lifetime cannot be reported back to the native domain.
+    let owned = actor.actorManagedStateSnapshot()
+    pinLegacyManagedScopes(owned.pins)
+    markSharedValue(owned.state)
+    stateValue = owned.state
   var props = initPropTable()
-  props["state"] = snapshot.state
+  props["state"] = stateValue
   props["mailbox"] = newInt(snapshot.mailbox)
   props["closed"] = newBool(snapshot.closed)
   props["processing"] = newBool(snapshot.processing)
@@ -3981,6 +4013,9 @@ proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   let scope = actorDispatchScope(call)
   let actor = args[0]
   let handler = args[1]
+  if actor.actorManaged and activeWorkerThread:
+    raise newException(GeneError,
+      "managed Actor upgrade requires the root lane")
   let snapshot = actor.actorSnapshotFields()
   if not snapshot.idle:
     raise newException(GeneError, "actor/upgrade requires an idle actor")
@@ -3999,7 +4034,13 @@ proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       raiseTypeError("actor/upgrade migrate", "Callable", migrate, scope)
     var migrateArgs = [snapshot.state]
     nextState = applyCall(migrate, migrateArgs, NamedArgs(), scope)
-  if not actor.tryUpgradeIdleActor(nextState, handler):
+  if actor.actorManaged:
+    let statePins = publishManagedRootForRetirement(nextState)
+    let handlerPins = publishManagedRootForRetirement(handler)
+    if not actor.tryUpgradeIdleManagedActor(nextState, handler,
+                                             statePins, handlerPins):
+      raise newException(GeneError, "actor/upgrade requires an idle actor")
+  elif not actor.tryUpgradeIdleActor(nextState, handler):
     raise newException(GeneError, "actor/upgrade requires an idle actor")
   NIL
 
@@ -15364,6 +15405,13 @@ proc closeActorAndCancelMailbox(actor: Value) =
     discard cancelReplyTask(item.reply)
   wakeAllActorSenders(actor)
 
+proc nativeActorCloseManaged*(actor: Value, scope: Scope) =
+  withScopedScheduler(scope):
+    requireActor("managed native actor close", actor)
+    if not actor.actorManaged:
+      raise newException(GeneError, "managed close requires a managed Actor")
+    closeActorAndCancelMailbox(actor)
+
 proc cancelOwnedActor(actor: Value) =
   ## Scope/supervisor shutdown owns actor lifetime. Closing the mailbox is not
   ## enough: queued asks and already-scheduled handler fibers would otherwise keep
@@ -20299,13 +20347,15 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   let args = [newActorContext(actor), state, item.message]
   var bound = bindCallScope(handler, proto, args, NamedArgs())
   let workerSafe =
-    item.workerAllowed and actorFiberWorkerSafe(actor, handler, state,
-                                                item.message, item.reply, scope)
+    item.workerAllowed and not actor.actorManaged and
+      actorFiberWorkerSafe(actor, handler, state,
+                           item.message, item.reply, scope)
   if workerSafe:
     publishSpawnCapture(bound.scope, proto.chunk)
   Fiber(chunk: proto.chunk, scope: bound.scope, recycleScope: proto.poolCallScope,
         actorOwner: actor, actorReturnType: bound.returnType, actorScope: scope,
         actorAskReply: item.reply, actorMessage: item.message, started: false,
+        actorMessagePins: item.pins,
         workerSafe: workerSafe)
 
 proc scheduleActor(actor: Value, scope: Scope) =
@@ -20325,7 +20375,12 @@ proc scheduleActor(actor: Value, scope: Scope) =
       let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
       if step.kind != vkActorStep:
         raiseTypeError("actor handler return", "ActorStep", step, scope)
-      if step.actorStepContinue: actor.finishActorContinue(step.actorStepState)
+      if step.actorStepContinue:
+        if actor.actorManaged:
+          actor.finishActorContinueManaged(step.actorStepState,
+            publishManagedRootForRetirement(step.actorStepState))
+        else:
+          actor.finishActorContinue(step.actorStepState)
       else: closeActorAndCancelMailbox(actor)
       if item.reply.kind == vkReplyTo and not item.reply.replyToSent:
         discard failMissingReply(item.reply, scope)
@@ -20379,8 +20434,14 @@ proc runFiber(f: Fiber) =
                                  csmWorker):
             raiseTypeError("actor worker state", "Send",
                            step.actorStepState, f.actorScope)
-          markSharedValue(step.actorStepState)
-        if step.actorStepContinue: actor.finishActorContinue(step.actorStepState)
+          if not actor.actorManaged:
+            markSharedValue(step.actorStepState)
+        if step.actorStepContinue:
+          if actor.actorManaged:
+            actor.finishActorContinueManaged(step.actorStepState,
+              publishManagedRootForRetirement(step.actorStepState))
+          else:
+            actor.finishActorContinue(step.actorStepState)
         else: closeActorAndCancelMailbox(actor)
         if f.actorAskReply.kind == vkReplyTo and
             not f.actorAskReply.replyToSent:
@@ -23200,7 +23261,15 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       not value.actorMessageTypeExplicit and
       (value.actorMessageType.kind == vkNil or
        value.actorMessageType.isSymbol("Any")):
-    value.setActorMessageType(closeTypeExpr(typeExpr.body[0], scope))
+    let closedType = closeTypeExpr(typeExpr.body[0], scope)
+    if value.actorManaged:
+      if activeWorkerThread:
+        raise newException(GeneError,
+          "managed Actor type adaptation requires the root lane")
+      value.setManagedActorMessageType(closedType,
+        publishManagedRootForRetirement(closedType))
+    else:
+      value.setActorMessageType(closedType)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("ReplyTo") and
       typeExpr.body.len == 1 and value.kind == vkReplyTo and
       value.replyToResultType.kind == vkNil:

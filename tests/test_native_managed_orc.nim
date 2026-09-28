@@ -55,3 +55,34 @@ suite "managed native ORC legacy handoff":
     check retireReleasedGenerations(pending) == 0
     check pending[0].lookup("answer").intVal == 42
     pending[0].vars.clear()
+
+  test "Gene Actor snapshot permanently publishes managed weak state":
+    var pending: seq[Scope]
+    var state: GeneManagedRoot
+    var environment: GeneManagedEnvironment
+    block:
+      let scope = newGlobalScope()
+      scope.sandboxGenerationReleased = true
+      scope.define("answer", newInt(42))
+      pending = @[scope]
+      state = geneManagedRootFromVm(domain, host,
+        newProtocol("ActorStateP", [], scope = scope))
+      environment = geneNewManagedEnvironment(domain, scope)
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue state))"), host))
+    let created = geneManagedNewActor(environment, 1, state, handler)
+    check created.status == gsOk
+    let defined = geneManagedDefine(environment, "managed_actor", created.value)
+    check defined.status == gsOk
+    geneManagedRelease(defined.value)
+    block:
+      let observed = run(compileSource("(managed_actor .snapshot)"), pending[0])
+      check observed.kind == vkNode
+      check pending[0].scopePublishedForRetirement
+    geneManagedRelease(created.value)
+    geneManagedRelease(state)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+    check retireReleasedGenerations(pending) == 0
+    check pending[0].lookup("answer").intVal == 42
+    pending[0].vars.clear()

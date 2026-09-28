@@ -137,6 +137,13 @@ proc releaseManagedPointer(address: pointer) {.nimcall.} =
   discard geneManagedStats(domain) # cleanup must be outside the registry lock
   inc pointerReleases
 
+var managedActorRootLane: int
+var managedActorWorkerSeen: int
+proc recordManagedActorWorker(args: openArray[Value]): Value {.nimcall.} =
+  if currentEventLane() != managedActorRootLane:
+    atomicStoreN(addr managedActorWorkerSeen, 1, ATOMIC_RELEASE)
+  NIL
+
 suite "managed native handles":
   test "copied scalar text and binary bytes leave a borrow safely":
     let integer = geneManagedRootFromVm(domain, host, newInt(42))
@@ -434,6 +441,178 @@ suite "managed native handles":
     geneManagedRelease(typed.value)
     geneManagedRelease(intType)
     geneManagedEnvironmentRelease(environment)
+
+  test "managed Actor transfers weak message ownership through handler and state":
+    let environment = geneNewManagedEnvironment(domain, host)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue msg))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    check created.status == gsOk and created.value != nil
+    var candidate = privateWeakProtocol()
+    let sent = geneManagedActorTrySend(created.value, candidate.root,
+                                        environment)
+    check sent.status == gsOk and sent.accepted
+    geneManagedRelease(candidate.root)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    discard run(compileSource("($sleep 1)"), host)
+    let state = geneManagedActorState(created.value, environment)
+    check state.status == gsOk and state.value != nil
+    check geneWithNativeBorrow(state.value,
+      proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkProtocol
+    geneManagedRelease(created.value)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    geneManagedRelease(state.value)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+
+  test "managed Actor retains queued message under backpressure":
+    let environment = geneNewManagedEnvironment(domain, host)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue state))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    var candidate = privateWeakProtocol()
+    let first = geneManagedActorTrySend(created.value, candidate.root,
+                                         environment)
+    check first.status == gsOk and first.accepted
+    let second = geneManagedActorTrySend(created.value, candidate.root,
+                                          environment)
+    check second.status == gsOk and second.accepted
+    let full = geneManagedActorTrySend(created.value, candidate.root,
+                                        environment)
+    check full.status == gsOk and not full.accepted
+    geneManagedRelease(candidate.root)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    discard run(compileSource("($sleep 1)"), host)
+    geneManagedRelease(created.value)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+
+  test "managed Actor keeps message provenance while its handler is parked":
+    let environment = geneNewManagedEnvironment(domain, host)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource(
+        "(fn [ctx state msg] ($sleep 10) ($actor/continue state))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    var candidate = privateWeakProtocol()
+    check geneManagedActorTrySend(created.value, candidate.root,
+                                   environment).accepted
+    geneManagedRelease(candidate.root)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    discard run(compileSource("($sleep 1)"), host)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    geneManagedRelease(created.value)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    discard run(compileSource("($sleep 20)"), host)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+
+  test "managed Actor and defining Scope cycle retires after handles drop":
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue state))"), host))
+    proc batch(count: int) =
+      for i in 0 ..< count:
+        var candidate = privateWeakProtocol()
+        let environment = geneNewManagedEnvironment(domain, candidate.roots[0])
+        let created = geneManagedNewActor(environment, 1, candidate.root, handler)
+        check created.status == gsOk
+        let defined = geneManagedDefine(environment, "actor", created.value)
+        check defined.status == gsOk and defined.value != nil
+        geneManagedRelease(defined.value)
+        geneManagedRelease(created.value)
+        geneManagedRelease(candidate.root)
+        geneManagedEnvironmentRelease(environment)
+        check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+    batch(1)
+    let baseline = liveManaged
+    let classes = managedLiveByKind()
+    for count in [100, 1000, 10000]:
+      batch(count)
+      check liveManaged == baseline
+      check managedLiveByKind() == classes
+    geneManagedRelease(handler)
+
+  test "managed Actor stays on root until worker allocations are qualified":
+    managedActorRootLane = currentEventLane()
+    atomicStoreN(addr managedActorWorkerSeen, 0, ATOMIC_RELEASE)
+    host.define("record-managed-worker",
+      newNativeFn("record-managed-worker", recordManagedActorWorker))
+    let environment = geneNewManagedEnvironment(domain, host)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] (record-managed-worker) " &
+                        "($actor/continue msg))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    var candidate = privateWeakProtocol()
+    check geneManagedActorTrySend(created.value, candidate.root,
+                                   environment).accepted
+    geneManagedRelease(candidate.root)
+    discard run(compileSource(
+      "(var i 0) (while (< i 800000) (set i (+ i 1))) ($sleep 1)"), host)
+    check atomicLoadN(addr managedActorWorkerSeen, ATOMIC_ACQUIRE) == 0
+    check not candidate.roots[0].scopePublishedForRetirement
+    let state = geneManagedActorState(created.value, environment)
+    check state.status == gsOk and state.value != nil
+    geneManagedRelease(created.value)
+    geneManagedRelease(state.value)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+
+  test "managed Actor close rejects further sends and reports lifecycle":
+    let environment = geneNewManagedEnvironment(domain, host)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue state))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    let before = geneManagedActorStatus(created.value, environment)
+    check not before.closed and before.idle
+    let closed = geneManagedActorClose(created.value, environment)
+    check closed.status == gsOk and closed.accepted
+    check geneManagedActorStatus(created.value, environment).closed
+    let sent = geneManagedActorTrySend(created.value, initial, environment)
+    check sent.status == gsOk and not sent.accepted
+    geneManagedRelease(created.value)
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+
+  test "Gene typing upgrade and raw snapshot respect managed Actor tickets":
+    var scope = newGlobalScope()
+    scope.sandboxGenerationReleased = true
+    let environment = geneNewManagedEnvironment(domain, scope)
+    let initial = geneManagedRootFromVm(domain, host, newInt(0))
+    let handler = geneManagedRootFromVm(domain, host,
+      run(compileSource("(fn [ctx state msg] ($actor/continue state))"), host))
+    let created = geneManagedNewActor(environment, 1, initial, handler)
+    let defined = geneManagedDefine(environment, "managed_actor", created.value)
+    check defined.status == gsOk
+    geneManagedRelease(defined.value)
+    let snapshot = run(compileSource(
+      "(var typed : (ActorRef Int) managed_actor) " &
+      "(typed .upgrade (fn [ctx state msg] ($actor/continue msg))) " &
+      "(typed .snapshot)"), scope)
+    check snapshot.kind == vkNode
+    let bad = geneManagedRootFromVm(domain, host, newStr("wrong"))
+    let rejected = geneManagedActorTrySend(created.value, bad, environment)
+    check rejected.status == gsError
+    geneManagedRelease(bad)
+    geneManagedRelease(created.value)
+    geneManagedRelease(initial)
+    geneManagedRelease(handler)
+    geneManagedEnvironmentRelease(environment)
+    var roots = @[scope]
+    scope = nil
+    check testRetireAtomicGenerationRoots(host, roots) > 0
 
   test "legacy Channel receive permanently publishes a managed item":
     let environment = geneNewManagedEnvironment(domain, host)
