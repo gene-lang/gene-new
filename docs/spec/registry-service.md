@@ -12,10 +12,10 @@ No online private signing key is required.
 ## Build and provision
 
 ```sh
-rtk proxy nim c -d:release --path:src -o:bin/gene-registry src/gene_registry.nim
-rtk proxy bin/gene-registry keygen --crypto /absolute/libcrypto.3 --out /private/registry-keys
-rtk proxy bin/gene-registry keygen --crypto /absolute/libcrypto.3 --out /private/acme-keys
-rtk proxy bin/gene-registry delegate --crypto /absolute/libcrypto.3 --registry-key /private/registry-keys/private.seed --owner acme --owner-key /private/acme-keys/public.key --out /private/acme-delegation
+nim c -d:release --path:src -o:bin/gene-registry src/gene_registry.nim
+bin/gene-registry keygen --crypto /absolute/libcrypto.3 --out /private/registry-keys
+bin/gene-registry keygen --crypto /absolute/libcrypto.3 --out /private/acme-keys
+bin/gene-registry delegate --crypto /absolute/libcrypto.3 --registry-key /private/registry-keys/private.seed --owner acme --owner-key /private/acme-keys/public.key --out /private/acme-delegation
 ```
 
 The keygen output directory must be new and absolute. It contains raw 32-byte
@@ -74,7 +74,7 @@ startup and upload admission. Published data is never removed by staging cleanup
 ## Run behind HTTPS
 
 ```sh
-rtk proxy bin/gene-registry --config /absolute/registry-service.gene
+bin/gene-registry --config /absolute/registry-service.gene
 ```
 
 The listener binds only `127.0.0.1`. Terminate it with SIGTERM/SIGINT to finish
