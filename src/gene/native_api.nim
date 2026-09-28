@@ -44,6 +44,16 @@ type
     data*: ptr uint8
     capacity*: csize_t
     required*: csize_t
+  GeneNamedArg* {.bycopy.} = object
+    name*: ptr uint8
+    nameLen*: csize_t
+    value*: uint64
+  GeneNativeCallbackProc* = proc(api: ptr GeneApi, userContext: pointer,
+      arguments: ptr uint64, argumentCount: csize_t,
+      named: ptr GeneNamedArg, namedCount: csize_t,
+      environment: uint64, output, error: ptr uint64,
+      diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
+  GeneContextRetireProc* = proc(userContext: pointer) {.cdecl.}
   GeneApi* {.bycopy.} = object
     version*: uint32
     structSize*: uint32

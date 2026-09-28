@@ -29257,7 +29257,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           "native function '" & callee.nativeFnName & "' cannot receive named arguments")
       return impl(args)
     let callImpl = callee.nativeCallImpl
-    if callImpl == nil:
+    let contextImpl = callee.nativeContextCallImpl
+    if callImpl == nil and contextImpl == nil:
       raise newException(GeneError,
         "native function '" & callee.nativeFnName & "' has no implementation")
     if named.len != 0 and not callee.nativeAcceptsNamed:
@@ -29269,7 +29270,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                           dispatchScope: dispatchScope,
                           site: site,
                           loc: loc)
-    callImpl(args, addr call)
+    if contextImpl != nil:
+      contextImpl(callee.nativeContext, args, addr call)
+    else:
+      callImpl(args, addr call)
   of vkFfiCallable:
     applyFfiCallable(callee, args, named, dispatchScope)
   of vkEnumVariant:

@@ -569,6 +569,9 @@ type
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+  NativeContextCallProc* = proc(context: RootRef,
+                                args: openArray[Value],
+                                call: ptr NativeCall): Value {.nimcall.}
 
   ## typed_native AOT boundary (docs/workflows.md).
   ##
@@ -729,6 +732,8 @@ type
     name: string
     impl: NativeProc
     callImpl: NativeCallProc
+    contextImpl: NativeContextCallProc
+    context: RootRef
     acceptsNamed: bool
     fastKind: NativeFastKind
     errorMetadata: NativeErrorMetadata
@@ -4886,6 +4891,16 @@ proc nativeCallImpl*(v: Value): NativeCallProc {.inline.} =
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).callImpl
 
+proc nativeContextCallImpl*(v: Value): NativeContextCallProc {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).contextImpl
+
+proc nativeContext*(v: Value): RootRef {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).context
+
 proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
@@ -8943,6 +8958,18 @@ proc newNativeCallFn*(name: string, impl: NativeCallProc,
   p.acceptsNamed = acceptsNamed
   p.fastKind = nfkNone
   p.errorMetadata = errorMetadata
+  boxPtr(NATIVE_FN_TAG, p)
+
+proc newNativeContextFn*(name: string, context: RootRef,
+                         impl: NativeContextCallProc,
+                         acceptsNamed = true): Value =
+  let p = createObj(GeneNativeFn)
+  p.refCount = 1
+  p.name = name
+  p.context = context
+  p.contextImpl = impl
+  p.acceptsNamed = acceptsNamed
+  p.fastKind = nfkNone
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",

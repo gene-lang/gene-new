@@ -16,7 +16,7 @@
 #define GENE_API_FROZEN_FEATURE UINT64_C(8)
 #define GENE_API_ATTACHED_FEATURE UINT64_C(16)
 #define GENE_API_INGRESS_FEATURE UINT64_C(32)
-#define GENE_API_CALLBACK_FEATURE UINT64_C(64) /* reserved; not advertised */
+#define GENE_API_CALLBACK_FEATURE UINT64_C(64)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
 #define GENE_LIST_ITEM UINT32_C(0)
 #define GENE_MAP_ENTRY UINT32_C(1)
@@ -47,6 +47,15 @@ typedef uint32_t (*GeneNativeCallback)(
     GeneHandle environment, GeneHandle *out_value,
     GeneHandle *out_error, GeneOutBytes *diagnostic);
 typedef void (*GeneContextRetire)(void *user_context);
+
+/* Callback arguments and environment are valid only during the C call;
+ * retain an ID before storing it. On OK, out_value 0 means Gene nil,
+ * otherwise it is an owning ID. On failure, out_value must be 0 and
+ * out_error may contain an owning typed error ID. Callback results cannot
+ * be pending Tasks. Registration is available during module initialization.
+ * request_close denies new calls and may return PENDING during an active call.
+ * wait_closed consumes the registration token and returns an owning Task ID;
+ * the Task settles after user_context retirement and library release. */
 
 typedef struct GeneApi {
   uint32_t version;

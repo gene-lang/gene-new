@@ -17,6 +17,23 @@ type
     lane: int
     ticket: GeneThreadAttachment
 
+  GeneManagedRegistration = ref object of RootObj
+    domain: GeneManagedDomain
+    id: uint64
+    callback: GeneNativeCallbackProc
+    userContext: pointer
+    retire: GeneContextRetireProc
+    library: Value
+    environmentRoot: GeneManagedRoot
+    inFlight: int
+    closeRequested, retiring, retired: bool
+    waiters: seq[Value]
+
+  ManagedLoadFrame = object
+    library: Value
+    environment: uint64
+    registrations: seq[uint64]
+
   GeneManagedDomain* = ref object
     application: RuntimeContext
     rootLane: int
@@ -30,6 +47,9 @@ type
     attachments: array[256, ManagedAttachment]
     producers: int
     producerEntries: Table[uint64, ManagedEntry]
+    nextRegistrationId: uint64
+    registrations: Table[uint64, GeneManagedRegistration]
+    loadFrames: seq[ManagedLoadFrame]
     closed: bool
     apiTable: GeneApi
 
@@ -108,15 +128,17 @@ proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
   result.rootScope = scope
   result.roots = initTable[uint64, ManagedEntry]()
   result.producerEntries = initTable[uint64, ManagedEntry]()
+  result.registrations = initTable[uint64, GeneManagedRegistration]()
   initLock(result.lock)
   result.configureApiTable()
 
 proc addRoot(domain: GeneManagedDomain, value: Value,
-             scopes: seq[Scope] = @[]): GeneManagedRoot =
+             scopes: seq[Scope] = @[],
+             allowClosed = false): GeneManagedRoot =
   domain.requireDomain()
   acquire(domain.lock)
   try:
-    if domain.closed:
+    if domain.closed and not allowClosed:
       raise newException(GeneError, "managed native domain is closed")
     if domain.nextId == high(uint64):
       raise newException(GeneError, "managed native root IDs are exhausted")
@@ -1057,6 +1079,7 @@ const
   GeneApiCallDefineFeature* = 4'u64
   GeneApiFrozenFeature* = 8'u64
   GeneApiAttachedFeature* = 16'u64
+  GeneApiCallbackFeature* = 64'u64
   GeneApiMaxCopyBytes* = 64 * 1024 * 1024
 
 proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
@@ -1669,6 +1692,317 @@ proc apiCall(context: pointer, callable: uint64,
     apiDiagnostic(diagnostic, e.msg)
     result = 1
 
+proc finishRegistration(registration: GeneManagedRegistration) =
+  ## Transfer every physical owner out of the registry lock before calling C.
+  let domain = registration.domain
+  var retire: GeneContextRetireProc
+  var userContext: pointer
+  var library = NIL
+  var environmentRoot: GeneManagedRoot
+  var waiters: seq[Value]
+  acquire(domain.lock)
+  try:
+    if registration.retiring or registration.retired or
+        not registration.closeRequested or
+        registration.inFlight != 0:
+      return
+    registration.retiring = true
+    retire = registration.retire
+    userContext = registration.userContext
+    library = move(registration.library)
+    environmentRoot = move(registration.environmentRoot)
+    registration.callback = nil
+    registration.retire = nil
+    registration.userContext = nil
+  finally:
+    release(domain.lock)
+  try:
+    if retire != nil:
+      retire(userContext)
+  finally:
+    if library.kind == vkFfiLibrary:
+      releaseFfiLibraryBorrow(library)
+    if environmentRoot != nil:
+      geneManagedRelease(environmentRoot)
+    acquire(domain.lock)
+    try:
+      registration.retired = true
+      registration.retiring = false
+      waiters = move(registration.waiters)
+    finally:
+      release(domain.lock)
+    for waiter in waiters:
+      discard vm.nativeTaskComplete(waiter, NIL, domain.rootScope)
+
+proc requestCloseRegistration(registration: GeneManagedRegistration): uint32 =
+  let domain = registration.domain
+  acquire(domain.lock)
+  try:
+    registration.closeRequested = true
+    result = if registration.retired or
+        (registration.inFlight == 0 and not registration.retiring): 0'u32
+        else: 4'u32
+  finally:
+    release(domain.lock)
+  if result == 0:
+    finishRegistration(registration)
+
+proc invokeRegisteredCallback(context: RootRef, arguments: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  let registration = GeneManagedRegistration(context)
+  let domain = registration.domain
+  withManagedProgress:
+    var callback: GeneNativeCallbackProc
+    var userContext: pointer
+    acquire(domain.lock)
+    try:
+      if domain.closed or registration.closeRequested or registration.retired:
+        raise newException(GeneError, "native callback is closed")
+      inc registration.inFlight
+      callback = registration.callback
+      userContext = registration.userContext
+    finally:
+      release(domain.lock)
+    var temporary: seq[GeneManagedRoot]
+    var temporaryIds: seq[uint64]
+    var outputId, errorId: uint64
+    try:
+      if arguments.len > 4096 or
+          (call != nil and call.namedNames.len > 4096):
+        raise newException(GeneError, "native callback arguments exceed limit")
+      let env = GeneManagedEnvironment(root: registration.environmentRoot)
+      let scope = domain.environmentScope(env)
+      vm.requireNativeRootLane(scope)
+      var argumentIds = newSeq[uint64](arguments.len)
+      for i, argument in arguments:
+        let root = geneManagedRootFromVm(domain, scope, argument)
+        temporary.add root
+        temporaryIds.add root.id
+        argumentIds[i] = root.id
+      var named: seq[GeneNamedArg]
+      if call != nil:
+        named.setLen(call.namedNames.len)
+        for i in 0 ..< named.len:
+          let root = geneManagedRootFromVm(domain, scope, call.namedValues[i])
+          temporary.add root
+          temporaryIds.add root.id
+          let name = call.namedNames[i]
+          named[i] = GeneNamedArg(
+            name: if name.len == 0: nil
+                  else: cast[ptr uint8](unsafeAddr call.namedNames[i][0]),
+            nameLen: csize_t(name.len), value: root.id)
+      let environmentRoot = domain.addRoot(
+        domain.liveRootEntry(registration.environmentRoot).value,
+        domain.liveRootEntry(registration.environmentRoot).scopes)
+      temporary.add environmentRoot
+      temporaryIds.add environmentRoot.id
+      var bytes: array[512, uint8]
+      var diagnostic = GeneOutBytes(data: addr bytes[0],
+                                    capacity: csize_t(bytes.len))
+      let code = callback(addr domain.apiTable, userContext,
+        (if argumentIds.len == 0: nil else: addr argumentIds[0]),
+        csize_t(argumentIds.len),
+        (if named.len == 0: nil else: addr named[0]), csize_t(named.len),
+        environmentRoot.id, addr outputId, addr errorId, addr diagnostic)
+      let count = if diagnostic.required > csize_t(bytes.len): bytes.len
+                  else: int(diagnostic.required)
+      var message = "native callback returned " & $code
+      if count > 0:
+        message.add ": "
+        for i in 0 ..< count: message.add char(bytes[i])
+      if (outputId != 0 and outputId in temporaryIds) or
+          (errorId != 0 and errorId in temporaryIds):
+        raise newException(GeneError,
+          "native callback returned a borrowed argument handle")
+      if outputId != 0 and outputId == errorId:
+        raise newException(GeneError,
+          "native callback returned the same handle twice")
+      if code != 0 and outputId != 0:
+        raise newException(GeneError,
+          "native callback returned a value handle on failure")
+      let output = if outputId == 0: NIL else:
+        domain.liveRootValue(GeneManagedRoot(domain: domain, id: outputId))
+      let errorValue = if errorId == 0: NIL else:
+        domain.liveRootValue(GeneManagedRoot(domain: domain, id: errorId))
+      case code
+      of 0'u32:
+        if errorId != 0:
+          raise newException(GeneError,
+            "native callback returned an error handle on success")
+        if output.kind == vkTask:
+          raise newException(GeneError,
+            "native callback cannot return a Task")
+        result = output
+      of 1'u32:
+        let failure = newException(GeneError, message)
+        if errorId != 0:
+          failure.errVal = errorValue
+          failure.hasErrVal = true
+        raise failure
+      of 2'u32:
+        let failure = newException(GenePanic, message)
+        if errorId != 0:
+          failure.errVal = errorValue
+          failure.hasErrVal = true
+        raise failure
+      of 3'u32:
+        raise newException(GeneCancel, message)
+      else:
+        raise newException(GeneError,
+          "native callback returned unsupported status " & $code)
+    finally:
+      try:
+        if outputId != 0 and outputId notin temporaryIds:
+          geneManagedRelease(GeneManagedRoot(domain: domain, id: outputId))
+        if errorId != 0 and errorId != outputId and errorId notin temporaryIds:
+          geneManagedRelease(GeneManagedRoot(domain: domain, id: errorId))
+        for root in temporary:
+          geneManagedRelease(root)
+      finally:
+        var shouldFinish = false
+        acquire(domain.lock)
+        try:
+          dec registration.inFlight
+          shouldFinish = registration.closeRequested and
+                         registration.inFlight == 0
+        finally:
+          release(domain.lock)
+        if shouldFinish:
+          finishRegistration(registration)
+
+proc apiRegisterCallback(context: pointer, environment: uint64,
+    name: ptr uint8, nameLength: csize_t,
+    callback: GeneNativeCallbackProc, userContext: pointer,
+    retire: GeneContextRetireProc, output, token: ptr uint64,
+    diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  if token != nil: token[] = 0
+  var library = NIL
+  var environmentRoot, callableRoot: GeneManagedRoot
+  var borrowed = false
+  try:
+    let domain = apiDomain(context)
+    if output == nil or token == nil or callback == nil or retire == nil:
+      raise newException(GeneError,
+        "native callback registration arguments are invalid")
+    let copiedName = apiCopiedName(name, nameLength)
+    if copiedName.len > 128:
+      raise newException(GeneError, "native callback name is too long")
+    if domain.loadFrames.len == 0 or
+        domain.loadFrames[^1].environment != environment:
+      raise newException(GeneError,
+        "native callback registration requires an active module initializer")
+    library = domain.loadFrames[^1].library
+    let env = GeneManagedEnvironment(
+      root: GeneManagedRoot(domain: domain, id: environment))
+    let scope = domain.environmentScope(env)
+    let source = domain.liveRootEntry(env.root)
+    library.borrowFfiLibrary()
+    borrowed = true
+    environmentRoot = domain.addRoot(source.value, source.scopes)
+    var registration = GeneManagedRegistration(
+      domain: domain, callback: callback, userContext: userContext,
+      retire: retire, library: library, environmentRoot: environmentRoot)
+    acquire(domain.lock)
+    try:
+      if domain.nextRegistrationId == high(uint64):
+        raise newException(GeneError, "native registration IDs are exhausted")
+      inc domain.nextRegistrationId
+      registration.id = domain.nextRegistrationId
+    finally:
+      release(domain.lock)
+    let callable = newNativeContextFn(copiedName, RootRef(registration),
+                                      invokeRegisteredCallback)
+    callableRoot = geneManagedRootFromVm(domain, scope, callable)
+    let defined = geneManagedDefine(env, copiedName, callableRoot)
+    if defined.status != gsOk:
+      raise newException(GeneError, defined.message)
+    geneManagedRelease(defined.value)
+    acquire(domain.lock)
+    try:
+      domain.registrations[registration.id] = registration
+      domain.loadFrames[^1].registrations.add registration.id
+    finally:
+      release(domain.lock)
+    borrowed = false # registration owns the library borrow now
+    environmentRoot = nil
+    output[] = callableRoot.id
+    token[] = registration.id
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if result != 0:
+      if callableRoot != nil: geneManagedRelease(callableRoot)
+      if environmentRoot != nil: geneManagedRelease(environmentRoot)
+      if borrowed: library.releaseFfiLibraryBorrow()
+
+proc apiRequestClose(context: pointer, token: uint64,
+                     diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  try:
+    let domain = apiDomain(context, allowClosed = true)
+    var registration: GeneManagedRegistration
+    acquire(domain.lock)
+    try:
+      registration = domain.registrations.getOrDefault(token)
+    finally:
+      release(domain.lock)
+    if registration == nil:
+      raise newException(GeneError, "native registration token is unavailable")
+    result = requestCloseRegistration(registration)
+    apiDiagnostic(diagnostic, "")
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
+proc apiWaitClosed(context: pointer, token: uint64, output: ptr uint64,
+                   diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native close waiter output is nil")
+    let domain = apiDomain(context, allowClosed = true)
+    var registration: GeneManagedRegistration
+    acquire(domain.lock)
+    try:
+      registration = domain.registrations.getOrDefault(token)
+      if registration == nil or not registration.closeRequested:
+        raise newException(GeneError,
+          "native registration must request close before waiting")
+    finally:
+      release(domain.lock)
+    let task = vm.nativeNewAsyncTask()
+    let taskRoot = domain.addRoot(task, allowClosed = true)
+    acquire(domain.lock)
+    try:
+      domain.registrations.del(token) # wait consumes the registration token
+      if not registration.retired:
+        registration.waiters.add task
+    finally:
+      release(domain.lock)
+    if registration.retired:
+      discard vm.nativeTaskComplete(task, NIL, domain.rootScope)
+    output[] = taskRoot.id
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+
 proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable = GeneApi(version: GeneApiVersion,
                            structSize: uint32(sizeof(GeneApi)),
@@ -1676,7 +2010,8 @@ proc configureApiTable(domain: GeneManagedDomain) =
                                         GeneApiScalarFeature or
                                         GeneApiCallDefineFeature or
                                         GeneApiFrozenFeature or
-                                        GeneApiIngressFeature,
+                                        GeneApiIngressFeature or
+                                        GeneApiCallbackFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](apiRetain),
                            release: cast[pointer](apiRelease),
@@ -1692,6 +2027,9 @@ proc configureApiTable(domain: GeneManagedDomain) =
                            length: cast[pointer](apiLength),
                            copyKey: cast[pointer](apiCopyKey),
                            traverse: cast[pointer](apiTraverse))
+  domain.apiTable.registerCallback = cast[pointer](apiRegisterCallback)
+  domain.apiTable.requestClose = cast[pointer](apiRequestClose)
+  domain.apiTable.waitClosed = cast[pointer](apiWaitClosed)
   domain.apiTable.ingressBegin = geneIngressBegin
   domain.apiTable.ingressEnqueue = geneIngressEnqueue
   domain.apiTable.ingressEnd = geneIngressEnd
@@ -1706,6 +2044,33 @@ proc configureApiTable(domain: GeneManagedDomain) =
 
 const GeneModuleInitSymbol* = "gene_module_init"
 
+proc rollbackModuleLoad(domain: GeneManagedDomain,
+                        frame: ManagedLoadFrame, firstNewRoot: uint64) =
+  for id in frame.registrations:
+    var registration: GeneManagedRegistration
+    acquire(domain.lock)
+    try:
+      registration = domain.registrations.getOrDefault(id)
+    finally:
+      release(domain.lock)
+    if registration != nil:
+      discard requestCloseRegistration(registration)
+      acquire(domain.lock)
+      try:
+        if registration.retired:
+          domain.registrations.del(id)
+      finally:
+        release(domain.lock)
+  var newRoots: seq[uint64]
+  acquire(domain.lock)
+  try:
+    for id in domain.roots.keys:
+      if id > firstNewRoot: newRoots.add id
+  finally:
+    release(domain.lock)
+  for id in newRoots:
+    geneManagedRelease(GeneManagedRoot(domain: domain, id: id))
+
 proc geneManagedLoadModule*(domain: GeneManagedDomain,
     library: GeneManagedRoot, environment: GeneManagedEnvironment,
     name: string, requiredFeatures = 0'u64): GeneManagedResult =
@@ -1713,10 +2078,17 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
   ## Absent operations remain unadvertised until qualified.
   withManagedProgress:
     var moduleEnvironment: GeneManagedEnvironment
+    var frame: ManagedLoadFrame
+    var frameStarted = false
+    var frameOnStack = false
+    var succeeded = false
+    var initializerBorrowed = false
+    var firstNewRoot: uint64
+    var lib = NIL
     try:
       domain.requireOpen()
       let parentScope = domain.environmentScope(environment)
-      let lib = domain.liveRootValue(library)
+      lib = domain.liveRootValue(library)
       if lib.kind != vkFfiLibrary or lib.ffiLibraryClosed:
         raise newException(GeneError,
           "managed module load requires an open ffi/Library")
@@ -1734,13 +2106,27 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
       moduleScope.moduleRoot = true
       moduleScope.moduleBase = nil
       moduleScope.moduleStatic = true
+      acquire(domain.lock)
+      try:
+        firstNewRoot = domain.nextId
+      finally:
+        release(domain.lock)
       moduleEnvironment = geneNewManagedEnvironment(domain, moduleScope)
+      lib.borrowFfiLibrary()
+      initializerBorrowed = true
+      domain.loadFrames.add ManagedLoadFrame(
+        library: lib, environment: moduleEnvironment.root.id)
+      frameStarted = true
+      frameOnStack = true
       var bytes: array[512, uint8]
       var diagnostic = GeneOutBytes(data: addr bytes[0],
                                       capacity: csize_t(bytes.len))
       let initializer = cast[GeneModuleInitCProc](symbol)
       let code = initializer(addr domain.apiTable, moduleEnvironment.root.id,
                              addr diagnostic)
+      frame = move(domain.loadFrames[^1])
+      domain.loadFrames.setLen(domain.loadFrames.len - 1)
+      frameOnStack = false
       if code != 0:
         let count = if diagnostic.required > csize_t(bytes.len): bytes.len
                     else: int(diagnostic.required)
@@ -1760,6 +2146,7 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
       let moduleValue = newModule(name, root, lib.ffiLibraryPath)
       result.value = geneManagedRootFromVm(domain, parentScope, moduleValue)
       result.status = gsOk
+      succeeded = true
     except GeneError as e:
       result.status = gsError
       result.message = e.msg
@@ -1767,28 +2154,46 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
       result.status = gsPanic
       result.message = e.msg
     finally:
+      if frameOnStack:
+        frame = move(domain.loadFrames[^1])
+        domain.loadFrames.setLen(domain.loadFrames.len - 1)
+      if frameStarted and not succeeded:
+        rollbackModuleLoad(domain, frame, firstNewRoot)
       if moduleEnvironment != nil:
         geneManagedEnvironmentRelease(moduleEnvironment)
+      if initializerBorrowed:
+        lib.releaseFfiLibraryBorrow()
 
 proc geneManagedClose*(domain: GeneManagedDomain): bool =
   domain.requireDomain()
   if currentEventLane() != domain.rootLane:
     raise newException(GeneError, "managed native close requires the root lane")
+  var registrations: seq[GeneManagedRegistration]
   acquire(domain.lock)
   try:
     domain.closed = true
+    for _, registration in domain.registrations:
+      registrations.add registration
+  finally:
+    release(domain.lock)
+  for registration in registrations:
+    discard requestCloseRegistration(registration)
+  acquire(domain.lock)
+  try:
     result = domain.roots.len == 0 and domain.borrows == 0 and
-             domain.producers == 0 and domain.attachmentCount == 0
+             domain.producers == 0 and domain.attachmentCount == 0 and
+             domain.registrations.len == 0
   finally:
     release(domain.lock)
 
 proc geneManagedStats*(domain: GeneManagedDomain):
-    tuple[roots, borrows, producers, attachments: int,
+    tuple[roots, borrows, producers, attachments, registrations: int,
           closed: bool, nextId: uint64] =
   domain.requireDomain()
   acquire(domain.lock)
   try:
     result = (domain.roots.len, domain.borrows, domain.producers,
-              domain.attachmentCount, domain.closed, domain.nextId)
+              domain.attachmentCount, domain.registrations.len,
+              domain.closed, domain.nextId)
   finally:
     release(domain.lock)
