@@ -9,7 +9,9 @@ C callback registration now has temporary argument IDs, typed outcomes,
 root-lane close, and physical library/context retirement. Byte ingress is
 present in this same layout and powers `genex/libuv_timer`; subscriptions now
 keep handler, environment, active Task and library ownership through managed
-IDs until physical release. Package-native loader integration remains open. The owner
+IDs until physical release. Package-native module loading now uses
+`$pkg/native_module` and retains its domain, table, library and artifact
+lease through close. The owner
 selected opaque handles in
 [Native managed borrows](native-managed-borrows.md). Current qualification is
 recorded in the [consolidated native ABI evidence](../profiles/native-app.md#native-ownership-and-c-abi).
@@ -201,15 +203,20 @@ raw-publication pin is gone; release of the managed IDs follows all three
 physical retirement proofs. The byte queue and `$native/ingress/open` syntax
 are unchanged.
 
-The managed loader currently exists as `geneManagedLoadModule` in Nim. Package
-binary selection validates numeric ABI version 6, but invoking this loader
-through every package-native path remains integration work.
+The Nim `geneManagedLoadModule` loader is now reached through the selected
+`$pkg/native_module` path for `gene_api` binaries. The returned `NativeModule`
+IoResource owns the managed domain, module ID, open library and materialized
+artifact lease. A source-built `c_library` marks `^abi_kind gene_api`; a
+prebuilt `native_binary` declares the same ABI explicitly. The installed
+source-built fixture passes 10,000 compiler-free lifetimes; the same installed
+app loads a selected prebuilt variant. It rejects ordinary `c_abi`, rolls back
+initializer failure, and closes an abandoned owner without
+making an escaped Module callable jump into unloaded C code. The exact
+Gene-facing contract is in [Packaged managed native modules](../spec/native-module.md).
 
 ## Remaining implementation gates
 
-1. Wire the managed loader into package-native module loading and retain its
-   domain, table, and library until all registrations and producers retire.
-2. Qualify future producer/Task-return paths. The
+1. Qualify future producer/Task-return paths. The
    synchronous callback C fixture passes default ORC, AtomicArc, ASAN, and
    TSAN with initializer rollback, typed outcomes, re-entry, and repeated
    close/wait; the RC-enabled standalone probe reaches 10,000 lifetimes.

@@ -46,7 +46,7 @@ five-second samples against a 256-Value limit. A test-only collection safepoint
 supports bounded lifetime children; it does not enable general collection.
 
 The four standard gates (`nimble test`, `spec`, `leakcheck`, and `threadcheck`)
-pass on the current synchronous-callback source. Each table or hash below
+pass on the current packaged-native-module source. Each table or hash below
 identifies a bounded build; evidence from one build must not be silently
 transferred to another.
 
@@ -231,6 +231,13 @@ It passes the same 70 Node ABI cases and 30 pinned Chrome for Testing
 147.0.7727.15 cases; managed counts, occupied guest heap, retained-Type
 control, and browser/server shutdown remain flat/clean. Reports and the
 isolated browser profile are under `tmp/native-callback-wasm/`.
+The current package-loader source produced a fresh RC-instrumented wasm
+artifact with SHA-256
+`c4edb11c5ff4fe340b191f4afbea9b8ff289f5d01fe509ec4234a1b4429238fe`.
+It passes 70 Node ABI cases and 30 pinned Chrome for Testing cases, with flat
+managed counts (735), occupied guest heap (3,374,032 bytes), retained-Type
+control, and graceful browser/server shutdown. Reports are under
+`tmp/native-module-wasm/`; tracked web artifacts remain unchanged.
 Other browsers, workers, opaque code/error graphs, and broader shared mutable
 ownership are unqualified. The [wasm harness](../../tests/test_wasm_browser.gene)
 and [workflow](../workflows.md) document reproduction.
@@ -307,10 +314,18 @@ lifetimes with source hidden and compiler unavailable, zero live C contexts
 and libuv handles after each close, 20,000 handle close callbacks, and native
 root/materialized-lease baselines.
 
-Managed module-loader integration with packaged extensions and producer/Task-result
-semantics remain open.
+The selected `gene_api` package path now returns an owned `NativeModule`
+IoResource. The [installed native-module fixture](../../tests/test_genex_native_module.py)
+passed **10,000** compiler-free create/call/close/wait lifetimes on macOS arm64
+with two registered C callbacks per module, zero live C contexts, exact
+retirement counts, and native-root,
+`native_module_records`, and materialized-lease baselines. It rejects ordinary
+`c_abi` metadata, rolls back a failed initializer after two registrations,
+loads a selected prebuilt GeneApi variant, closes re-entrantly from an active
+C callback, and auto-closes an abandoned owner. An escaped Module value then
+refuses its unloaded callback safely. Producer/Task-result semantics remain open.
 The [native ABI design](../proposals/native-managed-extension-abi.md)
-and [ingress specification](../spec/native-ingress.md) define those gates.
+and [package-module specification](../spec/native-module.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
 ingress tests pass; unchanged `538764d` reproduces the same failure. The
 supported AtomicArc threaded ingress suite passes.
@@ -327,8 +342,8 @@ emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
 utf8proc, and libcurl were older than the genex pins; the probe built pinned
 versions from source. Linux work is deferred by the owner.
 
-Next implementation work is managed package-loader integration. The SERVICE
-heartbeat investigation,
+Next implementation work is the separate native producer/Task-result contract.
+The SERVICE heartbeat investigation,
 Linux native timing, broader shared ownership, and profile promotion remain
 deferred or gated as described above. The
 [profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order)

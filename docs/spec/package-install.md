@@ -27,9 +27,16 @@ lease. Its `.path` can be passed to `ffi/open` or an extension loader; close
 the lease after closing the library. Runtime selection rejects a target
 different from the running CPU/OS before loading. The CLI regression builds
 and loads a real C shared library under a suffix-free filename, then runs
-the installed launcher with the original source checkout hidden. This
-does not yet qualify host-independent native artifacts or package a genex
-library.
+the installed launcher with the original source checkout hidden. That CLI
+regression alone does not qualify host-independent native artifacts or a
+genex library.
+
+`($pkg/native_module this_pkg "alias")` requires selected `gene_api` metadata,
+opens the verified binary, invokes the managed initializer, and returns an
+owned `NativeModule` IoResource. Its library and materialized lease retire
+only after registered C callbacks and native owners finish. The installed
+source-built and prebuilt fixture is specified in
+[native module ownership](native-module.md).
 
 `(c_library "alias" ^sources ["native/bridge.c"] ^linkage shared
 ^targets ["arm64-macosx"] ...)` compiles selected C sources from the
@@ -49,6 +56,10 @@ there is no cross-host C derivation promotion in this format.
 Shared output is a loadable library; static output is an archive of pure C
 objects. Static recipes currently reject link flags and system-library
 aliases because there is no downstream native link step to consume them.
+`^abi_kind gene_api` marks a shared `c_library` as a managed GeneApi module;
+the build records the supported numeric ABI version and current runtime
+identity. Static GeneApi libraries are rejected because the loader opens a
+shared image.
 
 Compiler output is a digest-checked sidecar of the GIR artifact. Warm cache
 hits verify both GIR and the sidecar; `--verify-reproducible` rebuilds both.

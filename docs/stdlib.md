@@ -82,6 +82,11 @@ Experimental source-built `c_library` recipes produce verified shared
 libraries or static archives from selected C sources. The same
 `$pkg/native_binary` lookup materializes their output; see
 [package installation](spec/package-install.md).
+For a `gene_api` recipe, `($pkg/native_module this_pkg "alias")` performs the
+verified load and returns an owned `NativeModule` with `.module`,
+`.IoResource:close`, and `.IoResource:wait_closed`. A source-built recipe opts
+in with `^abi_kind gene_api`; selected prebuilt variants declare the ABI in
+their variant record. See [native module ownership](spec/native-module.md).
 
 ## Paths and CSV
 

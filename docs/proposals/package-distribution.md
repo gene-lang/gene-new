@@ -4,6 +4,11 @@
 
 **Stages:** PKG-1 (resources/offline install), PKG-2 (native recipes), PKG-3 (hosted publication).
 
+Source-built `gene_api` `c_library` recipes and selected prebuilt GeneApi
+variants now load through `$pkg/native_module`. The installed macOS arm64
+fixture passes 10,000 compiler-free module lifetimes, a prebuilt variant,
+initializer rollback and abandoned-owner retirement.
+
 **Depends on:** Current package/build system. PKG-1/2 do not require retained native callbacks or a hosted registry.
 
 ## Reuse the existing model
@@ -54,12 +59,19 @@ Use ordinary data nodes under build, referenced by target uses:
 
 | Recipe | Closed v1 schema |
 | --- | --- |
-| `(c_library "name" ...)` | sources: nonempty List of selected .c files; include_dirs: relative directory List; system: declared system-dependency aliases; cflags/ldflags: literal argument Lists; linkage: shared or static; targets: target-triple List. |
+| `(c_library "name" ...)` | sources: nonempty List of selected .c files; include_dirs: relative directory List; system: declared system-dependency aliases; cflags/ldflags: literal argument Lists; linkage: shared or static; targets: target-triple List; optional `^abi_kind gene_api` selects the sole managed GeneApi layout instead of the default `c_abi`. |
 | `(native_binary "name" ...)` | variants: List of artifact records with target, file, digest, ABI kind/version, and declared system aliases. Exactly one compatible variant per selected target. |
 
 No shell-string recipe execution. Invoke the configured C compiler with argument arrays in a private build directory. Resolve pkg_config/vcpkg/framework/policy_mapping requirements through the existing `system_dependency.nim` interfaces at build time, not runtime import. Capture provider/version, headers/libraries/toolchain identity and relevant digests in derivation evidence. If host SDK inputs cannot be fully pinned, label the build as environment-dependent and disable cross-host artifact reuse. The implemented conservative policy includes a hostname/per-user build-installation identity in C evidence, stored outside artifact stores. Copying a store does not authorize native reuse on another build installation; do not copy its host identity to another host. Compiler evidence imported with an installed bundle authorizes only its required verified closure, never an ambient/optional cache or rebuild. Prebuilt native_binary variants retain their explicit target/ABI/runtime/system contracts; those are publication inputs, not evidence of a hermetic C rebuild or compatibility with an unqualified host.
 
 Distinguish ordinary C ABI libraries, GeneApi extensions, and Gene-generated FFI/AOT artifacts. A matching CPU triple alone is insufficient for the latter: record runtime/compiler ABI and required runtime identity. Never load a binary selected solely by file suffix. Stage declared shared libraries and runtime search paths without relying on the developer's cwd. Do not redistribute a system library unless its redistribution policy/notices are included; external prerequisites are recorded explicitly.
+
+`$pkg/native_module` accepts only a selected `gene_api` recipe at the supported
+version. It materializes the verified image, invokes the managed initializer,
+and returns an owned `NativeModule` IoResource. Its module, C registrations,
+library image and artifact lease remain owned through
+[physical close](../spec/native-module.md), including installed, compiler-free
+launches. A plain `c_abi` recipe is refused before its C initializer runs.
 
 First integrate an existing local genex library with a synchronous/native boundary, such as websocket, to prove packaging independently of NATIVE-2. The later retained-notification package uses the same artifact route.
 

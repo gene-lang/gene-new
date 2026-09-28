@@ -10,9 +10,10 @@ and transfers returned-state provenance into the Actor. Managed Actor handlers
 remain on the root lane until AAR-3 worker allocation lifetimes are qualified.
 Synchronous C callback registration now holds its library and environment
 through physical retirement. Byte-ingress subscriptions now own their handler,
-environment, active Task and library through mediated IDs. Managed module-loader
-integration with package-native binaries, complete shared mutation/worker
-handoff policy, and AAR-2
+environment, active Task and library through mediated IDs. Source-built
+`gene_api` packages now load through an owned `NativeModule` IoResource; the
+installed fixture passes 10,000 compiler-free lifetimes. Complete shared
+mutation/worker handoff policy and AAR-2
 qualification remain open. This is the remaining native ownership program for
 AAR-1 in [AtomicArc generation retirement](atomic-arc-retirement.md). Direct
 Nim native helpers and Gene syntax stay unchanged. Production/shared retirement
@@ -108,7 +109,7 @@ Nim helpers in `src/gene/native_api.nim`, and the VM callback APIs.
 | Buffer new/len/get/set | Raw buffer/items and typed Scope input. | Copy scalar storage or return item handles; mutation observes both borrow admission and existing type checks. |
 | Channel trySend/tryRecv and actor trySend | Root-based input but raw outputs/Scope arguments; only nested root accesses currently fenced. | Enqueue owned handles/Values under admission; native queue owns them until physical dequeue/drop. Receive returns handles. Preserve Send/type/queue policies. |
 | Async Task create/complete/fail/cancel | Raw Tasks/results and native completion lifetimes. | Task/result/error handles retained through physical completion; cancellation does not prematurely end ownership. |
-| Module initialization and ingress subscriptions | The managed initializer and C callback registry own opaque environments and a library borrow until physical close; byte ingress now owns its handler, environment, active Task and library through a dedicated managed domain. | Connect managed module loading to package-native paths; qualify producer/Task-return semantics separately. |
+| Module initialization and ingress subscriptions | Selected source-built and prebuilt `gene_api` packages load through an owned `NativeModule`; the C callback registry and byte ingress own mediated handles and library borrows until physical close. | Qualify producer/Task-return semantics separately. |
 | Thread attach/detach and logging | No direct Gene graph returned by these entries. | Associate leases with attached lanes; copied diagnostic payloads require no Gene borrow. |
 | Direct Nim VM/Scope/Value APIs and custom `FunctionCode`/continuations | Arbitrary unmarked refs remain outside qualification. | Keep legacy accesses published/unqualified. Require explicit adapters and complete edge models before admitting any additional graph class. |
 
