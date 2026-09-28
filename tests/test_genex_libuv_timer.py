@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the v5 libuv adapter from a compiler-free installed app."""
+"""Exercise the libuv adapter from a compiler-free installed app."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ def invoke(argv: list[str], env: dict[str, str], timeout: int = 180):
 class GenexLibuvTimerTests(unittest.TestCase):
     def test_installed_timer_retires_each_native_handle(self) -> None:
         self.assertEqual(
-            (ROOT / "src/gene/native_api_v5.h").read_bytes(),
-            (TIMER / "native/gene_native_api_v5.h").read_bytes())
+            (ROOT / "src/gene/native_api.h").read_bytes(),
+            (TIMER / "native/gene_native_api.h").read_bytes())
         target = ("arm64-macosx" if platform.system() == "Darwin" else
                   "amd64-linux")
         if (platform.system(), platform.machine()) not in {

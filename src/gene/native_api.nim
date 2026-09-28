@@ -1,9 +1,6 @@
-## Nim-facing native extension foundation.
-##
-## This module intentionally exposes stable concepts rather than VM internals:
-## roots keep Gene values alive across native-owned lifetimes, and `geneCall`
-## is the trampoline native code can use to call any Gene callable through the
-## normal dynamic boundary.
+## Native extension plumbing. The public C ABI is the opaque `GeneApi` in
+## native_api.h; the direct Nim helpers below serve in-repo runtime code.
+## Roots keep their Values alive, and geneCall uses normal dynamic dispatch.
 
 import std/[algorithm, dynlib, json, locks, os, sets, tables]
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
@@ -28,17 +25,6 @@ export vm.NativeSyncCallback, vm.newNativeSyncCallback,
        vm.invokeNativeSyncCallback, vm.finishNativeCallbackCall
 
 type
-  GeneRootProc* = proc(value: Value): GeneRoot
-  GeneRootGetProc* = proc(root: GeneRoot): Value
-  GeneRootReleaseProc* = proc(root: GeneRoot)
-  GeneCallProc* = proc(callee: Value, call: GeneCall): GeneResult
-  GeneModuleDefineProc* = proc(module: GeneModule, name: string,
-                               value: Value): GeneResult
-  GeneModuleDefineNativeProc* = proc(module: GeneModule, name: string,
-                                     impl: NativeProc): GeneResult
-  GeneModuleDefineNativeCallProc* = proc(module: GeneModule, name: string,
-                                         impl: NativeCallProc,
-                                         acceptsNamed: bool): GeneResult
   GeneWrapperField* = object
     ## One declared prop of a native wrapper type. `typeExpr` is an ordinary
     ## Gene type expression (`newSym("Str")`, `(C/OwnedPtr PGconn)`, …) or NIL
@@ -47,68 +33,35 @@ type
     typeExpr*: Value
     optional*: bool
 
-  GeneDefineWrapperTypeProc* = proc(module: GeneModule, name: string,
-                                    fields: openArray[GeneWrapperField]): GeneResult
-  GeneNewWrapperProc* = proc(wrapperType: Value,
-                             props: openArray[(string, Value)]): GeneResult
-  GeneWrapperFieldProc* = proc(instance, wrapperType: Value,
-                               name: string): GeneResult
-  GeneNewCPtrProc* = proc(address: pointer, targetType: Value): Value
-  GeneNewCConstPtrProc* = proc(address: pointer, targetType: Value): Value
-  GeneNewCOwnedPtrProc* = proc(address: pointer, release: CPtrReleaseProc,
-                               targetType: Value): Value
-  GeneCloseCPtrProc* = proc(value: Value): GeneResult
-  GeneNewCSliceProc* = proc(address: pointer, length: int,
-                            targetType: Value): Value
-  GeneNewBufferProc* = proc(elemType: Value, items: seq[Value],
-                            scope: Scope): GeneResult
-  GeneBufferLenProc* = proc(buffer: Value): GeneResult
-  GeneBufferGetProc* = proc(buffer: Value, index: int): GeneResult
-  GeneBufferSetProc* = proc(buffer: Value, index: int, item: Value,
-                            scope: Scope): GeneResult
-  GeneChannelTrySendProc* = proc(channel: Value, item: GeneRoot,
-                                 scope: Scope): GeneResult
-  GeneChannelTryRecvProc* = proc(channel: Value, scope: Scope): GeneResult
-  GeneActorTrySendProc* = proc(actor: Value, message: GeneRoot,
-                               scope: Scope): GeneResult
-  GeneNewAsyncTaskProc* = proc(): Value
-  GeneTaskCompleteProc* = proc(task: Value, value: GeneRoot,
-                               scope: Scope): GeneResult
-  GeneTaskFailProc* = proc(task: Value, message: string, value: GeneRoot,
-                           hasValue: bool, scope: Scope): GeneResult
-  GeneTaskCancelProc* = proc(task: Value, scope: Scope): GeneResult
-  GeneNewCallbackProc* = proc(callee: Value): GeneCallbackHandle
-  GeneCallCallbackProc* = proc(callback: GeneCallbackHandle,
-                               call: GeneCall): GeneResult
-  GeneReleaseCallbackProc* = proc(callback: GeneCallbackHandle)
-  GeneAttachThreadProc* = proc(): GeneThreadAttachment
-  GeneDetachThreadProc* = proc(attachment: GeneThreadAttachment)
-  GeneThreadAttachedProc* = proc(): bool
-  GeneNewLoggerProc* = proc(name: string): RuntimeLogger
-  GeneLogEnabledProc* = proc(logger: RuntimeLogger, level: LogLevel): bool
-  GeneLogEmitProc* = proc(logger: RuntimeLogger, level: LogLevel,
-                          message, payloadJson: string): GeneResult
-  GeneModuleInitProc* = proc(api: ptr GeneApi,
-                             module: GeneModule): GeneResult {.nimcall.}
-
   GeneIngressBeginProc* = proc(context: pointer,
                                generation: uint64): cint {.cdecl.}
   GeneIngressEnqueueProc* = proc(context, data: pointer,
                                  length: csize_t): cint {.cdecl.}
   GeneIngressEndProc* = proc(context: pointer) {.cdecl.}
   GeneIngressUnregisterProc* = proc(context: pointer): cint {.cdecl.}
-  GeneIngressRegisterProc* = proc(api: ptr GeneApiV5, context: pointer,
-                                  generation: uint64,
-                                  nativeContext: ptr pointer): cint {.cdecl.}
-  GeneApiV5* = object
+  # The single C-facing layout.
+  GeneOutBytes* {.bycopy.} = object
+    data*: ptr uint8
+    capacity*: csize_t
+    required*: csize_t
+  GeneApi* {.bycopy.} = object
     version*: uint32
     structSize*: uint32
     featureBits*: uint64
+    runtimeContext*: pointer
+    attachThread*, detachThread*, retain*, release*, kind*: pointer
+    copyBool*, copyI64*, copyText*, copyBytes*: pointer
+    newBool*, newI64*, newText*, newBytes*: pointer
+    length*, copyKey*, traverse*, call*, define*: pointer
+    registerCallback*, requestClose*, waitClosed*, lookup*: pointer
     ingressBegin*: GeneIngressBeginProc
     ingressEnqueue*: GeneIngressEnqueueProc
     ingressEnd*: GeneIngressEndProc
-  GeneModuleInitV5Proc* = proc(api: ptr GeneApiV5,
-                               module: pointer): cint {.cdecl.}
+  GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
+                               diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
+  GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,
+                                    generation: uint64,
+                                    nativeContext: ptr pointer): cint {.cdecl.}
 
   GeneIngressSlot = object
     data: pointer
@@ -217,51 +170,8 @@ type
     value: Value
     scope: Scope
 
-  GeneApi* = object
-    version*: int
-    featureCount*: int
-    root*: GeneRootProc
-    rootGet*: GeneRootGetProc
-    rootRelease*: GeneRootReleaseProc
-    call*: GeneCallProc
-    moduleDefine*: GeneModuleDefineProc
-    moduleDefineNative*: GeneModuleDefineNativeProc
-    moduleDefineNativeCall*: GeneModuleDefineNativeCallProc
-    defineWrapperType*: GeneDefineWrapperTypeProc
-    newWrapper*: GeneNewWrapperProc
-    wrapperField*: GeneWrapperFieldProc
-    newCPtr*: GeneNewCPtrProc
-    newCConstPtr*: GeneNewCConstPtrProc
-    newCOwnedPtr*: GeneNewCOwnedPtrProc
-    closeCPtr*: GeneCloseCPtrProc
-    newCSlice*: GeneNewCSliceProc
-    newBuffer*: GeneNewBufferProc
-    bufferLen*: GeneBufferLenProc
-    bufferGet*: GeneBufferGetProc
-    bufferSet*: GeneBufferSetProc
-    channelTrySend*: GeneChannelTrySendProc
-    channelTryRecv*: GeneChannelTryRecvProc
-    actorTrySend*: GeneActorTrySendProc
-    newAsyncTask*: GeneNewAsyncTaskProc
-    taskComplete*: GeneTaskCompleteProc
-    taskFail*: GeneTaskFailProc
-    taskCancel*: GeneTaskCancelProc
-    newCallback*: GeneNewCallbackProc
-    callCallback*: GeneCallCallbackProc
-    releaseCallback*: GeneReleaseCallbackProc
-    attachThread*: GeneAttachThreadProc
-    detachThread*: GeneDetachThreadProc
-    threadAttached*: GeneThreadAttachedProc
-    newLogger*: GeneNewLoggerProc
-    logEnabled*: GeneLogEnabledProc
-    logEmit*: GeneLogEmitProc
-
-const GeneApiVersion* = 4   # 4: explicit cancellation status and owned synchronous callbacks.
-const GeneApiFeatureCount* = 35
-const GeneModuleInitSymbol* = "gene_module_init"
-const GeneApiV5Version* = 5'u32
-const GeneApiV5IngressFeature* = 1'u64
-const GeneModuleInitV5Symbol* = "gene_module_init_v5"
+const GeneApiVersion* = 6'u32
+const GeneApiIngressFeature* = 32'u64
 const GeneIngressMaxCount* = 256
 const GeneIngressMaxBytes* = 1024 * 1024
 const GeneIngressMaxPayload* = 64 * 1024
@@ -575,10 +485,7 @@ proc geneIngressDestroy*(context: GeneIngressContext) =
   deinitLock(context.lock)
   deallocShared(context)
 
-proc geneApi*(): GeneApi
-proc geneApiV5*(): GeneApiV5
-proc geneLoadModuleV5*(library: Value, name: string,
-                       scope: Scope, api: GeneApiV5): GeneResult
+proc geneApiIngress*(): GeneApi
 proc errorResult(e: ref GeneError): GeneResult
 
 proc geneNewLogger*(name: string): RuntimeLogger =
@@ -948,15 +855,10 @@ proc biIngressHandleOpen(args: openArray[Value],
   if registration == nil or unregistration == nil:
     raise newException(GeneError,
       "native ingress registration symbols are missing")
-  let initialized = geneLoadModuleV5(args[0], registerName & "-module", scope,
-                                     geneApiV5())
-  if initialized.status != gsOk:
-    raise newException(GeneError,
-      "native v5 module initialization failed: " & initialized.message)
   let subscription = newGeneIngressSubscription(args[1], scope,
     maxCount = maxCount, maxBytes = maxBytes, maxPayload = maxPayload,
     unregisterProc = unregistration, library = args[0])
-  var api = geneApiV5()
+  var api = geneApiIngress()
   var nativeContext: pointer
   let code = registration(addr api, cast[pointer](subscription.context),
                           subscription.id, addr nativeContext)
@@ -1515,148 +1417,13 @@ proc geneDetachThread*(attachment: GeneThreadAttachment) =
 proc geneThreadAttached*(): bool =
   geneThreadAttachDepth > 0
 
-proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
-                     api: GeneApi = geneApi()): GeneResult =
-  if init == nil:
-    result.status = gsError
-    result.message = "native module initializer is nil"
-    return
-  if api.version != GeneApiVersion:
-    result.status = gsError
-    result.message = "native API version mismatch: runtime " &
-      $GeneApiVersion & ", requested " & $api.version
-    return
-  var runtimeApi = api
-  try:
-    result = init(addr runtimeApi, module)
-    if result.status == gsOk:
-      result.value = module.geneModuleValue
-  except GeneError as e:
-    result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
-
-proc geneApiV5*(): GeneApiV5 =
-  GeneApiV5(version: GeneApiV5Version,
-    structSize: uint32(sizeof(GeneApiV5)),
-    featureBits: GeneApiV5IngressFeature,
+proc geneApiIngress*(): GeneApi =
+  ## The ingress-only view uses the same C layout as managed modules. Native
+  ## registrations may retain this table by value, but only its feature bit is
+  ## available; the context remains owned by the subscription.
+  GeneApi(version: GeneApiVersion,
+    structSize: uint32(sizeof(GeneApi)),
+    featureBits: GeneApiIngressFeature,
     ingressBegin: geneIngressBegin,
     ingressEnqueue: geneIngressEnqueue,
     ingressEnd: geneIngressEnd)
-
-proc geneInitModuleV5*(init: GeneModuleInitV5Proc,
-                       module: GeneModule,
-                       api: GeneApiV5 = geneApiV5()): GeneResult =
-  if init == nil or module == nil:
-    result.status = gsError
-    result.message = "native v5 module initializer or module is nil"
-    return
-  if api.version != GeneApiV5Version or
-      api.structSize != uint32(sizeof(GeneApiV5)) or
-      (api.featureBits and GeneApiV5IngressFeature) == 0 or
-      api.ingressBegin == nil or api.ingressEnqueue == nil or
-      api.ingressEnd == nil:
-    result.status = gsError
-    result.message = "native v5 API layout or feature mismatch"
-    return
-  var runtimeApi = api
-  let code = init(addr runtimeApi, cast[pointer](module))
-  if code != 0:
-    result.status = gsError
-    result.message = "native v5 initializer returned " & $code
-    return
-  result.status = gsOk
-  result.value = module.geneModuleValue
-
-proc geneLoadModule*(library: Value, name: string,
-                     scope: Scope = nil,
-                     initSymbol = GeneModuleInitSymbol,
-                     api: GeneApi = geneApi()): GeneResult =
-  try:
-    if library.kind != vkFfiLibrary:
-      raise newException(GeneError, "native module load expects an ffi/Library")
-    if library.ffiLibraryClosed:
-      raise newException(GeneError, "native module load library is closed")
-    if name.len == 0:
-      raise newException(GeneError, "native module name must not be empty")
-    if initSymbol.len == 0:
-      raise newException(GeneError, "native module initializer symbol must not be empty")
-    let symbol = symAddr(cast[LibHandle](library.ffiLibraryHandle), initSymbol)
-    if symbol == nil:
-      raise newException(GeneError,
-        "native module initializer not found: " & initSymbol)
-    let module = newGeneModule(name, library.ffiLibraryPath, scope)
-    result = geneInitModule(cast[GeneModuleInitProc](symbol), module, api)
-  except GeneError as e:
-    result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
-
-proc geneLoadModuleV5*(library: Value, name: string,
-                       scope: Scope,
-                       api: GeneApiV5): GeneResult =
-  try:
-    if library.kind != vkFfiLibrary or library.ffiLibraryClosed:
-      raise newException(GeneError,
-        "native v5 module load requires an open ffi/Library")
-    if name.len == 0:
-      raise newException(GeneError, "native v5 module name is empty")
-    let symbol = symAddr(cast[LibHandle](library.ffiLibraryHandle),
-                         GeneModuleInitV5Symbol)
-    if symbol == nil:
-      raise newException(GeneError,
-        "native v5 initializer not found: " & GeneModuleInitV5Symbol)
-    let module = newGeneModule(name, library.ffiLibraryPath, scope)
-    result = geneInitModuleV5(cast[GeneModuleInitV5Proc](symbol), module, api)
-  except GeneError as e:
-    result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
-
-proc geneLoadModuleVersioned*(library: Value, name: string,
-                              abiVersion: int,
-                              scope: Scope = nil): GeneResult =
-  case abiVersion
-  of GeneApiVersion:
-    geneLoadModule(library, name, scope)
-  of int(GeneApiV5Version):
-    geneLoadModuleV5(library, name, scope, geneApiV5())
-  else:
-    GeneResult(status: gsError,
-      message: "unsupported native module ABI version: " & $abiVersion)
-
-proc geneApi*(): GeneApi =
-  GeneApi(version: GeneApiVersion, featureCount: GeneApiFeatureCount,
-          root: geneRoot, rootGet: geneRootGet,
-          rootRelease: geneRootRelease, call: geneCall,
-          moduleDefine: geneModuleDefine,
-          moduleDefineNative: geneModuleDefineNative,
-          moduleDefineNativeCall: geneModuleDefineNativeCall,
-          newCPtr: geneNewCPtr,
-          newCConstPtr: geneNewCConstPtr,
-          newCOwnedPtr: geneNewCOwnedPtr,
-          defineWrapperType: geneDefineWrapperType,
-          newWrapper: geneNewWrapper,
-          wrapperField: geneWrapperField,
-          closeCPtr: geneCloseCPtr,
-          newCSlice: geneNewCSlice,
-          newBuffer: geneNewBuffer,
-          bufferLen: geneBufferLen,
-          bufferGet: geneBufferGet,
-          bufferSet: geneBufferSet,
-          channelTrySend: geneChannelTrySend,
-          channelTryRecv: geneChannelTryRecv,
-          actorTrySend: geneActorTrySend,
-          newAsyncTask: geneNewAsyncTask,
-          taskComplete: geneTaskComplete,
-          taskFail: geneTaskFail,
-          taskCancel: geneTaskCancel,
-          newCallback: geneNewCallback,
-          callCallback: geneCallCallback,
-          releaseCallback: geneReleaseCallback,
-          attachThread: geneAttachThread,
-          detachThread: geneDetachThread,
-          threadAttached: geneThreadAttached,
-          newLogger: geneNewLogger,
-          logEnabled: geneLogEnabled,
-          logEmit: geneLogEmit)

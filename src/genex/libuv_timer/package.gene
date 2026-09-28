@@ -1,7 +1,7 @@
 {^format 1
  ^name "genex/libuv_timer"
  ^version "0.1.0"
- ^description "Owned libuv timer notifications through Gene native ingress v5"
+ ^description "Owned libuv timer notifications through Gene native ingress"
  ^library {^entry "src/timer.gene" ^uses ["native"]}
  ^files {^include ["package.gene" "README.md" "src/**" "native/**"]}
  ^system_dependencies {

@@ -1,23 +1,34 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
-#include "native_api_v5.h"
+#include "native_api.h"
 
-static GeneApiV5 api;
+static GeneApi api;
 
-int gene_test_v5_register(const GeneApiV5 *incoming, void *context,
+int gene_test_set_api(const GeneApi *incoming) {
+  if (!incoming || incoming->version != GENE_API_VERSION ||
+      incoming->struct_size != sizeof(GeneApi) ||
+      !(incoming->feature_bits & GENE_API_INGRESS_FEATURE) ||
+      !incoming->ingress_begin || !incoming->ingress_enqueue ||
+      !incoming->ingress_end) return 1;
+  api = *incoming;
+  return 0;
+}
+
+int gene_test_ingress_register(const GeneApi *incoming, void *context,
                           uint64_t generation, void **native_context) {
-  if (!incoming || incoming->version != GENE_API_V5_VERSION ||
-      incoming->struct_size != sizeof(GeneApiV5) || !context ||
+  if (!incoming || incoming->version != GENE_API_VERSION ||
+      incoming->struct_size != sizeof(GeneApi) || !context ||
       !native_context) return 7;
   *native_context = context;
+  api = *incoming;
   if (!incoming->ingress_begin(context, generation)) return 8;
   int accepted = incoming->ingress_enqueue(context, "registered", 10);
   incoming->ingress_end(context);
   return accepted;
 }
 
-int gene_test_v5_register_fail(const GeneApiV5 *incoming, void *context,
+int gene_test_ingress_register_fail(const GeneApi *incoming, void *context,
                                uint64_t generation, void **native_context) {
   (void)incoming;
   (void)generation;
@@ -26,24 +37,13 @@ int gene_test_v5_register_fail(const GeneApiV5 *incoming, void *context,
   return 17;
 }
 
-int gene_test_v5_register_no_context(const GeneApiV5 *incoming,
+int gene_test_ingress_register_no_context(const GeneApi *incoming,
                                      void *context, uint64_t generation,
                                      void **native_context) {
   (void)incoming;
   (void)context;
   (void)generation;
   (void)native_context;
-  return 0;
-}
-
-int gene_module_init_v5(const GeneApiV5 *incoming, void *module) {
-  if (!incoming || !module || incoming->version != 5 ||
-      incoming->struct_size != sizeof(GeneApiV5) ||
-      !(incoming->feature_bits & 1) || !incoming->ingress_begin ||
-      !incoming->ingress_enqueue || !incoming->ingress_end) {
-    return 7;
-  }
-  api = *incoming;
   return 0;
 }
 
@@ -65,7 +65,7 @@ static void *emit_foreign(void *raw) {
   return NULL;
 }
 
-int gene_test_v5_emit_foreign(void *context, uint64_t generation,
+int gene_test_ingress_emit_foreign(void *context, uint64_t generation,
                               const void *data, size_t length,
                               int *began, int *enqueued) {
   ForeignEmit emit = {context, generation, data, length, 0, -4};
@@ -100,7 +100,7 @@ static void *emit_held(void *raw) {
   return NULL;
 }
 
-int gene_test_v5_hold_start(void *context, uint64_t generation) {
+int gene_test_ingress_hold_start(void *context, uint64_t generation) {
   held.context = context;
   held.generation = generation;
   held.began = 0;
@@ -112,20 +112,20 @@ int gene_test_v5_hold_start(void *context, uint64_t generation) {
   return held.began;
 }
 
-int gene_test_v5_hold_finish(void) {
+int gene_test_ingress_hold_finish(void) {
   atomic_store(&held.release, 1);
   if (pthread_join(held.thread, NULL)) return -11;
   return held.enqueued;
 }
 
-int gene_test_v5_unregister_slow(void *context) {
+int gene_test_ingress_unregister_slow(void *context) {
   (void)context;
   struct timespec delay = {0, 150000000};
   nanosleep(&delay, NULL);
   return 0;
 }
 
-int gene_test_v5_unregister_fail(void *context) {
+int gene_test_ingress_unregister_fail(void *context) {
   (void)context;
   return 17;
 }

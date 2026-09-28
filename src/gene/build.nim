@@ -846,8 +846,7 @@ proc selectedResources(engine: BuildEngine, request: BuildRequest,
         raiseBuild(becRequestInvalid, error.msg, [pkg.name, alias])
       let identity = engine.environment.toolchains.compilerIdentity
       if variant.abiKind == "gene_api":
-        if variant.abiVersion notin [GeneApiVersion,
-                                     int(GeneApiV5Version)] or
+        if variant.abiVersion != int(GeneApiVersion) or
             variant.runtimeIdentity != identity:
           raiseBuild(becRecipeUnavailable,
             "native binary GeneApi/runtime identity is incompatible",

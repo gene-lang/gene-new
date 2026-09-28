@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include <uv.h>
 
-#include "gene_native_api_v5.h"
+#include "gene_native_api.h"
 
 /* The owner thread creates, runs, and closes both libuv handles. The only
  * cross-thread libuv operation is uv_async_send, which libuv permits. */
 typedef struct GeneTimer {
-  GeneApiV5 api;
+  GeneApi api;
   void *ingress;
   uint64_t generation;
   pthread_t thread;
@@ -41,10 +41,12 @@ uint64_t gene_timer_closed_handles(void) {
   return atomic_load(&closed_handles);
 }
 
-int gene_module_init_v5(const GeneApiV5 *api, void *module) {
-  if (!module || !api || api->version != GENE_API_V5_VERSION ||
-      api->struct_size != sizeof(GeneApiV5) ||
-      !(api->feature_bits & GENE_API_V5_FEATURE_INGRESS) ||
+uint32_t gene_module_init(const GeneApi *api, GeneHandle environment,
+                          GeneOutBytes *diagnostic) {
+  (void)diagnostic;
+  if (!environment || !api || api->version != GENE_API_VERSION ||
+      api->struct_size != sizeof(GeneApi) ||
+      !(api->feature_bits & GENE_API_INGRESS_FEATURE) ||
       !api->ingress_begin || !api->ingress_enqueue || !api->ingress_end)
     return 1;
   return 0;
@@ -114,11 +116,11 @@ static void *timer_thread(void *raw) {
   return NULL;
 }
 
-int gene_timer_register(const GeneApiV5 *api, void *ingress,
+int gene_timer_register(const GeneApi *api, void *ingress,
                         uint64_t generation, void **native_context) {
   if (!api || !ingress || !native_context ||
-      api->version != GENE_API_V5_VERSION ||
-      api->struct_size != sizeof(GeneApiV5)) return 1;
+      api->version != GENE_API_VERSION ||
+      api->struct_size != sizeof(GeneApi)) return 1;
   *native_context = NULL;
   GeneTimer *state = calloc(1, sizeof(*state));
   if (!state) return 2;
