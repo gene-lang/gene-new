@@ -44,6 +44,17 @@ discard run(compileSource("nil"), host)
 host.define("v6_plus_one", run(compileSource("(fn [x] (+ x 1))"), host))
 host.define("v6_fail", run(compileSource(
   "(fn [] (fail (AssertionError ^message \"v6\")))"), host))
+host.define("v6_frozen_list", newList(@[newInt(3), newStr("item")],
+  immutable = true, deepFrozen = true))
+var frozenMapEntries = initPropTable()
+frozenMapEntries["map_key"] = newInt(4)
+host.define("v6_frozen_map", newMap(frozenMapEntries,
+  immutable = true, deepFrozen = true))
+var frozenNodeProps = initPropTable()
+frozenNodeProps["node_key"] = newInt(5)
+host.define("v6_frozen_node", newNode(newSym("Box"), frozenNodeProps,
+  @[newInt(6)], immutable = true, deepFrozen = true))
+host.define("v6_mutable_list", newList(@[newInt(7)]))
 
 suite "managed native extension ABI v6":
   test "exact layout and feature negotiation preserve opaque module entry":
@@ -63,13 +74,13 @@ suite "managed native extension ABI v6":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_v6_set_mode"))
         check calls != nil and setMode != nil
         let unavailable = geneManagedLoadModuleV6(domain, libraryRoot,
-          environment, "need-future", requiredFeatures = 8'u64)
+          environment, "need-future", requiredFeatures = 16'u64)
         check unavailable.status == gsError
         check unavailable.message.contains("required feature bits")
         check calls() == 0
         let loaded = geneManagedLoadModuleV6(domain, libraryRoot,
                                                environment, "v6-fixture",
-                                               requiredFeatures = 7'u64)
+                                               requiredFeatures = 15'u64)
         check loaded.status == gsOk and loaded.value != nil
         check geneWithNativeBorrow(loaded.value,
           proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkModule

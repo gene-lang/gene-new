@@ -26,6 +26,9 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
   if (!(api->feature_bits & GENE_API_V6_CALL_DEFINE_FEATURE) ||
       !api->lookup || !api->call || !api->define)
     return GENE_API_V6_ERROR;
+  if (!(api->feature_bits & GENE_API_V6_FROZEN_FEATURE) ||
+      !api->length || !api->copy_key || !api->traverse)
+    return GENE_API_V6_ERROR;
   if (mode == 1) {
     const char message[] = "rejected";
     if (diagnostic) {
@@ -170,6 +173,102 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
       api->release(api->runtime_context, stored, NULL) != GENE_API_V6_OK ||
       api->release(api->runtime_context, defined, NULL) != GENE_API_V6_OK ||
       api->release(api->runtime_context, found, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t list_name[] = "v6_frozen_list";
+  GeneHandleV6 list = 0, child = 0;
+  size_t length = 0;
+  if (api->lookup(api->runtime_context, environment, list_name,
+                  sizeof(list_name) - 1, &list, NULL) != GENE_API_V6_OK ||
+      api->length(api->runtime_context, list, GENE_V6_LIST_ITEM,
+                  &length, NULL) != GENE_API_V6_OK || length != 2 ||
+      api->traverse(api->runtime_context, list, GENE_V6_LIST_ITEM, 0,
+                    &child, NULL) != GENE_API_V6_OK ||
+      api->copy_i64(api->runtime_context, child, &answer,
+                    NULL) != GENE_API_V6_OK || answer != 3 ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK ||
+      api->traverse(api->runtime_context, list, GENE_V6_LIST_ITEM, 2,
+                    &child, NULL) != GENE_API_V6_ERROR || child != 0 ||
+      api->copy_key(api->runtime_context, list, GENE_V6_LIST_ITEM, 0,
+                    &operation_diag, NULL) != GENE_API_V6_ERROR ||
+      api->traverse(api->runtime_context, list, GENE_V6_LIST_ITEM, 1,
+                    &child, NULL) != GENE_API_V6_OK || !child ||
+      api->release(api->runtime_context, list, NULL) != GENE_API_V6_OK ||
+      api->traverse(api->runtime_context, list, GENE_V6_LIST_ITEM, 0,
+                    &original, NULL) != GENE_API_V6_ERROR)
+    return GENE_API_V6_ERROR;
+  uint8_t child_text[4] = {0};
+  GeneOutBytesV6 child_out = {child_text, sizeof(child_text), 0};
+  if (api->copy_text(api->runtime_context, child,
+                     &child_out, NULL) != GENE_API_V6_OK ||
+      child_out.required != sizeof(child_text) ||
+      memcmp(child_text, "item", sizeof(child_text)) != 0 ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t map_name[] = "v6_frozen_map";
+  GeneHandleV6 map = 0;
+  uint8_t key_copy[16] = {0};
+  GeneOutBytesV6 key_out = {NULL, 0, 0};
+  if (api->lookup(api->runtime_context, environment, map_name,
+                  sizeof(map_name) - 1, &map, NULL) != GENE_API_V6_OK ||
+      api->length(api->runtime_context, map, GENE_V6_MAP_ENTRY,
+                  &length, NULL) != GENE_API_V6_OK || length != 1 ||
+      api->copy_key(api->runtime_context, map, GENE_V6_MAP_ENTRY, 0,
+                    &key_out, NULL) != GENE_API_V6_OK ||
+      key_out.required != sizeof("map_key") - 1)
+    return GENE_API_V6_ERROR;
+  key_out.data = key_copy;
+  key_out.capacity = sizeof(key_copy);
+  if (api->copy_key(api->runtime_context, map, GENE_V6_MAP_ENTRY, 0,
+                    &key_out, NULL) != GENE_API_V6_OK ||
+      memcmp(key_copy, "map_key", sizeof("map_key") - 1) != 0 ||
+      api->traverse(api->runtime_context, map, GENE_V6_MAP_ENTRY, 0,
+                    &child, NULL) != GENE_API_V6_OK ||
+      api->copy_i64(api->runtime_context, child, &answer,
+                    NULL) != GENE_API_V6_OK || answer != 4 ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, map, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t node_name[] = "v6_frozen_node";
+  GeneHandleV6 node = 0;
+  if (api->lookup(api->runtime_context, environment, node_name,
+                  sizeof(node_name) - 1, &node, NULL) != GENE_API_V6_OK ||
+      api->length(api->runtime_context, node, GENE_V6_NODE_BODY,
+                  &length, NULL) != GENE_API_V6_OK || length != 1 ||
+      api->length(api->runtime_context, node, GENE_V6_NODE_PROP,
+                  &length, NULL) != GENE_API_V6_OK || length != 1 ||
+      api->length(api->runtime_context, node, GENE_V6_NODE_HEAD,
+                  &length, NULL) != GENE_API_V6_OK || length != 1 ||
+      api->traverse(api->runtime_context, node, GENE_V6_NODE_BODY, 0,
+                    &child, NULL) != GENE_API_V6_OK ||
+      api->copy_i64(api->runtime_context, child, &answer,
+                    NULL) != GENE_API_V6_OK || answer != 6 ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK ||
+      api->copy_key(api->runtime_context, node, GENE_V6_NODE_PROP, 0,
+                    &key_out, NULL) != GENE_API_V6_OK ||
+      key_out.required != sizeof("node_key") - 1 ||
+      memcmp(key_copy, "node_key", sizeof("node_key") - 1) != 0 ||
+      api->traverse(api->runtime_context, node, GENE_V6_NODE_PROP, 0,
+                    &child, NULL) != GENE_API_V6_OK ||
+      api->copy_i64(api->runtime_context, child, &answer,
+                    NULL) != GENE_API_V6_OK || answer != 5 ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK ||
+      api->traverse(api->runtime_context, node, GENE_V6_NODE_HEAD, 0,
+                    &child, NULL) != GENE_API_V6_OK || !child ||
+      api->release(api->runtime_context, child, NULL) != GENE_API_V6_OK ||
+      api->release(api->runtime_context, node, NULL) != GENE_API_V6_OK)
+    return GENE_API_V6_ERROR;
+
+  const uint8_t mutable_name[] = "v6_mutable_list";
+  GeneHandleV6 mutable = 0;
+  if (api->lookup(api->runtime_context, environment, mutable_name,
+                  sizeof(mutable_name) - 1, &mutable, NULL) != GENE_API_V6_OK ||
+      api->length(api->runtime_context, mutable, GENE_V6_LIST_ITEM,
+                  &length, &operation_diag) != GENE_API_V6_ERROR ||
+      operation_diag.required == 0 ||
+      api->release(api->runtime_context, mutable, NULL) != GENE_API_V6_OK)
     return GENE_API_V6_ERROR;
   if (diagnostic) diagnostic->required = 0;
   return GENE_API_V6_OK;

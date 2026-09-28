@@ -136,6 +136,13 @@ graph counts those Scope-to-Scope edges and detaches tickets with the retired
 bindings. Direct Nim mutation of `Scope.vars` bypasses this mediated contract
 and remains outside managed qualification.
 
+Frozen List/Map/Node traversal transfers the parent's known Scope provenance
+into each returned child handle. A child may therefore outlive its container
+without leaving weak Protocol/function metadata dangling. This is conservative:
+the child can hold a defining Scope that belonged only to a sibling until that
+child handle releases. The high-volume release controls check that those extra
+tickets do not become permanent pins.
+
 Do not mechanically classify every SDK function as a blocking drainable borrow.
 Constructors, mutation, trampoline execution and release can invoke cleanup or
 need root/worker progress. The collector must defer for those active operations.

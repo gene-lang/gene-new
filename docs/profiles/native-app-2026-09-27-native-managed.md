@@ -39,6 +39,11 @@ Gene Value field. A domain close denies new admission and reports outstanding
 roots/borrows; release and already admitted reads can still finish. Registry
 last-owner drops happen outside its lock and the native admission lock.
 
+Frozen List/Map/Node child handles now copy their parent's known weak/code
+Scope tickets. A weak Protocol child stays valid after all parent containers
+release, then its generation retires after the final child drops. Repeated
+child handoffs return to a flat managed baseline through 10,000 lifetimes.
+
 The next adapters define/read native wrapper fields without raw Values and
 construct borrowed/owned C pointers. A scoped address callback holds the
 existing physical C-pointer ticket: close fails during the callback, and
@@ -92,15 +97,15 @@ last-owner cleanup runs after releasing the lock.
 children with bounded deadlines and records hashes/commands/logs in
 `tmp/native-managed-qualification/`. Normal AtomicArc runs a disabled-retirement
 SDK control; the final fixed-source run passes disabled (one control), opt-in
-(37 cases), ASAN (37) and targeted TSAN (nine), without timeout or truncated
+(39 cases), ASAN (39) and targeted TSAN (ten), without timeout or truncated
 output. Binary SHA-256 values:
 
 | Mode | SHA-256 |
 | --- | --- |
-| Disabled | `62827dad2934eda395cc4c4fad731a46e0e2db1bf11c7c3eebf594ac203d9176` |
-| Opt-in | `4379c3d27f82e2153652188b58ad9ecdf522c6c8291d9a18c7714b7d48c6a0e8` |
-| ASAN | `053cf9e22d9b11167e9a4c7b6a1a78d5765f5df7473766d2e14778af4cc6efb1` |
-| TSAN | `d70e4be7dfa344c6c0f8429605baaff480a7f61f5650a4d8da5f9e733c3a9ed0` |
+| Disabled | `4d116deed4c6861a746df5b6fba7c70301dc97ba621275fbaac1eb048f154292` |
+| Opt-in | `4a0eb90bd9289446c851358300a5995996c8f097566228e21894173b3c21880c` |
+| ASAN | `edb36a182a3834436c7e0e2679f3d615bc11531fa1c223036ed252b70937ca9d` |
+| TSAN | `0b1548a128047b1ffd0608aad6450bddf20b207d3634d39ed39308ed53dcff36` |
 
 The opt-in controls check 1,000
 released/repeated IDs, wrong lane/runtime, copied binary data, nested handle

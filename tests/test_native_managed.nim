@@ -241,6 +241,71 @@ suite "managed native handles":
     geneManagedRelease(mutable)
     check geneManagedStats(domain).roots == 0
 
+  test "frozen child handles keep weak provenance after parents release":
+    var pending: seq[Scope]
+    var listRoot, mapRoot, nodeRoot: GeneManagedRoot
+    block:
+      let scope = newGlobalScope()
+      scope.sandboxGenerationReleased = true
+      scope.define("answer", newInt(42))
+      let weak = newProtocol("FrozenChildP", [], scope = scope)
+      pending = @[scope]
+      listRoot = geneManagedRootFromVm(domain, host,
+        newList(@[weak], immutable = true, deepFrozen = true))
+      var entries = initPropTable()
+      entries["weak"] = weak
+      mapRoot = geneManagedRootFromVm(domain, host,
+        newMap(entries, immutable = true, deepFrozen = true))
+      var props = initPropTable()
+      props["weak"] = weak
+      nodeRoot = geneManagedRootFromVm(domain, host,
+        newNode(weak, props, @[weak], immutable = true, deepFrozen = true))
+    let childList = geneWithNativeBorrow(listRoot,
+      proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedListAt(b, 0))
+    let childMap = geneWithNativeBorrow(mapRoot,
+      proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedMapAt(b, "weak"))
+    var childHead, childProp, childBody: GeneManagedRoot
+    geneWithNativeBorrow(nodeRoot, proc(b: GeneNativeBorrow) =
+      childHead = geneManagedNodeHead(b)
+      childProp = geneManagedNodeProp(b, "weak")
+      childBody = geneManagedNodeBodyAt(b, 0))
+    geneManagedRelease(listRoot)
+    geneManagedRelease(mapRoot)
+    geneManagedRelease(nodeRoot)
+    check testRetireAtomicGenerationRoots(host, pending) == 0
+    for child in [childList, childMap, childHead, childProp, childBody]:
+      check geneWithNativeBorrow(child,
+        proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkProtocol
+      geneManagedRelease(child)
+    check testRetireAtomicGenerationRoots(host, pending) > 0
+
+  test "repeated frozen child handoffs retire flat":
+    proc batch(count: int) =
+      for i in 0 ..< count:
+        var pending: seq[Scope]
+        var parent: GeneManagedRoot
+        block:
+          let scope = newGlobalScope()
+          scope.sandboxGenerationReleased = true
+          scope.define("answer", newInt(42))
+          pending = @[scope]
+          let weak = newProtocol("FrozenBatchP", [], scope = scope)
+          parent = geneManagedRootFromVm(domain, host,
+            newList(@[weak], immutable = true, deepFrozen = true))
+        let child = geneWithNativeBorrow(parent,
+          proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedListAt(b, 0))
+        geneManagedRelease(parent)
+        check testRetireAtomicGenerationRoots(host, pending) == 0
+        geneManagedRelease(child)
+        check testRetireAtomicGenerationRoots(host, pending) > 0
+    batch(1)
+    let baseline = liveManaged
+    let classes = managedLiveByKind()
+    for count in [100, 1000, 10000]:
+      batch(count)
+      check liveManaged == baseline
+      check managedLiveByKind() == classes
+
   test "managed native wrapper fields retain owned pointer tickets":
     let environment = geneNewManagedEnvironment(domain, host)
     let typ = geneManagedDefineWrapperType(environment, "ManagedWrapper",

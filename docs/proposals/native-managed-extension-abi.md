@@ -1,11 +1,11 @@
 # Managed native extension ABI
 
-**Status:** the ABI 6 layout, exact loader negotiation and a root-lane
-identity/Int64, copied scalar/Bytes and root-lane lookup/call/definition
-features are implemented against a compiled C fixture. Frozen traversal,
-callbacks and ingress remain unimplemented and
-their feature bits are not advertised. The owner
-selected opaque managed handles in [Native managed borrows](native-managed-borrows.md).
+**Status:** the ABI 6 layout, exact loader negotiation and four root-lane
+feature bits are implemented against a compiled C fixture: identity/Int64,
+copied scalar/Bytes, lookup/call/definition, and frozen-container traversal.
+Callbacks and ingress remain unimplemented and their feature bits are not
+advertised. The owner selected opaque managed handles in
+[Native managed borrows](native-managed-borrows.md).
 Qualification evidence is in
 [the ABI 6 loader audit](../profiles/native-app-2026-09-27-native-managed-v6.md).
 This ABI adds a versioned C-facing extension path. Existing v4 `GeneApi` and v5
@@ -50,15 +50,18 @@ never NUL-dependent.
 The first wire kind values are `0=nil`, `1=Bool`, `2=Int`, `3=Str`, `4=Bytes`,
 `5=List`, `6=Map`, `7=Node`, `8=callable`, `9=Task`, `10=Channel`,
 `11=ActorRef`, `255=other`; they are not Nim `ValueKind` ordinals.
+
 Feature bit 0 (`GENE_API_V6_IDENTITY_FEATURE = 1`) currently permits only
 root-lane `retain`, `release`, `kind` and `new_i64`. The future attached-lane
 feature will make the same operations available to an explicitly attached
 foreign lane; the table currently leaves attach/detach null.
+
 Feature bit 1 (`GENE_API_V6_SCALAR_FEATURE = 2`) adds root-lane Bool/Int64
 copies, copied Str/Bytes reads and Bool/Str/Bytes constructors. Incoming text
 must be valid UTF-8; Bytes may contain any octets. One copied input is bounded
 to 64 MiB, and both output reads support a length probe with a zero-capacity
 buffer. Neither feature exposes a Gene pointer.
+
 Feature bit 2 (`GENE_API_V6_CALL_DEFINE_FEATURE = 4`) adds root-lane environment
 lookup, positional call and definition. Calls accept at most 4,096 positional
 IDs and return separate owning value/error IDs with copied status. A definition
@@ -66,6 +69,14 @@ stores its known weak/code Scope provenance in the target binding until
 redefinition or Scope retirement; the returned ID has its own independent
 ticket. This permits Scope-bearing functions and protocols without permanent
 publication.
+
+Feature bit 3 (`GENE_API_V6_FROZEN_FEATURE = 8`) adds root-lane length, copied
+key and child-handle traversal for deeply frozen List/Map/Node values. Child
+handles inherit the parent's known weak/code Scope provenance. Selectors and
+ordering are fixed below; mutable and shallow-frozen containers fail with a
+copied error. Map and Node key lookup by ordinal currently scans insertion
+order, so enumerating every key is quadratic until the PropTable gets a stable
+indexed read API.
 
 ```c
 #include <stddef.h>
@@ -232,7 +243,7 @@ extension's actual use, not by this ABI.
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
    without exposing raw Gene bits. Root-lane identity and copied scalar/Bytes
    operations and positional call/definition are advertised as separate
-   feature bits. Attached-lane use and frozen traversal are still pending.
+   feature bits. Attached-lane use remains pending.
 3. Add callback registration and copied arguments/results. Test nested call,
    typed error/panic/cancel propagation, close during callback, context cleanup
    re-entry and library unload refusal until physical retirement.

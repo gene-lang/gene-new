@@ -111,3 +111,23 @@ suite "managed native ORC legacy handoff":
       for count in [100, 1000]:
         batch(count)
         check liveManaged == baseline
+
+  test "frozen child keeps weak Scope after its parent releases":
+    var pending: seq[Scope]
+    var parent: GeneManagedRoot
+    block:
+      let scope = newGlobalScope()
+      scope.sandboxGenerationReleased = true
+      scope.define("answer", newInt(42))
+      pending = @[scope]
+      let weak = newProtocol("FrozenOrcP", [], scope = scope)
+      parent = geneManagedRootFromVm(domain, host,
+        newList(@[weak], immutable = true, deepFrozen = true))
+    let child = geneWithNativeBorrow(parent,
+      proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedListAt(b, 0))
+    geneManagedRelease(parent)
+    check retireReleasedGenerations(pending) == 0
+    check geneWithNativeBorrow(child,
+      proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkProtocol
+    geneManagedRelease(child)
+    check retireReleasedGenerations(pending) > 0

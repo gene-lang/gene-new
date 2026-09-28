@@ -362,36 +362,41 @@ proc geneManagedListLength*(borrow: GeneNativeBorrow): int =
   value.listItems.len
 
 proc geneManagedListAt*(borrow: GeneNativeBorrow, index: int): GeneManagedRoot =
-  let value = borrow.requireBorrow().value
+  let entry = borrow.requireBorrow()
+  let value = entry.value
   requireFrozen(value, vkList, "index")
   if index < 0 or index >= value.listItems.len:
     raise newException(GeneError, "managed List index is out of bounds")
-  borrow.domain.addRoot(value.listItems[index])
+  borrow.domain.addRoot(value.listItems[index], entry.scopes)
 
 proc geneManagedMapAt*(borrow: GeneNativeBorrow,
                        name: string): GeneManagedRoot =
-  let value = borrow.requireBorrow().value
+  let entry = borrow.requireBorrow()
+  let value = entry.value
   requireFrozen(value, vkMap, "lookup")
-  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, VOID))
+  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, VOID), entry.scopes)
 
 proc geneManagedNodeHead*(borrow: GeneNativeBorrow): GeneManagedRoot =
-  let value = borrow.requireBorrow().value
+  let entry = borrow.requireBorrow()
+  let value = entry.value
   requireFrozen(value, vkNode, "head")
-  borrow.domain.addRoot(value.head)
+  borrow.domain.addRoot(value.head, entry.scopes)
 
 proc geneManagedNodeProp*(borrow: GeneNativeBorrow,
                           name: string): GeneManagedRoot =
-  let value = borrow.requireBorrow().value
+  let entry = borrow.requireBorrow()
+  let value = entry.value
   requireFrozen(value, vkNode, "property")
-  borrow.domain.addRoot(value.props.getOrDefault(name, VOID))
+  borrow.domain.addRoot(value.props.getOrDefault(name, VOID), entry.scopes)
 
 proc geneManagedNodeBodyAt*(borrow: GeneNativeBorrow,
                             index: int): GeneManagedRoot =
-  let value = borrow.requireBorrow().value
+  let entry = borrow.requireBorrow()
+  let value = entry.value
   requireFrozen(value, vkNode, "body")
   if index < 0 or index >= value.body.len:
     raise newException(GeneError, "managed Node body index is out of bounds")
-  borrow.domain.addRoot(value.body[index])
+  borrow.domain.addRoot(value.body[index], entry.scopes)
 
 proc geneNewManagedEnvironment*(domain: GeneManagedDomain,
                                 scope: Scope): GeneManagedEnvironment =
@@ -1078,6 +1083,7 @@ const
   GeneApiV6IdentityFeature* = 1'u64
   GeneApiV6ScalarFeature* = 2'u64
   GeneApiV6CallDefineFeature* = 4'u64
+  GeneApiV6FrozenFeature* = 8'u64
   GeneApiV6MaxCopyBytes* = 64 * 1024 * 1024
 
 proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
@@ -1370,6 +1376,143 @@ proc v6NewBytes(context: pointer, data: ptr uint8, length: csize_t,
     v6Diagnostic(diagnostic, e.msg)
     result = 1
 
+proc v6FrozenKey(borrow: GeneNativeBorrow, selector: uint32,
+                 index: csize_t): string =
+  let value = borrow.requireBorrow().value
+  case selector
+  of 1'u32:
+    requireFrozen(value, vkMap, "entry key")
+    if index >= csize_t(value.mapEntries.len):
+      raise newException(GeneError, "native v6 Map entry is out of bounds")
+    var position = 0.csize_t
+    for key in value.mapEntries.keys:
+      if position == index:
+        result = newStringOfCap(key.len)
+        result.add key
+        return
+      inc position
+  of 3'u32:
+    requireFrozen(value, vkNode, "property key")
+    if index >= csize_t(value.props.len):
+      raise newException(GeneError, "native v6 Node property is out of bounds")
+    var position = 0.csize_t
+    for key in value.props.keys:
+      if position == index:
+        result = newStringOfCap(key.len)
+        result.add key
+        return
+      inc position
+  else:
+    raise newException(GeneError,
+      "native v6 key selector requires Map entry or Node property")
+
+proc v6Length(context: pointer, id: uint64, selector: uint32,
+              output: ptr csize_t,
+              diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 length output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let count = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): int =
+        let value = b.requireBorrow().value
+        case selector
+        of 0'u32: geneManagedListLength(b)
+        of 1'u32:
+          requireFrozen(value, vkMap, "length")
+          value.mapEntries.len
+        of 2'u32:
+          requireFrozen(value, vkNode, "body length")
+          value.body.len
+        of 3'u32:
+          requireFrozen(value, vkNode, "property length")
+          value.props.len
+        of 4'u32:
+          requireFrozen(value, vkNode, "head length")
+          1
+        else:
+          raise newException(GeneError, "native v6 length selector is invalid"))
+    output[] = csize_t(count)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6CopyKey(context: pointer, id: uint64, selector: uint32,
+               index: csize_t, output: ptr GeneOutBytesV6,
+               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 key output is nil")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let key = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): string = v6FrozenKey(b, selector, index))
+    if validateUtf8(key) != -1:
+      raise newException(GeneError, "native v6 key is not valid UTF-8")
+    output.required = csize_t(key.len)
+    if output.data != nil and output.capacity > 0 and key.len > 0:
+      let count = if output.capacity > csize_t(key.len): key.len
+                  else: int(output.capacity)
+      copyMem(output.data, unsafeAddr key[0], count)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
+proc v6Traverse(context: pointer, id: uint64, selector: uint32,
+                index: csize_t, output: ptr uint64,
+                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  try:
+    if output == nil:
+      raise newException(GeneError, "native v6 traversal output is nil")
+    if index > csize_t(high(int)):
+      raise newException(GeneError, "native v6 traversal index is too large")
+    let domain = v6Domain(context)
+    let root = GeneManagedRoot(domain: domain, id: id)
+    let child = geneWithNativeBorrow(root,
+      proc(b: GeneNativeBorrow): GeneManagedRoot =
+        case selector
+        of 0'u32: geneManagedListAt(b, int(index))
+        of 1'u32: geneManagedMapAt(b, v6FrozenKey(b, selector, index))
+        of 2'u32: geneManagedNodeBodyAt(b, int(index))
+        of 3'u32: geneManagedNodeProp(b, v6FrozenKey(b, selector, index))
+        of 4'u32:
+          if index != 0:
+            raise newException(GeneError, "native v6 Node head index is out of bounds")
+          geneManagedNodeHead(b)
+        else:
+          raise newException(GeneError, "native v6 traversal selector is invalid"))
+    output[] = child.id
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+
 proc v6CopiedName(data: ptr uint8, length: csize_t): string =
   result = v6CopiedInput(data, length)
   if result.len == 0 or validateUtf8(result) != -1:
@@ -1470,7 +1613,8 @@ proc configureV6Api(domain: GeneManagedDomain) =
                            structSize: uint32(sizeof(GeneApiV6)),
                            featureBits: GeneApiV6IdentityFeature or
                                         GeneApiV6ScalarFeature or
-                                        GeneApiV6CallDefineFeature,
+                                        GeneApiV6CallDefineFeature or
+                                        GeneApiV6FrozenFeature,
                            runtimeContext: cast[pointer](domain),
                            retain: cast[pointer](v6Retain),
                            release: cast[pointer](v6Release),
@@ -1482,7 +1626,10 @@ proc configureV6Api(domain: GeneManagedDomain) =
                            copyText: cast[pointer](v6CopyText),
                            copyBytes: cast[pointer](v6CopyBytes),
                            newBool: cast[pointer](v6NewBool),
-                           newI64: cast[pointer](v6NewI64))
+                           newI64: cast[pointer](v6NewI64),
+                           length: cast[pointer](v6Length),
+                           copyKey: cast[pointer](v6CopyKey),
+                           traverse: cast[pointer](v6Traverse))
   domain.v6Api.newText = cast[pointer](v6NewText)
   domain.v6Api.newBytes = cast[pointer](v6NewBytes)
   domain.v6Api.lookup = cast[pointer](v6Lookup)
