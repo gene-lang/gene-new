@@ -8,6 +8,7 @@ tests/*
 !tests/build_wasm_qualification.gene
 !tests/test_wasm_browser.gene
 !tests/qualify_atomic_retirement.gene
+!tests/qualify_native_managed.gene
 !tests/wasm_browser.html
 !tests/test_owned_http_client.py
 !tests/test_genex_package.py

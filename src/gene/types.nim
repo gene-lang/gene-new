@@ -315,16 +315,19 @@ type
   GeneString = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     s: string
 
   GeneInt64 = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     i: int64
 
   GeneList = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
@@ -334,6 +337,7 @@ type
   GeneMap = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
@@ -363,6 +367,7 @@ type
   GeneNode = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     ## Deep immutability, distinct from `immutable` (events.md §6.5).
     ## `immutable` says "this container's own head/props/body cannot change";
@@ -495,8 +500,7 @@ type
   ## `Scope -> Value(fn) -> Scope` cycle does not keep both sides alive. Function
   ## values escaping as run/eval results are cloned back to a strong capture.
   Scope* = ref object
-    when defined(geneAtomicGenerationRetirementProbe):
-      retirementPublished: int # permanent publication pin, acquire/release accessed
+    retirementPublished: int # permanent raw/worker publication exclusion
     application*: RuntimeContext
     strictErrorLease*: RootRef
     parent*: Scope
@@ -702,6 +706,7 @@ type
   GeneFunction = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     name: string
     params: seq[string]
     code: FunctionCode
@@ -719,6 +724,7 @@ type
   GeneNativeFn = object
     refCount: int
     shared: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     name: string
     impl: NativeProc
     callImpl: NativeCallProc
@@ -777,6 +783,7 @@ type
   GeneObjectData* = ref object of RootObj
     objKind*: ObjKind
     shared*: int
+    when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
 
   NamespaceData = ref object of GeneObjectData
     name: string
@@ -943,6 +950,7 @@ type
     panicMsg: string
     panicValue: Value
     hasPanicValue: bool
+    retainedScopes: seq[Scope] # managed native result provenance until Task state dies
 
   TaskData = ref object of GeneObjectData
     state: TaskState
@@ -965,6 +973,7 @@ type
   ChannelState = ref object
     lock: Lock
     items: seq[Value]
+    scopePins: seq[seq[Scope]] # per-item managed provenance, under `lock`
     capacity: int
     closed: bool
 
@@ -2438,26 +2447,46 @@ template releaseManual(p: untyped, body: untyped) =
 
 template markManualShared(p: untyped) =
   markSharedFlag(p.shared)
+  when defined(geneAtomicGenerationRetirementProbe):
+    if managedPublicationDepth == 0: markSharedFlag(p.rawPublished)
+
+var managedPublicationDepth {.threadvar.}: int
+proc enterManagedValuePublication*() = inc managedPublicationDepth
+proc leaveManagedValuePublication*() =
+  doAssert managedPublicationDepth > 0
+  dec managedPublicationDepth
+proc managedValuePublicationActive*(): bool {.inline.} =
+  managedPublicationDepth > 0
 
 proc markObjectShared(data: GeneObjectData) {.inline.} =
   if data != nil:
     markSharedFlag(data.shared)
+    when defined(geneAtomicGenerationRetirementProbe):
+      if managedPublicationDepth == 0: markSharedFlag(data.rawPublished)
 
 proc pinPublishedScope*(scope: Scope) =
   ## Qualification-only provenance. Record lexical ancestors before handing a
   ## graph to another lane; never enumerate a published Scope during retirement.
   ## This does not make concurrent Scope mutation or raw SDK refs safe.
   when defined(geneAtomicGenerationRetirementProbe):
+    if managedPublicationDepth > 0: return
     var current {.cursor.} = scope
     while current != nil:
       markSharedFlag(current.retirementPublished)
       current = current.parent
 
 proc scopePublishedForRetirement*(scope: Scope): bool =
-  when defined(geneAtomicGenerationRetirementProbe):
-    scope != nil and isSharedFlag(scope.retirementPublished)
-  else:
-    false
+  scope != nil and isSharedFlag(scope.retirementPublished)
+
+proc pinLegacyManagedScopes*(scopes: openArray[Scope]) =
+  ## A managed object handed to a legacy raw Value cannot report its later
+  ## accesses. Keep its known defining generation (and lexical ancestors)
+  ## in the retirement queue even after named handles drop.
+  for scope in scopes:
+    var current {.cursor.} = scope
+    while current != nil:
+      markSharedFlag(current.retirementPublished)
+      current = current.parent
 
 proc markSharedBits(bits: uint64, seen: var HashSet[uint64])
 
@@ -2562,6 +2591,17 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     for item in queue:
       markSharedBits(item.message.bits, seen)
       markSharedBits(item.reply.bits, seen)
+  of okAtomicCell:
+    let cell {.cursor.} = AtomicCellData(data)
+    var stored, itemType: Value
+    acquire(cell.lock)
+    try:
+      stored = cell.value
+      itemType = cell.valueType
+    finally:
+      release(cell.lock)
+    markSharedBits(stored.bits, seen)
+    markSharedBits(itemType.bits, seen)
   else:
     forObjectEdges(data, edgeBits):
       markSharedBits(edgeBits, seen)
@@ -2633,8 +2673,7 @@ proc markSharedValue*(value: Value) =
   var seen = initHashSet[uint64]()
   markSharedBits(value.bits, seen)
 
-when defined(geneAtomicGenerationRetirementProbe):
-  proc publicationValueChildren*(value: Value): seq[Value] =
+proc publicationValueChildren*(value: Value): seq[Value] =
     ## Known object Value edges for the VM's code-publication walk. Call before
     ## handoff under admission; this is not a shared-container snapshot adapter.
     if value.tagOf == OBJECT_TAG or value.tagOf == CYCLE_OBJECT_TAG:
@@ -2985,7 +3024,8 @@ proc generationRetirementAvailable*(): bool =
 
 type
   RetireNodeKind = enum
-    rnkValue, rnkScope, rnkRefTable, rnkRefEntry
+    rnkValue, rnkScope, rnkRefTable, rnkRefEntry, rnkTaskState,
+    rnkChannelState
 
   RetireNode = object
     kind: RetireNodeKind
@@ -3035,17 +3075,22 @@ when defined(geneAtomicGenerationRetirementProbe):
   proc retirementValuePublished(bits: uint64): bool =
     let payload = bits and PAYLOAD_MASK
     case bits shr TAG_SHIFT
-    of STRING_TAG: isSharedFlag(cast[ptr GeneString](payload).shared)
-    of INT64_TAG: isSharedFlag(cast[ptr GeneInt64](payload).shared)
-    of LIST_TAG: isSharedFlag(cast[ptr GeneList](payload).shared)
-    of MAP_TAG: isSharedFlag(cast[ptr GeneMap](payload).shared)
-    of NODE_TAG: isSharedFlag(cast[ptr GeneNode](payload).shared)
-    of FUNCTION_TAG: isSharedFlag(cast[ptr GeneFunction](payload).shared)
-    of NATIVE_FN_TAG: isSharedFlag(cast[ptr GeneNativeFn](payload).shared)
+    of STRING_TAG: isSharedFlag(cast[ptr GeneString](payload).rawPublished)
+    of INT64_TAG: isSharedFlag(cast[ptr GeneInt64](payload).rawPublished)
+    of LIST_TAG: isSharedFlag(cast[ptr GeneList](payload).rawPublished)
+    of MAP_TAG: isSharedFlag(cast[ptr GeneMap](payload).rawPublished)
+    of NODE_TAG: isSharedFlag(cast[ptr GeneNode](payload).rawPublished)
+    of FUNCTION_TAG: isSharedFlag(cast[ptr GeneFunction](payload).rawPublished)
+    of NATIVE_FN_TAG: isSharedFlag(cast[ptr GeneNativeFn](payload).rawPublished)
     of OBJECT_TAG, CYCLE_OBJECT_TAG:
       let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
-      isSharedFlag(data.shared)
+      isSharedFlag(data.rawPublished)
     else: false
+
+  proc valueRawPublishedForRetirement*(value: Value): bool =
+    if value.bits shr TAG_SHIFT < MANAGED_MIN or
+        (value.bits and PAYLOAD_MASK) == 0: return false
+    retirementValuePublished(value.bits)
 
 proc valueNode(g: var RetireGraph, bits: uint64): int =
   if bits shr TAG_SHIFT < MANAGED_MIN or (bits and PAYLOAD_MASK) == 0:
@@ -3072,9 +3117,8 @@ proc refNode(g: var RetireGraph, address: pointer,
 
 proc scopeNode(g: var RetireGraph, scope: Scope): int =
   result = g.refNode(cast[pointer](scope), rnkScope)
-  when defined(geneAtomicGenerationRetirementProbe):
-    if result >= 0 and scope.scopePublishedForRetirement:
-      g.nodes[result].pinned = true
+  if result >= 0 and scope.scopePublishedForRetirement:
+    g.nodes[result].pinned = true
 
 proc strongEdge(g: var RetireGraph, source, target: int) =
   if target < 0:
@@ -3166,6 +3210,34 @@ proc expandRetireModuleRef(g: var RetireGraph, idx: int) =
   else:
     let entry {.cursor.} = cast[ModuleRefEntry](g.nodes[idx].address)
     g.strongEdge(idx, g.valueNode(entry.value.bits))
+
+proc expandRetireTaskState(g: var RetireGraph, idx: int) =
+  ## The separately owned TaskState retains results and managed SDK Scope pins.
+  ## Read its complete owning edges under the state lock at the collector gate.
+  g.nodes[idx].expanded = true
+  let state {.cursor.} = cast[TaskState](g.nodes[idx].address)
+  acquire(state.lock)
+  try:
+    for scope in state.retainedScopes:
+      g.strongEdge(idx, g.scopeNode(scope))
+    g.strongEdge(idx, g.valueNode(state.result.bits))
+    g.strongEdge(idx, g.valueNode(state.errorValue.bits))
+    g.strongEdge(idx, g.valueNode(state.panicValue.bits))
+  finally:
+    release(state.lock)
+
+proc expandRetireChannelState(g: var RetireGraph, idx: int) =
+  g.nodes[idx].expanded = true
+  let state {.cursor.} = cast[ChannelState](g.nodes[idx].address)
+  acquire(state.lock)
+  try:
+    for item in state.items:
+      g.strongEdge(idx, g.valueNode(item.bits))
+    for pins in state.scopePins:
+      for scope in pins:
+        g.strongEdge(idx, g.scopeNode(scope))
+  finally:
+    release(state.lock)
 
 proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
   let bits = g.nodes[idx].bits
@@ -3269,9 +3341,16 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
             for bits in values:
               g.strongEdge(idx, g.valueNode(bits))
     of okTask:
-      scopeRef(cast[TaskData](data).boundaryScope)
+      let task {.cursor.} = cast[TaskData](data)
+      scopeRef(task.boundaryScope)
+      when counting:
+        g.strongEdge(idx, g.refNode(cast[pointer](task.state), rnkTaskState))
     of okChannel:
-      scopeRef(cast[ChannelData](data).itemScope)
+      let channel {.cursor.} = cast[ChannelData](data)
+      scopeRef(channel.itemScope)
+      when counting:
+        g.strongEdge(idx, g.refNode(cast[pointer](channel.state),
+                                    rnkChannelState))
     of okReplyTo:
       scopeRef(cast[ReplyToData](data).resultScope)
     of okBuffer:
@@ -3370,12 +3449,11 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
     return 0
-  when defined(geneAtomicGenerationRetirementProbe):
-    # Do not even read a published root's tables. Keep the entire candidate
-    # batch: weak relationships hidden in those tables are not a snapshot.
-    for root in pending:
-      if root.scopePublishedForRetirement:
-        return 0
+  # Do not inspect a raw-exported root's mutable tables. The entire candidate
+  # batch stays: weak relationships hidden there are not a stable snapshot.
+  for root in pending:
+    if root.scopePublishedForRetirement:
+      return 0
   generationRetiring = true
   try:
     var g = RetireGraph(complete: complete)
@@ -3408,6 +3486,8 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       of rnkScope: g.expandRetireScope(idx, counting = true)
       of rnkValue: g.expandRetireValue(idx, counting = true)
       of rnkRefTable, rnkRefEntry: g.expandRetireModuleRef(idx)
+      of rnkTaskState: g.expandRetireTaskState(idx)
+      of rnkChannelState: g.expandRetireChannelState(idx)
     var queue: seq[int]
     for i in 0 ..< g.nodes.len:
       if g.nodes[i].internal > g.nodes[i].total:
@@ -3429,11 +3509,9 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     while queue.len > 0:
       let idx = queue.pop()
       if not g.nodes[idx].expanded and not g.nodes[idx].weakScanned:
-        when defined(geneAtomicGenerationRetirementProbe):
-          if g.nodes[idx].kind == rnkScope and g.nodes[idx].pinned:
-            # Publication recorded weak/code relationships before handoff.
-            # A foreign lane may now be changing any of this Scope's tables.
-            continue
+        if g.nodes[idx].kind == rnkScope and g.nodes[idx].pinned:
+          # Do not enumerate a raw-exported Scope on another lane.
+          continue
         # An externally owned node can still hold a non-owning pointer into a
         # candidate (a Protocol's defining scope, a variant's Enum); that
         # target must outlive it.
@@ -3443,7 +3521,7 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
         case g.nodes[idx].kind
         of rnkScope: g.expandRetireScope(idx, counting = false)
         of rnkValue: g.expandRetireValue(idx, counting = false)
-        of rnkRefTable, rnkRefEntry: discard
+        of rnkRefTable, rnkRefEntry, rnkTaskState, rnkChannelState: discard
         resolveWeakEdges(fromScope, fromValue)
       for target in g.nodes[idx].edges:
         if not g.nodes[target].live:
@@ -5002,16 +5080,21 @@ proc atomicCellValue*(v: Value): Value =
 
 proc setAtomicCellValue*(v, newValue: Value) =
   let d = v.asAtomicCellData
+  if isSharedFlag(d.shared): markSharedValue(newValue)
+  var retired: Value
   withAtomicCellLock(d):
+    retired = retainedCopy(d.value)
     d.value = newValue
+  reset(retired) # physical cleanup outside the cell lock
 
 proc atomicCellSwap*(v, newValue: Value): Value =
   ## Reads the current value and replaces it as a single locked critical
   ## section (not a separate load + store), so a concurrent swap/CAS cannot
   ## interleave between the read and the write.
   let d = v.asAtomicCellData
+  if isSharedFlag(d.shared): markSharedValue(newValue)
   withAtomicCellLock(d):
-    result = d.value
+    result = retainedCopy(d.value)
     d.value = newValue
 
 proc atomicCellCompareExchange*(v, expected, newValue: Value,
@@ -5021,12 +5104,16 @@ proc atomicCellCompareExchange*(v, expected, newValue: Value,
   ## a cycle) and swaps in the same locked critical section as the compare,
   ## avoiding the check-then-set race of separate load/compare/store calls.
   let d = v.asAtomicCellData
+  if isSharedFlag(d.shared): markSharedValue(newValue)
+  var retired: Value
   withAtomicCellLock(d):
     if eq(d.value, expected):
+      retired = retainedCopy(d.value)
       d.value = newValue
       result = true
     else:
       result = false
+  reset(retired) # last-owner callbacks cannot re-enter under the cell lock
 
 proc callableViewData(v: Value): CallableViewData =
   if v.kind != vkCallableView:
@@ -5109,10 +5196,16 @@ proc newTaskState(done = false, cancelRequested = false, cancelled = false,
   result.hasPanicValue = hasPanicValue
 
 proc newChannelState(capacity: int, items: seq[Value] = @[],
-                     closed = false): ChannelState =
+                     closed = false,
+                     scopePins: seq[seq[Scope]] = @[]): ChannelState =
   new(result)
   initLock(result.lock)
   result.items = items
+  if scopePins.len == 0:
+    result.scopePins = newSeq[seq[Scope]](items.len)
+  else:
+    doAssert scopePins.len == items.len
+    result.scopePins = scopePins
   result.capacity = capacity
   result.closed = closed
 
@@ -5576,6 +5669,7 @@ proc pushChannel*(v, item: Value) =
   let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     state.items.add stored
+    state.scopePins.add @[]
 
 proc tryPushChannel*(v, item: Value): tuple[pushed: bool, closed: bool,
                                             full: bool] =
@@ -5588,24 +5682,65 @@ proc tryPushChannel*(v, item: Value): tuple[pushed: bool, closed: bool,
       result.full = true
     else:
       state.items.add stored
+      state.scopePins.add @[]
       result.pushed = true
+
+proc tryPushManagedChannel*(v, item: Value, pins: seq[Scope]):
+    tuple[pushed: bool, closed: bool, full: bool] =
+  let stored = escapeWeakFunctions(item)
+  let state {.cursor.} = channelData(v).state
+  withChannelStateLock(state):
+    if state.closed:
+      result.closed = true
+    elif state.items.len >= state.capacity:
+      result.full = true
+    else:
+      state.items.add stored
+      state.scopePins.add pins
+      result.pushed = true
+
+proc ownedChannelPins(pins: seq[Scope]): seq[Scope] {.inline.} = pins
+
+proc tryPopManagedChannel*(v: Value):
+    tuple[popped: bool, item: Value, pins: seq[Scope]] =
+  let state {.cursor.} = channelData(v).state
+  withChannelStateLock(state):
+    if state.items.len == 0:
+      return
+    result.item = state.items[0]
+    result.pins = ownedChannelPins(state.scopePins[0])
+    state.items.delete(0)
+    state.scopePins.delete(0)
+    result.popped = true
 
 proc popChannel*(v: Value): Value =
   let state {.cursor.} = channelData(v).state
+  var pins: seq[Scope]
   withChannelStateLock(state):
     if state.items.len == 0:
       raise newException(FieldDefect, "channel is empty")
     result = state.items[0]
+    pins = ownedChannelPins(state.scopePins[0])
     state.items.delete(0)
+    state.scopePins.delete(0)
+  if pins.len > 0:
+    pinLegacyManagedScopes(pins)
+    markSharedValue(result) # handed to the legacy VM surface
 
 proc tryPopChannel*(v: Value): tuple[popped: bool, item: Value] =
   let state {.cursor.} = channelData(v).state
+  var pins: seq[Scope]
   withChannelStateLock(state):
     if state.items.len == 0:
       return (false, NIL)
     result.item = state.items[0]
+    pins = ownedChannelPins(state.scopePins[0])
     state.items.delete(0)
+    state.scopePins.delete(0)
     result.popped = true
+  if pins.len > 0:
+    pinLegacyManagedScopes(pins)
+    markSharedValue(result.item) # legacy raw return
 
 proc actorData(v: Value): ActorData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorRef:
@@ -7837,10 +7972,12 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
   of vkChannel:
     let data {.cursor.} = channelData(v)
     var sourceItems: seq[Value]
+    var sourcePins: seq[seq[Scope]]
     var capacity: int
     var closed: bool
     withChannelStateLock(data.state):
       sourceItems = data.state.items
+      sourcePins = data.state.scopePins
       capacity = data.state.capacity
       closed = data.state.closed
     var changed = false
@@ -7851,7 +7988,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
         changed = true
     if not changed:
       return v
-    let escapedState = newChannelState(capacity, escapedItems, closed)
+    let escapedState = newChannelState(capacity, escapedItems, closed, sourcePins)
     boxObject(ChannelData(objKind: okChannel, state: escapedState,
                           itemType: data.itemType,
                           itemScope: data.itemScope))
@@ -8087,6 +8224,16 @@ proc newExternalTask*(): Value =
   ## treated as external progress rather than scheduler deadlock.
   boxObject(TaskData(objKind: okTask,
                      state: newTaskState(done = false, external = true)))
+
+proc retainTaskSourceScopes*(v: Value, scopes: openArray[Scope]) =
+  ## SDK payload handles may carry weak Type/protocol/code environments. The
+  ## Task's physical result owner must keep those Scopes after the input handle
+  ## drops, including across user cancellation until physical settlement.
+  if scopes.len == 0: return
+  let data {.cursor.} = taskState(v)
+  withTaskStateLock(data):
+    if not data.done:
+      for scope in scopes: data.retainedScopes.add scope
 
 proc tryCompleteTask*(v, value: Value): bool =
   let stored = escapeWeakFunctions(value)

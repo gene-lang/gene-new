@@ -206,17 +206,18 @@ The implementation contract for a future participating native borrow is:
    until cleanup ends, with no callbacks under publication/collector locks.
    Failure/refusal paths must also restore admission in `finally`.
 
-The entry-call portion above is implemented; this full managed-borrow contract
-is still a design requirement. Do not retrofit a lease lifetime onto
+The owner selected opaque managed handles on 2026-09-27. The entry-call portion
+above and initial opaque SDK ownership/borrow adapters are implemented; this
+full managed-borrow contract is still incomplete. Do not retrofit a lease lifetime onto
 the existing SDK signatures or claim that ingress begin/end fences raw Gene
-Values. The owner must review an additive managed-borrow API before public SDK
-ownership/access behavior changes. AAR-1 remains incomplete until that decision,
+Values. That SDK choice has been reviewed; further public ownership/access
+changes still need explicit design review. AAR-1 remains incomplete until full
 integration and the borrow/collector race matrix are complete.
 
-[Native managed borrows](native-managed-borrows.md) provides the concrete owner
-decision, complete SDK-family inventory, recommended opaque-handle contract,
-legacy export policy and implementation/acceptance sequence. Review that API
-choice before replacing the current permanent publication pins.
+[Native managed borrows](native-managed-borrows.md) records the owner-selected
+opaque-handle contract, SDK-family inventory, legacy export policy and remaining
+implementation/acceptance sequence. Its initial adapters do not qualify
+canonical/shared reclamation or permit replacing existing raw publication pins.
 
 ### AAR-2: published generation graphs
 

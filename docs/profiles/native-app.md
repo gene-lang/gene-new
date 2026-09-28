@@ -230,3 +230,10 @@ The [native entry admission audit](native-app-2026-09-27-native-admission.md)
 extends the experiment with SDK root/module entry fences, owner-progress
 deferral, cleanup after edge detachment and more code-publication edges.
 Escaped raw refs stay pinned; the full managed-borrow contract remains open.
+
+The owner-selected [opaque managed SDK audit](native-app-2026-09-27-native-managed.md)
+adds mediated roots/results/environments, scoped borrows, wrapper/resource/
+Buffer/Task/Channel adapters and explicit legacy export. Managed-only private
+generation controls are flat, while legacy handoffs remain pinned. Actor,
+installed-extension, mutable shared and canonical graph gates remain open;
+no stage is promoted.

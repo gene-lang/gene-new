@@ -1,7 +1,13 @@
 # Native managed borrows
 
-**Status:** owner review required before implementation. This is the remaining
-public ownership decision for AAR-1 in
+**Status:** the project owner selected opaque managed handles on 2026-09-27.
+The additive ownership/borrow, copied-read, frozen-container, managed-call,
+environment and explicit legacy-export core is implemented in
+`src/gene/native_managed.nim`. Initial managed wrapper/owned-pointer, private
+Buffer, Channel and external Task adapters are implemented. Managed Actor and
+installed-extension integration, complete shared mutation/worker handoff policy,
+and AAR-2 qualification remain open. This is the remaining
+native ownership program for AAR-1 in
 [AtomicArc generation retirement](atomic-arc-retirement.md). Existing SDK v4/v5
 and Gene syntax stay unchanged. Production/shared retirement remains disabled.
 
@@ -21,23 +27,28 @@ Choose one ownership contract before removing publication pins:
 | Scoped raw Value borrows | Caller promises not to retain, store, transfer or access a raw ref after the borrow ends. Nim cannot enforce this promise for `Value.bits`, Scope fields, captured closures or foreign memory. | Smaller API, but shared collection depends on a new explicit unsafe native-code contract. |
 | Keep existing raw SDK only | Retain existing permanent pins. | No ownership migration, but published generation lifetime stays unqualified; AAR-2 cannot be enabled. |
 
-The rest of this document specifies the recommended design. It is not approval
-to implement it or a claim that the existing SDK has this contract.
+The selected design follows below. The existing raw SDK does not gain this
+contract or a new interpretation of its results.
 Enforcement concerns supported SDK operations; arbitrary unsafe native memory
 access or casts remain outside the runtime's ownership guarantees.
 
 ## Opaque handle contract
 
 Use an additive SDK surface, separate from the legacy `GeneRoot`/`GeneResult`
-procedures. Names below are proposed Nim SDK spellings, not Gene syntax:
+procedures. The following Nim SDK spellings are implemented; they are not Gene
+syntax:
 
 - `GeneManagedRoot`: an owning, opaque handle to a Value or environment in one
   stable runtime domain. It exposes no `Value`, `Scope`, raw bits or object field.
-- `GeneNativeBorrow`: a lane-bound, scoped admission lease. It owns all handle
-  references used through it and records whether operations require root-lane
-  progress. It cannot be transferred to another lane.
+- `GeneNativeBorrow`: a lane-bound, scoped admission lease. It owns its root
+  entry; operations retain other handle inputs for their call extent and upgrade
+  admission when root-lane progress may be needed. The lease cannot be
+  transferred to another lane.
 - `GeneManagedResult`: status/message plus owned value/error handles. It must not
   contain the legacy raw `GeneResult.value` or `errorValue` fields.
+- `GeneManagedEnvironment`: an opaque dispatch Scope holder.
+- `GeneManagedTask`: an external producer ticket. `GeneManagedAck` and
+  `GeneManagedReceive` return copied status plus, for receive, an owned handle.
 
 `geneManagedRoot` creation consumes an owning reference through a participating
 VM boundary **before foreign handoff**. It must not accept an arbitrary raw
@@ -45,9 +56,18 @@ foreign Value and pretend its earlier transfers were fenced. A root exported
 through legacy SDK APIs remains permanently published. Moving an already
 published graph into a managed handle does not undo publication.
 
+The initial `geneManagedRootFromVm(domain, scope, value)` adapter requires the
+runtime root lane, one application, and an owner-confined value at that handoff.
+It cannot prove where a caller previously obtained an arbitrary Nim `Value`;
+direct/unmarked Nim transfers remain outside qualification. The SDK's managed
+operations themselves accept only opaque handles.
+
 `geneWithNativeBorrow(root, body)` admits one outer borrow; nested managed calls
 share that admission. Handle traversal returns more opaque handles, not raw
 Values. Scalars, copied text/bytes and copied diagnostics may leave the borrow.
+The whole callback is classified as requiring root-lane progress: caller code
+can wait outside any SDK getter. A collector defers rather than draining such a
+callback while blocking the root lane it may need.
 An object returned by a Gene call leaves as an owned managed handle. Access after
 lease end, wrong-lane access and use of released handles fail before reading Gene
 memory. Separate owned handles may be sent to another attached native lane; the

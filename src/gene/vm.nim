@@ -875,6 +875,7 @@ proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64],
                      mode = csmSend): bool
 proc isSendableValue(value: Value, scope: Scope): bool
+proc publishManagedRootForRetirement*(value: Value): seq[Scope]
 proc completedTaskFromError(e: ref GeneError): Value
 proc completedTaskFromPanic(e: ref GenePanic): Value
 proc schedulerForScope(scope: Scope): SchedulerState
@@ -3245,6 +3246,28 @@ proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
     wakeChannelWaiters(channel, wakeSenders = false)
     true
 
+proc nativeChannelTrySendManaged*(channel, item: Value,
+                                  sourceScopes: seq[Scope],
+                                  scope: Scope): bool =
+  ## A mediated queue owner holds defining Scopes until dequeue. Avoid the
+  ## permanent raw-publication marker used by legacy Channel sends.
+  withScopedScheduler(scope):
+    requireChannel("managed native channel try_send", channel)
+    let state = channel.channelSendState()
+    if state.closed or state.full:
+      return false
+    let stored = checkedChannelItem(channel, item, "managed native channel item",
+                                    scope)
+    if not isSendableValue(stored, scope):
+      raiseTypeError("managed native channel item", "Send", stored, scope)
+    var pins = sourceScopes
+    pins.add publishManagedRootForRetirement(stored)
+    let pushed = channel.tryPushManagedChannel(stored, pins)
+    if not pushed.pushed:
+      return false
+    wakeChannelWaiters(channel, wakeSenders = false)
+    true
+
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
@@ -3362,6 +3385,20 @@ proc nativeChannelTryRecv*(channel: Value, scope: Scope): Value =
     wakeChannelWaiters(channel, wakeSenders = true)
     drainSupervisorFailures()
     result = tryRecvValue(scope, item)
+
+proc nativeChannelTryRecvManaged*(channel: Value, scope: Scope):
+    tuple[hasValue: bool, item: Value, pins: seq[Scope]] =
+  withScopedScheduler(scope):
+    requireChannel("managed native channel try_recv", channel)
+    let popped = channel.tryPopManagedChannel()
+    if not popped.popped:
+      return
+    result.item = checkedChannelItem(channel, popped.item,
+                                     "managed native channel item", scope)
+    result.pins = popped.pins
+    result.hasValue = true
+    wakeChannelWaiters(channel, wakeSenders = true)
+    drainSupervisorFailures()
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/close", args)
@@ -13577,6 +13614,8 @@ proc snapshotSpawnScope(source: Scope, body: Chunk): Scope =
   result = snapshotScopeChain(source, scopeMap)
   copyChunkCapturesToSnapshots(source, body, scopeMap, initHashSet[string]())
 
+var managedPublishedScopes {.threadvar.}: seq[Scope]
+
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
                        seenValues: var HashSet[uint64],
                        seenChunks: var HashSet[pointer])
@@ -13589,27 +13628,30 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenValues: var HashSet[uint64],
                                seenChunks: var HashSet[pointer])
 
-when defined(geneAtomicGenerationRetirementProbe):
-  proc publishErrorEffect(effect: ErrorEffectSummary,
-                         seenScopes: var HashSet[pointer],
-                         seenValues: var HashSet[uint64],
-                         seenChunks: var HashSet[pointer]) =
-    for error in effect.named:
-      publishSpawnValue(error.expr, seenScopes, seenValues, seenChunks)
+template completePublication: bool =
+  when defined(geneAtomicGenerationRetirementProbe): true
+  else: managedValuePublicationActive()
 
-  proc publishErrorDependency(dependency: ErrorProofDependency,
-                             seenScopes: var HashSet[pointer],
-                             seenValues: var HashSet[uint64],
-                             seenChunks: var HashSet[pointer]) =
-    publishSpawnValue(dependency.target, seenScopes, seenValues, seenChunks)
-    publishErrorEffect(dependency.permitted, seenScopes, seenValues, seenChunks)
+proc publishErrorEffect(effect: ErrorEffectSummary,
+                       seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer]) =
+  for error in effect.named:
+    publishSpawnValue(error.expr, seenScopes, seenValues, seenChunks)
 
-  proc publishNativeRepr(repr: AotRepr, seenScopes: var HashSet[pointer],
-                         seenValues: var HashSet[uint64],
-                         seenChunks: var HashSet[pointer]) =
-    if repr.nativeType != nil and repr.nativeType.abi != nil:
-      for field in repr.nativeType.abi.fields:
-        publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+proc publishErrorDependency(dependency: ErrorProofDependency,
+                           seenScopes: var HashSet[pointer],
+                           seenValues: var HashSet[uint64],
+                           seenChunks: var HashSet[pointer]) =
+  publishSpawnValue(dependency.target, seenScopes, seenValues, seenChunks)
+  publishErrorEffect(dependency.permitted, seenScopes, seenValues, seenChunks)
+
+proc publishNativeRepr(repr: AotRepr, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer]) =
+  if repr.nativeType != nil and repr.nativeType.abi != nil:
+    for field in repr.nativeType.abi.fields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
 
 proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
                        seenValues: var HashSet[uint64],
@@ -13620,7 +13662,7 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
   if seenChunks.contains(key):
     return
   seenChunks.incl key
-  when defined(geneAtomicGenerationRetirementProbe):
+  if completePublication:
     publishSpawnValue(chunk.superType, seenScopes, seenValues, seenChunks)
     publishErrorEffect(chunk.initializationErrors, seenScopes, seenValues, seenChunks)
     for dependency in chunk.errorProofDependencies:
@@ -13650,13 +13692,13 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
   for attempt in chunk.tries:
     publishSpawnChunk(attempt.body, seenScopes, seenValues, seenChunks)
     for clause in attempt.catches:
-      when defined(geneAtomicGenerationRetirementProbe):
+      if completePublication:
         publishSpawnValue(clause.errorType, seenScopes, seenValues, seenChunks)
       publishSpawnValue(clause.pattern, seenScopes, seenValues, seenChunks)
       publishSpawnChunk(clause.body, seenScopes, seenValues, seenChunks)
     publishSpawnChunk(attempt.ensureBody, seenScopes, seenValues, seenChunks)
   for proto in chunk.typeProtos:
-    when defined(geneAtomicGenerationRetirementProbe):
+    if completePublication:
       publishSpawnFunctionProto(proto.ctorFn, seenScopes, seenValues, seenChunks)
       if proto.nativeType != nil and proto.nativeType.abi != nil:
         for field in proto.nativeType.abi.fields:
@@ -13672,7 +13714,7 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     for inline in proto.inlineImpls:
-      when defined(geneAtomicGenerationRetirementProbe):
+      if completePublication:
         publishSpawnValue(inline.protocolExpr, seenScopes, seenValues, seenChunks)
       for message in inline.messages:
         publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
@@ -13685,7 +13727,7 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     for inline in proto.inlineImpls:
-      when defined(geneAtomicGenerationRetirementProbe):
+      if completePublication:
         publishSpawnValue(inline.protocolExpr, seenScopes, seenValues, seenChunks)
       for message in inline.messages:
         publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
@@ -13694,13 +13736,13 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     publishSpawnFunctionProto(proto.deriveFn, seenScopes, seenValues, seenChunks)
   for proto in chunk.implProtos:
-    when defined(geneAtomicGenerationRetirementProbe):
+    if completePublication:
       publishSpawnValue(proto.protocolExpr, seenScopes, seenValues, seenChunks)
       publishSpawnValue(proto.receiverExpr, seenScopes, seenValues, seenChunks)
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for ffi in chunk.ffiFns:
-    when defined(geneAtomicGenerationRetirementProbe):
+    if completePublication:
       for repr in ffi.paramReprs:
         publishNativeRepr(repr, seenScopes, seenValues, seenChunks)
       publishNativeRepr(ffi.returnRepr, seenScopes, seenValues, seenChunks)
@@ -13727,7 +13769,7 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenChunks: var HashSet[pointer]) =
   if proto == nil:
     return
-  when defined(geneAtomicGenerationRetirementProbe):
+  if completePublication:
     # Prototype/header edges can loop through summary targets or Scope bindings.
     let key = cast[pointer](proto)
     if seenChunks.contains(key): return
@@ -13780,7 +13822,7 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     return
   seenValues.incl value.bits
   markSharedValue(value)
-  when defined(geneAtomicGenerationRetirementProbe):
+  if completePublication:
     for child in value.publicationValueChildren:
       publishSpawnValue(child, seenScopes, seenValues, seenChunks)
   case value.kind
@@ -13947,7 +13989,7 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       for item in value.typeDeriveRequests:
         publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkProtocol:
-    when defined(geneAtomicGenerationRetirementProbe):
+    if completePublication:
       publishSpawnScope(value.protocolScope, seenScopes, seenValues, seenChunks)
     for _, message in value.protocolMessages:
       publishSpawnValue(message, seenScopes, seenValues, seenChunks)
@@ -13977,6 +14019,8 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     if seenScopes.contains(key):
       return
     seenScopes.incl key
+    if managedValuePublicationActive():
+      managedPublishedScopes.add current
     pinPublishedScope(current)
     var atBuiltins = false
     if current.application != nil:
@@ -13986,7 +14030,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
           return
         app.spawnBuiltinsPublished = true
         atBuiltins = true
-    when defined(geneAtomicGenerationRetirementProbe):
+    if completePublication:
       publishSpawnScope(current.moduleBase, seenScopes, seenValues, seenChunks)
       for fallback in current.wildcardFallbacks.values:
         publishSpawnValue(fallback.value, seenScopes, seenValues, seenChunks)
@@ -14016,7 +14060,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     # their Value edges for atomic RC, but do not recurse into a formatter's
     # defining scope: that would publish unrelated module state.
     for impl in current.impls:
-      when defined(geneAtomicGenerationRetirementProbe):
+      if completePublication:
         if not atBuiltins:
           publishSpawnScope(impl.implAssemblyScope, seenScopes, seenValues, seenChunks)
       if atBuiltins:
@@ -14061,6 +14105,22 @@ when defined(geneAtomicGenerationRetirementProbe):
     var seenValues = initHashSet[uint64]()
     var seenChunks = initHashSet[pointer]()
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+
+proc publishManagedRootForRetirement*(value: Value): seq[Scope] =
+  ## Keep known defining Scopes physically rooted for the lifetime of the
+  ## managed handle, including weak captures. Atomic RC needs no permanent raw
+  ## pin; normal non-probe builds still use their existing shared RC marker.
+  doAssert not managedValuePublicationActive()
+  managedPublishedScopes.setLen(0)
+  enterManagedValuePublication()
+  try:
+    var seenScopes = initHashSet[pointer]()
+    var seenValues = initHashSet[uint64]()
+    var seenChunks = initHashSet[pointer]()
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  finally:
+    result = move(managedPublishedScopes)
+    leaveManagedValuePublication()
 
 proc validateRequiredImplType(scope: Scope, typ: Value) =
   for protocol in typ.typeRequiredProtocols:
