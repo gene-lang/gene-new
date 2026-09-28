@@ -109,6 +109,13 @@ its separately exported module/ingress and VM callback APIs.
 | Thread attach/detach and logging | No direct Gene graph returned by these entries. | Associate leases with attached lanes; copied diagnostic payloads require no Gene borrow. |
 | Direct Nim VM/Scope/Value APIs and custom `FunctionCode`/continuations | Arbitrary unmarked refs remain outside qualification. | Keep legacy accesses published/unqualified. Require explicit adapters and complete edge models before admitting any additional graph class. |
 
+ABI 6 now has bounded, monotonic attachment tokens on threaded AtomicArc.
+Attached C lanes may use mediated read/retain/release and frozen traversal;
+wrong-lane detach fails without consuming a token. Domain close reports pending
+while a token exists, and release/detach still work during closure. C callbacks,
+producer settlement and mutable graph access on an attached lane remain
+separate qualification work.
+
 The initial Actor adapter is `geneManagedNewActor(environment, capacity,
 state, handler, messageType?)`, `geneManagedActorTrySend(actor, message,
 environment)`, `geneManagedActorState(actor, environment)`, copied

@@ -4,6 +4,7 @@ import std/[dynlib, os, osproc, strtabs, streams, strutils, unittest]
 type
   SetMode = proc(value: uint32) {.cdecl.}
   ReadCalls = proc(): uint32 {.cdecl.}
+  TryForeign = proc(): cint {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -19,8 +20,12 @@ proc buildFixture(noInit = false): string =
     result = result.replace(".dylib", ".so")
   var args = when defined(macosx): @["-dynamiclib", "-fPIC"]
              else: @["-shared", "-fPIC"]
-  args.add @["-std=c11", "-Isrc/gene",
+  args.add @["-std=c11", "-pthread", "-Isrc/gene",
               "tests/fixtures/native_managed_v6_fixture.c"]
+  when defined(geneNativeAsan):
+    args.add "-fsanitize=address"
+  when defined(geneNativeTsan):
+    args.add "-fsanitize=thread"
   if noInit: args.add "-DGENE_V6_NO_INIT"
   args.add @["-o", result]
   let environment = newStringTable(modeCaseSensitive)
@@ -73,18 +78,44 @@ suite "managed native extension ABI v6":
         let calls = cast[ReadCalls](symAddr(handle, "gene_test_v6_calls"))
         let setMode = cast[SetMode](symAddr(handle, "gene_test_v6_set_mode"))
         check calls != nil and setMode != nil
+        when defined(gcAtomicArc) and compileOption("threads"):
+          const unavailableFeature = 32'u64
+          const availableFeatures = 31'u64
+        else:
+          const unavailableFeature = 16'u64
+          const availableFeatures = 15'u64
         let unavailable = geneManagedLoadModuleV6(domain, libraryRoot,
-          environment, "need-future", requiredFeatures = 16'u64)
+          environment, "need-future", requiredFeatures = unavailableFeature)
         check unavailable.status == gsError
         check unavailable.message.contains("required feature bits")
         check calls() == 0
         let loaded = geneManagedLoadModuleV6(domain, libraryRoot,
                                                environment, "v6-fixture",
-                                               requiredFeatures = 15'u64)
+                                               requiredFeatures = availableFeatures)
         check loaded.status == gsOk and loaded.value != nil
         check geneWithNativeBorrow(loaded.value,
           proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b)) == vkModule
         check calls() == 1
+        when defined(gcAtomicArc) and compileOption("threads"):
+          let beginReader = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_begin_key_reader"))
+          let endReader = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_end_key_reader"))
+          let foreign = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_try_foreign"))
+          let limits = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_attachment_limits"))
+          check beginReader != nil and endReader != nil and
+                foreign != nil and limits != nil
+          let reading = beginReader()
+          check reading == 0
+          if reading in [0, 2]:
+            for i in 0 ..< 10000:
+              discard newSym("v6_race_key_" & $i)
+            check endReader() == 0
+          check foreign() == 0
+          check limits() == 0
+          check geneManagedStats(domain).attachments == 0
         geneManagedRelease(loaded.value)
         setMode(1)
         let rejected = geneManagedLoadModuleV6(domain, libraryRoot,
@@ -129,3 +160,46 @@ suite "managed native extension ABI v6":
         geneManagedRelease(libraryRoot)
         geneManagedEnvironmentRelease(environment)
         check geneManagedClose(domain)
+
+  test "attached C lane retires after close despite wrong-lane detach":
+    when defined(gcAtomicArc) and compileOption("threads"):
+      let path = buildFixture()
+      if path.len == 0:
+        skip()
+      else:
+        let handle = loadLib(path)
+        check handle != nil
+        if handle != nil:
+          let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+          defer: library.closeFfiLibrary()
+          let domain = geneNewManagedDomain(host)
+          let environment = geneNewManagedEnvironment(domain, host)
+          let libraryRoot = geneManagedRootFromVm(domain, host, library)
+          let loaded = geneManagedLoadModuleV6(domain, libraryRoot,
+                                                environment, "v6-held")
+          check loaded.status == gsOk and loaded.value != nil
+          let beginHold = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_begin_hold"))
+          let wrongDetach = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_wrong_lane_detach"))
+          let endHold = cast[TryForeign](symAddr(handle,
+            "gene_test_v6_end_hold"))
+          check beginHold != nil and wrongDetach != nil and endHold != nil
+          let began = beginHold()
+          check began == 0
+          if began == 0:
+            check geneManagedStats(domain).attachments == 1
+            check wrongDetach() == 0
+            check geneManagedStats(domain).attachments == 1
+            geneManagedRelease(loaded.value)
+            geneManagedRelease(libraryRoot)
+            geneManagedEnvironmentRelease(environment)
+            check not geneManagedClose(domain)
+            check endHold() == 0
+            check geneManagedStats(domain).attachments == 0
+            check geneManagedStats(domain).roots == 0
+            check geneManagedClose(domain)
+          elif began == 3:
+            discard endHold()
+    else:
+      skip()

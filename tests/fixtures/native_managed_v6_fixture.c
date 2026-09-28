@@ -1,11 +1,249 @@
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <sched.h>
 #include "native_api_v6.h"
 
 static uint32_t mode;
 static uint32_t calls;
+static const GeneApiV6 *saved_api;
+static GeneHandleV6 saved_map;
 
 void gene_test_v6_set_mode(uint32_t value) { mode = value; }
 uint32_t gene_test_v6_calls(void) { return calls; }
+
+typedef struct ForeignRead {
+  GeneHandleV6 root;
+  int ok;
+} ForeignRead;
+
+static void *read_on_foreign_lane(void *raw) {
+  ForeignRead *read = raw;
+  const GeneApiV6 *api = saved_api;
+  uint64_t token = 0;
+  GeneHandleV6 retained = 0;
+  GeneHandleV6 map_child = 0;
+  uint32_t kind = 255;
+  int64_t number = 0;
+  uint8_t key_copy[16] = {0};
+  GeneOutBytesV6 key_out = {key_copy, sizeof(key_copy), 0};
+  int before_rejected = api->kind(api->runtime_context, read->root,
+                                   &kind, NULL) == GENE_API_V6_ERROR;
+  read->ok = before_rejected &&
+      api->attach_thread(api->runtime_context, &token, NULL) == GENE_API_V6_OK &&
+      token != 0 &&
+      api->kind(api->runtime_context, read->root, &kind, NULL) == GENE_API_V6_OK &&
+      kind == 2 &&
+      api->copy_i64(api->runtime_context, read->root, &number, NULL) == GENE_API_V6_OK &&
+      number == 99 &&
+      api->retain(api->runtime_context, read->root, &retained, NULL) == GENE_API_V6_OK &&
+      retained != 0 &&
+      api->release(api->runtime_context, retained, NULL) == GENE_API_V6_OK &&
+      api->copy_key(api->runtime_context, saved_map, GENE_V6_MAP_ENTRY, 0,
+                    &key_out, NULL) == GENE_API_V6_OK &&
+      key_out.required == sizeof("map_key") - 1 &&
+      memcmp(key_copy, "map_key", sizeof("map_key") - 1) == 0 &&
+      api->traverse(api->runtime_context, saved_map, GENE_V6_MAP_ENTRY, 0,
+                    &map_child, NULL) == GENE_API_V6_OK &&
+      api->copy_i64(api->runtime_context, map_child, &number, NULL) == GENE_API_V6_OK &&
+      number == 4 &&
+      api->release(api->runtime_context, map_child, NULL) == GENE_API_V6_OK &&
+      api->detach_thread(api->runtime_context, token, NULL) == GENE_API_V6_OK;
+  if (read->ok)
+    read->ok = api->kind(api->runtime_context, read->root,
+                          &kind, NULL) == GENE_API_V6_ERROR;
+  if (!read->ok && token) api->detach_thread(api->runtime_context, token, NULL);
+  return NULL;
+}
+
+int gene_test_v6_try_foreign(void) {
+  const GeneApiV6 *api = saved_api;
+  if (!api || !(api->feature_bits & GENE_API_V6_ATTACHED_FEATURE) ||
+      !api->attach_thread || !api->detach_thread) return -1;
+  ForeignRead read = {0, 0};
+  if (api->new_i64(api->runtime_context, 99, &read.root, NULL) != GENE_API_V6_OK)
+    return 1;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, read_on_foreign_lane, &read) != 0) {
+    api->release(api->runtime_context, read.root, NULL);
+    return 2;
+  }
+  pthread_join(thread, NULL);
+  int released = api->release(api->runtime_context, read.root, NULL) == GENE_API_V6_OK;
+  int map_released = api->release(api->runtime_context, saved_map,
+                                   NULL) == GENE_API_V6_OK;
+  saved_map = 0;
+  return read.ok && released && map_released ? 0 : 3;
+}
+
+int gene_test_v6_attachment_limits(void) {
+  const GeneApiV6 *api = saved_api;
+  if (!api || !(api->feature_bits & GENE_API_V6_ATTACHED_FEATURE)) return -1;
+  uint64_t tokens[256] = {0};
+  size_t count = 0;
+  int ok = 1;
+  for (; count < 256; ++count) {
+    if (api->attach_thread(api->runtime_context,
+                           &tokens[count], NULL) != GENE_API_V6_OK ||
+        tokens[count] == 0) {
+      ok = 0;
+      break;
+    }
+  }
+  uint64_t overflow = 0;
+  if (ok && (api->attach_thread(api->runtime_context, &overflow,
+                                NULL) != GENE_API_V6_ERROR || overflow != 0))
+    ok = 0;
+  while (count > 0) {
+    --count;
+    if (api->detach_thread(api->runtime_context, tokens[count],
+                           NULL) != GENE_API_V6_OK) ok = 0;
+  }
+  if (api->detach_thread(api->runtime_context, tokens[0],
+                         NULL) != GENE_API_V6_ERROR) ok = 0;
+  uint64_t next = 0;
+  if (api->attach_thread(api->runtime_context, &next,
+                         NULL) != GENE_API_V6_OK || next <= tokens[255])
+    ok = 0;
+  if (next && api->detach_thread(api->runtime_context, next,
+                                 NULL) != GENE_API_V6_OK) ok = 0;
+  return ok ? 0 : 1;
+}
+
+static pthread_t key_reader_thread;
+static atomic_int key_reader_stop;
+static atomic_int key_reader_reads;
+static atomic_int key_reader_bad;
+
+static void *read_keys_on_foreign_lane(void *unused) {
+  (void)unused;
+  const GeneApiV6 *api = saved_api;
+  uint64_t token = 0;
+  if (api->attach_thread(api->runtime_context, &token, NULL) != GENE_API_V6_OK) {
+    atomic_store(&key_reader_bad, 1);
+    return NULL;
+  }
+  while (!atomic_load(&key_reader_stop)) {
+    uint8_t key[16] = {0};
+    GeneOutBytesV6 out = {key, sizeof(key), 0};
+    if (api->copy_key(api->runtime_context, saved_map,
+                      GENE_V6_MAP_ENTRY, 0, &out, NULL) != GENE_API_V6_OK ||
+        out.required != sizeof("map_key") - 1 ||
+        memcmp(key, "map_key", sizeof("map_key") - 1) != 0) {
+      atomic_store(&key_reader_bad, 1);
+      break;
+    }
+    atomic_fetch_add(&key_reader_reads, 1);
+  }
+  if (api->detach_thread(api->runtime_context, token,
+                         NULL) != GENE_API_V6_OK)
+    atomic_store(&key_reader_bad, 1);
+  return NULL;
+}
+
+int gene_test_v6_begin_key_reader(void) {
+  if (!saved_api || !saved_map ||
+      !(saved_api->feature_bits & GENE_API_V6_ATTACHED_FEATURE)) return -1;
+  atomic_store(&key_reader_stop, 0);
+  atomic_store(&key_reader_reads, 0);
+  atomic_store(&key_reader_bad, 0);
+  if (pthread_create(&key_reader_thread, NULL,
+                      read_keys_on_foreign_lane, NULL) != 0) return 1;
+  for (int i = 0; i < 1000000 && !atomic_load(&key_reader_reads) &&
+                      !atomic_load(&key_reader_bad); ++i)
+    sched_yield();
+  return atomic_load(&key_reader_reads) > 0 ? 0 : 2;
+}
+
+int gene_test_v6_end_key_reader(void) {
+  atomic_store(&key_reader_stop, 1);
+  pthread_join(key_reader_thread, NULL);
+  return atomic_load(&key_reader_bad) == 0 &&
+         atomic_load(&key_reader_reads) > 0 ? 0 : 1;
+}
+
+static pthread_mutex_t hold_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t hold_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t hold_thread_id;
+static const GeneApiV6 *hold_api;
+static GeneHandleV6 hold_root;
+static uint64_t hold_token;
+static int hold_ready, hold_proceed, hold_result;
+
+static void *hold_foreign_lane(void *unused) {
+  (void)unused;
+  const GeneApiV6 *api = hold_api;
+  uint64_t token = 0;
+  int attached = api->attach_thread(api->runtime_context,
+                                     &token, NULL) == GENE_API_V6_OK;
+  pthread_mutex_lock(&hold_lock);
+  hold_token = token;
+  hold_ready = 1;
+  pthread_cond_broadcast(&hold_cond);
+  while (!hold_proceed) pthread_cond_wait(&hold_cond, &hold_lock);
+  pthread_mutex_unlock(&hold_lock);
+  uint32_t kind = 255;
+  int closed_read = api->kind(api->runtime_context, hold_root,
+                               &kind, NULL) == GENE_API_V6_ERROR;
+  int released = api->release(api->runtime_context, hold_root,
+                               NULL) == GENE_API_V6_OK;
+  int detached = attached &&
+      api->detach_thread(api->runtime_context, token, NULL) == GENE_API_V6_OK;
+  pthread_mutex_lock(&hold_lock);
+  hold_result = attached && closed_read && released && detached ? 0 : 1;
+  pthread_mutex_unlock(&hold_lock);
+  return NULL;
+}
+
+int gene_test_v6_begin_hold(void) {
+  const GeneApiV6 *api = saved_api;
+  if (!api || !(api->feature_bits & GENE_API_V6_ATTACHED_FEATURE)) return -1;
+  if (saved_map) {
+    if (api->release(api->runtime_context, saved_map,
+                     NULL) != GENE_API_V6_OK) return 4;
+    saved_map = 0;
+  }
+  hold_api = api;
+  hold_root = 0;
+  if (api->new_i64(api->runtime_context, 13,
+                   &hold_root, NULL) != GENE_API_V6_OK) return 1;
+  pthread_mutex_lock(&hold_lock);
+  hold_token = 0;
+  hold_ready = hold_proceed = 0;
+  hold_result = 1;
+  pthread_mutex_unlock(&hold_lock);
+  if (pthread_create(&hold_thread_id, NULL, hold_foreign_lane, NULL) != 0) {
+    api->release(api->runtime_context, hold_root, NULL);
+    return 2;
+  }
+  pthread_mutex_lock(&hold_lock);
+  while (!hold_ready) pthread_cond_wait(&hold_cond, &hold_lock);
+  int ready = hold_token != 0;
+  pthread_mutex_unlock(&hold_lock);
+  return ready ? 0 : 3;
+}
+
+int gene_test_v6_wrong_lane_detach(void) {
+  pthread_mutex_lock(&hold_lock);
+  uint64_t token = hold_token;
+  const GeneApiV6 *api = hold_api;
+  pthread_mutex_unlock(&hold_lock);
+  return api && token &&
+      api->detach_thread(api->runtime_context, token,
+                         NULL) == GENE_API_V6_ERROR ? 0 : 1;
+}
+
+int gene_test_v6_end_hold(void) {
+  pthread_mutex_lock(&hold_lock);
+  hold_proceed = 1;
+  pthread_cond_broadcast(&hold_cond);
+  pthread_mutex_unlock(&hold_lock);
+  pthread_join(hold_thread_id, NULL);
+  pthread_mutex_lock(&hold_lock);
+  int result = hold_result;
+  pthread_mutex_unlock(&hold_lock);
+  return result;
+}
 
 #ifndef GENE_V6_NO_INIT
 uint32_t gene_module_init_v6(const GeneApiV6 *api,
@@ -38,6 +276,7 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
     }
     return GENE_API_V6_ERROR;
   }
+  saved_api = api;
   GeneHandleV6 original = 0, retained = 0;
   uint32_t kind = 255;
   int64_t integer = 0;
@@ -270,6 +509,12 @@ uint32_t gene_module_init_v6(const GeneApiV6 *api,
       operation_diag.required == 0 ||
       api->release(api->runtime_context, mutable, NULL) != GENE_API_V6_OK)
     return GENE_API_V6_ERROR;
+  if (api->feature_bits & GENE_API_V6_ATTACHED_FEATURE) {
+    if (api->lookup(api->runtime_context, environment, map_name,
+                    sizeof(map_name) - 1, &saved_map,
+                    NULL) != GENE_API_V6_OK || !saved_map)
+      return GENE_API_V6_ERROR;
+  }
   if (diagnostic) diagnostic->required = 0;
   return GENE_API_V6_OK;
 }

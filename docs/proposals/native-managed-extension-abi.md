@@ -1,9 +1,8 @@
 # Managed native extension ABI
 
-**Status:** the ABI 6 layout, exact loader negotiation and four root-lane
-feature bits are implemented against a compiled C fixture: identity/Int64,
-copied scalar/Bytes, lookup/call/definition, and frozen-container traversal.
-Callbacks and ingress remain unimplemented and their feature bits are not
+**Status:** the ABI 6 layout, exact loader negotiation, four root-lane
+features and AtomicArc attached-lane admission are implemented against a
+compiled C fixture. Callbacks and ingress remain unimplemented and their bits are not
 advertised. The owner selected opaque managed handles in
 [Native managed borrows](native-managed-borrows.md).
 Qualification evidence is in
@@ -52,9 +51,9 @@ The first wire kind values are `0=nil`, `1=Bool`, `2=Int`, `3=Str`, `4=Bytes`,
 `11=ActorRef`, `255=other`; they are not Nim `ValueKind` ordinals.
 
 Feature bit 0 (`GENE_API_V6_IDENTITY_FEATURE = 1`) currently permits only
-root-lane `retain`, `release`, `kind` and `new_i64`. The future attached-lane
-feature will make the same operations available to an explicitly attached
-foreign lane; the table currently leaves attach/detach null.
+root-lane `retain`, `release`, `kind` and `new_i64` on every manager. Feature
+bit 4 extends retain/release/kind to explicitly attached AtomicArc lanes;
+construction stays on the root lane.
 
 Feature bit 1 (`GENE_API_V6_SCALAR_FEATURE = 2`) adds root-lane Bool/Int64
 copies, copied Str/Bytes reads and Bool/Str/Bytes constructors. Incoming text
@@ -74,9 +73,20 @@ Feature bit 3 (`GENE_API_V6_FROZEN_FEATURE = 8`) adds root-lane length, copied
 key and child-handle traversal for deeply frozen List/Map/Node values. Child
 handles inherit the parent's known weak/code Scope provenance. Selectors and
 ordering are fixed below; mutable and shallow-frozen containers fail with a
-copied error. Map and Node key lookup by ordinal currently scans insertion
-order, so enumerating every key is quadratic until the PropTable gets a stable
-indexed read API.
+copied error. Map and Node keys are copied by insertion-order index while the
+symbol-table lock protects the interned key sequence. Enumerating every key
+is linear in the number of entries.
+
+Feature bit 4 (`GENE_API_V6_ATTACHED_FEATURE = 16`) is advertised only in
+threaded AtomicArc builds. A C thread receives a monotonic attachment token,
+bounded to 256 simultaneous tokens per domain. The token retains its runtime
+through physical detach; wrong-lane detach leaves it live. While attached, the
+thread may retain/release IDs and use kind, copied scalar/Bytes reads and
+deep-frozen traversal. Constructors, environment lookup, calls and definitions
+remain root-lane operations. New reads are rejected before attach, after
+detach and after domain close. Release and detach remain available after close
+so shutdown can drain physical owners; `geneManagedClose` reports pending
+while any token remains. Default ORC does not advertise this bit.
 
 ```c
 #include <stddef.h>
@@ -243,7 +253,8 @@ extension's actual use, not by this ABI.
    fixture must prove stale, wrong-domain, wrong-lane and close rejection
    without exposing raw Gene bits. Root-lane identity and copied scalar/Bytes
    operations and positional call/definition are advertised as separate
-   feature bits. Attached-lane use remains pending.
+   feature bits. Attached-lane read/retain/release admission is qualified for
+   threaded AtomicArc; callback and producer use from those lanes is pending.
 3. Add callback registration and copied arguments/results. Test nested call,
    typed error/panic/cancel propagation, close during callback, context cleanup
    re-entry and library unload refusal until physical retirement.

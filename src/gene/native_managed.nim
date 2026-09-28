@@ -48,6 +48,11 @@ type
     scopes: seq[Scope] # strong known Scope/code provenance until physical release
     value: Value
 
+  V6Attachment = object
+    id: uint64
+    lane: int
+    ticket: GeneThreadAttachment
+
   GeneManagedDomain* = ref object
     application: RuntimeContext
     rootLane: int
@@ -56,6 +61,9 @@ type
     nextId: uint64
     roots: Table[uint64, ManagedEntry]
     borrows: int
+    nextAttachmentId: uint64
+    attachmentCount: int
+    v6Attachments: array[256, V6Attachment]
     producers: int
     producerEntries: Table[uint64, ManagedEntry]
     closed: bool
@@ -1084,6 +1092,7 @@ const
   GeneApiV6ScalarFeature* = 2'u64
   GeneApiV6CallDefineFeature* = 4'u64
   GeneApiV6FrozenFeature* = 8'u64
+  GeneApiV6AttachedFeature* = 16'u64
   GeneApiV6MaxCopyBytes* = 64 * 1024 * 1024
 
 proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
@@ -1095,12 +1104,112 @@ proc v6Diagnostic(output: ptr GeneOutBytesV6, message: string) =
   if count > 0:
     copyMem(output.data, unsafeAddr message[0], count)
 
-proc v6Domain(context: pointer): GeneManagedDomain =
+proc v6Domain(context: pointer, rootOnly = true,
+              allowClosed = false): GeneManagedDomain =
   if context == nil:
     raise newException(GeneError, "native v6 runtime context is nil")
   result = cast[GeneManagedDomain](context)
-  result.requireRootLane()
-  result.requireOpen()
+  if rootOnly:
+    result.requireRootLane()
+  else:
+    result.requireDomain()
+    when not defined(gcAtomicArc):
+      if currentEventLane() != result.rootLane:
+        raise newException(GeneError,
+          "foreign native v6 access requires AtomicArc")
+    if currentEventLane() != result.rootLane and not geneThreadAttached():
+      raise newException(GeneError,
+        "foreign native v6 lane must attach first")
+  if not allowClosed:
+    result.requireOpen()
+
+proc v6AttachThread(context: pointer, output: ptr uint64,
+                    diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  if output != nil: output[] = 0
+  var ticket: GeneThreadAttachment
+  var admitted = false
+  try:
+    if output == nil or context == nil:
+      raise newException(GeneError, "native v6 attachment input is nil")
+    when not (defined(gcAtomicArc) and compileOption("threads")):
+      raise newException(GeneError,
+        "native v6 foreign attachment requires threaded AtomicArc")
+    let domain = cast[GeneManagedDomain](context)
+    domain.requireOpen()
+    ticket = geneAttachThread()
+    acquire(domain.lock)
+    try:
+      if domain.closed:
+        raise newException(GeneError, "managed native domain is closed")
+      if domain.nextAttachmentId == high(uint64):
+        raise newException(GeneError, "native v6 attachment IDs are exhausted")
+      var slot = -1
+      for i in 0 ..< domain.v6Attachments.len:
+        if domain.v6Attachments[i].id == 0:
+          slot = i
+          break
+      if slot < 0:
+        raise newException(GeneError, "native v6 attachment limit reached")
+      inc domain.nextAttachmentId
+      domain.v6Attachments[slot] = V6Attachment(
+        id: domain.nextAttachmentId, lane: currentEventLane(), ticket: ticket)
+      inc domain.attachmentCount
+      GC_ref(domain) # token physically retains its runtime until detach
+      admitted = true
+      output[] = domain.nextAttachmentId
+    finally:
+      release(domain.lock)
+    v6Diagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  finally:
+    if not admitted and ticket != nil:
+      geneDetachThread(ticket)
+
+proc v6DetachThread(context: pointer, token: uint64,
+                    diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
+  try:
+    if context == nil or token == 0:
+      raise newException(GeneError, "native v6 detach input is invalid")
+    let domain = cast[GeneManagedDomain](context)
+    var ticket: GeneThreadAttachment
+    acquire(domain.lock)
+    try:
+      for i in 0 ..< domain.v6Attachments.len:
+        if domain.v6Attachments[i].id == token:
+          if domain.v6Attachments[i].lane != currentEventLane() or
+              not geneThreadAttached():
+            raise newException(GeneError,
+              "native v6 attachment belongs to another lane")
+          ticket = move(domain.v6Attachments[i].ticket)
+          domain.v6Attachments[i] = V6Attachment()
+          dec domain.attachmentCount
+          break
+      if ticket == nil:
+        raise newException(GeneError, "native v6 attachment is unavailable")
+    finally:
+      release(domain.lock)
+    geneDetachThread(ticket)
+    v6Diagnostic(diagnostic, "")
+    GC_unref(domain)
+    result = 0
+  except GeneError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    v6Diagnostic(diagnostic, e.msg)
+    result = 1
 
 proc v6Retain(context: pointer, id: uint64, output: ptr uint64,
               diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
@@ -1108,7 +1217,7 @@ proc v6Retain(context: pointer, id: uint64, output: ptr uint64,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 retain output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let copied = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedRetain(b))
@@ -1128,7 +1237,7 @@ proc v6Retain(context: pointer, id: uint64, output: ptr uint64,
 proc v6Release(context: pointer, id: uint64,
                diagnostic: ptr GeneOutBytesV6): uint32 {.cdecl.} =
   try:
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false, allowClosed = true)
     let root = GeneManagedRoot(domain: domain, id: id)
     discard domain.liveRootEntry(root) # stale IDs fail rather than no-op
     geneManagedRelease(root)
@@ -1150,7 +1259,7 @@ proc v6Kind(context: pointer, id: uint64, output: ptr uint32,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 kind output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let kind = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): ValueKind = geneManagedKind(b))
@@ -1215,7 +1324,7 @@ proc v6CopyText(context: pointer, id: uint64, output: ptr GeneOutBytesV6,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 text output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let copied = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): string = geneManagedText(b))
@@ -1243,7 +1352,7 @@ proc v6CopyBytes(context: pointer, id: uint64, output: ptr GeneOutBytesV6,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 Bytes output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let copied = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): seq[byte] = geneManagedBytes(b))
@@ -1270,7 +1379,7 @@ proc v6CopyBool(context: pointer, id: uint64, output: ptr uint8,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 Bool output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     output[] = if geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): bool = geneManagedBool(b)): 1'u8 else: 0'u8
@@ -1292,7 +1401,7 @@ proc v6CopyI64(context: pointer, id: uint64, output: ptr int64,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 Int output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     output[] = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): int64 = geneManagedInt64(b))
@@ -1384,24 +1493,12 @@ proc v6FrozenKey(borrow: GeneNativeBorrow, selector: uint32,
     requireFrozen(value, vkMap, "entry key")
     if index >= csize_t(value.mapEntries.len):
       raise newException(GeneError, "native v6 Map entry is out of bounds")
-    var position = 0.csize_t
-    for key in value.mapEntries.keys:
-      if position == index:
-        result = newStringOfCap(key.len)
-        result.add key
-        return
-      inc position
+    result = value.mapEntries.propKeyAtCopy(int(index))
   of 3'u32:
     requireFrozen(value, vkNode, "property key")
     if index >= csize_t(value.props.len):
       raise newException(GeneError, "native v6 Node property is out of bounds")
-    var position = 0.csize_t
-    for key in value.props.keys:
-      if position == index:
-        result = newStringOfCap(key.len)
-        result.add key
-        return
-      inc position
+    result = value.props.propKeyAtCopy(int(index))
   else:
     raise newException(GeneError,
       "native v6 key selector requires Map entry or Node property")
@@ -1413,7 +1510,7 @@ proc v6Length(context: pointer, id: uint64, selector: uint32,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 length output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let count = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): int =
@@ -1453,7 +1550,7 @@ proc v6CopyKey(context: pointer, id: uint64, selector: uint32,
   try:
     if output == nil:
       raise newException(GeneError, "native v6 key output is nil")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let key = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): string = v6FrozenKey(b, selector, index))
@@ -1485,7 +1582,7 @@ proc v6Traverse(context: pointer, id: uint64, selector: uint32,
       raise newException(GeneError, "native v6 traversal output is nil")
     if index > csize_t(high(int)):
       raise newException(GeneError, "native v6 traversal index is too large")
-    let domain = v6Domain(context)
+    let domain = v6Domain(context, rootOnly = false)
     let root = GeneManagedRoot(domain: domain, id: id)
     let child = geneWithNativeBorrow(root,
       proc(b: GeneNativeBorrow): GeneManagedRoot =
@@ -1633,6 +1730,11 @@ proc configureV6Api(domain: GeneManagedDomain) =
   domain.v6Api.newText = cast[pointer](v6NewText)
   domain.v6Api.newBytes = cast[pointer](v6NewBytes)
   domain.v6Api.lookup = cast[pointer](v6Lookup)
+  when defined(gcAtomicArc) and compileOption("threads"):
+    domain.v6Api.featureBits = domain.v6Api.featureBits or
+                               GeneApiV6AttachedFeature
+    domain.v6Api.attachThread = cast[pointer](v6AttachThread)
+    domain.v6Api.detachThread = cast[pointer](v6DetachThread)
 
 const GeneModuleInitV6Symbol* = "gene_module_init_v6"
 
@@ -1709,16 +1811,17 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
   try:
     domain.closed = true
     result = domain.roots.len == 0 and domain.borrows == 0 and
-             domain.producers == 0
+             domain.producers == 0 and domain.attachmentCount == 0
   finally:
     release(domain.lock)
 
 proc geneManagedStats*(domain: GeneManagedDomain):
-    tuple[roots, borrows, producers: int, closed: bool, nextId: uint64] =
+    tuple[roots, borrows, producers, attachments: int,
+          closed: bool, nextId: uint64] =
   domain.requireDomain()
   acquire(domain.lock)
   try:
     result = (domain.roots.len, domain.borrows, domain.producers,
-              domain.closed, domain.nextId)
+              domain.attachmentCount, domain.closed, domain.nextId)
   finally:
     release(domain.lock)

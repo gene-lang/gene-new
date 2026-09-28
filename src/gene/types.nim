@@ -1511,6 +1511,20 @@ iterator keys*(t: PropTable): lent string =
   for i in 0 ..< t.data.len:
     yield symbolNames[int(t.data[i].keyId)]
 
+proc propKeyAtCopy*(t: PropTable, index: int): string =
+  ## Stable insertion-order key read for a published frozen table. Copy while
+  ## the symbol table lock protects its backing sequence from reallocation.
+  if index < 0 or index >= t.data.len:
+    raise newException(IndexDefect, "property index is out of bounds")
+  let id = t.data[index].keyId
+  acquire(internLock)
+  try:
+    let source = symbolNames[int(id)]
+    result = newStringOfCap(source.len)
+    result.add source
+  finally:
+    release(internLock)
+
 iterator values*(t: PropTable): Value =
   for i in 0 ..< t.data.len:
     yield t.data[i].val

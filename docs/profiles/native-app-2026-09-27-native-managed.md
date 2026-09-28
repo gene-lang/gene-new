@@ -102,10 +102,10 @@ output. Binary SHA-256 values:
 
 | Mode | SHA-256 |
 | --- | --- |
-| Disabled | `4d116deed4c6861a746df5b6fba7c70301dc97ba621275fbaac1eb048f154292` |
-| Opt-in | `4a0eb90bd9289446c851358300a5995996c8f097566228e21894173b3c21880c` |
-| ASAN | `edb36a182a3834436c7e0e2679f3d615bc11531fa1c223036ed252b70937ca9d` |
-| TSAN | `0b1548a128047b1ffd0608aad6450bddf20b207d3634d39ed39308ed53dcff36` |
+| Disabled | `6c4ff6b758ad6e1e1fbda8d98a36476130ab28651d7a387b03b4620aa00c689e` |
+| Opt-in | `fe7b1ba6337199776e0fa0bc2f66e4b76cd5f90393e183ec50c396b9e0b8e6ef` |
+| ASAN | `8c47dc598440e928eb4e6c5a8617efe583893575d8eb0f4140ba4cdd8afa41be` |
+| TSAN | `547e729c355043d727466e3975d8545c1f9903b3d7453072132ca9f0b25bd1e7` |
 
 The opt-in controls check 1,000
 released/repeated IDs, wrong lane/runtime, copied binary data, nested handle
@@ -122,23 +122,25 @@ The separate qualification report is the evidence for this new SDK. The AAR-0
 retirement runner also passes on this tree: disabled (2), probe (30), ASAN (30)
 and targeted TSAN (10). Its current hashes and commands are under
 `tmp/atomic-retirement-qualification/` (disabled
-`d2fe3aa2fca340488b62fd43e3e0f9db2b6a0081c5853ccb5b98133ba8324202`,
-probe `393465373c80c5b5557150e94a8a350d98d40da11aa054f308669a1232288604`,
-ASAN `af1c5dd4b19614a4a19633f543829c4e9d911120bb3f74039bb03cfe6247df08`,
-TSAN `eae2a84aeffaa04e06d7f7732c8b814faf071524d5598ef15e9bd278a8c062c8`).
-The default ORC RC leak suite, executable specs and broad `nimble test` pass. Full
-`nimble threadcheck` passes on the binding-ticket core, including the ABI 6 C
-fixture, native ingress, workers, owned Client and the standard RC suite.
-The managed and AAR-0 sanitizer runners also pass on this core source.
+`e0b652135d0ba066d3163c151b348e6865cac5b3034bf126bf73d93d85352f97`,
+probe `1cbe4a7c063d41d230b93ebaacffe8b9754467f0c864e262bec835b1e55a353f`,
+ASAN `a475a019794ba56714c7d744eca2887cee8c206134f5c7a08ef18ab0dcfc359e`,
+TSAN `0b3bcc3caa1cadecef57965095439bae3f1fde75ae6c3ef7070385028eb5cf51`).
+The default ORC RC leak suite, executable specs and full `nimble threadcheck`
+pass on the synchronized-key core, including the ABI 6 C fixture, native
+ingress, workers, owned Client and the standard RC suite. The managed and AAR-0
+sanitizer runners also pass on this source. Broad `nimble test` passed on the
+preceding binding-ticket core; the added indexed key-copy helper is covered by
+the current ABI 6 C/ASAN/TSAN and wasm runs.
 
-A fresh instrumented wasm build from the binding-ticket core source has SHA-256
-`2e6ff9da5a3d1c0787ccd402ec88a78c304f13d80d61002b0e24253853b87414`.
+A fresh instrumented wasm build from the synchronized-key core source has SHA-256
+`3e36b387797807ed21b6ca8c5998e1785746c97d606306458f938bbe4a45bf1c`.
 Node passes all 70 ABI cases. Google Chrome for Testing 147.0.7727.15 passes
 the 30 shared browser cases and lifetime controls: all managed classes and
 occupied heap are flat at sampled checkpoints, stale handles are rejected,
 live handles finish at zero, and the server shuts down gracefully with no
 pending cleanup, resource, lease or forced-connection count. Artifacts/reports
-are under `tmp/wasm-managed-binding-qualification/`; tracked `web/gene.js` and
+are under `tmp/wasm-managed-keyrace-qualification/`; tracked `web/gene.js` and
 `web/gene.wasm` were not regenerated. The managed Nim SDK itself is not linked
 into this wasm artifact.
 
