@@ -1,18 +1,16 @@
-# Experimental native ingress v5 foundation
+# Native byte-ingress foundation
 
-`gene_module_init` retains its exact GeneApi v4 table. A module explicitly
-declared for v5 uses `gene_module_init_v5` and receives a separate C-callable
-table with `version`, `structSize`, and `featureBits`. The loader selects the
-declared ABI before invoking library code; it does not probe one initializer
-with the other's table. v5 currently advertises the ingress feature bit and
-three C entry helpers: `ingressBegin`, `ingressEnqueue`, and `ingressEnd`.
 The C layout and return codes are declared in
-[`native_api_v5.h`](../../src/gene/native_api_v5.h).
+[`native_api.h`](../../src/gene/native_api.h). `GeneApi` has numeric layout
+version 6, but its public names and entry symbol are unversioned.
+`native/ingress/open` passes a sized ingress-only view with the ingress feature
+bit and `ingress_begin`, `ingress_enqueue`, and `ingress_end` entries.
+A registration shim must copy this table if it needs it after registration.
 
 The root lane creates a subscription record that roots its handler and owns a
 raw shared ingress context. C code receives only that context pointer and its
-generation. A callback calls `ingressBegin` before touching the context,
-queues a copied payload with `ingressEnqueue`, then calls `ingressEnd`.
+generation. A callback calls `ingress_begin` before touching the context,
+queues a copied payload with `ingress_enqueue`, then calls `ingress_end`.
 Generation mismatch or logical close rejects entry. These C-callable helpers
 use raw locks, `malloc`, and byte copies; they do not create Gene Values or
 enter a Gene Scope on the foreign thread.
@@ -78,11 +76,11 @@ native retirement.
 For a pure C package shim, `($native/ingress/open library handler
 ^register "shim_register" ^unregister "shim_unregister")` provides the
 root-lane creation bridge. `library` is an open `ffi/Library`; the register
-symbol has the fixed `GeneIngressRegister` signature in the v5 header and
+symbol has the fixed `GeneIngressRegister` signature in the single C header and
 receives the API table, raw ingress context, generation, and an output native
 context pointer. The unregister symbol has the fixed
 `GeneIngressUnregister` signature. Both symbols are required and validated
-before the v5 initializer or registration runs. The package function can
+before registration runs. The package function can
 wrap this call in its own Gene API; the runtime does not synthesize arbitrary
 C callback signatures. Optional `^max_count`, `^max_bytes`, and
 `^max_payload` select tighter queue limits.
@@ -97,7 +95,7 @@ An absent output context is an opening failure; the runtime retains its own
 ingress context while attempting the binding's unregister function rather
 than publishing an ownerless handle.
 
-`genex/libuv_timer` is a package-level v5 example. Its `c_library` recipe
+`genex/libuv_timer` is a package-level byte-ingress example. Its `c_library` recipe
 builds against libuv 1.52.x; the Gene `open` function returns an `IoResource`
 wrapper retaining the materialized image and FFI library until native
 retirement. Both libuv handles live on one owner thread. Unregistration wakes
@@ -106,5 +104,4 @@ then joins the thread and frees its context. The installed-app fixture covers
 10,000 create/notify/close lifetimes without the source checkout or compiler.
 It verifies zero live contexts/handles after each close, 20,000 handle close
 callbacks overall, and native-root/materialized-lease baselines. Linux runtime
-qualification remains open. v4
-call-scoped callbacks keep their existing behavior.
+qualification remains open.

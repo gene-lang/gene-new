@@ -1,6 +1,6 @@
 # genex/libuv_timer
 
-An experimental owned timer package for native ingress v5. Its format-1
+An experimental owned timer package for native ingress through the single C API. Its format-1
 `package.gene` builds the C shim against libuv 1.52.x through `pkg-config`;
 it does not require a separate metadata format. The package currently targets
 macOS arm64 and Linux x86_64. macOS arm64 has the installed-app runtime test;

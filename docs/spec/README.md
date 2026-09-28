@@ -15,7 +15,7 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Experimental streamed HTTP responses](http-stream-response.md)
 - [Experimental owned HTTP Client](http-client-owned.md)
 - [Experimental HTTP server shutdown](http-server-shutdown.md)
-- [Experimental native ingress v5 foundation](native-ingress-v5.md)
+- [Native byte ingress foundation](native-ingress.md)
 - [Modules and native boundaries](modules.md)
 - [Native paths, CSV, and filesystem walking](path-csv-walk.md)
 - [Experimental temporal arithmetic and RFC3339](temporal.md)

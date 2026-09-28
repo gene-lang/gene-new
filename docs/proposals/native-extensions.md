@@ -1,39 +1,56 @@
 # Native Extension Lifecycle
 
-**Status:** NATIVE-1 and NATIVE-2 have experimental v5 ingress, typed C registration, root-lane dispatch, bounded cleanup, and owned Gene subscriptions. NATIVE-3 now has an experimental `genex/libuv_timer` `c_library` package: a libuv 1.52.x owner thread sends timer notifications through v5 ingress and joins only after both asynchronous handle close callbacks. A 10,000-lifetime macOS arm64 installed-app probe passes with its source checkout hidden and compiler unavailable: each close leaves zero live native contexts/handles, 20,000 handle close callbacks are recorded, and native roots/materialized leases return to baseline. Linux runtime qualification remains open. Design baseline `3b2bde9`.
+**Status:** the byte-ingress queue, typed registration, root-lane dispatch,
+bounded cleanup, and owned Gene subscriptions are implemented. The
+`genex/libuv_timer` package now uses the single opaque C API in
+[`native_api.h`](../../src/gene/native_api.h). Its libuv owner thread sends
+notifications through byte ingress and joins after both asynchronous handle
+close callbacks. The consolidated adapter passed a 10,000-lifetime macOS
+installed-app probe with its source checkout hidden and compiler unavailable;
+native roots and materialized leases returned to baseline. Linux runtime
+qualification remains open. The current validation record is the
+[single native C ABI audit](../profiles/native-app-2026-09-28-native-abi-consolidation.md).
 
 **Stages:** NATIVE-1 (native ingress/ABI), NATIVE-2 (subscription/binding), NATIVE-3 (package qualification).
 
 **Depends on:** VM-0 diagnostics; local C fixtures work before package distribution. The retained mode is for notifications, not arbitrary synchronous C callbacks.
 
-## Current boundary
+## Current boundary and binding choice
 
-The owner-selected opaque migration is specified separately in
-[Managed native extension ABI](native-managed-extension-abi.md). It adds an ABI 6
-path; this proposal's v4/v5 layouts and qualified byte-ingress behavior remain
-unchanged.
+There is one C-facing `GeneApi` layout and one optional module initializer,
+`gene_module_init`. Both are declared in
+[`native_api.h`](../../src/gene/native_api.h). The numeric `version` field is
+6, the only accepted layout in this greenfield project; `struct_size` and
+feature bits let a module reject a missing operation before calling it.
+`gene_module_init` receives an opaque environment handle and copied diagnostic
+buffer. The former Nim versioned table and its dynamic loader have been
+removed. Direct Nim helper functions remain for in-repo runtime code.
 
-`native_api.nim` exposes a fixed-layout GeneApi v4 and exact version checks. Call-scoped callbacks already preserve Gene error/panic/cancellation, enforce the owning root lane, and pin borrowed handles. Keep that mode. Do not append fields to the v4 structure while calling it binary compatible.
+A retained C callback cannot wait for later Gene code to compute its immediate
+C return value. Byte ingress therefore copies a notification and returns a
+binding-defined enqueue/abort acknowledgment. A package shim provides typed C
+registration and unregistration symbols; the runtime does not fabricate
+arbitrary callback pointer signatures. Gene packages expose ordinary functions
+and owned wrappers.
 
-A retained C callback cannot wait for later Gene code to compute its immediate C return value. The new mode therefore copies a notification and returns a binding-defined enqueue/abort acknowledgment. Libraries requiring a synchronous computed answer continue using the call-scoped mode or need a separately designed adapter.
-
-## ABI and binding choice
-
-Provide a separate v5 entry symbol `gene_module_init_v5` and a v5 API table with version, structure byte size, and feature bits. Keep `gene_module_init` with the exact v4 table through an explicit compatibility path. Package metadata declares v4 or v5; the loader selects the matching entry symbol and rejects a missing/unsupported one before calling library code. A library that needs both runtimes may export both. No probing an unknown structure layout by invoking it.
-
-Initially expose retained-subscription helpers to library-specific native shims. Each shim provides a typed static C callback entrypoint, payload copy/disposal functions, and native unregistration. This does not require a general runtime factory for arbitrary C function pointer signatures. Keep public Gene APIs as ordinary package functions and owned wrappers.
+The managed loader and `native/ingress/open` use the same C structure.
+`native/ingress/open` passes an ingress-only view whose feature bits advertise
+only the three byte functions. A module initializer receives a stable
+per-domain table with the mediated operations and ingress functions. The
+register function must copy the table if it needs it after registration
+returns. Native code may call only entries whose feature bits are present.
 
 ## Native ingress contract
 
 Creation on the root lane roots the selected callable and records its Application, code/scope references, a monotonic subscription ID/generation, and native context. The C entrypoint always queues, including calls made on the root thread. It may copy a declared bounded payload and signal the scheduler; it never allocates Gene values, touches a Scope, invokes Gene, or pumps the scheduler.
 
-Each subscription has a bounded FIFO: default 256 notifications, 1 MiB total payload, 64 KiB maximum one payload. Queue admission must atomically reserve count and bytes. Copy failures or overflow reject the incoming notification and record a counter plus the first failure; the binding returns its declared C rejection code. The root lane then fails and unregisters the subscription. Version 1 has no silent drop-oldest or generic coalescing. A notification-only library that cannot observe rejection still produces a visible subscription failure.
+Each subscription has a bounded FIFO: default 256 notifications, 1 MiB total payload, 64 KiB maximum one payload. Queue admission must atomically reserve count and bytes. Copy failures or overflow reject the incoming notification and record a counter plus the first failure; the binding returns its declared C rejection code. The root lane then fails and unregisters the subscription. The queue has no silent drop-oldest or generic coalescing. A notification-only library that cannot observe rejection still produces a visible subscription failure.
 
 Drain at most 32 notifications or the host's polling work budget per pass. Start at most one Gene handler at a time per subscription. Handlers run as normal root-lane tasks and may use supported Task APIs; an awaiting handler leaves later notifications queued under the same bounds. One subscription cannot monopolize scheduler turns. An ordinary handler error fails the subscription and initiates unregistration. Panic and unexpected cancellation preserve their TaskOutcome categories and reach the owning supervisor/host policy; do not convert them to an ordinary catchable error. The wrapper retains bounded diagnostics and counters while cleanup proceeds.
 
 ## Gene lifecycle
 
-Package wrappers implement `IoResource` from [async I/O](async-io.md) once IO-1 exists:
+Package wrappers implement `IoResource` from [async I/O](async-io.md):
 
 - `.IoResource:close` requests close immediately and is idempotent.
 - `.IoResource:wait_closed` returns a fresh Task for native retirement and retained terminal error.
@@ -47,7 +64,7 @@ Unregistration that blocks runs on a bounded native worker. Cancelling wait_clos
 
 ## Ownership and package boundary
 
-Opaque Gene values use registered roots. Buffer loans state element type, length, alignment, read/write mode, copy-back, and lifetime. No borrowed pointer survives its loan, and no native callback retains a buffer loan implicitly. Native receiver/close/Send checks remain authoritative. Native code admitted in-process remains trusted.
+Opaque Gene values use mediated owning IDs at the public C boundary. Buffer loans state element type, length, alignment, read/write mode, copy-back, and lifetime. No borrowed pointer survives its loan, and no native callback retains a buffer loan implicitly. Native receiver/close/Send checks remain authoritative. Native code admitted in-process remains trusted.
 
 Local fixture builds may use the existing C/Nim tooling. NATIVE-3 uses PKG-2 from [package distribution](package-distribution.md) to record target, ABI, toolchain, shared-library requirements, and content digests. It does not wait for a hosted registry.
 
@@ -55,8 +72,8 @@ Local fixture builds may use the existing C/Nim tooling. NATIVE-3 uses PKG-2 fro
 
 | Stage | Work | Exit tests |
 | --- | --- | --- |
-| NATIVE-1 | Extend `native_api.nim` and `native_errors.nim` with v5 ingress/context helpers; preserve the v4 loader branch and existing synchronous tests. | Exact ABI mismatch rejection; real C fixture emits from another thread; no Gene heap access on that thread; overflow and allocation-failure paths. |
-| NATIVE-2 | Root-lane polling, serialized handlers, IoResource wrapper and physical-retirement accounting. Extend `tests/fixtures/native_callback_fixture.c` and native callback/thread suites. | Close during C entry, cancellation during unregister, callback error, queued overflow, notification after logical close but before unregister, and zero roots after physical retirement. |
-| NATIVE-3 | One pinned libuv timer/notification adapter in `genex`, packaged through PKG-2. | Repeated create/notify/close across two qualified platforms, installation without checkout, v4 fixture still loads. |
+| NATIVE-1 | Maintain byte-ingress/context helpers behind the single C API layout; registration shims reject mismatched version, size, or feature bits. | Exact ABI mismatch rejection; real C fixture emits from another thread; no Gene heap access on that thread; overflow and allocation-failure paths. |
+| NATIVE-2 | Root-lane polling, serialized handlers, IoResource wrapper and physical-retirement accounting. Extend the C ingress fixture and native callback/thread suites. | Close during C entry, cancellation during unregister, callback error, queued overflow, notification after logical close but before unregister, and zero roots after physical retirement. |
+| NATIVE-3 | One pinned libuv timer/notification adapter in `genex`, packaged through PKG-2. | Repeated create/notify/close across two qualified platforms, installation without checkout, one ABI header and initializer. |
 
 The libuv fixture keeps its loop/handles on one native owner thread, delivers timer notifications through the ingress queue, and uses the asynchronous close callback as the library retirement acknowledgment. Handle storage remains valid through that callback, following [libuv's handle lifecycle](https://docs.libuv.org/en/v1.x/handle.html). Test the source contract's valid late-callback window, never intentionally invoke a freed pointer and call that a recovery test. Record native handle/context/root counts over 10,000 subscription lifetimes. Backend C lowering and generic callback-pointer factories remain separate work.

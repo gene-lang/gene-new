@@ -12,8 +12,7 @@ Installed-extension integration,
 complete shared mutation/worker handoff policy, and AAR-2 qualification remain
 open. This is the remaining
 native ownership program for AAR-1 in
-[AtomicArc generation retirement](atomic-arc-retirement.md). Existing SDK v4/v5
-and Gene syntax stay unchanged. Production/shared retirement remains disabled.
+[AtomicArc generation retirement](atomic-arc-retirement.md). Direct Nim native helpers and Gene syntax stay unchanged. Production/shared retirement remains disabled.
 The additive installed-extension contract is specified in
 [Managed native extension ABI](native-managed-extension-abi.md).
 
@@ -92,8 +91,8 @@ admission and drains those owners before destroying the domain.
 
 ## Native API inventory and integration
 
-The source of truth is `src/gene/native_api.nim`'s 35-entry `GeneApi` table plus
-its separately exported module/ingress and VM callback APIs.
+The source of truth is the public C `GeneApi` in `native_api.h`, the
+Nim helpers in `src/gene/native_api.nim`, and the VM callback APIs.
 
 | Existing paths | Current qualification coverage | Managed counterpart requirement |
 | --- | --- | --- |
@@ -105,11 +104,11 @@ its separately exported module/ingress and VM callback APIs.
 | Buffer new/len/get/set | Raw buffer/items and typed Scope input. | Copy scalar storage or return item handles; mutation observes both borrow admission and existing type checks. |
 | Channel trySend/tryRecv and actor trySend | Root-based input but raw outputs/Scope arguments; only nested root accesses currently fenced. | Enqueue owned handles/Values under admission; native queue owns them until physical dequeue/drop. Receive returns handles. Preserve Send/type/queue policies. |
 | Async Task create/complete/fail/cancel | Raw Tasks/results and native completion lifetimes. | Task/result/error handles retained through physical completion; cancellation does not prematurely end ownership. |
-| Module init/load/versioned and v5 ingress subscriptions | Legacy module pointers; ingress owns rooted handlers/libraries and dispatch Scope. | Initializer/export environment handles; callback/registration contexts own handles until physical unregistration and zero in-flight work. Byte-only ingress remains separate. |
+| Module initialization and ingress subscriptions | Legacy module pointers; ingress owns rooted handlers/libraries and dispatch Scope. | Initializer/export environment handles; callback/registration contexts own handles until physical unregistration and zero in-flight work. Byte-only ingress remains separate. |
 | Thread attach/detach and logging | No direct Gene graph returned by these entries. | Associate leases with attached lanes; copied diagnostic payloads require no Gene borrow. |
 | Direct Nim VM/Scope/Value APIs and custom `FunctionCode`/continuations | Arbitrary unmarked refs remain outside qualification. | Keep legacy accesses published/unqualified. Require explicit adapters and complete edge models before admitting any additional graph class. |
 
-ABI 6 now has bounded, monotonic attachment tokens on threaded AtomicArc.
+The single C ABI now has bounded, monotonic attachment tokens on threaded AtomicArc.
 Attached C lanes may use mediated read/retain/release and frozen traversal;
 wrong-lane detach fails without consuming a token. Domain close reports pending
 while a token exists, and release/detach still work during closure. C callbacks,
@@ -186,7 +185,7 @@ policy, and managed-root/registry/queue owners must appear in the graph model.
    explicit irreversible legacy export.
 3. Adapt wrappers/resources, buffers, native queues/Tasks, callbacks and installed
    extensions. Retain each physical ticket through cancellation/unregistration.
-   Preserve v4/v5 behavior; do not silently reinterpret old roots as managed.
+   Migrate direct Nim helper callers deliberately; do not silently reinterpret raw roots as managed.
 4. Run foreign reader/retainer/drop-transfer, late callback, progress-dependency,
    nested/self-entry and shutdown races under supported TSAN. Native and ASAN
    must pass, with controlled failure unwinding and resource closure.

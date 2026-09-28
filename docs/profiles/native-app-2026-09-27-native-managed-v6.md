@@ -1,5 +1,9 @@
 # Managed extension ABI 6 qualification — 2026-09-28
 
+This is a historical qualification record for the former additive layout.
+The current single C header, initializer, and fixture names are documented in
+the [ABI consolidation audit](native-app-2026-09-28-native-abi-consolidation.md).
+
 The owner-selected opaque extension path now has an additive C layout in
 `src/gene/native_api_v6.h` and an initial loader in
 `src/gene/native_managed.nim`. The v4/v5 API tables, symbols and versioned
