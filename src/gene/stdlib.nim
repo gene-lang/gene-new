@@ -1788,6 +1788,56 @@ proc biMaterializedClose(args: openArray[Value], call: ptr NativeCall): Value {.
     release(resourceRecordLock)
   result = NIL
 
+proc closeMaterializedResourceFromNative*(lease: Value, scope: Scope) =
+  var call = NativeCall(dispatchScope: scope)
+  discard biMaterializedClose([lease], addr call)
+
+var nativeModuleRuntimeIdentity = ""
+var nativeModuleRuntimeIdentityLock: Lock
+initLock(nativeModuleRuntimeIdentityLock)
+
+proc currentNativeModuleRuntimeIdentity(): string =
+  acquire(nativeModuleRuntimeIdentityLock)
+  try:
+    if nativeModuleRuntimeIdentity.len == 0:
+      nativeModuleRuntimeIdentity =
+        "gene-phase1/abi-1/sha256:" & sha256File(getAppFilename())
+    result = nativeModuleRuntimeIdentity
+  finally:
+    release(nativeModuleRuntimeIdentityLock)
+
+proc biPkgNativeModule(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if scope == nil or args.len != 2 or args[1].kind != vkString:
+    raisePackageResourceError(scope,
+      "pkg/native_module expects Package and recipe alias Str")
+  if nativeModuleAdapter.open == nil:
+    raisePackageResourceError(scope,
+      "managed native module loader is unavailable")
+  let pkg = selectedPackageValue(scope, args[0])
+  let app = scope.application()
+  if not app.nativeBinaryIndex.hasKey(pkg.id) or
+      not app.nativeBinaryIndex[pkg.id].hasKey(args[1].strVal):
+    raisePackageResourceError(scope,
+      "native module recipe is not selected: " & args[1].strVal)
+  let selected = app.nativeBinaryIndex[pkg.id][args[1].strVal]
+  if selected.abiKind != "gene_api" or
+      selected.abiVersion != nativeModuleAdapter.abiVersion:
+    raisePackageResourceError(scope,
+      "native module requires the supported gene_api ABI")
+  if selected.runtimeIdentity != currentNativeModuleRuntimeIdentity():
+    raisePackageResourceError(scope,
+      "native module runtime identity is incompatible")
+  let lease = biPkgNativeBinary(args, call)
+  try:
+    let path = requireMaterialized(scope, lease).path
+    result = nativeModuleAdapter.open(lease, path, selected.alias, scope)
+  except CatchableError:
+    closeMaterializedResourceFromNative(lease, scope)
+    raise
+
+
 # --- paths: lexical native-platform path operations ---------------------------
 
 proc raisePathError(message: string, scope: Scope) =
@@ -8923,6 +8973,30 @@ proc biNativeIngressStatus(args: openArray[Value],
     raise newException(GeneError, "native ingress adapter is unavailable")
   nativeIngressAdapter.status(args, call)
 
+proc biNativeModuleModule(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  if nativeModuleAdapter.module == nil:
+    raise newException(GeneError, "managed native module adapter is unavailable")
+  nativeModuleAdapter.module(args, call)
+
+proc biNativeModuleClose(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+  if nativeModuleAdapter.close == nil:
+    raise newException(GeneError, "managed native module adapter is unavailable")
+  nativeModuleAdapter.close(args, call)
+
+proc biNativeModuleWaitClosed(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  if nativeModuleAdapter.waitClosed == nil:
+    raise newException(GeneError, "managed native module adapter is unavailable")
+  nativeModuleAdapter.waitClosed(args, call)
+
+proc biNativeModuleStatus(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  if nativeModuleAdapter.status == nil:
+    raise newException(GeneError, "managed native module adapter is unavailable")
+  nativeModuleAdapter.status(args, call)
+
 proc registerStdlibNamespaces(root: Scope) =
   let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
@@ -9225,6 +9299,8 @@ proc registerStdlibNamespaces(root: Scope) =
                    biPkgMaterialize, acceptsNamed = false))
   pkgScope.define("native_binary", builtinNativeCallFn("pkg/native_binary",
                    biPkgNativeBinary, acceptsNamed = false))
+  pkgScope.define("native_module", builtinNativeCallFn("pkg/native_module",
+                   biPkgNativeModule, acceptsNamed = false))
   pkgScope.define("MaterializedResource", materializedType)
   pkgScope.define("PackageResourceError", packageResourceError)
   root.define("pkg", newNamespace("pkg", pkgScope))
@@ -9793,6 +9869,25 @@ proc registerStdlibNamespaces(root: Scope) =
       ImplMessage(message: ioResource.protocolMessages["wait_closed"],
         fn: builtinNativeCallFn("IoResource/wait_closed",
                                 biNativeIngressWaitClosed,
+                                acceptsNamed = false))])
+  let nativeModuleType = newType("NativeModule", NIL, @[], @[], root,
+                                 repr = trNativeWrapper)
+  root.define("NativeModule", nativeModuleType)
+  var nativeModuleMethods = initTable[string, Value]()
+  nativeModuleMethods["module"] = builtinNativeCallFn(
+    "NativeModule/module", biNativeModuleModule, acceptsNamed = false)
+  nativeModuleMethods["status"] = builtinNativeCallFn(
+    "NativeModule/status", biNativeModuleStatus, acceptsNamed = false)
+  nativeModuleType.setTypeOwnMessages(nativeModuleMethods, NIL)
+  root.impls.add ProtocolImpl(protocol: ioResource,
+    receiver: nativeModuleType,
+    messages: @[
+      ImplMessage(message: ioResource.protocolMessages["close"],
+        fn: builtinNativeCallFn("IoResource/close", biNativeModuleClose,
+                                acceptsNamed = false)),
+      ImplMessage(message: ioResource.protocolMessages["wait_closed"],
+        fn: builtinNativeCallFn("IoResource/wait_closed",
+                                biNativeModuleWaitClosed,
                                 acceptsNamed = false))])
   # Extend the `net` namespace buildBuiltins already created (the raw TCP ops)
   # instead of rebinding the name, so the TCP ops and `net/http` are members

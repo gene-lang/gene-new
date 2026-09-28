@@ -1,0 +1,3 @@
+(mod native_module_probe)
+
+(fn open [] ($pkg/native_module this_pkg "native"))

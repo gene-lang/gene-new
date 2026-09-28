@@ -928,7 +928,10 @@ proc selectedResources(engine: BuildEngine, request: BuildRequest,
       evidence.sort()
       result.add BuildResource(path: relative, builtRelative: relative,
         nativeAlias: alias, nativeTarget: triple,
-        abiKind: "c_abi", abiVersion: 1,
+        abiKind: recipe.abiKind,
+        abiVersion: (if recipe.abiKind == "gene_api": int(GeneApiVersion)
+                     else: 1),
+        runtimeIdentity: (if recipe.abiKind == "gene_api": identity else: ""),
         compilerEvidence: cCompilerEvidence(engine.environment.toolchains),
         systemEvidence: evidence)
       continue

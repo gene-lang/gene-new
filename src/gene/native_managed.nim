@@ -2,7 +2,7 @@
 ## direct Nim native helpers still serve in-repo callers. No raw Value or
 ## Scope leaves this module except through irreversible legacy export.
 
-import std/[dynlib, locks, tables, unicode]
+import std/[dynlib, locks, sysatomics, tables, unicode]
 import ./[native_api, types, vm]
 when defined(geneAtomicGenerationRetirementProbe):
   import ./retirement_native_gate
@@ -37,6 +37,25 @@ type
     activeTask: GeneManagedRoot
     borrowedLibrary, released: bool
 
+  ManagedModuleWaiter = object
+    task, lease: Value
+    scope: Scope
+
+  GeneManagedPackageModule = ref object
+    id: uint64
+    application: Application
+    ownerLane: int
+    domain: GeneManagedDomain
+    environment: GeneManagedEnvironment
+    libraryRoot, moduleRoot: GeneManagedRoot
+    library, lease, cleanupLease: Value
+    closeTasks: seq[GeneManagedRoot]
+    waiters: seq[ManagedModuleWaiter]
+    closeRequested, rootsReleased, closed: bool
+    handleGone: bool
+    terminalStatus: GeneStatus
+    terminalMessage: string
+
   ManagedLoadFrame = object
     library: Value
     environment: uint64
@@ -56,6 +75,7 @@ type
     producers: int
     producerEntries: Table[uint64, ManagedEntry]
     nextRegistrationId: uint64
+    liveRegistrations: int
     registrations: Table[uint64, GeneManagedRegistration]
     loadFrames: seq[ManagedLoadFrame]
     closed: bool
@@ -103,6 +123,10 @@ type
     message*: string
     value*: GeneManagedRoot
     error*: GeneManagedRoot
+
+var managedPackageModules = initTable[uint64, GeneManagedPackageModule]()
+var managedPackageModuleLock: Lock
+initLock(managedPackageModuleLock)
 
 proc ownedCopy[T](value: T): T {.inline.} = value
 
@@ -1741,6 +1765,11 @@ proc finishRegistration(registration: GeneManagedRegistration) =
       release(domain.lock)
     for waiter in waiters:
       discard vm.nativeTaskComplete(waiter, NIL, domain.rootScope)
+    acquire(domain.lock)
+    try:
+      dec domain.liveRegistrations
+    finally:
+      release(domain.lock)
 
 proc requestCloseRegistration(registration: GeneManagedRegistration): uint32 =
   let domain = registration.domain
@@ -1929,6 +1958,7 @@ proc apiRegisterCallback(context: pointer, environment: uint64,
     acquire(domain.lock)
     try:
       domain.registrations[registration.id] = registration
+      inc domain.liveRegistrations
       domain.loadFrames[^1].registrations.add registration.id
     finally:
       release(domain.lock)
@@ -2190,18 +2220,20 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
   try:
     result = domain.roots.len == 0 and domain.borrows == 0 and
              domain.producers == 0 and domain.attachmentCount == 0 and
-             domain.registrations.len == 0
+             domain.registrations.len == 0 and domain.liveRegistrations == 0
   finally:
     release(domain.lock)
 
 proc geneManagedStats*(domain: GeneManagedDomain):
-    tuple[roots, borrows, producers, attachments, registrations: int,
+    tuple[roots, borrows, producers, attachments, registrations,
+          liveRegistrations: int,
           closed: bool, nextId: uint64] =
   domain.requireDomain()
   acquire(domain.lock)
   try:
     result = (domain.roots.len, domain.borrows, domain.producers,
               domain.attachmentCount, domain.registrations.len,
+              domain.liveRegistrations,
               domain.closed, domain.nextId)
   finally:
     release(domain.lock)
@@ -2333,3 +2365,298 @@ installNativeIngressManagedHooks(GeneIngressManagedHooks(
   settle: managedIngressSettle,
   cancel: managedIngressCancel,
   release: managedIngressRelease))
+
+proc unloadManagedPackageLibrary(address: pointer) {.nimcall.} =
+  unloadLib(cast[LibHandle](address))
+
+proc requestCloseManagedPackageModule(record: GeneManagedPackageModule)
+proc pollManagedPackageModule(record: GeneManagedPackageModule)
+
+proc managedPackageModuleRecord(value: Value,
+                                scope: Scope): GeneManagedPackageModule =
+  if value.kind != vkNode or value.nodeResourceId == 0 or scope == nil:
+    raise newException(GeneError, "native module requires a live handle")
+  acquire(managedPackageModuleLock)
+  try:
+    result = managedPackageModules.getOrDefault(value.nodeResourceId)
+  finally:
+    release(managedPackageModuleLock)
+  if result == nil or result.application != vm.application(scope) or
+      result.ownerLane != currentEventLane():
+    raise newException(GeneError,
+      "native module handle is unavailable on this lane")
+
+proc settleManagedPackageWaiter(record: GeneManagedPackageModule,
+                                waiter: ManagedModuleWaiter) =
+  case record.terminalStatus
+  of gsOk: discard vm.nativeTaskComplete(waiter.task, NIL, waiter.scope)
+  of gsError: discard vm.nativeTaskFail(waiter.task,
+    record.terminalMessage, scope = waiter.scope)
+  of gsPanic: discard vm.nativeTaskPanic(waiter.task,
+    record.terminalMessage, waiter.scope)
+  of gsCancelled: discard vm.nativeTaskCancel(waiter.task, waiter.scope)
+  if waiter.lease.kind == vkTask:
+    discard vm.nativeRetireIoCleanupLease(waiter.lease, waiter.scope)
+
+proc requestCloseManagedPackageModule(record: GeneManagedPackageModule) =
+  if record == nil or record.closed: return
+  record.closeRequested = true
+  if record.domain == nil: return
+  var registrations: seq[uint64]
+  acquire(record.domain.lock)
+  try:
+    for id in record.domain.registrations.keys: registrations.add id
+  finally:
+    release(record.domain.lock)
+  for id in registrations:
+    var registration: GeneManagedRegistration
+    acquire(record.domain.lock)
+    try:
+      registration = record.domain.registrations.getOrDefault(id)
+    finally:
+      release(record.domain.lock)
+    if registration == nil: continue
+    discard requestCloseRegistration(registration)
+    var stillRegistered = false
+    acquire(record.domain.lock)
+    try:
+      stillRegistered = record.domain.registrations.hasKey(id)
+    finally:
+      release(record.domain.lock)
+    if not stillRegistered: continue # C retirement consumed its own token
+    var taskId: uint64
+    let code = apiWaitClosed(cast[pointer](record.domain), id,
+                             addr taskId, nil)
+    if code == 0 and taskId != 0:
+      record.closeTasks.add GeneManagedRoot(domain: record.domain, id: taskId)
+    elif record.terminalStatus == gsOk:
+      record.terminalStatus = gsError
+      record.terminalMessage = "native registration close waiter failed"
+
+proc pollManagedPackageModule(record: GeneManagedPackageModule) =
+  if record == nil or record.closed: return
+  if not record.closeRequested:
+    if not atomicLoadN(addr record.handleGone, ATOMIC_ACQUIRE): return
+    record.requestCloseManagedPackageModule()
+  let domain = record.domain
+  if domain != nil:
+    if geneManagedStats(domain).registrations > 0:
+      record.requestCloseManagedPackageModule()
+    let before = geneManagedStats(domain)
+    if before.liveRegistrations > 0: return
+    for root in record.closeTasks:
+      let task = domain.liveRootValue(root)
+      if not task.taskDone: return
+      if task.taskHasError and record.terminalStatus == gsOk:
+        record.terminalStatus = gsError
+        record.terminalMessage = task.taskErrorMsg
+    discard geneManagedClose(domain) # seals new native admission
+    let sealed = geneManagedStats(domain)
+    if sealed.borrows > 0 or sealed.producers > 0 or
+        sealed.attachments > 0: return
+    if not record.rootsReleased:
+      var ids: seq[uint64]
+      acquire(domain.lock)
+      try:
+        for id in domain.roots.keys: ids.add id
+      finally:
+        release(domain.lock)
+      for id in ids:
+        geneManagedRelease(GeneManagedRoot(domain: domain, id: id))
+      record.closeTasks.setLen(0)
+      record.moduleRoot = nil
+      record.libraryRoot = nil
+      record.environment = nil
+      record.rootsReleased = true
+    if not geneManagedClose(domain): return
+  try:
+    if record.library.kind == vkFfiLibrary:
+      record.library.closeFfiLibrary()
+    if record.lease.kind != vkNil:
+      vm.closeMaterializedResourceFromNative(record.lease,
+        if domain == nil: nil else: domain.rootScope)
+    if record.cleanupLease.kind == vkTask:
+      discard vm.nativeRetireIoCleanupLease(record.cleanupLease)
+  except CatchableError as error:
+    if record.terminalStatus == gsOk:
+      record.terminalStatus = gsError
+      record.terminalMessage = error.msg
+    return # keep the image and lease for a later physical retry
+  record.library = NIL
+  record.lease = NIL
+  record.cleanupLease = NIL
+  record.domain = nil
+  record.closed = true
+  for waiter in record.waiters:
+    record.settleManagedPackageWaiter(waiter)
+  record.waiters.setLen(0)
+  if atomicLoadN(addr record.handleGone, ATOMIC_ACQUIRE):
+    acquire(managedPackageModuleLock)
+    try:
+      managedPackageModules.del(record.id)
+    finally:
+      release(managedPackageModuleLock)
+
+proc managedPackageModuleOpen(lease: Value, path, name: string,
+                              scope: Scope): Value {.nimcall.} =
+  vm.requireNativeRootLane(scope)
+  let stableScope = newScope(scope,
+    application = RuntimeContext(vm.application(scope)))
+  var record = GeneManagedPackageModule(
+    id: nextRuntimeResourceId(), application: vm.application(scope),
+    ownerLane: currentEventLane(), lease: lease)
+  try:
+    record.domain = geneNewManagedDomain(stableScope)
+    record.cleanupLease = vm.nativeNewIoCleanupLease(stableScope)
+    acquire(managedPackageModuleLock)
+    try:
+      managedPackageModules[record.id] = record
+    finally:
+      release(managedPackageModuleLock)
+    let handle = loadLib(path)
+    if handle == nil:
+      raise newException(GeneError,
+        "managed native module failed to open library: " & path)
+    record.library = newFfiLibrary(cast[pointer](handle), path,
+                                   unloadManagedPackageLibrary)
+    record.environment = geneNewManagedEnvironment(record.domain, stableScope)
+    record.libraryRoot = geneManagedRootFromVm(record.domain, stableScope,
+                                               record.library)
+    let loaded = geneManagedLoadModule(record.domain, record.libraryRoot,
+                                       record.environment, name)
+    if loaded.status != gsOk:
+      case loaded.status
+      of gsPanic: raise newException(GenePanic, loaded.message)
+      of gsCancelled: raise newException(GeneCancel, loaded.message)
+      else: raise newException(GeneError, loaded.message)
+    record.moduleRoot = loaded.value
+    result = newRuntimeResourceHandle(scope, "NativeModule", record.id)
+  except CatchableError:
+    if record.domain == nil:
+      vm.closeMaterializedResourceFromNative(lease, scope)
+    else:
+      atomicStoreN(addr record.handleGone, true, ATOMIC_RELEASE)
+      record.requestCloseManagedPackageModule()
+      record.pollManagedPackageModule()
+    raise
+
+proc biManagedPackageModuleValue(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raise newException(GeneError, "NativeModule.module expects one receiver")
+  let record = managedPackageModuleRecord(args[0], scope)
+  if record.closed or record.closeRequested or record.moduleRoot == nil:
+    raise newException(GeneError, "native module is closing or closed")
+  record.domain.liveRootValue(record.moduleRoot)
+
+proc biManagedPackageModuleClose(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raise newException(GeneError, "NativeModule.close expects one receiver")
+  let record = managedPackageModuleRecord(args[0], scope)
+  record.requestCloseManagedPackageModule()
+  record.pollManagedPackageModule()
+  NIL
+
+proc biManagedPackageModuleWaitClosed(args: openArray[Value],
+                                      call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raise newException(GeneError,
+      "NativeModule.wait_closed expects one receiver")
+  let record = managedPackageModuleRecord(args[0], scope)
+  record.pollManagedPackageModule()
+  if record.closed:
+    result = vm.nativeNewAsyncTask()
+    record.settleManagedPackageWaiter(ManagedModuleWaiter(task: result,
+      scope: scope))
+    return
+  let operation = vm.nativeNewIoOperation(scope)
+  result = operation.task
+  record.waiters.add ManagedModuleWaiter(task: operation.task,
+    lease: operation.cleanupLease, scope: scope)
+
+proc biManagedPackageModuleStatus(args: openArray[Value],
+                                  call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raise newException(GeneError, "NativeModule.status expects one receiver")
+  let record = managedPackageModuleRecord(args[0], scope)
+  let stats = if record.domain == nil:
+    (roots: 0, registrations: 0, liveRegistrations: 0)
+    else:
+      let current = geneManagedStats(record.domain)
+      (roots: current.roots, registrations: current.registrations,
+       liveRegistrations: current.liveRegistrations)
+  var fields = initPropTable()
+  fields["state"] = newStr(
+    if record.closed: "closed"
+    elif record.closeRequested: "closing"
+    else: "active")
+  fields["roots"] = newInt(stats.roots)
+  fields["registrations"] = newInt(stats.registrations)
+  fields["live_registrations"] = newInt(stats.liveRegistrations)
+  fields["terminal_kind"] = newStr($record.terminalStatus)
+  fields["terminal_message"] = newStr(record.terminalMessage)
+  newMap(fields)
+
+proc releaseManagedPackageModuleHandle(id: uint64) {.nimcall, raises: [].} =
+  var retired: GeneManagedPackageModule
+  acquire(managedPackageModuleLock)
+  try:
+    let record = managedPackageModules.getOrDefault(id)
+    if record != nil:
+      atomicStoreN(addr record.handleGone, true, ATOMIC_RELEASE)
+      if record.closed:
+        discard managedPackageModules.pop(id, retired)
+  finally:
+    release(managedPackageModuleLock)
+  reset(retired)
+
+proc managedPackageModuleRecordCount(app: Application): int {.nimcall.} =
+  acquire(managedPackageModuleLock)
+  try:
+    for _, record in managedPackageModules:
+      if record.application == app: inc result
+  finally:
+    release(managedPackageModuleLock)
+
+proc pollManagedPackageModules(scheduler: SchedulerState) {.nimcall.} =
+  var pending: seq[GeneManagedPackageModule]
+  acquire(managedPackageModuleLock)
+  try:
+    for _, record in managedPackageModules:
+      if vm.schedulerOwnsApplication(scheduler, record.application) and
+          record.ownerLane == currentEventLane():
+        pending.add record
+  finally:
+    release(managedPackageModuleLock)
+  for record in pending:
+    record.pollManagedPackageModule()
+
+proc hasManagedPackageModulesClosing(scheduler: SchedulerState): bool
+                                     {.nimcall.} =
+  acquire(managedPackageModuleLock)
+  try:
+    for _, record in managedPackageModules:
+      if vm.schedulerOwnsApplication(scheduler, record.application) and
+          (record.closeRequested or
+           atomicLoadN(addr record.handleGone, ATOMIC_ACQUIRE)) and
+          not record.closed:
+        return true
+  finally:
+    release(managedPackageModuleLock)
+
+installNativeModuleAdapter(NativeModuleAdapter(
+  abiVersion: int(GeneApiVersion),
+  open: managedPackageModuleOpen,
+  module: biManagedPackageModuleValue,
+  close: biManagedPackageModuleClose,
+  waitClosed: biManagedPackageModuleWaitClosed,
+  status: biManagedPackageModuleStatus,
+  recordCount: managedPackageModuleRecordCount))
+installNativeModuleHandleReleaseHook(releaseManagedPackageModuleHandle)
+installNativeModulePollHook(pollManagedPackageModules)
+installNativeModuleActiveHook(hasManagedPackageModulesClosing)

@@ -1043,15 +1043,29 @@ proc releaseOwnedHttpClientRecord(id: uint64) {.raises: [].}
 proc releaseOwnedHttpBodyRecord(id: uint64) {.raises: [].}
 type NativeIngressAdapter* = object
   open*, close*, waitClosed*, status*: NativeCallProc
+type NativeModuleAdapter* = object
+  abiVersion*: int
+  open*: proc(lease: Value, path, name: string, scope: Scope): Value {.nimcall.}
+  module*, close*, waitClosed*, status*: NativeCallProc
+  recordCount*: proc(app: Application): int {.nimcall.}
 var nativeIngressAdapter: NativeIngressAdapter
+var nativeModuleAdapter: NativeModuleAdapter
 var nativeIngressHandleReleaseHook: proc(id: uint64) {.nimcall, raises: [].}
+var nativeModuleHandleReleaseHook: proc(id: uint64) {.nimcall, raises: [].}
 
 proc installNativeIngressAdapter*(adapter: NativeIngressAdapter) =
   nativeIngressAdapter = adapter
 
+proc installNativeModuleAdapter*(adapter: NativeModuleAdapter) =
+  nativeModuleAdapter = adapter
+
 proc installNativeIngressHandleReleaseHook*(
     hook: proc(id: uint64) {.nimcall, raises: [].}) =
   nativeIngressHandleReleaseHook = hook
+
+proc installNativeModuleHandleReleaseHook*(
+    hook: proc(id: uint64) {.nimcall, raises: [].}) =
+  nativeModuleHandleReleaseHook = hook
 proc ioFileOpenCount(app: Application): int
 proc ioFileWaitingCount(): int
 proc csvReaderOpenCount(app: Application): int
@@ -1119,6 +1133,8 @@ proc releaseResourceRecord(id: uint64) {.nimcall, raises: [].} =
   releaseOwnedHttpBodyRecord(id)
   if nativeIngressHandleReleaseHook != nil:
     nativeIngressHandleReleaseHook(id)
+  if nativeModuleHandleReleaseHook != nil:
+    nativeModuleHandleReleaseHook(id)
 
 initLock(resourceRecordLock)
 installResourceReleaseHook(releaseResourceRecord)
@@ -1346,6 +1362,8 @@ proc pollIoFileCompletions()
 var nativeIngressPollHook: proc(scheduler: SchedulerState) {.nimcall.}
 var nativeIngressSleepHook: proc(timeoutMs: int): bool {.nimcall.}
 var nativeIngressActiveHook: proc(scheduler: SchedulerState): bool {.nimcall.}
+var nativeModulePollHook: proc(scheduler: SchedulerState) {.nimcall.}
+var nativeModuleActiveHook: proc(scheduler: SchedulerState): bool {.nimcall.}
 
 proc installNativeIngressPollHook*(hook: proc(scheduler: SchedulerState) {.nimcall.}) =
   nativeIngressPollHook = hook
@@ -1356,11 +1374,27 @@ proc installNativeIngressSleepHook*(hook: proc(timeoutMs: int): bool {.nimcall.}
 proc installNativeIngressActiveHook*(hook: proc(scheduler: SchedulerState): bool {.nimcall.}) =
   nativeIngressActiveHook = hook
 
+proc installNativeModulePollHook*(hook: proc(scheduler: SchedulerState) {.nimcall.}) =
+  nativeModulePollHook = hook
+
+proc installNativeModuleActiveHook*(hook: proc(scheduler: SchedulerState): bool {.nimcall.}) =
+  nativeModuleActiveHook = hook
+
+proc nativeRootResourceActive(scheduler: SchedulerState): bool =
+  (nativeIngressActiveHook != nil and nativeIngressActiveHook(scheduler)) or
+    (nativeModuleActiveHook != nil and nativeModuleActiveHook(scheduler))
+
 proc pollNativeIngressHook() =
   if nativeIngressPollHook != nil:
     let scheduler = currentScheduler()
     if currentEventLane() == scheduler.rootLane:
       nativeIngressPollHook(scheduler)
+      if nativeModulePollHook != nil:
+        nativeModulePollHook(scheduler)
+  elif nativeModulePollHook != nil:
+    let scheduler = currentScheduler()
+    if currentEventLane() == scheduler.rootLane:
+      nativeModulePollHook(scheduler)
 
 # Actor message processing runs each handler as a scheduler fiber. scheduleActor
 # enqueues the next message's handler fiber if the actor is idle; driveActor pumps
@@ -7848,6 +7882,9 @@ proc biRuntimeGcStats(args: openArray[Value],
   entries["materialized_resource_leases"] = newInt(materializedLeaseCount())
   let scope = if call == nil: nil else: call[].dispatchScope
   let app = if scope == nil: currentApplication() else: scope.application()
+  entries["native_module_records"] =
+    if nativeModuleAdapter.recordCount == nil: NIL
+    else: newInt(nativeModuleAdapter.recordCount(app))
   when defined(geneRcStats):
     acquire(resourceRecordLock)
     try:
@@ -21067,8 +21104,7 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
       if task.taskDone:
         break
       if currentEventLane() == currentScheduler().rootLane and
-          nativeIngressActiveHook != nil and
-          nativeIngressActiveHook(currentScheduler()):
+          nativeRootResourceActive(currentScheduler()):
         if nativeIngressSleepHook != nil:
           discard nativeIngressSleepHook(100)
         else:
@@ -21084,8 +21120,7 @@ proc pumpUntilDone(task: Value, parentTask: Value) =
           if externalNativeOpsPending():
             os.sleep(1)
           elif currentEventLane() == currentScheduler().rootLane and
-              nativeIngressActiveHook != nil and
-              nativeIngressActiveHook(currentScheduler()):
+              nativeRootResourceActive(currentScheduler()):
             if nativeIngressSleepHook != nil:
               discard nativeIngressSleepHook(100)
             else:

@@ -1,0 +1,16 @@
+{^format 1
+ ^name "genex/native_module_probe"
+ ^version "0.1.0"
+ ^description "Managed GeneApi module package qualification fixture"
+ ^library {^entry "src/module.gene" ^uses ["native" "plain" "failing"]}
+ ^files {^include ["package.gene" "src/**" "native/**"]}
+ ^build [(c_library "native" ^sources ["native/module.c"]
+           ^include_dirs ["native"] ^abi_kind gene_api
+           ^linkage shared ^targets ["arm64-macosx"])
+         (c_library "plain" ^sources ["native/module.c"]
+           ^include_dirs ["native"]
+           ^linkage shared ^targets ["arm64-macosx"])
+         (c_library "failing" ^sources ["native/module.c"]
+           ^include_dirs ["native"] ^abi_kind gene_api
+           ^cflags ["-DGENE_FAIL_INIT"]
+           ^linkage shared ^targets ["arm64-macosx"])]}

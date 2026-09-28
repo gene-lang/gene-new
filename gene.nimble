@@ -82,6 +82,7 @@ task test, "Run the test suite":
   exec "python3 tests/test_owned_http_client.py"
   exec "python3 tests/test_genex_package.py"
   exec "python3 tests/test_genex_libuv_timer.py"
+  exec "python3 tests/test_genex_native_module.py"
   exec "python3 tests/test_genex_tzdb.py"
   exec "python3 tests/test_archive_codec.py"
   exec "python3 tests/test_genex_archive_package.py"

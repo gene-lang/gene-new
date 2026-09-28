@@ -122,7 +122,7 @@ type
     alias*: string
     sources*, includeDirs*, systemAliases*: seq[string]
     cflags*, ldflags*, targets*: seq[string]
-    linkage*: string
+    linkage*, abiKind*: string
 
   DependencyDecl* = object
     ## One alias-keyed, validated `(dep "owner/name" …)` declaration.
@@ -1833,12 +1833,23 @@ proc cLibraryRecipe*(pkg: Package, alias,
         "c_library requires one string name", [pkg.manifestPath])
     rejectUnknown(recipe.props,
       ["sources", "include_dirs", "system", "cflags", "ldflags",
-       "linkage", "targets"], "c_library recipe", pkg.manifestPath)
+       "linkage", "targets", "abi_kind"], "c_library recipe", pkg.manifestPath)
     for field in ["sources", "linkage", "targets"]:
       if not recipe.props.hasKey(field):
         raisePackageError(pecManifestInvalid,
           "c_library requires ^" & field, [pkg.manifestPath])
     result.alias = alias
+    result.abiKind = "c_abi"
+    if recipe.props.hasKey("abi_kind"):
+      let kind = recipe.props["abi_kind"]
+      if kind.kind == vkSymbol: result.abiKind = kind.symVal
+      elif kind.kind == vkString: result.abiKind = kind.strVal
+      else:
+        raisePackageError(pecManifestInvalid,
+          "c_library abi_kind must be a symbol or Str", [pkg.manifestPath])
+      if result.abiKind notin ["c_abi", "gene_api"]:
+        raisePackageError(pecManifestInvalid,
+          "c_library abi_kind must be c_abi or gene_api", [pkg.manifestPath])
     let sources = manifestStrings(recipe.props["sources"],
                                   "c_library.sources", pkg.manifestPath)
     if sources.len == 0:
@@ -1906,6 +1917,9 @@ proc cLibraryRecipe*(pkg: Package, alias,
     if result.linkage notin ["shared", "static"]:
       raisePackageError(pecManifestInvalid,
         "c_library linkage must be shared or static", [pkg.manifestPath])
+    if result.abiKind == "gene_api" and result.linkage != "shared":
+      raisePackageError(pecManifestInvalid,
+        "gene_api c_library requires shared linkage", [pkg.manifestPath])
     result.targets = manifestStrings(recipe.props["targets"],
                                      "c_library.targets", pkg.manifestPath)
     if result.targets.len == 0 or target notin result.targets:
