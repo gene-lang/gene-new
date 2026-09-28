@@ -8,6 +8,11 @@
 
 ## Current boundary
 
+The owner-selected opaque migration is specified separately in
+[Managed native extension ABI](native-managed-extension-abi.md). It adds an ABI 6
+path; this proposal's v4/v5 layouts and qualified byte-ingress behavior remain
+unchanged.
+
 `native_api.nim` exposes a fixed-layout GeneApi v4 and exact version checks. Call-scoped callbacks already preserve Gene error/panic/cancellation, enforce the owning root lane, and pin borrowed handles. Keep that mode. Do not append fields to the v4 structure while calling it binary compatible.
 
 A retained C callback cannot wait for later Gene code to compute its immediate C return value. The new mode therefore copies a notification and returns a binding-defined enqueue/abort acknowledgment. Libraries requiring a synchronous computed answer continue using the call-scoped mode or need a separately designed adapter.

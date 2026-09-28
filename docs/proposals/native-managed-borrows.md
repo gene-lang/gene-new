@@ -14,6 +14,8 @@ open. This is the remaining
 native ownership program for AAR-1 in
 [AtomicArc generation retirement](atomic-arc-retirement.md). Existing SDK v4/v5
 and Gene syntax stay unchanged. Production/shared retirement remains disabled.
+The additive installed-extension contract is specified in
+[Managed native extension ABI](native-managed-extension-abi.md).
 
 ## Problem and decision
 
