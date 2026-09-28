@@ -13,7 +13,7 @@ qualification remains open. The current validation record is the
 
 **Stages:** NATIVE-1 (native ingress/ABI), NATIVE-2 (subscription/binding), NATIVE-3 (package qualification).
 
-**Depends on:** VM-0 diagnostics; local C fixtures work before package distribution. The retained mode is for notifications, not arbitrary synchronous C callbacks.
+**Depends on:** VM-0 diagnostics; local C fixtures work before package distribution. Byte ingress handles retained foreign notifications; the managed callback feature handles synchronous Gene-to-C calls.
 
 ## Current boundary and binding choice
 
@@ -26,8 +26,8 @@ feature bits let a module reject a missing operation before calling it.
 buffer. The former Nim versioned table and its dynamic loader have been
 removed. Direct Nim helper functions remain for in-repo runtime code.
 
-A retained C callback cannot wait for later Gene code to compute its immediate
-C return value. Byte ingress therefore copies a notification and returns a
+A foreign notification callback cannot wait for later Gene code to compute its
+immediate C return value. Byte ingress therefore copies a notification and returns a
 binding-defined enqueue/abort acknowledgment. A package shim provides typed C
 registration and unregistration symbols; the runtime does not fabricate
 arbitrary callback pointer signatures. Gene packages expose ordinary functions

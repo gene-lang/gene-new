@@ -45,12 +45,10 @@ and workload outcomes. RC claims require `-d:geneRcStats`; a plain build reports
 five-second samples against a 256-Value limit. A test-only collection safepoint
 supports bounded lifetime children; it does not enable general collection.
 
-The four standard gates passed at several checkpoints, including the
-reader-borrowing and later AtomicArc/native SDK continuations. Each table or
-hash below identifies a bounded build; evidence from one build must not be
-silently transferred to another. The last native ABI consolidation passed the
-broad `test_all` suite before deletion of the obsolete Nim function table;
-its focused suite passed and the full suite passed `nim check` afterward.
+The four standard gates (`nimble test`, `spec`, `leakcheck`, and `threadcheck`)
+pass on the current synchronous-callback source. Each table or hash below
+identifies a bounded build; evidence from one build must not be silently
+transferred to another.
 
 ## Core workloads
 
@@ -226,6 +224,13 @@ A later managed-SDK/source checkpoint rebuilt wasm as
 70 Node ABI cases and 30 Chrome shared/lifetime controls passed. The tracked
 `web/gene.js` and `web/gene.wasm` were not replaced. The browser driver and
 wasm build orchestration are Gene; Emscripten remains an external compiler.
+The current synchronous-callback source produced a fresh RC-instrumented wasm
+artifact with SHA-256
+`9ebf941ce3b1797d7e9209cc63c58b243249d23125da3cb1f73fefe9c5eb3311`.
+It passes the same 70 Node ABI cases and 30 pinned Chrome for Testing
+147.0.7727.15 cases; managed counts, occupied guest heap, retained-Type
+control, and browser/server shutdown remain flat/clean. Reports and the
+isolated browser profile are under `tmp/native-callback-wasm/`.
 Other browsers, workers, opaque code/error graphs, and broader shared mutable
 ownership are unqualified. The [wasm harness](../../tests/test_wasm_browser.gene)
 and [workflow](../workflows.md) document reproduction.
@@ -261,7 +266,7 @@ Their build commands and binary hashes are in
 retirement, AAR-2 shared/canonical reclamation, and AAR-3 activation/worker
 handoff remain disabled. Managed Actor worker execution stays root-only
 pending the demonstrated worker allocator-lifetime fix. Mutable shared
-Buffers/graphs, arbitrary direct Nim ownership transfers, opaque callbacks,
+Buffers/graphs, arbitrary direct Nim ownership transfers, unmodeled callbacks,
 and native cleanup requiring Gene worker progress remain outside the model.
 
 ## Native ownership and C ABI
@@ -273,9 +278,20 @@ function table, v5 ingress table, versioned loaders, and v5/v6 headers were
 removed. Direct Nim helpers remain for in-repo runtime code.
 
 The managed loader accepts opaque environment IDs and advertises only
-implemented feature bits. Its compiled C fixture checks layout, feature
-negotiation, copied reads, stale handles, call/define, frozen traversal, and
-AtomicArc attached-lane tokens. An ingress-only view of the same C layout
+implemented feature bits. Its compiled C fixtures check layout, feature
+negotiation, copied reads, stale handles, call/define, frozen traversal,
+AtomicArc attached-lane tokens, and synchronous callback registration. The
+[callback ABI suite](../../tests/test_native_callback_abi.nim) covers temporary
+positional/named/environment IDs, retained
+arguments, typed error/panic/cancellation, rejected borrowed results,
+re-entrant close, waiter creation/cancellation during an active callback,
+initializer rollback, caller ownership after failed registration, domain
+shutdown, and 10,000 create/close/wait cycles with flat registry roots and
+manual Value counts.
+It passes under ORC, AtomicArc, ASAN, and TSAN. A library borrow prevents unload
+until its C retirement callback runs outside registry locks.
+
+An ingress-only view of the same C layout
 powers `$native/ingress/open`; its C callback thread copies bytes and never
 touches Gene objects. `genex/libuv_timer` preserves the physical unregister
 proof: no future callbacks, zero in-flight entries, then handler settlement.
@@ -284,9 +300,9 @@ lifetimes with source hidden and compiler unavailable, zero live C contexts
 and libuv handles after each close, 20,000 handle close callbacks, and native
 root/materialized-lease baselines.
 
-General retained C callback registration, a managed library lease spanning
-registrations, and migration of ingress's internally rooted Gene handler/Scope
-to mediated IDs remain open. The [native ABI design](../proposals/native-managed-extension-abi.md)
+Installed-package integration, producer/Task-result semantics, and migration
+of ingress's internally rooted Gene handler/Scope to mediated IDs remain open.
+The [native ABI design](../proposals/native-managed-extension-abi.md)
 and [ingress specification](../spec/native-ingress.md) define those gates.
 A nonstandard ORC-with-threads run crashes in a concurrent Task join after all
 ingress tests pass; unchanged `538764d` reproduces the same failure. The
@@ -304,9 +320,8 @@ emulation, not native x86_64 timing qualification. Ubuntu's packaged libuv,
 utf8proc, and libcurl were older than the genex pins; the probe built pinned
 versions from source. Linux work is deferred by the owner.
 
-Next implementation work is general retained C callback registration with
-physical context/library retirement, then managed ingress handler ownership
-and managed package-loader integration. The SERVICE heartbeat investigation,
+Next implementation work is managed ingress handler ownership and managed
+package-loader integration. The SERVICE heartbeat investigation,
 Linux native timing, broader shared ownership, and profile promotion remain
 deferred or gated as described above. The
 [profile proposal](../proposals/python-replacement-profile.md#recommended-implementation-order)

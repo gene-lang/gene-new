@@ -4,11 +4,13 @@
 [`native_api.h`](../../src/gene/native_api.h). Numeric layout version 6 is the
 only supported native extension version. The managed loader, opaque handles,
 copied scalar reads, frozen traversal, call/define, and AtomicArc attached-lane
-admission are implemented against a compiled C fixture. Byte ingress is
+admission are implemented against a compiled C fixture. Synchronous retained
+C callback registration now has temporary argument IDs, typed outcomes,
+root-lane close, and physical library/context retirement. Byte ingress is
 present in this same layout and powers `genex/libuv_timer`; its Gene handler
-is still rooted by the existing subscription implementation. General retained
-C callback registration and full managed ownership for ingress subscriptions
-remain to be implemented. The owner selected opaque handles in
+is still rooted by the existing subscription implementation. Managed ingress
+ownership and package-native loader integration remain open. The owner
+selected opaque handles in
 [Native managed borrows](native-managed-borrows.md). Current qualification is
 recorded in the [consolidated native ABI evidence](../profiles/native-app.md#native-ownership-and-c-abi).
 
@@ -29,9 +31,11 @@ The managed loader keeps a table at a stable per-domain address. The
 its register function must copy the table before returning if it needs its
 function pointers later. Both paths obey feature-bit negotiation. The ingress
 bridge retains its library through physical unregister, zero in-flight entries,
-and handler settlement. The managed loader still needs an
-equivalent lease for future callback and producer registrations. A native shim
-cannot use its table or context after physical retirement.
+and handler settlement. The managed loader borrows its library through
+initialization; each successful callback registration keeps an independent
+borrow until its C context retires. Future producer registrations need the
+same lease. A native shim cannot use its table or context after physical
+retirement.
 
 The handle representation is an unsigned 64-bit ID, never a cast Gene pointer.
 ID zero is invalid. Each call also carries `runtime_context`, so lookup checks
@@ -39,8 +43,9 @@ the owning Application/domain before touching Gene memory. IDs are monotonic
 and never reused during a domain lifetime. Releasing a handle removes its
 registry entry; a stale ID fails even when the native library still stores the
 number. Domain close rejects new admission and reports pending while mediated
-handles, borrows, producers, or C attachment tokens remain. Future callback
-registration must add its physical owners to this close accounting.
+handles, borrows, producers, callback tokens, or C attachment tokens remain.
+Domain close requests callback closure and reports pending until token waiters
+consume the registrations and other owners release.
 
 ## C operations
 
@@ -98,8 +103,9 @@ appended ingress entries. `GENE_API_VERSION` is `6`. Feature bit 5
 `ingress_enqueue`, and `ingress_end`. The ingress-only view advertises no
 managed-handle operations. A module table advertises only implemented
 families. Null slots must never be called.
-`GENE_API_CALLBACK_FEATURE = 64` is reserved but never advertised until
-registration and physical retirement are implemented.
+Feature bit 6 (`GENE_API_CALLBACK_FEATURE = 64`) is advertised by the managed
+loader for synchronous retained callbacks. The ingress-only table does not
+advertise it.
 
 `length`, `copy_key` and `traverse` use selectors `0=List item`, `1=Map
 entry`, `2=Node body`, `3=Node prop`, `4=Node head`. `copy_key` applies only to
@@ -127,7 +133,7 @@ Gene memory survives a call.
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
 | `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
 | `new_task`, `complete`, `fail`, `cancel`, `retire` | Opaque Task producer ticket and payload/error IDs. | Physical producer owner survives user cancellation until completion/retire. Typed foreign errors require a root-lane dispatch adapter before enabled. |
-| `register_callback`, `request_close`, `wait_closed` | C callback/context, environment ID, registration token. | Runtime owns the context and library lease through unregister confirmation, zero in-flight calls and result settlement. |
+| `register_callback`, `request_close`, `wait_closed` | C callback/context, initializer environment ID, registration token. | Root lane; context and library borrow retire after close and zero in-flight calls. `wait_closed` consumes the token and returns an owning Task ID. |
 
 The table's `struct_size` permits appending new function pointers in a later
 minor feature level, but a caller may only use an entry after checking both
@@ -137,32 +143,40 @@ requires an absent bit fails at initialization with a copied diagnostic.
 
 ## Native callback registration
 
-`register_callback` stores a C function pointer, foreign context, context
-retirement callback, environment handle and a strong library lease. Gene sees
+`register_callback` is admitted during `gene_module_init`, when the loader
+knows the matching library and module environment. It stores a C function
+pointer, foreign context, context retirement callback, owning environment
+handle, and a library borrow. Gene sees
 the resulting callable through the existing native-function surface; no Gene
 syntax or call convention changes. Invocation is on the runtime root lane and
 receives temporary callback-scoped IDs for positional/named arguments. These
 IDs are invalidated on return. Native code calls `retain` before storing an
-argument beyond the callback. A returned value or typed error must be an
-owning ID; the runtime consumes that ID exactly once. Native code may not
-return a pointer to transient argument bytes as a result.
+argument beyond the callback. On `OK`, `out_value = 0` means Gene `nil`;
+otherwise it must be an owning ID. On failure, `out_value` must be zero and
+`out_error` may be an owning typed error ID. The runtime consumes each owning
+output exactly once. Returning a temporary argument/environment ID without
+retaining it is rejected. Native code may not return a pointer to transient
+argument bytes as a result. This callback family is synchronous: returning a
+Task is rejected; asynchronous notifications use byte ingress, and a future
+producer feature will need its own result-lifetime contract.
 On registration failure ownership of `user_context` stays with the caller; on
 success it transfers to the runtime and the retirement callback runs exactly
 once after physical close. No callback or retirement function runs under a
 registry or scheduler lock.
 On initializer failure the loader closes every registration created during that
-initializer, waits for physical retirement, then releases the environment and
-library lease. A callback that returns a non-OK status leaves `out_value` zero;
-it may return an owned typed `out_error` ID or a copied diagnostic. The runtime
-consumes whichever owning output ID is present before leaving the callback
-frame, even when the callback itself reports failure.
+initializer, completes physical retirement, and releases every handle created
+by the failed initializer. A callback failure may provide a copied diagnostic
+and preserves error, panic, or cancellation status.
 
 The registration token is distinct from every Gene value handle. Closing it
 denies new invocations and waits for in-flight calls to finish before invoking
-the foreign retirement callback. Physical retirement also waits for any
-runtime-owned result Task to settle. Last-owner drops and foreign retirement
+the foreign retirement callback. Last-owner drops and foreign retirement
 callbacks run outside the domain and scheduler locks. Re-entrant close from
 inside the same callback reports pending, then completes after callback exit.
+`wait_closed` returns a fresh Task that settles after context retirement and
+library release; it consumes the registration token. Callers request close
+first, call `wait_closed` once, and may retain the returned Task handle if
+they need multiple waiters. Cancelling that Task does not cancel retirement.
 The library cannot unload while any registration, callback frame, producer or
 ingress context still names its code.
 
@@ -185,23 +199,20 @@ and the three physical retirement proofs intact. The Gene-side syntax
 
 The managed loader currently exists as `geneManagedLoadModule` in Nim. Package
 binary selection validates numeric ABI version 6, but invoking this loader
-through every package-native path and retaining its library lease across
-registrations are still integration work.
+through every package-native path remains integration work.
 
 ## Remaining implementation gates
 
-1. Implement `register_callback`, `request_close`, and `wait_closed` with
-   owning environment IDs, copied arguments/results, a runtime-owned context,
-   and physical C retirement. Keep the feature bit absent until this passes
-   nested calls, typed failures, close during callback, re-entry, and unload
-   refusal while a callback is live.
-2. Migrate ingress subscription handler/Scope ownership to managed IDs without
+1. Migrate ingress subscription handler/Scope ownership to managed IDs without
    changing `$native/ingress/open` or C byte entry. Prove cancellation,
    unregister delay, queued overflow, and 1/100/1,000/10,000 lifetimes.
-3. Wire the managed loader into package-native module loading and retain its
+2. Wire the managed loader into package-native module loading and retain its
    domain, table, and library until all registrations and producers retire.
-4. Qualify default ORC, threaded AtomicArc, ASAN, supported TSAN, and
-   installed packages. Shared reclamation remains disabled until the managed
+3. Qualify installed packages and future producer/Task-return paths. The
+   synchronous callback C fixture passes default ORC, AtomicArc, ASAN, and
+   TSAN with initializer rollback, typed outcomes, re-entry, and repeated
+   close/wait; the RC-enabled standalone probe reaches 10,000 lifetimes.
+   Shared reclamation remains disabled until the managed
    ownership and exposure inventory is complete.
 
 Direct Nim helper functions still serve in-repo runtime code; there is no
