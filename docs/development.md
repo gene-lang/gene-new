@@ -42,6 +42,37 @@ Application-scale examples include [Cordis](../examples/cordis/README.md),
 [Miclone](../examples/miclone/README.md), and the
 [Todo app](../examples/todo_app/src/main.gene).
 
+### Paused native-app and AtomicArc work (2026-09-28)
+
+The current checkpoint is `a7702fa` (root-owned bounded foreign C handle
+registry). The single numeric Gene C ABI is version 6. It supports managed
+native callbacks and Task producers, copied Nil/Bool/Int/Float/Text/Bytes Task
+results, and root-reserved slots for owning C IDs created on attached threads.
+The registry lets those numeric IDs survive worker exit under the default
+AtomicArc allocator; capacity and pending releases are observable. The
+[native-app qualification ledger](profiles/native-app.md) and
+[foreign-handle decision](proposals/native-foreign-handle-allocation.md) give
+the contracts and limits.
+
+At this checkpoint, `nimble test`, `nimble spec`, `nimble leakcheck`, and
+`nimble threadcheck` pass. The managed qualification runner reports 1 disabled,
+41 opt-in probe, 41 ASAN, and 12 targeted TSAN cases passing. Focused default-
+allocator ASAN tests transfer 10,000 C IDs; four-worker ASAN/TSAN tests transfer
+2,048. These results qualify the tested C numeric-ID path, not arbitrary Nim
+reference transfer or production AtomicArc cycle collection.
+
+The next ownership boundary, if this work resumes, is a `GeneManagedRoot` Nim
+wrapper allocated on an attached thread and held after that thread exits. It
+can still outlive its creating allocator. The proposed narrow contract is to
+create new Nim wrappers only on the root lane while retaining attached-lane
+borrowing and C numeric IDs for ownership transfer. This changes the public
+Nim SDK contract and needs owner design review before implementation; see the
+[AAR-1 plan](proposals/atomic-arc-retirement.md) and
+[managed-borrow design](proposals/native-managed-borrows.md). Then rerun the
+AAR-1 ownership/sanitizer matrix before considering opt-in AAR-2 shared graph
+reclamation. Production collection remains disabled. Native Linux
+qualification and the two-hour SERVICE heartbeat failure remain deferred.
+
 ## Codebase
 
 | Location | Responsibility |
