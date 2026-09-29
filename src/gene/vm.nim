@@ -4777,6 +4777,8 @@ proc biRuntimeContext(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "runtime/context expects no arguments")
   activeTaskContext
 
+proc biRuntimeSandboxNamespaces(args: openArray[Value]): Value {.nimcall.}
+
 proc biSwapTaskContext(args: openArray[Value]): Value {.nimcall.} =
   requireOne("runtime/with_context", args)
   result = activeTaskContext
@@ -9433,6 +9435,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("context", builtinNativeFn("runtime/context", biRuntimeContext))
+  runtimeScope.define("sandbox_namespaces", builtinNativeFn(
+    "runtime/sandbox_namespaces", biRuntimeSandboxNamespaces))
   block:
     let contextScope = newScope(result)
     contextScope.define("swap_context", builtinNativeFn("runtime/swap_context", biSwapTaskContext))
@@ -10239,6 +10243,13 @@ const sandboxableNamespaces* = [
   "fs", "net", "os", "ffi", "db", "store", "terminal", "curses", "repl",
   "device", "runtime", "serde", "aot", "web", "http",
 ]
+
+proc biRuntimeSandboxNamespaces(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "runtime/sandbox_namespaces expects no arguments")
+  var names: seq[Value]
+  for name in sandboxableNamespaces: names.add newStr(name)
+  newList(names, immutable = true)
 
 proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   ## The builtins root a **sandboxed** module sees — design §D5, and the one

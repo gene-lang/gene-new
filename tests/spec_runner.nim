@@ -8050,6 +8050,15 @@ suite "spec — Env and eval from design":
                "[false panic \"\\\"boom\\\"\"]")
 
 suite "spec — task context":
+  test "sandbox namespace reflection matches the runtime's grant vocabulary":
+    let scope = newGlobalScope()
+    let namespaces = run(compileSource("($runtime/sandbox_namespaces)"), scope)
+    check namespaces.listImmutable
+    check namespaces.listItems.len == sandboxableNamespaces.len
+    for index, name in sandboxableNamespaces:
+      check namespaces.listItems[index].strVal == name
+    check_eval_error("($runtime/sandbox_namespaces 1)", "expects no arguments")
+
   test "now uses the same ISO offset convention as DateTime literals":
     let local = now()
     let value = run(compileSource("($now)"), newGlobalScope())

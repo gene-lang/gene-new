@@ -88,6 +88,11 @@ may contain Cells for application lifecycle state; the runtime does not close
 them automatically. An application can mark its shared turn state closed and
 reject later operations while continuing to route detached task output.
 
+`($runtime/sandbox_namespaces)` returns an immutable List of the namespace
+names accepted by sandbox module grants. A host that grants the complete
+standard library can use this list directly for both its loader ceiling and
+each generated module, without maintaining a second namespace inventory.
+
 `($parse/read_all text ^source "response" ^locs true)` returns a Stream of
 forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
 nodes. Lines and columns start at 1. `eval` honors this metadata when reporting
