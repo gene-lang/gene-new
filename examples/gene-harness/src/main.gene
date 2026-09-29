@@ -25,8 +25,7 @@
 (import [prepare_workspace doctor disable_entry enable_entry]
   ^from "./storage/workspace")
 (import [HarnessView] ^from "./views/view_api")
-(import [prepare_home open_runtime close_runtime] ^from "./runtime/bootstrap")
-(import $os [get_env])
+(import [prepare_workspace_root open_runtime close_runtime] ^from "./runtime/bootstrap")
 
 (fn arg_list [args] : Any
   (var out [])
@@ -82,15 +81,34 @@
 
 (fn main [args]
   (var names (arg_list args))
+  (var workspace_root "")
+  (var session "default")
+  (var remaining [])
+  (var index 0)
+  (while (< index names/.size)
+    (var argument names/%index)
+    (if (["--workspace" "--session"] .contains? argument)
+      (then
+        (set index (+ index 1))
+        (if (>= index names/.size) (fail $"${argument} requires a value"))
+        (if (== argument "--workspace")
+          (set workspace_root names/%index)
+          (set session names/%index)))
+      (else (remaining .push argument)))
+    (set index (+ index 1)))
+  (set names remaining)
   (var name (if (> names/.size 0) names/0 "chat"))
-  (var p (profile_named name))
-  (var home (prepare_home))
-  (var session (get_env "GENE_HARNESS_SESSION" "default"))
+  (var direct_recovery (["disable" "enable" "doctor"] .contains? name))
+  (var p (profile_named (if direct_recovery "chat" name)))
+  (var home (prepare_workspace_root ^root workspace_root))
   (var prompt (joined_from names 1))
   (var recovery_command (if (> names/.size 1) names/1 ""))
   (var recovery_target (if (> names/.size 2) names/2 ""))
+  (if_yes direct_recovery
+    (set recovery_command name)
+    (set recovery_target (if (> names/.size 1) names/1 "")))
   (var recovering (["disable" "enable" "doctor"] .contains? recovery_command))
-  (var runtime (open_runtime home session p ^activate (! recovering)))
+  (var runtime (open_runtime home session p ^entry this_mod/.path ^activate (! recovering)))
   (var h runtime/h)
   (var workspace runtime/workspace)
 

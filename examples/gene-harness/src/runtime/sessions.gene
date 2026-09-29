@@ -1,0 +1,233 @@
+(mod sessions)
+
+(import [core_states core_state record_core_state events_for flush_event_store
+         unload_event_stream repair_interrupted_turns copy_data]
+  ^from "../storage/state")
+
+(type SessionError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for SessionError)
+
+(type SessionState
+  ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any
+          ^last_access Any ^viewers Any})
+
+(type SessionManager
+  ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any
+          ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any})
+
+(fn require_open [manager : SessionManager]
+  (if (manager/closed .get)
+    (fail (SessionError ^code "closed" ^message "the session manager is closed")))
+  manager)
+
+(fn safe_id? [id : Str]
+  (if (|| (== id "") (> ($str/byte_size id) 128)) (return false))
+  (for forbidden in ["/" "\\" ".." ":" "\0"]
+    (if ($str/contains? id forbidden) (return false)))
+  true)
+
+(fn require_record [manager : SessionManager, id : Str]
+  (require_open manager)
+  (let record ((manager/index .get) .get id))
+  (if ($absent? record)
+    (fail (SessionError ^code "not_found" ^message $"session ${id} does not exist")))
+  record)
+
+(fn write_index [manager : SessionManager]
+  (while (manager/index_writing .swap true) ($sleep 1))
+  (try
+    ($fs/write_text_atomic $"${manager/state_root}/sessions/index"
+      ($serde/write_data {^format 1 ^sessions (manager/index .get)}))
+    ensure (manager/index_writing .set false)))
+
+(fn open_session_manager [runtime, events, state_root : Str,
+                          ^idle_timeout_ms idle_timeout_ms : Int = 600000] : SessionManager
+  (if (< idle_timeout_ms 0)
+    (fail (SessionError ^code "invalid_request" ^message "idle timeout must be non-negative")))
+  ($fs/make_dir $"${state_root}/sessions")
+  (let index {})
+  # Workspace projections are authoritative if a crash preceded index publication.
+  # This reads projection metadata, never session event segments or plugins.
+  (for [key record] in (core_states events "workspace" "workspace")
+    (if ($str/starts_with? ($to_str key) "session/") (index .put record/id record)))
+  (let manager (SessionManager ^runtime runtime ^events events ^state_root state_root
+    ^index ($cell index) ^loaded ($cell {}) ^idle_timeout_ms idle_timeout_ms ^closed ($cell false)
+    ^mutating ($cell false) ^index_writing ($cell false)))
+  (write_index manager)
+  (recover_sessions manager)
+  manager)
+
+(fn recover_sessions [manager : SessionManager]
+  (let interrupted [])
+  (for [id record] in (manager/index .get)
+    (if (== record/status "running") (interrupted .push ($to_str id))))
+  (for id in interrupted
+    (repair_interrupted_turns manager/events ^session id)
+    (let round (core_state manager/events "session" id "round"))
+    (if_not ($absent? round)
+      (round .put "state" "interrupted")
+      (record_core_state manager/events "session" id "round/state" "round" round))
+    (let record (require_record manager id))
+    (update_session manager id {^status "interrupted"
+      ^attention (|| record/attention (!= record/kind "interactive"))})
+    (unload_event_stream manager/events "session" id))
+  interrupted/.size)
+
+(fn update_session [manager : SessionManager, id : Str, changes]
+  (require_open manager)
+  (while (manager/mutating .swap true) ($sleep 1))
+  (try
+    (update_session_unlocked manager id changes)
+    ensure (manager/mutating .set false)))
+
+(fn update_session_unlocked [manager : SessionManager, id : Str, changes]
+  (let record (copy_data (require_record manager id)))
+  (for [key value] in changes
+    (if (== key "id")
+      (fail (SessionError ^code "invalid_request" ^message "session identity cannot change")))
+    (record .put key value))
+  (record_core_state manager/events "workspace" "workspace" "session/state"
+    $"session/${id}" record)
+  (flush_event_store manager/events)
+  ((manager/index .get) .put id record)
+  (write_index manager)
+  (copy_data record))
+
+(fn create_session [manager : SessionManager,
+                    ^id id : Str = "", ^kind kind : Str = "interactive",
+                    ^title title : Str = "New conversation", ^trigger trigger = nil,
+                    ^occurrence occurrence = nil, ^first_request first_request : Str = "",
+                    ^pinned pinned : Bool = false]
+  (require_open manager)
+  (while (manager/mutating .swap true) ($sleep 1))
+  (try
+    (create_session_unlocked manager ^id id ^kind kind ^title title ^trigger trigger
+      ^occurrence occurrence ^first_request first_request ^pinned pinned)
+    ensure (manager/mutating .set false)))
+
+(fn create_session_unlocked [manager : SessionManager,
+                    ^id id : Str = "", ^kind kind : Str = "interactive",
+                    ^title title : Str = "New conversation", ^trigger trigger = nil,
+                    ^occurrence occurrence = nil, ^first_request first_request : Str = "",
+                    ^pinned pinned : Bool = false]
+  (require_open manager)
+  (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
+  (if_not (safe_id? chosen)
+    (fail (SessionError ^code "invalid_request" ^message "invalid session id")))
+  (let previous ((manager/index .get) .get chosen))
+  (if_not ($absent? previous)
+    (if (&& (== previous/kind kind) (== previous/trigger trigger)
+            (== previous/occurrence occurrence))
+      (return (copy_data previous)))
+    (fail (SessionError ^code "conflict" ^message $"session ${chosen} already exists")))
+  (if_not (["interactive" "heartbeat" "scheduled" "cron"] .contains? kind)
+    (fail (SessionError ^code "invalid_request" ^message "invalid session kind")))
+  (let name ($str/trim title))
+  (if (|| (== name "") (> ($str/byte_size name) 256))
+    (fail (SessionError ^code "invalid_request" ^message "session title must have 1–256 bytes")))
+  (let now ($to_str ($now)))
+  (let record {^id chosen ^kind kind ^title name ^status "done" ^created now ^last_active now
+    ^attention false ^pinned pinned ^trigger trigger ^occurrence occurrence ^turns 0
+    ^first_request first_request})
+  (record_core_state manager/events "workspace" "workspace" "session/state"
+    $"session/${chosen}" record)
+  (flush_event_store manager/events)
+  ((manager/index .get) .put chosen record)
+  (write_index manager)
+  (copy_data record))
+
+(fn list_sessions [manager : SessionManager,
+                   ^kind kind = nil, ^status status = nil, ^attention attention = nil,
+                   ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "",
+                   ^until until : Str = "", ^all all : Bool = false]
+  (require_open manager)
+  (let filtered (|| all (! ($absent? kind)) (! ($absent? status)) (! ($absent? attention))
+    (! ($absent? trigger)) (!= q "") (!= since "") (!= until "")))
+  (let query ($str/lower q))
+  (let results [])
+  (for [id record] in (manager/index .get)
+    (if (&& (! filtered) (!= record/kind "interactive") (! record/pinned)) (continue))
+    (if (&& (! ($absent? kind)) (!= record/kind kind)) (continue))
+    (if (&& (! ($absent? status)) (!= record/status status)) (continue))
+    (if (&& (! ($absent? attention)) (!= record/attention attention)) (continue))
+    (if (&& (! ($absent? trigger)) (!= record/trigger trigger)) (continue))
+    (if (&& (!= since "") (< ($order/compare record/last_active since) 0)) (continue))
+    (if (&& (!= until "") (> ($order/compare record/last_active until) 0)) (continue))
+    (if (&& (!= query "")
+            (! ($str/contains? ($str/lower record/title) query))
+            (! ($str/contains? ($str/lower record/first_request) query))) (continue))
+    (results .push (copy_data record)))
+  ($order/sort_by results (fn [record] record/last_active)
+    ^compare (fn [a b] ($order/compare b a))))
+
+(fn session_busy? [state : SessionState] : Bool
+  (let round (state/round .get))
+  (&& (! ($absent? round)) (["running" "waiting"] .contains? round/state)))
+
+(fn session_running? [state : SessionState] : Bool
+  (let round (state/round .get))
+  (&& (! ($absent? round)) (== round/state "running")))
+
+(fn load_session [manager : SessionManager, id : Str] : SessionState
+  (require_record manager id)
+  (let loaded (manager/loaded .get))
+  (let previous (loaded .get id))
+  (if_not ($absent? previous)
+    (previous/last_access .set ($os/monotonic_ms))
+    (return previous))
+  (let history (events_for manager/events "session" id))
+  (let state (SessionState ^id id ^runtime manager/runtime ^history ($cell history)
+    ^round ($cell (core_state manager/events "session" id "round"))
+    ^outputs ($cell {}) ^console ($cell [])
+    ^last_access ($cell ($os/monotonic_ms)) ^viewers ($cell 0)))
+  (loaded .put id state)
+  state)
+
+(fn view_session [manager : SessionManager, id : Str] : SessionState
+  (let state (load_session manager id))
+  (state/viewers .set (+ (state/viewers .get) 1))
+  (let record (require_record manager id))
+  (if record/attention
+    (update_session manager id {^attention false}))
+  state)
+
+(fn leave_session [manager : SessionManager, id : Str]
+  (let state ((manager/loaded .get) .get id))
+  (if_not ($absent? state)
+    (state/viewers .set ($math/max 0 (- (state/viewers .get) 1)))
+    (state/last_access .set ($os/monotonic_ms)))
+  nil)
+
+(fn unload_session [manager : SessionManager, id : Str] : Bool
+  (require_open manager)
+  (let state ((manager/loaded .get) .get id))
+  (if ($absent? state) (return false))
+  (if (|| (session_running? state) (> (state/viewers .get) 0)) (return false))
+  (flush_event_store manager/events)
+  (unload_event_stream manager/events "session" id)
+  ((manager/loaded .get) .delete id)
+  true)
+
+(fn unload_idle_sessions [manager : SessionManager] : Int
+  (require_open manager)
+  (let due [])
+  (let now ($os/monotonic_ms))
+  (for [id state] in (manager/loaded .get)
+    (if (>= (- now (state/last_access .get)) manager/idle_timeout_ms) (due .push ($to_str id))))
+  (var count 0)
+  (for id in due (if (unload_session manager id) (set count (+ count 1))))
+  count)
+
+(fn close_session_manager [manager : SessionManager]
+  (if (manager/closed .get) (return nil))
+  (for [id state] in (manager/loaded .get)
+    (if (session_running? state)
+      (fail (SessionError ^code "busy" ^message $"session ${id} still has a round"))))
+  (flush_event_store manager/events)
+  (let ids [])
+  (for [id state] in (manager/loaded .get) (ids .push ($to_str id)))
+  (for id in ids (unload_event_stream manager/events "session" id))
+  (manager/loaded .set {})
+  (set manager/runtime nil)
+  (manager/closed .set true)
+  nil)

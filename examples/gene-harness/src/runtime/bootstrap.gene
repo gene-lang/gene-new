@@ -5,77 +5,102 @@
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_workspace close_workspace prepare_workspace activate_workspace_plan]
   ^from "../storage/workspace")
-(import [claim_session] ^from "./session_claim")
-(import $fs [make_dir real_path])
-(import $os [get_env])
+(import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "./workspace_lock" ^export true)
+(import [open_session_manager close_session_manager create_session load_session]
+  ^from "./sessions")
 
-(type HarnessRuntime ^props {^h Any ^workspace Any ^events Any ^claim Any
-                            ^owns_events Bool ^closed Any})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^events Any
+                            ^sessions Any
+                            ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
-(fn prepare_home [^root root : Str = ""] : Str
-  (var chosen root)
-  (if (== chosen "")
-    (set chosen (get_env "GENE_HARNESS_HOME"
-      $"${(module_dir (module_dir (module_dir this_mod/.path)))}/tmp/workspace")))
-  (make_dir chosen)
-  (for directory in ["composition" "modules" "events" "claims"]
-    (make_dir $"${chosen}/${directory}"))
-  (real_path chosen))
+(fn prepare_workspace_root [^root root : Str = ""] : Str
+  (let chosen (if (== root "") ($os/launch_dir) root))
+  ($fs/make_dir chosen)
+  ($fs/real_path chosen))
+
+(fn prepare_layout [root : Str]
+  (let state_root $"${root}/.gene-harness")
+  (for directory in ["composition" "modules" "blobs" "events" "sessions" "triggers"]
+    ($fs/make_dir $"${state_root}/${directory}"))
+  (if_not ($fs/exists? $"${state_root}/config.gene")
+    ($fs/write_text_atomic $"${state_root}/config.gene"
+      ($serde/write_data
+        {^provider "anthropic" ^model ""
+         ^response_budget {^timeout_ms 600000 ^max_memory_mb 1024}
+         ^turn_limit 24 ^trigger_turn_limit 12 ^trigger_timeout_ms 300000
+         ^idle_timeout_ms 600000 ^trigger_concurrency 2})))
+  state_root)
 
 (fn close_runtime [runtime : HarnessRuntime]
   (if (runtime/closed .get) (return nil))
   (var outcome nil)
   (try
-    (try (set outcome (shutdown_harness runtime/h))
+    (try
+      (close_session_manager runtime/sessions)
+      (set outcome (shutdown_harness runtime/h))
     ensure (close_workspace runtime/workspace))
   ensure
     (try
       (if runtime/owns_events (close_event_store runtime/events)
         (flush_event_store runtime/events))
     ensure
-      (runtime/claim .close)
+      (if runtime/owns_ownership (close_workspace_lock runtime/ownership))
       (runtime/closed .set true)))
   (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
-    (fail (RuntimeCleanupError ^message "Session cleanup requires recovery. Inspect the local Harness output before continuing.")))
+    (fail (RuntimeCleanupError ^message "Composition cleanup requires recovery. Inspect the Harness output.")))
   nil)
 
-(fn open_runtime [home : Str, session : Str, profile,
-                  ^events supplied_events = nil,
-                  ^project_root project_root : Str = "",
+(fn open_runtime [root : Str, session : Str, profile,
+                  ^events supplied_events = nil, ^ownership supplied_ownership = nil,
+                  ^entry entry : Str = "", ^event_scope event_scope : Str = "session",
                   ^activate activate : Bool = true] : HarnessRuntime
-  (var claim (claim_session home session))
+  (let canonical (prepare_workspace_root ^root root))
+  (let owns_ownership ($absent? supplied_ownership))
+  (let ownership (if owns_ownership
+    (acquire_workspace_lock canonical (if (== entry "") this_mod/.path entry))
+    supplied_ownership))
   (var events supplied_events)
   (var workspace nil)
   (var h nil)
+  (var runtime nil)
   (var ready false)
-  (var owned ($absent? supplied_events))
+  (let owned ($absent? supplied_events))
   (try
-    (if_yes owned (set events (open_event_store $"${home}/events")))
-    (set workspace (open_workspace $"${home}/composition"
-      ^blob_root $"${home}/modules" ^state_root home
-      ^workspace_root (if (== project_root "") (get_env "GENE_HARNESS_PROJECT" "") project_root)))
-    (set h (new_harness ^event_store events ^event_scope "session"
-      ^event_stream session ^workspace workspace
-      # Cordis derives every plugin's limits from this ceiling and refuses a
-      # wider one, so the profile's deployment-wide budget is the ceiling.
-      ^limits profile/limits))
+    (let state_root (prepare_layout canonical))
+    ($os/set_cwd canonical)
+    (if owned (set events (open_event_store $"${state_root}/events")))
+    (set workspace (open_workspace $"${state_root}/composition"
+      ^blob_root $"${state_root}/modules" ^state_root state_root
+      ^workspace_root canonical ^generated_dir $"${state_root}/modules/source"))
+    (set h (new_harness ^event_store events ^event_scope event_scope
+      ^event_stream session ^workspace workspace ^limits profile/limits))
     (if_yes activate
-      (var prepared (prepare_workspace workspace h ^session session))
+      (let prepared (prepare_workspace workspace h ^session session))
       (boot profile ^h h)
       (activate_workspace_plan prepared h))
+    (set runtime (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil
+      ^h h ^workspace workspace ^events events ^ownership ownership
+      ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
+    (set runtime/sessions (open_session_manager runtime events state_root))
+    (if (&& activate (== event_scope "session"))
+      (then
+        (create_session runtime/sessions ^id session)
+        (load_session runtime/sessions session)))
     (set ready true)
-    (HarnessRuntime ^h h ^workspace workspace ^events events ^claim claim
-      ^owns_events owned ^closed ($cell false))
+    runtime
   ensure
     (if_not ready
       (try
+        (if (&& (! ($absent? runtime)) (! ($absent? runtime/sessions)))
+          (close_session_manager runtime/sessions))
         (if_not ($absent? h) (shutdown_harness h))
       ensure
         (try
           (if_not ($absent? workspace) (close_workspace workspace))
         ensure
           (try
-            (if_yes (&& owned (! ($absent? events))) (close_event_store events))
-          ensure (claim .close)))))))
+            (if (&& owned (! ($absent? events))) (close_event_store events))
+          ensure
+            (if owns_ownership (close_workspace_lock ownership))))))))

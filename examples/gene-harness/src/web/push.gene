@@ -3,6 +3,7 @@
 
 (import [host_status list_sessions snapshot RunError] ^from "../runtime/session_host")
 (import [protocol_version] ^from "./contract")
+(import [view_session leave_session] ^from "../runtime/sessions")
 (import $net/http [ws_send ws_close])
 (import $os [monotonic_ms])
 
@@ -40,13 +41,15 @@
 
 (fn add_peer [hub : PushHub, connection, session : Str, expires : Int]
   (var peer {^connection connection ^session session ^expires expires
-    ^sequence 0 ^closed false})
+    ^sequence 0 ^closed false ^viewing false})
   ((hub/peers .get) .push peer)
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status hub/host)})
     (send_frame hub peer {^type "sessions" ^session "" ^data (list_sessions hub/host)})
     (if_yes (!= session "")
       (try
+        (view_session hub/host/sessions session)
+        (peer .put "viewing" true)
         (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot hub/host session)})
       catch RunError
         (send_frame hub peer {^type "error" ^session session
@@ -59,7 +62,10 @@
 (fn remove_peer [hub : PushHub, connection]
   (var kept [])
   (for peer in (hub/peers .get)
-    (if_not (same? peer/connection connection) (kept .push peer)))
+    (if (same? peer/connection connection)
+      (then
+        (if peer/viewing (leave_session hub/host/sessions peer/session)))
+      (else (kept .push peer))))
   (hub/peers .set kept))
 
 (fn expire_peers [hub : PushHub]

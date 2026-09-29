@@ -660,19 +660,23 @@ Reply with one Gene map: ^type "response", a short ^response, and
 
 (type LlmAgent ^private true ^props {^model Str ^session Any ^state_host PluginContext})
 
+(fn restored_session_history [host : PluginContext]
+  (let restored (host .PluginHost:state))
+  ($cell ($thaw (if ($absent? restored) #[] (?? restored/history #[])))))
+
 (impl HarnessPrompt for LlmAgent
   (message handle [h, prompt : Str] : Str
-    (answer h prompt self/session self/state_host)))
+    (answer h prompt (restored_session_history self/state_host) self/state_host)))
 
 (impl HarnessResume for LlmAgent
   (message resume [h, continuation, reply] : Str
     (if_yes (== continuation/kind "tool")
       (var result (resume_tool h continuation reply))
       (if (== result/waiting true) (return ""))
-      (return (run_task h continuation/prompt self/session self/state_host
+      (return (run_task h continuation/prompt (restored_session_history self/state_host) self/state_host
         ^history $"${continuation/history}\nTool ${continuation/tool} resumed after input. Result: ${result}"
         ^start_round (+ continuation/round 1))))
-    (run_task h continuation/prompt self/session self/state_host
+    (run_task h continuation/prompt (restored_session_history self/state_host) self/state_host
       ^history $"${continuation/history}\nThe user answered question ${reply/id}: ${reply/value}"
       ^start_round continuation/round)))
 

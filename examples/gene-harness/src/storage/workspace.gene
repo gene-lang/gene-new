@@ -1,4 +1,4 @@
-# Desired composition generations and revision-CAS coordination.
+# Desired composition generations, published by the workspace owner.
 
 (mod workspace)
 
@@ -24,11 +24,6 @@
 
 (type CompositionError ^props {^message Str} ^impl [Error])
 (impl Error for CompositionError)
-
-(type CompositionConflict
-  ^props {^message Str ^expected Int ^actual Int}
-  ^impl [Error])
-(impl Error for CompositionConflict)
 
 (type Workspace
   ^props {^root Str ^state_root Str ^workspace_root Str
@@ -121,12 +116,10 @@
     (real_path (if (== state_root "") canonical_root state_root)))
   (var canonical_workspace_root
     (real_path (if (== workspace_root "") package_root workspace_root)))
-  (var generated_base $"${package_root}/plugins/generated")
-  (make_dir generated_base)
   (var generated
     (if (== generated_dir "")
       (then
-        (var scoped $"${generated_base}/${(sha256 canonical_root)}")
+        (var scoped $"${canonical_blob_root}/source")
         (make_dir scoped)
         (real_path scoped))
       (else
@@ -148,10 +141,6 @@
                ^errors ($cell (fresh_map))))
   (load_composition workspace))
 
-(fn refresh_workspace [workspace : Workspace]
-  (require_open workspace)
-  (load_composition workspace))
-
 (fn composition_revision [workspace : Workspace] : Int
   (require_open workspace)
   (workspace/revision .get))
@@ -160,33 +149,17 @@
   (require_open workspace)
   (data_copy (workspace/entries .get)))
 
-(fn revision_conflict [workspace : Workspace, expected : Int]
-  (refresh_workspace workspace)
-  (var actual (workspace/revision .get))
-  (fail (CompositionConflict
-    ^message $"composition revision conflict: expected ${expected}, actual ${actual}"
-    ^expected expected ^actual actual)))
-
-(fn commit_composition [workspace : Workspace, expected : Int, entries]
+(fn commit_composition [workspace : Workspace, entries]
   (require_open workspace)
   (if (workspace/busy .get)
     (fail (CompositionError ^message "composition mutation is already active")))
   (var actual (workspace/revision .get))
-  (if_not (== expected actual)
-    (fail (CompositionConflict
-      ^message $"composition revision conflict: expected ${expected}, actual ${actual}"
-      ^expected expected ^actual actual)))
   (var checked (validate_entries (data_copy entries)))
   (var next (+ actual 1))
   (var manifest {^format 1 ^revision next ^entries checked})
   (workspace/busy .set true)
   (try
-    (try
-      (workspace/store .Store:checkpoint next {^composition manifest})
-    catch StoreError
-      (if (== ($to_str $err/kind) "conflict")
-        (revision_conflict workspace expected)
-        (fail (CompositionError ^message $err/message))))
+    (workspace/store .Store:checkpoint next {^composition manifest})
     (workspace/revision .set next)
     (workspace/entries .set checked)
     next
@@ -527,7 +500,7 @@
   (var before (composition_entries workspace))
   (var previous_digest (previous_module_digest before id))
   (var next_entries (entries_with before entry replace))
-  (var revision (commit_composition workspace expected next_entries))
+  (var revision (commit_composition workspace next_entries))
   (var status "error")
   (try
     (record_composition_change h id previous_digest digest revision
@@ -570,7 +543,7 @@
     (var composition_changed (> pending_plugins/.size 0))
     (set revision expected)
     (if_yes composition_changed
-      (set revision (commit_composition workspace expected staged_entries))
+      (set revision (commit_composition workspace staged_entries))
       (set durable_committed true))
     (var registry_result (commit_turn h tx))
     (for pending in pending_plugins
@@ -734,7 +707,7 @@
   (if_not found
     (fail (CompositionError ^message $"composition entry ${id} does not exist")))
   (var revision
-    (commit_composition workspace (composition_revision workspace) next_entries))
+    (commit_composition workspace next_entries))
   (if_not ($absent? h)
     (var digest (previous_module_digest next_entries id))
     (record_composition_change h id digest digest revision "recovery"

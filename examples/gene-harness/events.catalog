@@ -8,6 +8,7 @@ turn/end 1 required turn_end
 composition/changed 1 required composition_changed
 plugin/state 1 required plugin_state
 session/state 1 required core_state
+round/state 1 required core_state
 run/state 1 required core_state
 input/request 1 required core_state
 input/reply 1 required core_state

@@ -1,24 +1,28 @@
 (mod session_host)
 
-(import [prepare_home open_runtime close_runtime RuntimeCleanupError] ^from "./bootstrap")
-(import [open_event_store close_event_store refresh_event_store flush_event_store
+(import [prepare_workspace_root prepare_layout open_runtime close_runtime RuntimeCleanupError]
+  ^from "./bootstrap")
+(import [acquire_workspace_lock close_workspace_lock] ^from "./workspace_lock")
+(import [load_session write_index update_session unload_idle_sessions]
+  ^from "./sessions")
+(import [open_event_store close_event_store flush_event_store
          core_state core_states record_core_state events_for copy_data] ^from "../storage/state")
 (import [RunError new_run_controller controller_busy? close_controller
          duplicate_receipt run_state receipt_for recover_runs submit_run cancel_run reply_to_input]
   ^from "./run_controller" ^export true)
-(import [SessionBusy claim_session] ^from "./session_claim")
 (import [repair_interrupted_turns validate_event_catalog] ^from "../storage/state")
 (import [core_event_types] ^from "../storage/generated_event_catalog")
 (import [browser_profile] ^from "../profiles/browser")
 (import [public_model_config] ^from "../agents/model_client")
-(import [rows plugin_ids status_of flush_harness Harness HarnessEvent HarnessLog HarnessFlushed HarnessPreview]
+(import [rows plugin_ids status_of flush_harness hydrate_harness_log Harness HarnessEvent HarnessLog HarnessFlushed HarnessPreview]
   ^from "../kernel")
-(import [refresh_workspace composition_revision workspace_status] ^from "../storage/workspace")
+(import [composition_revision workspace_status] ^from "../storage/workspace")
 (import $crypto [random_hex sha256])
 (import [prompt_limit history_page_limit protocol_version] ^from "../web/contract")
 (import [reply_digest] ^from "./interactions")
 
-(type SessionHost ^props {^home Str ^project_root Str ^events Any ^profile Any ^offline Bool
+(type SessionHost ^props {^home Str ^state_root Str ^ownership Any ^events Any ^profile Any ^offline Bool
+                         ^sessions Any
                          ^epoch Str ^runtime Any ^controller Any ^session Any
                          ^closed Any ^revision Any ^status_snapshot Any ^model_info Any
                          ^publisher Any ^subscription Any ^previews Any})
@@ -87,6 +91,19 @@
     (if_not (host_busy? host) (host/previews .set {}))
     (var metadata (require_session host/events id))
     (var state (run_state host/events metadata/stream))
+    (var last nil)
+    (for receipt in state/receipts (set last receipt))
+    (if_not ($absent? last)
+      (var status (if (== last/status "completed") "done"
+        (if (== last/status "waiting_input") "waiting"
+          (if (== last/status "accepted") "running" last/status))))
+      (var round {^id last/id ^state status ^receipt last})
+      (record_core_state host/events "session" id "round/state" "round" round)
+      (var loaded ((host/sessions/loaded .get) .get id))
+      (if_not ($absent? loaded)
+        (loaded/round .set round)
+        (loaded/history .set (events_for host/events "session" id)))
+      (update_session host/sessions id {^status status}))
     (push_message host "run" id
       {^status (host_status host) ^session (public_session host/events metadata)
        ^next_submission_seq ($to_str state/next_seq)})
@@ -145,8 +162,7 @@
 
 (fn refresh_idle [host : SessionHost]
   (require_idle host)
-  (flush_event_store host/events)
-  (refresh_event_store host/events))
+  (flush_event_store host/events))
 
 (fn session_metadata [events, id : Str]
   (core_state events "workspace" "workspace" $"session/${id}"))
@@ -176,31 +192,47 @@
         (indexed .put stream true))))
   (flush_event_store events))
 
-(fn open_session_host [^home home : Str = "", ^offline offline : Bool = false,
-                      ^project_root project_root : Str = ""] : SessionHost
-  (var root (prepare_home ^root home))
-  (var events (open_event_store $"${root}/events"))
-  (var catalog {})
-  (for entry in core_event_types (catalog .put entry/name entry))
-  (validate_event_catalog events catalog)
-  (discover_sessions events)
-  # Only repair streams we can exclusively claim. A different CLI session may
-  # still be executing against the same event store.
-  (for [key metadata] in (core_states events "workspace" "workspace")
-    (if_yes ($str/starts_with? ($to_str key) "session/")
-      (var claim (try (claim_session root metadata/stream) catch SessionBusy nil))
-      (if_not ($absent? claim)
+(fn open_session_host [^workspace workspace : Str = "", ^offline offline : Bool = false] : SessionHost
+  (var root (prepare_workspace_root ^root workspace))
+  (var ownership (acquire_workspace_lock root "web"))
+  (var events nil)
+  (var runtime nil)
+  (var ready false)
+  (try
+    (var state_root (prepare_layout root))
+    ($os/set_cwd root)
+    (set events (open_event_store $"${state_root}/events"))
+    (var catalog {})
+    (for entry in core_event_types (catalog .put entry/name entry))
+    (validate_event_catalog events catalog)
+    (discover_sessions events)
+    # The workspace owner may recover every session without per-session claims.
+    (for [key metadata] in (core_states events "workspace" "workspace")
+      (if_yes ($str/starts_with? ($to_str key) "session/")
+        (recover_runs events metadata/stream)
+        (repair_interrupted_turns events ^session metadata/stream)))
+    (var profile (browser_profile ^offline offline))
+    (set runtime (open_runtime root "workspace" profile ^events events
+      ^ownership ownership ^event_scope "workspace"))
+    (var sessions runtime/sessions)
+    (let result (SessionHost ^home root ^state_root state_root ^ownership ownership
+      ^events events ^profile profile ^sessions sessions
+      ^offline offline ^epoch (random_hex 16) ^runtime ($cell runtime)
+      ^controller ($cell nil) ^session ($cell nil) ^closed ($cell false)
+      ^revision ($cell 0) ^status_snapshot ($cell {^commands [] ^plugins [] ^composition nil})
+      ^publisher ($cell nil) ^subscription ($cell nil) ^previews ($cell {})
+      ^model_info (if offline {^provider "offline" ^model "Command agent" ^effort ""}
+        (public_model_config))))
+    (set ready true)
+    result
+    ensure
+      (if_not ready
         (try
-          (recover_runs events metadata/stream)
-          (repair_interrupted_turns events ^session metadata/stream)
-        ensure (claim .close)))))
-  (SessionHost ^home root ^project_root project_root ^events events ^profile (browser_profile ^offline offline)
-    ^offline offline ^epoch (random_hex 16) ^runtime ($cell nil)
-    ^controller ($cell nil) ^session ($cell nil) ^closed ($cell false)
-    ^revision ($cell 0) ^status_snapshot ($cell {^commands [] ^plugins [] ^composition nil})
-    ^publisher ($cell nil) ^subscription ($cell nil) ^previews ($cell {})
-    ^model_info (if offline {^provider "offline" ^model "Command agent" ^effort ""}
-      (public_model_config))))
+          (if_not ($absent? runtime) (close_runtime runtime))
+          ensure
+            (try
+              (if_not ($absent? events) (close_event_store events))
+              ensure (close_workspace_lock ownership))))))
 
 (fn create_session [host : SessionHost, ^title title : Str = "New conversation"]
   (refresh_idle host)
@@ -208,11 +240,16 @@
   (if (|| (== name "") (> ($str/byte_size name) 256))
     (fail (RunError ^code "invalid_request" ^message "Use a session title of 1–256 bytes.")))
   (var id $"s_${(random_hex 12)}")
+  (var now ($to_str ($now)))
   (var metadata {^id id ^stream id ^title name ^revision 1
+    ^kind "interactive" ^status "done" ^created now ^last_active now
+    ^attention false ^pinned false ^trigger nil ^occurrence nil ^turns 0 ^first_request ""
     ^auto_title (== name "New conversation")
     ^created_at ($to_str ($now)) ^last_activity ($to_str ($now))})
   (save_session host/events metadata)
+  ((host/sessions/index .get) .put id (copy_data metadata))
   (flush_event_store host/events)
+  (write_index host/sessions)
   (push_message host "session" metadata/id (public_session host/events metadata))
   (copy_data metadata))
 
@@ -228,7 +265,9 @@
   (metadata .put "auto_title" false)
   (metadata .put "revision" (+ revision 1))
   (save_session host/events metadata)
+  ((host/sessions/index .get) .put id (copy_data metadata))
   (flush_event_store host/events)
+  (write_index host/sessions)
   (push_message host "session" metadata/id (public_session host/events metadata))
   metadata)
 
@@ -250,7 +289,7 @@
    ^last_run (public_receipt last)})
 
 (fn list_sessions [host : SessionHost, ^after after : Str = "", ^limit limit : Int = 100]
-  (var events (open_event_store $"${host/home}/events"))
+  (var events (open_event_store $"${host/state_root}/events"))
   (try
     (var all [])
     (for [key metadata] in (core_states events "workspace" "workspace")
@@ -276,29 +315,18 @@
 (fn ensure_runtime [host : SessionHost, metadata]
   (require_idle host)
   (var runtime (host/runtime .get))
-  (if_not ($absent? runtime)
-    (var old_revision (composition_revision runtime/workspace))
-    (refresh_workspace runtime/workspace)
-    (if_yes (&& (== runtime/h/event_stream metadata/stream)
-                (== old_revision (composition_revision runtime/workspace)))
-      (return runtime))
+  (load_session host/sessions metadata/id)
+  (if_yes (== runtime/h/event_stream metadata/stream) (return runtime))
+  (if_not ($absent? (host/controller .get))
     (close_controller (host/controller .get))
-    (detach_observer host)
-    (try (close_runtime runtime)
-    catch RuntimeCleanupError
-      (var message $err/message)
-      (var controller (host/controller .get))
-      (controller/failed .set message)
-      (host/runtime .set nil)
-      (fail (RunError ^code "recovery_required" ^message message)))
-    (host/runtime .set nil)
-    (host/controller .set nil)
-    (flush_event_store host/events))
-  (try
-    (set runtime (open_runtime host/home metadata/stream host/profile ^events host/events
-      ^project_root host/project_root))
-  catch SessionBusy
-    (fail (RunError ^code "session_busy" ^message $err/message)))
+    (host/controller .set nil))
+  (detach_observer host)
+  (flush_event_store host/events)
+  (set runtime/h/event_scope "session")
+  (set runtime/h/event_stream metadata/stream)
+  (runtime/h/log .set [])
+  (runtime/h/log_hydrated .set false)
+  (hydrate_harness_log runtime/h)
   (recover_runs host/events metadata/stream)
   (host/runtime .set runtime)
   (host/controller .set (new_run_controller runtime
@@ -344,11 +372,15 @@
     (metadata .put "auto_title" false)
     (metadata .put "revision" (+ metadata/revision 1)))
   (metadata .put "last_activity" ($to_str ($now)))
+  (metadata .put "last_active" metadata/last_activity)
+  (if (== metadata/first_request "") (metadata .put "first_request" text))
   (save_session host/events metadata)
+  ((host/sessions/index .get) .put id (copy_data metadata))
+  (write_index host/sessions)
   (public_receipt (submit_run (host/controller .get) request_id sequence text)))
 
 (fn run_receipt [host : SessionHost, id : Str, run_id : Str]
-  (var events (open_event_store $"${host/home}/events"))
+  (var events (open_event_store $"${host/state_root}/events"))
   (try
     (var metadata (require_session events id))
     (var receipt (receipt_for events metadata/stream run_id))
@@ -360,7 +392,7 @@
 (fn answer_input [host : SessionHost, id : Str, input_id : Str, value,
                   ^cancelled cancelled : Bool = false]
   # A matching retry is a read, even while this or another session is running.
-  (var events (open_event_store $"${host/home}/events"))
+  (var events (open_event_store $"${host/state_root}/events"))
   (try
     (var saved (require_session events id))
     (var state (core_state events "session" saved/stream "interaction"))
@@ -393,7 +425,7 @@
 
 (fn snapshot [host : SessionHost, id : Str, ^after after : Int = -1,
               ^before before : Int = -1, ^limit limit : Int = 200]
-  (var events (open_event_store $"${host/home}/events"))
+  (var events (open_event_store $"${host/state_root}/events"))
   (try
     (var metadata (require_session events id))
     (var history (events_for events "session" metadata/stream))
@@ -517,5 +549,7 @@
     (try
       (var runtime (host/runtime .get))
       (if_not ($absent? runtime) (close_runtime runtime))
-    ensure (close_event_store host/events)))
+    ensure
+      (try (close_event_store host/events)
+        ensure (close_workspace_lock host/ownership))))
   nil)
