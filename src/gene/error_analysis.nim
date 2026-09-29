@@ -997,7 +997,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     result.errors = joinedErrors(oneError("ParseError"), oneError("RuntimeError"))
   of "read_all":
     result.errors = oneError("ParseError")
-    if args[0].typ.kind != vkSymbol or args[0].typ.symVal != "Str":
+    if namedCount > 0 or args[0].typ.kind != vkSymbol or args[0].typ.symVal != "Str":
       result.errors.mergeErrors(oneError("RuntimeError"))
     result.value = AbstractValue(kind: avStream, deferredKnown: true,
                                   resultType: newSym("Any"), streamTaskSafe: true)

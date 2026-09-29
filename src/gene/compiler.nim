@@ -257,6 +257,13 @@ proc sourceLocFor(c: Compiler, v: Value): SourceLoc =
   if c.sourceLocs != nil and v.hasStableSourceIdentity and
       c.sourceLocs[].hasKey(v.bits):
     return c.sourceLocs[][v.bits]
+  if v.kind == vkNode:
+    let line = v.meta.getOrDefault("line", NIL)
+    let col = v.meta.getOrDefault("col", NIL)
+    let source = v.meta.getOrDefault("source", NIL)
+    if line.kind == vkInt and col.kind == vkInt:
+      return SourceLoc(sourceName: if source.kind == vkString: source.strVal else: "",
+                       line: int(line.intVal), col: int(col.intVal))
   c.currentLoc
 
 proc sharedSourceLocs(locs: Table[uint64, SourceLoc]):
@@ -9746,6 +9753,8 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
       c.currentFormIndex = i
       if i < c.formLocs.len and c.formLocs[i].hasSourceLoc:
         c.currentLoc = c.formLocs[i]
+      else:
+        c.currentLoc = c.sourceLocFor(forms[i])
       try:
         compileExpr(c, forms[i], allowModDecl = true)
         c.warnDiscardedPipeline(forms[i])

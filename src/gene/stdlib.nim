@@ -26,7 +26,7 @@ proc fsWriteAtomic(path, content: string, ownerOnly = false) =
   ## restricts the file to its owner before any content is written.
   inc fsAtomicWriteCounter
   let temporary = path & ".gene-tmp-" & $getCurrentProcessId() & "-" &
-    $fsAtomicWriteCounter
+    $nativeCallbackLane() & "-" & $fsAtomicWriteCounter
   try:
     var file = open(temporary, fmWrite)
     try:
@@ -1534,6 +1534,8 @@ proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let receiver = args[0]
   if receiver.kind notin {vkStream, vkList, vkMap, vkHashMap, vkSet}:
     return dispatchGenericForward("each", receiver, args[1 .. args.high], scope)
+  if activeVmFiber != nil and receiver.kind != vkStream:
+    requestCollectionFrame("each", receiver, args[1], scope)
   # The private driver stays within this consuming call. Its resumable item
   # frame allows ordinary callbacks to await even inside a spawned consumer.
   let driver = newLazyStream(receiver, pullMapStream,
@@ -2049,8 +2051,21 @@ proc biOsLaunchDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       "os/launch_dir requires an application runtime")
   newStr(app.launchDir)
 
+proc biOsSetCwd(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("os/set_cwd", args)
+  requireStr("os/set_cwd", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  try:
+    setCurrentDir(args[0].strVal)
+  except OSError as error:
+    raiseOsError("os/set_cwd: " & error.msg, scope)
+  NIL
+
 const osExecDefaultOutputCap = 1024 * 1024
 const osExecPollMs = 5
+
+proc biOsExecAsyncImpl(name: string, wantChan, inheritStdio: bool,
+                       args: openArray[Value], call: ptr NativeCall): Value
 
 proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess and return {^status ^stdout ^stderr ^timed_out}.
@@ -2058,6 +2073,13 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## unless the caller passes a shell explicitly), `^timeout_ms` bounds the run,
   ## and captured output is truncated at `^max_bytes`. Never uses a shell to
   ## split the command, so injection through argument values is not possible.
+  when compileOption("threads"):
+    if activeVmFiber != nil:
+      if activeVmFiber.nativeTask.kind != vkTask:
+        let task = biOsExecAsyncImpl("os/exec", false, false, args, call)
+        activeVmFiber.nativeTask = task
+        call.dispatchScope.registerOwnedTask(task)
+      return finishNativeTask()
   if args.len != 0:
     raise newException(GeneError, "os/exec expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -2495,6 +2517,8 @@ when compileOption("threads"):
       next: ptr SharedExecArg
       text: SharedExecText
     OsExecAsyncCtx = object
+      fileOperation: NativeFileOperation
+      fileOwnerOnly: bool
       name: SharedExecText
       cmd: SharedExecText
       procArgs: ptr SharedExecArg
@@ -2532,6 +2556,8 @@ when compileOption("threads"):
       workerDone: bool
     OsExecPending {.acyclic.} = ref object
       ctx: ptr OsExecAsyncCtx
+      fileErrorScope: Scope
+      filePath: string
       taskOwner: Value
       lineChanOwner: Value
       pipeWriterOwner: Value
@@ -2713,7 +2739,19 @@ when compileOption("threads"):
           if not cancelling:
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
-              if tryFailTask(task, failure):
+              var value = NIL
+              if ctx.fileOperation != nfoNone:
+                var props = initPropTable()
+                props["message"] = newStr(failure)
+                value = newNode(builtInTypeHead(pending.fileErrorScope, "OsError"),
+                                props = props)
+              if tryFailTask(task, failure, value, hasValue = value.kind != vkNil):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+            elif ctx.fileOperation != nfoNone:
+              let value = if ctx.fileOperation == nfoRead:
+                            newStr(consumeSharedExecText(ctx.resultStdout))
+                          else: NIL
+              if tryCompleteTask(task, value):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
             elif ctx.inheritStdio:
               if tryCompleteTask(task, newInt(ctx.resultStatus)):
@@ -2758,6 +2796,24 @@ when compileOption("threads"):
       # It never constructs a Gene Value or touches an ORC-managed object from
       # the scheduler heap.
       let ctx = cast[ptr OsExecAsyncCtx](jobPtr)
+      if ctx.fileOperation != nfoNone:
+        try:
+          if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+            ctx.resultCancelled = true
+            return
+          let path = readSharedExecText(ctx.cmd)
+          case ctx.fileOperation
+          of nfoRead:
+            ctx.resultStdout = sharedExecText(fsReadBytes(path))
+          of nfoWrite:
+            fsWriteBytes(path, readSharedExecText(ctx.workdir))
+          of nfoAtomicWrite:
+            fsWriteAtomic(path, readSharedExecText(ctx.workdir), ctx.fileOwnerOnly)
+          of nfoNone: discard
+        except CatchableError as error:
+          ctx.resultFailed = true
+          ctx.resultFailure = sharedExecText(readSharedExecText(ctx.name) & ": " & error.msg)
+        return
       defer:
         when defined(posix):
           if ctx.stdoutPipeFd >= 0:
@@ -3113,6 +3169,46 @@ else:
     pollHttpTlsReloadCompletions()
     pollCursesInputCompletions()
     pollNativeIngressHook()
+
+proc startNativeFileTask(name, path, text: string, operation: NativeFileOperation,
+                         scope: Scope, ownerOnly = false): Value =
+  when compileOption("threads"):
+    if scope == nil:
+      raise newException(GeneError, name & " requires a scheduler scope")
+    let task = newExternalTask()
+    let ctx = cast[ptr OsExecAsyncCtx](allocShared0(sizeof(OsExecAsyncCtx)))
+    ctx.fileOperation = operation
+    ctx.fileOwnerOnly = ownerOnly
+    ctx.stdoutPipeFd = -1
+    ctx.stderrPipeFd = -1
+    ctx.stdinPipeFd = -1
+    ctx.taskBits = task.bits
+    ctx.schedulerPtr = cast[pointer](schedulerForScope(scope))
+    ctx.name = sharedExecText(name)
+    ctx.cmd = sharedExecText(absolutePath(path))
+    ctx.workdir = sharedExecText(text)
+    initLock(ctx.lineLock)
+    let watchPath =
+      try: fsRealPath(parentDir(absolutePath(path))) / extractFilename(path)
+      except CatchableError: absolutePath(path)
+    let pending = OsExecPending(ctx: ctx,
+                               fileErrorScope: scope.application().builtinsScope(),
+                               filePath: watchPath)
+    pending.taskOwner = retainedCopy(task)
+    withLock osExecAsyncLock:
+      osExecAsyncPending.add pending
+    beginExternalNativeOp()
+    try:
+      enqueueOsExecAsyncJob(ctx)
+    except CatchableError:
+      endExternalNativeOp()
+      withLock osExecAsyncLock:
+        osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
+      freeOsExecCtx(ctx)
+      raise
+    task
+  else:
+    newFailedTask(name & " requires a threaded runtime build")
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        inheritStdio: bool,
@@ -4634,6 +4730,19 @@ proc fsWatcherRecord(name: string, handle: Value,
 proc fsWatchRelative(root, path: string): string =
   relativePath(path, root).replace(DirSep, '/')
 
+proc nativeFileWritePending(path: string): bool =
+  ## Polling watchers see a completed stdlib write as one change. Do not
+  ## publish a writer's truncation or an atomic writer's temporary sibling.
+  when compileOption("threads"):
+    let absolute = absolutePath(path)
+    withLock osExecAsyncLock:
+      for pending in osExecAsyncPending:
+        if pending.ctx.fileOperation in {nfoWrite, nfoAtomicWrite} and
+            (pending.filePath == absolute or
+             (pending.ctx.fileOperation == nfoAtomicWrite and
+              absolute.startsWith(pending.filePath & ".gene-tmp-"))):
+          return true
+
 proc fsWatchScan(record: FsWatcherRecord): Table[string, FsWatchStamp] =
   var pending = @[record.root]
   var index = 0
@@ -4642,6 +4751,11 @@ proc fsWatchScan(record: FsWatcherRecord): Table[string, FsWatchStamp] =
     inc index
     for name in fsListDir(directory):
       let path = directory / name
+      let relative = fsWatchRelative(record.root, path)
+      if nativeFileWritePending(path):
+        if record.snapshot.hasKey(relative):
+          result[relative] = record.snapshot[relative]
+        continue
       var info: FileInfo
       try:
         info = getFileInfo(path, followSymlink = false)
@@ -4650,7 +4764,6 @@ proc fsWatchScan(record: FsWatcherRecord): Table[string, FsWatchStamp] =
         # and metadata sampling. The next scan observes the stable result.
         continue
       let kind = info.kind
-      let relative = fsWatchRelative(record.root, path)
       result[relative] = FsWatchStamp(
         kind: info.kind,
         size: info.size,
@@ -4840,6 +4953,15 @@ proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nim
     raise newException(GeneError, "fs/read_text expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/read_text path", args[0])
+  if activeVmFiber != nil:
+    if activeVmFiber.nativeTask.kind != vkTask:
+      let task = biFsReadTextAsync(args)
+      activeVmFiber.nativeTask = task
+      scope.registerOwnedTask(task)
+    try:
+      return finishNativeTask()
+    except GeneError as error:
+      raiseOsError("fs/read_text: " & error.msg, scope)
   try:
     newStr(fsReadBytes(args[0].strVal))
   except CatchableError as e:
@@ -4853,6 +4975,12 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
     raise newException(GeneError, "fs/read_bytes expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/read_bytes path", args[0])
+  if activeVmFiber != nil:
+    if activeVmFiber.nativeTask.kind != vkTask:
+      let task = biFsReadTextAsync(args)
+      activeVmFiber.nativeTask = task
+      scope.registerOwnedTask(task)
+    return newBytes(finishNativeTask().strVal)
   try:
     newBytes(fsReadBytes(args[0].strVal))
   except CatchableError as e:
@@ -4868,6 +4996,12 @@ proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.n
   if args[1].kind != vkBytes:
     raise newException(GeneError,
       "fs/write_bytes expects Bytes, got " & $args[1].kind)
+  if activeVmFiber != nil:
+    if activeVmFiber.nativeTask.kind != vkTask:
+      let task = biFsWriteTextAsync([args[0], newStr(args[1].bytesVal)])
+      activeVmFiber.nativeTask = task
+      scope.registerOwnedTask(task)
+    return finishNativeTask()
   try:
     fsWriteBytes(args[0].strVal, args[1].bytesVal)
   except CatchableError as e:
@@ -4881,6 +5015,15 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
   let scope = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_text path", args[0])
   requireStr("fs/write_text text", args[1])
+  if activeVmFiber != nil:
+    if activeVmFiber.nativeTask.kind != vkTask:
+      let task = biFsWriteTextAsync(args)
+      activeVmFiber.nativeTask = task
+      scope.registerOwnedTask(task)
+    try:
+      return finishNativeTask()
+    except GeneError as error:
+      raiseOsError("fs/write_text: " & error.msg, scope)
   try:
     fsWriteBytes(args[0].strVal, args[1].strVal)
   except CatchableError as e:
@@ -4912,6 +5055,14 @@ proc biFsWriteTextAtomicSync(args: openArray[Value],
       else:
         raise newException(GeneError,
           "fs/write_text_atomic got unexpected named argument: " & name)
+  when compileOption("threads"):
+    if activeVmFiber != nil:
+      if activeVmFiber.nativeTask.kind != vkTask:
+        let task = startNativeFileTask("fs/write_text_atomic", args[0].strVal,
+                                      args[1].strVal, nfoAtomicWrite, scope, ownerOnly)
+        activeVmFiber.nativeTask = task
+        scope.registerOwnedTask(task)
+      return finishNativeTask()
   try:
     fsWriteAtomic(args[0].strVal, args[1].strVal, ownerOnly = ownerOnly)
   except CatchableError as e:
@@ -10162,6 +10313,8 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("launch_dir",
                  builtinNativeCallFn("os/launch_dir", biOsLaunchDir,
                                  acceptsNamed = false))
+  osScope.define("set_cwd", builtinNativeCallFn("os/set_cwd", biOsSetCwd,
+                                              acceptsNamed = false))
   osScope.define("exec", builtinNativeCallFn("os/exec", biOsExec))
   osScope.define("exec_stream", builtinNativeCallFn("os/exec_stream", biOsExecStream))
   osScope.define("exec_stdio", builtinNativeCallFn("os/exec_stdio", biOsExecStdio))

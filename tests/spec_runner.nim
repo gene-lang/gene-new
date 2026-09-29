@@ -8049,7 +8049,130 @@ suite "spec — Env and eval from design":
                "[guarded/ok guarded/kind guarded/message]",
                "[false panic \"\\\"boom\\\"\"]")
 
+suite "spec — task context":
+  test "context is dynamically scoped, inherited by spawn, and restored on error":
+    check_eval("(scope (let child " &
+      "($runtime/with_context {^id \"outer\"} (fn [] " &
+      "  (spawn ^lane root (do ($sleep 1) ($runtime/context)))))) " &
+      "[($runtime/context) (await child)])", "[nil {^id \"outer\"}]")
+    check_eval("($runtime/with_context {^id \"outer\"} (fn [] " &
+      "  (let inner ($runtime/with_context {^id \"inner\"} " &
+      "     (fn [] ($runtime/context)))) " &
+      "  [inner ($runtime/context)]))", "[{^id \"inner\"} {^id \"outer\"}]")
+    check_eval("(try ($runtime/with_context {^id \"error\"} " &
+      " (fn [] (fail (Error ^message \"boom\")))) " &
+      " catch Any nil) ($runtime/context)", "nil")
+
+  test "parallel fibers retain separate console sinks across pauses":
+    check_eval("(let a ($cell \"\")) (let b ($cell \"\")) " &
+      "(scope " &
+      " (let ta (spawn ^lane root " &
+      "  ($runtime/with_context {^output (fn [text] (a .set ($str/join [(a .get) text] \"\")))} " &
+      "   (fn [] ($print \"a\") ($sleep 2) " &
+      "      (spawn ^lane root ($println \"child\")) ($println \"end\"))))) " &
+      " (let tb (spawn ^lane root " &
+      "  ($runtime/with_context {^output (fn [text] (b .set ($str/join [(b .get) text] \"\")))} " &
+      "   (fn [] ($println \"b\") ($sleep 1) ($print \"done\"))))) " &
+      " (await ta) (await tb)) [(a .get) (b .get)]",
+      "[\"aend\\nchild\\n\" \"b\\ndone\"]")
+
+  test "fiber execution quantum applies inside eager collection callbacks":
+    for operation in ["map", "filter", "filter_map", "each"]:
+      check_eval("(let ticks ($cell 0)) (let stop ($cell false)) " &
+        "(scope (let ticker (spawn ^lane root " &
+        " (while (not (stop .get)) ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
+        " (let worker (spawn ^lane root ($" & operation & " [1] (fn [item] " &
+        "  (let until (+ ($os/monotonic_ms) 30)) " &
+        "  (while (< ($os/monotonic_ms) until) nil) item)))) " &
+        " (await worker) (stop .set true) (await ticker)) (> (ticks .get) 3)",
+        "true")
+
+  test "a console sink can await in its calling fiber":
+    check_eval("(let output ($cell \"\")) (scope (let task (spawn ^lane root " &
+      " ($runtime/with_context {^output (fn [text] ($sleep 1) (output .set text))} " &
+      "  (fn [] ($println \"console\"))))) (await task)) (output .get)",
+      "\"console\\n\"")
+
+  test "synchronous subprocess calls park fibers and preserve argument evaluation":
+    check_eval("(let ticks ($cell 0)) (let calls ($cell 0)) (let stop ($cell false)) " &
+      "(scope (let ticker (spawn ^lane root " &
+      " (while (not (stop .get)) ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
+      " (let worker (spawn ^lane root ($os/exec ^cmd " &
+      "   (do (calls .set (+ (calls .get) 1)) \"sleep\") ^args [\"1\"]))) " &
+      " (let result (await worker)) (stop .set true) (await ticker) " &
+      " [result/status (> (ticks .get) 10) (calls .get)])", "[0 true 1]")
+
+  test "collection callbacks can await and preserve eager receiver shapes":
+    check_eval("(scope (let worker (spawn ^lane root " &
+      " [($map #{^a 1 ^b 2} (fn [x] ($sleep 1) (+ x 1))) " &
+      "  ($filter [1 2 3] (fn [x] ($sleep 1) (> x 1))) " &
+      "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) void x))) " &
+      "  ([1 2] .map (fn [x] ($sleep 1) (* x 2)))])) (await worker))",
+      "[#{^a 2 ^b 3} [2 3] [2] [2 4]]")
+
+  test "sorting callbacks pause, compute keys once, and preserve stable order":
+    check_eval("(let keys ($cell 0)) (scope (let task (spawn ^lane root " &
+      " ($order/sort_by [{^k 2 ^id \"a\"} {^k 1 ^id \"b\"} {^k 2 ^id \"c\"}] " &
+      "  (fn [x] ($sleep 1) (keys .set (+ (keys .get) 1)) x/k) " &
+      "  ^compare (fn [a b] ($sleep 1) ($order/compare a b))))) " &
+      " [(await task) (keys .get)])",
+      "[[{^k 1 ^id \"b\"} {^k 2 ^id \"a\"} {^k 2 ^id \"c\"}] 3]")
+
+  test "cancelling callback and subprocess work remains responsive":
+    for expression in ["($map [1] (fn [x] (while true nil)))",
+                       "($os/exec ^cmd \"sleep\" ^args [\"5\"])"]:
+      check_eval("(scope (let task (spawn ^lane root " & expression & ")) " &
+        " ($sleep 20) (let start ($os/monotonic_ms)) (task .cancel) " &
+        " (let outcome (task .join)) " &
+        " [outcome (< (- ($os/monotonic_ms) start) 100)])",
+        "[TaskOutcome/cancelled true]")
+
+  test "synchronous file operations retain byte content and typed failures in fibers":
+    let path = getTempDir() / "gene-fiber-file-content"
+    defer: removeFile(path)
+    check_eval("(scope (let task (spawn ^lane root (do " &
+      " ($fs/write_text_atomic " & geneString(path) & " \"initial\" ^owner_only true) " &
+      " ($fs/write_bytes " & geneString(path) & " ($binary/from_list [0 255 97])) " &
+      " [($binary/to_list ($fs/read_bytes " & geneString(path) & ")) " &
+      "  (try ($fs/read_text " & geneString(path & "-missing") & " ) false " &
+      "   catch OsError true)]))) (await task))", "[[0 255 97] true]")
+
+  test "set_cwd changes relative paths while preserving the launch directory":
+    let previous = getCurrentDir()
+    let path = getTempDir() / "gene-set-cwd-spec"
+    createDir(path)
+    defer:
+      setCurrentDir(previous)
+      removeFile(path / "data.txt")
+      removeDir(path)
+    let app = newApplication()
+    let scope = newGlobalScope(app)
+    check run(compileSource("($os/set_cwd " & geneString(path) & ") " &
+      "($fs/write_text \"data.txt\" \"workspace\") " &
+      "[($fs/read_text \"data.txt\") ($os/launch_dir)]"), scope).print() ==
+      "[\"workspace\" " & geneString(previous) & "]"
+
 suite "spec — parser helpers from design":
+  test "located reading exposes metadata and eval preserves nested error locations":
+    check_eval("(let forms ($parse/read_all \"\\n(+ 1\\n  (missing))\" " &
+               "^source \"turn-57\" ^locs true)) " &
+               "(let form (forms .next)) " &
+               "(let m ($node/meta form)) [m/source m/line m/col]",
+               "[\"turn-57\" 2 1]")
+    let scope = newGlobalScope()
+    try:
+      discard run(compileSource("(let forms ($parse/read_all " &
+        "\"\\n(+ 1\\n  (missing))\" ^source \"turn-57\" ^locs true)) " &
+        "(eval (forms .next) ^in (env))"), scope)
+      check false
+    except GeneError as error:
+      check error.loc.sourceName == "turn-57"
+      check error.loc.line == 3
+      check error.loc.col == 3
+    check_eval("(try ($parse/read_all \"(\" ^source \"turn-58\" ^locs true) " &
+               "false catch ParseError [$err/source $err/line $err/col])",
+               "[\"turn-58\" 1 2]")
+
   test "read_one feeds eval and read_all returns a stream":
     check_eval("(eval ($read_one \"(+ 1 2)\") ^in (env))", "3")
     check_eval("(var s ($read_all \"(a) (b 2)\")) " &

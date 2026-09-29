@@ -5,7 +5,7 @@
 import std/strutils
 import ./types
 
-const NativeErrorModelVersion* = "3"
+const NativeErrorModelVersion* = "4"
 
 proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
   var local = if name.startsWith("gene/"): name[5..^1] else: name
@@ -36,8 +36,10 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
 proc nativeErrorAcceptsCall*(metadata: NativeErrorMetadata,
                              positionalCount, namedCount: int): bool =
   ## Shapes accepted by these native implementations before their body-specific
-  ## work. All catalogued models reject named arguments. Invalid shapes raise
+  ## work. Located reading accepts named arguments. Invalid shapes raise
   ## ordinary RuntimeError, rather than a generated annotated-parameter failure.
+  if metadata.identity == "gene/read_all":
+    return positionalCount == 1 and namedCount <= 2
   if namedCount != 0: return false
   case metadata.identity
   of "gene/assert": positionalCount in 1..2

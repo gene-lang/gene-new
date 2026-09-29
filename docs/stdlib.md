@@ -63,6 +63,46 @@ a lowercase hexadecimal digest. Use Bytes for binary files and payloads:
 
 ## Files
 
+`($os/set_cwd directory)` changes the process working directory. Relative
+filesystem paths subsequently resolve there; `$os/launch_dir` still reports
+the directory captured when the application started. Applications sharing one
+process should set their working directory at boot.
+
+Inside a scheduled fiber, synchronous `$os/exec`, `$fs/read_text`, and
+`$fs/write_text` park the fiber while their asynchronous adapters do the I/O.
+They retain their synchronous results. Other sessions and cancellation can
+run while the operation is pending.
+
+## Task context and source locations
+
+`($runtime/with_context context thunk)` installs a value while calling
+`thunk`, restores the previous value on every exit, and returns the thunk's
+result. `($runtime/context)` reads it (initially `nil`). Spawned tasks inherit
+the value and retain it across pauses, independently of other tasks. A
+non-nil context keeps spawned work on the root lane.
+
+When the context is a map with a callable `^output` field, `$print` and
+`$println` call that sink with the formatted text, including the newline for
+`$println`. Without a sink they write to the ordinary process output. Contexts
+may contain Cells for application lifecycle state; the runtime does not close
+them automatically. An application can mark its shared turn state closed and
+reject later operations while continuing to route detached task output.
+
+`($parse/read_all text ^source "response" ^locs true)` returns a Stream of
+forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
+nodes. Lines and columns start at 1. `eval` honors this metadata when reporting
+errors. Without `^locs`, the forms retain the ordinary reader representation.
+
+```gene runnable
+(let forms ($parse/read_all "\n(+ 1 2)" ^source "response" ^locs true))
+(let form (forms .next))
+(let location ($node/meta form))
+[location/source location/line location/col (eval form ^in (env))]
+# ["response" 2 1 3]
+```
+
+## File recipes
+
 This recipe writes a file under the launch directory:
 
 ```gene

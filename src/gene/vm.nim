@@ -214,6 +214,8 @@ type
                             # truncates back to it before running catch clauses
 
   Fiber = ref object of RootObj
+    taskContext: Value
+    nativeTask: Value
     initializationLease: RootRef
     privateCall: bool
     callError: ref CatchableError
@@ -289,6 +291,9 @@ type
     aioWriteText
     aioTcpReadText
     aioTcpWriteText
+
+  NativeFileOperation = enum
+    nfoNone, nfoRead, nfoWrite, nfoAtomicWrite
 
   AsyncIoEnqueueResult = enum
     aioUnavailable
@@ -473,6 +478,9 @@ type
     builtins: Scope
     boundCallTemplate: FunctionProto
     streamCallbackTemplate: FunctionProto
+    collectionCallbackTemplate: FunctionProto
+    sortCallbackTemplate: FunctionProto
+    outputCallbackTemplate: FunctionProto
     callableViewTemplate: FunctionProto
     errorDefaultMessage: Value
     tests: TestRegistry
@@ -914,6 +922,12 @@ type
     resourceId: uint64
     deadline: MonoTime
 
+  NativeFrameRequest = object of CatchableError
+    ## Native collection shells transfer iteration to this fiber's VM stack.
+    chunk: Chunk
+    scope: Scope
+    label: string
+
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
 # parks on blocking channel/actor operations. Root-level channel use keeps its
 # original synchronous behavior. The active scheduler pointer and fiber-active
@@ -927,6 +941,8 @@ var activeConstructionDepth {.threadvar.}: int
 var activeVmBudget {.threadvar.}: ptr EvalBudget
 var activeVmScope {.threadvar.}: ptr Scope
 var activeTask {.threadvar.}: Value
+var activeTaskContext {.threadvar.}: Value
+var activeVmFiber {.threadvar.}: Fiber
 var nativeSyncCallbackDepth {.threadvar.}: int
 
 type
@@ -1344,6 +1360,8 @@ proc schedulerRunOneRootUntil(deadline: MonoTime,
 proc enqueueAsyncReadText(path: string, task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncWriteText(path, text: string,
                            task: Value): AsyncIoEnqueueResult
+proc startNativeFileTask(name, path, text: string, operation: NativeFileOperation,
+                         scope: Scope, ownerOnly = false): Value
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
                              task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
@@ -2799,6 +2817,91 @@ type SortEntry = object
   value: Value
   key: Value
 
+type SortCallState = ref object of RootObj
+  source: Value
+  entries, scratch: seq[SortEntry]
+  index, width, first, middle, last, left, right, position: int
+
+proc prepareSortKey(context: RootRef, args: openArray[Value],
+                     call: ptr NativeCall): Value {.nimcall.} =
+  let state = SortCallState(context)
+  state.entries.add SortEntry(value: state.source.listItems[state.index], key: args[0])
+  inc state.index
+  NIL
+
+proc nextSortPair(context: RootRef, args: openArray[Value],
+                   call: ptr NativeCall): Value {.nimcall.} =
+  let state = SortCallState(context)
+  let size = state.entries.len
+  while state.width < size:
+    if state.last == 0:
+      state.middle = min(state.first + state.width, size)
+      state.last = min(state.middle + state.width, size)
+      state.left = state.first
+      state.right = state.middle
+      state.position = state.first
+    if state.left < state.middle and state.right < state.last:
+      return newList(@[state.entries[state.left].key, state.entries[state.right].key])
+    while state.position < state.last:
+      if state.left < state.middle:
+        state.scratch[state.position] = state.entries[state.left]
+        inc state.left
+      else:
+        state.scratch[state.position] = state.entries[state.right]
+        inc state.right
+      inc state.position
+    state.first = state.last
+    state.last = 0
+    if state.first >= size:
+      swap(state.entries, state.scratch)
+      state.width *= 2
+      state.first = 0
+  NIL
+
+proc chooseSortEntry(context: RootRef, args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
+  let state = SortCallState(context)
+  if checkedOrderResult(args[0]) <= 0:
+    state.scratch[state.position] = state.entries[state.left]
+    inc state.left
+  else:
+    state.scratch[state.position] = state.entries[state.right]
+    inc state.right
+  inc state.position
+  NIL
+
+proc finishSort(context: RootRef, args: openArray[Value],
+                  call: ptr NativeCall): Value {.nimcall.} =
+  let state = SortCallState(context)
+  var values: seq[Value]
+  for entry in state.entries: values.add entry.value
+  newList(values, state.source.listImmutable)
+
+proc defaultSortCompare(args: openArray[Value]): Value {.nimcall.} =
+  newInt(orderCompare(args[0], args[1], true))
+
+proc requestSortFrame(source, keyFn, comparator: Value, caller: Scope) =
+  let state = SortCallState(source: source, width: 1,
+                           scratch: newSeq[SortEntry](source.listItems.len))
+  let proto = caller.application().sortCallbackTemplate
+  let scope = newScope(caller)
+  scope.prepareSlots(proto.localNames)
+  let arguments = [source, keyFn,
+    newNativeContextFn("sort/prepare", state, prepareSortKey, acceptsNamed = false),
+    newNativeContextFn("sort/next", state, nextSortPair, acceptsNamed = false),
+    (if comparator.kind == vkNil:
+       builtinNativeFn("sort/compare", defaultSortCompare) else: comparator),
+    newNativeContextFn("sort/choose", state, chooseSortEntry, acceptsNamed = false),
+    newNativeContextFn("sort/finish", state, finishSort, acceptsNamed = false)]
+  for i, argument in arguments:
+    scope.defineFreshCallSlot(proto.positionalSlots[i], argument)
+  var request: ref NativeFrameRequest
+  new(request)
+  request.chunk = proto.chunk
+  request.scope = scope
+  request.label = "sort callback"
+  raise request
+
 proc orderComparator(call: ptr NativeCall): Value =
   if call == nil: return NIL
   var found = false
@@ -2851,6 +2954,8 @@ proc orderSortedList(source, keyFn, comparator: Value,
     raise newException(GeneError, "order/sort expects a finite List")
   if keyFn.kind != vkNil and not keyFn.valueImplementsCallable(scope):
     raiseTypeError("order/sort_by key_fn", "Callable", keyFn, scope)
+  if activeVmFiber != nil:
+    requestSortFrame(source, keyFn, comparator, scope)
   var entries = newSeq[SortEntry](source.listItems.len)
   for i, value in source.listItems:
     entries[i].value = value
@@ -4587,11 +4692,52 @@ proc raiseReaderError(name, message, typeName: string, scope: Scope,
   e.hasErrVal = true
   raise e
 
-proc readFormsFromString(name: string, value: Value, scope: Scope): seq[Value] =
+proc readFormsFromString(name: string, value: Value, scope: Scope,
+                         source = "", located = false): seq[Value] =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
   try:
-    result = readAll(value.strVal)
+    if located:
+      let unit = readAllWithLocs(value.strVal, source)
+      proc locate(value: Value): Value =
+        if value.kind == vkNode:
+          var meta = initPropTable()
+          for key, item in value.meta: meta[key] = item
+          let loc = unit.locs.getOrDefault(value.bits)
+          if loc.line > 0:
+            meta["source"] = newStr(loc.sourceName)
+            meta["line"] = newInt(loc.line)
+            meta["col"] = newInt(loc.col)
+          var body: seq[Value]
+          for item in value.body: body.add locate(item)
+          var props = initPropTable()
+          for key, item in value.props: props[key] = locate(item)
+          return newNode(locate(value.head), props = props, body = body,
+                         meta = meta, immutable = value.nodeImmutable)
+        if value.kind == vkList:
+          var items: seq[Value]
+          for item in value.listItems: items.add locate(item)
+          return newList(items, immutable = value.listImmutable)
+        if value.kind == vkMap:
+          var entries = initPropTable()
+          for key, item in value.mapEntries: entries[key] = locate(item)
+          return newMap(entries, immutable = value.mapImmutable)
+        if value.kind == vkPipeline:
+          var stages: seq[PipelineStage]
+          for original in value.pipelineStages:
+            var stage = original
+            stage.head = locate(original.head)
+            stage.props = initPropTable()
+            for key, item in original.props: stage.props[key] = locate(item)
+            stage.body = @[]
+            for item in original.body: stage.body.add locate(item)
+            stages.add stage
+          return newPipeline(locate(value.pipelineInitial), stages,
+                             value.pipelineImmutable)
+        value
+      for form in unit.forms: result.add locate(form)
+    else:
+      result = readAll(value.strVal, source)
   except ReadError as e:
     raiseReaderError(name, e.msg, "ParseError", scope,
                      e.sourceName, e.line, e.col, e.contextFrames)
@@ -4609,7 +4755,32 @@ proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_all", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  newStream(readFormsFromString("read_all", args[0], scope))
+  var source = ""
+  var located = false
+  if call != nil:
+    for i, name in call.namedNames:
+      let value = call.namedValues[i]
+      case name
+      of "source":
+        requireStr("read_all ^source", value)
+        source = value.strVal
+      of "locs":
+        if value.kind != vkBool:
+          raise newException(GeneError, "read_all ^locs expects Bool")
+        located = value.boolVal
+      else:
+        raise newException(GeneError, "read_all got unexpected named argument: " & name)
+  newStream(readFormsFromString("read_all", args[0], scope, source, located))
+
+proc biRuntimeContext(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "runtime/context expects no arguments")
+  activeTaskContext
+
+proc biSwapTaskContext(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("runtime/with_context", args)
+  result = activeTaskContext
+  activeTaskContext = args[0]
 
 proc tokenValue(token: Token, tokenType: Value): Value =
   var props = initPropTable()
@@ -5673,6 +5844,101 @@ proc dispatchGenericForward(name: string, receiver: Value,
 proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biFilterMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
+type CollectionCallState = ref object of RootObj
+  operation: string
+  receiver: Value
+  originals: seq[Value]
+  keys: seq[Value]
+  items: seq[Value]
+  entries: PropTable
+  hashEntries: seq[HashMapEntry]
+  index: int
+
+proc collectCallbackResult(context: RootRef, args: openArray[Value],
+                           call: ptr NativeCall): Value {.nimcall.} =
+  let state = CollectionCallState(context)
+  let mapped = args[0]
+  let keep = case state.operation
+             of "filter": mapped.isTruthy
+             of "filter_map": mapped.kind != vkVoid
+             of "each": false
+             else: true
+  if keep:
+    let value = if state.operation == "filter": state.originals[state.index]
+                elif mapped.kind == vkVoid: NIL
+                else: mapped
+    case state.receiver.kind
+    of vkMap: state.entries[state.keys[state.index].strVal] = value
+    of vkHashMap:
+      state.hashEntries.add HashMapEntry(key: state.keys[state.index], val: value)
+    else: state.items.add value
+  inc state.index
+  NIL
+
+proc finishCallbackCollection(context: RootRef, args: openArray[Value],
+                               call: ptr NativeCall): Value {.nimcall.} =
+  let state = CollectionCallState(context)
+  if state.operation == "each": return NIL
+  case state.receiver.kind
+  of vkList: newList(move(state.items), state.receiver.listImmutable)
+  of vkMap: newMap(move(state.entries), state.receiver.mapImmutable)
+  of vkHashMap: newHashMap(move(state.hashEntries))
+  of vkSet:
+    if state.operation != "filter":
+      beginKeyOperation(state.receiver)
+      defer: endKeyOperation()
+      return buildSet(state.operation, state.items)
+    newSet(state.items)
+  else: NIL
+
+proc clearCallbackCollection(context: RootRef, args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  let state = CollectionCallState(context)
+  state.receiver = NIL
+  state.originals = @[]
+  state.keys = @[]
+  state.items = @[]
+  state.entries = initPropTable()
+  state.hashEntries = @[]
+  NIL
+
+proc requestCollectionFrame(operation: string, receiver, callback: Value,
+                             caller: Scope) =
+  let state = CollectionCallState(operation: operation, receiver: receiver,
+                                  entries: initPropTable())
+  case receiver.kind
+  of vkList:
+    for item in receiver.listItems: state.originals.add item
+  of vkSet:
+    for item in receiver.setItems: state.originals.add item
+  of vkMap:
+    for key, value in receiver.mapEntries:
+      state.keys.add newStr(key)
+      state.originals.add value
+  of vkHashMap:
+    for entry in receiver.hashMapEntries:
+      state.keys.add entry.key
+      state.originals.add entry.val
+  else: return
+  let proto = caller.application().collectionCallbackTemplate
+  let scope = newScope(caller)
+  scope.prepareSlots(proto.localNames)
+  let arguments = [newList(state.originals), callback,
+    newNativeContextFn("collection/accept", state, collectCallbackResult,
+                       acceptsNamed = false),
+    newNativeContextFn("collection/finish", state, finishCallbackCollection,
+                       acceptsNamed = false),
+    newNativeContextFn("collection/clear", state, clearCallbackCollection,
+                       acceptsNamed = false)]
+  for i, argument in arguments:
+    scope.defineFreshCallSlot(proto.positionalSlots[i], argument)
+  var request: ref NativeFrameRequest
+  new(request)
+  request.chunk = proto.chunk
+  request.scope = scope
+  request.label = operation & " callback"
+  raise request
+
 proc mapCollection(args: openArray[Value], call: ptr NativeCall,
                    dropVoid: bool): Value =
   let name = if dropVoid: "filter_map" else: "map"
@@ -5683,6 +5949,8 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
   if args.len != 2:
     raise newException(GeneError, name & " expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
+  if activeVmFiber != nil and receiver.kind in {vkList, vkMap, vkHashMap, vkSet}:
+    requestCollectionFrame(name, receiver, args[1], scope)
   case receiver.kind
   of vkStream:
     result = newLazyStream(receiver,
@@ -5737,6 +6005,8 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     raise newException(GeneError,
       "filter expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
+  if activeVmFiber != nil and receiver.kind in {vkList, vkMap, vkHashMap, vkSet}:
+    requestCollectionFrame("filter", receiver, args[1], scope)
   case receiver.kind
   of vkStream:
     result = newLazyStream(receiver, pullFilterStream,
@@ -7550,9 +7820,32 @@ when defined(geneWasm):
       {.cast(gcsafe).}:
         geneWasmEmit(s))
 
+proc requestOutputFrame(sink: Value, text: string) =
+  let caller = activeVmScope[]
+  let proto = caller.application().outputCallbackTemplate
+  let scope = newScope(caller)
+  scope.prepareSlots(proto.localNames)
+  scope.defineFreshCallSlot(proto.positionalSlots[0], sink)
+  scope.defineFreshCallSlot(proto.positionalSlots[1], newStr(text))
+  var request: ref NativeFrameRequest
+  new(request)
+  request.chunk = proto.chunk
+  request.scope = scope
+  request.label = "output sink"
+  raise request
+
 proc biPrint(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
+  let sink = if activeTaskContext.kind == vkMap:
+               activeTaskContext.mapEntries.getOrDefault("output", NIL)
+             else: NIL
+  if sink.kind notin {vkNil, vkVoid}:
+    if activeVmFiber != nil:
+      requestOutputFrame(sink, parts.join(" "))
+    discard applyCall(sink, [newStr(parts.join(" "))], NamedArgs(),
+                      if activeVmScope != nil: activeVmScope[] else: nil)
+    return NIL
   when defined(geneWasm): geneWasmEmit(parts.join(" "))
   else: stdout.write parts.join(" ")
   NIL
@@ -7560,6 +7853,15 @@ proc biPrint(args: openArray[Value]): Value {.nimcall.} =
 proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
+  let sink = if activeTaskContext.kind == vkMap:
+               activeTaskContext.mapEntries.getOrDefault("output", NIL)
+             else: NIL
+  if sink.kind notin {vkNil, vkVoid}:
+    if activeVmFiber != nil:
+      requestOutputFrame(sink, parts.join(" ") & "\n")
+    discard applyCall(sink, [newStr(parts.join(" ") & "\n")], NamedArgs(),
+                      if activeVmScope != nil: activeVmScope[] else: nil)
+    return NIL
   when defined(geneWasm):
     geneWasmEmit(parts.join(" "))
     geneWasmEmit("\n")
@@ -7834,7 +8136,11 @@ proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioQueued:
     task
   of aioUnavailable:
-    completedReadTextTask(path)
+    when compileOption("threads"):
+      startNativeFileTask("fs/read_text_async", path, "", nfoRead,
+        if activeVmScope != nil: activeVmScope[] else: nil)
+    else:
+      completedReadTextTask(path)
   of aioQueueFull:
     asyncIoQueueFullTask("fs/read_text_async")
 
@@ -7851,9 +8157,29 @@ proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioQueued:
     task
   of aioUnavailable:
-    completedWriteTextTask(path, text)
+    when compileOption("threads"):
+      startNativeFileTask("fs/write_text_async", path, text, nfoWrite,
+        if activeVmScope != nil: activeVmScope[] else: nil)
+    else:
+      completedWriteTextTask(path, text)
   of aioQueueFull:
     asyncIoQueueFullTask("fs/write_text_async")
+
+proc awaitTaskValue(task: Value): Value
+
+proc finishNativeTask(): Value =
+  ## A synchronous I/O native starts one async operation and retries its call
+  ## instruction on wake. Arguments stay on the VM operand stack, so their
+  ## expressions and the I/O itself are each evaluated exactly once.
+  let task = activeVmFiber.nativeTask
+  if not task.taskDone:
+    var suspended: ref SuspendError
+    new(suspended)
+    suspended.task = task
+    suspended.retry = true
+    raise suspended
+  activeVmFiber.nativeTask = NIL
+  awaitTaskValue(task)
 
 proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 4:
@@ -8508,6 +8834,25 @@ proc buildBuiltins(app: Application): Scope =
   app.streamCallbackTemplate = compileSource(
     "(fn [callback item] (callback item))", "<stream callback>").functions[0]
   app.streamCallbackTemplate.chunk.callSites.clear()
+  app.collectionCallbackTemplate = compileSource("""
+    (fn collect [source callback accept finish clear]
+      (try
+        (for item in source (accept (callback item)))
+        (finish)
+        ensure (clear)))
+    """, "<builtin collection callback>").functions[0]
+  app.sortCallbackTemplate = compileSource("""
+    (fn sort [source key_fn prepare next_pair compare choose finish]
+      (for value in source (prepare (if key_fn (key_fn value) value)))
+      (var pair (next_pair))
+      (while pair
+        (choose (compare pair/0 pair/1))
+        (set pair (next_pair)))
+      (finish))
+    """, "<builtin sort callback>").functions[0]
+  app.outputCallbackTemplate = compileSource(
+    "(fn output [sink text] (sink text) nil)",
+    "<builtin output sink>").functions[0]
   app.callableViewTemplate = FunctionProto(
     name: "Callable contract", params: @["payload"], localNames: @["payload"],
     positionalSlots: @[0], positionalSlotMaySet: @[false],
@@ -9087,6 +9432,17 @@ proc buildBuiltins(app: Application): Scope =
     messages = sandboxGenerationMessages)
   result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
+  runtimeScope.define("context", builtinNativeFn("runtime/context", biRuntimeContext))
+  block:
+    let contextScope = newScope(result)
+    contextScope.define("swap_context", builtinNativeFn("runtime/swap_context", biSwapTaskContext))
+    let proto = compileSource("""
+      (fn with_context [context thunk]
+        (let previous (swap_context context))
+        (try (thunk) ensure (swap_context previous)))
+      """, "<builtin runtime/with_context>").functions[0]
+    runtimeScope.define("with_context", newFunction("runtime/with_context",
+                        proto.params, proto, contextScope))
   runtimeScope.define("gc_stats",
                       builtinNativeCallFn("runtime/gc_stats", biRuntimeGcStats,
                                           acceptsNamed = false))
@@ -9295,8 +9651,7 @@ proc buildBuiltins(app: Application): Scope =
     "snapshot": builtinNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
   result.define("read_one", builtinNativeCallFn("read_one", biReadOne,
                                             acceptsNamed = false))
-  result.define("read_all", builtinNativeCallFn("read_all", biReadAll,
-                                            acceptsNamed = false))
+  result.define("read_all", builtinNativeCallFn("read_all", biReadAll))
   result.define("lex_all", builtinNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
   result.define("to_stream", toStreamFn)
@@ -15859,8 +16214,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var chunk = chunkArg
   var scope = scopeArg
   let previousVmScope = activeVmScope
+  let previousVmFiber = activeVmFiber
   activeVmScope = addr scope
-  defer: activeVmScope = previousVmScope
+  activeVmFiber = fiber
+  defer:
+    activeVmScope = previousVmScope
+    activeVmFiber = previousVmFiber
   var recycleScope = false
   var stack = move stackArg
   # --- sp-register operand stack ---------------------------------------------
@@ -17434,7 +17793,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             try:
               compileEvalForm(node)
             except GeneError as e:
-              raiseCompileError(scope, e.msg)
+              try:
+                raiseCompileError(scope, e.msg)
+              except GeneError as diagnostic:
+                diagnostic.loc = e.loc
+                raise
               newChunk()
           pushFrame()
           enterFrame(evalChunk, evalScope, true)
@@ -17933,6 +18296,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           try:
             value = applyCall(callee, [], NamedArgs(), scope, site,
                               instructionLocAt(chunk, ip - 1))
+          except NativeFrameRequest as request:
+            enterBytecodeCall(request.chunk, request.scope, false, false,
+              NIL, "", false, @[], request.label, sp, false)
           except SuspendError as se:
             if not se.timer or se.retry:
               raise
@@ -18152,6 +18518,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 applyCall(callee, stack.toOpenArray(argsStart, (sp - 1)),
                           NamedArgs(), scope, site,
                           instructionLocAt(chunk, ip - 1))
+          except NativeFrameRequest as request:
+            strunc(argsStart)
+            enterBytecodeCall(request.chunk, request.scope, false, false,
+              NIL, "", false, @[], request.label, argsStart, false)
           except SuspendError as se:
             if not se.timer or se.retry:
               raise
@@ -18602,6 +18972,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 applyCall(callee, stack.toOpenArray(argsStart, (sp - 1)),
                           named, scope, site,
                           instructionLocAt(chunk, ip - 1))
+          except NativeFrameRequest as request:
+            strunc(calleeIndex)
+            enterBytecodeCall(request.chunk, request.scope, false, false,
+              NIL, "", false, @[], request.label, calleeIndex, false)
           except SuspendError as se:
             if not se.timer or se.retry:
               raise
@@ -18802,6 +19176,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               else:
                 applyCall(callee, args, named, scope, site,
                           authoredLoc)
+          except NativeFrameRequest as request:
+            strunc(calleeIndex)
+            enterBytecodeCall(request.chunk, request.scope, false, false,
+              NIL, "", false, @[], request.label, calleeIndex, false)
           except SuspendError as se:
             if not se.timer or se.retry:
               raise
@@ -19506,7 +19884,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError,
               "spawn cannot capture an in-progress constructed instance")
           let body = chunk.subchunks[inst[].intArg]
-          let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
+          let workerSafe = activeTaskContext.kind == vkNil and
+                           inst[].flag and scope.spawnCanMoveToWorker(body)
           publishSpawnCapture(scope, body)
           let taskParent =
             if workerSafe: snapshotSpawnScope(scope, body)
@@ -20615,9 +20994,13 @@ proc runFiber(f: Fiber) =
   var dummyIp = 0
   let savedActive = currentFiberActive
   let savedTask = activeTask
+  let savedContext = activeTaskContext
   currentFiberActive = true
   activeTask = f.task
+  activeTaskContext = f.taskContext
   defer:
+    f.taskContext = activeTaskContext
+    activeTaskContext = savedContext
     currentFiberActive = savedActive
     activeTask = savedTask
   let actor = f.actorOwner
@@ -20626,6 +21009,9 @@ proc runFiber(f: Fiber) =
     let injectCancel =
       f.task.kind == vkTask and f.task.taskCancelRequested and
         not f.task.taskDone and not f.inCancelCleanup()
+    if injectCancel and f.nativeTask.kind == vkTask:
+      f.nativeTask.requestTaskCancellation()
+      f.nativeTask = NIL
     let stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
                        validateArg = true, fiber = f,
                        injectCancel = injectCancel,
@@ -21144,6 +21530,7 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   ## operations drive the run queue until the task completes or parks.
   let task = newPendingTask()
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
+                taskContext: activeTaskContext,
                 started: false, workerSafe: workerSafe)
   enqueueRunnable(f)
   task
@@ -21366,7 +21753,7 @@ proc invokeStreamCallback(stream, item: Value): Value =
   let parentTask = activeTask
   let pending = newPendingTask()
   let frame = Fiber(chunk: proto.chunk, scope: callScope, task: pending,
-    privateCall: true)
+    privateCall: true, taskContext: activeTaskContext)
   stream.setStreamGeneratorContinuation(frame)
   try:
     runFiber(frame)
