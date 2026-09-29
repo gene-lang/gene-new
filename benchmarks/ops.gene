@@ -1,0 +1,111 @@
+# VM operation timings. Run with an optimized Gene binary on an idle machine.
+# Gross iteration cost includes loop/control work; net subtracts empty while.
+(mod ops)
+
+(fn plain [x] x)
+(fn typed [x : F64] : F64 x)
+(type Meter ^props {^v F64}
+  (message value [] : F64 self/v))
+
+(fn empty_loop [n]
+  (var i 0)
+  (while (< i n) (set i (+ i 1))))
+
+(fn typed_counter [n]
+  (var i : Int 0)
+  (while (< i n) (set i (+ i 1))))
+
+(fn call_plain [n]
+  (var i 0)
+  (while (< i n)
+    (plain 1)
+    (set i (+ i 1))))
+
+(fn call_typed [n]
+  (var i 0)
+  (while (< i n)
+    (typed 1.0)
+    (set i (+ i 1))))
+
+(fn send_value [n meter]
+  (var i 0)
+  (while (< i n)
+    (meter .value)
+    (set i (+ i 1))))
+
+(fn get_buffer [n buffer]
+  (var i 0)
+  (while (< i n)
+    (buffer .get i)
+    (set i (+ i 1))))
+
+(fn set_buffer [n buffer]
+  (var i 0)
+  (while (< i n)
+    (buffer .set i 1.0)
+    (set i (+ i 1))))
+
+(fn get_prop [n point]
+  (var i 0)
+  (while (< i n)
+    point/v
+    (set i (+ i 1))))
+
+(fn for_list [n items]
+  (var last 0)
+  (for item in items (set last item))
+  last)
+
+(fn indexed_list [n items]
+  (var last 0)
+  (var i 0)
+  (while (< i n)
+    (set last items/%i)
+    (set i (+ i 1)))
+  last)
+
+(fn main [args] : Nil
+  (let n (if (> ($size args/body) 0)
+             ($parse/parse_int args/body/0)
+             1000000))
+  ($assert (> n 0) "ops iteration count must be positive")
+  (let meter (Meter ^v 1.0))
+  (let point {^v 1})
+  (let buffer ($buffer F64 n))
+  (let items ($into ($range 0 n) []))
+
+  # Warm each call shape, message table, and container once outside timing.
+  (empty_loop 1)
+  (typed_counter 1)
+  (call_plain 1)
+  (call_typed 1)
+  (send_value 1 meter)
+  (get_buffer 1 buffer)
+  (set_buffer 1 buffer)
+  (get_prop 1 point)
+  (for_list n items)
+  (indexed_list 1 items)
+
+  (let baseline_start ($os/monotonic_ms))
+  (empty_loop n)
+  (let baseline_ms (- ($os/monotonic_ms) baseline_start))
+  (let baseline_ns (/ (* ($to_float baseline_ms) 1000000.0) ($to_float n)))
+  ($println $"empty_while gross_ns=${baseline_ns} net_ns=0.0 ms=${baseline_ms}")
+
+  (fn measure [label f]
+    (let started ($os/monotonic_ms))
+    (f)
+    (let elapsed (- ($os/monotonic_ms) started))
+    (let gross (/ (* ($to_float elapsed) 1000000.0) ($to_float n)))
+    ($println $"${label} gross_ns=${gross} net_ns=$(- gross baseline_ns) ms=${elapsed}"))
+
+  (measure "typed_counter" (fn [] (typed_counter n)))
+  (measure "plain_call" (fn [] (call_plain n)))
+  (measure "typed_call" (fn [] (call_typed n)))
+  (measure "message_send" (fn [] (send_value n meter)))
+  (measure "buffer_get" (fn [] (get_buffer n buffer)))
+  (measure "buffer_set" (fn [] (set_buffer n buffer)))
+  (measure "property_read" (fn [] (get_prop n point)))
+  (measure "for_list" (fn [] (for_list n items)))
+  (measure "indexed_while" (fn [] (indexed_list n items)))
+  nil)
