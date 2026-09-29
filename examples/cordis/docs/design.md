@@ -1280,6 +1280,24 @@ records become visible. A cleanup or generation-release failure after that
 point reports `recovery_required`; it does not roll visibility back to a mix of
 generations.
 
+### Host-controlled retirement
+
+A host that leases composition snapshots can set `LoaderOptions ^retirement
+callback`. This selects staged reconciliation. Publication replaces the active
+provider and hook indexes, while the old contexts, effect scopes, and owned
+module generations remain reachable through a `RetirementTicket`. The callback
+receives the ticket after publication; `(ticket .instances)` identifies the
+old activation instances. `(loader .instances)` supplies the currently
+published activation handles for the host's new snapshot. These revisions use distinct handles, so an existing
+call cannot resolve to a replacement halfway through execution.
+
+The host calls `(loader .retire ticket)` when its last snapshot lease ends.
+Retirement disposes old effects in consumer order and releases module graphs.
+The operation is idempotent, rejects tickets from another loader, and reports
+cleanup failures as `RecoveryRequired`. Loader shutdown drains outstanding
+tickets. With no retirement callback, the ordinary immediate retirement and
+instance-handle preservation rules apply.
+
 Staging covers Cordis-visible publication, not arbitrary external effects. A
 candidate may still log, read a file, or contact a remote system before commit
 within its admitted authority. Plugins whose activation cannot be repeated or

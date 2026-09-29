@@ -14,7 +14,7 @@
          ContinuationAlreadyCalled HookDispatchError CompositionError
          ReloadRejected RecoveryRequired
          Runtime Context ActivationContext EffectScope EffectLease
-         ProviderLease PluginInstance HookSubject RealmId Loader
+         ProviderLease PluginInstance HookSubject RealmId Loader RetirementTicket
          invocation_limits service_key hook_key default_plugin_invoker
          invoke_effect_owner config_update hmr_reloaded new_runtime]
   ^from "./runtime" ^export true)

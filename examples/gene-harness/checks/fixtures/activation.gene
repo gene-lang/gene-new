@@ -1,0 +1,8 @@
+(mod activation_fixture)
+(import [Plugin] ^from "../../src/plugin_api")
+
+(fn make_direct_plugin [value : Int]
+  (let captured ($cell value))
+  (Plugin ^id "direct-activation" ^provides []
+    ^activate (fn [host]
+      (host "captured" (fn [] (captured .get))))))

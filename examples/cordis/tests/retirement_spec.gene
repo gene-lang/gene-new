@@ -1,0 +1,82 @@
+(mod cordis_retirement_spec)
+
+(import $test [describe it after_each assert_equal assert_raises])
+(import [RuntimeOptions LoaderOptions PluginSpec PluginCallKind EffectDisposed
+         invocation_limits default_plugin_invoker new_runtime invoke_effect_owner]
+  ^from "../src/cordis")
+(import [LoadedValue loaded_key] ^from "../fixtures/contract")
+
+(describe "Cordis deferred retirement"
+  (after_each [t]
+    (if_not ($absent? t/runtime) (t/runtime .close)))
+
+  (it "keeps old effect calls alive until the host releases the retirement ticket" [t]
+    (let cleanups ($cell []))
+    (let scopes ($cell []))
+    (let tickets ($cell []))
+    (fn version [number]
+      (PluginSpec ^id "revision" ^config_schema nil ^requires [] ^provides [] ^reload nil
+        ^activate (fn [ctx config]
+          (ctx .effect $"version-${number}" (fn [fx]
+            ((scopes .get) .push fx)
+            (fx .defer (fn [] ((cleanups .get) .push number))))))))
+    (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (let loader (runtime .loader (LoaderOptions ^plugin_root "fixtures/plugins"
+      ^shared [] ^max_namespaces [] ^default_limits nil ^reload_policy nil
+      ^retirement (fn [ticket] ((tickets .get) .push ticket)))))
+    (let manifest {^format 1 ^entries [{^id "revision" ^module "host/revision"}]})
+    (loader .reconcile_plugins manifest {^revision (version 1)})
+    (let old_scope (scopes .get))
+    (let v1 old_scope/0)
+    (loader .reconcile_plugins manifest {^revision (version 2)})
+    (assert_equal (cleanups .get) [] "publication must not dispose a leased revision")
+    (assert_equal (invoke_effect_owner v1 PluginCallKind/operation (fn [] 1) []) 1
+      "the old effect context must remain callable")
+    (let pending (tickets .get))
+    (assert_equal pending/.size 1 "replacement must hand the host one retirement ticket")
+    (let instances (pending/0 .instances))
+    (assert_equal instances/.size 1 "the ticket must identify its retiring instance")
+    (loader .retire pending/0)
+    (assert_equal (cleanups .get) [1] "release must dispose only the old revision")
+    (assert_raises (fn [] (invoke_effect_owner v1 PluginCallKind/operation (fn [] 1) []))
+      EffectDisposed "retired resources must reject later calls")
+    (loader .retire pending/0)
+    (assert_equal (cleanups .get) [1] "retirement must be idempotent")
+    (loader .reconcile_plugins {^format 1 ^entries []} {})
+    (assert_equal (cleanups .get) [1] "removal also waits for retirement")
+    (loader .dispose)
+    (assert_equal (cleanups .get) [1 2] "loader shutdown must drain outstanding tickets"))
+
+  (it "keeps a generated module's resource alive across an await and closes it on retirement" [t]
+    (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits (invocation_limits))))
+    (set t/runtime runtime)
+    (runtime .admit_service_key loaded_key)
+    (let tickets ($cell []))
+    (let loader (runtime .loader (LoaderOptions ^plugin_root "fixtures/plugins"
+      ^shared ["fixtures/contract.gene" "src/plugin_api.gene"] ^max_namespaces []
+      ^default_limits nil ^reload_policy nil
+      ^retirement (fn [ticket] ((tickets .get) .push ticket)))))
+    (loader .reconcile {^format 1 ^entries [{^id "provider" ^module "retirement.gene" ^config 1}]})
+    (let old ((runtime .root) .require loaded_key))
+    (scope
+      (let turn (spawn ^lane root
+        (do
+          (let first (old .LoadedValue:value))
+          ($sleep 20)
+          [first (old .LoadedValue:value)])))
+      ($sleep 2)
+      (loader .reconcile {^format 1 ^entries [{^id "provider" ^module "retirement.gene" ^config 2}]})
+      (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 2
+        "new lookups must see the newly published module")
+      (assert_equal (await turn) [1 1] "the leased binding must remain on its old module"))
+    (let pending (tickets .get))
+    (loader .retire pending/0)
+    ($assert
+      (try (old .LoadedValue:value) false catch Any ($str/contains? $err/message "closed"))
+      "the plugin's resource must close when its generation retires")
+    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 2
+      "retiring the old module must not withdraw the new provider")
+    (loader .dispose)))

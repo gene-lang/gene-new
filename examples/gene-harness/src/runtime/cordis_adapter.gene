@@ -175,6 +175,7 @@
       (LoaderOptions ^plugin_root configured/plugin_root ^shared configured/shared
         ^max_namespaces configured/max_namespaces
         ^default_limits configured/default_limits ^reload_policy configured/reload_policy
+        ^retirement configured/retirement
         ^allow_pending true
         ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))
   (Composition ^token token))

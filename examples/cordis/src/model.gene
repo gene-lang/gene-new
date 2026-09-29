@@ -64,6 +64,7 @@
           ^default_limits InvocationLimits?
           ^reload_policy Any?
           ^publication PublicationParticipant?
+          ^retirement Any?
           ^allow_pending Bool?
           ^descriptor_factory Any?})
 

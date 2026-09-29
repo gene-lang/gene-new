@@ -144,7 +144,9 @@
     (loader_reconcile_plugins self manifest plugins))
   (message reload [changed_paths] (loader_reload self changed_paths))
   (message inspect [] (loader_inspect self))
+  (message instances [] (loader_instances self))
   (message await_settled [] : Nil (loader_await_settled self))
+  (message retire [ticket] : Nil (loader_retire self ticket))
   (message dispose [] : Nil (loader_dispose self))
   (impl Disposable
     (message dispose [] : Nil (loader_dispose self))))
@@ -260,11 +262,21 @@
           ^hook HookKey ^handlers Any ^index Int ^payload Any
           ^terminal Any ^used Any})
 
+(type RetirementTicket
+  ^props {^token Any}
+  (message instances [] (retirement_instances self)))
+
+(type RetirementRecord ^^private
+  ^props {^ticket RetirementTicket ^loader Any ^runtime Any ^instances Any
+          ^resources Any ^contexts Any ^generations Any ^closed Any})
+
+(var retirement_records ^^private ($cell ($thaw #[])))
+
 (type LoaderRecord
   ^private true
   ^props {^token Any ^runtime RuntimeRecord ^options LoaderOptions
           ^entries Any ^order Any ^manifest Any ^state Any
-          ^generations Any ^watchers Any ^host_plugins Any})
+          ^generations Any ^watchers Any ^host_plugins Any ^retirements Any})
 
 (type LoaderEntryRecord
   ^private true
@@ -363,18 +375,34 @@
                       (== (record/owner/state .get) InstanceState/disposed)))
             (cordis_failure ContextDisposed "context is disposed"))
           (return record)))))
+  (var retired (retired_context context/token))
+  (if_not (absent? retired)
+    (if (|| (! (retired/alive .get))
+            (&& (! (absent? retired/owner))
+                (== (retired/owner/state .get) InstanceState/disposed)))
+      (cordis_failure ContextDisposed "context is disposed"))
+    (return retired))
   (cordis_failure ContextDisposed "context is disposed or foreign"))
 
 (fn context_record_even_if_closed ^^private [context]
   (for runtime in (runtime_records .get)
     (for record in (runtime/contexts .get)
       (if (same? record/token context/token) (return record))))
+  (retired_context context/token))
+
+(fn retired_context ^^private [token]
+  (for retirement in (retirement_records .get)
+    (for record in retirement/contexts
+      (if (same? record/token token) (return record))))
   nil)
 
 (fn instance_record ^^private [instance : PluginInstance]
   ($runtime/require_root_lane)
   (for runtime in (runtime_records .get)
     (for record in (runtime/instances .get)
+      (if (same? record/token instance/token) (return record))))
+  (for retirement in (retirement_records .get)
+    (for record in retirement/instances
       (if (same? record/token instance/token) (return record))))
   (cordis_failure InstanceDisposed "plugin instance is disposed or foreign"))
 
@@ -384,6 +412,10 @@
     (for record in (runtime/resources .get)
       (if (&& (== ($head record) EffectRecord)
               (same? record/token handle/token))
+        (return record))))
+  (for retirement in (retirement_records .get)
+    (for record in retirement/resources
+      (if (&& (== ($head record) EffectRecord) (same? record/token handle/token))
         (return record))))
   (cordis_failure EffectDisposed "effect scope is disposed or foreign"))
 
@@ -1319,6 +1351,15 @@
           (when "hook" (== ($head record) HookRecord))
           (else false)))
       (if (&& matches (same? record/token token)) (return record))))
+  (for retirement in (retirement_records .get)
+    (for record in retirement/resources
+      (var matches
+        (match kind
+          (when "cleanup" (== ($head record) CleanupRecord))
+          (when "provider" (== ($head record) ProviderRecord))
+          (when "hook" (== ($head record) HookRecord))
+          (else false)))
+      (if (&& matches (same? record/token token)) (return record))))
   nil)
 
 (fn invoke_cleanup ^^private [record]
@@ -2169,12 +2210,15 @@
   (if (&& (! (absent? options/descriptor_factory))
           (! (callable? options/descriptor_factory)))
     (cordis_failure CompositionError "descriptor_factory must be a host callable"))
+  (if (&& (! (absent? options/retirement)) (! (callable? options/retirement)))
+    (cordis_failure CompositionError "retirement must be a host callable"))
   (LoaderOptions
     ^plugin_root options/plugin_root
     ^shared ($freeze (copy_list options/shared))
     ^max_namespaces ($freeze (copy_list options/max_namespaces))
     ^default_limits limits ^reload_policy options/reload_policy
     ^publication options/publication ^allow_pending options/allow_pending
+    ^retirement options/retirement
     ^descriptor_factory options/descriptor_factory))
 
 (fn runtime_loader ^^private [handle : Runtime, options]
@@ -2194,6 +2238,7 @@
                   ^manifest ($cell nil) ^state ($cell "open")
                   ^generations ($cell (fresh_list))
                   ^host_plugins ($cell (fresh_map))
+                  ^retirements ($cell (fresh_list))
                   ^watchers ($cell (fresh_list))))
   (current .push record)
   (runtime/loaders .set current)
@@ -2952,6 +2997,8 @@
 (fn publish_staged_runtime ^^private
   [loader, candidate, staged, old_entries, old_order, manifest]
   (var live loader/runtime)
+  (var deferred (! (absent? loader/options/retirement)))
+  (var old_resources (copy_list (live/resources .get)))
   (var retiring (fresh_map))
   (for [id entry] in old_entries
     (if_not (absent? entry/instance)
@@ -2960,24 +3007,27 @@
   (var replaced_direct staged/direct_replaced)
   (for old in replaced_direct
     (if_not (instance_object_in_records? closure old) (closure .push old)))
-  (preserve_staged_instance_identities old_entries staged/entries)
-  (preserve_direct_revision_identities staged/direct_revisions)
+  (if_not deferred
+    (preserve_staged_instance_identities old_entries staged/entries)
+    (preserve_direct_revision_identities staged/direct_revisions))
   (move_candidate_state candidate live)
   # Close every old external/effect gate before replacing public indexes.
-  (for old_instance in closure
-    (old_instance/gate_open .set false)
-    (var root (old_instance/root_effect .get))
-    (if_not (absent? root) (root/accepting .set false))
-    (for provider in (old_instance/providers .get)
-      (provider/active .set false)))
+  (if_not deferred
+    (for old_instance in closure
+      (old_instance/gate_open .set false)
+      (var root (old_instance/root_effect .get))
+      (if_not (absent? root) (root/accepting .set false))
+      (for provider in (old_instance/providers .get)
+        (provider/active .set false))))
   (var contexts (direct_contexts live old_entries replaced_direct))
   (var retiring_contexts (copy_list (live/contexts .get)))
   (var old_entry_tokens (old_entry_context_tokens old_entries))
-  (for context in retiring_contexts
-    (if (|| (token_in? old_entry_tokens context/token)
-            (&& (! (absent? context/owner))
-                (instance_object_in_records? closure context/owner)))
-      (context/alive .set false)))
+  (if_not deferred
+    (for context in retiring_contexts
+      (if (|| (token_in? old_entry_tokens context/token)
+              (&& (! (absent? context/owner))
+                  (instance_object_in_records? closure context/owner)))
+        (context/alive .set false))))
   (var during_contexts (copy_list retiring_contexts))
   (var candidate_root_handle (candidate/root .get))
   (for context in (candidate/contexts .get)
@@ -3013,6 +3063,30 @@
   # Candidate handles now resolve through the live record only.
   (runtime_records .set
     (without_token (runtime_records .get) candidate/token))
+
+  (if_yes deferred
+    (var old_generations (fresh_list))
+    (for [id entry] in old_entries
+      (if (&& (! (absent? entry/generation))
+              (! (generation_reused? staged/entries entry/generation))
+              (! (old_generations .contains? entry/generation)))
+        (old_generations .push entry/generation)))
+    (var ticket (RetirementTicket ^token ($cell nil)))
+    (var record (RetirementRecord ^ticket ticket ^loader loader ^runtime live
+      ^instances closure ^resources old_resources ^contexts retiring_contexts
+      ^generations old_generations ^closed ($cell false)))
+    ((retirement_records .get) .push record)
+    ((loader/retirements .get) .push record)
+    (live/contexts .set contexts)
+    (var generations (fresh_list))
+    (for [id entry] in staged/entries
+      (if_not (absent? entry/generation)
+        (if_not (generations .contains? entry/generation) (generations .push entry/generation))))
+    (loader/generations .set generations)
+    (if (|| (> closure/.size 0) (> old_generations/.size 0))
+      (then (loader/options/retirement ticket))
+      (else (loader_retire (Loader ^token loader/token) ticket)))
+    (return nil))
 
   # Visibility has committed. Old closures are now retired from consumers to
   # providers, and only then are their module generations released.
@@ -3130,7 +3204,7 @@
   # A publication participant swaps host state for a whole candidate, so it
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
-  (if (absent? loader/options/publication)
+  (if (&& (absent? loader/options/publication) (absent? loader/options/retirement))
     (loader_reconcile_incremental loader manifest rows admitted)
     (loader_reconcile_staged loader manifest rows #[] admitted)))
 
@@ -3140,12 +3214,16 @@
     (cordis_failure CompositionError "loader is disposed"))
   (var rows (validate_manifest loader manifest))
   (var selected_mode
-    (if (absent? mode) ReconcileMode/incremental mode))
+    (if (absent? mode)
+      (if (absent? loader/options/retirement) ReconcileMode/incremental ReconcileMode/staged)
+      mode))
   (var host_plugins (loader/host_plugins .get))
   (if (&& (|| (! (absent? loader/options/publication))
               (!= host_plugins #{}))
           (!= selected_mode ReconcileMode/staged))
     (cordis_failure CompositionError "a publication participant requires staged reconciliation"))
+  (if (&& (! (absent? loader/options/retirement)) (!= selected_mode ReconcileMode/staged))
+    (cordis_failure CompositionError "deferred retirement requires staged reconciliation"))
   (match selected_mode
     (when ReconcileMode/incremental
       (loader_reconcile_incremental loader manifest rows))
@@ -3345,9 +3423,69 @@
 (fn loader_inspect ^^private [handle : Loader]
   (loader_snapshot (loader_record handle) "inspect" #[]))
 
+(fn loader_instances ^^private [handle : Loader]
+  (var loader (loader_record handle))
+  (var out (fresh_list))
+  (for id in (loader/order .get)
+    (var entry ((loader/entries .get) .get id))
+    (if (&& (! (absent? entry)) (! (absent? entry/instance)))
+      (out .push entry/instance)))
+  out)
+
 (fn loader_await_settled ^^private [handle : Loader] : Nil
   (var loader (loader_record handle))
   (runtime_await_settled (Runtime ^token loader/runtime/token)))
+
+(fn retirement_record ^^private [ticket : RetirementTicket]
+  (for record in (retirement_records .get)
+    (if (same? record/ticket/token ticket/token) (return record)))
+  nil)
+
+(fn retirement_instances ^^private [ticket : RetirementTicket]
+  (var record (retirement_record ticket))
+  (var out (fresh_list))
+  (if_not (absent? record)
+    (for instance in record/instances (out .push (instance_handle instance))))
+  out)
+
+(fn loader_retire ^^private [handle : Loader, ticket : RetirementTicket] : Nil
+  ($runtime/require_root_lane)
+  (var loader (loader_record handle))
+  (var record (retirement_record ticket))
+  (if (absent? record) (return nil))
+  (if_not (same? record/loader/token loader/token)
+    (cordis_failure CompositionError "retirement ticket belongs to another loader"))
+  (if (record/closed .get) (return nil))
+  (var errors (fresh_list))
+  (var index (- record/instances/.size 1))
+  (while (>= index 0)
+    (var instance record/instances/%index)
+    (set index (- index 1))
+    (try
+      (var error (unload_instance instance true))
+      (if_not (absent? error) (errors .push error))
+      catch Any (errors .push $err)))
+  (for generation in record/generations
+    (try (generation .release) catch Any (errors .push $err)))
+  (for context in record/contexts
+    (var live false)
+    (for current in (record/runtime/contexts .get)
+      (if (same? context/token current/token) (set live true)))
+    (if_not live (context/alive .set false)))
+  (record/closed .set true)
+  (var remaining (fresh_list))
+  (for other in (retirement_records .get)
+    (if_not (same? other/ticket/token ticket/token) (remaining .push other)))
+  (retirement_records .set remaining)
+  (var owned (fresh_list))
+  (for other in (loader/retirements .get)
+    (if_not (same? other/ticket/token ticket/token) (owned .push other)))
+  (loader/retirements .set owned)
+  (rebuild_runtime_indexes loader/runtime)
+  (runtime_await_settled (Runtime ^token loader/runtime/token))
+  (if (> errors/.size 0)
+    (cordis_failure RecoveryRequired "deferred retirement failed" errors))
+  nil)
 
 (fn register_loader_watcher [handle : Loader, watcher]
   (var loader (loader_record handle))
@@ -3360,6 +3498,8 @@
   (var loader (loader_record handle))
   (if (== (loader/state .get) "disposed") (return nil))
   (loader/state .set "disposing")
+  (for retirement in (copy_list (loader/retirements .get))
+    (loader_retire handle retirement/ticket))
   (for watcher in (loader/watchers .get)
     (try (watcher .close) catch Any nil))
   (var order (loader/order .get))

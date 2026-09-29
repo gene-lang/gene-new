@@ -1,0 +1,49 @@
+(import [RuntimeOptions LoaderOptions PluginSpec invocation_limits default_plugin_invoker new_runtime]
+  ^from "." ^pkg "cordis")
+(import [new_composition_state acquire_snapshot release_snapshot publish_snapshot current_snapshot
+         queue_retirement close_composition_state]
+  ^from "../src/runtime/composition")
+
+(fn main [args]
+  (let functions ($cell {}))
+  (let closed ($cell []))
+  (let loader_cell ($cell nil))
+  (let state (new_composition_state {} []
+    (fn [ticket] ((loader_cell .get) .retire ticket))))
+  (fn plugin [version]
+    (PluginSpec ^id "leased" ^config_schema nil ^requires [] ^provides [] ^reload nil
+      ^activate (fn [ctx config]
+        (let disposed ($cell false))
+        (ctx .defer (fn [] (disposed .set true) ((closed .get) .push version)))
+        (functions .set {^functions [{^name "f" ^fn (fn []
+          ($assert (! (disposed .get)) "closed leased plugin") version)}]}))))
+  (let runtime (new_runtime (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+    ^default_limits (invocation_limits))))
+  (let loader (runtime .loader (LoaderOptions ^plugin_root "." ^shared [] ^max_namespaces []
+    ^default_limits nil ^reload_policy nil
+    ^retirement (fn [ticket] (queue_retirement state ticket (ticket .instances))))))
+  (loader_cell .set loader)
+  (try
+    (let manifest {^format 1 ^entries [{^id "leased" ^module "host/leased"}]})
+    (loader .reconcile_plugins manifest {^leased (plugin 1)})
+    (publish_snapshot state (functions .get) (loader .instances))
+    (let lease (acquire_snapshot state))
+    (let old lease/snapshot/registries/functions/0/fn)
+    (scope
+      (let turn (spawn ^lane root (do (let before (old)) ($sleep 20) [before (old)])))
+      ($sleep 2)
+      (loader .reconcile_plugins manifest {^leased (plugin 2)})
+      ($assert (== (closed .get) []) "reconcile closed the old instance before publication")
+      (publish_snapshot state (functions .get) (loader .instances))
+      (let current (current_snapshot state))
+      ($assert (== ((/fn current/registries/functions/0)) 2) "new snapshot did not bind v2")
+      ($assert (== (await turn) [1 1]) "turn changed its bound instance across await"))
+    ($assert (== (closed .get) []) "publication ignored a live turn lease")
+    (release_snapshot state lease)
+    ($assert (== (closed .get) [1]) "lease release did not dispose v1")
+    ($assert (try (old) false catch Any true) "retired plugin resource remained open")
+    (close_composition_state state)
+    ($println "leased composition: Cordis instance and function snapshots survive concurrent replacement")
+    ensure
+      (loader .dispose)
+      (runtime .close)))
