@@ -1026,8 +1026,13 @@ suite "modules — the sandbox loader (design §D5)":
       "($fs/write_text \"" &
       (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"escaped\")")
-    expect GeneError:
+    var raised = false
+    try:
       discard runSandboxProgram(loadSandboxed(modDir, "evil.gene", "[]"))
+    except GeneError as error:
+      raised = true
+      check "cannot call $fs/write_text: gene/fs is not defined here" in error.msg
+    check raised
     check not fileExists(modDir / "gene_sandbox_escape")
 
   test "a granted namespace works after initialization":

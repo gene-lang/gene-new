@@ -80,6 +80,10 @@ A missing property produces void. `??` supplies a fallback for nil or void:
 # ["anonymous" true]
 ```
 
+Calling a missing member still fails. The error names the call head, such as
+`person/run`, and a missing `$` path identifies its first missing namespace
+member. Reading the missing property alone remains a normal void result.
+
 Use `==` for structural equality and `same?` for identity. Metadata does not
 participate in structural equality. Mutable list/map identity remains distinct
 from equal contents.

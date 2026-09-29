@@ -1,5 +1,5 @@
 import gene/[compiler, types, vm, printer]
-import std/unittest
+import std/[strutils, unittest]
 
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
@@ -24,6 +24,33 @@ proc markChildCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
   NIL
 
 suite "errors — fail and catch":
+  test "non-callable diagnostics name authored heads and missing namespace segments":
+    ck "(try ($nope 1) catch RuntimeError $err/message)",
+       "\"cannot call $nope: gene/nope is not defined here\""
+    ck "(try ($str/nope \"a\") catch RuntimeError $err/message)",
+       "\"cannot call $str/nope: gene/str/nope is not defined here\""
+    ck "(let o {^a 1}) (try (o/b 1) catch RuntimeError $err/message)",
+       "\"cannot call o/b: the value is void (missing)\""
+    ck "(let n 1) (try (n 2) catch RuntimeError $err/message)",
+       "\"cannot call n: value is Int, which is not callable\""
+    ck "(let datum (quote (entry))) (try (datum) catch RuntimeError $err/message)",
+       "\"cannot call datum: value is Node, which is not callable\""
+    ck "(let o {^a 1}) ($void? o/b)", "true"
+
+  test "call diagnostic does not repeat the callee or argument effects":
+    ck "(var hits 0) " &
+       "(fn absent [] (set hits (+ hits 1)) void) " &
+       "(try ((absent) (set hits (+ hits 1))) catch RuntimeError nil) hits", "2"
+
+  test "native calls without an authored site keep the fallback diagnostic":
+    var raised = false
+    try:
+      discard call(newInt(1))
+    except GeneError as error:
+      raised = true
+      check error.msg == "value is not callable: vkInt"
+    check raised
+
   test "catch selects by type and exposes the error as $err":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &

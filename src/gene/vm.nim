@@ -29327,6 +29327,43 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
     dec activeConstructionDepth
 
 
+proc notCallableMessage(callee, site: Value, scope: Scope): string =
+  if site.kind != vkNode:
+    return "value is not callable: " & $callee.kind
+  let head = site.head
+  var label = head.print()
+  if head.kind == vkNode and head.head.isSymbol("path") and head.body.len > 0:
+    var parts: seq[string]
+    for part in head.body:
+      if part.kind != vkSymbol:
+        parts.setLen(0)
+        break
+      parts.add part.symVal
+    if parts.len > 0:
+      label = if parts[0] == "gene" and parts.len > 1:
+                "$" & parts[1 .. ^1].join("/")
+              else: parts.join("/")
+      if callee.kind == vkVoid and parts[0] == "gene" and scope != nil:
+        # Inspect only namespace exports on the failure path. Never evaluate
+        # authored expressions or repeat a selector/protocol callback merely
+        # to improve a diagnostic.
+        var current: Value
+        var prefix = "gene"
+        if not scope.lookupOptional("gene", current):
+          return "cannot call " & label & ": gene is not defined here"
+        for i in 1 ..< parts.len:
+          case current.kind
+          of vkNamespace: current = current.exportedBinding(parts[i])
+          of vkModule: current = current.moduleRootNamespace.exportedBinding(parts[i])
+          else: break
+          prefix.add "/" & parts[i]
+          if current.kind == vkVoid:
+            return "cannot call " & label & ": " & prefix & " is not defined here"
+  if callee.kind == vkVoid:
+    return "cannot call " & label & ": the value is void (missing)"
+  "cannot call " & label & ": value is " & callee.declarationKind &
+    ", which is not callable"
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
@@ -29452,7 +29489,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):
         return applyUserCallable(callee, args, named, dispatchScope, site)
-      raise newException(GeneError, "value is not callable: " & $callee.kind)
+      raise newException(GeneError, notCallableMessage(callee, site, dispatchScope))
     if named.len != 0:
       raise newException(GeneError, "selector calls do not accept named arguments")
     if args.len != 1:
@@ -29461,7 +29498,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if dispatchScope == nil: selected
     else: materializedModuleRefValue(dispatchScope, selected)
   else:
-    raise newException(GeneError, "value is not callable: " & $callee.kind)
+    raise newException(GeneError, notCallableMessage(callee, site, dispatchScope))
 
 proc call*(callee: Value, args: seq[Value] = @[]): Value =
   applyCall(callee, args, NamedArgs())

@@ -26,6 +26,15 @@ earlier named value with the same key. Use `$body` explicitly when only a
 node's positional contents are wanted. Named properties must not disappear
 merely because a call uses a spread.
 
+## Failed calls
+
+Calling a non-callable value names the authored head and the value's kind.
+A missing callee reports void; a missing `gene` namespace path names its first
+missing exported segment (for example, a denied `gene/fs`). Diagnostic
+construction does not reevaluate the callee, arguments, or selector callbacks.
+Ordinary missing property reads still return void. Native calls without an
+authored site retain the fallback `value is not callable: <Kind>` diagnostic.
+
 ## Fexpr evaluation boundaries
 
 Fexprs choose how to interpret syntax at runtime. Template macros expand into
