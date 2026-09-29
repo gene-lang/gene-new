@@ -114,6 +114,12 @@ its limit. Close that original Stream when ownership ends:
   the first pull. Lookahead caches one result without repeating callbacks;
   reentrant pulls are rejected. Map normalizes callback void to nil;
   filter_map and raw generator emissions skip void.
+- `drop` skips a nonnegative Int count lazily before forwarding later items.
+  It owns its upstream even for a zero count; close before the first pull
+  closes that upstream without starting an unstarted generator. Closing after
+  a yield runs entered ensures once. Exhaustion while skipping ends the
+  adapter, and a producer error closes ownership and propagates once.
+  Repeated lookahead does not repeat skips. `($drop n)` is a pipeline stage.
 - Stream `each` and `into` close their immediate consumed cursor on success,
   callback/boundary failure, or cancellation. A cleanup error does not replace
   an already propagating producer or consumer error.

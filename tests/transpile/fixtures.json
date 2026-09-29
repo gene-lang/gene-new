@@ -2,6 +2,33 @@
   "version": 1,
   "cases": [
     {
+      "id": "collection.reverse_vm_only",
+      "source": "($reverse [1 2])",
+      "web_source": "(mod reverse_vm_only ^profile web) (fn run [] : (List Int) ($reverse [1 2]))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "1"}]},
+      "expected_error": null, "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "reverse is currently VM-only", "diagnostic": "portable web stdlib does not provide reverse"}
+    },
+    {
+      "id": "collection.drop_vm_only",
+      "source": "($drop [1 2] 1)",
+      "web_source": "(mod drop_vm_only ^profile web) (fn run [] : (List Int) ($drop [1 2] 1))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}]},
+      "expected_error": null, "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "drop is currently VM-only", "diagnostic": "portable web stdlib does not provide drop"}
+    },
+    {
+      "id": "collection.has_key_vm_only",
+      "source": "($has_key? {^a nil} \"a\")",
+      "web_source": "(mod has_key_vm_only ^profile web) (fn run [] : Bool ($has_key? {^a nil} \"a\"))",
+      "web_export": "run",
+      "expected_value": {"kind": "bool", "value": true},
+      "expected_error": null, "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "has_key? is currently VM-only", "diagnostic": "portable web stdlib does not provide has_key?"}
+    },
+    {
       "id": "str.case_ascii_only",
       "source": "[($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")]",
       "web_source": "(mod str_case_ascii_only ^profile web) (fn run [] : (List Str) [($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")])",

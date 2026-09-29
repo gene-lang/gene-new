@@ -53,6 +53,9 @@ divisor, adjust a negative remainder: `(let r (// a b)) (if (< r 0) (+ r b) r)`.
 The web profile requires matching Int or F64 operands. See
 [numbers](stdlib.md#numbers) for floating-point behavior.
 
+The [collection library](stdlib.md#collections) lists receiver messages,
+generic functions, Set construction, and shallow-copy idioms.
+
 ### Paths and selectors
 
 Slash paths read fields and indexed positions. `%` evaluates a dynamic segment.
@@ -64,6 +67,10 @@ A leading slash creates a reusable selector:
 [person/name person/roles/0 person/roles/-1 person/%field (/name person)]
 # ["Ada" "reader" "writer" "Ada" "Ada"]
 ```
+
+To select from a call result, write `(/name (get_person))`, or bind the result
+first. A path or message glued after a closing delimiter, such as `(get_person)/name`
+or `(get_people).size`, is a read error; a send uses `((get_people) .size)`.
 
 A missing property produces void. `??` supplies a fallback for nil or void:
 

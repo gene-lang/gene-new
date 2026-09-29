@@ -2002,6 +2002,22 @@ proc parseForm(r: var Reader, inList = false): Value =
       r.restoreReadContext(contextDepth)
   template finish(value: Value): untyped =
     let parsed = value
+    if tok.kind in {tkLParen, tkLBracket, tkLBrace, tkHashMapStart,
+                    tkHashLParen, tkHashLBracket, tkHashLBrace}:
+      # Each compound parser has just consumed its final closing token.
+      # Use that token, not the opener or a nested form's closing position.
+      let closing = r.tokens[r.tokIdx - 1]
+      let suffix = r.peek()
+      if suffix.kind == tkSymbol and suffix.line == closing.line and
+          suffix.col == closing.col + 1:
+        if suffix.lexeme.startsWith("/") and suffix.lexeme notin ["/", "//"]:
+          r.raiseReadErrorAt(suffix,
+            "a path cannot follow '" & closing.lexeme &
+            "' without whitespace; use a selector call (/a (g)) or bind the value first")
+        if dotSendPrefix(suffix.lexeme).found or suffix.lexeme.startsWith("?."):
+          r.raiseReadErrorAt(suffix,
+            "a message cannot follow '" & closing.lexeme &
+            "' without whitespace; write ((g) .size)")
     r.recordSourceLoc(parsed, tok)
     return parsed
   case tok.kind

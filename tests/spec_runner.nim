@@ -6813,6 +6813,90 @@ suite "spec — streams from design":
               scope).print() == "[9 nil]"
 
 suite "spec — generic collection operations from design (§6.2)":
+  test "reverse and drop return fresh shallow Lists with the same mutability":
+    check_eval("[($reverse [1 2 3]) (#[1 2 3] .reverse) ($reverse []) " &
+               " ([1 2 3] .drop 0) ([1 2 3] .drop 2) " &
+               " ([1 2 3] .drop 3) ([1 2 3] .drop 9) (#[1 2] .drop 1)]",
+               "[[3 2 1] #[3 2 1] [] [1 2 3] [3] [] [] #[2]]")
+    check_eval("(let child [1]) (let xs [child]) (let reversed ($reverse xs)) " &
+               "(let dropped ($drop xs 0)) " &
+               "[(same? xs reversed) (same? xs dropped) " &
+               " (same? child reversed/0) (same? child dropped/0)]",
+               "[false false true true]")
+    check_eval_error("($drop [1] -1)", "drop count must be non-negative")
+    check_eval_error("($drop -1)", "drop count must be non-negative")
+    check_eval_error("($drop [1] 1.0)", "Int")
+    check_eval("($drop [1 2] 1000000000000000000000000)", "[]")
+    check_eval_error("($reverse ($to_stream [1]))", "collect the stream with $into")
+    check_shared_native("List", "reverse", "$reverse")
+    check_shared_native("List", "drop", "$drop")
+    check_shared_native("Stream", "drop", "$drop")
+
+  test "reverse and drop forward to type-direct messages":
+    check_eval("(type Box ^props {} " &
+               " (message reverse [] : Int 7) (message drop [n] : Int (+ n 7))) " &
+               "[($reverse (Box)) ($drop (Box) 2) ((Box) .drop 2)]", "[7 9 9]")
+
+  test "drop stages are lazy and close their owned upstream exactly once":
+    check_eval("([1 2 3 4] -> $drop 2 -> $into [])", "[3 4]")
+    check_eval("($into ($drop ($to_stream [1 2]) 9) [])", "[]")
+    check_eval("(($to_stream [1 2]) -> $drop 1000000000000000000000000 -> $into [])", "[]")
+    check_eval("""
+      (var pulls 0) (var closed 0)
+      (fn ^^generator source []
+        (try
+          (for n in [1 2 3 4] (set pulls (+ pulls 1)) (yield n))
+          ensure (set closed (+ closed 1))))
+      (let upstream (source))
+      (let cursor ($drop upstream 2))
+      (let before pulls)
+      (let peeked (cursor .peek))
+      (let again (cursor .peek))
+      (cursor .close) (cursor .close)
+      [before peeked again pulls closed (upstream .has_next)]
+    """, "[0 3 3 3 1 false]")
+    check_eval("""
+      (var closed 0)
+      (fn ^^generator source []
+        (try (yield 1) (yield 2) ensure (set closed (+ closed 1))))
+      (let upstream (source))
+      (upstream .next)
+      (let cursor ($drop upstream 0))
+      (cursor .close) (cursor .close)
+      [closed (upstream .has_next)]
+    """, "[1 false]")
+    check_eval("""
+      (var entered 0) (var closed 0)
+      (fn ^^generator source []
+        (set entered 1)
+        (try (yield 1) ensure (set closed (+ closed 1))))
+      (let upstream (source))
+      (let cursor ($drop upstream 2))
+      (cursor .close)
+      [entered closed (upstream .has_next)]
+    """, "[0 0 false]")
+    check_eval("""
+      (var closed 0)
+      (fn ^^generator source []
+        (try (yield 1) (// 1 0) ensure (set closed (+ closed 1))))
+      (let cursor ($drop (source) 2))
+      (let failed (try (cursor .next) false catch Any true))
+      (cursor .close)
+      [failed closed (cursor .has_next)]
+    """, "[true 1 false]")
+
+  test "has_key distinguishes missing keys from stored nil":
+    check_eval("(let m {^a nil}) " &
+               "[($has_key? m \"a\") (m .has_key? (quote a)) (m .has_key? \"b\") " &
+               " ($has_key? {{\"a\" : nil}} \"a\") " &
+               " ($has_key? {{#[1 2] : nil}} #[1 2]) " &
+               " ($has_key? {{#[1 2] : nil}} #[2 1])]",
+               "[true true false true true false]")
+    check_eval("(try ($has_key? [] \"a\") catch TypeError $err/expected)", "\"Map\"")
+    check_eval_error("($contains? {} \"a\")", "use has_key? for Map keys")
+    check_eval_error("($has_key? {{#[1] : 2}} [1])", "HashStable")
+    check_shared_native("Map", "has_key?", "$has_key?")
+
   test "the three spellings are one dispatch":
     check_eval("($map [1 2 3] (fn [x] (* x 10)))", "[10 20 30]")
     check_eval("([1 2 3] .map (fn [x] (* x 10)))", "[10 20 30]")

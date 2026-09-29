@@ -166,6 +166,54 @@ a Task yielding one row or nil. Close it through `IoResource`. Pass
   ensure (rows .IoResource:close))
 ```
 
+## Collections
+
+Generic operations live at the `gene` root and share their implementation with
+receiver messages: `($map xs f)` and `(xs .map f)` are the same operation.
+Text helpers live under `$str`, and ordering helpers under `$order`.
+
+| Receiver | Operations |
+| --- | --- |
+| List | `assoc`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` |
+| Map (PropMap or HashMap) | `assoc`, `get`, `has_key?`, `put`, `delete`, `map`, `filter_map`, `filter`, `each`, `to_pairs_stream` |
+| Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream`, `to_pairs_stream` |
+
+`($reverse xs)` returns a fresh reversed List; `($drop xs n)` returns a fresh
+List without its first `n` items. Both are shallow copies and preserve the
+List's immutability flag. `drop` takes a nonnegative Int and returns an empty
+List when the count reaches or exceeds its size. A user Type may implement
+the type-direct `reverse` or `drop` message to join these generic operations.
+
+On a Stream, `drop` is lazy and owns its upstream, including when closed before
+the first pull. `($drop n)` also makes a pipeline stage. `reverse` requires a
+List; collect a finite Stream with `$into` first. See the
+[Stream cleanup contract](spec/streams.md).
+
+```gene runnable
+(let xs [1 2 3 4])
+[($reverse xs) (xs -> $drop 2 -> $into [])]
+# [[4 3 2 1] [3 4]]
+```
+
+`($has_key? m k)` / `(m .has_key? k)` tests entry presence, including stored
+nil. PropMap keys are symbols or strings; HashMap keys use the same hash
+stability and semantic equality rules as `get`. `$contains?` is List/Set
+membership and rejects Maps with a hint to use `has_key?` for keys.
+
+```gene runnable
+(let m {^name nil})
+[($has_key? m "name") (m .has_key? "missing")]
+# [true false]
+```
+
+Construct a Set with `(Set 1 2)` and use `$set_has?` / `$set_size` for its
+membership and size. Common collection idioms already compose from generics:
+`($into xs [])` makes a shallow List copy;
+`($into ($to_pairs_stream m) {})` copies a property map;
+`($filter xs (fn [x] (!= x v)))` removes elements equal to `v`.
+`reverse`, `drop`, and `has_key?` are currently native VM operations; the web
+profile rejects them explicitly.
+
 ## Value protocols and ordering (native VM experimental)
 
 `ValueEq` and `ValueHash` select equality and hash behavior for a nominal Type.

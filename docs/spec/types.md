@@ -71,6 +71,24 @@ plain name, and remains an unconditional module/namespace declaration.
 Extra body forms and properties other than `^private` are compile errors.
 The existing restrictions on where `^private` is allowed still apply.
 
+## Collection helpers
+
+`reverse` on a List creates a shallow copy in reverse order, including a fresh
+empty result for an empty input. `drop` creates a shallow suffix copy and takes
+a nonnegative Int count; a count at or beyond the size returns an empty List.
+Both preserve the receiver's immutability flag and nested element identity.
+Neither mutates the receiver. Root functions and receiver messages share one
+native function object. Other receiver types may supply type-direct messages
+for the generic operations; `reverse` rejects Streams with a collect-first hint.
+Stream `drop` follows the [Stream lifecycle](streams.md).
+
+`has_key?` accepts only PropMap or HashMap and returns whether an entry exists,
+regardless of its value. PropMap Sym/Str key resolution and HashMap semantic
+equality/hash stability are identical to `Map/get`. HashMap lookup holds the
+same reentry guard, so key callbacks cannot mutate the active collection.
+Non-Map receivers raise TypeError. `contains?` remains List/Set membership.
+The web profile explicitly rejects these three helpers for now.
+
 ## Division and remainder
 
 Int `/` truncates toward zero. `//` is the truncated remainder; for nonzero

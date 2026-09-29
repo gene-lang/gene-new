@@ -2680,6 +2680,9 @@ proc biContains(args: openArray[Value]): Value {.nimcall.} =
     for item in args[0].setItems:
       if semanticEqual(item, args[1]): return TRUE
     FALSE
+  of vkMap, vkHashMap:
+    raise newException(GeneError,
+      "contains? expects a List or Set, got Map; use has_key? for Map keys")
   else:
     raise newException(GeneError,
       "contains? expects a List or Set, got " & $args[0].kind)
@@ -5588,6 +5591,27 @@ proc pullTakeStream(stream: Value): StreamPullResult {.nimcall.} =
     stream.detachStreamSource()
   StreamPullResult(has: false, item: NIL)
 
+proc pullDropStream(stream: Value): StreamPullResult {.nimcall.} =
+  let source = stream.streamSource
+  # The ordinary counter is unboxed. Only counts beyond int64 need a boxed
+  # counter; the stream owns that Cell through its existing state edge.
+  if stream.streamRemaining < 0:
+    let counter = stream.streamCallable
+    while not counter.cellValue.intIsZero:
+      if not source.streamHasNext:
+        return StreamPullResult(has: false, item: NIL)
+      discard checkedStreamNext(source, "drop item")
+      counter.setCellValue(intSub(counter.cellValue, newInt(1)))
+  while stream.streamRemaining > 0:
+    if not source.streamHasNext:
+      return StreamPullResult(has: false, item: NIL)
+    discard checkedStreamNext(source, "drop item")
+    stream.setStreamRemaining(stream.streamRemaining - 1)
+  if source.streamHasNext:
+    return StreamPullResult(has: true,
+      item: checkedStreamNext(source, "drop item"))
+  StreamPullResult(has: false, item: NIL)
+
 proc newSelectorCallStage(callee: Value, args: openArray[Value]): Value =
   var body = newSeqOfCap[Value](args.len + 1)
   body.add callee
@@ -5752,6 +5776,59 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     result = newList(items, receiver.listImmutable)
   else:
     result = dispatchGenericForward("take", receiver, args[1 .. args.high], scope)
+
+proc biReverse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("reverse", args)
+  let receiver = args[0]
+  case receiver.kind
+  of vkList:
+    var items = newSeq[Value](receiver.listItems.len)
+    for i in 0 ..< items.len:
+      items[i] = receiver.listItems[items.high - i]
+    result = newList(items, receiver.listImmutable)
+  of vkStream:
+    raise newException(GeneError,
+      "reverse needs a List; collect the stream with $into first")
+  else:
+    let scope = if call == nil: nil else: call.dispatchScope
+    result = dispatchGenericForward("reverse", receiver, [], scope)
+
+proc requireDropCount(value: Value) =
+  if value.kind != vkInt:
+    raiseTypeError("drop count", "Int", value, nil)
+  if value.intCompareToInt64(0) < 0:
+    raise newException(GeneError, "drop count must be non-negative")
+
+proc biDrop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len == 1:
+    requireDropCount(args[0])
+    return newSelectorCallStage(
+      builtinNativeCallFn("drop", biDrop, acceptsNamed = false), args)
+  if args.len != 2:
+    raise newException(GeneError, "drop expects 1 or 2 arguments, got " & $args.len)
+  let receiver = args[0]
+  case receiver.kind
+  of vkList, vkStream:
+    let count = args[1]
+    requireDropCount(count)
+    if receiver.kind == vkStream:
+      if count.intFitsInt64:
+        result = newLazyStream(receiver, pullDropStream, remaining = count.intVal,
+          close = closeStreamCallback)
+      else:
+        result = newLazyStream(receiver, pullDropStream, callable = newCell(count),
+          close = closeStreamCallback)
+    else:
+      let first = if count.intCompareToInt64(receiver.listItems.len) >= 0:
+                    receiver.listItems.len
+                  else: int(count.intVal)
+      var items = newSeq[Value](receiver.listItems.len - first)
+      for i in 0 ..< items.len:
+        items[i] = receiver.listItems[first + i]
+      result = newList(items, receiver.listImmutable)
+  else:
+    let scope = if call == nil: nil else: call.dispatchScope
+    result = dispatchGenericForward("drop", receiver, args[1 .. args.high], scope)
 
 proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   var scope: Scope = nil
@@ -6452,6 +6529,23 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
     if idx >= 0: args[0].hashMapEntries[idx].val else: VOID
   else:
     VOID
+
+proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "has_key? expects 2 arguments, got " & $args.len)
+  case args[0].kind
+  of vkMap:
+    newBool(args[0].mapEntries.hasKey(keySegment("has_key?", args[1])))
+  of vkHashMap:
+    beginKeyOperation(args[0])
+    defer: endKeyOperation()
+    requireHashStableKey("has_key?", args[1])
+    newBool(findHashMapKey(args[0].hashMapEntries, args[1]) >= 0)
+  else:
+    let scope = if call == nil: nil else: call.dispatchScope
+    raiseTypeError("has_key?", "Map", args[0], scope)
+    FALSE
 
 proc requireRegex(name: string, value: Value) =
   if value.kind != vkRegex:
@@ -8780,6 +8874,12 @@ proc buildBuiltins(app: Application): Scope =
     builtinNativeCallFn("filter", biFilter, acceptsNamed = false))
   let takeFn = sharedBuiltinNative("take",
     builtinNativeCallFn("take", biTake, acceptsNamed = false))
+  let reverseFn = sharedBuiltinNative("reverse",
+    builtinNativeCallFn("reverse", biReverse, acceptsNamed = false))
+  let dropFn = sharedBuiltinNative("drop",
+    builtinNativeCallFn("drop", biDrop, acceptsNamed = false))
+  let hasKeyFn = sharedBuiltinNative("has_key?",
+    builtinNativeCallFn("has_key?", biHasKey, acceptsNamed = false))
   let intoFn = sharedBuiltinNative("into",
     builtinNativeCallFn("into", biInto, acceptsNamed = false))
   let eachFn = sharedBuiltinNative("each",
@@ -8808,6 +8908,8 @@ proc buildBuiltins(app: Application): Scope =
     "filter_map": filterMapFn,
     "filter": filterFn,
     "take": takeFn,
+    "reverse": reverseFn,
+    "drop": dropFn,
     "each": eachFn,
     "into": intoFn,
     "to_stream": toStreamFn})
@@ -8819,6 +8921,7 @@ proc buildBuiltins(app: Application): Scope =
   let mapType = result.defineBuiltinType(vkMap, "Map", {
     "assoc": builtinNativeFn("Map/assoc", biMapAssoc),
     "get": builtinNativeFn("Map/get", biMapGet),
+    "has_key?": hasKeyFn,
     "put": builtinNativeFn("Map/put", biMapPutBang),
     "delete": builtinNativeFn("Map/delete", biMapDeleteBang),
     "map": mapFn,
@@ -9153,6 +9256,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("filter_map", filterMapFn)
   result.define("filter", filterFn)
   result.define("take", takeFn)
+  result.define("reverse", reverseFn)
+  result.define("drop", dropFn)
+  result.define("has_key?", hasKeyFn)
   result.define("into", intoFn)
   result.define("assoc_in", builtinNativeFn("assoc_in", biAssocIn))
   result.define("update_in", builtinNativeFn("update_in", biUpdateIn))
@@ -9181,6 +9287,7 @@ proc buildBuiltins(app: Application): Scope =
     "filter_map": filterMapFn,
     "filter": filterFn,
     "take": takeFn,
+    "drop": dropFn,
     "into": intoFn,
     "each": exportedBinding(streamNs, "each"),
     # Identity, so a caller normalizing an unknown receiver into the lazy tier

@@ -156,6 +156,8 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-09-29 | Paths and messages glued after compound forms are read errors. | Replace `(g)/a` with `(/a (g))` and `(g).size` with `((g) .size)`, or bind the result first. Whitespace-separated forms and spreads remain valid. |
+| 2026-09-29 | Added native VM `reverse`, `drop`, and `has_key?`. | Use the root functions or their List/Stream/Map messages. Map key presence stays separate from `contains?`; the web profile rejects the new helpers. |
 | 2026-09-29 | Web `$str/lower` now follows the VM's ASCII-only behavior; `$str/upper` uses the same rule. | Do not rely on these functions to case-map non-ASCII characters. |
 | 2026-09-29 | Binding declarations reject extra values and unknown props. | Keep one initializer after an optional annotation; use `do` for a compound initializer. Only the existing `^private` prop is accepted. |
 | 2026-09-01 (`304a8e0`) | Dot descriptors replace tilde sends. | Write `(x .method arg)` instead of `(x ~method arg)`; use `?.` for guarded sends. |

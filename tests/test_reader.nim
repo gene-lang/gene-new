@@ -7,6 +7,39 @@ template check_read(src: string, expected: string) =
   check read(src).print() == expected
 
 suite "reader — atoms and containers":
+  test "adjacent paths and messages after compound forms are rejected":
+    for source in ["(g)/a", "[1 2]/0", "{^a 1}/a", "#[1]/0",
+                   "#(g)/a", "#{^a 1}/a", "{{\"a\" : 1}}/a",
+                   "$\"${(g)/a}\""]:
+      var raised = false
+      try:
+        discard read(source)
+      except ReadError as error:
+        raised = true
+        check "a path cannot follow" in error.msg
+        check "(/a (g))" in error.msg
+      check raised
+    for source in ["(g).size", "(g)?.size", "[1].size", "#{^a 1}.size"]:
+      var raised = false
+      try:
+        discard read(source)
+      except ReadError as error:
+        raised = true
+        check "a message cannot follow" in error.msg
+        check "((g) .size)" in error.msg
+      check raised
+
+  test "suffix checks preserve separated selectors, operators, and spreads":
+    check readAll("(g) /a").len == 2
+    check readAll("(g)\n/a").len == 2
+    check_read("(/a (g))", "((select a) (g))")
+    check readAll("(f)...").len == 2
+    check readAll("(a b)/ ").len == 2
+    check readAll("(a b)// ").len == 2
+    check_read("xs/0/0", "(path xs 0 0)")
+    check readAll("(g)#< separator >#/a").len == 2
+    check_read("((g) .size)", "((g) .size)")
+
   test "node":               check_read("(a b c)",   "(a b c)")
   test "list":               check_read("[1 2 3]",   "[1 2 3]")
   test "map":                check_read("{^name \"Alice\" ^age 30}", "{^name \"Alice\" ^age 30}")
