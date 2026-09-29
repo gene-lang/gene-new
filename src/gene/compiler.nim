@@ -9287,6 +9287,11 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
   if exprLoc.hasSourceLoc:
     c.currentLoc = exprLoc
   defer:
+    let failure = getCurrentException()
+    if failure != nil and failure of GeneError:
+      let error = cast[ref GeneError](failure)
+      if not error.loc.hasSourceLoc:
+        error.loc = c.currentLoc
     c.currentLoc = savedLoc
   case node.kind
   of vkSymbol:

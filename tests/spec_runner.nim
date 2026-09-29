@@ -8050,6 +8050,12 @@ suite "spec — Env and eval from design":
                "[false panic \"\\\"boom\\\"\"]")
 
 suite "spec — task context":
+  test "now uses the same ISO offset convention as DateTime literals":
+    let local = now()
+    let value = run(compileSource("($now)"), newGlobalScope())
+    check value.dateTimeHasOffset
+    check value.dateTimeOffsetMinutes == -(local.utcOffset div 60)
+
   test "context is dynamically scoped, inherited by spawn, and restored on error":
     check_eval("(scope (let child " &
       "($runtime/with_context {^id \"outer\"} (fn [] " &
@@ -8172,6 +8178,18 @@ suite "spec — parser helpers from design":
     check_eval("(try ($parse/read_all \"(\" ^source \"turn-58\" ^locs true) " &
                "false catch ParseError [$err/source $err/line $err/col])",
                "[\"turn-58\" 1 2]")
+
+  test "located eval compilation reports the inner form's line":
+    let scope = newGlobalScope()
+    try:
+      discard run(compileSource("(let forms ($parse/read_all " &
+        "\"\\n(do\\n  (var))\" ^source \"turn-59\" ^locs true)) " &
+        "(eval (forms .next) ^in (env))"), scope)
+      check false
+    except GeneError as error:
+      check error.loc.sourceName == "turn-59"
+      check error.loc.line == 3
+      check error.loc.col == 3
 
   test "read_one feeds eval and read_all returns a stream":
     check_eval("(eval ($read_one \"(+ 1 2)\") ^in (env))", "3")
@@ -8951,6 +8969,13 @@ suite "spec — value ordering and stable sort":
       " ($order/compare ($date 2025 1 1) ($date 2026 1 1)) " &
       " ($order/compare ($duration 1) ($duration 2))]",
       "[true true true true -1 true -1 -1]")
+    check_eval("[($order/compare \"a\" \"z\") ($order/compare \"z\" \"a\")]", "[-1 1]")
+
+  test "ordering errors in a distinct application keep their Error identity in fibers":
+    let app = newApplication()
+    check run(compileSource("(scope (let task (spawn ^lane root " &
+      " (try ($order/sort [1 2] ^compare (fn [a b] 2)) false " &
+      "  catch OrderError true))) (await task))"), newGlobalScope(app)).print() == "true"
 
   test "default sort is stable and sort_by evaluates each key once":
     check_eval("(import gene/order [sort]) (sort [3 1 2])", "[1 2 3]")

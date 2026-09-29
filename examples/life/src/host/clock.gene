@@ -18,6 +18,5 @@
   (set days (+ days (- date/.day 1)))
   (+ (* days 86400000) (* date/.hour 3600000) (* date/.minute 60000)
      (* date/.second 1000) ($to_int (/ date/.microsecond 1000))
-     # Current $now exposes Nim's utcOffset (minutes west of UTC), not an
-     # ISO offset. Add it when converting the local calendar to Unix time.
-     (* 60000 (?? date/.offset 0))))
+     # Gene offsets are ISO minutes east of UTC.
+     (- 0 (* 60000 (?? date/.offset 0)))))

@@ -2433,7 +2433,7 @@ var activeIndexOperations {.threadvar.}: seq[ActiveIndexOperation]
 proc raiseValueSemanticError(kind, message: string) {.noreturn.} =
   var props = initPropTable()
   props["message"] = newStr(message)
-  let typ = builtinBinding(nil, kind)
+  let typ = builtinBinding(if activeVmScope != nil: activeVmScope[] else: nil, kind)
   var error: ref GeneError
   new(error)
   error.msg = kind & ": " & message
@@ -2676,7 +2676,7 @@ proc orderCompare(left, right: Value, strictNumeric: bool): int =
     return cmp(a, b)
   if left.kind == vkString and right.kind == vkString:
     # Valid UTF-8 byte order preserves Unicode scalar order.
-    return cmp(left.strVal, right.strVal)
+    return cmp(cmp(left.strVal, right.strVal), 0)
   if left.kind == vkDate and right.kind == vkDate:
     result = cmp(left.dateYear, right.dateYear)
     if result == 0: result = cmp(left.dateMonth, right.dateMonth)
@@ -5001,7 +5001,7 @@ proc biNow(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "now expects 0 arguments, got " & $args.len)
   let dt = now()
   newDateTime(dt.year, int(dt.month), dt.monthday, dt.hour, dt.minute,
-              dt.second, dt.nanosecond div 1000, true, dt.utcOffset div 60,
+              dt.second, dt.nanosecond div 1000, true, -(dt.utcOffset div 60),
               "")
 
 proc biDateYear(args: openArray[Value]): Value {.nimcall.} =
