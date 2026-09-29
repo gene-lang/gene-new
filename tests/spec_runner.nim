@@ -211,7 +211,7 @@ suite "spec — reader surface from design":
                "[true true \"a1\"]")
     check_eval("(var x 5) $\"v=${x}\"", "\"v=5\"")
 
-  test "selector literals and context-neutral paths stay distinct":
+  test "Path literals and context-neutral paths stay distinct":
     check_read("/user/name", "(Path \"user\" \"name\")")
     check_read("user/name", "(path user name)")
     check_read("/users/0/name", "(Path \"users\" 0 \"name\")")

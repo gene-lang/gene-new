@@ -41,6 +41,7 @@ Use the [cross-backend specs and headless harnesses](../README.md#cross-backend-
 to compare VM and web results and compare both with captured pre-change output.
 The native numeric specs additionally compare F64 bits over 10,000 deterministic
 integral pairs plus boundary cases. Terrain composition summaries must stay
-unchanged, and worldgen timing comparisons use the same optimized compiler on
-an idle machine. Timing and qualification evidence are recorded separately
-from this input-domain audit.
+unchanged. Worldgen timing comparisons normally use the same optimized compiler
+on an idle machine; the [2026-09-29 baseline](../../../benchmarks/logs/worldgen-2026-09-29-12e8202.md)
+records an owner-approved non-idle exception and its host load. Timing and
+qualification evidence are recorded separately from this input-domain audit.

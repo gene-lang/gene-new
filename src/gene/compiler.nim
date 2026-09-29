@@ -5671,7 +5671,7 @@ proc pathSymbolSegments(value: Value): seq[string] =
     return
   # Validate before allocating the spelling list. Nim 2.2.4 lowers `return @[]`
   # after appending to `result` as a bare overwrite, leaking that partial seq
-  # and its strings on numeric/dynamic selector paths.
+  # and its strings on numeric/dynamic Paths.
   for segment in value.body:
     if segment.kind != vkSymbol:
       return
