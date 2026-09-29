@@ -28,6 +28,11 @@ rejects mixed types. A large Int may lose precision in that conversion.
 
 ## Text and JSON
 
+`$str/lower` and `$str/upper` map ASCII letters only on the VM and web
+backends; every other character is unchanged. For example,
+`($str/lower "ÉA")` is `"Éa"` and `($str/upper "éa")` is `"éA"`.
+Unicode case mapping is deliberately absent from these operations.
+
 ```gene runnable
 (import $str [split trim join])
 (let names ($map (split " Ada, Grace " ",") trim))

@@ -2,6 +2,26 @@
   "version": 1,
   "cases": [
     {
+      "id": "str.case_ascii_only",
+      "source": "[($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")]",
+      "web_source": "(mod str_case_ascii_only ^profile web) (fn run [] : (List Str) [($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "Éa"}, {"kind": "str", "value": "éA"}, {"kind": "str", "value": "abc"}, {"kind": "str", "value": "ßZ😀"}, {"kind": "str", "value": ""}]},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "str.lower_ascii_only",
+      "source": "($str/lower \"ÉA\")",
+      "web_source": "(mod str_lower_ascii_only ^profile web) (fn run [] : Str ($str/lower \"ÉA\"))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "Éa"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "numeric.f64_remainder_exact",
       "source": "[(// 1e20 3.0) (// 4294967297.0 4294967296.0)]",
       "web_source": "(mod numeric_remainder_exact ^profile web) (fn run [] : (List F64) [(// 1e20 3.0) (// 4294967297.0 4294967296.0)])",

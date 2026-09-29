@@ -650,6 +650,11 @@ proc biStrLower(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/lower", args[0])
   newStr(args[0].strVal.toLowerAscii())
 
+proc biStrUpper(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("str/upper", args)
+  requireStr("str/upper", args[0])
+  newStr(args[0].strVal.toUpperAscii())
+
 proc biStrByteSize(args: openArray[Value]): Value {.nimcall.} =
   requireOne("str/byte_size", args)
   requireStr("str/byte_size", args[0])
@@ -9236,6 +9241,7 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("split", builtinNativeFn("str/split", biStrSplit))
   strScope.define("trim", builtinNativeFn("str/trim", biStrTrim))
   strScope.define("lower", builtinNativeFn("str/lower", biStrLower))
+  strScope.define("upper", builtinNativeFn("str/upper", biStrUpper))
   strScope.define("byte_size", builtinNativeFn("str/byte_size", biStrByteSize))
   strScope.define("slice_bytes", builtinNativeFn("str/slice_bytes", biStrSliceBytes))
   strScope.define("to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8))

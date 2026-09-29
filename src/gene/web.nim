@@ -2805,7 +2805,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "str/split":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkList, webType(wtkStr))
-      of "str/trim", "str/lower", "url/encode_component",
+      of "str/trim", "str/lower", "str/upper", "url/encode_component",
           "url/decode_component", "html/escape", "html/attr_escape":
         paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkStr)
@@ -5602,7 +5602,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "str/join": arguments[0] & ".join(" & arguments[1] & ")"
     of "str/split": arguments[0] & ".split(" & arguments[1] & ")"
     of "str/trim": arguments[0] & ".trim()"
-    of "str/lower": arguments[0] & ".toLowerCase()"
+    of "str/lower": "$gene_ascii_lower(" & arguments[0] & ")"
+    of "str/upper": "$gene_ascii_upper(" & arguments[0] & ")"
     of "str/starts_with?": arguments[0] & ".startsWith(" & arguments[1] & ")"
     of "str/ends_with?": arguments[0] & ".endsWith(" & arguments[1] & ")"
     of "str/contains?": arguments[0] & ".includes(" & arguments[1] & ")"
@@ -8258,6 +8259,15 @@ proc emitModule(module: WebModule, typescript: bool,
       " { const image = new Image(); image.onload = () => onLoad(image); " &
       "image.onerror = () => { throw new Error(`image/load failed: ${src}`); }; " &
       "image.src = src; }")
+  for op in ["lower", "upper"]:
+    if moduleUsesBuiltin(module, ["str/" & op]):
+      let params = if typescript: "s: string" else: "s"
+      let returns = if typescript: ": string" else: ""
+      let range = if op == "lower": "[A-Z]" else: "[a-z]"
+      let offset = if op == "lower": "+ 32" else: "- 32"
+      emitter.line("function $gene_ascii_" & op & "(" & params & ")" &
+        returns & " { return s.replace(/" & range &
+        "/g, c => String.fromCharCode(c.charCodeAt(0) " & offset & ")); }")
   # --- portable UTF-8 ---
   #
   # One encoder and one decoder, constructed once at module scope rather than

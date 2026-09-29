@@ -156,6 +156,7 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-09-29 | Web `$str/lower` now follows the VM's ASCII-only behavior; `$str/upper` uses the same rule. | Do not rely on these functions to case-map non-ASCII characters. |
 | 2026-09-29 | Binding declarations reject extra values and unknown props. | Keep one initializer after an optional annotation; use `do` for a compound initializer. Only the existing `^private` prop is accepted. |
 | 2026-09-01 (`304a8e0`) | Dot descriptors replace tilde sends. | Write `(x .method arg)` instead of `(x ~method arg)`; use `?.` for guarded sends. |
 | 2026-09-12 (`6f6b173`) | Imports use `^from`. | Replace `from "path"` with `^from "path"` in `import` and `import_impl`. |
