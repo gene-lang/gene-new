@@ -37,6 +37,8 @@
     (let filters (if (== mode "tsan")
       ["wrong lane is rejected before reading a live borrow"
        "foreign attached lane traverses handles while collector defers"
+       "foreign root release waits for its admitted borrow"
+       "foreign root and borrow retain private Scope provenance"
        "a released handle cannot invalidate an admitted borrow"
        "attached foreign lane completes a managed Task"
        "frozen child handles keep weak provenance after parents release"

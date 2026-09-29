@@ -20,7 +20,9 @@
 #define GENE_API_TASK_PRODUCER_FEATURE UINT64_C(128)
 #define GENE_API_TASK_COPY_FEATURE UINT64_C(256)
 #define GENE_API_FLOAT_FEATURE UINT64_C(512)
+#define GENE_API_FOREIGN_ROOTS_FEATURE UINT64_C(1024)
 #define GENE_API_MAX_COPY_BYTES (64u * 1024u * 1024u)
+#define GENE_FOREIGN_ROOT_MAX_CAPACITY UINT32_C(65536)
 #define GENE_LIST_ITEM UINT32_C(0)
 #define GENE_MAP_ENTRY UINT32_C(1)
 #define GENE_NODE_BODY UINT32_C(2)
@@ -30,6 +32,10 @@
 typedef uint64_t GeneHandle;
 typedef uint64_t GeneRegistration;
 typedef uint64_t GeneProducer;
+
+/* reserve_foreign_roots runs on the root lane before an attached C lane
+ * creates owning IDs. Capacity is absolute, bounded, and retryable after
+ * root polling retires released IDs and active borrows. */
 
 #define GENE_COPY_NIL UINT32_C(0)
 #define GENE_COPY_BOOL UINT32_C(1)
@@ -136,6 +142,7 @@ typedef struct GeneApi {
                                const GeneCopiedResult *, GeneOutBytes *);
   uint32_t (*copy_f64)(void *, GeneHandle, double *, GeneOutBytes *);
   uint32_t (*new_f64)(void *, double, GeneHandle *, GeneOutBytes *);
+  uint32_t (*reserve_foreign_roots)(void *, size_t, GeneOutBytes *);
 } GeneApi;
 
 #define GENE_INGRESS_ACCEPTED 0

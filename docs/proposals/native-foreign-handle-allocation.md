@@ -1,12 +1,13 @@
 # Foreign-created managed handles under AtomicArc
 
-**Status:** owner decision required before AAR-1 foreign ownership transfer or
-AAR-2 shared reclamation can be promoted. No production allocator or ABI
-behavior changes are made by this proposal.
+**Status:** the owner selected B, a root-owned bounded registry. The C numeric
+ID path is implemented under default AtomicArc. Direct Nim wrapper transfer,
+arbitrary foreign Nim refs, and AAR-2 shared reclamation remain unqualified;
+this does not enable production collection.
 
-The single `GeneApi` currently lets an attached C lane call `retain` and
-frozen `traverse`, returning a new numeric owning ID. Its managed registry is
-a Nim `Table[uint64, ManagedEntry]`. A new entry and a growing table can use
+Before B, the single `GeneApi` let an attached C lane call `retain` and
+frozen `traverse`, returning a new numeric owning ID in the ordinary
+`Table[uint64, ManagedEntry]`. A new entry and a growing table could use
 the creating thread's Nim allocator. If that C thread exits while the ID or
 expanded table remains, later root-lane release/destruction accesses allocator
 storage already freed at thread exit. Atomic reference counting does not make
@@ -34,29 +35,51 @@ are in `tmp/native-task-producer-qualification/`:
 `abi-transfer-malloc-asan-run.log`, `abi-transfer-malloc-tsan-run.log`, and
 `native-malloc-probe.log`.
 
-The committed C fixture exposes `gene_test_api_transfer_many`; its test runs
-the transfer only when `useMalloc` is defined. Default AtomicArc's existing
-same-lane read/retain/release tests remain enabled. Passing them does **not**
-authorize cross-lane ownership transfer or unbounded foreign registry growth.
+The C fixture exposes `gene_test_api_transfer_many`. With B, the default
+AtomicArc build transfers 10,000 IDs to the root under ASAN, using the same
+numeric ABI and default allocator. A four-worker 2,048-ID control passes ASAN
+and TSAN, including simultaneous inserts into the root-reserved index. A
+two-slot control rejects the third retain, then recycles the slots after root
+release; stale IDs stay invalid. Root-lane growth preserves IDs that were
+already live. An attached lane can retain a foreign-created ID again, or
+traverse a frozen parent, and the resulting ID remains readable after the
+parent ID is released and the worker exits. A separate
+managed SDK test keeps a foreign-created ID borrowed while the root releases
+it; root polling reclaims its slot only after the borrow exits, under ASAN and
+TSAN. A private-Scope control also retains its known provenance through a
+foreign ID and in-flight borrow; the Scope retires only after root polling
+releases that slot. The full managed probe passes under ASAN. The original
+failure logs remain historical evidence for the selected design.
 
 ## Decision options
 
 | Option | Contract and work | Tradeoff |
 | --- | --- | --- |
-| **A. Use system malloc for qualified AtomicArc native apps (recommended)** | Make `useMalloc` an explicit build/profile requirement for applications advertising foreign ID creation/transfer. Record it in runtime identity and package metadata; run foreign retain, traversal, wrapper/result, installed-module, 1/100/1,000/10,000, ASAN/TSAN and performance gates before promotion. Keep numeric GeneApi version 6 and negotiate the owning capability with a feature bit. | Smallest ownership implementation; changes allocator policy and requires platform/performance qualification. |
-| B. Root-owned bounded registry | Allocate stable slots/table capacity on the root lane, reserve them before foreign access, and defer all last-owner cleanup to the root. Define capacity/backpressure and refill behavior when a foreign lane exhausts slots. Qualify every path that creates an ID, not only `retain`. | Preserves default allocator; adds a bounded public behavior and substantial registry/scheduler complexity. |
+| A. Use system malloc for qualified AtomicArc native apps | Make `useMalloc` an explicit build/profile requirement for applications advertising foreign ID creation/transfer. | Smaller registry implementation but a global allocator and package-build policy change. The focused experiment passed; this option was not selected. |
+| **B. Root-owned bounded registry (selected)** | Root-lane `reserve_foreign_roots` provisions stable entries and an oversized index before attached access. A foreign operation fills a free slot or returns a copied capacity diagnostic without consuming its source. Release invalidates the ID immediately; root polling defers last-owner cleanup until borrows end, then recycles the slot. | Preserves the default allocator; requires an explicit capacity and root progress for reuse. |
 | C. Restrict foreign ID creation for now | Reject attached-lane `retain` and handle-producing traversal while keeping copied reads, Task settlement and byte ingress. Add an explicit feature bit so C modules can detect the restriction. | Safe interim boundary but reduces the advertised attached-lane API. |
 
-Option A is the recommended next experiment for this greenfield project. It
-does not itself approve production shared reclamation. First qualify the
-allocator policy on macOS arm64, then on native Linux x86_64 when that
-platform gate resumes. A build without the selected policy must not advertise
-cross-lane owning transfer as qualified. Existing raw Nim `Value`/`Scope`
-exports remain permanently published or excluded under the opaque-handle
-contract, regardless of allocator choice.
+The selected C entry is `reserve_foreign_roots(context, absolute_capacity,
+diagnostic)`, advertised by `GENE_API_FOREIGN_ROOTS_FEATURE = 1024` only in a
+threaded AtomicArc table. It is root-lane-only and permits capacities 1 through
+`GENE_FOREIGN_ROOT_MAX_CAPACITY` (65,536). A module reserves before starting
+attached workers, then checks the
+feature bit and `struct_size` as for every optional entry. Slots and index
+buckets are allocated on the root lane; attached operations never grow them.
+Each slot holds a root-allocated entry and a reference to the original
+root-owned provenance entry; it does not copy a Nim Scope sequence on the
+attached lane. An early ASAN control caught that second allocator hazard,
+and the root-owned provenance link removed it.
+An exhausted pool returns `GENE_API_ERROR` and a copied capacity diagnostic.
+The caller can release IDs and let the root poll recycle slots, or request a
+larger absolute capacity on the root lane. Numeric IDs remain monotonic, so a
+reused slot never revives a stale ID. `NativeModule.status` reports
+`foreign_roots`, `foreign_pending`, and `foreign_capacity`.
 
-The owner must select the policy because it changes the public meaning of an
-attached owning handle or the supported AtomicArc build configuration. After
-selection, implement only the chosen capability gate and test matrix before
-attempting AAR-2. The current default build retains its conservative
-publication behavior; no AAR-2 or AAR-3 collection is enabled by this record.
+This qualifies the C numeric-ID transfer boundary only. A Nim
+`GeneManagedRoot` wrapper itself allocated on an attached thread is still a
+Nim ref and must not be handed to the root after that thread exits. The
+arbitrary raw `Value`/`Scope` exports remain permanently published or
+excluded under the opaque-handle contract. Complete AAR-1 native graph
+inventory, mutable snapshot policy, and the AAR-2/3 lifetime matrices are
+separate gates. Native Linux x86_64 qualification remains owner-deferred.

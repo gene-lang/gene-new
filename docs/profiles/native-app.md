@@ -266,7 +266,7 @@ those graphs live until release; explicit export to a raw `GeneRoot` pins them
 irreversibly.
 
 The current managed qualification runner passes disabled/probe/ASAN/targeted
-TSAN at 1/39/39/10 cases; the AAR-0 compatibility runner passes 2/30/30/10.
+TSAN at 1/41/41/12 cases; the AAR-0 compatibility runner passes 2/30/30/10.
 Their build commands and binary hashes are in
 `tmp/native-managed-qualification/report.json` and
 `tmp/atomic-retirement-qualification/report.json`. Normal AtomicArc
@@ -275,10 +275,15 @@ handoff remain disabled. Managed Actor worker execution stays root-only
 pending the demonstrated worker allocator-lifetime fix. Mutable shared
 Buffers/graphs, arbitrary direct Nim ownership transfers, unmodeled callbacks,
 and native cleanup requiring Gene worker progress remain outside the model.
-Foreign-created managed IDs crossing an exiting C thread are also unqualified
-with the default AtomicArc allocator; the
-[allocator decision](../proposals/native-foreign-handle-allocation.md) records
-the ASAN failure and passing `useMalloc` experiment.
+Foreign-created C numeric IDs now use the owner-selected
+[bounded registry](../proposals/native-foreign-handle-allocation.md): root-lane
+reservation prevents foreign Nim allocations, and root polling releases
+pending slots after borrows end. A 10,000-ID transfer passes default-allocator
+ASAN, and four concurrent workers transferring 2,048 IDs pass TSAN. A
+two-slot cap/retry and an in-flight borrow release pass ASAN/TSAN. Direct Nim
+wrapper transfer and broader shared reclamation remain unqualified. A private
+Scope retained through a foreign ID and active borrow stays live until root
+polling releases the slot, then retires in the opt-in collector.
 After the ingress migration, the AAR runner again passes
 disabled/probe/ASAN/TSAN at 2/30/30/10 cases. Its late C-entry case now proves
 that the handler Scope retires after physical release; the current mode hashes

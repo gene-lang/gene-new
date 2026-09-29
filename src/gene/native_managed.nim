@@ -10,12 +10,22 @@ when defined(geneAtomicGenerationRetirementProbe):
 type
   ManagedEntry = ref object
     scopes: seq[Scope] # strong known Scope/code provenance until physical release
+    source: ManagedEntry # foreign slots refer to root-owned provenance
     value: Value
 
   ManagedAttachment = object
     id: uint64
     lane: int
     ticket: GeneThreadAttachment
+
+  ForeignRootState = enum
+    frFree, frLive, frPending, frDraining
+
+  ForeignRootSlot = ref object
+    id: uint64
+    entry: ManagedEntry # allocated on the root lane before foreign access
+    borrows: int
+    state: ForeignRootState
 
   GeneManagedRegistration = ref object of RootObj
     domain: GeneManagedDomain
@@ -85,6 +95,10 @@ type
     lock: Lock
     nextId: uint64
     roots: Table[uint64, ManagedEntry]
+    foreignSlots: seq[ForeignRootSlot]
+    foreignIndex: Table[uint64, int]
+    foreignLive, foreignPending: int
+    foreignWakeHeld: bool
     borrows: int
     nextAttachmentId: uint64
     attachmentCount: int
@@ -116,6 +130,7 @@ type
     domain: GeneManagedDomain
     entry: ManagedEntry
     ownerLane: int
+    foreignSlot: int
     active: bool
 
   GeneManagedTask* = ref object
@@ -161,6 +176,7 @@ const
   GeneCopiedF64 = 5'u32
   GeneCopiedQueueCount = 256
   GeneCopiedQueueBytes = 64 * 1024 * 1024
+  GeneForeignRootLimit = 65536
 
 when defined(geneNativeCopyAllocationProbe):
   var failNextNativeCopyAllocation: bool
@@ -172,6 +188,14 @@ proc copiedMalloc(size: csize_t): pointer
 proc copiedFree(value: pointer) {.importc: "free", header: "<stdlib.h>".}
 
 proc ownedCopy[T](value: T): T {.inline.} = value
+
+proc provenanceRoot(entry: ManagedEntry): ManagedEntry =
+  result = entry
+  while result != nil and result.source != nil:
+    result = result.source
+
+proc knownScopes(entry: ManagedEntry): seq[Scope] =
+  entry.provenanceRoot().scopes
 
 proc requireDomain(domain: GeneManagedDomain) =
   if domain == nil:
@@ -202,6 +226,7 @@ proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
   result.rootLane = currentEventLane()
   result.rootScope = scope
   result.roots = initTable[uint64, ManagedEntry]()
+  result.foreignIndex = initTable[uint64, int]()
   result.producerEntries = initTable[uint64, ManagedEntry]()
   result.cProducers = initTable[uint64, ManagedCProducer]()
   result.registrations = initTable[uint64, GeneManagedRegistration]()
@@ -210,8 +235,40 @@ proc geneNewManagedDomain*(scope: Scope): GeneManagedDomain =
 
 proc addRoot(domain: GeneManagedDomain, value: Value,
              scopes: seq[Scope] = @[],
-             allowClosed = false): GeneManagedRoot =
+             allowClosed = false,
+             source: ManagedEntry = nil): GeneManagedRoot =
   domain.requireDomain()
+  if currentEventLane() != domain.rootLane:
+    if source == nil:
+      raise newException(GeneError,
+        "foreign managed root requires rooted provenance")
+    var id: uint64
+    acquire(domain.lock)
+    try:
+      if domain.closed and not allowClosed:
+        raise newException(GeneError, "managed native domain is closed")
+      if domain.nextId == high(uint64):
+        raise newException(GeneError, "managed native root IDs are exhausted")
+      var slotIndex = -1
+      for i, slot in domain.foreignSlots:
+        if slot.state == frFree:
+          slotIndex = i
+          break
+      if slotIndex < 0:
+        raise newException(GeneError,
+          "foreign managed root capacity exhausted; reserve on the root lane")
+      inc domain.nextId
+      id = domain.nextId
+      let slot = domain.foreignSlots[slotIndex]
+      slot.entry.value = value
+      slot.entry.source = source.provenanceRoot()
+      slot.id = id
+      slot.state = frLive
+      domain.foreignIndex[id] = slotIndex
+      inc domain.foreignLive
+    finally:
+      release(domain.lock)
+    return GeneManagedRoot(domain: domain, id: id)
   acquire(domain.lock)
   try:
     if domain.closed and not allowClosed:
@@ -220,7 +277,8 @@ proc addRoot(domain: GeneManagedDomain, value: Value,
       raise newException(GeneError, "managed native root IDs are exhausted")
     inc domain.nextId
     let id = domain.nextId
-    domain.roots[id] = ManagedEntry(value: value, scopes: scopes)
+    let rootScopes = if source == nil: scopes else: source.knownScopes()
+    domain.roots[id] = ManagedEntry(value: value, scopes: rootScopes)
     result = GeneManagedRoot(domain: domain, id: id)
   finally:
     release(domain.lock)
@@ -230,6 +288,53 @@ proc requireRootLane(domain: GeneManagedDomain) =
   if currentEventLane() != domain.rootLane:
     raise newException(GeneError, "managed native operation requires the runtime root lane")
 
+proc geneManagedReserveForeignRoots*(domain: GeneManagedDomain,
+                                     capacity: int) =
+  ## Allocate every slot, entry, and index bucket on the root lane. Attached
+  ## lanes may fill existing slots but never grow a Nim container.
+  domain.requireRootLane()
+  domain.requireOpen()
+  if capacity < 1 or capacity > GeneForeignRootLimit:
+    raise newException(GeneError, "foreign managed root capacity is invalid")
+  let current = domain.foreignSlots.len
+  if capacity <= current: return
+  var wakeHeld = false
+  var installed = false
+  var oldSlots: seq[ForeignRootSlot]
+  var oldIndex: Table[uint64, int]
+  try:
+    if current == 0:
+      geneHoldNativeWake()
+      wakeHeld = true
+    var slots = newSeq[ForeignRootSlot](capacity)
+    for i in current ..< capacity:
+      slots[i] = ForeignRootSlot(entry: ManagedEntry(value: NIL))
+    var index = initTable[uint64, int](capacity * 4)
+    acquire(domain.lock)
+    try:
+      if domain.closed:
+        raise newException(GeneError, "managed native domain is closed")
+      for i in 0 ..< current:
+        slots[i] = domain.foreignSlots[i]
+      for id, slotIndex in domain.foreignIndex:
+        index[id] = slotIndex
+      oldSlots = move(domain.foreignSlots)
+      oldIndex = move(domain.foreignIndex)
+      domain.foreignSlots = move(slots)
+      domain.foreignIndex = move(index)
+      if wakeHeld: domain.foreignWakeHeld = true
+      installed = true
+    finally:
+      release(domain.lock)
+  finally:
+    if wakeHeld and not installed: geneReleaseNativeWake()
+  reset(oldSlots)
+  reset(oldIndex)
+
+proc foreignSlotIndex(domain: GeneManagedDomain, id: uint64): int =
+  if domain.foreignIndex.hasKey(id): domain.foreignIndex[id]
+  else: -1
+
 proc liveRootValue(domain: GeneManagedDomain,
                    root: GeneManagedRoot): Value =
   domain.requireDomain()
@@ -237,7 +342,11 @@ proc liveRootValue(domain: GeneManagedDomain,
     raise newException(GeneError, "managed root belongs to another runtime")
   acquire(domain.lock)
   try:
-    let entry = domain.roots.getOrDefault(root.id)
+    var entry = domain.roots.getOrDefault(root.id)
+    if entry == nil:
+      let slotIndex = domain.foreignSlotIndex(root.id)
+      if slotIndex >= 0:
+        entry = domain.foreignSlots[slotIndex].entry
     if entry == nil:
       raise newException(GeneError, "managed native root has been released")
     result = entry.value
@@ -252,9 +361,16 @@ proc liveRootEntry(domain: GeneManagedDomain,
   acquire(domain.lock)
   try:
     let found = domain.roots.getOrDefault(root.id)
-    if found == nil:
-      raise newException(GeneError, "managed native root has been released")
-    result = ownedCopy(found)
+    if found != nil:
+      result = ownedCopy(found)
+    else:
+      let slotIndex = domain.foreignSlotIndex(root.id)
+      if slotIndex < 0:
+        raise newException(GeneError, "managed native root has been released")
+      let entry = domain.foreignSlots[slotIndex].entry
+      # A snapshot owns its fields independently of a reusable foreign slot.
+      result = ManagedEntry(value: entry.value,
+                            source: entry.provenanceRoot())
   finally:
     release(domain.lock)
 
@@ -301,6 +417,37 @@ proc geneManagedRootFromVm*(domain: GeneManagedDomain, scope: Scope,
     let scopes = vm.publishManagedRootForRetirement(value)
     result = domain.addRoot(value, scopes)
 
+proc drainForeignRoots(domain: GeneManagedDomain) =
+  domain.requireRootLane()
+  acquire(domain.lock)
+  let pending = domain.foreignPending
+  release(domain.lock)
+  if pending == 0: return
+  for i in 0 ..< domain.foreignSlots.len:
+    var entry: ManagedEntry
+    acquire(domain.lock)
+    try:
+      let slot = domain.foreignSlots[i]
+      if slot.state == frPending and slot.borrows == 0:
+        slot.state = frDraining
+        entry = ownedCopy(slot.entry)
+    finally:
+      release(domain.lock)
+    if entry == nil: continue
+    try:
+      entry.value = NIL
+      reset(entry.scopes)
+      reset(entry.source)
+    finally:
+      acquire(domain.lock)
+      try:
+        let slot = domain.foreignSlots[i]
+        slot.id = 0
+        slot.state = frFree
+        dec domain.foreignPending
+      finally:
+        release(domain.lock)
+
 proc geneManagedRelease*(root: GeneManagedRoot) =
   if root == nil or root.domain == nil: return
   when defined(geneAtomicGenerationRetirementProbe):
@@ -309,6 +456,7 @@ proc geneManagedRelease*(root: GeneManagedRoot) =
   try:
     let domain = root.domain
     var retired: ManagedEntry
+    var foreign = false
     acquire(domain.lock)
     try:
       let found = domain.roots.getOrDefault(root.id)
@@ -316,9 +464,23 @@ proc geneManagedRelease*(root: GeneManagedRoot) =
         # Keep the final owner until after the registry lock is released.
         retired = ownedCopy(found)
         domain.roots.del(root.id)
+      else:
+        let slotIndex = domain.foreignSlotIndex(root.id)
+        if slotIndex >= 0:
+          let slot = domain.foreignSlots[slotIndex]
+          slot.state = frPending
+          domain.foreignIndex.del(root.id)
+          dec domain.foreignLive
+          inc domain.foreignPending
+          foreign = true
     finally:
       release(domain.lock)
     reset(retired)
+    if foreign:
+      if currentEventLane() == domain.rootLane:
+        domain.drainForeignRoots()
+      else:
+        geneSignalNativeWake()
   finally:
     when defined(geneAtomicGenerationRetirementProbe):
       leaveRetirementNativeAccess()
@@ -343,11 +505,19 @@ proc beginBorrow(root: GeneManagedRoot): GeneNativeBorrow =
     try:
       if domain.closed:
         raise newException(GeneError, "managed native domain is closed")
-      let entry = domain.roots.getOrDefault(root.id)
+      var entry = domain.roots.getOrDefault(root.id)
+      var slotIndex = -1
+      if entry == nil:
+        slotIndex = domain.foreignSlotIndex(root.id)
+        if slotIndex >= 0:
+          let slot = domain.foreignSlots[slotIndex]
+          entry = slot.entry
+          inc slot.borrows
       if entry == nil:
         raise newException(GeneError, "managed native root has been released")
       result = GeneNativeBorrow(domain: domain, entry: entry,
-                                ownerLane: currentEventLane(), active: true)
+                                ownerLane: currentEventLane(),
+                                foreignSlot: slotIndex, active: true)
       inc domain.borrows
       admitted = true
     finally:
@@ -365,6 +535,11 @@ proc endBorrow(borrow: GeneNativeBorrow) =
     try:
       borrow.active = false
       dec domain.borrows
+      if borrow.foreignSlot >= 0:
+        let slot = domain.foreignSlots[borrow.foreignSlot]
+        dec slot.borrows
+        if slot.state == frPending and slot.borrows == 0:
+          geneSignalNativeWake()
       retired = ownedCopy(entry)
       reset(borrow.entry) # `retired` prevents last-owner cleanup under the lock
     finally:
@@ -426,7 +601,7 @@ proc geneManagedBytes*(borrow: GeneNativeBorrow): seq[byte] =
 
 proc geneManagedRetain*(borrow: GeneNativeBorrow): GeneManagedRoot =
   let entry = borrow.requireBorrow()
-  result = borrow.domain.addRoot(entry.value, entry.scopes)
+  result = borrow.domain.addRoot(entry.value, source = entry)
 
 proc requireFrozen(value: Value, kind: ValueKind, label: string) =
   if value.kind != kind or not value.isDeepFrozen:
@@ -443,27 +618,28 @@ proc geneManagedListAt*(borrow: GeneNativeBorrow, index: int): GeneManagedRoot =
   requireFrozen(value, vkList, "index")
   if index < 0 or index >= value.listItems.len:
     raise newException(GeneError, "managed List index is out of bounds")
-  borrow.domain.addRoot(value.listItems[index], entry.scopes)
+  borrow.domain.addRoot(value.listItems[index], source = entry)
 
 proc geneManagedMapAt*(borrow: GeneNativeBorrow,
                        name: string): GeneManagedRoot =
   let entry = borrow.requireBorrow()
   let value = entry.value
   requireFrozen(value, vkMap, "lookup")
-  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, VOID), entry.scopes)
+  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, VOID),
+                        source = entry)
 
 proc geneManagedNodeHead*(borrow: GeneNativeBorrow): GeneManagedRoot =
   let entry = borrow.requireBorrow()
   let value = entry.value
   requireFrozen(value, vkNode, "head")
-  borrow.domain.addRoot(value.head, entry.scopes)
+  borrow.domain.addRoot(value.head, source = entry)
 
 proc geneManagedNodeProp*(borrow: GeneNativeBorrow,
                           name: string): GeneManagedRoot =
   let entry = borrow.requireBorrow()
   let value = entry.value
   requireFrozen(value, vkNode, "property")
-  borrow.domain.addRoot(value.props.getOrDefault(name, VOID), entry.scopes)
+  borrow.domain.addRoot(value.props.getOrDefault(name, VOID), source = entry)
 
 proc geneManagedNodeBodyAt*(borrow: GeneNativeBorrow,
                             index: int): GeneManagedRoot =
@@ -472,7 +648,7 @@ proc geneManagedNodeBodyAt*(borrow: GeneNativeBorrow,
   requireFrozen(value, vkNode, "body")
   if index < 0 or index >= value.body.len:
     raise newException(GeneError, "managed Node body index is out of bounds")
-  borrow.domain.addRoot(value.body[index], entry.scopes)
+  borrow.domain.addRoot(value.body[index], source = entry)
 
 proc geneNewManagedEnvironment*(domain: GeneManagedDomain,
                                 scope: Scope): GeneManagedEnvironment =
@@ -496,7 +672,7 @@ proc geneManagedDefine*(environment: GeneManagedEnvironment,
       let scope = domain.environmentScope(environment)
       let entry = domain.liveRootEntry(value)
       let stored = entry.value
-      var pins = ownedCopy(entry.scopes)
+      var pins = ownedCopy(entry.knownScopes())
       pins.add vm.publishManagedRootForRetirement(stored)
       scope.define(name, stored)
       if pins.len > 0:
@@ -770,7 +946,7 @@ proc geneManagedChannelTrySend*(channel, item: GeneManagedRoot,
       let channelEntry = domain.liveRootEntry(channel)
       let itemEntry = domain.liveRootEntry(item)
       result.accepted = vm.nativeChannelTrySendManaged(channelEntry.value,
-        itemEntry.value, itemEntry.scopes, scope)
+        itemEntry.value, itemEntry.knownScopes(), scope)
       result.status = gsOk
     except GeneError as e:
       result.status = gsError
@@ -826,13 +1002,13 @@ proc geneManagedNewActor*(environment: GeneManagedEnvironment,
       let actor = newActorRef(capacity, stateEntry.value, handlerEntry.value,
                               contract,
                               messageTypeExplicit = contractEntry != nil)
-      var statePins = ownedCopy(stateEntry.scopes)
+      var statePins = ownedCopy(stateEntry.knownScopes())
       statePins.add vm.publishManagedRootForRetirement(stateEntry.value)
-      var handlerPins = ownedCopy(handlerEntry.scopes)
+      var handlerPins = ownedCopy(handlerEntry.knownScopes())
       handlerPins.add vm.publishManagedRootForRetirement(handlerEntry.value)
       var contractPins: seq[Scope]
       if contractEntry != nil:
-        contractPins = ownedCopy(contractEntry.scopes)
+        contractPins = ownedCopy(contractEntry.knownScopes())
         contractPins.add vm.publishManagedRootForRetirement(contract)
       actor.configureManagedActor(statePins, handlerPins, contractPins)
       result.status = gsOk
@@ -856,7 +1032,7 @@ proc geneManagedActorTrySend*(actor, message: GeneManagedRoot,
       let actorEntry = domain.liveRootEntry(actor)
       let messageEntry = domain.liveRootEntry(message)
       result.accepted = vm.nativeActorTrySendManaged(actorEntry.value,
-        messageEntry.value, messageEntry.scopes, scope)
+        messageEntry.value, messageEntry.knownScopes(), scope)
       result.status = gsOk
     except GeneError as e:
       result.status = gsError
@@ -983,11 +1159,12 @@ proc geneManagedTaskComplete*(task: GeneManagedTask,
   let domain = task.domain
   withManagedProgress:
     let scope = domain.environmentScope(environment, rootOnly = false)
-    let payloadEntry = domain.liveRootEntry(value)
-    let payload = payloadEntry.value
+    let payloadEntry = if value == nil: nil else: domain.liveRootEntry(value)
+    let payload = if payloadEntry == nil: NIL else: payloadEntry.value
     let producer = task.claimProducer()
     try:
-      producer.value.retainTaskSourceScopes(payloadEntry.scopes)
+      if payloadEntry != nil:
+        producer.value.retainTaskSourceScopes(payloadEntry.knownScopes())
       result.accepted = vm.nativeTaskComplete(producer.value, payload, scope)
       result.status = gsOk
     except GeneError as e:
@@ -1014,7 +1191,7 @@ proc geneManagedTaskFail*(task: GeneManagedTask,
     let producer = task.claimProducer()
     try:
       if payloadEntry != nil:
-        producer.value.retainTaskSourceScopes(payloadEntry.scopes)
+        producer.value.retainTaskSourceScopes(payloadEntry.knownScopes())
       result.accepted = vm.nativeTaskFail(producer.value, message, payload,
                                            error != nil, scope)
       result.status = gsOk
@@ -1150,7 +1327,7 @@ proc geneExportManagedRoot*(borrow: GeneNativeBorrow): GeneRoot =
   if currentEventLane() != borrow.domain.rootLane:
     raise newException(GeneError, "legacy export requires the runtime root lane")
   borrow.domain.requireOpen()
-  pinLegacyManagedScopes(entry.scopes)
+  pinLegacyManagedScopes(entry.knownScopes())
   when defined(geneAtomicGenerationRetirementProbe):
     vm.publishNativeRootForRetirement(entry.value)
   result = geneRoot(entry.value) # irreversible raw publication
@@ -1165,6 +1342,7 @@ const
   GeneApiTaskProducerFeature* = 128'u64
   GeneApiTaskCopyFeature* = 256'u64
   GeneApiFloatFeature* = 512'u64
+  GeneApiForeignRootsFeature* = 1024'u64
   GeneApiMaxCopyBytes* = 64 * 1024 * 1024
 
 proc apiDiagnostic(output: ptr GeneOutBytes, message: string) =
@@ -1932,7 +2110,7 @@ proc invokeRegisteredCallback(context: RootRef, arguments: openArray[Value],
             nameLen: csize_t(name.len), value: root.id)
       let environmentRoot = domain.addRoot(
         domain.liveRootEntry(registration.environmentRoot).value,
-        domain.liveRootEntry(registration.environmentRoot).scopes)
+        domain.liveRootEntry(registration.environmentRoot).knownScopes())
       temporary.add environmentRoot
       temporaryIds.add environmentRoot.id
       var bytes: array[512, uint8]
@@ -2040,7 +2218,7 @@ proc apiRegisterCallback(context: pointer, environment: uint64,
     let source = domain.liveRootEntry(env.root)
     library.borrowFfiLibrary()
     borrowed = true
-    environmentRoot = domain.addRoot(source.value, source.scopes)
+    environmentRoot = domain.addRoot(source.value, source.knownScopes())
     var registration = GeneManagedRegistration(
       domain: domain, callback: callback, userContext: userContext,
       retire: retire, library: library, environmentRoot: environmentRoot)
@@ -2221,7 +2399,7 @@ proc apiNewTask(context: pointer, environment: uint64,
         "native Task environment belongs to another callback")
     let source = domain.liveRootEntry(supplied.root)
     ownedEnvironment = GeneManagedEnvironment(
-      root: domain.addRoot(source.value, source.scopes))
+      root: domain.addRoot(source.value, source.knownScopes()))
     library = registration.library
     library.borrowFfiLibrary()
     borrowed = true
@@ -2285,17 +2463,11 @@ proc apiTaskComplete(context: pointer, token, value: uint64,
           raise newException(GeneError,
             "foreign Task payload must be deep-frozen")
     producer = takeCProducer(domain, token)
-    let nilPayload = if value == 0: domain.addRoot(NIL, allowClosed = true)
-                     else: nil
-    let payload = if nilPayload == nil:
-      GeneManagedRoot(domain: domain, id: value)
-      else: nilPayload
+    let payload = if value == 0: nil
+                  else: GeneManagedRoot(domain: domain, id: value)
     var ack: GeneManagedAck
-    try:
-      ack = geneManagedTaskComplete(producer.task, payload,
-                                    producer.environment)
-    finally:
-      if nilPayload != nil: geneManagedRelease(nilPayload)
+    ack = geneManagedTaskComplete(producer.task, payload,
+                                  producer.environment)
     if ack.status != gsOk:
       raise newException(GeneError, ack.message)
     accepted[] = uint8(ord(ack.accepted))
@@ -2519,6 +2691,7 @@ proc geneManagedPoll*(domain: GeneManagedDomain): int =
   ## A direct Nim embedder may call this from its root event loop. The normal
   ## NativeModule owner calls it through the installed scheduler poll hook.
   domain.requireRootLane()
+  domain.drainForeignRoots()
   var copiedBytes = 0
   while result < 32:
     var producer: ManagedCProducer
@@ -2581,6 +2754,26 @@ proc geneManagedPoll*(domain: GeneManagedDomain): int =
           finally:
             finishCProducer(domain, producer)
   drainCProducerReleases(domain)
+  domain.drainForeignRoots()
+
+proc apiReserveForeignRoots(context: pointer, capacity: csize_t,
+                            diagnostic: ptr GeneOutBytes): uint32 {.cdecl.} =
+  try:
+    if capacity > csize_t(GeneForeignRootLimit):
+      raise newException(GeneError, "foreign managed root capacity is invalid")
+    let domain = apiDomain(context)
+    domain.geneManagedReserveForeignRoots(int(capacity))
+    apiDiagnostic(diagnostic, "")
+    result = 0
+  except GeneError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
+  except GenePanic as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 2
+  except CatchableError as e:
+    apiDiagnostic(diagnostic, e.msg)
+    result = 1
 
 proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable = GeneApi(version: GeneApiVersion,
@@ -2628,9 +2821,11 @@ proc configureApiTable(domain: GeneManagedDomain) =
   domain.apiTable.lookup = cast[pointer](apiLookup)
   when defined(gcAtomicArc) and compileOption("threads"):
     domain.apiTable.featureBits = domain.apiTable.featureBits or
-                               GeneApiAttachedFeature
+                               GeneApiAttachedFeature or
+                               GeneApiForeignRootsFeature
     domain.apiTable.attachThread = cast[pointer](apiAttachThread)
     domain.apiTable.detachThread = cast[pointer](apiDetachThread)
+    domain.apiTable.reserveForeignRoots = cast[pointer](apiReserveForeignRoots)
 
 const GeneModuleInitSymbol* = "gene_module_init"
 
@@ -2769,29 +2964,45 @@ proc geneManagedClose*(domain: GeneManagedDomain): bool =
     release(domain.lock)
   for registration in registrations:
     discard requestCloseRegistration(registration)
+  var retiredSlots: seq[ForeignRootSlot]
+  var retiredIndex: Table[uint64, int]
+  var releaseForeignWake = false
   acquire(domain.lock)
   try:
     result = domain.roots.len == 0 and domain.borrows == 0 and
+             domain.foreignLive == 0 and domain.foreignPending == 0 and
              domain.producers == 0 and domain.attachmentCount == 0 and
              domain.registrations.len == 0 and domain.liveRegistrations == 0 and
              domain.cProducers.len == 0 and
              domain.pendingProducerReleases == nil and
              domain.copyCount == 0 and domain.copyReservations == 0
+    if result and domain.foreignWakeHeld:
+      retiredSlots = move(domain.foreignSlots)
+      retiredIndex = move(domain.foreignIndex)
+      domain.foreignWakeHeld = false
+      releaseForeignWake = true
   finally:
     release(domain.lock)
+  reset(retiredSlots)
+  reset(retiredIndex)
+  if releaseForeignWake: geneReleaseNativeWake()
 
 proc geneManagedStats*(domain: GeneManagedDomain):
     tuple[roots, borrows, producers, attachments, registrations,
           liveRegistrations, copiedQueued, copiedBytes,
-          copiedReserved, copiedReservedBytes: int,
+          copiedReserved, copiedReservedBytes, foreignLive,
+          foreignPending, foreignCapacity: int,
           closed: bool, nextId: uint64] =
   domain.requireDomain()
   acquire(domain.lock)
   try:
-    result = (domain.roots.len, domain.borrows, domain.producers,
+    result = (domain.roots.len + domain.foreignLive + domain.foreignPending,
+              domain.borrows, domain.producers,
               domain.attachmentCount, domain.registrations.len,
               domain.liveRegistrations, domain.copyCount, domain.copyBytes,
               domain.copyReservations, domain.copyReservedBytes,
+              domain.foreignLive, domain.foreignPending,
+              domain.foreignSlots.len,
               domain.closed, domain.nextId)
   finally:
     release(domain.lock)
@@ -3145,7 +3356,8 @@ proc biManagedPackageModuleStatus(args: openArray[Value],
   let stats = if record.domain == nil:
     (roots: 0, producers: 0, registrations: 0, liveRegistrations: 0,
      copiedQueued: 0, copiedBytes: 0, copiedReserved: 0,
-     copiedReservedBytes: 0)
+     copiedReservedBytes: 0, foreignLive: 0, foreignPending: 0,
+     foreignCapacity: 0)
     else:
       let current = geneManagedStats(record.domain)
       (roots: current.roots, producers: current.producers,
@@ -3154,7 +3366,10 @@ proc biManagedPackageModuleStatus(args: openArray[Value],
        copiedQueued: current.copiedQueued,
        copiedBytes: current.copiedBytes,
        copiedReserved: current.copiedReserved,
-       copiedReservedBytes: current.copiedReservedBytes)
+       copiedReservedBytes: current.copiedReservedBytes,
+       foreignLive: current.foreignLive,
+       foreignPending: current.foreignPending,
+       foreignCapacity: current.foreignCapacity)
   var fields = initPropTable()
   fields["state"] = newStr(
     if record.closed: "closed"
@@ -3168,6 +3383,9 @@ proc biManagedPackageModuleStatus(args: openArray[Value],
   fields["copied_bytes"] = newInt(stats.copiedBytes)
   fields["copied_reserved"] = newInt(stats.copiedReserved)
   fields["copied_reserved_bytes"] = newInt(stats.copiedReservedBytes)
+  fields["foreign_roots"] = newInt(stats.foreignLive)
+  fields["foreign_pending"] = newInt(stats.foreignPending)
+  fields["foreign_capacity"] = newInt(stats.foreignCapacity)
   fields["terminal_kind"] = newStr($record.terminalStatus)
   fields["terminal_message"] = newStr(record.terminalMessage)
   newMap(fields)
@@ -3227,7 +3445,8 @@ proc hasManagedPackageModulesClosing(scheduler: SchedulerState): bool
       acquire(record.domain.lock)
       try:
         if record.domain.cProducers.len > 0 or record.domain.copyCount > 0 or
-            record.domain.pendingProducerReleases != nil:
+            record.domain.pendingProducerReleases != nil or
+            record.domain.foreignPending > 0:
           return true
       finally:
         release(record.domain.lock)

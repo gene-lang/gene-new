@@ -59,6 +59,12 @@ defer collection; native admission reopens after Scope edges detach and before
 cleanup, while a collector reservation prevents overlapping passes. Raw returned
 objects keep their permanent pins. Full managed borrows and other native API
 paths remain unqualified; this does not promote AAR-2 or production retirement.
+The owner-selected bounded C registry now reserves slot entries and index
+capacity on the root lane. Attached C retain/traversal returns numeric IDs
+without growing Nim storage; root polling defers physical release until
+borrows end. A 10,000-ID ASAN transfer and four-worker TSAN control pass.
+Direct Nim ref-wrapper transfer and broader published-graph reclamation remain
+outside that qualification.
 
 ThreadSanitizer exposed worker allocator access after an early inactive marker.
 Nested pause depth and teardown-aware retiring slots now acknowledge only after

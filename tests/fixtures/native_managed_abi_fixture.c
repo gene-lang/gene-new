@@ -15,6 +15,7 @@ uint32_t gene_test_api_calls(void) { return calls; }
 
 typedef struct ForeignRead {
   GeneHandle root;
+  GeneHandle traversed;
   int ok;
 } ForeignRead;
 
@@ -49,6 +50,8 @@ static void *read_on_foreign_lane(void *raw) {
       api->copy_i64(api->runtime_context, map_child, &number, NULL) == GENE_API_OK &&
       number == 4 &&
       api->release(api->runtime_context, map_child, NULL) == GENE_API_OK &&
+      api->traverse(api->runtime_context, saved_map, GENE_MAP_ENTRY, 0,
+                    &read->traversed, NULL) == GENE_API_OK &&
       api->detach_thread(api->runtime_context, token, NULL) == GENE_API_OK;
   if (read->ok)
     read->ok = api->kind(api->runtime_context, read->root,
@@ -60,7 +63,11 @@ static void *read_on_foreign_lane(void *raw) {
 int gene_test_api_try_foreign(void) {
   const GeneApi *api = saved_api;
   if (!api || !(api->feature_bits & GENE_API_ATTACHED_FEATURE) ||
-      !api->attach_thread || !api->detach_thread) return -1;
+      !(api->feature_bits & GENE_API_FOREIGN_ROOTS_FEATURE) ||
+      !api->attach_thread || !api->detach_thread ||
+      !api->reserve_foreign_roots) return -1;
+  if (api->reserve_foreign_roots(api->runtime_context, 2048, NULL) !=
+      GENE_API_OK) return 4;
   ForeignRead read = {0, 0};
   if (api->new_i64(api->runtime_context, 99, &read.root, NULL) != GENE_API_OK)
     return 1;
@@ -73,14 +80,24 @@ int gene_test_api_try_foreign(void) {
   int released = api->release(api->runtime_context, read.root, NULL) == GENE_API_OK;
   int map_released = api->release(api->runtime_context, saved_map,
                                    NULL) == GENE_API_OK;
+  int64_t transferred_value = 0;
+  int traversed_ok = 0;
+  if (read.traversed) {
+    traversed_ok = api->copy_i64(api->runtime_context, read.traversed,
+                                 &transferred_value, NULL) == GENE_API_OK &&
+      transferred_value == 4;
+    traversed_ok = api->release(api->runtime_context, read.traversed,
+                                NULL) == GENE_API_OK && traversed_ok;
+  }
   saved_map = 0;
-  return read.ok && released && map_released ? 0 : 3;
+  return read.ok && released && map_released && traversed_ok ? 0 : 3;
 }
 
 typedef struct TransferMany {
   GeneHandle source;
   GeneHandle *ids;
   uint32_t count;
+  int reserve_rejected;
   int ok;
 } TransferMany;
 
@@ -91,6 +108,9 @@ static void *retain_many_on_foreign_lane(void *raw) {
   state->ok = api->attach_thread(api->runtime_context, &attachment, NULL) ==
     GENE_API_OK;
   if (state->ok) {
+    state->reserve_rejected =
+      api->reserve_foreign_roots(api->runtime_context,
+                                 state->count + 1, NULL) == GENE_API_ERROR;
     for (uint32_t i = 0; i < state->count; ++i) {
       if (api->retain(api->runtime_context, state->source,
                       &state->ids[i], NULL) != GENE_API_OK) {
@@ -109,6 +129,12 @@ int gene_test_api_transfer_many(uint32_t count) {
   GeneHandle source = 0;
   if (saved_api->new_i64(saved_api->runtime_context, 77, &source,
                           NULL) != GENE_API_OK) return 2;
+  if (!saved_api->reserve_foreign_roots ||
+      saved_api->reserve_foreign_roots(saved_api->runtime_context, count,
+                                       NULL) != GENE_API_OK) {
+    saved_api->release(saved_api->runtime_context, source, NULL);
+    return 5;
+  }
   TransferMany state = {0};
   state.source = source;
   state.count = count;
@@ -130,7 +156,223 @@ int gene_test_api_transfer_many(uint32_t count) {
   free(state.ids);
   int source_released = saved_api->release(saved_api->runtime_context,
                                            source, NULL) == GENE_API_OK;
-  return state.ok && released == count && source_released ? 0 : 4;
+  return state.ok && state.reserve_rejected && released == count &&
+    source_released ? 0 : 4;
+}
+
+int gene_test_api_transfer_concurrent(uint32_t workers, uint32_t each) {
+  if (!saved_api || workers == 0 || workers > 8 || each == 0 ||
+      each > 10000 / workers) return 1;
+  uint32_t total = workers * each;
+  if (!saved_api->reserve_foreign_roots ||
+      saved_api->reserve_foreign_roots(saved_api->runtime_context,
+                                       total, NULL) != GENE_API_OK) return 2;
+  GeneHandle source = 0;
+  if (saved_api->new_i64(saved_api->runtime_context, 88,
+                          &source, NULL) != GENE_API_OK) return 3;
+  GeneHandle *ids = calloc(total, sizeof(*ids));
+  TransferMany *states = calloc(workers, sizeof(*states));
+  pthread_t *threads = calloc(workers, sizeof(*threads));
+  if (!ids || !states || !threads) {
+    free(threads);
+    free(states);
+    free(ids);
+    saved_api->release(saved_api->runtime_context, source, NULL);
+    return 4;
+  }
+  uint32_t started = 0;
+  for (uint32_t i = 0; i < workers; ++i) {
+    states[i].source = source;
+    states[i].count = each;
+    states[i].ids = ids + i * each;
+    if (pthread_create(&threads[i], NULL, retain_many_on_foreign_lane,
+                       &states[i]) != 0) break;
+    ++started;
+  }
+  for (uint32_t i = 0; i < started; ++i) pthread_join(threads[i], NULL);
+  int ok = started == workers;
+  for (uint32_t i = 0; i < started; ++i)
+    ok = ok && states[i].ok && states[i].reserve_rejected;
+  uint32_t released = 0;
+  for (uint32_t i = 0; i < total; ++i) {
+    if (ids[i] && saved_api->release(saved_api->runtime_context,
+                                      ids[i], NULL) == GENE_API_OK)
+      ++released;
+  }
+  int source_released = saved_api->release(saved_api->runtime_context,
+                                           source, NULL) == GENE_API_OK;
+  free(threads);
+  free(states);
+  free(ids);
+  return ok && released == total && source_released ? 0 : 5;
+}
+
+static GeneHandle held_foreign_id;
+
+int gene_test_api_hold_foreign_id(void) {
+  const GeneApi *api = saved_api;
+  if (!api || !api->reserve_foreign_roots || held_foreign_id ||
+      api->reserve_foreign_roots(api->runtime_context, 1,
+                                 NULL) != GENE_API_OK) return 1;
+  GeneHandle source = 0;
+  if (api->new_i64(api->runtime_context, 123,
+                   &source, NULL) != GENE_API_OK) return 2;
+  TransferMany state = {0};
+  state.source = source;
+  state.ids = &held_foreign_id;
+  state.count = 1;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) return 3;
+  pthread_join(thread, NULL);
+  int released = api->release(api->runtime_context, source,
+                               NULL) == GENE_API_OK;
+  return state.ok && state.reserve_rejected && held_foreign_id &&
+    released ? 0 : 4;
+}
+
+int gene_test_api_release_held_foreign_id(void) {
+  if (!saved_api || !held_foreign_id) return 1;
+  int result = saved_api->release(saved_api->runtime_context,
+                                   held_foreign_id, NULL) == GENE_API_OK;
+  held_foreign_id = 0;
+  if (saved_map) {
+    result = saved_api->release(saved_api->runtime_context,
+                                 saved_map, NULL) == GENE_API_OK && result;
+    saved_map = 0;
+  }
+  return result ? 0 : 2;
+}
+
+int gene_test_api_foreign_capacity_control(void) {
+  const GeneApi *api = saved_api;
+  if (!api || !api->reserve_foreign_roots ||
+      api->reserve_foreign_roots(api->runtime_context,
+        GENE_FOREIGN_ROOT_MAX_CAPACITY + 1, NULL) != GENE_API_ERROR ||
+      api->reserve_foreign_roots(api->runtime_context, 2, NULL) != GENE_API_OK)
+    return 1;
+  GeneHandle source = 0;
+  if (api->new_i64(api->runtime_context, 91, &source, NULL) != GENE_API_OK)
+    return 2;
+  GeneHandle ids[3] = {0};
+  TransferMany state = {0};
+  state.source = source;
+  state.ids = ids;
+  state.count = 3;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) return 3;
+  pthread_join(thread, NULL);
+  int bounded = !state.ok && state.reserve_rejected &&
+    ids[0] && ids[1] && !ids[2];
+  GeneHandle stale = ids[0];
+  if (ids[0]) api->release(api->runtime_context, ids[0], NULL);
+  if (ids[1]) api->release(api->runtime_context, ids[1], NULL);
+  memset(ids, 0, sizeof(ids));
+  state.ok = 0;
+  state.count = 2;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) return 4;
+  pthread_join(thread, NULL);
+  uint32_t kind = 255;
+  int stale_rejected = api->kind(api->runtime_context, stale,
+                                  &kind, NULL) == GENE_API_ERROR;
+  if (ids[0]) api->release(api->runtime_context, ids[0], NULL);
+  if (ids[1]) api->release(api->runtime_context, ids[1], NULL);
+  int source_released = api->release(api->runtime_context, source,
+                                     NULL) == GENE_API_OK;
+  return bounded && state.ok && state.reserve_rejected && ids[0] && ids[1] &&
+    stale_rejected && source_released ? 0 : 5;
+}
+
+int gene_test_api_foreign_growth_control(void) {
+  const GeneApi *api = saved_api;
+  if (!api || !api->reserve_foreign_roots ||
+      api->reserve_foreign_roots(api->runtime_context, 2, NULL) != GENE_API_OK)
+    return 1;
+  GeneHandle source = 0;
+  if (api->new_i64(api->runtime_context, 92, &source, NULL) != GENE_API_OK)
+    return 2;
+  GeneHandle first[2] = {0};
+  TransferMany state = {0};
+  state.source = source;
+  state.ids = first;
+  state.count = 2;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) return 3;
+  pthread_join(thread, NULL);
+  int ok = state.ok && first[0] && first[1];
+  if (api->reserve_foreign_roots(api->runtime_context, 8,
+                                 NULL) != GENE_API_OK) ok = 0;
+  GeneHandle later[6] = {0};
+  state.ids = later;
+  state.count = 6;
+  state.ok = 0;
+  if (pthread_create(&thread, NULL, retain_many_on_foreign_lane,
+                     &state) != 0) return 4;
+  pthread_join(thread, NULL);
+  ok = ok && state.ok;
+  int64_t value = 0;
+  for (uint32_t i = 0; i < 2; ++i) {
+    ok = ok && first[i] &&
+      api->copy_i64(api->runtime_context, first[i], &value,
+                     NULL) == GENE_API_OK && value == 92;
+    if (first[i]) api->release(api->runtime_context, first[i], NULL);
+  }
+  for (uint32_t i = 0; i < 6; ++i) {
+    ok = ok && later[i] &&
+      api->copy_i64(api->runtime_context, later[i], &value,
+                     NULL) == GENE_API_OK && value == 92;
+    if (later[i]) api->release(api->runtime_context, later[i], NULL);
+  }
+  ok = api->release(api->runtime_context, source, NULL) == GENE_API_OK && ok;
+  return ok ? 0 : 5;
+}
+
+typedef struct RetainChain {
+  GeneHandle source, first, second;
+  int ok;
+} RetainChain;
+
+static void *retain_chain_on_foreign_lane(void *raw) {
+  RetainChain *state = raw;
+  const GeneApi *api = saved_api;
+  uint64_t attachment = 0;
+  state->ok = api->attach_thread(api->runtime_context,
+                                  &attachment, NULL) == GENE_API_OK;
+  if (state->ok) {
+    state->ok = api->retain(api->runtime_context, state->source,
+                            &state->first, NULL) == GENE_API_OK &&
+      api->retain(api->runtime_context, state->first,
+                   &state->second, NULL) == GENE_API_OK;
+    if (api->detach_thread(api->runtime_context, attachment,
+                           NULL) != GENE_API_OK) state->ok = 0;
+  }
+  return NULL;
+}
+
+int gene_test_api_foreign_retain_chain(void) {
+  const GeneApi *api = saved_api;
+  if (!api || !api->reserve_foreign_roots ||
+      api->reserve_foreign_roots(api->runtime_context, 2, NULL) != GENE_API_OK)
+    return 1;
+  RetainChain state = {0};
+  if (api->new_i64(api->runtime_context, 93,
+                   &state.source, NULL) != GENE_API_OK) return 2;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, retain_chain_on_foreign_lane,
+                     &state) != 0) return 3;
+  pthread_join(thread, NULL);
+  int ok = state.ok && state.first && state.second &&
+    state.first != state.second;
+  api->release(api->runtime_context, state.source, NULL);
+  if (state.first) api->release(api->runtime_context, state.first, NULL);
+  int64_t value = 0;
+  ok = ok && api->copy_i64(api->runtime_context, state.second,
+                           &value, NULL) == GENE_API_OK && value == 93;
+  if (state.second) api->release(api->runtime_context, state.second, NULL);
+  return ok ? 0 : 4;
 }
 
 int gene_test_api_attachment_limits(void) {

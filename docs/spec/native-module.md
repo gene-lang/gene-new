@@ -22,8 +22,10 @@ owner is active. It implements `IoResource:close` and
 plus managed root/registration/producer counts, copied-result queue count and
 bytes, and a terminal category. The queue fields are `copied_queued`, `copied_bytes`,
 `copied_reserved`, and `copied_reserved_bytes`; the reservation fields count
-concurrent submissions that have not yet reached the queue. Package Gene code
-retains the owner for as long as it exposes native functions:
+concurrent submissions that have not yet reached the queue. Status also has
+`foreign_roots`, `foreign_pending`, and `foreign_capacity` when an AtomicArc
+module reserves attached-lane owning ID slots. Package Gene code retains the
+owner for as long as it exposes native functions:
 
 ```gene
 (import $io [IoResource])
@@ -73,11 +75,12 @@ Nil, Bool, Int, Text, Bytes or Float. Float additionally requires
 `GENE_API_FLOAT_FEATURE`. The root lane constructs the Gene value and
 settles the Task; `task_submit_copy` reports queue admission, not whether the
 user Task accepted the eventual result.
-The default AtomicArc allocator does not qualify an owning ID newly created
-on an attached C thread for transfer to the root after that thread exits;
-see the [allocator decision](../proposals/native-foreign-handle-allocation.md).
-Worker-computed values should use the copied-result handoff until that
-ownership policy is selected and qualified.
+An AtomicArc module that creates owning IDs on an attached C lane must first
+call root-lane `reserve_foreign_roots`. The
+[bounded registry contract](../proposals/native-foreign-handle-allocation.md)
+sets its capacity, retry, stale-ID and deferred-release behavior. It applies
+to numeric C IDs, not direct Nim wrapper references. Worker-computed scalar
+or byte values can use the copied-result handoff without reserving ID slots.
 The installed macOS arm64 fixture
 in `tests/test_genex_native_module.py` checks source-built and prebuilt selected
 `gene_api` images, compiler-free launch, ABI-kind refusal, initializer rollback,

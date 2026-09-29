@@ -76,6 +76,7 @@ type
     newTask*, taskComplete*, taskFail*, taskCancel*, taskRetire*: pointer
     taskSubmitCopy*: pointer
     copyF64*, newF64*: pointer
+    reserveForeignRoots*: pointer
   GeneModuleInitCProc* = proc(api: ptr GeneApi, environment: uint64,
                                diagnostic: ptr GeneOutBytes): uint32 {.cdecl.}
   GeneIngressRegisterProc* = proc(api: ptr GeneApi, context: pointer,

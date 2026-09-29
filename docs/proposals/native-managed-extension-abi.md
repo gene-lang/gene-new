@@ -120,6 +120,8 @@ Feature bit 8 (`GENE_API_TASK_COPY_FEATURE = 256`) advertises
 `task_submit_copy` after the producer entries. It requires the producer bit.
 Feature bit 9 (`GENE_API_FLOAT_FEATURE = 512`) advertises `copy_f64` and
 `new_f64` after `task_submit_copy`, and enables the copied Float result kind.
+Feature bit 10 (`GENE_API_FOREIGN_ROOTS_FEATURE = 1024`) advertises root-lane
+`reserve_foreign_roots` after the Float entries in threaded AtomicArc builds.
 
 `length`, `copy_key` and `traverse` use selectors `0=List item`, `1=Map
 entry`, `2=Node body`, `3=Node prop`, `4=Node head`. `copy_key` applies only to
@@ -140,22 +142,24 @@ Gene memory survives a call.
 
 | Family | Inputs and result | Lane and lifetime |
 | --- | --- | --- |
-| `retain`, `release` | Runtime context and ID; retain returns a new owning ID. | Attached lanes pass bounded same-lane controls. Foreign-created ID transfer/registry growth is unqualified under the default AtomicArc allocator. Release removes the last owner outside registry locks. |
+| `retain`, `release` | Runtime context and ID; retain returns a new owning ID. | An attached lane uses root-reserved bounded slots for new IDs. Release invalidates immediately; the root retires its physical owner after borrows end. |
 | `kind`, scalar reads | ID; copied Bool/Int64 or required byte count plus copy for text/Bytes. | A structured attached-lane borrow for the call extent. |
 | Scalar constructors | Copied Bool/Int64/UTF-8 text/Bytes; return owning ID. | Root lane for the current implementation. |
-| Frozen traversal | ID and index/key; returns a new owning ID. | Only deep-frozen List/Map/Node values; no raw container pointer. Attached-lane output ownership has the same allocator gate as `retain`. |
+| Frozen traversal | ID and index/key; returns a new owning ID. | Only deep-frozen List/Map/Node values; no raw container pointer. Attached-lane outputs use the same reserved slots as `retain`. |
 | `call` | Callable ID, owning argument IDs, environment ID; returns owned value or typed error ID. | Root lane; callback runs under owner-dependent admission. |
 | `define` | Environment ID, copied name bytes, value ID; returns an owned binding ID. | Root lane; the Scope owns the binding independently. |
 | `lookup` | Environment ID and copied name; returns an owning ID. | Root lane; resolves lexical parents under the same managed provenance walk. |
 | `new_task`, `task_complete`, `task_fail`, `task_cancel`, `task_retire` | Owning Task ID, distinct opaque producer token, and payload/error IDs. | New Task on the root lane during a registered callback; settlement on root or attached lane. The physical owner survives user cancellation until completion, failure or retirement. Typed foreign errors require a root-lane dispatch adapter before enabled. |
 | `task_submit_copy` | Producer token and copied Nil/Bool/Int/Float/Text/Bytes source; status means queue admission. | Root or attached lane; the root poll constructs the Gene value and consumes the producer. Float additionally requires its feature bit. Bounds and cancellation behavior are in [copied Task results](native-task-result-handoff.md). |
 | `copy_f64`, `new_f64` | Double precision Float read or new owning ID. | Read on an attached lane; construction on the root lane. `task_submit_copy` accepts a Float source when this feature is advertised. |
+| `reserve_foreign_roots` | Absolute slot capacity and copied diagnostic. | Root lane only; provisions stable entries and index buckets before attached-lane `retain` or traversal returns new owning IDs. |
 | `register_callback`, `request_close`, `wait_closed` | C callback/context, initializer environment ID, registration token. | Root lane; context and library borrow retire after close and zero in-flight calls. `wait_closed` consumes the token and returns an owning Task ID. |
 
-The [foreign handle allocator decision](native-foreign-handle-allocation.md)
-records the ASAN failure behind the attached-lane owning gate. The current
-table layout is not a claim that a foreign-created ID may outlive its creating
-thread under the default AtomicArc allocator.
+The [bounded registry contract](native-foreign-handle-allocation.md) records the
+selected capacity, retry and physical-release rules. An attached lane must
+reserve before creating owning IDs; a full pool returns a copied error rather
+than growing Nim storage on that lane. A direct Nim ref wrapper remains
+outside this C numeric-ID transfer qualification.
 
 The table's `struct_size` permits appending new function pointers in a later
 minor feature level, but a caller may only use an entry after checking both

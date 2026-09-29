@@ -6,6 +6,7 @@ type
   ReadCalls = proc(): uint32 {.cdecl.}
   TryForeign = proc(): cint {.cdecl.}
   TransferMany = proc(count: uint32): cint {.cdecl.}
+  TransferConcurrent = proc(workers, each: uint32): cint {.cdecl.}
 
 proc unloadFixture(address: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](address))
@@ -80,8 +81,8 @@ suite "managed native extension ABI":
         let setMode = cast[SetMode](symAddr(handle, "gene_test_api_set_mode"))
         check calls != nil and setMode != nil
         when defined(gcAtomicArc) and compileOption("threads"):
-          const unavailableFeature = 1024'u64
-          const availableFeatures = 1023'u64
+          const unavailableFeature = 2048'u64
+          const availableFeatures = 2047'u64
         else:
           const unavailableFeature = 1024'u64
           const availableFeatures = 1007'u64
@@ -106,8 +107,18 @@ suite "managed native extension ABI":
             "gene_test_api_try_foreign"))
           let limits = cast[TryForeign](symAddr(handle,
             "gene_test_api_attachment_limits"))
+          let capacityControl = cast[TryForeign](symAddr(handle,
+            "gene_test_api_foreign_capacity_control"))
+          let growthControl = cast[TryForeign](symAddr(handle,
+            "gene_test_api_foreign_growth_control"))
+          let retainChain = cast[TryForeign](symAddr(handle,
+            "gene_test_api_foreign_retain_chain"))
           check beginReader != nil and endReader != nil and
-                foreign != nil and limits != nil
+                foreign != nil and limits != nil and capacityControl != nil and
+                growthControl != nil and retainChain != nil
+          check capacityControl() == 0
+          check growthControl() == 0
+          check retainChain() == 0
           let reading = beginReader()
           check reading == 0
           if reading in [0, 2]:
@@ -115,10 +126,23 @@ suite "managed native extension ABI":
               discard newSym("abi_race_key_" & $i)
             check endReader() == 0
           check foreign() == 0
-          when defined(useMalloc):
-            let transferMany = cast[TransferMany](symAddr(handle,
-              "gene_test_api_transfer_many"))
-            check transferMany != nil and transferMany(2048) == 0
+          discard geneManagedPoll(domain)
+          let transferMany = cast[TransferMany](symAddr(handle,
+            "gene_test_api_transfer_many"))
+          let transferConcurrent = cast[TransferConcurrent](symAddr(handle,
+            "gene_test_api_transfer_concurrent"))
+          check transferMany != nil
+          check transferConcurrent != nil
+          let transferCount = parseInt(getEnv("GENE_NATIVE_FOREIGN_ROOT_COUNT",
+                                          "2048"))
+          doAssert transferCount > 0 and transferCount <= 10000
+          let transferStatus = transferMany(uint32(transferCount))
+          check transferStatus == 0
+          discard geneManagedPoll(domain)
+          check transferConcurrent(4, 512) == 0
+          discard geneManagedPoll(domain)
+          check geneManagedStats(domain).foreignLive == 0
+          check geneManagedStats(domain).foreignPending == 0
           check limits() == 0
           check geneManagedStats(domain).attachments == 0
         geneManagedRelease(loaded.value)
@@ -206,5 +230,42 @@ suite "managed native extension ABI":
             check geneManagedClose(domain)
           elif began == 3:
             discard endHold()
+    else:
+      skip()
+
+  test "domain close waits for a transferred foreign owning ID":
+    when defined(gcAtomicArc) and compileOption("threads"):
+      let path = buildFixture()
+      if path.len == 0:
+        skip()
+      else:
+        let handle = loadLib(path)
+        check handle != nil
+        let library = newFfiLibrary(cast[pointer](handle), path, unloadFixture)
+        let setMode = cast[SetMode](symAddr(handle, "gene_test_api_set_mode"))
+        setMode(0)
+        let domain = geneNewManagedDomain(host)
+        let environment = geneNewManagedEnvironment(domain, host)
+        let libraryRoot = geneManagedRootFromVm(domain, host, library)
+        let loaded = geneManagedLoadModule(domain, libraryRoot,
+                                          environment, "abi-foreign-owner")
+        check loaded.status == gsOk
+        let hold = cast[TryForeign](symAddr(handle,
+          "gene_test_api_hold_foreign_id"))
+        let releaseHeld = cast[TryForeign](symAddr(handle,
+          "gene_test_api_release_held_foreign_id"))
+        check hold != nil and releaseHeld != nil
+        check hold() == 0
+        check geneManagedStats(domain).foreignLive == 1
+        check not geneManagedClose(domain)
+        check releaseHeld() == 0
+        check geneManagedStats(domain).foreignLive == 0
+        check geneManagedStats(domain).foreignPending == 0
+        geneManagedRelease(loaded.value)
+        geneManagedRelease(libraryRoot)
+        geneManagedEnvironmentRelease(environment)
+        check geneManagedClose(domain)
+        check geneManagedStats(domain).foreignCapacity == 0
+        library.closeFfiLibrary()
     else:
       skip()

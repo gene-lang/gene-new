@@ -58,6 +58,32 @@ type ReaderState = ref object
   root: GeneManagedRoot
   stop, reads, bad: int
 
+type ForeignBorrowState = ref object
+  source, transferred: GeneManagedRoot
+  expectedKind: ValueKind
+  ready, entered, release, bad: int
+
+proc foreignRetainedBorrow(state: ForeignBorrowState) {.thread.} =
+  {.cast(gcsafe).}:
+    let attached = geneAttachThread()
+    try:
+      let retained = geneWithNativeBorrow(state.source,
+        proc(b: GeneNativeBorrow): GeneManagedRoot = geneManagedRetain(b))
+      state.transferred = retained
+      atomicStoreN(addr state.ready, 1, ATOMIC_RELEASE)
+      geneWithNativeBorrow(retained, proc(b: GeneNativeBorrow) =
+        atomicStoreN(addr state.entered, 1, ATOMIC_RELEASE)
+        let deadline = getMonoTime() + initDuration(seconds = 2)
+        while atomicLoadN(addr state.release, ATOMIC_ACQUIRE) == 0:
+          if getMonoTime() >= deadline:
+            atomicStoreN(addr state.bad, 1, ATOMIC_RELEASE)
+            return
+          os.sleep(1)
+        if geneManagedKind(b) != state.expectedKind:
+          atomicStoreN(addr state.bad, 1, ATOMIC_RELEASE))
+    finally:
+      geneDetachThread(attached)
+
 proc foreignReader(state: ReaderState) {.thread.} =
   {.cast(gcsafe).}:
     let attached = geneAttachThread()
@@ -860,6 +886,59 @@ suite "managed native handles":
       atomicStoreN(addr reader.stop, 1, ATOMIC_RELEASE)
       joinThread(thread)
     geneManagedRelease(candidate.root)
+    check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
+
+  test "foreign root release waits for its admitted borrow":
+    domain.geneManagedReserveForeignRoots(1)
+    let source = geneManagedRootFromVm(domain, host, newInt(42))
+    let state = ForeignBorrowState(source: source, expectedKind: vkInt)
+    var thread: Thread[ForeignBorrowState]
+    createThread(thread, foreignRetainedBorrow, state)
+    try:
+      let deadline = getMonoTime() + initDuration(seconds = 2)
+      while atomicLoadN(addr state.entered, ATOMIC_ACQUIRE) == 0:
+        doAssert getMonoTime() < deadline
+        os.sleep(1)
+      block:
+        let transferred = state.transferred
+        geneManagedRelease(transferred)
+        state.transferred = nil # only the foreign thread keeps its wrapper
+      check geneManagedStats(domain).foreignPending == 1
+      check geneManagedPoll(domain) == 0
+      check geneManagedStats(domain).foreignPending == 1
+    finally:
+      atomicStoreN(addr state.release, 1, ATOMIC_RELEASE)
+      joinThread(thread)
+    check atomicLoadN(addr state.bad, ATOMIC_ACQUIRE) == 0
+    discard geneManagedPoll(domain)
+    check geneManagedStats(domain).foreignPending == 0
+    geneManagedRelease(source)
+
+  test "foreign root and borrow retain private Scope provenance":
+    domain.geneManagedReserveForeignRoots(1)
+    var candidate = privateGeneration()
+    let state = ForeignBorrowState(source: candidate.root,
+                                   expectedKind: vkNamespace)
+    var thread: Thread[ForeignBorrowState]
+    createThread(thread, foreignRetainedBorrow, state)
+    try:
+      let deadline = getMonoTime() + initDuration(seconds = 2)
+      while atomicLoadN(addr state.entered, ATOMIC_ACQUIRE) == 0:
+        doAssert getMonoTime() < deadline
+        os.sleep(1)
+      geneManagedRelease(candidate.root)
+      block:
+        let transferred = state.transferred
+        geneManagedRelease(transferred)
+        state.transferred = nil
+      check geneManagedStats(domain).foreignPending == 1
+      check testRetireAtomicGenerationRoots(host, candidate.roots) == 0
+    finally:
+      atomicStoreN(addr state.release, 1, ATOMIC_RELEASE)
+      joinThread(thread)
+    check atomicLoadN(addr state.bad, ATOMIC_ACQUIRE) == 0
+    discard geneManagedPoll(domain)
+    check geneManagedStats(domain).foreignPending == 0
     check testRetireAtomicGenerationRoots(host, candidate.roots) > 0
 
   test "owner-dependent borrow callback never blocks its collecting lane":
