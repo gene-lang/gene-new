@@ -753,7 +753,7 @@
 
 (fn input_flag? [flags : F64 flag : F64] : Bool
   (var above (* 2.0 flag))
-  (>= (- flags (* above ($math/floor (/ flags above)))) flag))
+  (>= (// flags above) flag))
 
 # --- dig and place -----------------------------------------------------------
 #

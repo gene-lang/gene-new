@@ -16,7 +16,7 @@
 # Tile index to grid position, the inverse of what `core/mesh.gene` does to
 # reach the atlas: index `t` lives at column `t mod 8`, row `t / 8`.
 (fn tile_col [t : F64] : F64
-  (- t (* ($math/floor (/ t atlas_cols)) atlas_cols)))
+  (// t atlas_cols))
 
 (fn tile_row [t : F64] : F64
   ($math/floor (/ t atlas_cols)))

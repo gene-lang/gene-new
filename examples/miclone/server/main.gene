@@ -303,9 +303,9 @@
   (var last ($math/min total (+ from count)))
   (var dropped 0.0)
   (while (< at last)
-    (var cx (- at (* span_x ($math/floor (/ at ($to_float span_x))))))
+    (var cx (// at ($to_float span_x)))
     (var rest ($math/floor (/ at ($to_float span_x))))
-    (var cy (- rest (* span_y ($math/floor (/ rest ($to_float span_y))))))
+    (var cy (// rest ($to_float span_y)))
     (var cz ($math/floor (/ rest ($to_float span_y))))
     (var drops (send_block conn w
                            (+ ($to_float origin_bx) cx)

@@ -299,7 +299,7 @@
   (var y b)
   (while (> y 0.0)
     (var t y)
-    (set y (- x (* y ($math/floor (/ x y)))))
+    (set y (// x y))
     (set x t))
   x)
 
@@ -314,6 +314,8 @@
       s)))
 
 (fn sample_index [step : F64 total : F64 stride : F64] : F64
+  # Keep the existing reductions: the server's step counter has no <2^53
+  # bound. See docs/numeric-reductions.md before changing the sampler's math.
   (var i (- step (* total ($math/floor (/ step total)))))
   (var v (* i stride))
   (- v (* total ($math/floor (/ v total)))))

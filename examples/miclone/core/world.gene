@@ -110,10 +110,10 @@
   (+ x (+ (* y block_stride_y) (* z block_stride_z))))
 
 (fn index_x [i : F64] : F64
-  (- i (* ($math/floor (/ i block_stride_y)) block_stride_y)))
+  (// i block_stride_y))
 
 (fn index_y [i : F64] : F64
-  (var within (- i (* ($math/floor (/ i block_stride_z)) block_stride_z)))
+  (var within (// i block_stride_z))
   ($math/floor (/ within block_stride_y)))
 
 (fn index_z [i : F64] : F64
