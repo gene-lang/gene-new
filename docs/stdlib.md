@@ -4,6 +4,28 @@ Standard libraries live under `gene`; `$str` is shorthand for `gene/str`.
 Import names when you use them repeatedly. These recipes show the common path;
 [examples](../examples/) contain larger programs.
 
+## Numbers
+
+Int `/` truncates toward zero and `//` computes the matching remainder using
+arbitrary-precision arithmetic. A nonzero remainder has the dividend's sign:
+`(// -7 3)` is `-1`, and `(// 7 -3)` is `1`. For a floored wrap with a
+positive divisor, adjust the truncated remainder explicitly:
+
+```gene runnable
+(fn wrap [a : Int b : Int] : Int
+  (let r (// a b))
+  (if (< r 0) (+ r b) r))
+(wrap -7 3) # 2
+```
+
+With F64 operands, `//` computes `fmod`, exact for finite represented operands
+and a nonzero divisor: `(// 1e20 3.0)` is `1.0`. An exact negative multiple
+retains negative zero: `(// -6.0 3.0)` is `-0.0`. The expression
+`a - b * floor(a / b)` can round differently and is not a general replacement.
+Either sign of a zero divisor raises `RuntimeError: division by zero`.
+The VM accepts mixed Int/F64 operands and converts to F64; the web profile
+rejects mixed types. A large Int may lose precision in that conversion.
+
 ## Text and JSON
 
 ```gene runnable

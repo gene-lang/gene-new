@@ -2,6 +2,26 @@
   "version": 1,
   "cases": [
     {
+      "id": "numeric.f64_remainder_exact",
+      "source": "[(// 1e20 3.0) (// 4294967297.0 4294967296.0)]",
+      "web_source": "(mod numeric_remainder_exact ^profile web) (fn run [] : (List F64) [(// 1e20 3.0) (// 4294967297.0 4294967296.0)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "f64", "value": "1.0"}, {"kind": "f64", "value": "1.0"}]},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.remainder_mixed",
+      "source": "(// 7 2.0)",
+      "web_source": "(mod numeric_remainder_mixed ^profile web) (fn run [] : F64 (// 7 2.0))",
+      "web_export": "run",
+      "expected_value": {"kind": "f64", "value": "1.0"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "web arithmetic requires matching numeric types", "diagnostic": "expected Int, got F64"}
+    },
+    {
       "id": "binding.extra_value_rejected",
       "source": "(let v 1 2)",
       "web_source": "(mod binding_extra ^profile web) (fn run [] : Int (let v 1 2) v)",

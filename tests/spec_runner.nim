@@ -3394,6 +3394,48 @@ suite "spec — numeric boundaries from design":
                "[2 -2 2 0 1.5]")
     expect GeneError:
       discard run(compileSource("(// 1 0)"), newGlobalScope())
+    check_eval("(// 1000000000000000000000000000001 7)", "2")
+    check_eval("[(// 1e20 3.0) (// 4294967297.0 4294967296.0) " &
+               " (// -6.0 3.0) (// 7 2.0)]", "[1.0 1.0 -0.0 1.0]")
+    check_eval("[(// 1.0 0.1) (- 1.0 (* 0.1 ($math/floor (/ 1.0 0.1))))]",
+               "[0.09999999999999995 0.0]")
+    for divisor in ["0.0", "-0.0"]:
+      check_eval_error("(// 7.5 " & divisor & ")", "division by zero")
+    check_eval("""
+      (var ok true)
+      (for a in [-17 0 17 1000000000000000000000000000001]
+        (for b in [-7 -2 2 7]
+          (set ok (&& ok (== (+ (* b (/ a b)) (// a b)) a)))))
+      ok
+    """, "true")
+
+  test "remainder matches bounded integral application reductions bit for bit":
+    let pairs = run(compileSource("""
+      (let results [])
+      (fn record [a : F64 b : F64]
+        (results .push [a b (// a b) (- a (* b ($math/floor (/ a b))))]))
+      (var state 1337.0)
+      (fn next [] : F64
+        (set state (// (+ (* state 1664525.0) 1013904223.0) 4294967296.0))
+        state)
+      (repeat 10000
+        (let hi (next))
+        (let lo (// (next) 2097152.0))
+        (record (+ (* hi 2097152.0) lo) (+ (next) 1.0)))
+      (for b in [1.0 2.0 3.0 16.0 256.0 4096.0 2400000.0 65536.0 4294967296.0]
+        (for a in [0.0 1.0 15.0 255.0 4095.0 2399999.0
+                   5759995200001.0 1999999910557600.0 9007199254740991.0]
+          (record a b))
+        (let multiple (* b ($math/floor (/ 9007199254740990.0 b))))
+        (for a in [(- multiple 1.0) multiple (+ multiple 1.0)]
+          (record a b)))
+      results
+    """), newGlobalScope())
+    check pairs.listItems.len == 10108
+    for pair in pairs.listItems:
+      checkpoint "integral remainder inputs: " & pair.print()
+      check cast[uint64](pair.listItems[2].floatVal) ==
+            cast[uint64](pair.listItems[3].floatVal)
 
   test "// is an operator, never the empty selector":
     # A selector needs at least one segment, so `//` reads back as the operator

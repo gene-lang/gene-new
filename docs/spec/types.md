@@ -71,6 +71,21 @@ plain name, and remains an unconditional module/namespace declaration.
 Extra body forms and properties other than `^private` are compile errors.
 The existing restrictions on where `^private` is allowed still apply.
 
+## Division and remainder
+
+Int `/` truncates toward zero. `//` is the truncated remainder; for nonzero
+Int `b`, `a == (+ (* b (/ a b)) (// a b))`. Integer arithmetic, including
+remainder, has arbitrary precision. A nonzero remainder follows the dividend's
+sign, regardless of the divisor's sign.
+
+When either operand is F64, the VM converts Int operands to F64 and computes
+the floating-point remainder (`fmod`), preserving negative zero. For finite
+F64 operands and a nonzero divisor, the remainder is exact for those represented
+operands; conversion from a large Int can already have rounded the input.
+Both zero signs raise `RuntimeError` with message `division by zero`.
+The web profile requires identical numeric operand types and uses the same
+truncated semantics. Experimental C/AOT lowering does not yet accept `//`.
+
 ## Numeric buffer storage
 
 `Buffer` remains mutable, identity-bearing Gene-owned storage. The built-in

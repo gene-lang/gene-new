@@ -47,6 +47,12 @@ Common values:
 and `#{...}` forms are literals, not comments. `^^active` is shorthand for
 `^active true`.
 
+Int `/` truncates toward zero; `//` is the remainder, with the dividend's sign:
+`(/ -7 2)` is `-3`, and `(// -7 2)` is `-1`. For wrapping with a positive
+divisor, adjust a negative remainder: `(let r (// a b)) (if (< r 0) (+ r b) r)`.
+The web profile requires matching Int or F64 operands. See
+[numbers](stdlib.md#numbers) for floating-point behavior.
+
 ### Paths and selectors
 
 Slash paths read fields and indexed positions. `%` evaluates a dynamic segment.
