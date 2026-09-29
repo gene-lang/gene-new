@@ -1,0 +1,41 @@
+(mod workspace_lock)
+
+(type WorkspaceInUse ^props {^message Str ^root Str ^owner Any?} ^impl [Error])
+(impl Error for WorkspaceInUse)
+
+(type WorkspaceLock ^props {^root Str ^state_root Str ^handle Any ^closed Any})
+
+(fn read_owner [state_root : Str]
+  (try
+    (let record ($serde/read_data ($fs/read_text $"${state_root}/owner")))
+    (match record
+      (when {^pid pid ^started started ^entry entry} record)
+      (else nil))
+    catch Any nil))
+
+(fn acquire_workspace_lock [root : Str, entry : Str] : WorkspaceLock
+  (let canonical ($fs/real_path root))
+  (let state_root $"${canonical}/.gene-harness")
+  ($fs/make_dir state_root)
+  (let handle ($fs/try_lock $"${state_root}/lock"))
+  (if_yes ($absent? handle)
+    (let owner (read_owner state_root))
+    (let pid (if ($absent? owner) "unknown" (?? owner/pid "unknown")))
+    (let source (if ($absent? owner) "unknown entry" (?? owner/entry "unknown entry")))
+    (let started (if ($absent? owner) "unknown" (?? owner/started "unknown")))
+    (fail (WorkspaceInUse ^root canonical ^owner owner
+      ^message $"workspace ${canonical} is in use by PID ${pid} (${source}, since ${started})")))
+  (var ready false)
+  (try
+    ($fs/write_text_atomic $"${state_root}/owner"
+      ($serde/write_data {^pid ($os/process_id) ^started ($to_str ($now)) ^entry entry}))
+    ($fs/write_text_atomic $"${state_root}/.gitignore" "*\n")
+    (set ready true)
+    (WorkspaceLock ^root canonical ^state_root state_root ^handle handle ^closed ($cell false))
+    ensure (if_not ready (handle .close))))
+
+(fn close_workspace_lock [lock : WorkspaceLock]
+  (if_not (lock/closed .get)
+    (lock/handle .close)
+    (lock/closed .set true))
+  nil)
