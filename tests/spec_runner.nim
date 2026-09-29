@@ -5953,6 +5953,22 @@ suite "spec — protocol derive from design":
                   newGlobalScope())
 
 suite "spec — binding forms from design §12.1":
+  test "binding declarations reject extra values and unknown props":
+    for source in ["(let v 1 2)", "(var v 1 2)", "(let v : Int 1 2)",
+                   "(const K 1 2)", "(const K : Int 1 2)",
+                   "(let [a b] [1 2] 3)"]:
+      check_compile_error(source, "expects a pattern")
+    for form in ["let", "var", "const"]:
+      check_compile_error("(" & form & " v 1 ^x 2)", "does not accept ^x")
+    check_compile_error("(let v 1 (select a))", "write (/a (g))")
+    check_compile_error("(var v 1 .size)", "write (/a (g))")
+
+  test "binding shape checks preserve omitted values and typed constants":
+    check_eval("(let v) (var w) [v w]", "[nil nil]")
+    check_eval("(let v : Int 1) (const K : Int 7) [v K]", "[1 7]")
+    check_eval("(var x ^private true 1) x", "1")
+    check_eval_error("(const K : Int \"wrong\")", "Int")
+
   test "let binds a fixed value; var is rebindable":
     check_eval("(let x 10) (var y 1) (set y 2) [x y]", "[10 2]")
 

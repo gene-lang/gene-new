@@ -2,6 +2,19 @@
   "version": 1,
   "cases": [
     {
+      "id": "binding.extra_value_rejected",
+      "source": "(let v 1 2)",
+      "web_source": "(mod binding_extra ^profile web) (fn run [] : Int (let v 1 2) v)",
+      "web_export": "run",
+      "expected_error": "expects a pattern",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "binding declarations accept at most one initializer",
+        "diagnostic": "expects a pattern"
+      }
+    },
+    {
       "id": "absence.nil",
       "source": "nil",
       "web_source": "(mod absence_nil ^profile web) (fn run [] : Nil nil)",

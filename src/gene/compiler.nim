@@ -4427,7 +4427,29 @@ proc compileNot(c: var Compiler, node: Value) =
   compileExpr(c, node.body[0])
   discard c.emit(opNot)
 
+proc checkBindingProps(node: Value) =
+  for key, _ in node.props:
+    if key != "private":
+      raise newException(GeneError, node.head.symVal & " does not accept ^" & key)
+
+proc checkBindingTail(node: Value, valueIndex: int) =
+  if node.body.len <= valueIndex + 1: return
+  let form = node.head.symVal
+  var message = form &
+    " expects a pattern, an optional type annotation, and one value; found " &
+    $(node.body.len - valueIndex - 1) & " extra forms"
+  for i in valueIndex + 1 ..< node.body.len:
+    let extra = node.body[i]
+    if (extra.kind == vkNode and extra.head.isSymbol("select")) or
+        (extra.kind == vkSymbol and
+         (extra.symVal.startsWith(".") or extra.symVal.startsWith("?."))):
+      message.add "; a path or message after ')' is a separate form; " &
+        "write (/a (g)) or ((g) .size)"
+      break
+  raise newException(GeneError, message)
+
 proc compileVar(c: var Compiler, node: Value, immutable = false) =
+  checkBindingProps(node)
   let body = node.body
   if body.len == 0:
     let form = if immutable: "let" else: "var"
@@ -4436,6 +4458,7 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
   if typed and body.len < 3:
     raise newException(GeneError, "var type annotation requires a type")
   let valueIndex = if typed: 3 else: 1
+  checkBindingTail(node, valueIndex)
   let generatorValue = body.len > valueIndex and
     ((body[valueIndex].kind == vkSymbol and c.generatorFnNames.hasKey(body[valueIndex].symVal)) or
      (body[valueIndex].kind == vkNode and body[valueIndex].head.isSymbol("fn") and
@@ -4578,6 +4601,7 @@ proc compileConst(c: var Compiler, node: Value) =
   # iteration does not, and folding that needs a scope-aware table — two
   # mechanisms wearing one word. `let` already covers the body case, where its
   # value is fixed anyway; `const` covers the case `let` cannot state portably.
+  checkBindingProps(node)
   if c.inFunction:
     raise newException(GeneError,
       "const is a module-level declaration and cannot appear inside a " &
@@ -4620,6 +4644,7 @@ proc compileConst(c: var Compiler, node: Value) =
       "const '" & name & "' requires a value: a const has no later assignment " &
       "that could give it one (design §12.1)")
   let declared = body[valueIndex]
+  checkBindingTail(node, valueIndex)
   if not isConstantValue(declared):
     raise newException(GeneError,
       "const '" & name & "' requires a constant value — a scalar, or an " &

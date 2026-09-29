@@ -25,6 +25,9 @@ $"Hello, ${name}; visit ${visits}"
 
 `let` binds a name once. `var` permits rebinding with `set`. A let-bound mutable
 collection can still be changed; binding immutability does not freeze a value.
+Bindings accept at most one initializer, after an optional `: TYPE` annotation;
+extra forms are errors. `const` requires a constant initializer at module or
+namespace level, for example `(const limit : Int 100)`.
 
 Common values:
 

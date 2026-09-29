@@ -62,6 +62,15 @@ key”.
   and releases the pin after the call. This protects aliases of a connection
   handle during synchronous callbacks; it does not make the pointer Send.
 
+## Binding declaration shape
+
+`(let PATTERN [: TYPE] [VALUE])` and `(var PATTERN [: TYPE] [VALUE])`
+accept at most one initializer; an omitted initializer is nil. A constant
+uses `(const NAME [: TYPE] VALUE)`, requires a constant initializer and a
+plain name, and remains an unconditional module/namespace declaration.
+Extra body forms and properties other than `^private` are compile errors.
+The existing restrictions on where `^private` is allowed still apply.
+
 ## Numeric buffer storage
 
 `Buffer` remains mutable, identity-bearing Gene-owned storage. The built-in
