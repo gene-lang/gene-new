@@ -382,21 +382,21 @@ suite "language callable reflection":
       (type Handle ^repr native_wrapper ^props {})
       (let data ($runtime/signature Plain))
       (let ctor ($runtime/constructor_signature Plain))
-      (let alias ($runtime/signature Alias))
+      (let alias_sig ($runtime/signature Alias))
       (let enum_sig ($runtime/signature Choice))
       (let handle ($runtime/signature Handle))
-      [data/shape_known ctor/shape_known ctor/reason alias/shape_known
+      [data/shape_known ctor/shape_known ctor/reason alias_sig/shape_known
        enum_sig/shape_known handle/shape_known]
     """, "[true false no_constructor false false false]"
 
-  test "selectors expose a unary shape without traversing a receiver":
+  test "Paths expose a unary shape without traversing a receiver":
     reflectionCheck """
       (let s ($runtime/signature /name))
       (let b ($runtime/bind_shape s [{^name "Ada"}] {}))
       (let args b/positional)
       [s/category s/minimum_positional s/result_known (/name args ...)
        (try ($runtime/bind_shape s args {^extra 1}) false catch Error true)]
-    """, "[selector 1 false \"Ada\" true]"
+    """, "[path 1 false \"Ada\" true]"
 
   test "enum variants expose exact payload slots without constructing values":
     reflectionCheck """

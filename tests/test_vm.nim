@@ -1841,29 +1841,29 @@ suite "vm — optional and default parameters":
   test "too many positional arguments still raise":
     expect GeneError: discard runStr("(var f (fn [x = 1] x)) (f 1 2)")
 
-suite "vm — selectors":
-  test "selector literals are first-class values":
-    ck "/name", "(select name)"
+suite "vm — Paths":
+  test "Path literals are first-class values":
+    ck "/name", "(Path \"name\")"
     ck "(var get-name /name) (get-name {^name \"Ada\"})", "\"Ada\""
-  test "expression paths apply static selectors to lexical values":
+  test "expression paths apply static Paths to lexical values":
     ck "(var user {^name \"Ada\" ^age 37}) user/name", "\"Ada\""
     ck "(var user {^address {^city \"Raleigh\"}}) user/address/city", "\"Raleigh\""
-  test "missing selector lookup propagates void":
+  test "missing Path lookup propagates void":
     ck "(var user {^name \"Ada\"}) user/missing/name", "void"
     ck "(var user {^name nil}) user/name", "nil"
-  test "selector options handle missing lookups explicitly":
+  test "Path options handle missing lookups explicitly":
     ck "(var fallback \"unknown\") " &
-       "((select ^default fallback name) {^age 37})",
+       "((Path ^default fallback \"name\") {^age 37})",
        "\"unknown\""
-    ck "((select ^default \"unknown\" name) {^name nil})", "nil"
-    ck "(try ((select ^strict true name) {^age 37}) catch Any $err/message)",
-       "\"selector lookup failed at segment: name\""
-    ck "(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
+    ck "((Path ^default \"unknown\" \"name\") {^name nil})", "nil"
+    ck "(try ((Path ^strict true \"name\") {^age 37}) catch Any $err/message)",
+       "\"Path lookup failed at segment: \\\"name\\\"\""
+    ck "(try ((Path ^strict true ^default \"unknown\" \"name\") {^age 37}) " &
        "catch Any $err/message)",
-       "\"selector lookup failed at segment: name\""
+       "\"Path lookup failed at segment: \\\"name\\\"\""
     expect GeneError:
-      discard runStr("((select ^strict 1 name) {^age 37})")
-  test "selectors read list indexes and path sends expose list behavior":
+      discard runStr("((Path ^strict 1 \"name\") {^age 37})")
+  test "Paths read list indexes and path sends expose list behavior":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
     ck "(var xs [10 20 30]) xs/size", "void"
@@ -1871,63 +1871,63 @@ suite "vm — selectors":
        "[3 false 10 30]"
     ck "(var xs []) [xs/.empty? xs/.first xs/.last]", "[true void void]"
     ck "(fn size [xs] xs/.size) (size [1 2 3])", "3"
-  test "selectors read node props, body indexes, and projections":
+  test "Paths read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/head", "user"
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/body", "[10 20]"
-  test "selector calls validate their call envelope":
+  test "Path calls validate their call envelope":
     expect GeneError: discard runStr("(/name)")
     expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
 
-  test "static selector lookup maps over streams and skips void":
+  test "static Path lookup maps over streams and skips void":
     ck "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
        "(var names users/%$to_stream/name) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
 
-  test "first-class selectors map over streams":
+  test "first-class Paths map over streams":
     ck "(var get-name /name) " &
        "(var names (get-name ($to_stream [{^name \"Ada\"} {^name \"Bob\"}]))) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
 
-suite "vm — dynamic selectors":
-  test "dynamic selector keys are evaluated":
+suite "vm — dynamic Paths":
+  test "dynamic Path keys are evaluated":
     ck "(var field \"name\") (var user {^name \"Ada\"}) user/%field", "\"Ada\""
     ck "(var field (quote name)) (var user {^name \"Ada\"}) user/%field", "\"Ada\""
-  test "dynamic selector indexes are evaluated":
+  test "dynamic Path indexes are evaluated":
     ck "(var i 1) (var xs [10 20 30]) xs/%i", "20"
-  test "selector values capture dynamic segments":
+  test "Path values capture dynamic segments":
     ck "(var field \"name\") (var get /%field) (set field \"age\") (get {^name \"Ada\" ^age 37})",
        "\"Ada\""
-  test "explicit select can capture dynamic segments":
-    ck "(var field \"name\") (var get (select %field)) (get {^name \"Ada\"})",
+  test "explicit Path construction can capture dynamic segments":
+    ck "(var field \"name\") (var get (Path %field)) (get {^name \"Ada\"})",
        "\"Ada\""
-  test "callable dynamic segments act as selector stages":
+  test "callable dynamic segments act as Path stages":
     ck "(var stage not) (var s /%stage) (s false)", "true"
-  test "dynamic selector keys can be forced explicitly":
+  test "dynamic Path keys can be forced explicitly":
     ck "(var field \"name\") " &
-       "(var get (select %($key field))) " &
+       "(var get (Path %($key field))) " &
        "(get {^name \"Ada\"})",
        "\"Ada\""
     ck "(var plus +) " &
-       "[((select %plus) 4) ((select %($key plus)) 4)]",
+       "[((Path %plus) 4) ((Path %($key plus)) 4)]",
        "[4 void]"
     ck "(var field \"name\") " &
        "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
-       "(var names ((select %$to_stream %($key field)) users)) " &
+       "(var names ((Path %$to_stream %($key field)) users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
   test "complex selector stages adapt stream helpers":
     ck "(var users [{^name \"Ada\" ^adult true} " &
        "            {^name \"Tim\" ^adult false} " &
        "            {^name \"Bob\" ^adult true}]) " &
-       "(var names ((select %$to_stream %($filter /adult) name) users)) " &
+       "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
     ck "(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
-       "((select %$to_stream %($map /name) %($take 2) %($into [])) users)",
+       "((Path %$to_stream %($map /name) %($take 2) %($into [])) users)",
        "[\"Ada\" \"Bob\"]"
 
 suite "vm — node projection built-ins":
@@ -1971,7 +1971,7 @@ suite "vm — node projection built-ins":
        "[n/data/0 n/0/0 n/%$meta/note/0]",
        "[9 9 9]"
 
-suite "vm — functional selector updates":
+suite "vm — functional Path updates":
   test "assoc_in updates maps without mutating the original":
     ck "(var user {^name \"Ada\" ^age 37}) (var user2 ($assoc_in user /age 38)) (+ (* user/age 100) user2/age)",
        "3738"
@@ -2006,7 +2006,7 @@ suite "vm — functional selector updates":
     expect GeneError: discard runStr("($assoc_in 1 /x 2)")
     expect GeneError: discard runStr("($update_in {^score 1} /score 1)")
     expect GeneError:
-      discard runStr("(var s (select %($map /name))) " &
+      discard runStr("(var s (Path %($map /name))) " &
                      "($assoc_in {^name \"Ada\"} s \"Bob\")")
 
 suite "vm — container update built-ins":

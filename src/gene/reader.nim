@@ -1232,9 +1232,9 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
   ## they are only read on the error path, so callers with no token in hand
   ## may leave them defaulted.
   if lexeme == "/": return newSym("/")
-  # `//` is the remainder operator (design §7.4), not a selector: a selector
-  # needs at least one segment, so `//` would otherwise read as the empty
-  # `(select)`, which denotes nothing. Paths with an interior `//` (`a//b`)
+  # `//` is the remainder operator (design §7.4), not a Path: a Path
+  # shorthand needs at least one segment, so `//` stays the operator rather
+  # than the identity `(Path)`. Paths with an interior `//` (`a//b`)
   # keep collapsing the empty segment below.
   if lexeme == "//": return newSym("//")
   if '/' notin lexeme: return newSym(lexeme)
@@ -1252,8 +1252,11 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
       if dotSend.rest.len == 0 or dotSend.rest == "%":
         raiseReadErrorAt(sourceName, line, col,
           "message path segment requires a message name")
-      body.add newSym((if dotSend.optional: "?~" else: "~") &
-                      dotSend.rest)
+      if lexeme.startsWith("/"):
+        body.add newStr((if dotSend.optional: "?." else: ".") & dotSend.rest)
+      else:
+        body.add newSym((if dotSend.optional: "?~" else: "~") &
+                        dotSend.rest)
     elif p.startsWith("%"):
       # `%x` escapes to a lexical value; `%$x` escapes to a standard-library
       # one, so `$` means `gene/` wherever a name is legal.
@@ -1261,7 +1264,7 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
       if inner.len == 0:
         # A bare `%` segment has nothing to escape to. Design §2.1 already
         # declares this short syntax invalid -- a complex stage must use the
-        # `(select ...)` long form -- and accepting it is actively harmful in
+        # `(Path ...)` long form -- and accepting it is actively harmful in
         # two ways: it yields an unquoted *empty* symbol, which the printer
         # cannot write back out (`(unquote )` rereads as a body-less
         # `(unquote)`), and the following form is silently swallowed as a
@@ -1272,7 +1275,7 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
         # exists, so no symbol token pays an extra pass over its lexeme.
         raiseReadErrorAt(sourceName, line, col,
           "'%' path segment needs a name; a computed stage must use the " &
-          "long form, e.g. (select xs %stage) (design §2.1)")
+          "long form, e.g. (Path xs %stage) (design §2.1)")
       let escaped =
         if inner.startsWith("$") and inner.len > 1:
           desugarPath("gene/" & inner[1..^1], sourceName, line, col)
@@ -1284,11 +1287,13 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
         body.add newIntFromHex(p)
       elif p.isIntLexeme:
         body.add newIntFromDecimal(p)
+      elif lexeme.startsWith("/"):
+        body.add newStr(p)
       else:
         body.add newSym(p)
 
   if lexeme.startsWith("/"):
-    return newNode(newSym("select"), body = body)
+    return newNode(newSym("Path"), body = body)
   else:
     # Context-neutral path node; the compiler resolves it as an access chain
     # or static qualified name according to context (design §2.1).
@@ -2013,7 +2018,7 @@ proc parseForm(r: var Reader, inList = false): Value =
         if suffix.lexeme.startsWith("/") and suffix.lexeme notin ["/", "//"]:
           r.raiseReadErrorAt(suffix,
             "a path cannot follow '" & closing.lexeme &
-            "' without whitespace; use a selector call (/a (g)) or bind the value first")
+            "' without whitespace; use a Path call (/a (g)) or bind the value first")
         if dotSendPrefix(suffix.lexeme).found or suffix.lexeme.startsWith("?."):
           r.raiseReadErrorAt(suffix,
             "a message cannot follow '" & closing.lexeme &
@@ -2043,6 +2048,10 @@ proc parseForm(r: var Reader, inList = false): Value =
         r.raiseReadErrorAt(tok,
           "'?~' message sends were removed; use '?.message'")
       let colonAt = qualifiedMessageSplit(lex)
+      if lex.startsWith("/") and colonAt > 0:
+        # A leading slash always denotes a Path value. `/.P:m` is a Path
+        # message segment, while `P:m` without the slash is a message value.
+        finish desugarPath(lex, r.sourceName, tok.line, tok.col)
       if colonAt > 0 and '/' notin lex[colonAt + 1 .. ^1]:
         # `Proto:msg` names a message. This is its own node, not `(path P m)`:
         # `/` selects a member and `:` names a message, and the two have to be

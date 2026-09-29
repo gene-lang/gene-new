@@ -15,9 +15,12 @@
   reader syntax.
 - Reader prefixes, slash paths, interpolation, props/meta flags, immutable
   literals, and malformed-input behavior follow the reader suites.
-- A glued leading slash is a selector literal. A glued non-leading path is a
+- A glued leading slash is a Path literal. A glued non-leading path is a
   context-neutral path classified by the compiler. A delimited `/` is a normal
   symbol.
+- `/.P:m` reads as a Path with a qualified message segment; `P:m` without the
+  leading slash reads as a Message value. A Path containing a literal key that
+  begins with `.` uses `$key` in its explicit constructor.
 - A path or dot-message token cannot directly follow `)`, `]`, or `}` without
   whitespace. This includes immutable literals and general Maps. Write
   `(/a (g))` or `((g) .size)`, rather than `(g)/a` or `(g).size`. Whitespace

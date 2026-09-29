@@ -77,6 +77,21 @@ suite "native api — roots and trampoline":
     expect GeneError:
       discard geneRootGet(root)
 
+  test "roots escape scope-owned Paths with held messages":
+    var scope = newGlobalScope()
+    discard run(compileSource("(let p (Path \".Self:head\"))"), scope)
+    let stored = scope.lookup("p")
+    let root = geneRoot(stored)
+    check geneRootGet(root).bits != stored.bits
+    check escapeWeakFunctions(geneRootGet(root)).bits == geneRootGet(root).bits
+    scope = nil
+    GC_fullCollect()
+    let called = geneCall(geneRootGet(root),
+      GeneCall(args: @[newNode(newSym("payload"))]))
+    check called.status == gsOk
+    check called.value.print() == "payload"
+    geneRootRelease(root)
+
   test "roots reject in-progress constructed instances":
     let partial = newNode(newSym("Partial"), constructing = true)
     expect GeneError:

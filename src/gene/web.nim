@@ -694,7 +694,10 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
     of wtkList, wtkTask, wtkStream:
       return accepts(analysis, expected.item, actual.item)
     of wtkCallback:
-      if expected.name != "callable context" and actual.name in ["message", "selector"]:
+      if expected.name == "Path" and actual.name != "Path":
+        return false
+      if expected.name notin ["callable context", "Path"] and
+          actual.name in ["message", "Path"]:
         return false
       if actual.namedKeys.len > 0 or expected.params.len < actual.requiredCallbackParams or
           expected.params.len > actual.params.len: return false
@@ -754,6 +757,7 @@ proc typeName(typ: WebType): string =
     for member in typ.members: parts.add typeName(member)
     "(| " & parts.join(" ") & ")"
   of wtkCallback:
+    if typ.name == "Path": return "Path"
     var params: seq[string]
     for item in typ.params: params.add typeName(item)
     # `Fn`, because that is the spelling a reader can write back into the
@@ -935,6 +939,9 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "Any": return webType(wtkAny)
     of "Callable": return WebType(kind: wtkCallable, name: "bare",
                                     returnType: webType(wtkAny))
+    of "Path": return WebType(kind: wtkCallback, name: "Path",
+                               params: @[webType(wtkAny)],
+                               returnType: webType(wtkAny))
     of "Never": return webType(wtkNever)
     of "PropMap": return webType(wtkPropMap)
     of "Node": return webType(wtkNode)
@@ -2507,6 +2514,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     result = analysis.analyzeCall(directSend, bindings, expected)
     result.loc = loc
     return
+  if value.head.kind == vkNode and value.head.head.isSym("Path"):
+    if value.props.len != 0 or value.body.len != 1:
+      raise webError(loc, "web Path call expects one receiver and no named arguments")
+    let callee = analysis.analyzeExpr(value.head, bindings)
+    result = analysis.analyzeCallableInvocation(value, callee, bindings, loc)
+    if expected != nil:
+      result.typ = expected
+    return
   if value.head.kind == vkSymbol and bindings.hasKey(value.head.symVal) and
       bindings[value.head.symVal].typ.kind == wtkCallable:
     return analysis.analyzeCallableInvocation(value,
@@ -3692,10 +3707,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     else:
       result.typ = webType(wtkAny)
     return
-  if name == "select":
-    if value.body.len == 0:
-      raise webError(loc, "web selector requires at least one segment")
-    let selectorType = WebType(kind: wtkCallback, name: "selector",
+  if name == "Path":
+    let selectorType = WebType(kind: wtkCallback, name: "Path",
       params: @[webType(wtkAny)], returnType: webType(wtkAny))
     if expected != nil and expected.kind in {wtkCallback, wtkCallable}:
       selectorType.params = expected.params
@@ -3703,19 +3716,26 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     result = WebExpr(kind: wekSelector, typ: selectorType, loc: loc)
     if value.props.hasKey("strict"):
       if value.props["strict"].kind != vkBool:
-        raise webError(loc, "web selector ^strict must be Bool")
+        raise webError(loc, "web Path ^strict must be Bool")
       result.boolValue = value.props["strict"].boolVal
     if value.props.hasKey("default"):
       result.propCount = 1
       result.children.add analysis.analyzeExpr(value.props["default"], bindings)
     for segment in value.body:
-      if segment.kind == vkSymbol: result.keys.add segment.symVal
+      if segment.kind == vkString:
+        if segment.strVal.startsWith(".") or segment.strVal.startsWith("?."):
+          raise webError(loc,
+            "portable web Path does not provide message segments")
+        result.keys.add segment.strVal
       elif segment.kind == vkInt: result.keys.add segment.intToString
+      elif segment.kind == vkSymbol:
+        result.keys.add ""
+        result.children.add analysis.analyzeExpr(segment, bindings)
       elif segment.kind == vkNode and segment.head.isSym("unquote") and
           segment.body.len == 1:
         result.keys.add ""
         result.children.add analysis.analyzeExpr(segment.body[0], bindings)
-      else: raise webError(loc, "unsupported web selector segment")
+      else: raise webError(loc, "unsupported web Path segment")
     return
   if name == "new":
     if value.body.len < 1 or value.body[0].kind != vkSymbol or
@@ -4232,6 +4252,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let left = analysis.analyzeExpr(value.body[0], bindings)
     let right = analysis.analyzeExpr(value.body[1], bindings,
       if left.typ.kind == wtkCallable: nil else: left.typ)
+    if name in ["==", "!=", "same?"] and
+        ((left.typ.kind == wtkCallback and left.typ.name == "Path") or
+         (right.typ.kind == wtkCallback and right.typ.name == "Path")):
+      raise webError(loc,
+        "web Path equality and identity are unavailable in this profile")
     if not sameType(left.typ, right.typ):
       raise webError(loc, "web operator '" & name & "' requires identical types")
     if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">="] and
@@ -4632,7 +4657,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     message.symbolName = "$gene_error_message"
     message.defaultFactory = "$gene_error_message_default"
   analysis.protocolDecls["Error"] = errorDeclaration
-  for name in ["RuntimeError", "TypeError", "ErrorContractViolation", "MatchError", "SelectorMissing", "EndOfStream"]:
+  for name in ["RuntimeError", "TypeError", "ErrorContractViolation", "MatchError", "PathMissing", "EndOfStream"]:
     analysis.errorTypes.incl name
   for name in ["TypeError", "ErrorContractViolation"]:
     let declaration = WebTypeDecl(sourceName: name,
@@ -5397,7 +5422,7 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
     let emitted =
       case name
       of "MatchError": "GeneMatchError"
-      of "SelectorMissing": "GeneSelectorMissing"
+      of "PathMissing": "GenePathMissing"
       of "EndOfStream": "GeneEndOfStream"
       else: mangleWebName(name)
     return target & " instanceof " & emitted
@@ -6104,12 +6129,19 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     target
   of wekPath:
     var current = emitter.emitExpr(expr.children[0])
+    if "" in expr.keys:
+      let base = emitter.temp()
+      emitter.line("const " & base & " = " & current & ";")
+      current = base
     var dynamicIndex = 1
     var segments: seq[string]
     for key in expr.keys:
       if key.len > 0: segments.add jsString(key)
       else:
-        segments.add emitter.emitExpr(expr.children[dynamicIndex])
+        let captured = emitter.temp()
+        emitter.line("const " & captured & " = " &
+          emitter.emitExpr(expr.children[dynamicIndex]) & ";")
+        segments.add captured
         inc dynamicIndex
     let direct = emitter.directRead(expr, current, segments)
     if direct.len > 0: direct
@@ -6140,13 +6172,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     for segment in capturedSegments:
       statements.add current & " = $gene_get(" & current & ", " & segment & "); "
       if expr.boolValue:
-        statements.add "if (" & current & " === undefined) throw new GeneSelectorMissing(" & segment & "); "
+        statements.add "if (" & current & " === undefined) throw new GenePathMissing(" & segment & "); "
       elif defaultName.len > 0:
         statements.add "if (" & current & " === undefined) return " &
           defaultName & "; "
       else:
         statements.add "if (" & current & " === undefined) return undefined; "
-    "$gene_selector_value((" & receiver & (if emitter.typescript: ": any" else: "") &
+    "$gene_path_value((" & receiver & (if emitter.typescript: ": any" else: "") &
       ") => { " & statements & "return " & current & "; })"
   of wekMessage:
     if expr.children.len > 0:
@@ -7014,13 +7046,17 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       emitter.line("if (value === null || typeof value !== \"object\") " &
         "$gene_type_error(where, \"" & typeName(typ) & "\", value);")
     of wtkCallback:
-      let excluded = if typ.name == "callable context": ""
+      let excluded = if typ.name == "Path":
+        " || " & (if emitter.typescript: "(value as any)" else: "value") &
+          "[Symbol.for(\"gene.path_value\")] !== true"
+        elif typ.name == "callable context": ""
         else: " || " & (if emitter.typescript: "(value as any)" else: "value") &
           "[Symbol.for(\"gene.message_value\")] === true || " &
           (if emitter.typescript: "(value as any)" else: "value") &
-          "[Symbol.for(\"gene.selector_value\")] === true"
+          "[Symbol.for(\"gene.path_value\")] === true"
       emitter.line("if (typeof value !== \"function\"" & excluded &
-        ") $gene_type_error(where, \"Fn\", value);")
+        ") $gene_type_error(where, \"" &
+        (if typ.name == "Path": "Path" else: "Fn") & "\", value);")
     of wtkCallable:
       if typ.name == "bare":
         emitter.line("if (!$gene_is_callable(value)) $gene_type_error(where, \"Callable\", value);")
@@ -7546,7 +7582,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("const $gene_callable_shape = Symbol.for(\"gene.callable_shape\");")
   emitter.line("function $gene_is_callable(value" & a & ") { return typeof value === \"function\" || (value != null && (value[Symbol.for(\"gene.callable_view\")] === true || typeof value[$gene_callable_apply] === \"function\")); }")
   emitter.line("function $gene_message_value(value" & a & ", required = value.length) { Object.defineProperty(value, Symbol.for(\"gene.message_value\"), { value: true }); if (required < value.length) Object.defineProperty(value, $gene_callable_shape, { value: { positionals: value.length, required, names: [], order: Array.from({length: value.length}, (_, i) => i) } }); return value; }")
-  emitter.line("function $gene_selector_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.selector_value\"), { value: true }); return value; }")
+  emitter.line("function $gene_path_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.path_value\"), { value: true }); return value; }")
   emitter.line("function $gene_invoke_callable(target" & a & ", parts" & arr & ", supplied" & a & " = {}, site" & a & " = null, splices" & arr & " = [])" & a & " {")
   inc emitter.indent
   emitter.line("const args" & arr & " = []; const named = Object.assign(Object.create(null), supplied);")
@@ -8618,11 +8654,11 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("}")
     emitter.line()
   if moduleUsesStrictSelector(module):
-    emitter.line("class GeneSelectorMissing extends Error {")
+    emitter.line("class GenePathMissing extends Error {")
     inc emitter.indent
     emitter.line("constructor(segment" &
       (if typescript: ": unknown" else: "") &
-      ") { super(`selector segment ${String(segment)} is missing`); this.name = \"SelectorMissing\"; }")
+      ") { super(`Path segment ${String(segment)} is missing`); this.name = \"PathMissing\"; }")
     dec emitter.indent
     emitter.line("}")
     emitter.line()

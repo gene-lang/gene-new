@@ -72,9 +72,9 @@ arbitrary keys and reads through `(m .get "k")`.
 `freeze` is deep, `freeze_shallow` is shallow, `thaw` is deep. `assoc` returns a
 new root; `set`/`push`/`put` mutate a mutable container in place.
 
-## Paths and selectors
+## Paths
 
-A glued path navigates. A glued *leading* slash is a selector literal — a
+A glued path navigates. A glued *leading* slash is a Path literal — a
 first-class navigation value.
 
 ```gene
@@ -86,10 +86,10 @@ xs/.size                 # zero-argument send (see SKILL.md)
 ```
 
 ```gene
-(var s /a/b)             # selector literal
+(var s /a/b)             # Path value
 (s {^a {^b 7}})          # 7 — apply it
-(/a/b {^a {^b 7}})       # 7 — apply the selector
-((select a %field) {^a {^b 7}})   # computed segment
+(/a/b {^a {^b 7}})       # 7 — apply the Path
+((Path "a" %field) {^a {^b 7}})   # computed segment
 ```
 
 A delimited `/` — whitespace on both sides — is an ordinary symbol, which is how
@@ -103,9 +103,9 @@ m/b              # void
 (?? m/b "dflt")  # "dflt"
 ```
 
-Strict selector lookup instead raises `SelectorMissing` carrying `^segment`.
+Strict Path lookup instead raises `PathMissing` carrying `^segment`.
 
-`$assoc_in` and `$update_in` navigate with a selector too:
+`$assoc_in` and `$update_in` navigate with a Path too:
 
 ```gene
 ($assoc_in {^a {^b 1}} /a/b 9)              # {^a {^b 9}}

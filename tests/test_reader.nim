@@ -32,7 +32,7 @@ suite "reader — atoms and containers":
   test "suffix checks preserve separated selectors, operators, and spreads":
     check readAll("(g) /a").len == 2
     check readAll("(g)\n/a").len == 2
-    check_read("(/a (g))", "((select a) (g))")
+    check_read("(/a (g))", "((Path \"a\") (g))")
     check readAll("(f)...").len == 2
     check readAll("(a b)/ ").len == 2
     check readAll("(a b)// ").len == 2
@@ -164,8 +164,8 @@ suite "reader — sugars":
       discard read("$\"$((x))\"", options = ReadOptions(maxDepth: 1))
 
 suite "reader — paths":
-  test "absolute path":      check_read("/user/name",   "(select user name)")
-  test "numeric selector segment": check_read("/users/0/name", "(select users 0 name)")
+  test "absolute path":      check_read("/user/name",   "(Path \"user\" \"name\")")
+  test "numeric Path segment": check_read("/users/0/name", "(Path \"users\" 0 \"name\")")
   test "relative path":      check_read("user/name",    "(path user name)")
   test "negative path segment": check_read("users/-1/name", "(path users -1 name)")
   test "path with unquote":  check_read("user/%field",  "(path user (unquote field))")

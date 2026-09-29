@@ -2,6 +2,56 @@
   "version": 1,
   "cases": [
     {
+      "id": "path.message_web_rejected",
+      "source": "(/.size [1 2])",
+      "web_source": "(mod path_message_web_rejected ^profile web) (fn run [] : Int (/.size [1 2]))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "2"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "Path message dispatch is VM-only", "diagnostic": "portable web Path does not provide message segments"}
+    },
+    {
+      "id": "path.identity_constructor",
+      "source": "((Path) 7)",
+      "web_source": "(mod path_identity_constructor ^profile web) (fn run [] : Int ((Path) 7))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "7"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "path.equality_vm_only",
+      "source": "(== /a (Path \"a\"))",
+      "web_source": "(mod path_equality_vm_only ^profile web) (fn run [] : Bool (== /a (Path \"a\")))",
+      "web_export": "run",
+      "expected_value": {"kind": "bool", "value": true},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "web Path values have no structural equality", "diagnostic": "web Path equality and identity are unavailable"}
+    },
+    {
+      "id": "path.dynamic_receiver",
+      "source": "(let a {^b 4}) (let k \"b\") a/%k",
+      "web_source": "(mod path_dynamic_receiver ^profile web) (fn run [] : Int (let a : Any {^b 4}) (let k : Str \"b\") a/%k)",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "4"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "path.typed_callback",
+      "source": "(fn get [p : Path] : Str (p {^a \"ok\"})) (get /a)",
+      "web_source": "(mod path_typed_callback ^profile web) (fn get [p : Path] : Str (p {^a \"ok\"})) (fn run [] : Str (get /a))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "ok"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "collection.reverse_vm_only",
       "source": "($reverse [1 2])",
       "web_source": "(mod reverse_vm_only ^profile web) (fn run [] : (List Int) ($reverse [1 2]))",
@@ -836,8 +886,8 @@
     },
     {
       "id": "data.selector_default_and_strict",
-      "source": "(let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")]",
-      "web_source": "(mod data_selector_options ^profile web) (fn run [] : (List Str) (let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")])",
+      "source": "(let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^strict true \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")]",
+      "web_source": "(mod data_path_options ^profile web) (fn run [] : (List Str) (let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^strict true \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3673,16 +3723,16 @@
       }
     },
     {
-      "id": "callable.selector_not_fn",
+      "id": "callable.path_not_fn",
       "source": "(fn require_fn [f : (Fn [Any] Any)] : Int 1) (fn run [] : Int (require_fn /name)) (run)",
-      "web_source": "(mod callable_selector_not_fn ^profile web) (fn require_fn [f : (Fn [Any] Any)] : Int 1) (fn run [] : Int (require_fn /name))",
+      "web_source": "(mod callable_path_not_fn ^profile web) (fn require_fn [f : (Fn [Any] Any)] : Int 1) (fn run [] : Int (require_fn /name))",
       "web_export": "run",
       "expected_value": null,
       "expected_error": "Fn",
       "expected_stdout": "",
       "profile": {
         "status": "rejected",
-        "reason": "Selectors are Callable and retain their distinct runtime category.",
+        "reason": "Paths are Callable and retain their distinct runtime category.",
         "diagnostic": "Fn"
       }
     },

@@ -1,7 +1,7 @@
-# Calls, selectors, control, and eval contract
+# Calls, Paths, control, and eval contract
 
 **Status:** normative and implemented. Executable coverage:
-`tests/spec_runner.nim`, suites “explicit fexprs”, “selectors”, “pattern
+`tests/spec_runner.nim`, suites “explicit fexprs”, “Paths”, “pattern
 destructuring”, “checked errors”, “Env and eval”, and “absence-guarded
 sends”, plus “proper tail calls”. Frame-space assertions live in
 `tests/test_vm.nim` because they inspect VM instrumentation rather than only
@@ -31,7 +31,7 @@ merely because a call uses a spread.
 Calling a non-callable value names the authored head and the value's kind.
 A missing callee reports void; a missing `gene` namespace path names its first
 missing exported segment (for example, a denied `gene/fs`). Diagnostic
-construction does not reevaluate the callee, arguments, or selector callbacks.
+construction does not reevaluate the callee, arguments, or Path callbacks.
 Ordinary missing property reads still return void. Native calls without an
 authored site retain the fallback `value is not callable: <Kind>` diagnostic.
 
@@ -72,7 +72,7 @@ Held-message application `(m x)` retains the message's authored dispatch scope;
 failure timing need not match a send.
 
 `(Callable [A B] R)` creates a checked invocation view of any ordinary callable:
-functions, native callables, messages, selectors, constructor-capable types,
+functions, native callables, messages, Paths, constructor-capable types,
 and user values implementing `Callable`. Fexprs are excluded. Bare `Callable`
 only tests callability; `Fn` and `(Fn ...)` retain their function-only matching.
 A checked view itself is Callable and is neither Fn nor Message. A held send
@@ -120,7 +120,7 @@ fixtures in `tests/transpile/fixtures.json`.
 
 `($runtime/signature target)` returns an immutable `SignatureDescription` node.
 Known argument shapes are available for ordinary Gene functions, checked
-`Callable` views, selectors, enum variants, direct ordinary Type construction,
+`Callable` views, Paths, enum variants, direct ordinary Type construction,
 declared FFI callables, and message contracts with available signature metadata.
 Ordinary native functions without signature metadata and fexprs remain unknown.
 Custom `Callable` values expose the selected `apply_contract` separately;
@@ -196,8 +196,8 @@ fail after an otherwise successful ctor with `^errors []`.
 
 ### Other callable categories
 
-Selectors expose one positional argument, no named arguments, and unknown
-result/error contracts. Describing a selector does not traverse any data or
+Paths expose one positional argument, no named arguments, and unknown
+result/error contracts. Describing a Path does not traverse any data or
 execute effectful stages. FFI callables expose their existing declared
 parameter/result types, with unknown error contracts; addresses, libraries,
 release callbacks, and foreign memory are not exported.
@@ -359,11 +359,19 @@ MVP compiler-dispatched heads:
 <!-- compiler-head-dispatch:start -->
 ```text
 do if if_yes if_not && || ?? ! let var const set new fn macro quote quasiquote
-select path msg ns env eval import import_impl mod match while loop repeat for break
+Path path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive web_module
 ```
 <!-- compiler-head-dispatch:end -->
+
+An executable control or declaration head that has a visible same-named
+lexical binding or import is a compile error: `(fn mod [a b] a) (mod x 1)`
+cannot silently declare a module instead of calling the function. The binding
+remains usable in value position, and names in unrelated scopes do not
+collide. Reader forms that represent Paths, Messages, and quasiquote syntax
+use their intrinsic meaning regardless of ordinary variables named `path`,
+`msg`, or `quasiquote`; those names can still be used as values.
 
 `?.message` is the absence-guarded send. It is `.message` with one additional
 rule, applied to the receiver only:
@@ -384,7 +392,7 @@ rule, applied to the receiver only:
   held `.%m`, and computed `.%(expr)` — together with named arguments and spreads;
 - leading `(?.m …)` is the guarded self-send, observable where lexical `self`
   is absent, as in an `impl P for Nil` body;
-- `super` is never absent, so `super ?.m` is rejected. Selectors are ordinary
+- `super` is never absent, so `super ?.m` is rejected. Paths are ordinary
   callables (`(/name x)`), not message descriptors; use `??` for an
   absent-valued projection.
 
@@ -419,7 +427,22 @@ not. Stack traces retain a bounded recent tail history and an elision count.
 development diagnostics.
 
 Expression paths resolve their base lexically and select later segments;
-declaration/import/type contexts resolve qualified names statically. Static
-scalar/key selector segments are pure. Callable, call-stage, and send segments
-are executable: they are non-serializable and invalid for `assoc_in` and
-`update_in`. Strict missing lookup raises `SelectorMissing` with `^segment`.
+declaration/import/type contexts resolve qualified names statically. A
+receiver path evaluates its base once, then resolves all dynamic segments in
+order, then traverses them. Segment resolution failures prevent traversal.
+`/a/b/.c/1` is a callable Path value with the segments of
+`(Path "a" "b" ".c" 1)`; `a/b/c` applies `/b/c` to `a` after evaluating `a`.
+Static scalar/key Path segments are pure. Callable, call-stage, and message
+segments are executable: they are non-serializable and invalid for `assoc_in`
+and `update_in`. Strict missing lookup raises `PathMissing` with `^segment`.
+`$key` forces literal-key lookup when a string begins with `.`. Path values
+are callable, accept one receiver and no named arguments, and satisfy the
+`Path` annotation rather than the concrete `Node` annotation.
+An empty `(Path)` is the identity Path. The web profile accepts portable Path
+callbacks and annotations, and rejects message segments, Path equality, and
+Path identity before emission. The native VM supports those operations.
+Pure Paths containing named or indexed segments, including literal keys made
+with `$key`, round-trip through `serde/write_data` and `serde/read_data`.
+Paths containing callable or message stages are executable, so `serde/data?`
+returns false and `serde/write_data` raises `SerdeError` before writing data.
+Qualified or held message stages preserve their authored implementation scope.

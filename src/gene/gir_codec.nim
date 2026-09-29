@@ -7,9 +7,10 @@
 import std/[algorithm, json, jsonutils, sets, strutils, tables]
 import ./[gir, printer, reader, types]
 
-# The number changes whenever the chunk layout does, so a stale artifact fails
-# closed instead of being read with a different shape.
-const GirArtifactFormat* = 20
+# The number changes when the chunk layout or opcode/value meaning changes, so
+# a stale artifact fails closed. Path values replaced Selector values while
+# reusing the same bytecode slots, so that migration also advances the format.
+const GirArtifactFormat* = 21
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.

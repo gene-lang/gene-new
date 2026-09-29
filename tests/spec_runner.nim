@@ -143,6 +143,55 @@ proc checkCRuns(source, label, expected: string,
     check ran.output.strip() == expected
 
 suite "spec — reader surface from design":
+  test "Path literals and construction have the same callable value":
+    check_eval("(let datum {^a {^b [10 20]}}) " &
+               "[(== /a/b/1 (Path \"a\" \"b\" 1)) " &
+               " (/a/b/1 datum) ((Path \"a\" \"b\" 1) datum) " &
+               " (Path \"a\" \"b\" \".size\" 1)]",
+               "[true 20 20 (Path \"a\" \"b\" \".size\" 1)]")
+    check_eval("(let P Path) (let p (P \"a\")) " &
+               "[($head p) ($body p) (p {^a 3})]",
+               "[(type Path) [\"a\"] 3]")
+    check_eval("(let path 2) (let select 3) (let a {^b 4}) " &
+               "[a/b ((Path \"b\") a) path select]", "[4 4 2 3]")
+    check_eval("(let p /a) (== p ($read_one ($to_str p)))", "true")
+    check_eval("(macro key_path [] `/a) " &
+               "((key_path) {^a 2})", "2")
+    check_compile_error("(select name)",
+                        "select was removed; use Path")
+    check_eval("(fn select [x] (+ x 1)) (select 3)", "4")
+
+  test "receiver paths construct dynamic segments before traversal":
+    check_eval("(var hits ($cell 0)) " &
+               "(type Box ^props {} " &
+               "  (message ping [] : Box (hits .set (+ (hits .get) 1)) self)) " &
+               "(let box (Box)) " &
+               "(let failed (try box/.ping/%missing_path_key false " &
+               "                 catch RuntimeError true)) " &
+               "[failed (hits .get)]", "[true 0]")
+    check_eval("(let a {^b 4}) (let k \"b\") " &
+               "[a/%k ((Path k) a)]", "[4 4]")
+
+  test "qualified, held, and optional message Paths agree":
+    check_eval("(protocol P (message ping [] : Int)) " &
+               "(type X ^props {}) " &
+               "(impl P for X (message ping [] : Int 4)) " &
+               "(let x (X)) (let m P:ping) (let make Path) (let absent nil) " &
+               "[x/.P:ping (/.P:ping x) ((Path \".P:ping\") x) " &
+               " ((make \".P:ping\") x) x/.%m absent/?.%m]",
+               "[4 4 4 4 4 nil]")
+
+  test "a literal-key stage bypasses message interpretation and serializes":
+    check_eval("(let m {}) (m .put \".c\" 9) " &
+               "(let p (Path ($key \".c\"))) " &
+               "[(p m) ($serde/data? p) " &
+               " (== p ($serde/read_data ($serde/write_data p)))]",
+               "[9 true true]")
+    check_eval("(let p (Path \".c\")) " &
+               "[($serde/data? p) " &
+               " (try ($serde/write_data p) false catch SerdeError true)]",
+               "[false true]")
+
   test "programs contain multiple top-level forms":
     let forms = readAll("(mod app) (import gene/stream [map]) (fn main [] nil)")
     check forms.len == 3
@@ -163,9 +212,9 @@ suite "spec — reader surface from design":
     check_eval("(var x 5) $\"v=${x}\"", "\"v=5\"")
 
   test "selector literals and context-neutral paths stay distinct":
-    check_read("/user/name", "(select user name)")
+    check_read("/user/name", "(Path \"user\" \"name\")")
     check_read("user/name", "(path user name)")
-    check_read("/users/0/name", "(select users 0 name)")
+    check_read("/users/0/name", "(Path \"users\" 0 \"name\")")
     check_read("users/-1/name", "(path users -1 name)")
     check_read("(import $net/http [Request])", "(import (path gene net http) [Request])")
     check_read("xs/.size", "xs/.size")
@@ -302,8 +351,8 @@ suite "spec — reader surface from design":
     discard compileSource("(fn size-of [self] (.size))")
     fixture(["fn"], "(fn identity [x] x)")
     fixture(["macro"], "(macro identity [x] `%x) (identity 1)")
-    fixture(["quote", "quasiquote", "select", "path"],
-      "(do (quote x) (quasiquote x) (select name) (path a b))")
+    fixture(["quote", "quasiquote", "Path", "path"],
+      "(do (quote x) (quasiquote x) (Path \"name\") (path a b))")
     # `msg` is what the reader gives `Proto:msg`; `/` stays `path`.
     fixture(["msg"], "(protocol FixtureMsgProto (message m [] : Int)) " &
                      "(fn use [x] (x .FixtureMsgProto:m))")
@@ -3441,7 +3490,7 @@ suite "spec — numeric boundaries from design":
     # A selector needs at least one segment, so `//` reads back as the operator
     # symbol; an interior `//` in a path still collapses (design §7.4).
     check_eval("(quote //)", "//")
-    check_eval("[(quote a//b) (quote /a/b)]", "[(path a b) (select a b)]")
+    check_eval("[(quote a//b) (quote /a/b)]", "[(path a b) (Path \"a\" \"b\")]")
 
   test "fixed-width integer annotations are range checked":
     check_eval("(fn signed [x : SignedInt] x) " &
@@ -3594,12 +3643,13 @@ suite "spec — nominal types from design":
       discard compileSource("(type Packed ^sealed true ^props {})")
 
 suite "spec — direct construction, new, and ctor (design §7.1.1)":
-  test "new is a keyword that invokes the type constructor":
+  test "new invokes the type constructor unless its head collides":
     check_eval("(type Point ^props {^x Int} " &
                "  (ctor [x : Int] (self .set_prop `x x))) " &
-               "(let new (fn [_] \"shadowed\")) " &
                "(var point (new Point 42)) point/x",
                "42")
+    check_compile_error("(let new (fn [_] \"shadowed\")) (new Point 42)",
+                        "new is a special form")
 
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
@@ -4328,12 +4378,12 @@ suite "spec — typed variable boundaries from design":
     check_eval("(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
                "catch TypeError $err/expected)",
                "\"Fn\"")
-    check_eval("(fn keep-selector [s : Selector] s) (keep-selector /name)",
-               "(select name)")
-    check_eval("(try (fn keep-selector [s : Selector] s) " &
-               "     (keep-selector (quote (name))) " &
+    check_eval("(fn keep-path [p : Path] p) (keep-path /name)",
+               "(Path \"name\")")
+    check_eval("(try (fn keep-path [p : Path] p) " &
+               "     (keep-path (quote (name))) " &
                "catch TypeError $err/expected)",
-               "\"Selector\"")
+               "\"Path\"")
     check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
                "(native-fn +)")
     check_eval("(type AddN ^props {^n Int}) " &
@@ -5995,6 +6045,24 @@ suite "spec — protocol derive from design":
                   newGlobalScope())
 
 suite "spec — binding forms from design §12.1":
+  test "bound special-form heads report the collision":
+    check_compile_error("(fn mod [a b] a) (mod x 1)",
+                        "mod is a special form, but a binding named mod is in scope")
+    check_compile_error("(fn f [loop] (loop (break)))",
+                        "loop is a special form")
+    check_compile_error("(fn outer [loop] (fn inner [] (loop (break))))",
+                        "loop is a special form")
+    check_compile_error("(import [loop] ^from \"./unused.gene\") (loop)",
+                        "loop is a special form")
+    check_eval("(let mod 1) mod", "1")
+    check_eval("(fn once [] 1) (once)", "1")
+    check_eval("(let loop 1) (quote (loop (break)))",
+               "(loop (break))")
+    check_eval("(fn first [] (let loop 1) loop) " &
+               "(fn second [] (loop (break)) 2) (second)", "2")
+    check_eval("(let path 1) (let msg 2) (let a {^b 4}) " &
+               "[a/b path msg]", "[4 1 2]")
+
   test "binding declarations reject extra values and unknown props":
     for source in ["(let v 1 2)", "(var v 1 2)", "(let v : Int 1 2)",
                    "(const K 1 2)", "(const K : Int 1 2)",
@@ -6002,7 +6070,7 @@ suite "spec — binding forms from design §12.1":
       check_compile_error(source, "expects a pattern")
     for form in ["let", "var", "const"]:
       check_compile_error("(" & form & " v 1 ^x 2)", "does not accept ^x")
-    check_compile_error("(let v 1 (select a))", "write (/a (g))")
+    check_compile_error("(let v 1 (Path \"a\"))", "write (/a (g))")
     check_compile_error("(var v 1 .size)", "write (/a (g))")
 
   test "binding shape checks preserve omitted values and typed constants":
@@ -6742,18 +6810,18 @@ suite "spec — streams from design":
 
   test "selector strict and default options make missing lookup explicit":
     check_eval("(var fallback \"unknown\") " &
-               "[((select ^default fallback name) {^age 37}) " &
-               " ((select ^default fallback name) {^name nil})]",
+               "[((Path ^default fallback \"name\") {^age 37}) " &
+               " ((Path ^default fallback \"name\") {^name nil})]",
                "[\"unknown\" nil]")
-    check_eval("(try ((select ^strict true name) {^age 37}) " &
+    check_eval("(try ((Path ^strict true \"name\") {^age 37}) " &
                "catch Any $err/message)",
-               "\"selector lookup failed at segment: name\"")
-    check_eval("(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
+               "\"Path lookup failed at segment: \\\"name\\\"\"")
+    check_eval("(try ((Path ^strict true ^default \"unknown\" \"name\") {^age 37}) " &
                "catch Any $err/message)",
-               "\"selector lookup failed at segment: name\"")
-    check_eval("(try ((select ^strict true name) {^age 37}) " &
-               "catch SelectorMissing $err/segment)",
-               "name")
+               "\"Path lookup failed at segment: \\\"name\\\"\"")
+    check_eval("(try ((Path ^strict true \"name\") {^age 37}) " &
+               "catch PathMissing $err/segment)",
+               "\"name\"")
 
   test "list path sends expose behavior while selectors stay generic":
     check_eval("(var xs [10 20 30]) " &
@@ -6767,22 +6835,22 @@ suite "spec — streams from design":
     check_eval("(var users [{^name \"Ada\" ^adult true} " &
                "            {^name \"Tim\" ^adult false} " &
                "            {^name \"Bob\" ^adult true}]) " &
-               "(var names ((select %$to_stream %($filter /adult) name) users)) " &
+               "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
                "[(names .next) " &
                " (names .next) " &
                " (names .has_next)]",
                "[\"Ada\" \"Bob\" false]")
     check_eval("(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
-               "((select %$to_stream %($map /name) %($take 2) %($into [])) users)",
+               "((Path %$to_stream %($map /name) %($take 2) %($into [])) users)",
                "[\"Ada\" \"Bob\"]")
 
   test "selector key wrappers force dynamic key lookup":
     check_eval("(var field \"name\") " &
-               "(var get-name (select %($key field))) " &
+               "(var get-name (Path %($key field))) " &
                "(get-name {^name \"Ada\"})",
                "\"Ada\"")
     check_eval("(var plus +) " &
-               "[((select %plus) 4) ((select %($key plus)) 4)]",
+               "[((Path %plus) 4) ((Path %($key plus)) 4)]",
                "[4 void]")
 
   test "declarations is an ordinary stream selector stage":
@@ -10454,10 +10522,10 @@ suite "spec — serde data core (docs/stdlib.md stage 1)":
                " (try (data? 1 ^policy nil) catch Any \"rejected\")]",
                "[\"rejected\" \"rejected\"]")
 
-  test "serde rejects executable selectors and traverses node metadata":
+  test "serde rejects executable Paths and traverses node metadata":
     check_eval("(import $serde [data? write_data read_data SerdeError]) " &
                "(var pure /name) " &
-               "(var executable (select %($map /name))) " &
+               "(var executable (Path %($map /name))) " &
                "[(data? pure) (== pure (read_data (write_data pure))) " &
                " (data? executable) " &
                " (try (write_data executable) catch SerdeError \"rejected\") " &

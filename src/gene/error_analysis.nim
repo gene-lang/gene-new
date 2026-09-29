@@ -237,7 +237,7 @@ proc builtinError(name: string): ErrorTypeSummary =
   result = ErrorTypeSummary(identity: "builtin:" & name, name: name, expr: newSym(name))
   case name
   of "MessageError", "CallKindError": result.ancestors = @["builtin:TypeError"]
-  of "SelectorMissing": result.ancestors = @["builtin:MatchError"]
+  of "PathMissing": result.ancestors = @["builtin:MatchError"]
   of "RuntimeLaneError", "ValueProtocolPending", "ValueNotHashable",
      "ValueOperationReentry", "OrderError":
     result.ancestors = @["builtin:RuntimeError"]
@@ -275,7 +275,7 @@ proc literalValue(value: Value): AbstractValue =
     result.typ = newSym("Range")
     result.resultType = newSym("Int")
   of vkNode:
-    result.kind = if value.head.kind == vkSymbol and value.head.symVal == "select":
+    result.kind = if value.head.kind == vkSymbol and value.head.symVal == "Path":
                     avSelector else: avNode
   else: result.kind = avUnknown
 
@@ -470,7 +470,7 @@ proc newErrorAnalysis*(root: Chunk,
   let builtins = newErrorEnvironment(nil, "builtin", "")
   for name in ["RuntimeError", "RuntimeLaneError", "TypeError",
                "ErrorContractViolation", "AssertionError",
-               "MatchError", "SelectorMissing", "CompileError", "CallKindError",
+               "MatchError", "PathMissing", "CompileError", "CallKindError",
                "MessageError", "ParseError", "ValueProtocolPending",
                "ValueNotHashable", "ValueOperationReentry", "OrderError",
                "IoError", "IoBusy", "IoClosed", "IoBackpressure",
@@ -1040,13 +1040,20 @@ proc selectValue(analysis: ErrorAnalysis, target: AbstractValue, selector: Value
                   environment: ErrorEnvironment): BodyErrors =
   result.value = unknownValue()
   if target == nil: return
-  if selector.kind != vkNode or selector.head.kind != vkSymbol or selector.head.symVal != "select":
+  if selector.kind != vkNode or selector.head.kind != vkSymbol or selector.head.symVal != "Path":
     result.errors.open = true
     result.mayConsumeTasks = true
     result.taskCode = true
     return
   var current = target
   for segment in selector.body:
+    if segment.kind == vkString and
+        (segment.strVal.startsWith(".") or segment.strVal.startsWith("?.")):
+      result.errors.open = true
+      result.mayConsumeTasks = true
+      result.taskCode = true
+      current = unknownValue()
+      continue
     if segment.kind notin {vkSymbol, vkString, vkInt}:
       result.errors.open = true
       current = unknownValue()
@@ -1534,7 +1541,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let part = state.pop()
         known = known and part.hasLiteral
         parts[i] = part.literal
-      push (if known: literalValue(newNode(newSym("select"), body = parts)) else: unknownValue())
+      push (if known: literalValue(newNode(newSym("Path"), body = parts)) else: unknownValue())
     of opApplySelector, opApplySelectorTop:
       let a = state.pop()
       let b = state.pop()

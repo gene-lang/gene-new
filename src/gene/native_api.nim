@@ -588,9 +588,13 @@ proc cancelResult(e: ref GeneCancel): GeneResult =
 proc geneRoot*(value: Value): GeneRoot =
   withRetirementNativeAdmission(true):
     vm.requireNativeRootable(value)
+    # A scope-owned Path can contain a held message with a weak back-reference
+    # to that scope. A native root outlives the scope's storage, so publish an
+    # escaped copy rather than retaining the scope-owned value as-is.
+    let rooted = escapeWeakFunctions(value)
     when defined(geneAtomicGenerationRetirementProbe):
-      vm.publishNativeRootForRetirement(value)
-    result = GeneRoot(value: value)
+      vm.publishNativeRootForRetirement(rooted)
+    result = GeneRoot(value: rooted)
     noteNativeRootCreated()
 
 proc geneRootGet*(root: GeneRoot): Value =

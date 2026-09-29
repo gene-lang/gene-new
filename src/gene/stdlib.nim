@@ -5885,6 +5885,7 @@ proc serdeEmitSharedPrefix(w: var SerdeWriter, v: Value): bool =
   false
 
 proc serdeEmit(w: var SerdeWriter, v: Value)
+proc pathIsSerializableData(v: Value): bool
 proc serdeEmitInst(w: var SerdeWriter, v: Value)
 
 proc serdeEmitRef(w: var SerdeWriter, tag, module, path: string) =
@@ -6055,6 +6056,9 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     serdeLeaveContainer(w, v)
   of vkNode:
     serdeEnterContainer(w, v)
+    if v.isSelector and not pathIsSerializableData(v):
+      raiseSerdeError(w.scope,
+        "Path contains an executable segment", w.path)
     if v.head.kind == vkType or v.head.kind == vkEnumVariant:
       serdeEmitInst(w, v)
       serdeLeaveContainer(w, v)
@@ -6215,20 +6219,26 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
   w.sb.add "])"
 
 proc serdeDataValueP(v: Value): bool
+proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool
 
-proc selectorIsSerializableData(v: Value): bool =
+proc pathIsSerializableData(v: Value, active: var HashSet[uint64]): bool =
   if not v.isSelector:
     return true
+  if active.containsOrIncl(v.bits):
+    return false
+  defer: active.excl v.bits
   for segment in v.body:
     case segment.kind
     of vkInt, vkSymbol, vkString:
-      discard
+      if segment.kind == vkString and
+          (segment.strVal.startsWith(".") or segment.strVal.startsWith("?.")):
+        return false
     of vkNode:
       if segment.head.isSymbol("selector_key") and segment.body.len == 1:
-        if not serdeDataValueP(segment.body[0]):
+        if not serdeDataValueP(segment.body[0], active):
           return false
       elif segment.isSelector:
-        if not selectorIsSerializableData(segment):
+        if not pathIsSerializableData(segment, active):
           return false
       else:
         # call_stage and arbitrary node stages execute behavior.
@@ -6237,6 +6247,10 @@ proc selectorIsSerializableData(v: Value): bool =
       # Callable stages execute behavior and retain runtime authority.
       return false
   true
+
+proc pathIsSerializableData(v: Value): bool =
+  var active = initHashSet[uint64]()
+  pathIsSerializableData(v, active)
 
 proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
   if v.isNil:
@@ -6290,7 +6304,7 @@ proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
   of vkNode:
     if v.head.kind in {vkType, vkEnumVariant}:
       return false
-    if v.isSelector and not selectorIsSerializableData(v):
+    if v.isSelector and not pathIsSerializableData(v, onPath):
       return false
     if v.bits in onPath:
       return false

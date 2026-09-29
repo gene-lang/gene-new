@@ -4,7 +4,7 @@ These files define precise behavior for contributors and advanced users.
 Start with [the language guide](../language.md) for examples and ordinary usage.
 
 - [Reader and values](reader.md)
-- [Calls, selectors, control, and eval](calls.md)
+- [Calls, paths, control, and eval](calls.md)
 - [Types and construction](types.md)
 - [Nil, void, and optional binding](nil-void.md)
 - [Protocols and dispatch](protocols.md)

@@ -64,6 +64,36 @@ when defined(geneRcStats):
   GC_fullCollect()
 
   suite "rc — closures and scopes (geneRcStats)":
+    test "a directly stored Path releases its held-message scope":
+      for slots in [true, false]:
+        check leakedManaged("(Path \".Self:head\")",
+          useLocalSlots = slots) == 0
+        check leakedManaged("(let p (Path \".Self:head\")) p",
+          useLocalSlots = slots) == 0
+
+    test "a returned child-scope Path exposes the existing parent cycle limit":
+      for slots in [true, false]:
+        let closureLeak = leakedManaged("""
+          (fn make_fn [] (scope (let x 1) (fn [] x)))
+          (let f (make_fn)) (f)
+        """, useLocalSlots = slots)
+        let pathLeak = leakedManaged("""
+          (fn make_path []
+            (scope
+              (let p (Path ".Self:head"))
+              p))
+          (let p (make_path))
+          ($assert (== (p (quote (payload))) (quote payload)))
+        """, useLocalSlots = slots)
+        # The unresolved cross-scope cycle retains one function plus its
+        # captured child/root scopes in the control, or one Path and its held
+        # Message plus the same scopes here. If the control retires, this Path
+        # must retire too; do not silently promote one without the other.
+        if closureLeak == 0:
+          check pathLeak == 0
+        else:
+          check pathLeak == closureLeak + 1
+
     test "abandoned owned pointers retire before their borrowed FFI image":
       ffiAutoLibraryCloses = 0
       ffiAutoPointerReleases = 0

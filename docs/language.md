@@ -56,10 +56,10 @@ The web profile requires matching Int or F64 operands. See
 The [collection library](stdlib.md#collections) lists receiver messages,
 generic functions, Set construction, and shallow-copy idioms.
 
-### Paths and selectors
+### Paths
 
 Slash paths read fields and indexed positions. `%` evaluates a dynamic segment.
-A leading slash creates a reusable selector:
+A leading slash creates a reusable Path:
 
 ```gene runnable
 (let person {^name "Ada" ^roles ["reader" "writer"]})
@@ -67,6 +67,27 @@ A leading slash creates a reusable selector:
 [person/name person/roles/0 person/roles/-1 person/%field (/name person)]
 # ["Ada" "reader" "writer" "Ada" "Ada"]
 ```
+
+`Path` is a callable type. A Path literal and its constructor have the same
+segments and traversal behavior:
+
+```gene runnable
+(let data {^a {^b [10 20 30]}})
+[(/a/b/1 data) ((Path "a" "b" 1) data)]
+# [20 20]
+```
+
+Strings name properties, integers index positions, and a string beginning
+with `.` names a zero-argument message. The longer form
+`(Path "a" "b" ".size")` is equivalent to `/a/b/.size`.
+`$key` marks a literal key that would otherwise look like a message.
+Paths are values and may be stored, passed as callbacks, and annotated `Path`.
+
+A receiver path such as `data/%key` evaluates `data` first, resolves its
+dynamic segments next, then traverses the completed Path. If the base raises,
+those segments are not evaluated. A Path expression written as a call, such
+as `(/a/%key data)`, follows ordinary call order: its callee is constructed
+before the receiver argument is evaluated.
 
 To select from a call result, write `(/name (get_person))`, or bind the result
 first. A path or message glued after a closing delimiter, such as `(get_person)/name`
@@ -392,7 +413,7 @@ directly or import its name:
 ```
 
 `map`, `filter`, and `filter_map` operate on eager collections and lazy streams.
-A selector can be the callback:
+A Path can be the callback:
 
 ```gene runnable
 (let people [{^name "Ada"} {^name "Grace"}])

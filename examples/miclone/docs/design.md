@@ -286,7 +286,7 @@ baked in at compile time.**
 
 ```
 $fs/write_text  ->  0: opLoadName name=gene
-                    1: opPushConst const=0     # (select fs write_text)
+                    1: opPushConst const=0     # (Path fs write_text)
                     2: opApplySelectorTop
 ```
 

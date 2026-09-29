@@ -94,7 +94,7 @@ send whose *result* is called. The path shortcut carries no arguments:
 **`//` is remainder, not floor division.** `(/ 7 2)` is `3`; `(// 7 2)` is `1`.
 
 **The `/.message` shortcut needs a symbol base.** On a literal it silently reads
-as two values — a collection and a selector — with no error at all:
+as two values — a collection and a Path — with no error at all:
 
 ```gene
 (var xs [1 2])

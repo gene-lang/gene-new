@@ -156,6 +156,8 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-09-29 | A visible binding sharing an executable special-form head now causes a compile error at that head. | Rename the binding or alias its import; values remain usable outside call-head position. Intrinsic Path, Message, and quasiquote forms retain their syntax meaning. |
+| 2026-09-29 | Paths are callable `Path` values; their constructor uses ordered string, message, and index segments. Receiver paths evaluate the base before dynamic segments. | Replace `Selector` annotations and `(select …)` construction with `Path` and `(Path …)`; use quoted strings for literal property names. Rename catches of `SelectorMissing` to `PathMissing`. |
 | 2026-09-29 | Non-callable errors name the authored call head and missing namespace segment. | Ordinary missing reads still return void; update any checks of the old generic diagnostic text. |
 | 2026-09-29 | Paths and messages glued after compound forms are read errors. | Replace `(g)/a` with `(/a (g))` and `(g).size` with `((g) .size)`, or bind the result first. Whitespace-separated forms and spreads remain valid. |
 | 2026-09-29 | Added native VM `reverse`, `drop`, and `has_key?`. | Use the root functions or their List/Stream/Map messages. Map key presence stays separate from `contains?`; the web profile rejects the new helpers. |

@@ -15,7 +15,7 @@ Provide `ValueEq`, `ValueHash`, `ValueOrder`, `IndexRead`, and `IndexWrite` in t
 | ValueEq | `equal [other : Self] : Bool` | ==, !=, recursive collection equality and membership. |
 | ValueHash | `hash [] : Int` | hash and Set/general-key Map keys; requires ValueEq. |
 | ValueOrder | `compare [other : Self] : Int` | Non-numeric ordering fallback and default sorting; result -1, 0, or 1. |
-| IndexRead | `size [] : Int`; `at [index : Int] : Any` | Numeric paths/selectors and generic $size. |
+| IndexRead | `size [] : Int`; `at [index : Int] : Any` | Numeric Paths and generic $size. |
 | IndexWrite | `put_at [index : Int value : Any] : Any` | Final numeric set-path segment; requires IndexRead. |
 
 Example proposed application code, after the core protocols exist:
@@ -80,7 +80,7 @@ Use stable O(n log n) merge sort over a copied finite List. Validate comparator 
 | --- | --- | --- |
 | VAL-1 | Type metadata in types.nim, protocol assembly/reload/eval in vm.nim | Empty and selected descriptors seal before use; duplicate/late/scoped override rejection; inherited Self; old values survive new Type generation; witnesses release when unreachable. |
 | VAL-2 | VM equality/hash and collection operations; preserve internal equality.nim use | Aliased ==/hash, nested typed values, frozen keys across modules, equal/hash law fixtures, collisions, missing hash, callback failure/reentry, compiler fast-path parity. |
-| VAL-3 | Selector/staticLookup/set/size seams, ordering natives and new order module | Read-only sequence writes fail, negative/F64/huge indices, void normalization, immutable/native wrappers, sort stability/key-call counts, custom callbacks cannot await. |
+| VAL-3 | Path/staticLookup/set/size seams, ordering natives and new order module | Read-only sequence writes fail, negative/F64/huge indices, void normalization, immutable/native wrappers, sort stability/key-call counts, custom callbacks cannot await. |
 
 Extend existing protocol, spec, mutation, and RC suites. The web/C backends must either implement a listed fallback with shared tests or reject it before execution; an accepted nominal type must not silently fall back to structural equality on another backend. Custom worker fallback is separately qualified later.
 

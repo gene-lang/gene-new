@@ -27,6 +27,16 @@ Baseline invocation: `nimble leakcheck` runs the ORC build with `geneRcStats`. T
 
 Next VM-0/3 work: closure cycles whose outside owner is not a returned value, and the container kinds the pre-check skips (Closures and scopes row); then compiled-code constant and error-evidence edges in retired generations (matrix probes so far are flat). The batch fixtures keep source vocabularies bounded and each child process under a hard deadline.
 
+Path values that contain a held Message have a scope edge. A Path stored
+directly in its creating scope now uses a weak owned back-edge; two RC variants
+return to baseline when the scope drops. Returning a Path from a child scope
+and then storing it in the enclosing root leaves three managed Values, while
+the equivalent returned-closure control leaves two. Both shapes expose the
+existing parent-scope cycle that is not revisited after the outside owner drops;
+the extra Path Value is its held Message. `tests/test_rc.nim` keeps both the flat
+direct control and the relative mixed-cycle control explicit. This evidence
+does not promote general scope-cycle retirement or AtomicArc collection.
+
 ## Protocol read admission
 
 The owned Client and canonical AsyncReader dispatch share scheduler-owned reader/Task pins. Custom-reader RC tests require zero guards and a flat managed count after repeated completed reads. Owned-Client tests cover pending-read admission, held/dynamic/pipeline/inherited reads, delayed cancellation cleanup, budget rollback, and parent delegation; the AtomicArc case exercises worker-pool integration. Completed pins retire on the root lane outside its lock. Native physical tickets remain lifecycle-owned; custom convenience methods/backend aliases are outside the protocol guard. See [the borrowing audit](../../docs/profiles/native-app.md#async-io-and-borrowing).

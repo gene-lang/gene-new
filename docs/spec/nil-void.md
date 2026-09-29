@@ -84,7 +84,7 @@ This is mathematical notation, not Gene syntax. Ordinary unnormalized function
 composition is sufficient when f cannot produce void. Laziness still changes
 evaluation timing, partial consumption, side effects, and error timing.
 
-The iterate delimiter `=>` uses map normalization. Generator yield and selector
+The iterate delimiter `=>` uses map normalization. Generator yield and Path
 stream projections retain their explicit non-emission/missing-result policies.
 
 Coverage: `tests/test_nil_void.nim`, executable specs, pipeline tests, and shared

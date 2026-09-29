@@ -328,6 +328,8 @@ suite "errors — panic":
     expect GenePanic: discard runStr("(try (panic \"halt\") ensure 1)")
   test "panic head is a special form":
     expect GenePanic:
+      discard runStr("(panic \"halt\")")
+    expect GeneError:
       discard runStr("(var panic (fn [x] nil)) (panic \"halt\")")
     expect GeneError:
       discard compileSource("(panic \"x\" \"y\")")

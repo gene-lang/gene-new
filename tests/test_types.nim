@@ -7187,8 +7187,8 @@ suite "types — function boundaries":
        "catch TypeError $err/expected)", "\"NativeFn\""
     ck "(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
        "catch TypeError $err/expected)", "\"Fn\""
-    ck "(fn keep-selector [s : Selector] s) (keep-selector /name)", "(select name)"
-    ck "(try (fn keep-selector [s : Selector] s) (keep-selector (quote (x))) " &
-       "catch TypeError $err/expected)", "\"Selector\""
+    ck "(fn keep-path [p : Path] p) (keep-path /name)", "(Path \"name\")"
+    ck "(try (fn keep-path [p : Path] p) (keep-path (quote (x))) " &
+       "catch TypeError $err/expected)", "\"Path\""
     ck "(try (fn keep [f : Callable] f) (keep (quote (not-callable))) " &
        "catch TypeError $err/expected)", "\"Callable\""

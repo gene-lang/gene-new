@@ -89,7 +89,7 @@ const cases = [
    0, '[0 data new 1 true]', ''],
   ['(let s ($runtime/signature /name)) ' +
    '[s/category s/minimum_positional s/result_known]',
-   0, '[selector 1 false]', ''],
+   0, '[path 1 false]', ''],
   ['(type Box ^props {^n Int} (message value [] self/n)) ' +
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +

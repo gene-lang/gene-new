@@ -242,8 +242,8 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
     minimum = positional.len
     resultType = enumType
   of vkNode:
-    if target.head.symbol("select"):
-      props["category"] = newSym("selector")
+    if target.head.symbol("Path"):
+      props["category"] = newSym("path")
       props["origin"] = newSym("builtin")
       positional.add parameter("value", "", NIL, true, false, nil, lookup)
       minimum = 1

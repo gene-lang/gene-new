@@ -712,6 +712,7 @@ const supervisorFailureRetryCapacity = 64
 const tailTraceWindow = 64
 
 var gScalarTypes: array[ValueKind, Value]
+var gPathType: Value
 
 var gBuiltinSurfaceTypes: HashSet[uint64]
   ## Identities of every built-in surface type. Read by `isBuiltinSurfaceType`
@@ -2147,7 +2148,9 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value]
-proc applySelector(selector, target: Value): Value
+proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value
+proc staticLookup(target, segment: Value): Value
+proc pathQualifiedMessageValue(text: string, scope: Scope): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs):
                    tuple[scope: Scope, returnType: Value]
@@ -2255,7 +2258,29 @@ proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
 proc isSelector(v: Value): bool =
-  v.kind == vkNode and v.head.isSymbol("select")
+  v.kind == vkNode and v.head.isSymbol("Path")
+
+proc biPathConstruct(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  var props = initPropTable()
+  if call != nil:
+    for i, name in call.namedNames:
+      props[name] = call.namedValues[i]
+  var parts: seq[Value]
+  let scope = if call == nil: nil else: call.dispatchScope
+  for part in args:
+    if part.kind == vkString:
+      let message = pathQualifiedMessageValue(part.strVal, scope)
+      if message.kind != vkNil:
+        if part.strVal.startsWith("?."):
+          var optional = initPropTable()
+          optional["optional"] = TRUE
+          parts.add newNode(newSym("Path"), props = optional,
+                            body = @[message])
+        else:
+          parts.add message
+        continue
+    parts.add part
+  newNode(newSym("Path"), props = props, body = parts)
 
 proc isSelectorKeySegment(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("selector_key") and v.body.len == 1
@@ -2991,10 +3016,13 @@ proc isDataNode*(v: Value): bool {.inline.} =
   ##
   ## This is the same partition `receiverType` dispatches on, stated once so the
   ## annotation and the impl cannot answer differently for the same value.
-  v.kind == vkNode and v.head.kind notin {vkType, vkEnumVariant}
+  v.kind == vkNode and not v.isSelector and
+    v.head.kind notin {vkType, vkEnumVariant}
 
 proc projectHead(v: Value): Value =
   if v.kind == vkNode:
+    if v.isSelector and gPathType.kind == vkType:
+      return gPathType
     return v.head
   if v.kind in NodeShapedKinds:
     # NIL until `buildBuiltins` has registered the identities; falling through
@@ -5978,16 +6006,20 @@ proc updateIndex(name: string, itemsLen: int, rawIndex: int64): int =
 
 proc selectorPath(name: string, path: Value): seq[Value] =
   if not path.isSelector:
-    raise newException(GeneError, name & " expects a selector path")
+    raise newException(GeneError, name & " expects a Path")
   if path.body.len == 0:
-    raise newException(GeneError, name & " expects a non-empty selector path")
+    raise newException(GeneError, name & " expects a non-empty Path")
   for segment in path.body:
     case segment.kind
     of vkInt, vkSymbol, vkString:
+      if segment.kind == vkString and
+          (segment.strVal.startsWith(".") or segment.strVal.startsWith("?.")):
+        raise newException(GeneError,
+          name & " cannot update through a Path message segment")
       result.add segment
     else:
       raise newException(GeneError,
-        name & " cannot update through selector stage: " & $segment.kind)
+        name & " cannot update through Path stage: " & $segment.kind)
 
 proc readUpdateChild(name: string, target, segment: Value): Value =
   case target.kind
@@ -6286,7 +6318,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
           discard
     else:
       raise newException(GeneError,
-        name & " cannot update through selector stage: " & $segment.kind)
+        name & " cannot update through Path stage: " & $segment.kind)
     if head.kind == vkType:
       rejectNativeWrapperConstruction(head, name)
       validateTypedNodeParts(head, props, body, tnvmMutation)
@@ -8638,13 +8670,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("MatchError", matchError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: matchError)
-  let selectorMissing = newType("SelectorMissing", matchError,
+  let selectorMissing = newType("PathMissing", matchError,
                                 @[
                                   TypeField(name: "segment", optional: false,
                                             typeExpr: newSym("Any"), scope: result)
                                 ],
                                 @[], result)
-  result.define("SelectorMissing", selectorMissing)
+  result.define("PathMissing", selectorMissing)
   let compileError = newType("CompileError", NIL,
                              @[TypeField(name: "message", optional: false,
                                          typeExpr: newSym("Str"), scope: result),
@@ -8775,6 +8807,23 @@ proc buildBuiltins(app: Application): Scope =
   result.define("props", propsFn)
   result.define("body", bodyFn)
   result.define("meta", metaFn)
+  block:
+    let ctor = sharedBuiltinNative("Path/construct",
+      builtinNativeCallFn("Path/construct", biPathConstruct))
+    withBuiltinSurfaceLock:
+      if gBuiltinTypeSingletons.hasKey("Path"):
+        gPathType = gBuiltinTypeSingletons["Path"]
+      else:
+        var methods = initTable[string, Value]()
+        methods["head"] = headFn
+        methods["props"] = propsFn
+        methods["body"] = bodyFn
+        methods["meta"] = metaFn
+        gPathType = newType("Path", NIL, @[], @[], nil, messages = methods)
+        gPathType.setTypeNativeCtor(ctor)
+        gBuiltinTypeSingletons["Path"] = gPathType
+        gBuiltinSurfaceTypes.incl gPathType.bits
+    result.define("Path", gPathType)
   result.define("construct_type",
                 builtinNativeFn("construct_type", biConstructType))
   result.define("to_str", builtinNativeCallFn("to_str", biToStr,
@@ -13048,6 +13097,8 @@ proc hiddenImplHint(app: Application, protocol, receiver: Value,
     " ^from \"" & best.originPath & "\") there"
 
 proc receiverType(value: Value): Value =
+  if value.isSelector and gPathType.kind == vkType:
+    return gPathType
   let builtin = gScalarTypes[value.kind]
   if builtin.kind == vkType and value.kind notin {vkNode, vkEnumVariant}:
     return builtin
@@ -17232,21 +17283,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               body[i] = spop()
           for item in body:
             rejectCallerEnvEscape("selector construction", item)
-          spush newNode(newSym("select"), body = body)
+          spush newNode(newSym("Path"), body = body)
         of opApplySelector:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let target = spop()
           let selector = spop()
           spush materializedModuleRefValue(
-            scope, applySelector(selector, target))
+            scope, applySelector(selector, target, scope))
         of opApplySelectorTop:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let selector = spop()
           let target = spop()
           spush materializedModuleRefValue(
-            scope, applySelector(selector, target))
+            scope, applySelector(selector, target, scope))
         of opMakeFn:
           let proto = normalizeOptionalParameters(chunk.functions[inst[].intArg], scope)
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
@@ -21733,7 +21784,7 @@ proc runtimeTypeExpr(value: Value): Value =
     elif value.head.kind == vkEnumVariant:
       value.head.enumVariantEnum
     elif value.isSelector:
-      newSym("Selector")
+      newSym("Path")
     else:
       newSym("Node")
   of vkPipeline:
@@ -22158,6 +22209,9 @@ proc isInstanceOfType(value, expected: Value): bool =
   # what an F32 is — the annotation would accept 1.5 and the buffer boundary
   # would reject it, which is exactly the kind of split a single predicate
   # exists to prevent.
+  if expected.kind == vkType and gPathType.kind == vkType and
+      expected.bits == gPathType.bits:
+    return value.isSelector
   if expected.kind == vkType and gRefinementTypes.contains(expected.bits):
     let refined = matchesBuiltinType(expected.typeName, value)
     if refined.known:
@@ -22351,7 +22405,7 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.isSyntaxFn)
   of "NativeFn":
     (true, value.kind == vkNativeFn)
-  of "Selector":
+  of "Path":
     (true, value.kind == vkNode and value.isSelector)
   of "Callable":
     # Fexpr values have their own explicit lexical call kind, not Callable
@@ -23803,14 +23857,14 @@ proc staticLookup(target, segment: Value): Value =
       VOID
   of vkNode:
     if segment.head.isSymbol("unquote"):
-      raise newException(GeneError, "selector contains an unresolved dynamic segment")
+      raise newException(GeneError, "Path contains an unresolved dynamic segment")
     VOID
   else:
     VOID
 
 proc applySelectorCallStage(stage, target: Value): Value =
   if stage.body.len == 0:
-    raise newException(GeneError, "selector call stage requires a callee")
+    raise newException(GeneError, "Path call stage requires a callee")
   case stage.body.len
   of 1:
     var callArgs = [target]
@@ -23833,18 +23887,18 @@ proc selectorStrict(selector: Value): bool =
     return false
   let value = selector.props["strict"]
   if value.kind != vkBool:
-    raise newException(GeneError, "selector ^strict must be Bool")
+    raise newException(GeneError, "Path ^strict must be Bool")
   value.boolVal
 
-proc raiseSelectorMissing(segment: Value) =
-  let message = "selector lookup failed at segment: " & segment.print()
+proc raisePathMissing(segment: Value) =
+  let message = "Path lookup failed at segment: " & segment.print()
   var props = initPropTable()
   props["message"] = newStr(message)
   props["segment"] = segment
-  var head = newSym("SelectorMissing")
+  var head = newSym("PathMissing")
   let root = builtinsScope()
   var missingType: Value
-  if builtinTypeBinding(root, "SelectorMissing", missingType) and
+  if builtinTypeBinding(root, "PathMissing", missingType) and
       missingType.kind == vkType:
     head = missingType
   var e: ref GeneError
@@ -23856,18 +23910,89 @@ proc raiseSelectorMissing(segment: Value) =
 
 proc selectorMissingResult(selector: Value, segment: Value): Value =
   if selector.selectorStrict:
-    raiseSelectorMissing(segment)
+    raisePathMissing(segment)
   if selector.props.hasKey("default"):
     selector.props["default"]
   else:
     VOID
 
-proc applySelector(selector, target: Value): Value =
+proc pathQualifiedMessageValue(text: string, scope: Scope): Value =
+  if not text.startsWith(".") and not text.startsWith("?."):
+    return NIL
+  let member = text[(if text.startsWith("?."): 2 else: 1) .. ^1]
+  let at = qualifiedMessageSplit(member)
+  if at <= 0:
+    return NIL
+  if scope == nil:
+    raise newException(GeneError,
+      "qualified Path message construction requires a lexical scope")
+  let qualifierText = member[0 ..< at]
+  var qualifier = NIL
+  if qualifierText != "Self":
+    let names = qualifierText.split('/')
+    if not scope.lookupOptional(names[0], qualifier):
+      raiseUndefinedSymbol(names[0])
+    for i in 1 ..< names.len:
+      qualifier = staticLookup(qualifier, newSym(names[i]))
+      if qualifier.kind == vkVoid:
+        raiseUndefinedSymbol(names[0 .. i].join("/"))
+    if qualifier.kind != vkProtocol:
+      raiseCallKindError("message value", "Protocol",
+                         freezeRejectName(qualifier), qualifier, scope)
+  newBoundMessage(qualifier, member[at + 1 .. ^1],
+    (if qualifier.kind == vkProtocol: qualifier.bits else: 0'u64), scope)
+
+proc applyPathMessageSegment(segment, target: Value, scope: Scope): Value =
+  let text = segment.strVal
+  let optional = text.startsWith("?.")
+  if optional and target.isAbsent:
+    return target
+  let name = if optional: text[2 .. ^1] else: text[1 .. ^1]
+  if name.len == 0:
+    raise newException(GeneError, "Path message segment requires a name")
+  let split = qualifiedMessageSplit(name)
+  let callee =
+    if split > 0:
+      block:
+        var qualifier: Value
+        if not scope.lookupOptional(name[0 ..< split], qualifier):
+          raiseUndefinedSymbol(name[0 ..< split])
+        resolveQualifiedSend(scope, qualifier, name[split + 1 .. ^1], target)
+    else:
+      resolveQualifiedSend(scope, NIL, name, target)
+  var args = [target]
+  applyCall(callee, args, NamedArgs(), scope)
+
+proc applyPathHeldMessage(segment, target: Value, scope: Scope): Value =
+  let message = segment
+  if not message.protocolMessageIsBound:
+    let callee = resolveProtocolMessage(scope, message, target)
+    var args = [target]
+    return applyCall(callee, args, NamedArgs(), scope)
+  let boundScope = message.protocolMessageScope
+  let qualifier =
+    if message.protocolMessageQualifier.kind != vkNil:
+      message.protocolMessageQualifier
+    else:
+      message.protocolMessageProtocol
+  let callee = resolveQualifiedSend(boundScope, qualifier,
+    message.protocolMessageName, target)
+  var args = [target]
+  applyCall(callee, args, NamedArgs(), boundScope)
+
+proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value =
+  let scope = if dispatchScope != nil: dispatchScope
+              elif activeVmScope != nil: activeVmScope[]
+              else: currentApplication().builtinsScope()
   if selector.props.len == 0 and selector.body.len == 1:
     let segment = selector.body[0]
     case segment.kind
-    of vkInt, vkSymbol, vkString:
+    of vkInt, vkSymbol:
       return staticLookup(target, segment)
+    of vkString:
+      if not segment.strVal.startsWith(".") and
+          not segment.strVal.startsWith("?."):
+        return staticLookup(target, segment)
     else:
       discard
   let strict = selector.selectorStrict
@@ -23875,10 +24000,20 @@ proc applySelector(selector, target: Value): Value =
   for segment in selector.body:
     result =
       case segment.kind
+      of vkProtocolMessage:
+        if selector.props.hasKey("optional") and result.isAbsent:
+          result
+        else:
+          applyPathHeldMessage(segment, result, scope)
+      of vkString:
+        if segment.strVal.startsWith(".") or segment.strVal.startsWith("?."):
+          applyPathMessageSegment(segment, result, scope)
+        else:
+          staticLookup(result, segment)
       of vkFunction, vkNativeFn, vkFfiCallable:
         block:
           var callArgs = [result]
-          applyCall(segment, callArgs, NamedArgs())
+          applyCall(segment, callArgs, NamedArgs(), scope)
       of vkNode:
         if segment.isSelectorKeySegment:
           staticLookup(result, segment.body[0])
@@ -23887,14 +24022,14 @@ proc applySelector(selector, target: Value): Value =
         elif segment.isSelector:
           block:
             var callArgs = [result]
-            applyCall(segment, callArgs, NamedArgs())
+            applyCall(segment, callArgs, NamedArgs(), scope)
         else:
           staticLookup(result, segment)
       else:
         staticLookup(result, segment)
     if result.kind == vkVoid:
       if strict:
-        raiseSelectorMissing(segment)
+        raisePathMissing(segment)
       return selector.selectorMissingResult(segment)
 
 proc ensureNoInteriorNul(name: string, text: string) =
@@ -29491,10 +29626,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         return applyUserCallable(callee, args, named, dispatchScope, site)
       raise newException(GeneError, notCallableMessage(callee, site, dispatchScope))
     if named.len != 0:
-      raise newException(GeneError, "selector calls do not accept named arguments")
+      raise newException(GeneError, "Path calls do not accept named arguments")
     if args.len != 1:
       raise newException(GeneError, "selector expects 1 argument, got " & $args.len)
-    let selected = applySelector(callee, args[0])
+    let selected = applySelector(callee, args[0], dispatchScope)
     if dispatchScope == nil: selected
     else: materializedModuleRefValue(dispatchScope, selected)
   else:

@@ -1163,7 +1163,7 @@ type
 
   EventMatcherData* = ref object of GeneObjectData
     ## `event/exact T`. Opaque, immutable, and deliberately not called
-    ## `Selector` — that name is taken by reader selector literals (§6.3).
+    ## `Path` — that name belongs to first-class traversal values (§6.3).
     target*: Value           # the Type it names
     typeId*: int32
 
@@ -1308,6 +1308,7 @@ type
     protocolBits: uint64  # non-owning; set when the qualifier is a Protocol
     qualifier: Value      # the Protocol, or NIL for `Self:`
     boundScope: Scope     # where the value was written — impls resolve there
+    weakScope: pointer    # scope-owned binding back-reference
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -2548,8 +2549,12 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     of okProtocolMessage:
       markSharedBits(ProtocolMessageData(data).protocolBits, seen)
     of okBoundMessage:
-      pin(BoundMessageData(data).boundScope)
-      markSharedBits(BoundMessageData(data).protocolBits, seen)
+      let message = BoundMessageData(data)
+      if message.boundScope == nil and message.weakScope != nil:
+        message.boundScope = cast[Scope](message.weakScope)
+        message.weakScope = nil
+      pin(message.boundScope)
+      markSharedBits(message.protocolBits, seen)
     of okEnumVariant:
       markSharedBits(EnumVariantData(data).enumBits, seen)
     of okCell, okAtomicCell: pin(CellData(data).valueScope)
@@ -3346,6 +3351,7 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
     of okBoundMessage:
       let d {.cursor.} = cast[BoundMessageData](data)
       scopeRef(d.boundScope)
+      weakScope(d.weakScope)
       weakValue(d.protocolBits)
     of okEnumVariant:
       weakValue(cast[EnumVariantData](data).enumBits)
@@ -7483,6 +7489,11 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool,
   p.errorLease = src.errorLease
   boxPtr(FUNCTION_TAG, p)
 
+proc protocolMessageScope*(v: Value): Scope
+proc protocolMessageIsBound*(v: Value): bool {.inline.}
+proc cloneBoundMessageScope(v: Value, scope: Scope, weak: bool): Value
+proc weakenScopeFunctions(v: Value, owner: Scope): Value
+
 proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
   ## Store scope-owned functions with a weak back-edge so the owner can be
   ## reclaimed after its ordinary references are dropped. A `binding` stored in
@@ -7496,6 +7507,16 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
       # function in a different scope must keep the original capture alive.
       return cloneFunctionCapture(v, capture, weak = false,
         weakable = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).weakable)
+  if v.kind == vkProtocolMessage and v.protocolMessageIsBound:
+    let data = BoundMessageData(objData(v))
+    let capture = v.protocolMessageScope
+    if data.boundScope == owner:
+      return cloneBoundMessageScope(v, owner, weak = true)
+    if data.boundScope == nil and capture != owner:
+      return cloneBoundMessageScope(v, capture, weak = false)
+  if v.kind == vkNode and v.head.kind == vkSymbol and
+      v.head.symVal == "Path":
+    return weakenScopeFunctions(v, owner)
   if v.kind == vkCallableView:
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
@@ -7521,7 +7542,7 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
   if owner == nil or not v.isManaged:
     return v
   case v.kind
-  of vkFunction, vkCallableView:
+  of vkFunction, vkProtocolMessage, vkCallableView:
     functionForScopeStorage(v, owner)
   of vkList:
     for i, item in v.listItems:
@@ -7789,6 +7810,12 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
       p.weakScope != nil and not weakScopeProtected(guard, p.weakScope)
   of CYCLE_OBJECT_TAG, OBJECT_TAG:
     case v.kind
+    of vkProtocolMessage:
+      if objData(v).objKind != okBoundMessage:
+        return false
+      let data = BoundMessageData(objData(v))
+      data.boundScope == nil and data.weakScope != nil and
+        not weakScopeProtected(guard, data.weakScope)
     of vkType:
       if objData(v).objKind != okType:
         return false
@@ -7826,6 +7853,13 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
   template escapeNested(value: Value): Value =
     escapeWalk(value, guard, walk)
   case v.kind
+  of vkProtocolMessage:
+    if objData(v).objKind == okBoundMessage:
+      let data = BoundMessageData(objData(v))
+      if data.boundScope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope):
+        return cloneBoundMessageScope(v, cast[Scope](data.weakScope), weak = false)
+    v
   of vkType:
     if objData(v).objKind == okType:
       let data = TypeData(objData(v))
@@ -8035,7 +8069,11 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       if escaped.isPromotedBindingFunction:
         holdsPromoted = true
       meta[key] = escaped
-    if not v.nodeImmutable:
+    # A scope-owned Path may contain a weak held-message back-edge. Escaping
+    # it must leave the scope's stored copy weak; replacing that copy in place
+    # would recreate scope -> Path -> message -> scope.
+    if not v.nodeImmutable and not
+        (v.head.kind == vkSymbol and v.head.symVal == "Path"):
       let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
       node.head = escapedHead
       node.props = move props
@@ -9450,6 +9488,15 @@ proc newBoundMessage*(qualifier: Value, name: string, protocolBits: uint64,
                              qualifier: qualifier,
                              boundScope: scope))
 
+proc cloneBoundMessageScope(v: Value, scope: Scope, weak: bool): Value =
+  let original = BoundMessageData(objData(v))
+  boxObject(BoundMessageData(objKind: okBoundMessage,
+                             name: original.name,
+                             protocolBits: original.protocolBits,
+                             qualifier: original.qualifier,
+                             boundScope: (if weak: nil else: scope),
+                             weakScope: (if weak: cast[pointer](scope) else: nil)))
+
 proc protocolMessageQualifier*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okBoundMessage:
     raise newException(FieldDefect, "value is not a bound message")
@@ -9458,7 +9505,9 @@ proc protocolMessageQualifier*(v: Value): Value =
 proc protocolMessageScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okBoundMessage:
     raise newException(FieldDefect, "value is not a bound message")
-  BoundMessageData(objData(v)).boundScope
+  let data = BoundMessageData(objData(v))
+  if data.boundScope != nil: data.boundScope
+  else: cast[Scope](data.weakScope)
 
 proc protocolMessageIsBound*(v: Value): bool {.inline.} =
   v.tagOf == OBJECT_TAG and objData(v).objKind == okBoundMessage

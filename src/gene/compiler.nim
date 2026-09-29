@@ -225,7 +225,7 @@ const MaxMacroExpansionDepth = 100
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
   "let", "var", "const", "set", "new",
-  "fn", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
+  "fn", "macro", "quote", "quasiquote", "Path", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
   "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
@@ -409,12 +409,12 @@ proc typeExcludesFexpr(expr: Value): bool =
   case expr.kind
   of vkSymbol:
     expr.symVal in ["Fn", "Callable", "NativeFn", "Type",
-                    "ProtocolMessage", "Selector"]
+                    "ProtocolMessage", "Path"]
   of vkNode:
     if expr.head.kind != vkSymbol:
       return false
     if expr.head.symVal in ["Fn", "Callable", "NativeFn", "Type",
-                            "ProtocolMessage", "Selector"]:
+                            "ProtocolMessage", "Path"]:
       return true
     if expr.head.symVal == "|":
       if expr.body.len == 0:
@@ -2225,8 +2225,8 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, value.kind == vkDuration)
   of "Gene", "Node":
     (true, value.kind == vkNode)
-  of "Selector":
-    (true, value.kind == vkNode and value.head.isSymbol("select"))
+  of "Path":
+    (true, value.kind == vkNode and value.head.isSymbol("Path"))
   else:
     (false, false)
 
@@ -4440,7 +4440,7 @@ proc checkBindingTail(node: Value, valueIndex: int) =
     $(node.body.len - valueIndex - 1) & " extra forms"
   for i in valueIndex + 1 ..< node.body.len:
     let extra = node.body[i]
-    if (extra.kind == vkNode and extra.head.isSymbol("select")) or
+    if (extra.kind == vkNode and extra.head.isSymbol("Path")) or
         (extra.kind == vkSymbol and
          (extra.symVal.startsWith(".") or extra.symVal.startsWith("?."))):
       message.add "; a path or message after ')' is a separate form; " &
@@ -4682,7 +4682,7 @@ proc compileConst(c: var Compiler, node: Value) =
     c.emitDeclareType(name, body[2])
 
 proc setTargetIsPath(v: Value): bool =
-  v.kind == vkNode and (v.head.isSymbol("path") or v.head.isSymbol("select"))
+  v.kind == vkNode and (v.head.isSymbol("path") or v.head.isSymbol("Path"))
 
 proc compileSetPath(c: var Compiler, node: Value)
 
@@ -6743,21 +6743,56 @@ proc compileQuasiquote(c: var Compiler, node: Value) =
     raise newException(GeneError, "quasiquote expects one template")
   compileQuasiTemplate(c, node.body[0], 1)
 
+proc pathSegmentValue(part: Value): Value =
+  if part.kind != vkSymbol:
+    return part
+  let name = part.symVal
+  if name.startsWith("?~"):
+    newStr("?." & name[2 .. ^1])
+  elif name.startsWith("~"):
+    newStr("." & name[1 .. ^1])
+  else:
+    newStr(name)
+
 proc selectorLiteral(parts: openArray[Value],
                      props: PropTable): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
     body[i] = part
-  newNode(newSym("select"), props = props, body = body)
+  newNode(newSym("Path"), props = props, body = body)
 
 proc isUnquoteSegment(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("unquote")
 
+proc pathQualifiedMessageExpr(part: Value): Value =
+  if part.kind != vkString or
+      (not part.strVal.startsWith(".") and
+       not part.strVal.startsWith("?.")):
+    return NIL
+  let optional = part.strVal.startsWith("?.")
+  let name = part.strVal[(if optional: 2 else: 1) .. ^1]
+  let at = qualifiedMessageSplit(name)
+  if at <= 0:
+    return NIL
+  let qualifier = desugarPath(name[0 ..< at])
+  let message = newNode(newSym("msg"),
+    body = @[qualifier, newSym(name[at + 1 .. ^1])])
+  let dynamic = newNode(newSym("unquote"), body = @[message])
+  if not optional:
+    return dynamic
+  var props = initPropTable()
+  props["optional"] = TRUE
+  newNode(newSym("Path"), props = props, body = @[dynamic])
+
 proc compileSelector(c: var Compiler, node: Value) =
-  let parts = node.body
+  var parts = newSeq[Value](node.body.len)
+  for i, part in node.body:
+    let qualified = pathQualifiedMessageExpr(part)
+    parts[i] = if qualified.kind == vkNil: part else: qualified
   var dynamic = false
   for part in parts:
-    if part.isUnquoteSegment:
+    if part.isUnquoteSegment or part.kind == vkSymbol or
+        part.kind == vkNode:
       dynamic = true
       break
   if not dynamic and node.props.len == 0:
@@ -6768,14 +6803,16 @@ proc compileSelector(c: var Compiler, node: Value) =
     for part in parts:
       if part.isUnquoteSegment:
         if part.body.len != 1:
-          raise newException(GeneError, "selector unquote requires one expression")
+          raise newException(GeneError, "Path unquote requires one expression")
         compileExpr(c, part.body[0])
+      elif part.kind in {vkSymbol, vkNode}:
+        compileExpr(c, part)
       else:
         c.emitConst part
     discard c.emit(opMakeSelector, parts.len)
     return
 
-  c.emitConst newSym("select")
+  c.emitConst newSym("Path")
   var propNames: seq[string]
   for key, value in node.props:
     propNames.add key
@@ -6783,8 +6820,10 @@ proc compileSelector(c: var Compiler, node: Value) =
   for part in parts:
     if part.isUnquoteSegment:
       if part.body.len != 1:
-        raise newException(GeneError, "selector unquote requires one expression")
+        raise newException(GeneError, "Path unquote requires one expression")
       compileExpr(c, part.body[0])
+    elif part.kind in {vkSymbol, vkNode}:
+      compileExpr(c, part)
     else:
       c.emitConst part
   let idx = c.chunk.addNodeBuild(NodeBuildProto(propNames: propNames,
@@ -6794,8 +6833,23 @@ proc compileSelector(c: var Compiler, node: Value) =
 proc compileSelectorParts(c: var Compiler, parts: openArray[Value]) =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
-    body[i] = part
-  compileSelector(c, newNode(newSym("select"), body = body))
+    if part.kind == vkSymbol and
+        (part.symVal.startsWith("~%") or part.symVal.startsWith("?~%")):
+      let optional = part.symVal.startsWith("?~%")
+      let name = part.symVal[(if optional: 3 else: 2) .. ^1]
+      let source = if name.startsWith("$"):
+                     desugarPath("gene/" & name[1 .. ^1])
+                   else: newSym(name)
+      let dynamic = newNode(newSym("unquote"), body = @[source])
+      if optional:
+        var props = initPropTable()
+        props["optional"] = TRUE
+        body[i] = newNode(newSym("Path"), props = props, body = @[dynamic])
+      else:
+        body[i] = dynamic
+    else:
+      body[i] = pathSegmentValue(part)
+  compileSelector(c, newNode(newSym("Path"), body = body))
 
 proc validateMessageName(name: string)
 
@@ -6865,10 +6919,18 @@ proc compilePath(c: var Compiler, node: Value) =
     raise newException(GeneError, "$ex was renamed to $err")
   if parts.len >= 2 and parts[0].isSymbol("gene") and
       parts[1].isSymbol("err_msg"):
-    let access = read("$err/.Error:message")
-    var rewritten = access.body
-    for i in 2..<parts.len: rewritten.add parts[i]
-    c.compilePath(newNode(newSym("path"), body = rewritten))
+    if c.localSlot(CatchErrorBindingName) < 0 and
+        c.parentSlot(CatchErrorBindingName).slot < 0:
+      raise newException(GeneError,
+        "$err_msg is only available inside a catch body")
+    # The built-in shorthand has a proven Error:message contract. Keep its
+    # direct send so strict error analysis sees that proof. User suffixes, if
+    # present, traverse the resulting Str after this base is evaluated.
+    c.emitLoadBinding(CatchErrorBindingName)
+    c.compilePathSend(newSym("~Error:message"), node)
+    if parts.len > 2:
+      compileSelectorParts(c, parts.toOpenArray(2, parts.high))
+      discard c.emit(opApplySelectorTop)
     return
   if parts.len >= 2 and parts[0].isSymbol("gene") and
       parts[1].isSymbol("err"):
@@ -6877,17 +6939,9 @@ proc compilePath(c: var Compiler, node: Value) =
       raise newException(GeneError,
         "$err is only available inside a catch body")
     c.emitLoadBinding(CatchErrorBindingName)
-    var i = 2
-    while i < parts.len:
-      if parts[i].isPathSendSegment:
-        compilePathSend(c, parts[i], node)
-        inc i
-      else:
-        let start = i
-        while i < parts.len and not parts[i].isPathSendSegment:
-          inc i
-        compileSelectorParts(c, parts.toOpenArray(start, i - 1))
-        discard c.emit(opApplySelectorTop)
+    if parts.len > 2:
+      compileSelectorParts(c, parts.toOpenArray(2, parts.high))
+      discard c.emit(opApplySelectorTop)
     return
   if parts.len == 1:
     compileExpr(c, parts[0])
@@ -6901,17 +6955,8 @@ proc compilePath(c: var Compiler, node: Value) =
       "macro '" & spelling.join("/") &
       "' cannot be used as a value; call it in head position")
   compileExpr(c, parts[0])
-  var i = 1
-  while i < parts.len:
-    if parts[i].isPathSendSegment:
-      compilePathSend(c, parts[i], node)
-      inc i
-    else:
-      let start = i
-      while i < parts.len and not parts[i].isPathSendSegment:
-        inc i
-      compileSelectorParts(c, parts.toOpenArray(start, i - 1))
-      discard c.emit(opApplySelectorTop)
+  compileSelectorParts(c, parts.toOpenArray(1, parts.high))
+  discard c.emit(opApplySelectorTop)
 
 proc compileSetPath(c: var Compiler, node: Value) =
   ## `(set path value)` — checked in-place assignment (design §12.1). A symbol
@@ -7250,10 +7295,10 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     # metadata — must evaluate to a message value and is dispatched by
     # opResolveQualifiedMessage, so a dot send can never invoke an ordinary function
     # (design §3/§8).
-    if node.body[1].kind == vkNode and node.body[1].head.isSymbol("select"):
+    if node.body[1].kind == vkNode and node.body[1].head.isSymbol("Path"):
       if optional:
         raise newException(GeneError,
-          "an optional dot descriptor guards a message send; selectors are " &
+          "an optional dot descriptor guards a message send; Paths are " &
           "ordinary callables — write (/name x) and use ?? if needed")
       var args = newSeqOfCap[Value](node.body.len - 1)
       args.add node.head
@@ -7472,10 +7517,10 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
   # A selector callee projects the receiver rather than naming a message, so it
   # keeps the flipped-call lowering; everything else must be a message value and
   # goes through the same qualified-send path as `(x ....)` (design §3/§8).
-  if node.body[0].kind == vkNode and node.body[0].head.isSymbol("select"):
+  if node.body[0].kind == vkNode and node.body[0].head.isSymbol("Path"):
     if optional:
       raise newException(GeneError,
-        "an optional dot descriptor guards a message send; selectors are " &
+        "an optional dot descriptor guards a message send; Paths are " &
         "ordinary callables — write (/name self) and use ?? if needed")
     var args = newSeqOfCap[Value](node.body.len)
     args.add newSym("self")
@@ -8687,6 +8732,16 @@ proc compileModuleRefGet(c: var Compiler, node: Value, structural: bool) =
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
                  tail = false) =
   let h = node.head
+  if h.kind == vkSymbol and h.symVal in CoreSpecialFormNames and
+      h.symVal notin ["path", "msg", "quasiquote"]:
+    let name = h.symVal
+    if c.hasLexicalBinding(name) or name in c.declaredNames or
+        name in c.declaredUnitNames or c.importedCandidates(name).len > 0:
+      raise newException(GeneError,
+        name & " is a special form, but a binding named " & name &
+        " is in scope; a call (" & name &
+        " ...) would not call it. Rename the binding or import it under an " &
+        "alias such as [" & name & " : other_name]")
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
         ["var", "let", "const", "fn", "macro", "type", "alias", "enum",
@@ -8805,9 +8860,17 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
     of "quasiquote":
       compileQuasiquote(c, node)
       return
-    of "select":
+    of "Path":
       compileSelector(c, node)
       return
+    of "select":
+      if not c.hasLexicalBinding("select") and
+          "select" notin c.declaredUnitNames and
+          (not c.hasMacros or not c.macros.hasKey("select")) and
+          c.importedCandidates("select").len == 0:
+        raise newException(GeneError,
+          "select was removed; use Path with quoted property names, " &
+          "for example (Path \"name\")")
     of "path":
       compilePath(c, node)
       return

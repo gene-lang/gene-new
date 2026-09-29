@@ -53,7 +53,7 @@ they are not bound values, so `($println Any)` is an undefined symbol. Sets are
 built by the `Set` function (`(Set 1 2)`) and read with `$set_size` / `$set_has?`.
 
 Error types: `Error` (protocol) plus `TypeError` `MessageError` `CallKindError`
-`MatchError` `ParseError` `LexError` `CompileError` `SelectorMissing`
+`MatchError` `ParseError` `LexError` `CompileError` `PathMissing`
 `ChannelClosed` `ActorError` `ActorClosed` `ActorFailure` `ReplyAlreadySent`
 `OsError` `HttpError` `HttpClientError` `JsonError` `SerdeError` `DbError`
 `StoreError` `UrlError` `TerminalError` `CursesError` `RefError`

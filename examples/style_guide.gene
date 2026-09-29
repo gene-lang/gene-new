@@ -209,7 +209,7 @@ line two"""
     (var right_task (spawn (right)))
     [(await left_task) (await right_task)]))
 
-# Syntax values, macros, fexprs, templates, selectors, and spread.
+# Syntax values, macros, fexprs, templates, Paths, and spread.
 
 (macro unless [condition, body...]
   `(if_not %condition %body...))
@@ -222,8 +222,8 @@ line two"""
      (h2 %(user .label))
      (ul %((path user roles %$to_stream) .map (fn [role] `(li %role)); .into []) ...)))
 
-(fn selector_examples [session, field]
-  [session/user/name session/items/-1 /user/name (session .%(select user %field))])
+(fn path_examples [session, field]
+  [session/user/name session/items/-1 /user/name (session .%(Path "user" %field))])
 
 # A small entry point keeps the example coherent without making formatting
 # depend on external capabilities.
