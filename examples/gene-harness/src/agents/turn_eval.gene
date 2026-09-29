@@ -49,7 +49,11 @@
     (let response (split_response text))
     (turn .put "attachments" response/attachments)
     (var plan nil)
-    (if_not ($absent? response/patch) (set plan (prepare_patch workspace_root response/patch)))
+    (if_not ($absent? response/patch)
+      (try
+        (set plan (prepare_patch workspace_root response/patch))
+        catch Any
+          (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^attention false})))
     # Durability precedes staging. The caller records body stubs/blob refs.
     (if_not ($absent? record)
       (record "turn/response" {^turn number ^response response
@@ -77,13 +81,20 @@
             (let task (spawn ^lane root
               ($runtime/with_context context (fn []
                 (evaluate_response `(scope %forms...) environment)))))
-            (match (task .join)
+            (let expired ($cell false))
+            (let deadline (spawn ^lane root
+              (do ($sleep timeout_ms) (expired .set true) (task .cancel))))
+            (let outcome
+              (try (task .join)
+                ensure (deadline .cancel) (deadline .join)))
+            (match outcome
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))
                 (set error_line (?? failure/line nil)))
               (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
-              (when TaskOutcome/cancelled (set cancelled true))))
+              (when TaskOutcome/cancelled
+                (if (expired .get) (set error "response budget timed out") (set cancelled true)))))
           (else
             (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text)))))))
     catch Any
