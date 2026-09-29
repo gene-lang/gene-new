@@ -1,0 +1,99 @@
+(mod turn_eval)
+(import [split_response] ^from "./response")
+(import [Outcome new_turn_items append_prompt_at validate_outcome render_request
+         rewrite_prompt_calls attachment recall]
+  ^from "./outcome")
+(import [evaluate_response] ^from "./eval_site")
+(import [prepare_patch commit_patch] ^from "../runtime/patch")
+
+(fn evaluate_turn [number : Int, workspace_root : Str, text : Str,
+                   ^bindings bindings = {}, ^timeout_ms timeout_ms : Int = 600000,
+                   ^max_memory_mb max_memory_mb : Int = 1024,
+                   ^console_sink console_sink = nil, ^recall recall_function = nil,
+                   ^record record = nil, ^context inherited = nil,
+                   ^fail_after_renames fail_after_renames : Int = -1]
+  (let console ($cell []))
+  (let bytes ($cell 0))
+  (let truncated ($cell false))
+  (let turn (new_turn_items number ^recall recall_function))
+  (let context (if ($absent? inherited) {} ($thaw ($freeze_shallow inherited))))
+  (context .put "turn" turn)
+  (context .put "output" (fn [text]
+    (let late (!= (turn/state .get) "open"))
+    (if late
+      (then
+        (if_not ($absent? console_sink) (console_sink {^text text ^late true})))
+      (else
+        (if (< (bytes .get) 262144)
+          (then
+            (let length ($str/byte_size text))
+            (var kept text)
+            (if (> (+ (bytes .get) length) 262144)
+              (set kept "[console truncated]\n"))
+            ((console .get) .push {^text kept ^late false})
+            (bytes .set (+ (bytes .get) length))
+            (if_not ($absent? console_sink) (console_sink {^text kept ^late false})))
+          (else
+            (if_not (truncated .swap true)
+              (let marker {^text "[console truncated]\n" ^late false})
+              ((console .get) .push marker)
+              (if_not ($absent? console_sink) (console_sink marker)))))))))
+  (turn .put "console" (fn [text] (context/output text)))
+  (var patch_result nil)
+  (var validated nil)
+  (var error nil)
+  (var error_line nil)
+  (var last_line nil)
+  (var cancelled false)
+  (try
+    (let response (split_response text))
+    (turn .put "attachments" response/attachments)
+    (var plan nil)
+    (if_not ($absent? response/patch) (set plan (prepare_patch workspace_root response/patch)))
+    # Durability precedes staging. The caller records body stubs/blob refs.
+    (if_not ($absent? record)
+      (record "turn/response" {^turn number ^response response
+        ^patch_files (if ($absent? plan) [] plan/files)}))
+    (if_not ($absent? plan)
+      (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames))
+      (if_not ($absent? record) (record "turn/patch" {^turn number ^result patch_result})))
+    (if (|| ($absent? patch_result) (== patch_result/status "applied"))
+      (then
+        (let values ($thaw ($freeze_shallow bindings)))
+        (values .put "Outcome" Outcome)
+        (values .put "workspace_root" workspace_root)
+        (values .put "append_prompt_at" (fn [label line form value]
+          (append_prompt_at turn label line form value)))
+        (values .put "attachment" (fn [name] (attachment turn name)))
+        (values .put "recall" (fn [id] (recall turn id)))
+        (let environment (env ^bindings values
+          ^policy {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb}))
+        (let forms (rewrite_prompt_calls response/forms))
+        (if (> forms/.size 0)
+          (then
+            (let last_index (- forms/.size 1))
+            (let meta ($node/meta forms/%last_index))
+            (set last_line (?? meta/line nil))
+            (let task (spawn ^lane root
+              ($runtime/with_context context (fn []
+                (evaluate_response `(scope %forms...) environment)))))
+            (match (task .join)
+              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value)))
+              (when (TaskOutcome/error failure)
+                (set error ($to_str failure/message))
+                (set error_line (?? failure/line nil)))
+              (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
+              (when TaskOutcome/cancelled (set cancelled true))))
+          (else
+            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text)))))))
+    catch Any
+      (set error ($to_str $err/message))
+      (set error_line (?? $err/line nil))
+    ensure (turn/state .set "closed"))
+  (let patch_text (if ($absent? patch_result) nil patch_result/text))
+  (let request (if (|| cancelled (&& (! ($absent? validated)) (== validated/kind "done"))) ""
+    (render_request turn validated ^patch patch_text ^error error ^error_line error_line ^result_line last_line)))
+  (let kind (if cancelled "cancelled" (if ($absent? error)
+    (if ($absent? validated) "error" validated/kind) "error")))
+  {^kind kind ^validated validated ^request request ^patch patch_result ^error error
+   ^console (console .get) ^turn turn})

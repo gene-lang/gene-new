@@ -1,0 +1,81 @@
+(mod response)
+
+(type ResponseReadError ^props {^message Str ^line Int} ^impl [Error])
+(impl Error for ResponseReadError)
+
+(fn read_response_code [code : Str, ^source source : Str = "response"]
+  ($into ($parse/read_all code ^source source ^locs true) []))
+
+(fn complete_code? [code : Str]
+  (try
+    ($into ($parse/read_all code) [])
+    true
+    catch Any false))
+
+(fn block_start? [line : Str]
+  (|| ($str/starts_with? line "<<<") ($str/starts_with? line "*** Begin Patch")))
+
+(fn read_error [line : Int, message : Str]
+  (fail (ResponseReadError ^line line ^message $"response:${line}: ${message}")))
+
+(fn line_text [lines, index : Int] : Str
+  (if (< index (- lines/.size 1)) $"${lines/%index}\n" lines/%index))
+
+(fn split_response [text : Str]
+  (let lines ($str/split text "\n"))
+  (var code "")
+  (var start lines/.size)
+  (var index 0)
+  (while (< index lines/.size)
+    (let line lines/%index)
+    (if (&& (block_start? line) (complete_code? code))
+      (then (set start index) (break)))
+    (set code ($str/join [code (line_text lines index)] ""))
+    (set index (+ index 1)))
+  (let attachments {})
+  (let blocks [])
+  (var patch nil)
+  (set index start)
+  (while (< index lines/.size)
+    (let line lines/%index)
+    (if (== ($str/trim line) "")
+      (then (set index (+ index 1)) (continue)))
+    (if ($str/starts_with? line "<<<")
+      (then
+        (let header ($str/split line " "))
+        (if (!= header/.size 3) (read_error (+ index 1) "attachment header must be <<< name terminator"))
+        (let name header/1)
+        (let terminator header/2)
+        (if (|| (!= header/0 "<<<") ($absent? (#"^[A-Za-z0-9_.-]+$" .match name))
+                (== terminator "") (! ($absent? (#"\s" .match terminator))))
+          (read_error (+ index 1) "invalid attachment name or terminator"))
+        (if_not (== (attachments .get name) void)
+          (read_error (+ index 1) $"duplicate attachment ${name}"))
+        (let opening (+ index 1))
+        (set index (+ index 1))
+        (var body "")
+        (while (&& (< index lines/.size) (!= lines/%index terminator))
+          (set body ($str/join [body (line_text lines index)] ""))
+          (set index (+ index 1)))
+        (if (>= index lines/.size) (read_error opening $"unterminated attachment ${name}"))
+        (if (== index (- lines/.size 1)) (read_error (+ index 1) "attachment terminator requires a newline"))
+        (attachments .put name body)
+        (blocks .push {^kind "attachment" ^name name ^line opening ^body body})
+        (set index (+ index 1)))
+      (elif (== line "*** Begin Patch")
+        (if_not ($absent? patch) (read_error (+ index 1) "a response may contain at most one patch"))
+        (let opening (+ index 1))
+        (var body (line_text lines index))
+        (set index (+ index 1))
+        (while (&& (< index lines/.size) (!= lines/%index "*** End Patch"))
+          (set body ($str/join [body (line_text lines index)] ""))
+          (set index (+ index 1)))
+        (if (>= index lines/.size) (read_error opening "unterminated patch"))
+        (if (== index (- lines/.size 1)) (read_error (+ index 1) "patch terminator requires a newline"))
+        (set patch ($str/join [body (line_text lines index)] ""))
+        (blocks .push {^kind "patch" ^line opening ^body patch})
+        (set index (+ index 1)))
+      (else (read_error (+ index 1) "expected an attachment or patch after response code"))))
+  # Read the code even when there were no blocks. Reading remains inert.
+  (let forms (read_response_code code))
+  {^text text ^code code ^forms forms ^attachments attachments ^patch patch ^blocks blocks})

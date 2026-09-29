@@ -1,0 +1,92 @@
+(mod questions)
+(import [core_state record_core_state flush_event_store] ^from "../storage/state")
+
+(type QuestionError ^props {^message Str} ^impl [Error])
+(impl Error for QuestionError)
+
+(fn validate_questions [questions, ^validators validators = {}]
+  (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))
+    (fail (QuestionError ^message "questions must be a batch of 1–8 items")))
+  (let ids {})
+  (let normalized [])
+  (for question in questions
+    (if (|| (!= ($head question) Map) (!= ($head question/id) Str) (== question/id "")
+            (!= ($head question/prompt) Str) (== ($str/trim question/prompt) ""))
+      (fail (QuestionError ^message "a question requires a non-empty id and prompt")))
+    (if_not (== (ids .get question/id) void)
+      (fail (QuestionError ^message $"duplicate question ${question/id}")))
+    (ids .put question/id true)
+    (let copy ($thaw ($freeze question)))
+    (let choices (?? question/choices nil))
+    (let kind (?? question/kind (if ($absent? choices) "text" "select")))
+    (copy .put "kind" kind)
+    (if (== kind "confirm") (copy .put "choices" [true false]))
+    (if_not ($absent? (?? copy/choices nil))
+      (if (|| (!= ($head copy/choices) List) (== ($size copy/choices) 0))
+        (fail (QuestionError ^message $"question ${question/id} requires choices"))))
+    (if_not (== question/recommended void)
+      (if (|| ($absent? (?? copy/choices nil)) (! (copy/choices .contains? question/recommended)))
+        (fail (QuestionError ^message $"question ${question/id} recommended value is not a choice"))))
+    (if_not (== question/multi void)
+      (if (!= ($head question/multi) Bool)
+        (fail (QuestionError ^message $"question ${question/id} multi must be Bool"))))
+    (let validator (validators .get kind))
+    (if (&& (! (["text" "select" "confirm"] .contains? kind)) ($absent? validator))
+      (fail (QuestionError ^message $"unknown question kind ${kind}")))
+    (if_not ($absent? validator) (validator copy))
+    (normalized .push ($freeze copy)))
+  ($freeze normalized))
+
+(fn normalize_answers [questions, values, ^dismiss dismiss : Bool = false]
+  (if (!= ($head values) Map)
+    (fail (QuestionError ^message "answers must be a map")))
+  (let ids {})
+  (for question in questions (ids .put question/id true))
+  (for [id value] in values
+    (if (== (ids .get id) void)
+      (fail (QuestionError ^message $"unknown question ${id}"))))
+  (let answers {})
+  (for question in questions
+    (let value (if dismiss (quote unanswered) (?? (values .get question/id) (quote unanswered))))
+    (if (!= value (quote unanswered))
+      (then
+        (if (== question/multi true)
+          (then
+            (if (!= ($head value) List)
+              (fail (QuestionError ^message $"question ${question/id} expects multiple choices")))
+            (for choice in value
+              (if_not (question/choices .contains? choice)
+                (fail (QuestionError ^message $"invalid choice for ${question/id}")))))
+          (else
+            (if_not ($absent? (?? question/choices nil))
+              (if_not (question/choices .contains? value)
+                (fail (QuestionError ^message $"invalid choice for ${question/id}"))))))
+        (if (&& (== question/kind "text") (!= ($head value) Str))
+          (fail (QuestionError ^message $"question ${question/id} expects text")))))
+    (answers .put question/id value))
+  ($freeze answers))
+
+(fn ask_questions [events, session : Str, id : Str, turn : Int, questions,
+                   ^deadline deadline = nil, ^validators validators = {}]
+  (let batch {^id id ^turn turn ^questions (validate_questions questions ^validators validators)
+    ^deadline deadline ^status "waiting" ^answers nil ^digest nil})
+  (record_core_state events "session" session "question/asked" $"questions/${id}" batch)
+  (flush_event_store events)
+  batch)
+
+(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false]
+  (let batch (core_state events "session" session $"questions/${id}"))
+  (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
+  (let answers (normalize_answers batch/questions values ^dismiss dismiss))
+  (let digest ($crypto/sha256 ($serde/write_data answers)))
+  (if (== batch/status "answered")
+    (then
+      (if (!= digest batch/digest)
+        (fail (QuestionError ^message $"question batch ${id} already has different answers")))
+      (return batch)))
+  (batch .put "status" "answered")
+  (batch .put "answers" answers)
+  (batch .put "digest" digest)
+  (record_core_state events "session" session "question/answered" $"questions/${id}" batch)
+  (flush_event_store events)
+  batch)

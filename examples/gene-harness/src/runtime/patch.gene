@@ -1,0 +1,252 @@
+(mod patch)
+
+(type PatchError ^props {^message Str} ^impl [Error])
+(impl Error for PatchError)
+
+(fn patch_error [message : Str] (fail (PatchError ^message message)))
+(fn suffix [text : Str, prefix : Str]
+  (let count ($str/byte_size prefix))
+  ($str/slice_bytes text count (- ($str/byte_size text) count)))
+
+(fn checked_path [path : Str]
+  (if (|| (== path "") ($str/starts_with? path "/") ($str/contains? path "\0")
+          (($str/split path "/") .contains? ".."))
+    (patch_error $"invalid relative patch path ${path}"))
+  path)
+
+(fn file_header? [line : Str]
+  (|| ($str/starts_with? line "*** Add File: ") ($str/starts_with? line "*** Update File: ")
+      ($str/starts_with? line "*** Delete File: ")))
+
+(fn parse_patch [text : Str]
+  (let lines ($str/split text "\n"))
+  (if (!= lines/0 "*** Begin Patch") (patch_error "patch must start with *** Begin Patch"))
+  (let operations [])
+  (var index 1)
+  (while (< index lines/.size)
+    (let line lines/%index)
+    (if (== line "*** End Patch")
+      (then
+        (set index (+ index 1))
+        (while (< index lines/.size)
+          (if (!= lines/%index "") (patch_error "unexpected text after patch"))
+          (set index (+ index 1)))
+        (return operations)))
+    (if_not (file_header? line) (patch_error $"expected file header at patch line ${(+ index 1)}"))
+    (let kind (if ($str/starts_with? line "*** Add File: ") "add"
+      (if ($str/starts_with? line "*** Update File: ") "update" "delete")))
+    (let prefix (if (== kind "add") "*** Add File: "
+      (if (== kind "update") "*** Update File: " "*** Delete File: ")))
+    (let path (checked_path (suffix line prefix)))
+    (let operation {^kind kind ^path path ^target path ^hunks [] ^lines [] ^added 0 ^removed 0})
+    (set index (+ index 1))
+    (if (&& (== kind "update") (< index lines/.size)
+            ($str/starts_with? lines/%index "*** Move to: "))
+      (then
+        (operation .put "target" (checked_path (suffix lines/%index "*** Move to: ")))
+        (set index (+ index 1))))
+    (var hunk nil)
+    (while (&& (< index lines/.size) (! (file_header? lines/%index)) (!= lines/%index "*** End Patch"))
+      (let content lines/%index)
+      (if (== kind "delete") (patch_error $"delete ${path} cannot contain hunks"))
+      (if (== kind "add")
+        (then
+          (if_not ($str/starts_with? content "+") (patch_error $"add ${path} requires + lines"))
+          (operation/lines .push (suffix content "+"))
+          (operation .put "added" (+ operation/added 1)))
+        (elif ($str/starts_with? content "@@")
+          (let anchor (if (== content "@@") "" (suffix content "@@ ")))
+          (set hunk {^old [] ^new [] ^anchor anchor ^eof false})
+          (operation/hunks .push hunk))
+        (elif (== content "*** End of File")
+          (if ($absent? hunk) (patch_error $"${path}: missing hunk before End of File"))
+          (hunk .put "eof" true))
+        (else
+          (if ($absent? hunk) (patch_error $"${path}: update requires a hunk"))
+          (if ($str/starts_with? content " ")
+            (then (hunk/old .push (suffix content " ")) (hunk/new .push (suffix content " ")))
+            (elif ($str/starts_with? content "-")
+              (hunk/old .push (suffix content "-"))
+              (operation .put "removed" (+ operation/removed 1)))
+            (elif ($str/starts_with? content "+")
+              (hunk/new .push (suffix content "+"))
+              (operation .put "added" (+ operation/added 1)))
+            (else (patch_error $"${path}: invalid hunk line ${(+ index 1)}")))))
+      (set index (+ index 1)))
+    (operations .push operation))
+  (patch_error "unterminated patch"))
+
+(fn trailing_trim [text : Str]
+  (var count ($str/byte_size text))
+  (while (> count 0)
+    (let last ($str/slice_bytes text (- count 1) 1))
+    (if_not ([" " "\t" "\r"] .contains? last) (break))
+    (set count (- count 1)))
+  ($str/slice_bytes text 0 count))
+
+(fn normalize_line [text : Str, tier : Int]
+  (if (== tier 0) text (if (== tier 1) (trailing_trim text) ($str/trim text))))
+
+(fn hunk_position [path : Str, number : Int, lines, hunk, start : Int]
+  (var lower start)
+  (if (!= hunk/anchor "")
+    (then
+      (let anchors [])
+      (var position start)
+      (while (< position lines/.size)
+        (if ($str/starts_with? ($str/trim lines/%position) ($str/trim hunk/anchor))
+          (anchors .push position))
+        (set position (+ position 1)))
+      (if (!= anchors/.size 1) (patch_error $"${path} hunk ${number}: anchor not unique"))
+      (set lower anchors/0)))
+  (for tier in [0 1 2]
+    (let matches [])
+    (var position lower)
+    (while (<= position (- lines/.size hunk/old/.size))
+      (var matched true)
+      (var offset 0)
+      (while (< offset hunk/old/.size)
+        (let location (+ position offset))
+        (if (!= (normalize_line lines/%location tier) (normalize_line hunk/old/%offset tier))
+          (set matched false))
+        (set offset (+ offset 1)))
+      (if (&& hunk/eof (!= (+ position hunk/old/.size) lines/.size)) (set matched false))
+      (if matched (matches .push position))
+      (set position (+ position 1)))
+    (if (== matches/.size 1) (return matches/0))
+    (if (> matches/.size 1) (patch_error $"${path} hunk ${number}: context is ambiguous")))
+  (patch_error $"${path} hunk ${number}: context not found"))
+
+(fn apply_hunks [operation, original : Str]
+  (let split ($str/split original "\n"))
+  (var lines [])
+  (let newline ($str/ends_with? original "\n"))
+  (var length split/.size)
+  (if (|| newline (== original "")) (set length (- length 1)))
+  (var index 0)
+  (while (< index length) (lines .push split/%index) (set index (+ index 1)))
+  (var start 0)
+  (var number 0)
+  (for hunk in operation/hunks
+    (set number (+ number 1))
+    (let position (hunk_position operation/path number lines hunk start))
+    (let next [])
+    (set index 0)
+    (while (< index position) (next .push lines/%index) (set index (+ index 1)))
+    (for line in hunk/new (next .push line))
+    (set index (+ position hunk/old/.size))
+    (while (< index lines/.size) (next .push lines/%index) (set index (+ index 1)))
+    (set start (+ position hunk/new/.size))
+    (set lines next))
+  ($str/join [($str/join lines "\n") (if newline "\n" "")] ""))
+
+(fn temporary_path [target : Str]
+  ($path/join ($path/parent target) $".${($path/name target)}.gene-harness-tmp"))
+
+(fn prepare_patch [root : Str, text : Str]
+  (let operations (parse_patch text))
+  (let originals {})
+  (let targets {})
+  (let files [])
+  (for operation in operations
+    (for relative in [operation/path operation/target]
+      (if (== (originals .get relative) void)
+        (then
+          (let path ($path/join root relative))
+          (let exists ($fs/exists? path))
+          (originals .put relative {^exists exists ^text (if exists ($fs/read_text path) nil)})
+          (files .push relative))))
+    (if_not (== (targets .get operation/target) void)
+      (patch_error $"multiple patch operations target ${operation/target}"))
+    (targets .put operation/target true)
+    (let original (originals .get operation/path))
+    (if (== operation/kind "add")
+      (then
+        (if original/exists (patch_error $"${operation/path}: file already exists"))
+        (operation .put "result" (if (== operation/lines/.size 0) ""
+          ($str/join [($str/join operation/lines "\n") "\n"] ""))))
+      (else
+        (if_not original/exists (patch_error $"${operation/path}: file does not exist"))
+        (if (== operation/kind "update")
+          (operation .put "result" (apply_hunks operation original/text)))))
+    (if (!= operation/kind "delete")
+      (operation .put "temporary" (temporary_path ($path/join root operation/target)))))
+  {^root root ^operations operations ^originals originals ^files files})
+
+(fn cleanup_temporaries [plan]
+  (for operation in plan/operations
+    (if (!= operation/kind "delete")
+      (try
+        (if ($fs/exists? operation/temporary) ($fs/remove operation/temporary))
+        catch Any nil))))
+
+(fn patch_summary [plan]
+  (let summaries [])
+  (for operation in plan/operations
+    (let note (if (== operation/kind "add") " (new)" ""))
+    (summaries .push (if (== operation/kind "delete") $"${operation/path} (deleted)"
+      (if (!= operation/path operation/target) $"${operation/path} -> ${operation/target} +${operation/added} -${operation/removed}"
+        $"${operation/target} +${operation/added} -${operation/removed}${note}"))))
+  ($str/join summaries ", "))
+
+(fn commit_patch [plan, ^fail_after_renames fail_after_renames : Int = -1, ^after_rename after_rename = nil]
+  (let changed [])
+  (var current "")
+  (var renames 0)
+  (try
+    (for operation in plan/operations
+      (if (!= operation/kind "delete")
+        (then
+          (set current operation/target)
+          ($fs/make_dir ($path/parent operation/temporary))
+          ($fs/write_text operation/temporary operation/result))))
+    (for operation in plan/operations
+      (if (!= operation/kind "delete")
+        (then
+          (set current operation/target)
+          (if (&& (>= fail_after_renames 0) (>= renames fail_after_renames))
+            (patch_error "injected rename failure"))
+          ($fs/rename operation/temporary ($path/join plan/root operation/target))
+          (changed .push operation/target)
+          (set renames (+ renames 1))
+          (if_not ($absent? after_rename) (after_rename renames)))))
+    (for operation in plan/operations
+      (if (|| (== operation/kind "delete") (!= operation/path operation/target))
+        (then
+          (set current operation/path)
+          ($fs/remove ($path/join plan/root operation/path))
+          (changed .push operation/path))))
+    (cleanup_temporaries plan)
+    {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^attention false}
+    catch Any
+      (let reason $err/message)
+      (let restored [])
+      (let partial [])
+      (for relative in ($reverse changed)
+        (let original (plan/originals .get relative))
+        (try
+          (if original/exists
+            ($fs/write_text_atomic ($path/join plan/root relative) original/text)
+            ($fs/remove ($path/join plan/root relative)))
+          (restored .push relative)
+          catch Any (partial .push relative)))
+      (cleanup_temporaries plan)
+      (let restored_names ($str/join restored ", "))
+      (let partial_names ($str/join partial ", "))
+      (if (== partial/.size 0)
+        {^status "failed" ^text $"failed writing ${current}: ${reason}; restored ${restored_names}"
+         ^files plan/files ^attention false}
+        {^status "partial" ^text $"partial: changed paths ${partial_names}; failed writing ${current}: ${reason}"
+         ^files partial ^attention true})))
+
+(fn apply_patch [root : Str, text : Str, ^fail_after_renames fail_after_renames : Int = -1]
+  (try
+    (commit_patch (prepare_patch root text) ^fail_after_renames fail_after_renames)
+    catch Any {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^attention false}))
+
+(fn recover_patch_temporaries [root : Str, files]
+  (for relative in files
+    (let temporary (temporary_path ($path/join root relative)))
+    (if ($fs/exists? temporary) ($fs/remove temporary)))
+  (let names ($str/join files ", "))
+  $"patch may be partially applied: ${names}; re-read them")
