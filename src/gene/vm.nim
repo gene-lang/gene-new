@@ -7150,6 +7150,8 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   noteFunctionStore(args[0], stored)
   stored
 
+proc biNodeRebuild(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+
 proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -10540,6 +10542,43 @@ proc biRuntimeConfigureModule(args: openArray[Value],
     maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
     timeoutMs: limits.timeoutMs)
   args[0]
+
+proc biNodeRebuild(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("node/rebuild", args)
+  requireNode("node/rebuild", args[0])
+  let source = args[0]
+  if source.head.isNativeWrapperType:
+    raise newException(GeneError, "node/rebuild cannot reconstruct a native wrapper")
+  var head = source.head
+  var props = copyEntries(source.props)
+  var body = copyItems(source.body)
+  var meta = copyEntries(source.meta)
+  if call != nil:
+    for i, name in call.namedNames:
+      let value = call.namedValues[i]
+      case name
+      of "head": head = value
+      of "props", "meta":
+        if value.kind != vkMap:
+          raise newException(GeneError, "node/rebuild ^" & name & " expects a Map")
+        if name == "props": props = copyEntries(value.mapEntries)
+        else: meta = copyEntries(value.mapEntries)
+      of "body":
+        if value.kind != vkList:
+          raise newException(GeneError, "node/rebuild ^body expects a List")
+        body = copyItems(value.listItems)
+      else:
+        raise newException(GeneError, "node/rebuild got unexpected argument: " & name)
+  rejectCallerEnvEscape("node/rebuild head", head)
+  if head.isNativeWrapperType:
+    raise newException(GeneError, "node/rebuild cannot construct a native wrapper")
+  for _, value in props: rejectCallerEnvEscape("node/rebuild props", value)
+  for value in body: rejectCallerEnvEscape("node/rebuild body", value)
+  for _, value in meta: rejectCallerEnvEscape("node/rebuild meta", value)
+  if head.kind == vkType:
+    validateTypedNodeParts(head, props, body, tnvmMutation)
+  newNode(head, props = props, body = body, meta = meta,
+          immutable = source.nodeImmutable)
 
 proc bindThisModule*(scope: Scope, name: string, path = "",
                      pkg: Package = nil): Value =

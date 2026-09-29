@@ -5069,6 +5069,26 @@ proc biFsWriteTextAtomicSync(args: openArray[Value],
     raiseFilesystemOperationError("fs/write_text_atomic", e, scope)
   NIL
 
+when defined(posix) and not defined(geneWasm) and not defined(emscripten):
+  proc renamePath(source, destination: cstring): cint
+    {.importc: "rename", header: "<stdio.h>".}
+
+proc biFsRename(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "fs/rename expects source and destination paths")
+  requireStr("fs/rename source", args[0])
+  requireStr("fs/rename destination", args[1])
+  let scope = if call == nil: nil else: call.dispatchScope
+  try:
+    when defined(posix) and not defined(geneWasm) and not defined(emscripten):
+      if renamePath(args[0].strVal.cstring, args[1].strVal.cstring) != 0:
+        raiseOSError(osLastError())
+    else:
+      moveFile(args[0].strVal, args[1].strVal)
+  except CatchableError as error:
+    raiseFilesystemOperationError("fs/rename", error, scope)
+  NIL
+
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/exists? expects (path)")
@@ -9317,6 +9337,7 @@ proc registerStdlibNamespaces(root: Scope) =
   stdNodeScope.define("props", builtinNativeFn("props", biProps))
   stdNodeScope.define("body", builtinNativeFn("body", biBody))
   stdNodeScope.define("meta", builtinNativeFn("meta", biMeta))
+  stdNodeScope.define("rebuild", builtinNativeCallFn("node/rebuild", biNodeRebuild))
   stdNodeScope.define("declarations",
                       builtinNativeFn("declarations", biDeclarations))
   let stdParseScope = newScope(root)
@@ -10481,6 +10502,8 @@ proc registerStdlibNamespaces(root: Scope) =
       builtinNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
       builtinNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
+    fsNs.nsScope.define("rename",
+      builtinNativeCallFn("fs/rename", biFsRename, acceptsNamed = false))
     fsNs.nsScope.define("real_path",
       builtinNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
     fsNs.nsScope.define("walk", builtinNativeCallFn("fs/walk", biFsWalk))

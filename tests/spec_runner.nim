@@ -8168,6 +8168,18 @@ suite "spec — task context":
       "[\"workspace\" " & geneString(previous) & "]"
 
 suite "spec — parser helpers from design":
+  test "node rebuild preserves source metadata and original structure":
+    check_eval("(let source (quote (call @line 7 @col 3 @source \"turn\" ^named 1 child))) " &
+      "(let changed ($node/rebuild source ^head `other ^body [2])) " &
+      "(let meta ($node/meta changed)) " &
+      "[($head source) ($body source) ($head changed) ($body changed) " &
+      "meta/line meta/col meta/source]", "[call [child] other [2] 7 3 \"turn\"]")
+    check_eval("(type Typed ^props {^value Int}) (let value (Typed ^value 1)) " &
+      "(try ($node/rebuild value ^props {^value \"bad\"}) false catch TypeError true)", "true")
+    check_eval("(let source (quote #(a 1))) " &
+      "(let changed ($node/rebuild source ^body [2])) " &
+      "(try (changed .set_body [3]) false catch Any true)", "true")
+
   test "located reading exposes metadata and eval preserves nested error locations":
     check_eval("(let forms ($parse/read_all \"\\n(+ 1\\n  (missing))\" " &
                "^source \"turn-57\" ^locs true)) " &

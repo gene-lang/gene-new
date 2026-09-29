@@ -75,6 +75,12 @@ run while the operation is pending.
 
 ## Task context and source locations
 
+`($node/rebuild node ^head head ^props map ^body list ^meta map)` returns a
+fresh node, keeping any parts omitted from the call and preserving its
+immutability. It supports code transformations that retain reader locations.
+Typed nodes still validate their fields; native resource wrappers cannot be
+reconstructed through this operation.
+
 `($runtime/with_context context thunk)` installs a value while calling
 `thunk`, restores the previous value on every exit, and returns the thunk's
 result. `($runtime/context)` reads it (initially `nil`). Spawned tasks inherit
@@ -107,6 +113,10 @@ errors. Without `^locs`, the forms retain the ordinary reader representation.
 ```
 
 ## File recipes
+
+`($fs/rename source destination)` publishes a same-filesystem rename. On the
+native POSIX backend it atomically replaces an existing destination and raises
+OsError for a cross-filesystem move, rather than copying data in the caller.
 
 This recipe writes a file under the launch directory:
 
