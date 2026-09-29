@@ -133,6 +133,33 @@ Exact edge cases belong in `docs/spec/`. The compiler-head inventory in the
 call spec is checked against dispatch. Update links and examples when names
 move. Do not recreate a second directory of overlapping feature designs.
 
+## Surface changes
+
+The supported surface is what [the language guide](language.md),
+[the specification](spec/README.md), and [the library guide](stdlib.md)
+document without an experimental label. Changing reader syntax, special
+forms, `gene` root names, or documented semantics requires:
+
+1. Owner approval before implementation.
+2. Migration of every in-repository use (examples, tests, docs, and tools)
+   in the same change.
+3. For a removed or renamed form, a diagnostic naming the replacement, as
+   `from` does: `import: from was removed; use ^from "path"`.
+4. Updated guides and specs, plus an entry in the change log below.
+
+Gene is greenfield and all Gene code lives in this repository, so compatibility
+shims and a general migration tool are not required. The version in
+`gene.nimble` identifies the implementation; neither it nor the native ABI
+version is a language compatibility promise.
+
+### Change log
+
+| Date | Change | Migration |
+| --- | --- | --- |
+| 2026-09-01 (`304a8e0`) | Dot descriptors replace tilde sends. | Write `(x .method arg)` instead of `(x ~method arg)`; use `?.` for guarded sends. |
+| 2026-09-12 (`6f6b173`) | Imports use `^from`. | Replace `from "path"` with `^from "path"` in `import` and `import_impl`. |
+| 2026-09-20 (`ef7e399`) | The Capabilities system was removed. | Remove capability declarations, grants, wrappers, and CLI options. Ordinary native calls are ungated; use the sandbox loader and execution budgets for its supported isolation contract. See [trusted scripts and sandboxes](design.md#trusted-scripts-and-sandboxes). |
+
 ## Roadmap
 
 Current open areas include hosted registry publication/signing, native
