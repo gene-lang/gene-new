@@ -941,6 +941,7 @@ var activeConstructionDepth {.threadvar.}: int
 var activeVmBudget {.threadvar.}: ptr EvalBudget
 var activeVmScope {.threadvar.}: ptr Scope
 var activeTask {.threadvar.}: Value
+var activeFiberTasks {.threadvar.}: seq[Value]
 var activeTaskContext {.threadvar.}: Value
 var activeVmFiber {.threadvar.}: Fiber
 var nativeSyncCallbackDepth {.threadvar.}: int
@@ -1558,12 +1559,15 @@ proc cancelOwnedTasks(scope: Scope) =
 proc waitOwnedTasks(scope: Scope) =
   if scope.ownedTasks.len == 0 and scope.ownedCleanupTasks.len == 0:
     return
+  let parentTask = activeTask
   try:
     for i in 0 ..< scope.ownedTasks.len:
       let task = scope.ownedTasks[i]
       if task.kind == vkTask and not task.taskDone:
-        pumpUntilDone(task)
+        pumpUntilDone(task, parentTask)
     scope.waitOwnedCleanupTasks()
+    if parentTask.kind == vkTask and parentTask.taskCancelRequested:
+      raise newException(GeneCancel, "task was cancelled while joining its scope")
   except CatchableError:
     scope.cancelOwnedTasks()
     raise
@@ -16813,6 +16817,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     spush NIL
 
   template finishFrameReturn(retValue: Value) =
+    if fiber != nil and curFrameKind == fkTaskScopeBody and curOwnedScope != nil:
+      var pending = NIL
+      for task in curOwnedScope.ownedTasks:
+        if task.kind == vkTask and not task.taskDone:
+          pending = task
+          break
+      if pending.kind == vkNil:
+        for task in curOwnedScope.ownedCleanupTasks:
+          if task.kind == vkTask and not task.taskDone:
+            pending = task
+            break
+      if pending.kind == vkTask:
+        spush retValue
+        captureContinuation(ip - 1)
+        fiber.waitTask = pending
+        return RunStop(kind: rskSuspend, value: NIL)
     scope.finishImplAssembly(chunk)
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
@@ -21047,8 +21067,10 @@ proc runFiber(f: Fiber) =
   let savedContext = activeTaskContext
   currentFiberActive = true
   activeTask = f.task
+  activeFiberTasks.add f.task
   activeTaskContext = f.taskContext
   defer:
+    activeFiberTasks.setLen(activeFiberTasks.len - 1)
     f.taskContext = activeTaskContext
     activeTaskContext = savedContext
     currentFiberActive = savedActive
@@ -21631,6 +21653,9 @@ proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool =
   true
 
 proc cancelScheduledTask(task: Value): bool =
+  for running in activeFiberTasks:
+    if running.taskSharesState(task):
+      return true
   ## Mark the task's own continuation for cancellation and move any parked
   ## continuation back to the run queue so runFiber can inject GeneCancel and
   ## let ensure blocks unwind. If the fiber is already in the run queue, it

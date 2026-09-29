@@ -8142,6 +8142,13 @@ suite "spec — task context":
         " [outcome (< (- ($os/monotonic_ms) start) 100)])",
         "[TaskOutcome/cancelled true]")
 
+  test "cancellation propagates while a parent joins its scoped child":
+    check_eval("(scope (let parent (spawn ^lane root " &
+      " (scope (spawn ^lane root ($sleep 1000)) 1))) " &
+      " ($sleep 10) (let start ($os/monotonic_ms)) (parent .cancel) " &
+      " (let outcome (parent .join)) " &
+      " [outcome (< (- ($os/monotonic_ms) start) 100)])", "[TaskOutcome/cancelled true]")
+
   test "synchronous file operations retain byte content and typed failures in fibers":
     let path = getTempDir() / "gene-fiber-file-content"
     defer: removeFile(path)
