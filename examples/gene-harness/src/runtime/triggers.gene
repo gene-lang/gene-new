@@ -13,7 +13,8 @@
 (type TriggerError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for TriggerError)
 (type TriggerManager ^props {^runtime Any ^controller Any ^definitions Any ^occurrences Any
-  ^cap Int ^task Any ^closed Any ^mutating Any ^hook Any ^last_retention Any})
+  ^pending Any ^watermarks Any ^last_finished Any ^occurrence_keep Int
+  ^cap Int ^task Any ^closed Any ^mutating Any ^hook Any ^last_retention Any ^last_gc Any ^gc_interval Int})
 
 (fn invalid [message : Str]
   (fail (TriggerError ^code "invalid_request" ^message message)))
@@ -110,8 +111,18 @@
 (fn save_occurrence [manager, occurrence]
   (record_core_state manager/runtime/events "workspace" "workspace" "trigger/occurrence"
     $"occurrence/${occurrence/id}" occurrence)
+  (let last ((manager/last_finished .get) .get occurrence/trigger))
+  (let newest (&& (== occurrence/state "finished")
+    (|| ($absent? last) (> occurrence/at_ms last/at_ms))))
+  (if newest
+    (record_core_state manager/runtime/events "workspace" "workspace" "trigger/state"
+      $"trigger-last/${occurrence/trigger}" occurrence))
   (flush_event_store manager/runtime/events)
   ((manager/occurrences .get) .put occurrence/id (copy_data occurrence))
+  (if (["due" "started"] .contains? occurrence/state)
+    ((manager/pending .get) .put occurrence/id (copy_data occurrence))
+    ((manager/pending .get) .delete occurrence/id))
+  (if newest ((manager/last_finished .get) .put occurrence/trigger (copy_data occurrence)))
   (copy_data occurrence))
 
 (fn create_trigger [manager, input, ^now now = nil]
@@ -142,9 +153,10 @@
     (if_not (== definition/deleted true) (result .push (copy_data definition))))
   ($order/sort_by result (fn [definition] definition/id)))
 
-(fn list_occurrences [manager, ^trigger trigger = nil]
+(fn list_occurrences [manager, ^trigger trigger = nil, ^active active : Bool = false]
   (let result [])
-  (for [id occurrence] in (manager/occurrences .get)
+  (let source (if active (manager/pending .get) (manager/occurrences .get)))
+  (for [id occurrence] in source
     (if (|| ($absent? trigger) (== occurrence/trigger trigger)) (result .push (copy_data occurrence))))
   ($order/sort_by result (fn [occurrence] occurrence/at_ms)))
 
@@ -154,13 +166,17 @@
 
 (fn matching_receipt [manager, occurrence]
   (if ($absent? ((manager/runtime/sessions/index .get) .get occurrence/session)) (return nil))
+  (let loaded ((manager/runtime/sessions/loaded .get) .get occurrence/session))
+  (if_not ($absent? loaded)
+    (let current (loaded/round .get))
+    (if (== current/request_id occurrence/id) (return (copy_data current))))
   (let state (round_state manager/controller occurrence/session))
   (for receipt in state/receipts
     (if (== receipt/request_id occurrence/id) (return receipt)))
   nil)
 
 (fn reconcile_occurrences [manager]
-  (for occurrence in (list_occurrences manager)
+  (for occurrence in (list_occurrences manager ^^active)
     (if_not (["due" "started"] .contains? occurrence/state) (continue))
     (let receipt (matching_receipt manager occurrence))
     (if ($absent? receipt) (continue))
@@ -177,18 +193,19 @@
       (save_occurrence manager occurrence))))
 
 (fn trigger_busy? [manager, trigger]
-  (for occurrence in (list_occurrences manager ^trigger trigger)
+  (for occurrence in (list_occurrences manager ^trigger trigger ^^active)
     (if (== occurrence/state "started") (return true)))
   false)
 
 (fn record_due [manager, definition, at, ^missed missed : Bool = false]
   (let id $"${definition/id}@${at}")
   (if_not ($absent? ((manager/occurrences .get) .get id)) (return nil))
+  (if (<= at (?? ((manager/watermarks .get) .get definition/id) -1)) (return nil))
   (var state "due")
   (var reason "")
   (if_yes (&& missed (== definition/missed "skip")) (set state "skipped") (set reason "missed"))
   (var queued false)
-  (for previous in (list_occurrences manager ^trigger definition/id)
+  (for previous in (list_occurrences manager ^trigger definition/id ^^active)
     (if (== previous/state "due") (set queued true)))
   (if_yes (== state "due")
     (if queued
@@ -218,9 +235,9 @@
 
 (fn start_due [manager]
   (var running 0)
-  (for occurrence in (list_occurrences manager)
+  (for occurrence in (list_occurrences manager ^^active)
     (if (== occurrence/state "started") (set running (+ running 1))))
-  (for occurrence in (list_occurrences manager)
+  (for occurrence in (list_occurrences manager ^^active)
     (if (>= running manager/cap) (break))
     (if (!= occurrence/state "due") (continue))
     (let definition ((manager/definitions .get) .get occurrence/trigger))
@@ -233,10 +250,7 @@
     (if (trigger_busy? manager definition/id) (continue))
     (if definition/continue_session
       (then
-        (let previous (list_occurrences manager ^trigger definition/id))
-        (var prior nil)
-        (for item in previous
-          (if (&& (< item/at_ms occurrence/at_ms) (== item/state "finished")) (set prior item)))
+        (let prior ((manager/last_finished .get) .get definition/id))
         (if_yes (&& (! ($absent? prior)) (! ($absent? ((manager/runtime/sessions/index .get) .get prior/session))))
           (occurrence .put "session" prior/session)
           (save_occurrence manager occurrence))))
@@ -260,6 +274,32 @@
         (boundary manager "started" occurrence)))
     (set running (+ running 1))))
 
+(fn prune_occurrences [manager]
+  (var removed 0)
+  (for [id definition] in (manager/definitions .get)
+    (let candidates [])
+    (for occurrence in (list_occurrences manager ^trigger ($to_str id))
+      (if_not (["finished" "skipped"] .contains? occurrence/state) (continue))
+      (let session ((manager/runtime/sessions/index .get) .get occurrence/session))
+      (if (&& (! ($absent? session)) (|| session/pinned session/attention)) (continue))
+      (candidates .push occurrence))
+    (let excess (- candidates/.size manager/occurrence_keep))
+    (if (<= excess 0) (continue))
+    (var watermark (?? ((manager/watermarks .get) .get id) -1))
+    (repeat index in excess
+      (set watermark ($math/max watermark candidates/%index/at_ms)))
+    (record_core_state manager/runtime/events "workspace" "workspace" "trigger/state"
+      $"occurrence-watermark/${id}" {^trigger id ^at_ms watermark})
+    ((manager/watermarks .get) .put id watermark)
+    (repeat position in excess
+      (let occurrence candidates/%position)
+      (record_core_state manager/runtime/events "workspace" "workspace" "trigger/occurrence"
+        $"occurrence/${occurrence/id}" nil)
+      ((manager/occurrences .get) .delete occurrence/id)
+      (set removed (+ removed 1))))
+  (if (> removed 0) (flush_event_store manager/runtime/events))
+  removed)
+
 (fn tick_triggers [manager, ^now now = nil, ^boot boot : Bool = false]
   (if (|| (manager/closed .get) (manager/runtime/stopping .get)) (return nil))
   (while (manager/mutating .swap true) ($sleep 1))
@@ -268,12 +308,16 @@
     (expire_trigger_questions manager (?? now ($os/wall_ms)))
     (reconcile_occurrences manager)
     (schedule_due manager (?? now ($os/wall_ms)) boot)
+    (if_yes (&& (manager/runtime/body_gc_pending .get)
+      (>= (- (?? now ($os/wall_ms)) (manager/last_gc .get)) manager/gc_interval))
+      (if (collect_unreferenced_bodies manager/runtime)
+        (manager/last_gc .set (?? now ($os/wall_ms)))))
     (start_due manager)
+    (prune_occurrences manager)
     (if_yes (>= (- (?? now ($os/wall_ms)) (manager/last_retention .get)) 3600000)
       (apply_retention manager ^now now)
       (manager/last_retention .set (?? now ($os/wall_ms))))
     (unload_idle_sessions manager/runtime/sessions)
-    (if (manager/runtime/body_gc_pending .get) (collect_unreferenced_bodies manager/runtime))
   ensure (manager/mutating .set false)))
 
 (fn expire_trigger_questions [manager, now]
@@ -337,23 +381,39 @@
   removed)
 
 (fn open_trigger_manager [runtime, controller, ^poll_ms poll_ms : Int = 100,
-                          ^start start : Bool = true, ^now now = nil, ^hook hook = nil]
+                          ^start start : Bool = true, ^boot boot : Bool = true, ^now now = nil, ^hook hook = nil]
   (let definitions {})
   (let occurrences {})
+  (let pending {}) (let watermarks {}) (let finished {})
   (for [key value] in (core_states runtime/events "workspace" "workspace")
     (if ($str/starts_with? ($to_str key) "trigger/") (definitions .put value/id value))
-    (if ($str/starts_with? ($to_str key) "occurrence/") (occurrences .put value/id value)))
+    (if_yes ($str/starts_with? ($to_str key) "occurrence/")
+      (occurrences .put value/id value)
+      (if (["due" "started"] .contains? value/state) (pending .put value/id value)))
+    (if ($str/starts_with? ($to_str key) "occurrence-watermark/") (watermarks .put value/trigger value/at_ms))
+    (if ($str/starts_with? ($to_str key) "trigger-last/") (finished .put value/trigger value)))
   (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (for [id occurrence] in occurrences
+    (if_yes (== occurrence/state "finished")
+      (let previous (finished .get occurrence/trigger))
+      (if (|| ($absent? previous) (> occurrence/at_ms previous/at_ms))
+        (finished .put occurrence/trigger occurrence))))
   (let cap (?? config/trigger_concurrency 2))
   (if (|| (!= ($head cap) Int) (< cap 1)) (invalid "trigger_concurrency must be positive"))
+  (let keep (?? config/trigger_occurrence_keep 256))
+  (let gc_interval (?? config/body_gc_interval_ms 60000))
+  (if (|| (!= ($head keep) Int) (< keep 0)) (invalid "trigger_occurrence_keep must be non-negative"))
+  (if (|| (!= ($head gc_interval) Int) (< gc_interval 1)) (invalid "body_gc_interval_ms must be positive"))
   (let manager (TriggerManager ^runtime runtime ^controller controller ^definitions ($cell definitions)
     ^occurrences ($cell occurrences) ^cap cap ^task ($cell nil) ^closed ($cell false)
+    ^pending ($cell pending) ^watermarks ($cell watermarks) ^last_finished ($cell finished) ^occurrence_keep keep
+    ^last_gc ($cell 0) ^gc_interval gc_interval
     ^mutating ($cell false) ^hook hook ^last_retention ($cell 0)))
   (set runtime/triggers manager)
   (runtime/functions .put "create_trigger" (fn [definition] (create_trigger manager definition)))
   (runtime/functions .put "list_triggers" (fn [] (list_triggers manager)))
   (runtime/functions .put "delete_trigger" (fn [id : Str] (delete_trigger manager id)))
-  (tick_triggers manager ^boot true ^now now)
+  (if boot (tick_triggers manager ^boot true ^now now))
   (if start
     (manager/task .set (spawn ^lane root
       (while (! (manager/closed .get))

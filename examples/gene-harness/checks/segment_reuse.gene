@@ -1,0 +1,43 @@
+(import $store/fs [Store])
+(import ^from "../src/storage/state" [open_event_store close_event_store append_core_event flush_event_store events_for])
+(type ObservedStore ^props {^inner Any ^lookups Any}
+  (impl Store
+    (message put [key value] (self/inner .Store:put key value))
+    (message get [key] (self/inner .Store:get key))
+    (message has? [key]
+      (if ($str/starts_with? key "segment/") (self/lookups .set (+ (self/lookups .get) 1)))
+      (self/inner .Store:has? key))
+    (message delete [key] (self/inner .Store:delete key))
+    (message keys [] (self/inner .Store:keys))
+    (message clear [] (self/inner .Store:clear))
+    (message checkpoint [generation records] (self/inner .Store:checkpoint generation records))
+    (message load_checkpoint [] (self/inner .Store:load_checkpoint))
+    (message close [] (self/inner .Store:close))))
+(fn main [args]
+  ($fs/make_dir args/0)
+  (let events (open_event_store args/0 ^segment_events 16 ^gc_interval 1000))
+  (let lookups ($cell 0))
+  (try
+    (repeat n in 2048 (append_core_event events "session" "test" {^type "trace" ^text ($to_str n)}))
+    (flush_event_store events)
+    (let original_manifest (events/last_manifest .get))
+    (let original (original_manifest/streams .get "session:test"))
+    (set events/backend (ObservedStore ^inner events/backend ^lookups lookups))
+    (let before ($os/monotonic_ms))
+    (repeat turn in 200
+      (lookups .set 0)
+      (append_core_event events "session" "test" {^type "trace" ^text ($to_str turn)})
+      (flush_event_store events)
+      ($assert (== (lookups .get) 1) "flush revisited sealed event segments"))
+    (let current_manifest (events/last_manifest .get))
+    (let current (current_manifest/streams .get "session:test"))
+    (repeat index in original/segments/.size
+      ($assert (== original/segments/%index current/segments/%index) "sealed segment digest changed"))
+    ($println $"segment reuse: 200 flushes after 2048 events, one tail write each (${(- ($os/monotonic_ms) before)} ms)")
+  ensure (close_event_store events))
+  (let reopened (open_event_store args/0 ^segment_events 64))
+  (try
+    (append_core_event reopened "session" "test" {^type "trace" ^text "after reopen"})
+    (flush_event_store reopened)
+    ($assert (== ($size (events_for reopened "session" "test")) 2249) "changing segment size lost events")
+  ensure (close_event_store reopened)))

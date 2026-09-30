@@ -7,11 +7,11 @@
   (let chosen (?? args/0 $"check-workspaces-${($crypto/random_hex 8)}"))
   ($fs/make_dir chosen)
   (let root ($fs/real_path chosen))
-  (for name in ["activation" "event_store" "workspace_lock" "sessions" "composition" "leased_composition"
-               "response" "outcome" "questions" "patch" "turn_eval" "plugin_v2" "turn_loop" "web_turn_loop" "history" "compaction"
-               "message_transport" "kernel_snapshots" "round_concurrency" "round_recovery"
-               "patch_recovery" "shared_runtime" "commands" "auth_restart" "stop_restart"
-               "async_cli" "triggers" "trigger_recovery" "trigger_policies"
+  (for name in ["activation" "event_store" "segment_reuse" "workspace_lock" "sessions" "composition" "leased_composition"
+               "response" "provider_blocks" "outcome" "questions" "patch" "patch_edges" "turn_eval" "plugin_v2" "turn_loop" "web_turn_loop" "history" "compaction"
+               "message_transport" "kernel_snapshots" "round_concurrency" "admission_races" "round_recovery"
+               "patch_recovery" "shared_runtime" "commands" "commands_io" "process_cleanup" "auth_restart" "stop_restart"
+               "async_cli" "triggers" "triggers_admin" "growth" "trigger_recovery" "trigger_policies"
                "trigger_queue_restart" "trigger_calendar" "retention" "live_transcript" "late_console" "web_metadata" "web_paging" "responsiveness" "stop_grace" "provider_prefix" "plugin_command" "patch_transcript" "mid_turn" "command_edges" "patch_crash_process"]
     (let workspace $"${root}/${name}")
     (if ($fs/exists? $"${workspace}/.gene-harness")

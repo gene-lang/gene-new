@@ -8177,6 +8177,47 @@ suite "spec — task context":
       " (try ($fs/info " & geneString(path & "-missing") & ") false catch OsError true)]",
       "[\"file\" 3 \"directory\" true]")
 
+  test "file pages preserve ranges, bound a long line and work inside a fiber":
+    let directory = getTempDir() / "gene-file-page-spec"
+    createDir(directory)
+    let path = directory / "page.txt"
+    writeFile(path, "one\r\ntwo\r\nthree\r\n")
+    defer: removeFile(path); removeDir(directory)
+    check_eval("(let p ($fs/read_text_page " & geneString(path) & " ^from 2 ^lines 1)) " &
+      "[p/text p/from p/to p/next p/binary]", "[\"two\" 2 2 3 false]")
+    check_eval("(scope (let task (spawn ^lane root ($fs/read_text_page " & geneString(path) &
+      " ^from 3 ^lines 1))) (let p (await task)) [p/text p/next])", "[\"three\" nil]")
+    writeFile(path, repeat("x", 100000))
+    check_eval("(let p ($fs/read_text_page " & geneString(path) & " ^max_bytes 32)) " &
+      "[($str/byte_size p/text) p/truncated]", "[32 true]")
+
+  when defined(posix):
+    test "file mode and symlink metadata support atomic editors":
+      let directory = getTempDir() / "gene-mode-symlink-spec"
+      createDir(directory)
+      let path = directory / "script"
+      let link = directory / "link"
+      writeFile(path, "data")
+      defer: removeFile(link); removeFile(path); removeDir(directory)
+      check_eval("($fs/set_mode " & geneString(path) & " 493) " &
+        "($fs/create_symlink \"script\" " & geneString(link) & ") " &
+        "(let target ($fs/info " & geneString(link) & ")) " &
+        "(let alias ($fs/info " & geneString(link) & " ^follow false)) " &
+        "[target/mode alias/symlink alias/link_target alias/kind]",
+        "[493 true \"script\" \"symlink\"]")
+
+    test "a sparse multi-GB file is inspected without allocating the whole file":
+      let path = getTempDir() / "gene-sparse-page-spec"
+      let fd = posix.open(path.cstring, O_CREAT or O_TRUNC or O_RDWR, Mode(0o600))
+      check fd >= 0
+      check posix.write(fd, "head\n".cstring, 5) == 5
+      check posix.ftruncate(fd, Off(2147483648'i64)) == 0
+      discard posix.close(fd)
+      defer: removeFile(path)
+      check_eval("(let p ($fs/read_text_page " & geneString(path) & ")) " &
+        "(let info ($fs/info " & geneString(path) & ")) [p/binary info/size]",
+        "[true 2147483648]")
+
   when defined(posix) and not defined(geneWasm) and not defined(emscripten):
     test "async stdin parks on partial lines, permits scheduler progress and cancels":
       var endpoints: array[2, cint]
@@ -9404,6 +9445,9 @@ suite "spec — native I/O lifecycle adapter":
       "[0 \"iopClosed\" \"ab\"]")
 
 suite "spec — stdlib namespaces from stdlib plan":
+  test "parse incomplete status is inert and distinguishes malformed input":
+    check_eval("[($parse/incomplete? \"(+ 1\") ($parse/incomplete? \"(+ 1 2)\") " &
+      " ($parse/incomplete? \")\") ($parse/incomplete? \"\\\"open\")]", "[true false false true]")
   test "io/flush_stdout is available to streaming CLIs":
     check_eval("($io/flush_stdout)", "nil")
   test "gene/stream, gene/node, and gene/parse resolve as namespace imports":
@@ -10391,6 +10435,10 @@ suite "spec — os and json from ai-agent plan":
                "    catch ChannelClosed \"closed\"))",
                "\"closed\"")
     check getMonoTime() - started < initDuration(milliseconds = 1200)
+
+  test "captured execution supplies EOF when input is omitted":
+    check_eval("(let r (await ($os/exec_async ^cmd \"cat\" ^timeout_ms 500))) " &
+      "[r/status r/stdout r/timed_out]", "[0 \"\" false]")
 
   test "Task/cancel terminates an inherited-stream async child":
     let started = getMonoTime()

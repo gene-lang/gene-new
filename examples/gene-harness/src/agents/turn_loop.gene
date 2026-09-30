@@ -52,7 +52,7 @@
       (let record ((runtime/sessions/index .get) .get session))
       (let title (?? record/title session))
       (let prefix (if (> running 1) $"[${title}] " ""))
-      (if ($os/stdin_tty?) ($print "\u001b[2m" prefix item/text "\u001b[0m")
+      (if ($os/stdout_tty?) ($print "\u001b[2m" prefix item/text "\u001b[0m")
         ($print prefix item/text))
       ($io/flush_stdout))))
   nil)

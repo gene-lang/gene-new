@@ -11,6 +11,7 @@
   ^from "./sessions")
 (import [new_command_manager close_command_manager] ^from "./commands")
 (import [close_trigger_manager] ^from "./triggers")
+(import [collect_unreferenced_bodies] ^from "../agents/history")
 
 (type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^events Any
                             ^sessions Any ^commands Any ^triggers Any ^functions Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any
@@ -45,6 +46,7 @@
       (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
       (close_session_manager runtime/sessions)
       (set outcome (shutdown_harness runtime/h))
+      (if (runtime/body_gc_pending .get) (collect_unreferenced_bodies runtime))
     ensure (close_workspace runtime/workspace))
   ensure
     (try

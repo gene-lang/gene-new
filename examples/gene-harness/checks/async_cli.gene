@@ -1,8 +1,8 @@
 (import $io [AsyncWriter IoResource pipe write_all])
 (fn main [args]
   (let directory ($fs/real_path args/0))
-  (let gene_binary ($path/join ($os/launch_dir) "bin/gene"))
-  (let entry ($path/join ($os/launch_dir) "examples/gene-harness/src/main.gene"))
+  (let gene_binary ($os/executable_path))
+  (let entry ($path/join ($path/parent ($path/parent this_mod/.path)) "src/main.gene"))
   (let script ($path/join directory "responses.gene"))
   ($fs/write_text
     script
@@ -21,7 +21,7 @@
         (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "slow\n") .to_list))))
         (let deadline (+ ($os/monotonic_ms) 7000))
         (while (&& (! (console_seen .get)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
-        (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/run (+ 2 3)\n") .to_list))))
+        (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/run (+ 2\n  3)\n") .to_list))))
         ($sleep 150)
         (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/cancel\n") .to_list))))
         ($sleep 150)

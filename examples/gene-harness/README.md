@@ -58,6 +58,8 @@ default.
 Credentials remain in the host transport and are excluded from prompts and
 durable transcripts. The Claude transport disables its tools, hooks and MCP
 connections. Only complete provider responses are evaluated.
+Transports preserve response bytes. Block terminators can end at EOF, and
+CRLF delimiters are accepted while attachment bodies retain their line endings.
 
 Defaults: ten minutes and 1 GiB per response; 24 turns per user round; five
 minutes of running time and 12 turns per trigger round; two concurrent trigger
@@ -190,10 +192,17 @@ bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project tr
 bin/gene run examples/gene-harness/src/main.gene --workspace /path/to/project triggers occurrences nightly-audit
 ```
 
-The definition file uses inert serde data. Every due occurrence starts
+The definition file accepts a plain inert Gene map or serde data. Trigger
+administration commands inspect or edit definitions without starting due work.
+Every due occurrence starts
 eventually. An admitted round is never replayed after a crash. Missed work is
 skipped or coalesced once; overlap is skipped or queued once. Retention prefers
 empty heartbeats and preserves pinned and attention sessions.
+`trigger_occurrence_keep` defaults to 256 recent terminal occurrences per
+trigger; due/started occurrences and pinned/attention records remain retained.
+Durable high-water marks prevent collected occurrence ids from replaying.
+`body_gc_interval_ms` defaults to 60000. Idle collection removes superseded
+history blobs while preserving live recall bodies and checkpoint fallbacks.
 
 ## Model-free checks
 

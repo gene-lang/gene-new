@@ -111,11 +111,9 @@
   (let shell (?? ($os/env? "SHELL") "/bin/sh"))
   (let channel ($channel ^capacity 128))
   (let process
-    ($os/exec_stream_async ^cmd shell ^args ["-c" ($ "exec 2>&1\n" ctx/raw)] ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
-  (let lines [])
-  (let bytes ($cell 0))
+    ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^merge_stderr true ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
   (let output
-    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output ($ line "\n")) (if (< (bytes .get) 1048576) (then (lines .push line) (bytes .set (+ (bytes .get) ($str/byte_size line)))))) catch ChannelClosed nil)))
+    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output ($ line "\n"))) catch ChannelClosed nil)))
   (let result
     (try
       (await process)
@@ -128,7 +126,16 @@
 (fn view_command [ctx]
   (let specification ($str/trim ctx/raw))
   (let pieces ($str/split specification ":"))
-  (let relative pieces/0)
+  (var relative specification)
+  (var first 1)
+  (var last 400)
+  (if_yes (&& (> pieces/.size 1) (! ($fs/exists? ($path/join ctx/runtime/root specification))))
+    (let suffix ($last pieces))
+    (if_not ($absent? (#"^[0-9]+(-[0-9]+)?$" .match suffix))
+      (let range ($str/split suffix "-"))
+      (set first ($parse/parse_int range/0))
+      (set last (if (> range/.size 1) ($parse/parse_int range/1) (+ first 399)))
+      (set relative ($str/slice_bytes specification 0 (- ($str/byte_size specification) (+ ($str/byte_size suffix) 1))))))
   (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
     (fail (CommandError ^code "invalid_path" ^message "view needs a workspace-relative path")))
   (let path ($path/join ctx/runtime/root relative))
@@ -136,32 +143,17 @@
   (if (== info/kind "directory")
     (return
       (CommandResult ^display ($fs/list_dir path) ^^attached ^view {^path relative ^kind "directory"})))
-  (let bytes ($fs/read_bytes path))
-  (let text (try ($str/from_utf8 ($binary/to_buffer bytes)) catch Any nil))
-  (if (|| ($absent? text) ($str/contains? text "\0"))
-    (return
-      (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached ^view {^path relative ^kind "binary" ^bytes info/size})))
-  (var first 1)
-  (var last 400)
-  (if (> pieces/.size 1)
-    (then
-      (let range ($str/split pieces/1 "-"))
-      (set first ($parse/parse_int range/0))
-      (set last (if (> range/.size 1) ($parse/parse_int range/1) (+ first 399)))))
   (if (|| (< first 1) (< last first))
     (fail (CommandError ^code "invalid_range" ^message "invalid line range")))
   (set last ($math/min last (+ first 399)))
-  (let lines
-    ($str/split
-      text
-      """
-"""))
-  (let page [])
-  (var index (- first 1))
-  (while (&& (< index lines/.size) (< index last))
-    (page .push lines/%index)
-    (set index (+ index 1)))
-  (CommandResult ^display ($str/join page "\n") ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text")) ^from first ^to index ^next (if (< index lines/.size) (+ index 1) nil)}))
+  (let page ($fs/read_text_page path ^from first ^lines (+ (- last first) 1)))
+  (if page/binary
+    (return (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached
+      ^view {^path relative ^kind "binary" ^bytes info/size})))
+  (let text (if page/truncated ($ page/text "\n[page truncated at byte limit]") page/text))
+  (CommandResult ^display text ^^attached ^view {^path relative
+    ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text"))
+    ^from first ^to page/to ^next page/next ^truncated page/truncated}))
 
 (fn install_core_commands [runtime]
   (let definitions

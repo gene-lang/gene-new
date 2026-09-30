@@ -19,7 +19,7 @@
       ($str/starts_with? line "*** Delete File: ")))
 
 (fn parse_patch [text : Str]
-  (let lines ($str/split text "\n"))
+  (let lines ($str/split (#"\r\n" .replace_all text "\n") "\n"))
   (if (!= lines/0 "*** Begin Patch") (patch_error "patch must start with *** Begin Patch"))
   (let operations [])
   (var index 1)
@@ -62,9 +62,14 @@
           (if ($absent? hunk) (patch_error $"${path}: missing hunk before End of File"))
           (hunk .put "eof" true))
         (else
-          (if ($absent? hunk) (patch_error $"${path}: update requires a hunk"))
-          (if ($str/starts_with? content " ")
-            (then (hunk/old .push (suffix content " ")) (hunk/new .push (suffix content " ")))
+          (if_yes ($absent? hunk)
+            (set hunk {^old [] ^new [] ^anchor "" ^eof false})
+            (operation/hunks .push hunk))
+          (if (== content "")
+            (then (hunk/old .push "") (hunk/new .push ""))
+            (elif ($str/starts_with? content " ")
+              (hunk/old .push (suffix content " "))
+              (hunk/new .push (suffix content " ")))
             (elif ($str/starts_with? content "-")
               (hunk/old .push (suffix content "-"))
               (operation .put "removed" (+ operation/removed 1)))
@@ -99,6 +104,8 @@
         (set position (+ position 1)))
       (if (!= anchors/.size 1) (patch_error $"${path} hunk ${number}: anchor not unique"))
       (set lower anchors/0)))
+  (if hunk/old/.empty?
+    (return (if (!= hunk/anchor "") (+ lower 1) (if hunk/eof lines/.size start))))
   (for tier in [0 1 2]
     (let matches [])
     (var position lower)
@@ -118,7 +125,8 @@
   (patch_error $"${path} hunk ${number}: context not found"))
 
 (fn apply_hunks [operation, original : Str]
-  (let split ($str/split original "\n"))
+  (let ending (if ($str/contains? original "\r\n") "\r\n" "\n"))
+  (let split ($str/split (#"\r\n" .replace_all original "\n") "\n"))
   (var lines [])
   (let newline ($str/ends_with? original "\n"))
   (var length split/.size)
@@ -138,7 +146,7 @@
     (while (< index lines/.size) (next .push lines/%index) (set index (+ index 1)))
     (set start (+ position hunk/new/.size))
     (set lines next))
-  ($str/join [($str/join lines "\n") (if newline "\n" "")] ""))
+  ($str/join [($str/join lines ending) (if newline ending "")] ""))
 
 (fn temporary_path [target : Str]
   ($path/join ($path/parent target) $".${($path/name target)}.gene-harness-tmp"))
@@ -147,6 +155,7 @@
   (let operations (parse_patch text))
   (let originals {})
   (let targets {})
+  (let physical_targets {})
   (let files [])
   (for operation in operations
     (for relative in [operation/path operation/target]
@@ -154,7 +163,18 @@
         (then
           (let path ($path/join root relative))
           (let exists ($fs/exists? path))
-          (originals .put relative {^exists exists ^text (if exists ($fs/read_text path) nil)})
+          (let info (if exists ($fs/info path ^follow false) nil))
+          (let linked (== info/symlink true))
+          (if (&& exists (! linked) (!= info/kind "file"))
+            (patch_error $"${relative}: patch requires a file"))
+          (let physical (if linked ($fs/real_path path) path))
+          (let target (if linked (try ($fs/info physical) catch Any nil) info))
+          (let content (if exists (try ($fs/read_text physical) catch Any nil) nil))
+          (if (&& exists (! linked) ($absent? content))
+            (patch_error $"${relative}: cannot read original file"))
+          (originals .put relative {^exists exists ^symlink linked ^link_target info/link_target
+            ^physical physical ^mode target/mode
+            ^text content})
           (files .push relative))))
     (if_not (== (targets .get operation/target) void)
       (patch_error $"multiple patch operations target ${operation/target}"))
@@ -168,9 +188,16 @@
       (else
         (if_not original/exists (patch_error $"${operation/path}: file does not exist"))
         (if (== operation/kind "update")
-          (operation .put "result" (apply_hunks operation original/text)))))
+          (then
+            (if ($absent? original/text) (patch_error $"${operation/path}: file contents are unreadable"))
+            (operation .put "result" (apply_hunks operation original/text))))))
     (if (!= operation/kind "delete")
-      (operation .put "temporary" (temporary_path ($path/join root operation/target)))))
+      (then
+        (let physical ($fs/real_path (if original/symlink original/physical ($path/join root operation/target))))
+        (if_not ($absent? (physical_targets .get physical)) (patch_error "multiple patch operations target the same physical file"))
+        (physical_targets .put physical true)
+        (operation .put "physical" physical)
+        (operation .put "temporary" (temporary_path physical)))))
   {^root root ^operations operations ^originals originals ^files files})
 
 (fn cleanup_temporaries [plan]
@@ -199,35 +226,51 @@
         (then
           (set current operation/target)
           ($fs/make_dir ($path/parent operation/temporary))
-          ($fs/write_text operation/temporary operation/result))))
+          ($fs/write_text operation/temporary operation/result)
+          (let original (plan/originals .get operation/path))
+          (if_not ($absent? original/mode) ($fs/set_mode operation/temporary original/mode)))))
     (for operation in plan/operations
       (if (!= operation/kind "delete")
         (then
           (set current operation/target)
           (if (&& (>= fail_after_renames 0) (>= renames fail_after_renames))
             (patch_error "injected rename failure"))
-          ($fs/rename operation/temporary ($path/join plan/root operation/target))
-          (changed .push operation/target)
+          ($fs/rename operation/temporary operation/physical)
+          (let original (plan/originals .get operation/path))
+          (changed .push {^relative (if original/symlink operation/path operation/target) ^physical operation/physical})
           (set renames (+ renames 1))
           (if_not ($absent? after_rename) (after_rename renames)))))
     (for operation in plan/operations
       (if (|| (== operation/kind "delete") (!= operation/path operation/target))
         (then
           (set current operation/path)
-          ($fs/remove ($path/join plan/root operation/path))
-          (changed .push operation/path))))
+          (let original (plan/originals .get operation/path))
+          (if (&& original/symlink (!= operation/kind "delete"))
+            (then
+              ($fs/rename ($path/join plan/root operation/path) ($path/join plan/root operation/target))
+              (changed .push {^relative operation/target ^physical ($path/join plan/root operation/target)}))
+            (else ($fs/remove ($path/join plan/root operation/path))))
+          (changed .push {^relative operation/path ^physical ($path/join plan/root operation/path)}))))
     (cleanup_temporaries plan)
     {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^attention false}
     catch Any
       (let reason $err/message)
       (let restored [])
       (let partial [])
-      (for relative in ($reverse changed)
+      (for change in ($reverse changed)
+        (let relative change/relative)
         (let original (plan/originals .get relative))
         (try
           (if original/exists
-            ($fs/write_text_atomic ($path/join plan/root relative) original/text)
-            ($fs/remove ($path/join plan/root relative)))
+            (then
+              (if (&& original/symlink (!= change/physical original/physical))
+                (then
+                  ($fs/remove ($path/join plan/root relative))
+                  ($fs/create_symlink original/link_target ($path/join plan/root relative)))
+                (else
+                  ($fs/write_text_atomic original/physical original/text)
+                  (if_not ($absent? original/mode) ($fs/set_mode original/physical original/mode)))))
+            (else ($fs/remove change/physical)))
           (restored .push relative)
           catch Any (partial .push relative)))
       (cleanup_temporaries plan)
@@ -248,5 +291,11 @@
   (for relative in files
     (let temporary (temporary_path ($path/join root relative)))
     (if ($fs/exists? temporary) ($fs/remove temporary)))
+  (for relative in files
+    (let path ($path/join root relative))
+    (if_yes ($fs/exists? path)
+      (let physical ($fs/real_path path))
+      (let temporary (temporary_path physical))
+      (if ($fs/exists? temporary) ($fs/remove temporary))))
   (let names ($str/join files ", "))
   $"patch may be partially applied: ${names}; re-read them")

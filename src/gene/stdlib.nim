@@ -21,6 +21,67 @@ proc biIoFlushStdout(args: openArray[Value]): Value {.nimcall.} =
 
 proc fsReadBytes(path: string): string = readFile(path)
 
+type FsTextPage = object
+  text: string
+  lastLine, nextLine: int
+  binary, truncated: bool
+
+proc fsReadTextPage(path: string, first, lines, maxBytes: int,
+                    cancelled: proc(): bool {.gcsafe.} = nil): FsTextPage =
+  let file = open(path, fmRead)
+  defer: file.close()
+  var buffer: array[65536, char]
+  var line = 1
+  var finished = false
+  let last = first + lines - 1
+  result.lastLine = first - 1
+  while true:
+    if cancelled != nil and cancelled(): return
+    let count = file.readBuffer(addr buffer[0], buffer.len)
+    if count == 0: break
+    for index in 0..<count:
+      let ch = buffer[index]
+      if ch == '\0':
+        result.binary = true
+        result.text.setLen(0)
+        return
+      if line >= first:
+        if result.text.len >= maxBytes:
+          result.truncated = true
+          result.nextLine = line + 1
+          break
+        result.text.add ch
+        result.lastLine = line
+      if ch == '\n':
+        if line >= last:
+          var extra: char
+          if index + 1 < count or file.readBuffer(addr extra, 1) > 0:
+            result.nextLine = line + 1
+          finished = true
+          break
+        inc line
+    if result.truncated or finished: break
+  if result.text.endsWith("\n"):
+    result.text.setLen(result.text.len - 1)
+    if result.text.endsWith("\r"): result.text.setLen(result.text.len - 1)
+  if result.truncated:
+    for _ in 0..<4:
+      let invalid = validateUtf8(result.text)
+      if invalid < 0 or invalid < result.text.len - 4: break
+      result.text.setLen(result.text.len - 1)
+  result.binary = validateUtf8(result.text) >= 0
+  if result.binary: result.text.setLen(0)
+
+proc fsTextPageValue(page: FsTextPage, first: int): Value =
+  var props = initPropTable()
+  props["text"] = newStr(page.text)
+  props["from"] = newInt(first)
+  props["to"] = newInt(page.lastLine)
+  props["next"] = if page.nextLine > 0: newInt(page.nextLine) else: NIL
+  props["binary"] = newBool(page.binary)
+  props["truncated"] = newBool(page.truncated)
+  newMap(props)
+
 proc fsWriteBytes(path, content: string) = writeFile(path, content)
 
 var fsAtomicWriteCounter {.threadvar.}: int
@@ -2525,11 +2586,15 @@ when compileOption("threads"):
     OsExecAsyncCtx = object
       fileOperation: NativeFileOperation
       fileOwnerOnly: bool
+      fileFirst, fileLines: int
+      resultPageNext: int
+      resultPageBinary: bool
       name: SharedExecText
       cmd: SharedExecText
       procArgs: ptr SharedExecArg
       workdir: SharedExecText
       inheritStdio: bool
+      mergeStderr: bool
       timeoutMs: int
       maxBytes: int
       taskBits: uint64      # external Task (OBJECT_TAG bits), worker-borrowed
@@ -2675,6 +2740,96 @@ when compileOption("threads"):
       process.kill()
       discard process.waitForExit()
 
+  when defined(posix):
+    {.emit: """
+#include <pthread.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <time.h>
+#include <unistd.h>
+static atomic_int gene_captured_groups[4096];
+static atomic_int gene_captured_spawns, gene_captured_closing;
+static pthread_once_t gene_captured_once = PTHREAD_ONCE_INIT;
+static _Thread_local sigset_t gene_captured_old_mask;
+static int gene_captured_signals[3] = {SIGINT, SIGTERM, SIGHUP};
+static struct sigaction gene_captured_old_actions[3];
+static void gene_captured_cleanup(void) {
+  atomic_store(&gene_captured_closing, 1);
+  for (int i = 0; i < 4096; ++i) {
+    int pid = atomic_load(&gene_captured_groups[i]);
+    if (pid > 0) kill(-pid, SIGKILL);
+  }
+}
+static void gene_captured_signal(int signal, siginfo_t *info, void *context) {
+  int index = 0;
+  while (index < 3 && gene_captured_signals[index] != signal) ++index;
+  if (index == 3) return;
+  struct sigaction *old = &gene_captured_old_actions[index];
+  if (old->sa_handler == SIG_IGN) return;
+  if (old->sa_handler != SIG_DFL) {
+    gene_captured_cleanup();
+    if (old->sa_flags & SA_SIGINFO) old->sa_sigaction(signal, info, context);
+    else old->sa_handler(signal);
+    atomic_store(&gene_captured_closing, 0);
+    return;
+  }
+  atomic_store(&gene_captured_closing, 1);
+  struct timespec start, now;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  while (atomic_load(&gene_captured_spawns)) {
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if ((now.tv_sec - start.tv_sec) * 1000000000LL + now.tv_nsec - start.tv_nsec > 1000000000LL) break;
+  }
+  gene_captured_cleanup();
+  sigaction(signal, old, NULL);
+  raise(signal);
+}
+static void gene_captured_init(void) {
+  atexit(gene_captured_cleanup);
+  for (int i = 0; i < 3; ++i) {
+    struct sigaction action = {0};
+    sigemptyset(&action.sa_mask);
+    for (int j = 0; j < 3; ++j) sigaddset(&action.sa_mask, gene_captured_signals[j]);
+    action.sa_flags = SA_SIGINFO;
+    action.sa_sigaction = gene_captured_signal;
+    sigaction(gene_captured_signals[i], &action, &gene_captured_old_actions[i]);
+  }
+}
+static int gene_captured_begin(void) {
+  pthread_once(&gene_captured_once, gene_captured_init);
+  sigset_t mask;
+  sigemptyset(&mask);
+  for (int i = 0; i < 3; ++i) sigaddset(&mask, gene_captured_signals[i]);
+  pthread_sigmask(SIG_BLOCK, &mask, &gene_captured_old_mask);
+  atomic_fetch_add(&gene_captured_spawns, 1);
+  return atomic_load(&gene_captured_closing) ? -1 : 0;
+}
+static int gene_captured_finish(int pid) {
+  int slot = -1;
+  if (pid > 0) {
+    for (int i = 0; i < 4096; ++i) {
+      int empty = 0;
+      if (atomic_compare_exchange_strong(&gene_captured_groups[i], &empty, pid)) { slot = i; break; }
+    }
+    if (slot < 0 || atomic_load(&gene_captured_closing)) kill(-pid, SIGKILL);
+  }
+  atomic_fetch_sub(&gene_captured_spawns, 1);
+  pthread_sigmask(SIG_SETMASK, &gene_captured_old_mask, NULL);
+  return slot;
+}
+static void gene_captured_release(int slot) {
+  if (slot >= 0) atomic_store(&gene_captured_groups[slot], 0);
+}
+""".}
+    proc beginCapturedSpawn(): cint {.importc: "gene_captured_begin", nodecl.}
+    proc finishCapturedSpawn(pid: cint): cint {.importc: "gene_captured_finish", nodecl.}
+    proc releaseCapturedGroup(slot: cint) {.importc: "gene_captured_release", nodecl.}
+  else:
+    proc beginCapturedSpawn(): cint = 0
+    proc finishCapturedSpawn(pid: cint): cint = 0
+    proc releaseCapturedGroup(slot: cint) = discard
+
   when defined(linux) or defined(geneCapturedForkBackend):
     # Nim's Linux osproc fork path ignores poDaemon. Create the pipes and
     # process group in a native child, using only async-signal-safe operations
@@ -2685,11 +2840,19 @@ when compileOption("threads"):
 #include <errno.h>
 #include <signal.h>
 #include <sys/wait.h>
-static int gene_spawn_captured(const char *cmd, char **argv, const char *dir,
+static int gene_spawn_captured(const char *cmd, char **argv, const char *dir, int merge,
                               int *input, int *output, int *error) {
   int pipes[4][2], made = 0, saved = 0;
   for (; made < 4; ++made) {
     if (pipe(pipes[made]) < 0) goto fail;
+    for (int end = 0; end < 2; ++end) {
+      if (pipes[made][end] <= STDERR_FILENO) {
+        int replacement = fcntl(pipes[made][end], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        if (replacement < 0) { ++made; goto fail; }
+        close(pipes[made][end]);
+        pipes[made][end] = replacement;
+      }
+    }
     if (fcntl(pipes[made][0], F_SETFD, FD_CLOEXEC) < 0 ||
         fcntl(pipes[made][1], F_SETFD, FD_CLOEXEC) < 0) {
       ++made; goto fail;
@@ -2704,7 +2867,7 @@ static int gene_spawn_captured(const char *cmd, char **argv, const char *dir,
     if (setpgid(0, 0) < 0 || sigprocmask(SIG_SETMASK, &mask, NULL) < 0 ||
         dup2(pipes[0][0], STDIN_FILENO) < 0 ||
         dup2(pipes[1][1], STDOUT_FILENO) < 0 ||
-        dup2(pipes[2][1], STDERR_FILENO) < 0 ||
+        dup2(merge ? pipes[1][1] : pipes[2][1], STDERR_FILENO) < 0 ||
         (dir[0] && chdir(dir) < 0)) goto child_fail;
     for (int i = 0; i < 3; ++i) { close(pipes[i][0]); close(pipes[i][1]); }
     execv(cmd, argv);
@@ -2737,7 +2900,7 @@ close_fail:
   return -1;
 }
 """.}
-    proc spawnCapturedPosix(cmd: cstring, argv: cstringArray, dir: cstring,
+    proc spawnCapturedPosix(cmd: cstring, argv: cstringArray, dir: cstring, merge: cint,
                            input, output, error: ptr cint): cint
       {.importc: "gene_spawn_captured", nodecl.}
     type CapturedOsExecProcess = ref object
@@ -2746,14 +2909,14 @@ close_fail:
       finished: bool
       exitStatus: int
     proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string]): CapturedOsExecProcess =
+                            args: seq[string], mergeStderr: bool): CapturedOsExecProcess =
       let executable = if cmd.contains(DirSep): cmd else: findExe(cmd)
       if executable.len == 0:
         raiseOSError(OSErrorCode(ENOENT), "command not found: " & cmd)
       let argv = allocCStringArray(@[cmd] & args)
       defer: deallocCStringArray(argv)
       new(result)
-      let pid = spawnCapturedPosix(executable.cstring, argv, workingDir.cstring,
+      let pid = spawnCapturedPosix(executable.cstring, argv, workingDir.cstring, cint(mergeStderr),
         addr result.inputHandle, addr result.outputHandle, addr result.errorHandle)
       if pid < 0: raiseOSError(osLastError())
       result.pid = Pid(pid)
@@ -2786,9 +2949,10 @@ close_fail:
   else:
     type CapturedOsExecProcess = Process
     proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string]): CapturedOsExecProcess =
+                            args: seq[string], mergeStderr: bool): CapturedOsExecProcess =
       startProcess(cmd, workingDir = workingDir, args = args,
-                   options = {poUsePath, poDaemon})
+                   options = if mergeStderr: {poUsePath, poDaemon, poStdErrToStdOut}
+                             else: {poUsePath, poDaemon})
 
   proc stopOsExecGroup(process: CapturedOsExecProcess) =
     ## Captured children own a process group, so shells cannot leave pipeline
@@ -2892,7 +3056,13 @@ close_fail:
               if tryFailTask(task, failure, value, hasValue = value.kind != vkNil):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
             elif ctx.fileOperation != nfoNone:
-              let value = if ctx.fileOperation == nfoRead:
+              let value = if ctx.fileOperation == nfoReadPage:
+                            fsTextPageValue(FsTextPage(
+                              text: consumeSharedExecText(ctx.resultStdout),
+                              lastLine: ctx.resultStatus, nextLine: ctx.resultPageNext,
+                              binary: ctx.resultPageBinary,
+                              truncated: ctx.resultStdoutTruncated), ctx.fileFirst)
+                          elif ctx.fileOperation == nfoRead:
                             newStr(consumeSharedExecText(ctx.resultStdout))
                           else: NIL
               if tryCompleteTask(task, value):
@@ -2953,6 +3123,15 @@ close_fail:
             fsWriteBytes(path, readSharedExecText(ctx.workdir))
           of nfoAtomicWrite:
             fsWriteAtomic(path, readSharedExecText(ctx.workdir), ctx.fileOwnerOnly)
+          of nfoReadPage:
+            let page = fsReadTextPage(path, ctx.fileFirst, ctx.fileLines, ctx.maxBytes,
+              proc(): bool {.gcsafe.} = atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE))
+            ctx.resultStdout = sharedExecText(page.text)
+            ctx.resultStatus = page.lastLine
+            ctx.resultPageNext = page.nextLine
+            ctx.resultPageBinary = page.binary
+            ctx.resultStdoutTruncated = page.truncated
+            if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE): ctx.resultCancelled = true
           of nfoNone: discard
         except CatchableError as error:
           ctx.resultFailed = true
@@ -3130,10 +3309,23 @@ close_fail:
         return
 
       var process: CapturedOsExecProcess
+      if beginCapturedSpawn() < 0:
+        discard finishCapturedSpawn(0)
+        settleFail(nativeName & " cannot start while the process exits")
+        return
+      var groupSlot: cint = -1
       try:
-        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs)
+        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs, ctx.mergeStderr)
       except CatchableError as e:
+        discard finishCapturedSpawn(0)
         settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
+        return
+      groupSlot = finishCapturedSpawn(cint(process.processID))
+      if groupSlot < 0:
+        stopOsExecGroup(process)
+        reapStoppedOsExecGroup(process)
+        process.close()
+        settleFail(nativeName & " has too many captured subprocesses")
         return
       try:
         try:
@@ -3154,6 +3346,8 @@ close_fail:
             var stdinCount = 0
             var stdinOffset = 0
             var stdinDone = ctx.stdinPipeFd < 0
+            if stdinDone:
+              if osExecFinishStdin(inFd) != 0: stdinPipeFailed = true
             template finishInput() =
               block:
                 if not stdinDone:
@@ -3201,7 +3395,7 @@ close_fail:
                   break
             while process.running:
               drainAvailable(outFd, true)
-              drainAvailable(errFd, false)
+              if not ctx.mergeStderr: drainAvailable(errFd, false)
               pumpInput()
               if stdoutPipeFailed or stderrPipeFailed or stdinPipeFailed:
                 stopOsExecGroup(process)
@@ -3221,7 +3415,7 @@ close_fail:
                        else:
                          process.waitForExit()
             drainAvailable(outFd, true)
-            drainAvailable(errFd, false)
+            if not ctx.mergeStderr: drainAvailable(errFd, false)
           else:
             while process.running:
               if cancellationRequested():
@@ -3264,6 +3458,10 @@ close_fail:
           settleFail(nativeName & " failed: " & e.msg)
       finally:
         try:
+          if process.running:
+            stopOsExecGroup(process)
+            reapStoppedOsExecGroup(process)
+          releaseCapturedGroup(groupSlot)
           process.close()
         except CatchableError:
           discard
@@ -3315,7 +3513,8 @@ else:
     pollNativeIngressHook()
 
 proc startNativeFileTask(name, path, text: string, operation: NativeFileOperation,
-                         scope: Scope, ownerOnly = false): Value =
+                         scope: Scope, ownerOnly = false, first = 1,
+                         lines = 400, maxBytes = 1048576): Value =
   when compileOption("threads"):
     if scope == nil:
       raise newException(GeneError, name & " requires a scheduler scope")
@@ -3323,6 +3522,9 @@ proc startNativeFileTask(name, path, text: string, operation: NativeFileOperatio
     let ctx = cast[ptr OsExecAsyncCtx](allocShared0(sizeof(OsExecAsyncCtx)))
     ctx.fileOperation = operation
     ctx.fileOwnerOnly = ownerOnly
+    ctx.fileFirst = first
+    ctx.fileLines = lines
+    ctx.maxBytes = maxBytes
     ctx.stdoutPipeFd = -1
     ctx.stderrPipeFd = -1
     ctx.stdinPipeFd = -1
@@ -3372,6 +3574,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
   var stdoutPipe = NIL
   var stderrPipe = NIL
   var stdinPipe = NIL
+  var mergeStderr = false
   if call != nil:
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
@@ -3397,6 +3600,10 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
       of "dir":
         requireStr(name & " ^dir", v)
         workdir = v.strVal
+      of "merge_stderr":
+        if inheritStdio or v.kind != vkBool:
+          raiseOsError(name & " ^merge_stderr expects Bool on captured execution", scope)
+        mergeStderr = v.boolVal
       of "stdout_chan":
         if not wantChan:
           raiseOsError(name & " got unexpected named argument: stdout_chan",
@@ -3444,6 +3651,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     ctx.cmd = sharedExecText(cmd)
     ctx.workdir = sharedExecText(workdir)
     ctx.inheritStdio = inheritStdio
+    ctx.mergeStderr = mergeStderr
     ctx.timeoutMs = timeoutMs
     ctx.maxBytes = maxBytes
     ctx.taskBits = task.bits
@@ -4599,6 +4807,11 @@ proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
 
 proc cClearErr(f: File) {.importc: "clearerr", header: "<stdio.h>".}
 
+proc biOsStdoutTty(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0: raise newException(GeneError, "os/stdout_tty? takes no arguments")
+  when defined(posix): newBool(isatty(STDOUT_FILENO) != 0)
+  else: FALSE
+
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   var stdinLineTask {.threadvar.}: Value
   var stdinLineScheduler {.threadvar.}: SchedulerState
@@ -5207,6 +5420,36 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
   except CatchableError as e:
     raiseFilesystemOperationError("fs/read_bytes", e, scope)
 
+proc biFsReadTextPage(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("fs/read_text_page", args)
+  requireStr("fs/read_text_page path", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  var first = 1'i64
+  var lines = 400'i64
+  var maxBytes = 1048576'i64
+  if call != nil:
+    for index, name in call.namedNames:
+      let value = requireInt64("fs/read_text_page ^" & name, call.namedValues[index])
+      case name
+      of "from": first = value
+      of "lines": lines = value
+      of "max_bytes": maxBytes = value
+      else: raiseOsError("fs/read_text_page got unexpected argument " & name, scope)
+  if first < 1 or lines < 1 or lines > 10000 or maxBytes < 1 or
+      maxBytes > 16777216 or first > int64(high(int)) - lines:
+    raiseOsError("fs/read_text_page needs positive bounded page arguments", scope)
+  if activeVmFiber != nil:
+    if activeVmFiber.nativeTask.kind != vkTask:
+      let task = startNativeFileTask("fs/read_text_page", args[0].strVal, "",
+        nfoReadPage, scope, first = int(first), lines = int(lines), maxBytes = int(maxBytes))
+      activeVmFiber.nativeTask = task
+      scope.registerOwnedTask(task)
+    return finishNativeTask()
+  try:
+    fsTextPageValue(fsReadTextPage(args[0].strVal, int(first), int(lines), int(maxBytes)), int(first))
+  except CatchableError as error:
+    raiseFilesystemOperationError("fs/read_text_page", error, scope)
+
 proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/write_text. The only difference is that the payload is Bytes, so a byte
   ## with the high bit set survives instead of being mangled by UTF-8 handling.
@@ -5325,15 +5568,66 @@ proc biFsInfo(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     raise newException(GeneError, "fs/info expects (path)")
   requireStr("fs/info path", args[0])
   let scope = if call == nil: nil else: call.dispatchScope
+  var follow = true
+  if call != nil:
+    for index, name in call.namedNames:
+      if name != "follow" or call.namedValues[index].kind != vkBool:
+        raiseOsError("fs/info accepts only ^follow Bool", scope)
+      follow = call.namedValues[index].boolVal
   try:
-    let info = getFileInfo(args[0].strVal)
+    let info = getFileInfo(args[0].strVal, followSymlink = follow)
     var fields = initPropTable()
     fields["kind"] = newStr(
-      if info.kind in {pcDir, pcLinkToDir}: "directory" else: "file")
+      if not follow and symlinkExists(args[0].strVal): "symlink"
+      elif info.kind in {pcDir, pcLinkToDir}: "directory" else: "file")
     fields["size"] = newInt(info.size)
+    fields["symlink"] = newBool(symlinkExists(args[0].strVal))
+    if symlinkExists(args[0].strVal):
+      fields["link_target"] = newStr(expandSymlink(args[0].strVal))
+    var mode = 0
+    when defined(posix) and not defined(geneWasm) and not defined(emscripten):
+      var metadata: Stat
+      let status = if follow: posix.stat(args[0].strVal.cstring, metadata)
+                   else: posix.lstat(args[0].strVal.cstring, metadata)
+      if status != 0: raiseOSError(osLastError())
+      mode = int(metadata.st_mode) and 0o7777
+    else:
+      for (permission, bit) in [(fpUserRead, 256), (fpUserWrite, 128), (fpUserExec, 64),
+          (fpGroupRead, 32), (fpGroupWrite, 16), (fpGroupExec, 8),
+          (fpOthersRead, 4), (fpOthersWrite, 2), (fpOthersExec, 1)]:
+        if permission in info.permissions: mode = mode or bit
+    fields["mode"] = newInt(mode)
     newMap(fields)
   except CatchableError as error:
     raiseFilesystemOperationError("fs/info", error, scope)
+
+proc biFsSetMode(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2: raise newException(GeneError, "fs/set_mode expects (path, mode)")
+  requireStr("fs/set_mode path", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  let mode = requireInt64("fs/set_mode mode", args[1])
+  if mode < 0 or mode > 0o7777: raiseOsError("fs/set_mode mode must be within 0..4095", scope)
+  try:
+    when defined(posix) and not defined(geneWasm) and not defined(emscripten):
+      if posix.chmod(args[0].strVal.cstring, Mode(mode)) != 0: raiseOSError(osLastError())
+    else:
+      var permissions: set[FilePermission]
+      for (permission, bit) in [(fpUserRead, 256), (fpUserWrite, 128), (fpUserExec, 64),
+          (fpGroupRead, 32), (fpGroupWrite, 16), (fpGroupExec, 8),
+          (fpOthersRead, 4), (fpOthersWrite, 2), (fpOthersExec, 1)]:
+        if (mode and bit) != 0: permissions.incl permission
+      setFilePermissions(args[0].strVal, permissions)
+  except CatchableError as error: raiseFilesystemOperationError("fs/set_mode", error, scope)
+  NIL
+
+proc biFsCreateSymlink(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2: raise newException(GeneError, "fs/create_symlink expects (target, path)")
+  requireStr("fs/create_symlink target", args[0])
+  requireStr("fs/create_symlink path", args[1])
+  let scope = if call == nil: nil else: call.dispatchScope
+  try: createSymlink(args[0].strVal, args[1].strVal)
+  except CatchableError as error: raiseFilesystemOperationError("fs/create_symlink", error, scope)
+  NIL
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -9580,6 +9874,7 @@ proc registerStdlibNamespaces(root: Scope) =
   stdParseScope.define("parse_int", builtinNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
   stdParseScope.define("read_all", root.vars["read_all"])
+  stdParseScope.define("incomplete?", builtinNativeFn("parse/incomplete?", biReadIncomplete))
   # `format` was removed from the runtime: canonical formatting is a tool
   # surface, not a language one, and it was the only thing linking fmt.nim
   # (and transitively lsp/analysis.nim) into every Gene binary. Use the
@@ -10599,6 +10894,7 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("exit", builtinNativeCallFn("os/exit", biOsExit,
                                             acceptsNamed = false))
   osScope.define("stdin_tty?", builtinNativeFn("os/stdin_tty?", biOsStdinTty))
+  osScope.define("stdout_tty?", builtinNativeFn("os/stdout_tty?", biOsStdoutTty))
   osScope.define("read_line", builtinNativeCallFn("os/read_line", biOsReadLine,
                                             acceptsNamed = false))
   osScope.define("read_input", builtinNativeCallFn("os/read_input", biOsReadInput))
@@ -10738,7 +11034,10 @@ proc registerStdlibNamespaces(root: Scope) =
     fsNs.nsScope.define("list_dir",
       builtinNativeCallFn("fs/list_dir", biFsListDir, acceptsNamed = false))
     fsNs.nsScope.define("info",
-      builtinNativeCallFn("fs/info", biFsInfo, acceptsNamed = false))
+      builtinNativeCallFn("fs/info", biFsInfo))
+    fsNs.nsScope.define("set_mode", builtinNativeCallFn("fs/set_mode", biFsSetMode, acceptsNamed = false))
+    fsNs.nsScope.define("create_symlink", builtinNativeCallFn("fs/create_symlink", biFsCreateSymlink, acceptsNamed = false))
+    fsNs.nsScope.define("read_text_page", builtinNativeCallFn("fs/read_text_page", biFsReadTextPage))
     fsNs.nsScope.define("make_dir",
       builtinNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",

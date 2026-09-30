@@ -142,7 +142,7 @@
   (var all (events/core_projections .get))
   (var states (all .get key))
   (if (== states void) (set states (fresh_map)))
-  (states .put name (copy_data state))
+  (if ($absent? state) (states .delete name) (states .put name (copy_data state)))
   (all .put key states)
   (events/core_projections .set all))
 
@@ -387,11 +387,23 @@
       (out .push value)))
   out)
 
-(fn segment_stream [events : EventStore, values]
+(fn segment_stream [events : EventStore, values, previous]
   (var backend events/backend)
   (var all_digests (fresh_list))
-  (var segments (fresh_list))
   (var start 0)
+  # Complete segments never change. Only the previous open tail and newly
+  # appended events need serialization; older digests are carried forward.
+  (if (&& (! ($absent? previous)) (== previous/segment_events events/segment_events))
+    (then
+    (var sealed (if ($absent? previous/event_count)
+      ($math/max 0 (- previous/segments/.size 1))
+      ($to_int (/ previous/event_count events/segment_events))))
+    (set sealed ($math/min sealed ($to_int (/ values/.size events/segment_events))))
+    (var index 0)
+    (while (< index sealed)
+      (all_digests .push previous/segments/%index)
+      (set index (+ index 1)))
+    (set start (* sealed events/segment_events))))
   (while (< start values/.size)
     (var segment
       (slice_events values start (+ start events/segment_events)))
@@ -401,14 +413,8 @@
       (if_not (backend .Store:has? key)
         (backend .Store:put key segment)))
     (all_digests .push digest)
-    (segments .push segment)
     (set start (+ start events/segment_events)))
-  (var kept_digests all_digests)
-  (var kept_segments segments)
-  (var retained (fresh_list))
-  (for segment in kept_segments
-    (for event in segment (retained .push event)))
-  {^digests kept_digests ^events retained})
+  {^digests all_digests ^events values})
 
 (fn all_manifest_digests [manifest]
   (var out (fresh_list))
@@ -443,7 +449,8 @@
     (var values (streams .get key))
     (if ($absent? values)
       (fail (HarnessStateError ^message $"Dirty event stream ${key} is not cached")))
-    (var segmented (segment_stream events values))
+    (var prior (if ($absent? previous) nil (previous/streams .get key)))
+    (var segmented (segment_stream events values prior))
 
     (var projection
       {^plugin ((events/projections .get) .get key)
@@ -453,7 +460,7 @@
       (events/backend .Store:put $"projection/${projection_digest}" projection))
     (descriptors .put key
       {^segments segmented/digests ^projection projection_digest
-       ^next_seq (next_sequence events ($to_str key))})
+       ^event_count values/.size ^segment_events events/segment_events ^next_seq (next_sequence events ($to_str key))})
     (streams .put key segmented/events))
   (events/streams .set streams)
 
@@ -476,6 +483,11 @@
 # Publication removes the descriptor before reclaiming unreachable segments.
 # Retained older generations age out through the normal event-store GC.
 (fn delete_event_stream [events : EventStore, scope : Str, stream : Str]
+  (acquire_event_writer events)
+  (try (delete_event_stream_unlocked events scope stream)
+    ensure (events/writing .set false)))
+
+(fn delete_event_stream_unlocked [events : EventStore, scope : Str, stream : Str]
   (require_open events)
   (let key (stream_key scope stream))
   ((events/streams .get) .delete key)

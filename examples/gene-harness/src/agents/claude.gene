@@ -63,8 +63,8 @@
       (if_not (== ($head block/text) Str)
         (fail (HarnessError ^message "anthropic returned invalid text content")))
       (parts .push block/text)))
-  (var text ($str/trim ($str/join parts "")))
-  (if_yes (== text "") (fail (HarnessError ^message "anthropic returned no output text")))
+  (var text ($str/join parts ""))
+  (if_yes (== ($str/trim text) "") (fail (HarnessError ^message "anthropic returned no output text")))
   text)
 
 (fn claude_request [config, system : Str, user : Str]
@@ -102,8 +102,8 @@
       (fail (HarnessError ^message "Claude CLI response did not finish its turn; incomplete output was not executed"))))
   (if_not (== ($head parsed/result) Str)
     (fail (HarnessError ^message "Claude CLI returned no text result")))
-  (var text ($str/trim parsed/result))
-  (if_yes (== text "") (fail (HarnessError ^message "Claude CLI returned empty output")))
+  (var text parsed/result)
+  (if_yes (== ($str/trim text) "") (fail (HarnessError ^message "Claude CLI returned empty output")))
   text)
 
 (fn claude_completion [config, system : Str, user : Str] : Str

@@ -5,18 +5,18 @@
 (import ^from "../agents/history" [append_message bounded_request write_body read_body acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store copy_data events_for append_core_event])
-(import ^from "./sessions" [load_session require_record update_session session_busy?])
+(import ^from "./sessions" [load_session require_record update_session session_busy? with_session_gate])
 (import ^from "./questions" [answer_questions])
 (import ^from "./commands" [take_command_attachments])
 (import ^from "./workspace_lock" [close_workspace_lock])
 
 (type RoundError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for RoundError)
-(type RoundController ^props {^runtime Any ^provider Any ^active Any ^watchers Any ^on_change Any?})
+(type RoundController ^props {^runtime Any ^provider Any ^active Any ^watchers Any ^completions Any ^on_change Any?})
 
 (fn new_round_controller [runtime, provider, ^on_change on_change = nil]
   (let controller
-    (RoundController ^runtime runtime ^provider provider ^active ($cell {}) ^watchers ($cell {}) ^on_change on_change))
+    (RoundController ^runtime runtime ^provider provider ^active ($cell {}) ^watchers ($cell {}) ^completions ($cell {}) ^on_change on_change))
   (if_not ($absent? runtime/commands)
     (set runtime/commands/cancel
       (fn [session]
@@ -90,7 +90,13 @@
   (changed controller session receipt)
   receipt)
 
-(fn finish_round [controller : RoundController, session : Str, receipt, outcome]
+(fn finish_round [controller : RoundController, session : Str, receipt, outcome, ^completion completion = nil]
+  (let claim (?? completion ((controller/completions .get) .get session)))
+  (if (&& (! ($absent? claim)) (claim .swap true)) (return nil))
+  (with_session_gate controller/runtime/sessions $"round/${session}"
+    (fn [] (finish_round_unlocked controller session receipt outcome))))
+
+(fn finish_round_unlocked [controller : RoundController, session : Str, receipt, outcome]
   (let saved (copy_data receipt))
   (match outcome
     (when (TaskOutcome/ok result)
@@ -104,6 +110,10 @@
       (saved .put "message" message))
     (when TaskOutcome/cancelled
       (saved .put "state" "cancelled")))
+  (if_yes (controller/runtime/stopping .get)
+    (saved .put "state" "cancelled")
+    (saved .put "message" "Workspace stopped.")
+    (saved .put "last_turn" (/turns (require_record controller/runtime/sessions session))))
   (if_yes (&& (["cancelled" "failed"] .contains? saved/state) (! ($absent? saved/last_turn)))
     (var ended false)
     (for event in (events_for controller/runtime/events "session" session)
@@ -133,7 +143,14 @@
   nil)
 
 (fn start_round_task [controller : RoundController, session : Str, receipt, ^resume resume : Bool = false]
+  (if_yes (controller/runtime/stopping .get)
+    (receipt .put "state" "cancelled")
+    (receipt .put "message" "Workspace stopped.")
+    (save_round controller session receipt)
+    (return receipt))
   (acquire_body_use controller/runtime)
+  (let completion ($cell false))
+  ((controller/completions .get) .put session completion)
   (let task
     (spawn ^lane root (run_round ^resume resume controller/runtime session receipt controller/provider)))
   (controller/active
@@ -152,7 +169,7 @@
     (try
       (let outcome (try (task .join) ensure
         (if_not ($absent? deadline) (deadline .cancel) (deadline .join))))
-      (finish_round controller session receipt
+      (finish_round ^completion completion controller session receipt
         (if (expired .get) (TaskOutcome/ok {^state "failed" ^message "trigger round budget timed out"}) outcome))
     ensure (release_body_use controller/runtime)))))
   (controller/watchers
@@ -162,7 +179,8 @@
 
 (fn submit_round [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
   (with_body_use controller/runtime (fn []
-    (submit_round_impl controller session request_id sequence text ^initiator initiator ^on_admit on_admit))))
+    (with_session_gate controller/runtime/sessions $"round/${session}" (fn []
+      (submit_round_impl controller session request_id sequence text ^initiator initiator ^on_admit on_admit))))))
 
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
   (if (controller/runtime/stopping .get)
@@ -222,7 +240,8 @@
 
 (fn answer_round [controller : RoundController, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (with_body_use controller/runtime (fn []
-    (answer_round_impl controller session batch_id values ^dismiss dismiss))))
+    (with_session_gate controller/runtime/sessions $"round/${session}" (fn []
+      (answer_round_impl controller session batch_id values ^dismiss dismiss))))))
 
 (fn answer_round_impl [controller : RoundController, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (let loaded (load_session controller/runtime/sessions session))

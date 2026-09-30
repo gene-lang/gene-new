@@ -20,7 +20,21 @@
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^on_change Any?})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^on_change Any?})
+
+(fn with_session_gate [manager, key : Str, thunk]
+  (while (manager/gate_mutex .swap true) ($sleep 1))
+  (let gate (try
+    (let previous ((manager/gates .get) .get key))
+    (if ($absent? previous)
+      (then
+        (let created ($cell false))
+        ((manager/gates .get) .put key created)
+        created)
+      (else previous))
+    ensure (manager/gate_mutex .set false)))
+  (while (gate .swap true) ($sleep 1))
+  (try (thunk) ensure (gate .set false)))
 
 (fn notify_session [manager, record]
   (if_not ($absent? manager/on_change)
@@ -76,7 +90,8 @@
     (if (&& ($str/starts_with? ($to_str key) "session/") (!= record/deleted true)) (index .put record/id record)))
   (let manager (SessionManager ^runtime runtime ^events events ^state_root state_root
     ^index ($cell index) ^loaded ($cell {}) ^idle_timeout_ms idle_timeout_ms ^closed ($cell false)
-    ^mutating ($cell false) ^index_writing ($cell false)))
+    ^mutating ($cell false) ^index_writing ($cell false)
+    ^gates ($cell {}) ^gate_mutex ($cell false)))
   (write_index manager)
   (recover_sessions manager)
   manager)
@@ -269,6 +284,9 @@
   (&& (! ($absent? round)) (== round/state "running")))
 
 (fn load_session [manager : SessionManager, id : Str] : SessionState
+  (with_session_gate manager $"load/${id}" (fn [] (load_session_unlocked manager id))))
+
+(fn load_session_unlocked [manager : SessionManager, id : Str] : SessionState
   (require_record manager id)
   (let loaded (manager/loaded .get))
   (let previous (loaded .get id))
@@ -282,8 +300,10 @@
   state)
 
 (fn view_session [manager : SessionManager, id : Str] : SessionState
-  (let state (load_session manager id))
-  (state/viewers .set (+ (state/viewers .get) 1))
+  (let state (with_session_gate manager $"load/${id}" (fn []
+    (let loaded (load_session_unlocked manager id))
+    (loaded/viewers .set (+ (loaded/viewers .get) 1))
+    loaded)))
   (let record (require_record manager id))
   (if record/attention (update_session manager id {^attention false}))
   state)
@@ -296,6 +316,10 @@
   nil)
 
 (fn unload_session [manager : SessionManager, id : Str] : Bool
+  (with_session_gate manager $"round/${id}" (fn []
+    (with_session_gate manager $"load/${id}" (fn [] (unload_session_unlocked manager id))))))
+
+(fn unload_session_unlocked [manager : SessionManager, id : Str] : Bool
   (require_open manager)
   (let state (manager/loaded .get; .get id))
   (if ($absent? state) (return false))

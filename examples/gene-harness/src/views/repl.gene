@@ -30,6 +30,21 @@
   (if (|| (< choice_index 0) (>= choice_index question/choices/.size)) (fail "invalid choice"))
   question/choices/%choice_index)
 
+(fn read_run_command [runtime, raw : Str]
+  (var code raw)
+  (while ($parse/incomplete? code)
+    ($print "... ")
+    (let input ($os/read_line_async))
+    (runtime/stdin_task .set input)
+    (let outcome (input .join))
+    (runtime/stdin_task .set nil)
+    (match outcome
+      (when (TaskOutcome/ok line)
+        (if ($absent? line) (return nil))
+        (set code ($ code "\n" line)))
+      (else (return nil))))
+  ($ "/run " code))
+
 (fn chat [controller, selected : Str]
   (let runtime controller/runtime)
   (let session ($cell selected))
@@ -94,8 +109,11 @@
         (continue))
       (let parsed (parse_submission runtime/h text))
       (if (== parsed/kind "command")
-        (submit_command runtime/commands selected_id text)
-        (if (&& (! ($absent? round)) (== round/state "waiting"))
+        (then
+          (let command (if (== parsed/name "run") (read_run_command runtime parsed/raw) text))
+          (if ($absent? command) (break))
+          (submit_command runtime/commands selected_id command))
+        (else (if (&& (! ($absent? round)) (== round/state "waiting"))
           (then
             (var current (answers .get; .get selected_id))
             (if ($absent? current)
@@ -121,7 +139,7 @@
               selected_id
               $"cli-${sequence/next_seq}"
               sequence/next_seq
-              parsed/text))))
+              parsed/text)))))
     catch Any
       ($println $err/message)))
   (runtime/exit_code .get))

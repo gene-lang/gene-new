@@ -77,6 +77,11 @@ Captured asynchronous subprocesses own a process group on POSIX. Cancelling
 or timing out the Task sends TERM to the group, waits for the child to exit,
 then sends KILL to remaining descendants before completing the Task. Inherited
 stdio execution retains the caller's terminal behavior.
+Captured execution supplies EOF when `stdin_pipe` is omitted. Use
+`^merge_stderr true` to send both output streams through stdout and its line
+channel. Live captured groups are cleaned up on process signals and exit;
+existing signal handlers are called after cleanup. `($os/stdout_tty?)` tests
+the output terminal independently of `stdin_tty?`.
 
 ## Task context and source locations
 
@@ -127,6 +132,10 @@ forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
 nodes. Lines and columns start at 1. `eval` honors this metadata when reporting
 errors. Without `^locs`, the forms retain the ordinary reader representation.
 
+`($parse/incomplete? text)` is an inert reader query. It returns true for
+unfinished forms, strings or comments; complete input and malformed input
+return false. A CLI can collect more input without evaluating partial code.
+
 ```gene runnable
 (let forms ($parse/read_all "\n(+ 1 2)" ^source "response" ^locs true))
 (let form (forms .next))
@@ -141,6 +150,17 @@ errors. Without `^locs`, the forms retain the ordinary reader representation.
 `{^kind "directory" ^size bytes}`, following symbolic links. Missing paths
 raise `OsError`. This lets file viewers select directory, text, and binary
 handling without attempting a directory listing as a type test.
+The result also includes permission `mode` and `symlink`; links include their
+exact `link_target`. `^follow false` inspects a link itself, including a
+dangling link. `($fs/set_mode path mode)` sets permission bits (0–4095 on
+POSIX), and `($fs/create_symlink target path)` creates a symbolic link.
+
+`($fs/read_text_page path ^from 1 ^lines 400 ^max_bytes 1048576)` reads a
+bounded line page, with `text`, `from`, `to`, `next`, `binary` and `truncated`
+fields. It uses a fixed-size input buffer and parks a fiber while reading.
+A page at the byte limit can truncate a long line; `next` names the next
+line. Binary pages return empty text. This API avoids loading an entire large
+file merely to display a range.
 
 `($os/read_line_async)` returns a Task containing one stdin line, or `nil` at
 EOF, on POSIX hosts. It polls readiness without blocking the root lane or

@@ -46,6 +46,9 @@ A loaded SessionState holds history, the current round, recall outputs,
 console state, viewers and its idle timestamp. Idle sessions with no running
 round or viewer unload after the configured timeout, flushing first. Waiting
 questions can remain durable while unloaded.
+Per-session gates cover loading and round admission across parking I/O.
+Concurrent retry answers resume once, and completion claims publish one
+terminal receipt for each execution.
 
 A round starts from a user or trigger request and contains one or more turns.
 Its states are running, waiting, done, failed, cancelled and interrupted.
@@ -86,9 +89,15 @@ apply-patch block. Edits are workspace-relative. Preflight resolves all anchors
 and computes all new bodies before any write. Matching tries exact, trailing
 whitespace-insensitive, then leading/trailing whitespace-insensitive context,
 requiring a unique anchor.
+EOF can terminate the final block. CRLF structure is accepted without changing
+attachment bytes. Patch hunks accept blank context lines, an implicit first
+hunk, and insertion after an anchor without removed lines.
 
 Temporary siblings are staged, then renamed in order; deletes and moves
 follow. A write failure attempts restoration from the in-memory originals.
+Updates and rollback preserve file permissions; symlink updates replace the
+target's content while retaining the link. Physical destination aliases are
+checked before staging.
 Restoration failure reports partial application and attention. Before staging,
 turn/response durably records the affected file list. Recovery reports possible
 partial application and removes leftover staging siblings. File edits in
@@ -163,6 +172,9 @@ Output bodies larger than 16 KiB retain bounded head/tail text. Request items
 share a 64 KiB aggregate limit. Bodies over 2 KiB settle to labeled stubs after
 their first full context. Assistant attachments and patches are elided once.
 Recall maps ids to verified content-addressed blobs and survives restart.
+Loaded history is cached in the session. Older full request bodies are replaced
+by their settled form in storage. Periodic idle blob collection retains the
+latest references and the event store's fallback generations.
 
 Settlement changes the latest previously full request while older message
 content remains stable. Anthropic transport currently places cache checkpoints
@@ -208,6 +220,8 @@ order when capacity and overlap permit. Admitted work is never re-executed.
 Missed policy skips downtime or coalesces it into one due occurrence.
 Overlap policy skips or retains one queued occurrence; further occurrences
 are coalesced as skipped. The workspace trigger-session cap defaults to two.
+The cap bounds unfinished trigger rounds, including waiting rounds. Waiting
+questions therefore retain a slot until answered or expired.
 continue_session reuses a previous occurrence's session when appropriate.
 
 Trigger rounds have their own turn/running-time budgets. Waiting questions
@@ -218,6 +232,10 @@ attention. User continuation of a trigger session uses user-round budgets.
 Hourly retention applies each trigger's keep-count or age policy. Empty
 heartbeats are collected first. Pinned, attention, running, waiting and viewed
 sessions are preserved.
+The scheduler indexes pending occurrences separately from terminal history.
+It retains a configurable recent terminal window (default 256 per trigger)
+and durable no-replay watermarks. Administrative CLI commands open this state
+without executing a scheduler boot tick.
 
 ## Operator commands and shutdown
 

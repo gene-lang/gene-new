@@ -293,7 +293,7 @@ type
     aioTcpWriteText
 
   NativeFileOperation = enum
-    nfoNone, nfoRead, nfoWrite, nfoAtomicWrite
+    nfoNone, nfoRead, nfoWrite, nfoAtomicWrite, nfoReadPage
 
   AsyncIoEnqueueResult = enum
     aioUnavailable
@@ -1362,7 +1362,8 @@ proc enqueueAsyncReadText(path: string, task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncWriteText(path, text: string,
                            task: Value): AsyncIoEnqueueResult
 proc startNativeFileTask(name, path, text: string, operation: NativeFileOperation,
-                         scope: Scope, ownerOnly = false): Value
+                         scope: Scope, ownerOnly = false, first = 1,
+                         lines = 400, maxBytes = 1048576): Value
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
                              task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
@@ -4756,6 +4757,15 @@ proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   if forms.len > 1:
     raise newException(GeneError, "read_one expects one form, got " & $forms.len)
   forms[0]
+
+proc biReadIncomplete(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("parse/incomplete?", args)
+  requireStr("parse/incomplete?", args[0])
+  try:
+    discard readAll(args[0].strVal)
+    FALSE
+  except ReadIncompleteError: TRUE
+  except ReadError: FALSE
 
 proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_all", args)

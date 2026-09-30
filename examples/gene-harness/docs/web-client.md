@@ -54,6 +54,9 @@ The Triggers view creates heartbeat, one-shot and cron definitions, with
 missed/overlap policies, continuation and retention. A trigger's occurrence
 view shows due, started, finished and skipped entries; admitted occurrences
 open their session.
+Occurrence listings retain the configured recent terminal window; due/started
+and pinned/attention entries remain available. Historical occurrence events
+remain in the durable workspace transcript.
 
 ## Wire protocol 4
 

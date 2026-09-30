@@ -136,8 +136,8 @@
       (for part in (?? item/content [])
         (if_yes (== part/type "refusal") (fail (HarnessError ^message "codex refused the request")))
         (if_yes (== part/type "output_text") (texts .push part/text)))))
-  (var text ($str/trim ($str/join texts "")))
-  (if_yes (== text "") (fail (HarnessError ^message "codex returned no output text")))
+  (var text ($str/join texts ""))
+  (if_yes (== ($str/trim text) "") (fail (HarnessError ^message "codex returned no output text")))
   text)
 
 (fn codex_event [data : Str, items] : Any
@@ -199,7 +199,8 @@
       (var text parsed/choices/0/message/content)
       (if ($absent? text)
         ""
-        ($str/trim ($to_str text))))))
+        (if (== ($head text) Str) text
+          (fail (HarnessError ^message "provider returned invalid text content")))))))
 
 (fn feed_codex_preview [state, chunk : Str]
   (state .put "pending" $"${state/pending}${chunk}")

@@ -610,28 +610,6 @@
   (if_yes (&& (!= current void) (== current/context context)) (policies .delete owner))
   nil)
 
-(fn row_diff_summary [record : RegistryRow]
-  {^row_id record/row_id ^owner record/owner ^registry record/registry ^key record/key})
-
-(fn entry_by_id [entries, id : Str]
-  (for entry in entries
-    (if_yes (== entry/id id) (return entry)))
-  nil)
-
-(fn composition_diff [baseline, staged]
-  (var changes (fresh_list))
-  (for entry in staged
-    (var before (entry_by_id baseline ($to_str entry/id)))
-    (if (== before nil)
-      (changes .push {^id entry/id ^change "added" ^from nil ^to entry/module_digest})
-      (if_not (== ($to_str before) ($to_str entry))
-        (changes .push
-          {^id entry/id ^change "changed" ^from before/module_digest ^to entry/module_digest}))))
-  (for entry in baseline
-    (if (== (entry_by_id staged ($to_str entry/id)) nil)
-      (changes .push {^id entry/id ^change "removed" ^from entry/module_digest ^to nil})))
-  changes)
-
 (fn validate_seam_row [candidate]
   (if (|| (== candidate/name void) (== candidate/value void))
     (fail (HarnessError ^message "a seam row requires ^name and ^value"))
@@ -641,8 +619,6 @@
   (if (|| (== candidate/name void) (== candidate/doc void) (== candidate/run void))
     (fail (HarnessError ^message "a command row requires name doc run"))
     candidate))
-
-
 
 (fn validate_function_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
@@ -902,15 +878,6 @@
   (h/log_hydrated .set true)
   (h/log .get))
 
-(fn effects_of [h : Harness, id : Str] : Any
-  (var out (fresh_list))
-  (var ledger (h/ledger .get))
-  (var row_index (h/row_index .get))
-  (for row_id in (?? (ledger .get id) (fresh_list))
-    (var record (row_index .get row_id))
-    (if_not (== record void) (out .push record)))
-  out)
-
 # The kernel log records lifecycle and plugin diagnostics. Session transcripts
 # and model history are owned by the round loop.
 
@@ -1011,7 +978,7 @@
         ^turn turn}))
   nil)
 
-(fn log_append [h : Harness, kind : Str, text : Str, ^phase phase : Str = "text", ^round round : Int = 0, ^role role : Str = "assistant", ^block_id block_id : Str = ""] : Any
+(fn log_append [h : Harness, kind : Str, text : Str] : Any
   (var record (log_record h kind text))
   (append_committed_record h record))
 
@@ -1021,31 +988,6 @@
     (var next (h/event_store/next_sequences .get; .get $"${h/event_scope}:${h/event_stream}"))
     (publish h (HarnessFlushed ^through (- (?? next 1) 1)))
     flushed))
-
-(fn log_events [h : Harness] : Any
-  (h/log .get))
-
-(fn lifecycle_log [h : Harness] : Any
-  (var out (fresh_list))
-  (for e in (h/log .get)
-    (if_yes (== ($to_str e/kind) "lifecycle") (out .push ($to_str e/text))))
-  out)
-
-(fn assemble_request [events] : (List Str)
-  # The whole invariant is this signature.
-  #
-  # It takes the log and nothing else — not the harness, not the seam table,
-  # not the filesystem — so the request is a function of the log alone and a
-  # plugin cannot smuggle model-visible content in around it.
-  #
-  # Replay is then an ordinary fold over the log rather than a bespoke
-  # deserializer, which is the part Gene gets more cheaply than TypeScript:
-  # the log is Gene data.
-  (var out (fresh_list))
-  (for e in events
-    (if_yes (== ($to_str e/kind) "message")
-      (out .push ($to_str e/text))))
-  out)
 
 # --- seams -----------------------------------------------------------------
 
@@ -1091,27 +1033,6 @@
   (for candidate in (rows h "seams")
     (out .push ($to_str candidate/name)))
   out)
-
-(fn render_registry_introspection [h : Harness] : Str
-  (var lines (fresh_list))
-  (for registry_name in ["commands" "functions" "seams" "views" "prompt"]
-    (var keys (registry_row_keys h registry_name))
-    (lines .push $"${registry_name}: ${keys}"))
-  ($str/join
-    lines
-    """
-"""))
-
-(fn render_prompt [h : Harness] : Str
-  (var sections (fresh_list))
-  (for section in (rows h "prompt")
-    (if_not (== section/pull_only true) (sections .push ($to_str section/text))))
-  (sections .push (render_registry_introspection h))
-  ($str/join
-    sections
-    """
-
-"""))
 
 (fn doc [h : Harness, name : Str] : Str
   (for registry_name in ["prompt" "commands" "functions" "seams" "views"]
@@ -1166,9 +1087,6 @@
 (fn apply_argument_list [bundle]
   (bundle/callable bundle/args...))
 
-(fn apply_zero_arguments [callable]
-  (callable))
-
 (fn configure_plugin_module [module, limits : ExecutionLimits]
   (var policy
     {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
@@ -1214,20 +1132,6 @@
     # the retained Store.
     (leave_plugin_execution h)))
 
-(fn invoke_registry_row [h : Harness, registry_name : Str, key : Str, args]
-  (var record (row_record h registry_name key))
-  (if (== record void)
-    (fail (HarnessError ^message $"registry ${registry_name} has no row ${key}")))
-  (invoke_owned_callable h record/owner record/payload/run args))
-
-
-
-
-
-
-
-
-
 (fn describe_plugin_module [h : Harness, module, expected_id : Str, ^core_interface core_interface : Str = "", ^limits limits = nil] : Plugin
   (var context (DescriptorContext ^module_id expected_id ^core_interface core_interface))
   (var bounded (if ($absent? limits) (default_execution_limits) limits))
@@ -1247,8 +1151,6 @@
   (message row_keys [registry_name : Str] : Any
     (var record self)
     (registry_row_keys record/h registry_name))
-
-
 
   (message create_registry [spec] : Any
     (var record self)
@@ -1396,15 +1298,6 @@
   # Installing registers the plugin and reconciles the composition. A failed
   # activation is a state (`error`) the caller reads, not an exception.
   (var state (put_cordis_plugin h p {^host true}))
-  (log_append h "lifecycle" $"installed ${p/id} (${state})")
-  $"installed ${p/id} (${state})")
-
-(fn install_with_policy [h : Harness, p : Plugin, ^limits limits = nil, ^host host : Bool = false] : Str
-  (var state
-    (put_cordis_plugin
-      h
-      p
-      {^host host ^limits (if ($absent? limits) (default_execution_limits) limits)}))
   (log_append h "lifecycle" $"installed ${p/id} (${state})")
   $"installed ${p/id} (${state})")
 

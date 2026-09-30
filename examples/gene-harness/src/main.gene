@@ -9,6 +9,15 @@
 (import ^from "./views/repl" [chat])
 (import ^from "./kernel" [HarnessError])
 
+(fn read_trigger_definition [path : Str]
+  (let text ($fs/read_text path))
+  (try ($serde/read_data text)
+    catch Any
+      (let forms ($into ($parse/read_all text) []))
+      (if (|| (!= forms/.size 1) (!= ($head forms/0) Map))
+        (fail (HarnessError ^message "trigger definition must be an inert Gene map or serde data")))
+      forms/0))
+
 (fn main [args]
   (let names [])
   (for arg in args
@@ -61,7 +70,8 @@
         (return 0)))
     (if_not (["chat" "scripted" "triggers"] .contains? command) (fail (HarnessError ^message $"unknown command ${command}")))
     (set controller (new_round_controller runtime provider))
-    (let triggers (open_trigger_manager runtime controller))
+    (let serving (!= command "triggers"))
+    (let triggers (open_trigger_manager runtime controller ^start serving ^boot serving))
     (if (== command "triggers")
       (then
         (let action (if (> positional/.size 1) positional/1 "list"))
@@ -69,7 +79,7 @@
           (when "list" (for definition in (list_triggers triggers) ($println definition)))
           (when "create"
             (if (< positional/.size 3) (fail (HarnessError ^message "triggers create needs a definition file")))
-            ($println (create_trigger triggers ($serde/read_data ($fs/read_text positional/2)))))
+            ($println (create_trigger triggers (read_trigger_definition positional/2))))
           (when "delete"
             (if (< positional/.size 3) (fail (HarnessError ^message "triggers delete needs an id")))
             ($println (delete_trigger triggers positional/2)))

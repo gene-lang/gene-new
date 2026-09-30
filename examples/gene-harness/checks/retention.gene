@@ -3,7 +3,7 @@
 (import ^from "../src/runtime/sessions" [create_session delete_session list_sessions])
 (import ^from "../src/agents/history"
   [store_body recall_body collect_unreferenced_bodies acquire_body_use release_body_use])
-(import ^from "../src/storage/state" [flush_event_store])
+(import ^from "../src/storage/state" [flush_event_store record_core_state])
 (fn main [args]
   (let runtime (open_runtime args/0 "default" (baseline_profile)))
   (let root runtime/root)
@@ -18,6 +18,13 @@
   ($assert (! (collect_unreferenced_bodies runtime)) "collection raced a live body writer")
   (release_body_use runtime)
   ($assert (collect_unreferenced_bodies runtime) "collection did not run after writers finished")
+  # Keep bodies needed by the retained fallback generations, then reclaim
+  # them once those generations have aged out.
+  ($assert ($fs/exists? $"${runtime/state_root}/blobs/${unique}") "collection broke a retained fallback generation")
+  (repeat epoch in 3
+    (record_core_state runtime/events "workspace" "workspace" "session/state" "gc-epoch" epoch)
+    (flush_event_store runtime/events))
+  (collect_unreferenced_bodies runtime)
   ($assert (! ($fs/exists? $"${runtime/state_root}/blobs/${unique}")) "unreferenced output leaked")
   ($assert (== (recall_body runtime "keep" "1.shared") "shared output") "collection removed a shared body")
   (let manifest (runtime/events/last_manifest .get))

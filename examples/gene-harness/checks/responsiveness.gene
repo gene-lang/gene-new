@@ -26,7 +26,7 @@
     (for scenario in [
       "(entered) (while true (work_tick))"
       "(entered) ($map [1] (fn [n] (while true (work_tick))))"
-      "(entered) ($os/exec ^cmd \"sleep\" ^args [\"5\"]) (Outcome ^done true ^reply \"done\")"]
+      "(entered) ($os/exec ^cmd \"sleep\" ^args [\"30\"]) (Outcome ^done true ^reply \"done\")"]
       (set sequence (+ sequence 1))
       (entered .set false)
       (code .set scenario)
@@ -52,6 +52,7 @@
       ($assert (< latency 100) $"HTTP listing took ${latency} ms")
       (let cancellation ($os/monotonic_ms))
       (let active ((service/controller/active .get) .get "busy"))
+      ($assert (! (active .done?)) "responsiveness fixture completed before the cancel request")
       (cancel_round service/controller "busy" slow/id)
       (active .join)
       (let stopped_after (- ($os/monotonic_ms) cancellation))

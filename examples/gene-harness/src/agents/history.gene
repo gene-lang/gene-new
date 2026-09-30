@@ -1,6 +1,7 @@
 (mod history)
 (import ^from "../storage/state" [core_state core_states record_core_state append_core_event])
 (import ^from "./response" [split_response])
+(import $store/fs [Store])
 
 (var ^^private history_gate ($cell false))
 (type HistoryError ^props {^message Str} ^impl [Error])
@@ -51,6 +52,18 @@
     (mark_body_references runtime (core_states runtime/events "workspace" "workspace") live)
     (for [id record] in (runtime/sessions/index .get)
       (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live))
+    # Retained event generations can still be selected after a damaged newest
+    # checkpoint. Their projection blobs must remain readable too.
+    (let manifest (runtime/events/last_manifest .get))
+    (if_not ($absent? manifest)
+      (let seen {})
+      (for generation in manifest/history
+        (for digest in generation
+          (let key $"projection/${digest}")
+          (if (&& ($absent? (seen .get key)) (runtime/events/backend .Store:has? key))
+            (then
+              (seen .put key true)
+              (mark_body_references runtime (runtime/events/backend .Store:get key) live))))))
     (for path in ($fs/list_dir $"${runtime/state_root}/blobs")
       (let parts ($str/split path "/"))
       (let name ($last parts))
@@ -61,17 +74,28 @@
   ensure (runtime/body_collecting .set false)))
 
 (fn history_state [runtime, session : Str]
+  (if_not ($absent? runtime/sessions)
+    (let loaded ((runtime/sessions/loaded .get) .get session))
+    (if_not ($absent? loaded)
+      (return {^messages ($thaw ($freeze (loaded/history .get)))
+        ^outputs ($thaw ($freeze_shallow (loaded/outputs .get)))})))
   (let ref (core_state runtime/events "session" session "history"))
   (if ($absent? ref) (return {^messages [] ^outputs {}}))
   (if_not ($absent? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))
   ref)
 
 (fn save_history [runtime, session : Str, state]
+  (let last (- state/messages/.size 1))
+  (var index 0)
+  (for message in state/messages
+    (if (< index last) (message .put "content" (?? message/settled message/content)))
+    (set index (+ index 1)))
   (let text ($serde/write_data state))
   (let digest ($crypto/sha256 text))
   (let path $"${runtime/state_root}/blobs/${digest}")
   (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
   (record_core_state runtime/events "session" session "session/state" "history" {^digest digest})
+  (if_not ($absent? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
   (if_not ($absent? runtime/sessions)
     (let loaded (runtime/sessions/loaded .get; .get session))
     (if_not ($absent? loaded)
@@ -83,6 +107,7 @@
   (let digest ($crypto/sha256 text))
   (let path $"${runtime/state_root}/blobs/${digest}")
   (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
+  (if_not ($absent? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
   digest)
 
 (fn read_body [runtime, digest : Str] : Str
