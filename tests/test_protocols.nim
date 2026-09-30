@@ -165,7 +165,7 @@ suite "protocols — declarations and dispatch":
        "((User ^name \"Ada\") .ToName:to_name)",
        "\"Ada\""
 
-  test "types can require manual Send impls":
+  test "a redundant empty impl of a message-free protocol remains legal":
     ck "(type Token ^props {^id Int} ^impl [Send]) " &
        "(impl Send for Token) " &
        "(var t (Token ^id 7)) t/id",
@@ -175,8 +175,35 @@ suite "protocols — declarations and dispatch":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str} ^impl [ToName])")
+    # A message with a default still needs the explicit (empty) impl.
     expect GeneError:
-      discard runStr("(type Token ^props {^id Int} ^impl [Send])")
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error])")
+
+  test "^impl of a message-free protocol is the conformance":
+    # Send: the channel admits the value only through the declaration.
+    ck "(type Token ^props {^id Int} ^impl [Send]) " &
+       "(let c ($channel ^capacity 1)) (c .send (Token ^id 7)) " &
+       "(let t (c .recv)) t/id",
+       "7"
+    expect GeneError:
+      discard runStr("(type Token ^props {^id Int}) " &
+                     "(let c ($channel ^capacity 1)) (c .send (Token ^id 7))")
+    # Nominal subtypes and protocol ancestors follow, as they do for impls.
+    ck "(protocol Marker) (protocol Tagged ^inherit [Marker]) " &
+       "(type A ^props {} ^impl [Tagged]) (type B : A ^props {}) (type Plain ^props {}) " &
+       "(fn marked? [x] (match x (when (m : Marker) true) (else false))) " &
+       "[(marked? (A)) (marked? (B)) (marked? (Plain))]",
+       "[true true false]"
+    # Local types are validated at creation; the declaration satisfies it there too.
+    ck "(protocol Marker) " &
+       "(fn make [] (type Local ^props {} ^impl [Marker]) Local) " &
+       "(match ((make)) (when (m : Marker) true) (else false))",
+       "true"
+    # Inheriting a messaged protocol makes the closure non-empty.
+    expect GeneError:
+      discard runStr("(protocol Named (message name [self] : Str)) " &
+                     "(protocol Loud ^inherit [Named]) " &
+                     "(type T ^props {} ^impl [Loud])")
 
   test "type ^impl barriers distinguish eval units and local forms":
     let evalScope = newGlobalScope()

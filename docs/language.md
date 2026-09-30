@@ -382,6 +382,19 @@ The qualifier identifies the protocol even when two protocols use the same
 message name. Ordinary protocol defaults require an impl. A protocol explicitly
 marked universal provides its own fallback-conformance rules.
 
+`^impl [P]` on a type requires an impl of `P` by the end of the declaring
+unit. When `P` has no messages, including inherited ones, the declaration is
+the conformance and no empty `(impl P for T)` is needed. The built-in `Send`
+marker works this way. A protocol with a defaulted message, such as `Error`,
+still needs its explicit impl.
+
+```gene runnable
+(protocol Audited)
+(type Payment ^props {^cents Int} ^impl [Audited])
+(match (Payment ^cents 250) (when (p : Audited) "audited") (else "plain"))
+# "audited"
+```
+
 ### Inheritance and Self
 
 A type has at most one nominal parent, written `: Parent`. An inherited

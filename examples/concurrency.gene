@@ -198,8 +198,7 @@
 ($println "     final state after 2 + 5 + 7:" snap1/state)
 
 ($println "   - actor/ask with explicit ReplyTo capability")
-(type Counter ^props {^reply (ReplyTo Int)})
-(impl Send for Counter)
+(type Counter ^props {^reply (ReplyTo Int)} ^impl [Send])
 
 (fn ask_handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
   (match msg

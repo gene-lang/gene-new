@@ -39,6 +39,11 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
 - Required `^impl` constraints are checked after forward impls in their
   declaration unit. Eval impls remain overlay-local. Module activation validates
   and publishes impls transactionally.
+- A type's `^impl [P]` establishes conformance by itself when P's inherited
+  message closure is empty, because an impl would carry no bodies. Nominal
+  subtypes and P's protocol ancestors follow, as they do for impls. A redundant
+  explicit empty impl remains legal. A defaulted message still requires an
+  explicit impl, so `^impl [Error]` alone is rejected.
 - Zero applicable visible impls is missing behavior; multiple applicable impls
   is ambiguity. Import order does not choose a winner.
 - `(import_impl Protocol for Receiver ^from "path.gene")` imports an exported

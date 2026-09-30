@@ -697,6 +697,19 @@ suite "modules — file imports":
     let replacement = app.reloadFileModule(modDir / "reload_interface.gene")
     check replacement.moduleRootNamespace.nsScope.lookup("value").print() == "2"
 
+  test "load and reload accept message-free ^impl declarations without impls":
+    writeModule("reload_marker.gene",
+      "(protocol Marker) (type Token ^props {} ^impl [Marker Send])")
+    let app = newApplication(modDir)
+    discard app.loadFileModule(modDir / "reload_marker.gene")
+    writeModule("reload_marker.gene",
+      "(protocol Marker) (type Token ^props {} ^impl [Marker Send]) ")
+    discard app.reloadFileModule(modDir / "reload_marker.gene")
+    let scope = newGlobalScope(app)
+    check run(compileSource(
+      "(import [Marker Token] ^from \"./reload_marker\") " &
+      "(match (Token) (when (m : Marker) true) (else false))"), scope).print() == "true"
+
   test "reload recomposes inherited impl entries through scoped imports":
     writeModule("self_base.gene", """
       (protocol P (message value [] : Int))

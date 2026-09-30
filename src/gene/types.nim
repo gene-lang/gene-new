@@ -9601,6 +9601,20 @@ proc protocolIsOrInherits*(candidate, target: Value): bool =
       return true
   false
 
+proc typeDeclaresMessageFreeProtocol*(typ, protocol: Value): bool =
+  ## A type's `^impl [P]` is itself the conformance when P's inherited message
+  ## closure is empty: an impl would carry no bodies (docs/spec/protocols.md).
+  ## Nominal subtypes inherit the declaration, as they inherit a parent's impl.
+  var current = typ
+  while current.tagOf == OBJECT_TAG and objData(current).objKind == okType:
+    for required in TypeData(objData(current)).requiredProtocols:
+      if required.kind == vkProtocol and
+          ProtocolData(objData(required)).closure.len == 0 and
+          protocolIsOrInherits(required, protocol):
+        return true
+    current = TypeData(objData(current)).parent
+  false
+
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.
   acquire(internLock)

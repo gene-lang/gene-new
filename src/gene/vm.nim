@@ -13573,6 +13573,8 @@ proc scopeChainContains(scope, target: Scope): bool =
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   if protocol.kind == vkProtocol and protocol.protocolUniversal:
     return true
+  if typ.typeDeclaresMessageFreeProtocol(protocol):
+    return true
   if scope != nil:
     validateLookupImpls(scope)
     if scope.hasVisibleImpl(protocol, typ): return true
@@ -30727,7 +30729,8 @@ proc validateProspectiveBase(scope: Scope,
       discard local.validateImplConflict(global)
   for typ in scope.requiredImplTypes:
     for protocol in typ.typeRequiredProtocols:
-      if not (enumerable.collectionHasImpl(typ, protocol) or
+      if not (typ.typeDeclaresMessageFreeProtocol(protocol) or
+              enumerable.collectionHasImpl(typ, protocol) or
               canonical.collectionHasImpl(typ, protocol)):
         raise newException(GeneError,
           "type " & typ.typeName & " requires impl " & protocol.protocolName)
