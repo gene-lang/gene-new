@@ -1,0 +1,48 @@
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/baseline" [baseline_profile])
+(import ^from "../src/runtime/sessions" [create_session load_session require_record])
+(import ^from "../src/runtime/round_controller" [new_round_controller save_round])
+(import ^from "../src/storage/state"
+  [record_core_state append_core_event flush_event_store core_state])
+(fn main [args]
+  (let runtime (open_runtime args/0 "default" (baseline_profile)))
+  (let root runtime/root)
+  (create_session ^id "patch" runtime/sessions)
+  (let controller (new_round_controller runtime (fn [request] "")))
+  (save_round
+    controller
+    "patch"
+    {^id "p1" ^request_id "p1" ^submission_seq 1 ^state "running" ^last_turn 1})
+  (append_core_event runtime/events "session" "patch" {^type "turn/start" ^turn 1 ^round "p1"})
+  (record_core_state
+    runtime/events
+    "session"
+    "patch"
+    "session/state"
+    "patch/1"
+    {^files ["a.txt" "b.txt"] ^state "started" ^round "p1" ^turn 1})
+  ($fs/write_text "a.txt" "new")
+  ($fs/write_text "b.txt" "old")
+  ($fs/write_text ".b.txt.gene-harness-tmp" "new")
+  (flush_event_store runtime/events)
+  (let loaded (load_session runtime/sessions "patch"))
+  (loaded/round
+    .get
+    ; .put "state" "done")
+  (close_runtime runtime)
+  (let reopened (open_runtime root "default" (baseline_profile)))
+  (try
+    ($assert
+      (! ($fs/exists? ".b.txt.gene-harness-tmp"))
+      "boot did not remove patch staging siblings")
+    ($assert (== ($fs/read_text "a.txt") "new") "recovery overwrote the partially applied file")
+    ($assert (== ($fs/read_text "b.txt") "old") "recovery silently finished a partial patch")
+    (let recovery (core_state reopened/events "session" "patch" "recovery"))
+    ($assert
+      ($str/contains? recovery/warnings/0 "a.txt, b.txt")
+      "recovery did not name affected paths")
+    (let record (require_record reopened/sessions "patch"))
+    ($assert record/attention "partial patch did not mark attention")
+    ($println "patch recovery: durable affected paths, partial warning, attention and staged sibling removal")
+  ensure
+    (close_runtime reopened)))

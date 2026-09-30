@@ -1,4 +1,4 @@
-# Provider transport shared by chat and plugin generation. Credentials stay in
+# Provider transport shared by workspace sessions. Credentials stay in
 # the host client; they never enter model prompts or durable harness state.
 (mod model_client)
 
@@ -47,18 +47,21 @@
    ^anthropic_key anthropic_key
    ^claude_command (?? (nonempty environment/GENE_HARNESS_CLAUDE_COMMAND) "claude")})
 
-(fn model_config [] : Any
+(fn model_config [^settings settings = {}] : Any
   (var environment {})
   (for name in ["GENE_HARNESS_PROVIDER" "GENE_HARNESS_MODEL" "GENE_HARNESS_THINKING_EFFORT" "GENE_HARNESS_CLAUDE_COMMAND" "ANTHROPIC_API_KEY" "OPENROUTER_API_KEY" "OPENROUTER_KEY" "OPENROUTER_MODEL" "CODEX_AUTH_FILE" "CODEX_HOME" "HOME"]
     (environment .put name ($os/env? name)))
+  (for [key name] in {^provider "GENE_HARNESS_PROVIDER" ^model "GENE_HARNESS_MODEL" ^effort "GENE_HARNESS_THINKING_EFFORT"}
+    (if ($absent? (nonempty (environment .get name)))
+      (environment .put name (settings .get key))))
   (resolve_config environment))
 
 (fn model_name [] : Str
   (var config (model_config))
   config/model)
 
-(fn public_model_config []
-  (var config (model_config))
+(fn public_model_config [^settings settings = {}]
+  (var config (model_config ^settings settings))
   {^provider config/provider ^model config/model ^effort config/effort})
 
 (fn codex_credentials [path] : Any
@@ -88,11 +91,13 @@
       ^message "Codex OAuth credentials are empty; run codex login")))
   {^access_token access ^account_id account})
 
-(fn completion_request [config, system : Str, user : Str, max_tokens : Int] : Any
+(fn completion_request [config, system : Str, user : Str, max_tokens : Int, ^messages messages = nil] : Any
   (if_yes (== config/provider "anthropic")
-    (return (anthropic_request config system user max_tokens)))
+    (return (anthropic_request config system user max_tokens ^messages messages)))
   (if_yes (== config/provider "claude")
     (fail (HarnessError ^message "Claude Code uses the local CLI, not an HTTP completion request")))
+  (let conversation (if ($absent? messages) [{^role "user" ^content user}]
+    (messages .filter (fn [message] (!= message/role "system")))))
   (if (== config/provider "codex")
     (then
       (var credentials (codex_credentials config/auth_file))
@@ -106,7 +111,9 @@
        # accept max_output_tokens. The buffered HTTP client still bounds bytes
        # and wall time; only completed responses are allowed to become code.
        ^body {^model config/model ^instructions system
-              ^input [{^role "user" ^content [{^type "input_text" ^text user}]}]
+              ^input (conversation .map (fn [message]
+                {^role message/role ^content [{^type (if (== message/role "assistant") "output_text" "input_text")
+                                             ^text message/content}]}))
               ^reasoning {^effort config/effort}
               ^store false ^stream true}})
     (else
@@ -117,8 +124,7 @@
        ^headers {^content-type "application/json"
                  ^authorization $"Bearer ${config/api_key}"}
        ^body {^model config/model
-              ^messages [{^role "system" ^content system}
-                         {^role "user" ^content user}]
+              ^messages (if ($absent? messages) [{^role "system" ^content system} {^role "user" ^content user}] messages)
               ^max_tokens max_tokens ^reasoning {^effort config/effort}}})))
 
 (fn response_text [response] : Str
@@ -239,15 +245,22 @@
   ensure (transfer/task .cancel)))
 
 (fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens = nil,
-                     ^on_delta on_delta = nil] : Str
-  (var config (model_config))
+                     ^on_delta on_delta = nil, ^messages messages = nil, ^config configured = nil] : Str
+  (var config (?? configured (model_config)))
   (if_yes (== config/provider "claude")
-    (return (claude_completion config system user)))
+    (return (claude_completion config system
+      (if ($absent? messages) user ($serde/write_data messages)))))
   (var budget (?? max_tokens (if (== config/provider "anthropic") 8192 3000)))
-  (var spec (completion_request config system user budget))
+  (var spec (completion_request config system user budget ^messages messages))
   (if_yes (&& (== config/provider "codex") (! ($absent? on_delta)))
     (return (stream_codex_completion spec on_delta)))
-  (var response
-    (await
-      (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000)))
+  (let pending (request ^method "POST" ^url spec/url ^headers spec/headers
+    ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000))
+  (var response (try (await pending) ensure (pending .cancel)))
   (completion_text config/provider response))
+
+(fn complete_messages [request] : Str
+  (let messages request/messages)
+  (let last (- messages/.size 1))
+  (chat_completion messages/0/content messages/%last/content ^messages messages ^max_tokens (?? request/max_tokens nil)
+    ^config (model_config ^settings (?? request/config {}))))

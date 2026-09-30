@@ -1,0 +1,24 @@
+(import ^from "../src/agents/model_client" [completion_request])
+(fn main [args]
+  (let messages
+    [
+      {^role "system" ^content "instructions"}
+      {^role "user" ^content "prompt"}
+      {^role "assistant" ^content "response1"}
+      {^role "user" ^content "request1"}
+      {^role "assistant" ^content "response2"}
+      {^role "user" ^content "request2"}])
+  (let spec
+    (completion_request ^messages messages
+      {^provider "anthropic" ^model "test" ^anthropic_key "test" ^effort "none"}
+      "instructions"
+      "request2"
+      100))
+  ($assert (== spec/body/messages/.size 5) "transport dropped conversation messages")
+  ($assert
+    (== spec/body/messages/1/content/0/cache_control/type "ephemeral")
+    "previous assistant cache hint missing")
+  ($assert
+    (== spec/body/messages/3/content/0/cache_control/type "ephemeral")
+    "latest assistant cache hint missing")
+  ($println "message transport: history list and two assistant cache hints"))

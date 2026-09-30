@@ -1,10 +1,8 @@
 (mod composition)
 
-(type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any})
+(type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
-(type CompositionState
-  ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any
-          ^retiring Any ^retire Any ^closed Any ^publishing Any})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^publishing Any ^mutating Any})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -14,32 +12,43 @@
   (if (== ($head value) Map)
     (then
       (let copied {})
-      (for [key item] in value (copied .put key (immutable_view item)))
+      (for [key item] in value
+        (copied .put key (immutable_view item)))
       (return ($freeze_shallow copied))))
   (if (== ($head value) List)
     (then
       (let copied [])
-      (for item in value (copied .push (immutable_view item)))
+      (for item in value
+        (copied .push (immutable_view item)))
       (return ($freeze_shallow copied))))
   value)
 
 (fn require_open [state : CompositionState]
-  (if (state/closed .get)
-    (fail (CompositionClosed ^message "workspace composition is closed")))
+  (if (state/closed .get) (fail (CompositionClosed ^message "workspace composition is closed")))
   state)
 
 (fn new_composition_state [registries, instances, retire] : CompositionState
-  (let snapshot ($freeze_shallow
-    (CompositionSnapshot ^id 0 ^registries (immutable_view registries)
-      ^instances ($freeze_shallow instances))))
+  (let snapshot
+    ($freeze_shallow
+      (CompositionSnapshot ^id 0 ^registries (immutable_view registries) ^instances ($freeze_shallow instances))))
   (let snapshots {})
   (snapshots .put "0" snapshot)
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
-  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1)
-    ^snapshots ($cell snapshots) ^counts ($cell counts)
-    ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false)
-    ^publishing ($cell false)))
+  (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^publishing ($cell false) ^mutating ($cell false)))
+
+(fn run_composition_change [state : CompositionState, change]
+  (require_open state)
+  (let context (?? ($runtime/context) {}))
+  (if (same? context/composition_step state) (return (change)))
+  (while (state/mutating .swap true)
+    ($sleep 1))
+  (try
+    (let scoped ($thaw ($freeze_shallow context)))
+    (scoped .put "composition_step" state)
+    ($runtime/with_context scoped change)
+  ensure
+    (state/mutating .set false)))
 
 (fn adjust_count [counter, delta : Int]
   (while true
@@ -51,8 +60,7 @@
 (fn current_snapshot [state : CompositionState] : CompositionSnapshot
   (require_open state)
   (let context ($runtime/context))
-  (if (&& (! ($absent? context)) (same? context/composition state)
-          (! ($absent? context/snapshot)))
+  (if (&& (! ($absent? context)) (same? context/composition state) (! ($absent? context/snapshot)))
     (return context/snapshot))
   (state/current .get))
 
@@ -79,25 +87,37 @@
 
 (fn queue_composition_change [state : CompositionState, change]
   (require_open state)
-  ((state/pending .get) .push change)
+  (let context ($runtime/context))
+  (if (&& (! ($absent? context)) (! ($absent? context/turn)))
+    (change .put "origin_turn" context/turn))
+  (state/pending
+    .get
+    ; .push change)
   nil)
 
 (fn take_composition_changes [state : CompositionState]
   (require_open state)
-  (state/pending .swap []))
+  (let ready []) (let waiting [])
+  (for change in (state/pending .swap [])
+    (if (&& (! ($absent? change/origin_turn)) (== (change/origin_turn/state .get) "open"))
+      (waiting .push change) (ready .push change)))
+  (for change in waiting ((state/pending .get) .push change))
+  ready)
 
-(fn publish_snapshot [state : CompositionState, registries, instances] : CompositionSnapshot
+(fn publish_snapshot [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
   (require_open state)
-  (while (state/publishing .swap true) ($sleep 1))
+  (while (state/publishing .swap true)
+    ($sleep 1))
   (try
-    (publish_snapshot_serial state registries instances)
-    ensure (state/publishing .set false)))
+    (publish_snapshot_serial state registries instances ^plugins plugins)
+  ensure
+    (state/publishing .set false)))
 
-(fn publish_snapshot_serial [state : CompositionState, registries, instances] : CompositionSnapshot
+(fn publish_snapshot_serial [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
   (let id (state/next_id .swap (+ (state/next_id .get) 1)))
   (let snapshot ($freeze_shallow
     (CompositionSnapshot ^id id ^registries (immutable_view registries)
-      ^instances ($freeze_shallow instances))))
+      ^instances ($freeze_shallow instances) ^plugins (immutable_view plugins))))
   ((state/snapshots .get) .put ($to_str id) snapshot)
   ((state/counts .get) .put ($to_str id) ($atomic_cell 0))
   # Publication itself is one native Cell operation and cannot yield.
@@ -112,13 +132,15 @@
   (for [id counter] in (state/counts .get)
     (if (> (counter .load) 0)
       (then
-        (let snapshot ((state/snapshots .get) .get id))
+        (let snapshot (state/snapshots .get; .get id))
         (for live in snapshot/instances
           (if (== live instance) (return true))))))
   false)
 
 (fn queue_retirement [state : CompositionState, ticket, instances]
-  ((state/retiring .get) .push {^ticket ticket ^instances instances})
+  (state/retiring
+    .get
+    ; .push {^ticket ticket ^instances instances})
   (drain_retirements state)
   nil)
 

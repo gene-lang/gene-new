@@ -8078,6 +8078,10 @@ suite "spec — task context":
       " (fn [] (fail (Error ^message \"boom\")))) " &
       " catch Any nil) ($runtime/context)", "nil")
 
+  test "native process exit validates its portable status range":
+    check_eval_error("($os/exit -1)", "status must be within 0..255")
+    check_eval_error("($os/exit 256)", "status must be within 0..255")
+
   test "parallel fibers retain separate console sinks across pauses":
     check_eval("(let a ($cell \"\")) (let b ($cell \"\")) " &
       "(scope " &
@@ -8095,10 +8099,10 @@ suite "spec — task context":
     for operation in ["map", "filter", "filter_map", "each"]:
       check_eval("(let ticks ($cell 0)) (let stop ($cell false)) " &
         "(scope (let ticker (spawn ^lane root " &
-        " (while (not (stop .get)) ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
+        " (while (not (stop .get)) ($sleep 0) (ticks .set (+ (ticks .get) 1))))) " &
         " (let worker (spawn ^lane root ($" & operation & " [1] (fn [item] " &
-        "  (let until (+ ($os/monotonic_ms) 30)) " &
-        "  (while (< ($os/monotonic_ms) until) nil) item)))) " &
+        "  (var work 0) " &
+        "  (while (< work 20000) (set work (+ work 1))) item)))) " &
         " (await worker) (stop .set true) (await ticker)) (> (ticks .get) 3)",
         "true")
 
@@ -8157,7 +8161,43 @@ suite "spec — task context":
       " ($fs/write_bytes " & geneString(path) & " ($binary/from_list [0 255 97])) " &
       " [($binary/to_list ($fs/read_bytes " & geneString(path) & ")) " &
       "  (try ($fs/read_text " & geneString(path & "-missing") & " ) false " &
-      "   catch OsError true)]))) (await task))", "[[0 255 97] true]")
+        "   catch OsError true)]))) (await task))", "[[0 255 97] true]")
+
+  test "filesystem info exposes file and directory metadata":
+    let directory = getTempDir() / "gene-fs-info-spec"
+    createDir(directory)
+    let path = directory / "data.bin"
+    writeFile(path, "abc")
+    defer:
+      removeFile(path)
+      removeDir(directory)
+    check_eval("(let file ($fs/info " & geneString(path) & ")) " &
+      "(let directory ($fs/info " & geneString(directory) & ")) " &
+      "[file/kind file/size directory/kind " &
+      " (try ($fs/info " & geneString(path & "-missing") & ") false catch OsError true)]",
+      "[\"file\" 3 \"directory\" true]")
+
+  when defined(posix) and not defined(geneWasm) and not defined(emscripten):
+    test "async stdin parks on partial lines, permits scheduler progress and cancels":
+      var endpoints: array[2, cint]
+      check posix.pipe(endpoints) == 0
+      let savedInput = posix.dup(STDIN_FILENO)
+      check savedInput >= 0
+      check posix.dup2(endpoints[0], STDIN_FILENO) >= 0
+      discard posix.close(endpoints[0])
+      defer:
+        discard posix.dup2(savedInput, STDIN_FILENO)
+        discard posix.close(savedInput)
+        discard posix.close(endpoints[1])
+      check posix.write(endpoints[1], "x".cstring, 1) == 1
+      check_eval("(scope (let ticks ($cell 0)) " &
+        " (let input ($os/read_line_async)) " &
+        " (let ticker (spawn ^lane root (repeat 20 ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
+        " ($sleep 5) (input .cancel) " &
+        " [(match (input .join) (when TaskOutcome/cancelled true) (else false)) (> (ticks .get) 0)])",
+        "[true true]")
+      check posix.write(endpoints[1], "next\n".cstring, 5) == 5
+      check_eval("(await ($os/read_line_async))", "\"next\"")
 
   test "set_cwd changes relative paths while preserving the launch directory":
     let previous = getCurrentDir()
@@ -9364,6 +9404,8 @@ suite "spec — native I/O lifecycle adapter":
       "[0 \"iopClosed\" \"ab\"]")
 
 suite "spec — stdlib namespaces from stdlib plan":
+  test "io/flush_stdout is available to streaming CLIs":
+    check_eval("($io/flush_stdout)", "nil")
   test "gene/stream, gene/node, and gene/parse resolve as namespace imports":
     check_eval("(import gene/stream [to_stream map into]) " &
                "((to_stream [1 2 3]) .map (fn [x] (* x x)) ; .into [])",
@@ -10362,6 +10404,27 @@ suite "spec — os and json from ai-agent plan":
     check getMonoTime() - started < initDuration(milliseconds = 1200)
 
   when defined(posix) and compileOption("threads"):
+    test "async exec cancellation stops the shell's background process group":
+      let observed = run(compileSource("""
+        (let channel ($channel ^capacity 2))
+        (let task ($os/exec_stream_async ^cmd "sh"
+          ^args ["-c" "echo $$; sleep 60 & echo $!; wait"]
+          ^stdout_chan channel ^timeout_ms 5000))
+        (let shell ($parse/parse_int (channel .recv)))
+        (let child ($parse/parse_int (channel .recv)))
+        (task .cancel)
+        (task .join)
+        [shell child]
+      """), newGlobalScope())
+      check observed.listItems.len == 2
+      for item in observed.listItems:
+        let pid = Pid(item.intVal)
+        let deadline = getMonoTime() + initDuration(milliseconds = 2000)
+        while posix.kill(pid, 0) == 0 and getMonoTime() < deadline:
+          sleep(10)
+        check posix.kill(pid, 0) == -1
+        check osLastError() == OSErrorCode(ESRCH)
+
     test "async exec join waits for reaping even when the child ignores TERM":
       let started = getMonoTime()
       let observed = run(compileSource("""

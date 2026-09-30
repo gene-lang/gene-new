@@ -18,6 +18,7 @@ proc escapeStr(s: string): string =
     of '\n': result.add "\\n"
     of '\t': result.add "\\t"
     of '\r': result.add "\\r"
+    of '\0': result.add "\\0"
     else: result.add ch
   result.add "\""
 

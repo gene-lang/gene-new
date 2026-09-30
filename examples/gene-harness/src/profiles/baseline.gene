@@ -1,0 +1,6 @@
+(mod baseline)
+(import [Profile] ^from "./profile")
+(import [ExecutionLimits] ^from "../plugin_api")
+(fn baseline_profile []
+  (Profile ^name "chat" ^plugins []
+    ^limits (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000)))

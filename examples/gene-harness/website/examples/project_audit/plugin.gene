@@ -3,9 +3,8 @@
 # shorthand spellings differ from the stored module; check.gene verifies that
 # this file canonicalizes to the recorded module digest.
 (mod plugin
-  (import [Plugin DescriptorContext PluginContext PluginHost fail_tool]
+  (import [Plugin DescriptorContext Host PluginHost fail_tool]
     ^from "../../../src/plugin_api")
-  (import_impl PluginHost for PluginContext ^from "../../../src/kernel")
 
   (fn check_path [path stage]
     (if_yes (== path "")
@@ -113,16 +112,15 @@
   (fn init [ctx : DescriptorContext] : Plugin
     (Plugin
       ^id "project_audit"
-      ^contextual true
+
       ^provides [["tools" "project_audit.scan"] ["tools" "project_audit.last"]]
       ^requires [["tools" "fs.read"] ["tools" "fs.write"]]
       ^activate
-        (fn []
-          (fn [host]
+        (fn [host]
             (host .PluginHost:contribute "tools"
               {^name "project_audit.scan"
                ^doc "Audit 1 to 8 files sequentially, write a Markdown table, and persist the successful summary."
-               ^contextual true
+
                ^run scan
                ^input_schema
                  {^type "object"
@@ -134,7 +132,7 @@
             (host .PluginHost:contribute "tools"
               {^name "project_audit.last"
                ^doc "Return the last saved audit summary without filesystem I/O."
-               ^contextual true
+
                ^run last
                ^input_schema
-                 {^type "object" ^required [] ^properties {} ^additionalProperties false}}))))))
+                 {^type "object" ^required [] ^properties {} ^additionalProperties false}})))))

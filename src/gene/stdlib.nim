@@ -8,6 +8,12 @@
 
 include ./ext/term/stdlib_term_decls
 
+proc biIoFlushStdout(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "io/flush_stdout takes no arguments")
+  when not defined(geneWasm): stdout.flushFile()
+  NIL
+
 # --- plain filesystem operations ---------------------------------------------
 # Thin wrappers over std/os shared by the `fs` natives, the fs-backed `Store`,
 # the HTTP client's CA file, and the file logger. Failures surface as OSError or
@@ -2669,7 +2675,145 @@ when compileOption("threads"):
       process.kill()
       discard process.waitForExit()
 
+  when defined(linux) or defined(geneCapturedForkBackend):
+    # Nim's Linux osproc fork path ignores poDaemon. Create the pipes and
+    # process group in a native child, using only async-signal-safe operations
+    # between fork and exec, so cancellation has the same contract as spawn.
+    {.emit: """
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
+static int gene_spawn_captured(const char *cmd, char **argv, const char *dir,
+                              int *input, int *output, int *error) {
+  int pipes[4][2], made = 0, saved = 0;
+  for (; made < 4; ++made) {
+    if (pipe(pipes[made]) < 0) goto fail;
+    if (fcntl(pipes[made][0], F_SETFD, FD_CLOEXEC) < 0 ||
+        fcntl(pipes[made][1], F_SETFD, FD_CLOEXEC) < 0) {
+      ++made; goto fail;
+    }
+  }
+  pid_t pid = fork();
+  if (pid < 0) goto fail;
+  if (pid == 0) {
+    close(pipes[3][0]);
+    sigset_t mask;
+    sigemptyset(&mask);
+    if (setpgid(0, 0) < 0 || sigprocmask(SIG_SETMASK, &mask, NULL) < 0 ||
+        dup2(pipes[0][0], STDIN_FILENO) < 0 ||
+        dup2(pipes[1][1], STDOUT_FILENO) < 0 ||
+        dup2(pipes[2][1], STDERR_FILENO) < 0 ||
+        (dir[0] && chdir(dir) < 0)) goto child_fail;
+    for (int i = 0; i < 3; ++i) { close(pipes[i][0]); close(pipes[i][1]); }
+    execv(cmd, argv);
+child_fail:
+    saved = errno;
+    while (write(pipes[3][1], &saved, sizeof(saved)) < 0 && errno == EINTR) {}
+    _exit(127);
+  }
+  close(pipes[3][1]);
+  int child_error = 0;
+  ssize_t read_result;
+  do { read_result = read(pipes[3][0], &child_error, sizeof(child_error)); }
+  while (read_result < 0 && errno == EINTR);
+  close(pipes[3][0]);
+  if (read_result != 0) {
+    saved = read_result > 0 ? child_error : errno;
+    kill(pid, SIGKILL);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    made = 3;
+    goto close_fail;
+  }
+  close(pipes[0][0]); close(pipes[1][1]); close(pipes[2][1]);
+  *input = pipes[0][1]; *output = pipes[1][0]; *error = pipes[2][0];
+  return pid;
+fail:
+  saved = errno;
+close_fail:
+  for (int i = 0; i < made; ++i) { close(pipes[i][0]); close(pipes[i][1]); }
+  errno = saved;
+  return -1;
+}
+""".}
+    proc spawnCapturedPosix(cmd: cstring, argv: cstringArray, dir: cstring,
+                           input, output, error: ptr cint): cint
+      {.importc: "gene_spawn_captured", nodecl.}
+    type CapturedOsExecProcess = ref object
+      pid: Pid
+      inputHandle, outputHandle, errorHandle: cint
+      finished: bool
+      exitStatus: int
+    proc startCapturedOsExec(cmd, workingDir: string,
+                            args: seq[string]): CapturedOsExecProcess =
+      let executable = if cmd.contains(DirSep): cmd else: findExe(cmd)
+      if executable.len == 0:
+        raiseOSError(OSErrorCode(ENOENT), "command not found: " & cmd)
+      let argv = allocCStringArray(@[cmd] & args)
+      defer: deallocCStringArray(argv)
+      new(result)
+      let pid = spawnCapturedPosix(executable.cstring, argv, workingDir.cstring,
+        addr result.inputHandle, addr result.outputHandle, addr result.errorHandle)
+      if pid < 0: raiseOSError(osLastError())
+      result.pid = Pid(pid)
+    proc processID(process: CapturedOsExecProcess): int = int(process.pid)
+    proc running(process: CapturedOsExecProcess): bool =
+      if process.finished: return false
+      var status: cint
+      let waited = waitpid(process.pid, status, WNOHANG)
+      if waited == 0 or (waited < 0 and errno == EINTR): return true
+      process.finished = true
+      process.exitStatus = if waited < 0: -1
+        elif WIFEXITED(status): int(WEXITSTATUS(status))
+        elif WIFSIGNALED(status): 128 + int(WTERMSIG(status))
+        else: -1
+      false
+    proc waitForExit(process: CapturedOsExecProcess, timeout = -1): int =
+      let deadline = getMonoTime() + initDuration(milliseconds = max(0, timeout))
+      while process.running:
+        if timeout >= 0 and getMonoTime() >= deadline: return -1
+        os.sleep(1)
+      process.exitStatus
+    proc terminate(process: CapturedOsExecProcess) =
+      discard posix.kill(process.pid, SIGTERM)
+    proc kill(process: CapturedOsExecProcess) =
+      discard posix.kill(process.pid, SIGKILL)
+    proc close(process: CapturedOsExecProcess) =
+      discard posix.close(process.inputHandle)
+      discard posix.close(process.outputHandle)
+      discard posix.close(process.errorHandle)
+  else:
+    type CapturedOsExecProcess = Process
+    proc startCapturedOsExec(cmd, workingDir: string,
+                            args: seq[string]): CapturedOsExecProcess =
+      startProcess(cmd, workingDir = workingDir, args = args,
+                   options = {poUsePath, poDaemon})
+
+  proc stopOsExecGroup(process: CapturedOsExecProcess) =
+    ## Captured children own a process group, so shells cannot leave pipeline
+    ## or background children running after timeout/cancellation.
+    when defined(posix):
+      let pid = Pid(process.processID)
+      if posix.kill(-pid, SIGTERM) != 0:
+        # Older/fork-based osproc implementations do not honor poDaemon.
+        # Keep cancellation effective even when no child group exists.
+        process.terminate()
+    else:
+      process.terminate()
+
+  proc reapStoppedOsExecGroup(process: CapturedOsExecProcess) =
+    discard process.waitForExit(1000)
+    when defined(posix):
+      # Also catch descendants that ignored TERM after their shell exited.
+      discard posix.kill(-Pid(process.processID), SIGKILL)
+      if process.running: process.kill()
+    else:
+      if process.running: process.kill()
+    if process.running: discard process.waitForExit()
+
   proc pollOsExecAsyncCompletions() =
+    pollStdinLineCompletions()
     ## Materialize Gene values and release completed jobs on the scheduler
     ## thread. Worker threads publish only native strings/ints; allocating a
     ## Gene value on a worker and freeing it on another thread corrupts ORC's
@@ -2985,10 +3129,9 @@ when compileOption("threads"):
           release(osExecStdioLock)
         return
 
-      var process: Process
+      var process: CapturedOsExecProcess
       try:
-        process = startProcess(nativeCmd, workingDir = nativeWorkdir,
-                               args = nativeArgs, options = {poUsePath})
+        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs)
       except CatchableError as e:
         settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
         return
@@ -3061,20 +3204,20 @@ when compileOption("threads"):
               drainAvailable(errFd, false)
               pumpInput()
               if stdoutPipeFailed or stderrPipeFailed or stdinPipeFailed:
-                process.terminate()
+                stopOsExecGroup(process)
                 break
               if cancellationRequested():
                 cancelled = true
-                process.terminate()
+                stopOsExecGroup(process)
                 break
               if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
                 timedOut = true
-                process.terminate()
+                stopOsExecGroup(process)
                 break
               os.sleep(osExecPollMs)
             exitCode = if timedOut or cancelled or stdoutPipeFailed or
                           stderrPipeFailed or stdinPipeFailed:
-                         (reapStoppedOsExec(process); -1)
+                         (reapStoppedOsExecGroup(process); -1)
                        else:
                          process.waitForExit()
             drainAvailable(outFd, true)
@@ -3083,15 +3226,15 @@ when compileOption("threads"):
             while process.running:
               if cancellationRequested():
                 cancelled = true
-                process.terminate()
+                stopOsExecGroup(process)
                 break
               if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
                 timedOut = true
-                process.terminate()
+                stopOsExecGroup(process)
                 break
               os.sleep(osExecPollMs)
             exitCode = if timedOut or cancelled:
-                         (reapStoppedOsExec(process); -1)
+                         (reapStoppedOsExecGroup(process); -1)
                        else:
                          process.waitForExit()
             handleStdoutChunk(process.outputStream.readAll())
@@ -3163,6 +3306,7 @@ else:
   proc requestOsExecCancellation(task: Value): bool = false
 
   proc pollOsExecAsyncCompletions() =
+    pollStdinLineCompletions()
     pollIoFileCompletions()
     pollHttpClientCompletions()
     pollOwnedHttpClientCompletions()
@@ -4431,6 +4575,20 @@ proc biOsProcessId(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raise newException(GeneError, "os/process_id takes no arguments")
   newInt(getCurrentProcessId())
 
+proc biOsExit(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOne("os/exit", args)
+  let status = requireInt64("os/exit", args[0])
+  if status < 0 or status > 255:
+    raiseOsError("os/exit status must be within 0..255", scope)
+  when defined(emscripten) or defined(geneWasm):
+    raiseOsError("os/exit is unavailable in the WebAssembly host", scope)
+  else:
+    # Explicit process termination does not unwind Gene ensure scopes.
+    # The caller is responsible for flushing its durable state first.
+    quit(int(status))
+  NIL
+
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/stdin_tty? takes no arguments")
@@ -4440,6 +4598,69 @@ proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
     FALSE
 
 proc cClearErr(f: File) {.importc: "clearerr", header: "<stdio.h>".}
+
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  var stdinLineTask {.threadvar.}: Value
+  var stdinLineScheduler {.threadvar.}: SchedulerState
+  var stdinLineBuffer {.threadvar.}: string
+
+  proc pollStdinLineCompletions() =
+    if stdinLineTask.kind != vkTask:
+      return
+    if stdinLineTask.taskDone:
+      stdinLineTask = NIL
+      stdinLineBuffer.setLen(0)
+      endExternalNativeOp()
+      return
+    for _ in 0..<4096:
+      var ready = TPollfd(fd: STDIN_FILENO,
+                         events: cshort(POLLIN or POLLHUP or POLLERR))
+      if posix.poll(addr ready, 1, 0) <= 0:
+        return
+      var ch: char
+      let count = posix.read(STDIN_FILENO, addr ch, 1)
+      if count < 0:
+        if errno == EINTR or errno == EAGAIN:
+          return
+        let error = "stdin read failed: " & osErrorMsg(osLastError())
+        discard tryFailTask(stdinLineTask, error)
+      elif count == 0 or ch == '\n':
+        if stdinLineBuffer.endsWith("\r"):
+          stdinLineBuffer.setLen(stdinLineBuffer.len - 1)
+        let value = if count == 0 and stdinLineBuffer.len == 0: NIL
+                    else: newStr(stdinLineBuffer)
+        discard tryCompleteTask(stdinLineTask, value)
+      else:
+        stdinLineBuffer.add ch
+        if stdinLineBuffer.len <= 1048576:
+          continue
+        discard tryFailTask(stdinLineTask, "stdin line exceeds 1048576 bytes")
+      wakeTaskWaitersIn(stdinLineScheduler, stdinLineTask)
+      stdinLineTask = NIL
+      stdinLineBuffer.setLen(0)
+      endExternalNativeOp()
+      return
+
+  proc biOsReadLineAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 0:
+      raise newException(GeneError, "os/read_line_async takes no arguments")
+    flushFile(stdout)
+    pollStdinLineCompletions()
+    if stdinLineTask.kind == vkTask:
+      raise newException(GeneError, "stdin already has a pending line read")
+    let scope = if call == nil: nil else: call.dispatchScope
+    stdinLineTask = newExternalTask()
+    if scope != nil:
+      scope.registerIoTask(stdinLineTask)
+    stdinLineScheduler = schedulerForScope(scope)
+    stdinLineBuffer.setLen(0)
+    result = stdinLineTask
+    beginExternalNativeOp()
+    pollStdinLineCompletions()
+else:
+  proc pollStdinLineCompletions() = discard
+  proc biOsReadLineAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    raise newException(GeneError, "os/read_line_async requires a POSIX host")
 
 proc biOsReadLine(args: openArray[Value], call: ptr NativeCall = nil): Value {.nimcall.} =
   ## Read one line from stdin; returns nil at EOF.
@@ -5098,6 +5319,21 @@ proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     newBool(fsPathExists(args[0].strVal))
   except CatchableError as e:
     raiseFilesystemOperationError("fs/exists?", e, scope)
+
+proc biFsInfo(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "fs/info expects (path)")
+  requireStr("fs/info path", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  try:
+    let info = getFileInfo(args[0].strVal)
+    var fields = initPropTable()
+    fields["kind"] = newStr(
+      if info.kind in {pcDir, pcLinkToDir}: "directory" else: "file")
+    fields["size"] = newInt(info.size)
+    newMap(fields)
+  except CatchableError as error:
+    raiseFilesystemOperationError("fs/info", error, scope)
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -9595,6 +9831,7 @@ proc registerStdlibNamespaces(root: Scope) =
   ioScope.define("AsyncReader", asyncReader)
   ioScope.define("AsyncWriter", asyncWriter)
   ioScope.define("IoResource", ioResource)
+  ioScope.define("flush_stdout", builtinNativeFn("io/flush_stdout", biIoFlushStdout))
   csvScope.define("AsyncReader", asyncReader)
   csvScope.define("IoResource", ioResource)
   root.impls.add ProtocolImpl(protocol: ioResource,
@@ -10359,6 +10596,8 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("process_id",
                  builtinNativeCallFn("os/process_id", biOsProcessId,
                                  acceptsNamed = false))
+  osScope.define("exit", builtinNativeCallFn("os/exit", biOsExit,
+                                            acceptsNamed = false))
   osScope.define("stdin_tty?", builtinNativeFn("os/stdin_tty?", biOsStdinTty))
   osScope.define("read_line", builtinNativeCallFn("os/read_line", biOsReadLine,
                                             acceptsNamed = false))
@@ -10498,6 +10737,8 @@ proc registerStdlibNamespaces(root: Scope) =
       builtinNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",
       builtinNativeCallFn("fs/list_dir", biFsListDir, acceptsNamed = false))
+    fsNs.nsScope.define("info",
+      builtinNativeCallFn("fs/info", biFsInfo, acceptsNamed = false))
     fsNs.nsScope.define("make_dir",
       builtinNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
@@ -10516,6 +10757,8 @@ proc registerStdlibNamespaces(root: Scope) =
   jsonScope.define("stringify", builtinNativeCallFn("json/stringify",
                                                 biJsonStringify,
                                                 acceptsNamed = false))
+  osScope.define("read_line_async", builtinNativeCallFn("os/read_line_async", biOsReadLineAsync,
+                                                       acceptsNamed = false))
   jsonScope.define("JsonError", jsonError)
   root.define("json", newNamespace("json", jsonScope))
 

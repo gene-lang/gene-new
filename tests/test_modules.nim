@@ -1136,6 +1136,80 @@ suite "modules — the sandbox loader (design §D5)":
                                 "[\"" & (modDir / "host_type.gene").replace("\\", "/") & "\"]") & ") " &
       "(m/take_it (new Reg 7))").print() == "7"
 
+  test "external source directories retain shared types and relative dependencies":
+    let externalRoot = getTempDir() / "gene_external_module_tests"
+    removeDir(externalRoot)
+    createDir(externalRoot / "src")
+    defer: removeDir(externalRoot)
+    createDir(modDir / "src")
+    writeModule("src/plugin_api.gene",
+      "(type Reg ^props {^n Int})")
+    # A same-named owned file is still relative to the plugin, not redirected
+    # to the host's shared contract.
+    writeFile(externalRoot / "src" / "plugin_api.gene", "(var n 5)")
+    writeFile(externalRoot / "src" / "helper.gene",
+      "(import [n] ^from \"./plugin_api\") (fn offset [] n)")
+    writeFile(externalRoot / "src" / "plugin.gene",
+      "(import [Reg] ^from \"src/plugin_api.gene\") " &
+      "(import [offset] ^from \"./helper\") " &
+      "(fn take_it [r : Reg] : Int (+ r/n (offset)))")
+    check runProgramInOwnApp(
+      "(import [Reg] ^from \"src/plugin_api.gene\") " &
+      "(var m " & loadSandboxed(externalRoot, "src/plugin.gene", "[]",
+                                "[\"src/plugin_api.gene\"]") & ") " &
+      "(import [Reg : StillReg] ^from \"src/plugin_api.gene\") " &
+      "(m/take_it (StillReg ^n 7))").print() == "12"
+
+  test "complete grants see live canonical host implementations through a shared contract":
+    let pluginRoot = modDir / "mods" / "full_contract"
+    createDir(pluginRoot)
+    writeModule("host_api.gene",
+      "(protocol PublicHost (message state [] : Int))")
+    writeFile(pluginRoot / "plugin.gene",
+      "(import [PublicHost] ^from \"host_api.gene\") " &
+      "(fn read [host] : Int (host .PublicHost:state)) " &
+      "(fn experimental_hidden [] ($absent? genex))")
+    let program =
+      "(import [PublicHost] ^from \"./host_api\") (type Host) " &
+      "(var m " & loadSandboxed(pluginRoot, "plugin.gene",
+        "($runtime/sandbox_namespaces)", "[\"host_api.gene\"]") & ") " &
+      # Register after creating the sandbox root: a copied impl list would
+      # still miss the implementation and make a cached root stale.
+      "(impl PublicHost for Host (message state [] : Int 7)) " &
+      "[(m/read (Host)) (m/experimental_hidden)]"
+    check runSandboxProgram(program).print() == "[7 true]"
+    expect GeneError:
+      discard runSandboxProgram(program.replace(
+        "($runtime/sandbox_namespaces)", "[\"fs\"]"))
+
+  test "external sources cannot escape their directory or reach unshared host modules":
+    let externalRoot = getTempDir() / "gene_external_module_tests"
+    removeDir(externalRoot)
+    createDir(externalRoot)
+    defer: removeDir(externalRoot)
+    writeModule("secret.gene", "(var secret 42)")
+    writeFile(externalRoot / "plugin.gene",
+      "(import [secret] ^from \"secret.gene\") secret")
+    expect GeneError:
+      discard runSandboxProgram(loadSandboxed(externalRoot, "plugin.gene", "[]"))
+    expect GeneError:
+      discard runSandboxProgram(loadSandboxed(externalRoot,
+        "../gene_module_tests/secret.gene", "[]"))
+    when defined(posix):
+      createSymlink(modDir / "secret.gene", externalRoot / "linked.gene")
+      expect GeneError:
+        discard runSandboxProgram(loadSandboxed(externalRoot, "linked.gene", "[]"))
+    writeFile(externalRoot / "plugin.gene",
+      "(fn touch [p : Str] ($fs/write_text p \"external\"))")
+    expect GeneError:
+      discard runSandboxProgram("(var m " &
+        loadSandboxed(externalRoot, "plugin.gene", "[]") & ") " &
+        "(m/touch \"" & (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")")
+    discard runSandboxProgram("(var m " &
+      loadSandboxed(externalRoot, "plugin.gene", "[\"fs\"]") & ") " &
+      "(m/touch \"" & (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")")
+    check readFile(modDir / "gene_sandbox_escape") == "external"
+
   test "a mod's own sibling file is inside the sandbox, however deep the entry":
     ## §D5.2 said "the sandbox covers the mod's own directory" and derived that
     ## directory from the entry — `moduleSourceDir(entry).parentDir()`. Measured,

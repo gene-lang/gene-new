@@ -1,15 +1,21 @@
 (mod harness_web_server)
 
-(import [open_session_host close_session_host list_sessions create_session rename_session
-         snapshot submit run_receipt cancel answer_input host_status RunError]
-  ^from "../runtime/session_host")
+(import [open_session_service close_session_service list_sessions create_session rename_session
+         snapshot submit receipt cancel answer command cancel_operator_command host_status edit_session acknowledge_attention RoundError]
+  ^from "./session_service")
 (import [styles] ^from "./style")
 (import [module_dir] ^from "../kernel")
 (import [error_status] ^from "./contract")
-(import [new_push_hub add_peer remove_peer expire_peers] ^from "./push")
+(import [new_push_hub add_peer remove_peer expire_peers broadcast] ^from "./push")
 (import [website_page] ^from "../website/page")
 (import [unload_idle_sessions] ^from "../runtime/sessions")
-(import $net/http [listen serve html json redirect ws_accept])
+(import [SessionError] ^from "../runtime/sessions")
+(import [CommandError] ^from "../runtime/commands")
+(import [QuestionError] ^from "../runtime/questions")
+(import [list_triggers create_trigger delete_trigger list_occurrences TriggerError] ^from "../runtime/triggers")
+(import [scripted_provider] ^from "../agents/scripted")
+(import $net/http [listen serve stop html json redirect ws_accept])
+(import [open_auth create_cookie authenticate] ^from "./auth")
 (import $html [render])
 (import $web [script stylesheet])
 (import $crypto [random_hex])
@@ -38,18 +44,40 @@
                  (span ^class "plus" ^aria-hidden "true" "+") "New conversation")
                (input ^id "session_filter" ^class "filter" ^type "search"
                  ^placeholder "Search conversations…" ^aria-label "Find a conversation")
+               (div ^class "session_filters"
+                 (select ^id "kind_filter" ^aria-label "Session kind"
+                   (option ^value "" "Interactive + pinned")
+                   (option ^value "interactive" "Interactive")
+                   (option ^value "heartbeat" "Heartbeat")
+                   (option ^value "scheduled" "Scheduled")
+                   (option ^value "cron" "Cron"))
+                 (select ^id "status_filter" ^aria-label "Round status"
+                   (option ^value "" "Any status") (option ^value "running" "Running")
+                   (option ^value "waiting" "Waiting") (option ^value "done" "Done")
+                   (option ^value "failed" "Failed") (option ^value "cancelled" "Cancelled")
+                   (option ^value "interrupted" "Interrupted"))
+                 (details (summary "More filters")
+                   (input ^id "trigger_filter" ^placeholder "Trigger id" ^aria-label "Trigger id")
+                   (label "Active since" (input ^id "since_filter" ^type "date"))
+                   (label "Active until" (input ^id "until_filter" ^type "date"))))
+               (div ^id "attention_section" ^^hidden
+                 (div ^class "section_label" "Needs attention")
+                 (nav ^id "attention_sessions" ^aria-label "Needs attention"))
                (div ^class "section_label" "Conversations")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
                (div ^class "sidebar_footer"
+                 (button ^id "triggers_button" ^type "button" "Triggers")
                  (button ^id "status_button" ^type "button" "Workspace status")
                  (a ^href "/about/" "About Gene Harness")))
              (main ^class "workspace"
+               (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
                (header ^class "topbar"
                  (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
                  (div ^class "heading"
                    (h1 ^id "conversation_title" "New conversation")
                    (div ^id "mode" ^class "mode" "Local workspace"))
-                 (button ^id "rename_session" ^class "quiet" ^type "button" "Rename"))
+                 (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
+                 (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
                (form ^id "rename_form" ^class "rename_form" ^^hidden
                  (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
                  (button ^type "submit" "Save title"))
@@ -60,6 +88,9 @@
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
+               (details ^id "console_pane" ^class "console_pane"
+                 (summary ^id "console_summary" "Console")
+                 (pre ^id "console_output" ^aria-label "Session console"))
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
                  (section ^id "input_panel" ^class "input_panel" ^^hidden
@@ -70,7 +101,7 @@
                        (button ^id "input_submit" ^type "submit" "Answer")
                        (button ^id "input_yes" ^type "button" "Yes")
                        (button ^id "input_no" ^type "button" "No")
-                       (button ^id "input_cancel" ^type "button" "Cancel question"))))
+                       (button ^id "input_cancel" ^type "button" "Dismiss all"))))
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
                    (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…"
@@ -87,13 +118,45 @@
                  (button ^id "close_status" ^class "drawer_close" ^type "button"
                    ^aria-label "Close workspace status" "×"))
                (div ^id "status_content")))
+             (aside ^id "trigger_drawer" ^class "drawer" ^^hidden
+               (div ^class "drawer_header"
+                 (h2 "Triggers") (button ^id "close_triggers" ^type "button" "Close"))
+               (div ^id "trigger_list")
+               (section ^id "trigger_occurrences")
+               (details ^class "trigger_create"
+                 (summary "Create trigger")
+                 (form ^id "trigger_form"
+                   (label "Id" (input ^id "trigger_id" ^required true ^placeholder "nightly-audit"))
+                   (label "Kind" (select ^id "trigger_kind"
+                     (option ^value "heartbeat" "Heartbeat") (option ^value "scheduled" "One-shot schedule")
+                     (option ^value "cron" "Cron")))
+                   (label ^id "trigger_every_field" "Interval in milliseconds"
+                     (input ^id "trigger_every" ^type "number" ^min "1" ^value "60000"))
+                   (label ^id "trigger_at_field" ^^hidden "At (UTC)"
+                     (input ^id "trigger_at" ^placeholder "2026-10-01T12:00:00Z"))
+                   (label ^id "trigger_cron_field" ^^hidden "Cron (five fields)"
+                     (input ^id "trigger_cron" ^value "0 3 * * *"))
+                   (label ^id "trigger_timezone_field" ^^hidden "Timezone"
+                     (input ^id "trigger_timezone" ^value "UTC"))
+                   (label "Request" (textarea ^id "trigger_request" ^rows "3" ^required true))
+                   (label "After downtime" (select ^id "trigger_missed"
+                     (option ^value "skip" "Skip missed work") (option ^value "once" "Run once")))
+                   (label "Overlapping work" (select ^id "trigger_overlap"
+                     (option ^value "skip" "Skip") (option ^value "queue_one" "Queue one")))
+                   (label (input ^id "trigger_continue" ^type "checkbox") "Continue previous session")
+                   (label "Sessions to keep" (input ^id "trigger_keep" ^type "number" ^min "0" ^value "30"))
+                   (button ^type "submit" "Create"))))
            %(script harness_ui ^mount "harness_root"))))))
 
 (fn response [status : Int, value]
   (json status ($json/stringify value)))
 
 (fn fail_request [code : Str, message : Str]
-  (fail (RunError ^code code ^message message)))
+  (fail (RoundError ^code code ^message message)))
+
+(fn optional_field [data, key : Str]
+  (let value (field data key ^default ""))
+  (if (== value "") nil value))
 
 (fn field [data, key : Str, ^default fallback = nil] : Str
   (var value (try (data .get key) catch Any nil))
@@ -137,6 +200,7 @@
   (var offline (== (get_env "GENE_HARNESS_OFFLINE" "") "1"))
   (var port ($parse/parse_int (get_env "GENE_HARNESS_PORT" "8095")))
   (var workspace "")
+  (var script_file "")
   (var i 0)
   (while (< i args/.size)
     (var arg args/%i)
@@ -148,26 +212,31 @@
       (elif (&& (== arg "--workspace") (< (+ i 1) args/.size))
         (set i (+ i 1))
         (set workspace args/%i))
+      (elif (&& (== arg "--script") (< (+ i 1) args/.size))
+        (set i (+ i 1))
+        (set script_file args/%i))
       (else (fail_request "invalid_request" $"Unknown server option ${arg}.")))
     (set i (+ i 1)))
   (if (|| (< port 1024) (> port 65535))
     (fail_request "invalid_request" "Choose a port between 1024 and 65535."))
-  (var host (open_session_host ^workspace workspace ^offline offline))
+  (var provider nil)
+  (if_yes (!= script_file "")
+    (set provider (scripted_provider (($parse/read_all ($fs/read_text script_file)) .next)))
+    (set offline true))
+  (var host (open_session_service ^workspace workspace ^offline offline ^provider provider))
   (var origin $"http://127.0.0.1:${port}")
   (var authority $"127.0.0.1:${port}")
   # Distinct names prevent local servers from overwriting each other's cookies.
   (var cookie_name $"gene_harness_session_${port}")
   (var bootstrap ($cell (random_hex 32)))
   (var bootstrap_until (+ (monotonic_ms) 600000))
-  (var browser_sessions ($cell {}))
+  (let auth (open_auth host/runtime/state_root))
   (var push (new_push_hub host))
 
   (fn authorized [request]
     (var value (cookie_value (?? request/headers/cookie "") cookie_name))
-    (var session ((browser_sessions .get) .get value))
-    (if (|| ($absent? session) (> (monotonic_ms) session/expires))
-      (fail_request "unauthorized" "Open the connection link printed by the local Harness server."))
-    session)
+    (try (authenticate auth value)
+      catch Any (fail_request "unauthorized" "Open the connection link printed by the local Harness server.")))
 
   (fn handle [request]
     (if (!= (?? request/headers/host "") authority)
@@ -185,17 +254,16 @@
       (return (redirect "/about/")))
     (if_yes (&& (== request/method "GET") (== request/path "/about/"))
       (return (html about_page)))
-    (if_yes (&& (== request/method "POST") (== request/path "/api/v1/auth/exchange"))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v4/auth/exchange"))
       (var data (request_data request))
       (var token (field data "token"))
       (if (|| (== (bootstrap .get) "") (!= token (bootstrap .get))
               (> (monotonic_ms) bootstrap_until))
         (fail_request "unauthorized" "This connection link has expired or was already used. Restart the server for a new link."))
       (bootstrap .set "")
-      (var cookie (random_hex 32))
-      (var csrf (random_hex 32))
-      ((browser_sessions .get) .put cookie
-        {^csrf csrf ^expires (+ (monotonic_ms) 28800000)})
+      (let browser (create_cookie auth))
+      (let cookie browser/cookie)
+      (let csrf browser/csrf)
       (var result (response 200 {^csrf csrf}))
       (result/headers .put "set-cookie"
         $"${cookie_name}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800")
@@ -204,47 +272,76 @@
     (if_yes (!= request/method "GET")
       (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
         (fail_request "forbidden" "Refresh this page before making a change.")))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v1/status"))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v4/status"))
       (var result (host_status host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v1/events"))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v4/events"))
       (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
       (var watched (field request/params "session" ^default ""))
       (if (> ($str/byte_size watched) 128) (fail_request "invalid_request" "Invalid session."))
       (return (ws_accept request
-        ^on_open (fn [connection] (add_peer push connection watched browser/expires))
+        ^on_open (fn [connection] (add_peer push connection watched (+ (monotonic_ms) ($math/max 0 (- browser/expires ($os/wall_ms))))))
         ^on_close (fn [connection] (remove_peer push connection)))))
-    (if_yes (== request/path "/api/v1/sessions")
+    (if_yes (== request/path "/api/v4/sessions")
       (if (== request/method "GET")
         (return (response 200 (list_sessions host
-          ^after (field request/params "after" ^default "")))))
+          ^after (field request/params "after" ^default "")
+          ^kind (optional_field request/params "kind")
+          ^status (optional_field request/params "status")
+          ^attention (if ($absent? (optional_field request/params "attention")) nil
+            (== (field request/params "attention") "true"))
+          ^trigger (optional_field request/params "trigger")
+          ^q (field request/params "q" ^default "")
+          ^since (field request/params "since" ^default "")
+          ^until (field request/params "until" ^default "")))))
       (if (== request/method "POST")
         (return (response 201 (create_session host
           ^title (field (request_data request) "title" ^default "New conversation"))))))
     (var parts ($str/split request/path "/"))
+    (if (== request/path "/api/v4/triggers")
+      (then
+        (if (== request/method "GET")
+          (return (response 200 {^triggers (list_triggers host/runtime/triggers)})))
+        (if (== request/method "POST")
+          (return (response 201 (create_trigger host/runtime/triggers (request_data request)))))))
+    (if_yes (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v4") (== parts/3 "triggers"))
+      (if (&& (== parts/.size 5) (== request/method "DELETE"))
+        (return (response 200 (delete_trigger host/runtime/triggers parts/4))))
+      (if (&& (== parts/.size 6) (== parts/5 "occurrences") (== request/method "GET"))
+        (return (response 200 {^occurrences (list_occurrences host/runtime/triggers ^trigger parts/4)}))))
     (if_yes (&& (>= parts/.size 5) (== parts/1 "api")
-                (== parts/2 "v1") (== parts/3 "sessions"))
+                (== parts/2 "v4") (== parts/3 "sessions"))
       (var id parts/4)
       (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))
         (var data (request_data request))
-        (return (response 200 (rename_session host id (field data "title")
+        (return (response 200 (edit_session host id data
           (number data "revision")))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "open") (== request/method "POST"))
+        (return (response 200 (acknowledge_attention host id))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
         (return (response 200 (snapshot host id
           ^after (number request/params "after" ^default "-1")
           ^before (number request/params "before" ^default "-1")))))
-      (if_yes (&& (== parts/.size 6) (== parts/5 "runs") (== request/method "POST"))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))
         (var data (request_data request))
         (return (response 202 (submit host id (field data "request_id")
           (number data "submission_seq") (field data "text")))))
-      (if_yes (&& (== parts/.size 6) (== parts/5 "input") (== request/method "POST"))
+      (if_yes (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
         (var data (request_data request))
-        (return (response 202 (answer_input host id (field data "input_id")
-          data/value ^cancelled (== data/cancelled true)))))
-      (if_yes (&& (== parts/.size 7) (== parts/5 "runs") (== request/method "GET"))
-        (return (response 200 (run_receipt host id parts/6))))
-      (if_yes (&& (== parts/.size 8) (== parts/5 "runs") (== parts/7 "cancel")
+        (return (response 202 (answer host id (field data "batch_id")
+          data/answers ^dismiss (== data/dismiss true)))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "POST"))
+        (var data (request_data request))
+        (return (response 202 (command host id (field data "text")))))
+      (if_yes (&& (== parts/.size 8) (== parts/5 "commands") (== parts/7 "cancel") (== request/method "POST"))
+        (return (response 200 (cancel_operator_command host id parts/6))))
+      (if_yes (&& (== parts/.size 6) (== parts/5 "cancel") (== request/method "POST"))
+        (let data (request_data request))
+        (return (response 200 (cancel host id (field data "round_id")))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "rounds") (== request/method "GET"))
+        (return (response 200 (receipt host id parts/6))))
+      (if_yes (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "cancel")
                   (== request/method "POST"))
         (return (response 200 (cancel host id parts/6)))))
     (response 404 {^code "not_found" ^message "This route is not available."}))
@@ -252,7 +349,11 @@
   (fn safe_handle [request]
     (secure_response
       (try (handle request)
-        catch RunError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch RoundError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch TriggerError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch SessionError (response (error_status $err/code) {^code $err/code ^message $err/message})
+        catch QuestionError (response 400 {^code "invalid_request" ^message $err/message})
         catch Any
           ($println $"Harness ${request/method} ${request/path} failed: ${$err/message}")
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
@@ -260,6 +361,7 @@
   (var server (listen ^host "127.0.0.1" ^port port))
   ($println "Gene Harness is ready.")
   ($println $"Open ${origin}/#token=${(bootstrap .get)}")
+  ($io/flush_stdout)
   ($println (if offline
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
     "Ask anything. Use /help for commands. Model replies are available in the transcript."))
@@ -267,5 +369,13 @@
     (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
       ^max_body_bytes 400000 ^request_timeout_ms 10000
       ^tick_ms 1000
-      ^on_tick (fn [] (expire_peers push) (unload_idle_sessions host/sessions)))
-  ensure (close_session_host host)))
+      ^on_tick (fn []
+        (expire_peers push) (unload_idle_sessions host/sessions)
+        (if (host/runtime/stopping .get)
+          (then
+            (let restarting (== (host/runtime/exit_code .get) 75))
+            (broadcast push {^type "stopped" ^session "" ^data {^restart restarting
+              ^message (if restarting "Harness restarting…" "Harness stopped. Restart it from a terminal.")}})
+            (stop server)))))
+  ensure (close_session_service host))
+  (host/runtime/exit_code .get))

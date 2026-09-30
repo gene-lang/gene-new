@@ -4,13 +4,16 @@
 (import [open_session_manager close_session_manager create_session list_sessions load_session
          view_session leave_session unload_session unload_idle_sessions update_session session_busy?]
   ^from "../src/runtime/sessions")
+(import [append_message] ^from "../src/agents/history")
 
 (fn main [args]
   (let root args/0)
   ($fs/make_dir $"${root}/events")
   (let events (open_event_store $"${root}/events"))
-  (let runtime ($cell "one workspace runtime"))
+  ($fs/make_dir $"${root}/blobs")
+  (let runtime {^events events ^state_root root ^root root ^sessions nil ^body_gc_pending ($cell false)})
   (let manager (open_session_manager runtime events root ^idle_timeout_ms 0))
+  (runtime .put "sessions" manager)
   (create_session manager ^id "a" ^title "Alpha")
   (create_session manager ^id "b" ^title "Beta")
   (create_session manager ^id "heartbeat" ^kind "heartbeat" ^trigger "tick"
@@ -29,6 +32,8 @@
   ($assert renamed/0/attention "parallel metadata update lost attention")
   (update_session manager "a" {^attention false})
   (for id in ["a" "b"]
+    (append_message runtime id "user" $"Question from ${id}")
+    (append_message runtime id "assistant" $"Response to ${id}")
     (append_core_event events "session" id {^type "turn/response" ^turn 1 ^text id})
     (append_core_event events "session" id {^type "turn/end" ^turn 1 ^reason "done"}))
   (let a (load_session manager "a"))
@@ -36,6 +41,7 @@
   ($assert (same? a/runtime b/runtime) "session load created another runtime")
   (let history_a (a/history .get))
   (let history_b (b/history .get))
+  ($assert (== history_a/.size 2) "reload test has no actual history")
   (view_session manager "a")
   ($assert (! (unload_session manager "a")) "viewed session unloaded")
   (leave_session manager "a")
@@ -57,7 +63,9 @@
   (close_session_manager manager)
   (close_event_store events)
   (let restored_events (open_event_store $"${root}/events"))
+  (runtime .put "events" restored_events)
   (let restored (open_session_manager runtime restored_events root ^idle_timeout_ms 0))
+  (runtime .put "sessions" restored)
   (try
     ($assert (== ($size (restored_events/streams .get)) 1) "startup retained session streams")
     ($assert (== ((restored_events/streams .get) .get "session:heartbeat") void)

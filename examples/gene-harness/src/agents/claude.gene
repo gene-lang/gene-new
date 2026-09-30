@@ -5,13 +5,27 @@
 (import [HarnessError] ^from "../kernel")
 (import $os [exec_async])
 
-(fn anthropic_request [config, system : Str, user : Str, max_tokens : Int]
+(fn anthropic_request [config, system : Str, user : Str, max_tokens : Int, ^messages messages = nil]
   (if_yes ($absent? config/anthropic_key)
     (fail (HarnessError ^message "no Anthropic API key; set ANTHROPIC_API_KEY, or use GENE_HARNESS_PROVIDER=claude with Claude Code login")))
   (if_yes ($str/starts_with? config/anthropic_key "sk-ant-oat")
     (fail (HarnessError ^message "ANTHROPIC_API_KEY must be an API key; use the claude provider for Claude Code authentication")))
-  (var body {^model config/model ^system system ^max_tokens max_tokens
-    ^messages [{^role "user" ^content user}]})
+  (let conversation (if ($absent? messages) [{^role "user" ^content user}]
+    (messages .filter (fn [message] (!= message/role "system")))))
+  (let assistant_indices [])
+  (var index 0)
+  (for message in conversation
+    (if (== message/role "assistant") (assistant_indices .push index))
+    (set index (+ index 1)))
+  (let cached ($into ($take (assistant_indices .reverse) 2) []))
+  (let wire [])
+  (set index 0)
+  (for message in conversation
+    (let block {^type "text" ^text message/content})
+    (if (cached .contains? index) (block .put "cache_control" {^type "ephemeral"}))
+    (wire .push {^role message/role ^content [block]})
+    (set index (+ index 1)))
+  (var body {^model config/model ^system system ^max_tokens max_tokens ^messages wire})
   (if (== config/effort "none")
     (body .put "thinking" {^type "disabled"})
     (do

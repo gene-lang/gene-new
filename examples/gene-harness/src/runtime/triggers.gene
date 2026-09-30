@@ -1,0 +1,369 @@
+(mod triggers)
+
+(import ^from "../storage/state"
+  [core_states record_core_state flush_event_store copy_data])
+(import ^from "./sessions" [create_session require_record list_sessions unload_idle_sessions update_session delete_session load_session session_busy?])
+(import ^from "../kernel" [rows])
+(import ^from "../agents/history" [collect_unreferenced_bodies])
+(import ^from "./round_controller" [submit_round round_state round_receipt answer_round])
+(import * : cron ^from "./schedule/cron")
+(import * : timezone ^from "./schedule/timezone")
+(import * : calendar ^from "./schedule/calendar")
+
+(type TriggerError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for TriggerError)
+(type TriggerManager ^props {^runtime Any ^controller Any ^definitions Any ^occurrences Any
+  ^cap Int ^task Any ^closed Any ^mutating Any ^hook Any ^last_retention Any})
+
+(fn invalid [message : Str]
+  (fail (TriggerError ^code "invalid_request" ^message message)))
+
+(fn safe_trigger_id? [id]
+  (if (|| (!= ($head id) Str) (== id "") (> ($str/byte_size id) 100)) (return false))
+  (let bytes ($binary/from_str id))
+  (var index 0)
+  (while (< index ($binary/size bytes))
+    (let byte ($binary/get bytes index))
+    (if_not (|| (&& (>= byte 65) (<= byte 90)) (&& (>= byte 97) (<= byte 122))
+      (&& (>= byte 48) (<= byte 57)) ([45 95] .contains? byte)) (return false))
+    (set index (+ index 1)))
+  true)
+
+(fn at_ms [value]
+  (if_yes (== ($head value) Int)
+    (if (< value 0) (invalid "Scheduled at must be non-negative"))
+    (return value))
+  (if (!= ($head value) Str) (invalid "Scheduled at must be epoch milliseconds or a UTC timestamp"))
+  (if_not ($str/ends_with? value "Z") (invalid "Scheduled timestamps require UTC (Z)"))
+  (let parts ($str/split ($str/slice_bytes value 0 (- ($str/byte_size value) 1)) "T"))
+  (if (!= parts/.size 2) (invalid "Expected YYYY-MM-DDTHH:MM:SSZ"))
+  (* (calendar/local_seconds parts/0 parts/1) 1000))
+
+(fn two_digits [number]
+  (if (< number 10) $"0${number}" ($to_str number)))
+
+(fn local_stamp [definition, at]
+  (let second ($to_int (/ at 1000)))
+  (let local (if (== definition/kind "cron")
+    (+ second (timezone/offset_at definition/rules second)) second))
+  (let day (calendar/floor_div local 86400))
+  (let date (calendar/civil day))
+  (let daytime (- local (* day 86400)))
+  (let hour (calendar/floor_div daytime 3600))
+  (let minute (calendar/floor_div (calendar/modulo daytime 3600) 60))
+  (let zone (?? definition/timezone "UTC"))
+  $"${date/year}-${(two_digits date/month)}-${(two_digits date/day)} ${(two_digits hour)}:${(two_digits minute)} ${zone}")
+
+(fn next_time [definition, after]
+  (match definition/kind
+    (when "heartbeat" (+ after definition/every_ms))
+    (when "scheduled" nil)
+    (when "cron" (cron/next definition/pattern definition/rules after))))
+
+(fn validate_definition [input, now]
+  (let definition (copy_data input))
+  (if_not (safe_trigger_id? definition/id) (invalid "Trigger id must contain letters, digits, - or _"))
+  (if_not (["heartbeat" "scheduled" "cron"] .contains? definition/kind) (invalid "Invalid trigger kind"))
+  (if (|| (!= ($head definition/request) Str) (== ($str/trim definition/request) ""))
+    (invalid "A trigger needs a request"))
+  (for [key default] in {^missed "skip" ^overlap "skip" ^continue_session false ^enabled true}
+    (if ($absent? (definition .get key)) (definition .put key default)))
+  (if_not (["skip" "once"] .contains? definition/missed) (invalid "Invalid missed policy"))
+  (if_not (["skip" "queue_one"] .contains? definition/overlap) (invalid "Invalid overlap policy"))
+  (for key in ["enabled" "continue_session"]
+    (if (!= ($head (definition .get key)) Bool) (invalid $"Trigger ${key} must be boolean")))
+  (if_not ($absent? definition/retention)
+    (let policy definition/retention)
+    (if (== ($absent? policy/keep) ($absent? policy/days)) (invalid "Retention requires either keep or days"))
+    (let amount (?? policy/keep policy/days))
+    (if (|| (!= ($head amount) Int) (< amount 0)) (invalid "Retention must be non-negative")))
+  (definition .put "created_ms" now)
+  (if (== definition/kind "heartbeat")
+    (then
+      (if (|| (!= ($head definition/every_ms) Int) (<= definition/every_ms 0))
+        (invalid "Heartbeat every_ms must be positive"))
+      (definition .put "next_ms" (+ now definition/every_ms))))
+  (if (== definition/kind "scheduled") (definition .put "next_ms" (at_ms definition/at)))
+  (if (== definition/kind "cron")
+    (then
+      (let pattern (cron/compile definition/cron))
+      (let rules (timezone/system_rules (?? definition/timezone "UTC") 2100))
+      (definition .put "timezone" rules/name)
+      (definition .put "pattern" pattern)
+      (definition .put "rules" rules)
+      (definition .put "next_ms" (cron/next pattern rules now))))
+  definition)
+
+(fn require_accepting [manager]
+  (if (|| (manager/closed .get) (manager/runtime/stopping .get))
+    (fail (TriggerError ^code "stopped" ^message "Workspace is stopping"))))
+
+(fn save_definition [manager, definition]
+  (record_core_state manager/runtime/events "workspace" "workspace" "trigger/state"
+    $"trigger/${definition/id}" definition)
+  (flush_event_store manager/runtime/events)
+  ((manager/definitions .get) .put definition/id (copy_data definition))
+  ($fs/write_text_atomic $"${manager/runtime/state_root}/triggers/${definition/id}.gene"
+    ($serde/write_data definition))
+  (copy_data definition))
+
+(fn save_occurrence [manager, occurrence]
+  (record_core_state manager/runtime/events "workspace" "workspace" "trigger/occurrence"
+    $"occurrence/${occurrence/id}" occurrence)
+  (flush_event_store manager/runtime/events)
+  ((manager/occurrences .get) .put occurrence/id (copy_data occurrence))
+  (copy_data occurrence))
+
+(fn create_trigger [manager, input, ^now now = nil]
+  (require_accepting manager)
+  (let definition (validate_definition input (?? now ($os/wall_ms))))
+  (while (manager/mutating .swap true) ($sleep 1))
+  (try
+    (if_not ($absent? ((manager/definitions .get) .get definition/id))
+      (fail (TriggerError ^code "conflict" ^message "Trigger already exists")))
+    (save_definition manager definition)
+  ensure (manager/mutating .set false)))
+
+(fn delete_trigger [manager, id : Str]
+  (require_accepting manager)
+  (while (manager/mutating .swap true) ($sleep 1))
+  (try
+    (let definition ((manager/definitions .get) .get id))
+    (if ($absent? definition) (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+    (let removed (copy_data definition))
+    (removed .put "enabled" false)
+    (removed .put "deleted" true)
+    (save_definition manager removed)
+  ensure (manager/mutating .set false)))
+
+(fn list_triggers [manager]
+  (let result [])
+  (for [id definition] in (manager/definitions .get)
+    (if_not (== definition/deleted true) (result .push (copy_data definition))))
+  ($order/sort_by result (fn [definition] definition/id)))
+
+(fn list_occurrences [manager, ^trigger trigger = nil]
+  (let result [])
+  (for [id occurrence] in (manager/occurrences .get)
+    (if (|| ($absent? trigger) (== occurrence/trigger trigger)) (result .push (copy_data occurrence))))
+  ($order/sort_by result (fn [occurrence] occurrence/at_ms)))
+
+(fn boundary [manager, name, occurrence]
+  (if_not ($absent? manager/hook) (manager/hook name (copy_data occurrence)))
+  nil)
+
+(fn matching_receipt [manager, occurrence]
+  (if ($absent? ((manager/runtime/sessions/index .get) .get occurrence/session)) (return nil))
+  (let state (round_state manager/controller occurrence/session))
+  (for receipt in state/receipts
+    (if (== receipt/request_id occurrence/id) (return receipt)))
+  nil)
+
+(fn reconcile_occurrences [manager]
+  (for occurrence in (list_occurrences manager)
+    (if_not (["due" "started"] .contains? occurrence/state) (continue))
+    (let receipt (matching_receipt manager occurrence))
+    (if ($absent? receipt) (continue))
+    (if_yes (== occurrence/state "due")
+      (occurrence .put "state" "started")
+      (occurrence .put "round" receipt/id))
+    (if_not (["running" "waiting"] .contains? receipt/state)
+      (occurrence .put "state" "finished")
+      (occurrence .put "outcome" receipt/state)
+      (if (["failed" "interrupted"] .contains? receipt/state)
+        (update_session manager/runtime/sessions occurrence/session {^^attention})))
+    (if (!= ($serde/write_data occurrence)
+             ($serde/write_data ((manager/occurrences .get) .get occurrence/id)))
+      (save_occurrence manager occurrence))))
+
+(fn trigger_busy? [manager, trigger]
+  (for occurrence in (list_occurrences manager ^trigger trigger)
+    (if (== occurrence/state "started") (return true)))
+  false)
+
+(fn record_due [manager, definition, at, ^missed missed : Bool = false]
+  (let id $"${definition/id}@${at}")
+  (if_not ($absent? ((manager/occurrences .get) .get id)) (return nil))
+  (var state "due")
+  (var reason "")
+  (if_yes (&& missed (== definition/missed "skip")) (set state "skipped") (set reason "missed"))
+  (var queued false)
+  (for previous in (list_occurrences manager ^trigger definition/id)
+    (if (== previous/state "due") (set queued true)))
+  (if_yes (== state "due")
+    (if queued
+      (then (set state "skipped") (set reason "coalesced"))
+      (else
+        (if_yes (&& (trigger_busy? manager definition/id) (== definition/overlap "skip"))
+          (set state "skipped") (set reason "overlap")))))
+  (let session $"s-trigger-${($str/slice_bytes ($crypto/sha256 id) 0 32)}")
+  (let occurrence (save_occurrence manager
+    {^id id ^trigger definition/id ^at_ms at ^state state ^reason reason ^session session}))
+  (boundary manager "due" occurrence)
+  occurrence)
+
+(fn schedule_due [manager, now, boot]
+  (for definition in (list_triggers manager)
+    (if (|| (! definition/enabled) ($absent? definition/next_ms) (> definition/next_ms now)) (continue))
+    (var at definition/next_ms)
+    # Downtime is coalesced to the last scheduled occurrence, including cron
+    # gaps and repeated local times as resolved by the retained timezone rules.
+    (if (== definition/kind "heartbeat")
+      (set at (+ at (* definition/every_ms ($to_int (/ (- now at) definition/every_ms))))))
+    (if (== definition/kind "cron") (set at (cron/previous definition/pattern definition/rules now)))
+    (record_due manager definition at ^missed boot)
+    (definition .put "last_ms" at)
+    (definition .put "next_ms" (next_time definition at))
+    (save_definition manager definition)))
+
+(fn start_due [manager]
+  (var running 0)
+  (for occurrence in (list_occurrences manager)
+    (if (== occurrence/state "started") (set running (+ running 1))))
+  (for occurrence in (list_occurrences manager)
+    (if (>= running manager/cap) (break))
+    (if (!= occurrence/state "due") (continue))
+    (let definition ((manager/definitions .get) .get occurrence/trigger))
+    (if (|| ($absent? definition) (! definition/enabled))
+      (then
+        (occurrence .put "state" "skipped")
+        (occurrence .put "reason" "disabled")
+        (save_occurrence manager occurrence)
+        (continue)))
+    (if (trigger_busy? manager definition/id) (continue))
+    (if definition/continue_session
+      (then
+        (let previous (list_occurrences manager ^trigger definition/id))
+        (var prior nil)
+        (for item in previous
+          (if (&& (< item/at_ms occurrence/at_ms) (== item/state "finished")) (set prior item)))
+        (if_yes (&& (! ($absent? prior)) (! ($absent? ((manager/runtime/sessions/index .get) .get prior/session))))
+          (occurrence .put "session" prior/session)
+          (save_occurrence manager occurrence))))
+    (let existing ((manager/runtime/sessions/index .get) .get occurrence/session))
+    (if (&& (! ($absent? existing)) (session_busy? (load_session manager/runtime/sessions occurrence/session))) (continue))
+    (let local (local_stamp definition occurrence/at_ms))
+    (if ($absent? ((manager/runtime/sessions/index .get) .get occurrence/session))
+      (create_session manager/runtime/sessions ^id occurrence/session ^kind definition/kind
+        ^trigger definition/id ^occurrence occurrence/id ^title $"${definition/id} · ${local}"
+        ^first_request definition/request))
+    (boundary manager "session" occurrence)
+    (let state (round_state manager/controller occurrence/session))
+    (let sequence state/next_seq)
+    (submit_round manager/controller occurrence/session occurrence/id sequence definition/request
+      ^initiator $"trigger:${definition/id}"
+      ^on_admit (fn [receipt]
+        (boundary manager "admitted" occurrence)
+        (occurrence .put "state" "started")
+        (occurrence .put "round" receipt/id)
+        (save_occurrence manager occurrence)
+        (boundary manager "started" occurrence)))
+    (set running (+ running 1))))
+
+(fn tick_triggers [manager, ^now now = nil, ^boot boot : Bool = false]
+  (if (|| (manager/closed .get) (manager/runtime/stopping .get)) (return nil))
+  (while (manager/mutating .swap true) ($sleep 1))
+  (try
+    (sync_plugin_triggers manager (?? now ($os/wall_ms)))
+    (expire_trigger_questions manager (?? now ($os/wall_ms)))
+    (reconcile_occurrences manager)
+    (schedule_due manager (?? now ($os/wall_ms)) boot)
+    (start_due manager)
+    (if_yes (>= (- (?? now ($os/wall_ms)) (manager/last_retention .get)) 3600000)
+      (apply_retention manager ^now now)
+      (manager/last_retention .set (?? now ($os/wall_ms))))
+    (unload_idle_sessions manager/runtime/sessions)
+    (if (manager/runtime/body_gc_pending .get) (collect_unreferenced_bodies manager/runtime))
+  ensure (manager/mutating .set false)))
+
+(fn expire_trigger_questions [manager, now]
+  (for record in (list_sessions manager/runtime/sessions ^status "waiting")
+    (if (== record/kind "interactive") (continue))
+    (let loaded (load_session manager/runtime/sessions record/id))
+    (let receipt (loaded/round .get))
+    (let deadline receipt/questions/deadline)
+    (if (&& (! ($absent? deadline)) (<= deadline now))
+      (then
+        (update_session manager/runtime/sessions record/id {^^attention})
+        (answer_round manager/controller record/id receipt/questions/id {} ^^dismiss)))))
+
+(fn sync_plugin_triggers [manager, now]
+  (let live {})
+  (for input in (rows manager/runtime/h "triggers")
+    (let fingerprint ($crypto/sha256 ($serde/write_data input)))
+    (live .put input/id true)
+    (let previous ((manager/definitions .get) .get input/id))
+    (if (&& (! ($absent? previous)) ($absent? previous/plugin_fingerprint))
+      (fail (TriggerError ^code "conflict" ^message $"Plugin trigger conflicts with operator trigger ${input/id}")))
+    (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
+      (let definition (validate_definition input now))
+      (definition .put "plugin_fingerprint" fingerprint)
+      (save_definition manager definition)))
+  (for [id definition] in (manager/definitions .get)
+    (if_yes (&& (! ($absent? definition/plugin_fingerprint)) ($absent? (live .get id)) (!= definition/deleted true))
+      (let removed (copy_data definition))
+      (removed .put "deleted" true)
+      (removed .put "enabled" false)
+      (save_definition manager removed))))
+
+(fn empty_heartbeat? [record]
+  (&& (== record/kind "heartbeat") (== record/status "done")
+      (!= record/has_patch true) (!= record/has_registration true) (!= record/attention true)))
+
+(fn apply_retention [manager, ^now now = nil]
+  (let instant (?? now ($os/wall_ms)))
+  (let removed [])
+  (for definition in (list_triggers manager)
+    (if ($absent? definition/retention) (continue))
+    (let all (list_sessions manager/runtime/sessions ^trigger definition/id))
+    (let candidates [])
+    (for record in all
+      (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)) (continue))
+      (candidates .push record))
+    (let ordered ($order/sort_by ^compare (fn [a b]
+      (let first (if (empty_heartbeat? a) 0 1))
+      (let second (if (empty_heartbeat? b) 0 1))
+      (if (!= first second) ($order/compare first second)
+        ($order/compare (?? a/last_active_ms 0) (?? b/last_active_ms 0))))
+      candidates (fn [record] record)))
+    (var excess ($math/max 0 (- all/.size (?? definition/retention/keep all/.size))))
+    (for record in ordered
+      (let expired (&& (! ($absent? definition/retention/days))
+        (< (?? record/last_active_ms 0) (- instant (* definition/retention/days 86400000)))))
+      (if (&& (<= excess 0) (! expired)) (continue))
+      (if_yes (delete_session manager/runtime/sessions record/id)
+        (removed .push record/id)
+        (set excess (- excess 1)))))
+  removed)
+
+(fn open_trigger_manager [runtime, controller, ^poll_ms poll_ms : Int = 100,
+                          ^start start : Bool = true, ^now now = nil, ^hook hook = nil]
+  (let definitions {})
+  (let occurrences {})
+  (for [key value] in (core_states runtime/events "workspace" "workspace")
+    (if ($str/starts_with? ($to_str key) "trigger/") (definitions .put value/id value))
+    (if ($str/starts_with? ($to_str key) "occurrence/") (occurrences .put value/id value)))
+  (let config ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene")))
+  (let cap (?? config/trigger_concurrency 2))
+  (if (|| (!= ($head cap) Int) (< cap 1)) (invalid "trigger_concurrency must be positive"))
+  (let manager (TriggerManager ^runtime runtime ^controller controller ^definitions ($cell definitions)
+    ^occurrences ($cell occurrences) ^cap cap ^task ($cell nil) ^closed ($cell false)
+    ^mutating ($cell false) ^hook hook ^last_retention ($cell 0)))
+  (set runtime/triggers manager)
+  (runtime/functions .put "create_trigger" (fn [definition] (create_trigger manager definition)))
+  (runtime/functions .put "list_triggers" (fn [] (list_triggers manager)))
+  (runtime/functions .put "delete_trigger" (fn [id : Str] (delete_trigger manager id)))
+  (tick_triggers manager ^boot true ^now now)
+  (if start
+    (manager/task .set (spawn ^lane root
+      (while (! (manager/closed .get))
+        ($sleep poll_ms)
+        (try (tick_triggers manager)
+          catch Any ($println $"Trigger scheduler: ${$err/message}"))))))
+  manager)
+
+(fn close_trigger_manager [manager]
+  (if (manager/closed .swap true) (return nil))
+  (let task (manager/task .get))
+  (if_not ($absent? task) (task .cancel) (task .join))
+  nil)

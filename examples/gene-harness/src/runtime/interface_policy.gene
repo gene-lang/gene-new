@@ -2,7 +2,6 @@
 (mod interface_policy)
 
 (fn current_interfaces []
-  {^core "gene-harness/PluginHost:1"
-   ^plugin_api "gene-harness/Plugin:1"
-   ^harness_render "gene-harness/HarnessRender:1"
-   ^harness_fs "gene-harness/HarnessFs:1"})
+  {^core "gene-harness/PluginHost:2"
+   ^plugin_api "gene-harness/Plugin:2"
+   ^harness_render "gene-harness/HarnessRender:1"})

@@ -2814,6 +2814,26 @@ suite "vm — cooperative scheduler":
        "[(out .get) ($sleep 10) (out .get)]",
        "[0 nil 9]"
 
+  test "detached eval tasks retain pooled lexical ancestors and task context":
+    ck """
+      (let tasks ($cell []))
+      (let lines ($cell []))
+      (fn start []
+        (let site (env ^bindings {^save (fn [task] (tasks .get; .push task))}))
+        ($runtime/with_context {^output (fn [text] (lines .get; .push text))}
+          (fn []
+            (let name "detached")
+            (eval (quote (scope
+              (let task (spawn ^lane root (do ($sleep 10) ($println name))))
+              (task .detach)
+              (save task))) ^in site))))
+      (let parent (spawn ^lane root (start)))
+      (parent .join)
+      (let pending (tasks .get))
+      (let result (pending/0 .join))
+      [(== ($head result) TaskOutcome/ok) (lines .get)]
+    """, "[true [\"detached\\n\"]]"
+
   test "an actor handler can suspend on a channel mid-message":
     # The handler recvs from a channel while processing a message: its fiber parks,
     # the scheduler runs a producer task to feed the channel, and the handler

@@ -5,13 +5,16 @@
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_workspace close_workspace prepare_workspace activate_workspace_plan]
   ^from "../storage/workspace")
+(import [persist_registry_generation record_registry_generation] ^from "../storage/workspace")
 (import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "./workspace_lock" ^export true)
 (import [open_session_manager close_session_manager create_session load_session]
   ^from "./sessions")
+(import [new_command_manager close_command_manager] ^from "./commands")
+(import [close_trigger_manager] ^from "./triggers")
 
 (type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^events Any
-                            ^sessions Any
-                            ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any})
+                            ^sessions Any ^commands Any ^triggers Any ^functions Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any
+                            ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^on_event Any? ^restarted Bool ^shutdown_watchdog Any})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 
@@ -27,10 +30,10 @@
   (if_not ($fs/exists? $"${state_root}/config.gene")
     ($fs/write_text_atomic $"${state_root}/config.gene"
       ($serde/write_data
-        {^provider "anthropic" ^model ""
+        {^provider "" ^model ""
          ^response_budget {^timeout_ms 600000 ^max_memory_mb 1024}
          ^turn_limit 24 ^trigger_turn_limit 12 ^trigger_timeout_ms 300000
-         ^idle_timeout_ms 600000 ^trigger_concurrency 2})))
+         ^idle_timeout_ms 600000 ^trigger_concurrency 2 ^question_timeout_ms 86400000})))
   state_root)
 
 (fn close_runtime [runtime : HarnessRuntime]
@@ -38,6 +41,8 @@
   (var outcome nil)
   (try
     (try
+      (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
+      (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
       (close_session_manager runtime/sessions)
       (set outcome (shutdown_harness runtime/h))
     ensure (close_workspace runtime/workspace))
@@ -47,7 +52,9 @@
         (flush_event_store runtime/events))
     ensure
       (if runtime/owns_ownership (close_workspace_lock runtime/ownership))
-      (runtime/closed .set true)))
+      (runtime/closed .set true)
+      (let watchdog (runtime/shutdown_watchdog .get))
+      (if_not ($absent? watchdog) (watchdog .cancel) (watchdog .join))))
   (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
     (fail (RuntimeCleanupError ^message "Composition cleanup requires recovery. Inspect the Harness output.")))
   nil)
@@ -69,6 +76,8 @@
   (let owned ($absent? supplied_events))
   (try
     (let state_root (prepare_layout canonical))
+    (let restarted ($fs/exists? $"${state_root}/restart_notice"))
+    (if restarted ($fs/remove $"${state_root}/restart_notice"))
     ($os/set_cwd canonical)
     (if owned (set events (open_event_store $"${state_root}/events")))
     (set workspace (open_workspace $"${state_root}/composition"
@@ -76,14 +85,21 @@
       ^workspace_root canonical ^generated_dir $"${state_root}/modules/source"))
     (set h (new_harness ^event_store events ^event_scope event_scope
       ^event_stream session ^workspace workspace ^limits profile/limits))
+    (set h/registry_commit (fn [owner] (persist_registry_generation workspace h owner)))
+    (set h/registry_record (fn [owner revision] (record_registry_generation workspace h owner revision)))
     (if_yes activate
       (let prepared (prepare_workspace workspace h ^session session))
       (boot profile ^h h)
       (activate_workspace_plan prepared h))
-    (set runtime (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil
+    (set runtime (HarnessRuntime ^root canonical ^state_root state_root ^sessions nil ^commands nil ^triggers nil ^functions {}
+      ^body_users ($atomic_cell 0) ^body_collecting ($cell false) ^body_gc_pending ($cell false)
+      ^stopping ($cell false) ^exit_code ($cell 0) ^stdin_task ($cell nil)
+      ^restarted restarted
+      ^shutdown_watchdog ($cell nil)
       ^h h ^workspace workspace ^events events ^ownership ownership
       ^owns_ownership owns_ownership ^owns_events owned ^closed ($cell false)))
     (set runtime/sessions (open_session_manager runtime events state_root))
+    (set runtime/commands (new_command_manager runtime))
     (if (&& activate (== event_scope "session"))
       (then
         (create_session runtime/sessions ^id session)

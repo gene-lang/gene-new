@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bootstrap Gene; the restart supervisor itself is written in Gene.
+GENE_HARNESS_SUPERVISED=1
+export GENE_HARNESS_SUPERVISED
+harness_package_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "${GENE_BINARY:-gene}" run "$harness_package_dir/src/runtime/supervisor.gene" "$@"

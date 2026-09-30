@@ -104,6 +104,15 @@ proc agentStateRecordPath(root, key: string): string =
   root / "generations" / readFile(current).strip() / (key & ".gene")
 
 suite "cli — gene run":
+  test "os exit returns an explicit status without unwinding Gene ensure":
+    let ran = runGene(["eval",
+      "(try ($println \"before\") ($os/exit 75) ensure ($println \"unwound\"))"])
+    check ran.exitCode == 75
+    check ran.output.strip() == "before"
+    let invalid = runGene(["eval", "($os/exit 256)"])
+    check invalid.exitCode != 0
+    check "os/exit status must be within 0..255" in invalid.output
+
   setup:
     createDir(cliDir)
 

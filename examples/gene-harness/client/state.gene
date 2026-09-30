@@ -1,6 +1,6 @@
 (mod harness_client_state ^profile web)
 
-(import [terminal_run : terminal] ^from "../src/web/contract.gene" ^export true)
+(import [terminal_round : terminal] ^from "../src/web/contract.gene" ^export true)
 
 (fn merge_blocks [previous : (List Any), incoming : (List Any)] : (List Any)
   (var out : (List Any) [])
@@ -39,34 +39,26 @@
   out)
 
 (fn step_key [block : Any] : Str
-  (var run : Str block/run_id)
-  (var round : Int block/round)
-  $"${run}/step-${round}")
+  (var run : Str block/round_id)
+  (var round : Int block/turn)
+  $"${run}/turn-${round}")
 
 (fn step_block [block : Any] : Bool
-  (var round : Int block/round)
+  (var round : Int block/turn)
   (var phase : Str block/phase)
   (&& (> round 0)
-      (|| (== phase "raw_response") (== phase "code")
-          (== phase "tool_call") (== phase "tool_result")
-          (== phase "result") (== phase "narration"))))
+      (|| (== phase "code") (== phase "turn/request") (== phase "turn/patch") (== phase "reply"))))
 
 (fn marker_block [block : Any] : Bool
-  (var phase : Str block/phase)
-  (var text : Str block/text)
-  (|| (== phase "round_marker") (== phase "result_marker")
-      # Recognize old display markers without hiding user text or final answers.
-      (&& (== phase "narration")
-          (|| (== text "-- Result  --")
-              (&& (str/starts_with? text "== Round ") (str/ends_with? text " =="))))))
+  false)
 
 (fn run_label [run : Any] : Str
-  (var status : Str run/status)
+  (var status : Str run/state)
   (var value : Any (?? run/outcome ""))
   (var outcome : Str value)
-  (if (== status "waiting_input") (return "Waiting for your answer"))
+  (if (== status "waiting") (return "Waiting for your answer"))
   (if (== outcome "code_error") "Code error"
-    (if (== status "completed") "Completed"
+    (if (== status "done") "Completed"
       (if (== status "cancelled") "Stopped"
         (if (== status "failed") "Failed"
           (if (== status "interrupted") "Interrupted"

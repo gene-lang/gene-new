@@ -1,5 +1,5 @@
 (mod outcome)
-(import [validate_questions] ^from "../runtime/questions")
+(import ^from "../runtime/questions" [validate_questions])
 
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool?})
 (type OutcomeError ^props {^message Str} ^impl [Error])
@@ -7,35 +7,49 @@
 (type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
 (impl Error for TurnClosed)
 
-(fn new_turn_items [turn : Int, ^attachments attachments = {}, ^recall recall = nil,
-                    ^console console = nil]
-  {^turn turn ^state ($cell "open") ^items ($cell []) ^labels ($cell {})
-   ^attachments attachments ^recall recall ^console console})
+(fn new_turn_items [turn : Int, ^attachments attachments = {}, ^recall recall = nil, ^console console = nil]
+  {
+    ^turn turn
+    ^state ($cell "open")
+    ^items ($cell [])
+    ^labels ($cell {})
+    ^attachments attachments
+    ^recall recall
+    ^console console})
 
 (fn require_turn [turn]
   (if (|| ($absent? turn) (!= (turn/state .get) "open"))
-    (fail (TurnClosed ^turn (if ($absent? turn) nil turn/turn)
-      ^message (if ($absent? turn) "operation requires an open turn" $"turn ${turn/turn} is closed"))))
+    (fail
+      (TurnClosed ^turn (if ($absent? turn) nil turn/turn) ^message (if ($absent? turn) "operation requires an open turn" $"turn ${turn/turn} is closed"))))
   turn)
 
 (fn next_label [turn, label : Str]
   (let labels (turn/labels .get))
   (let count (+ (?? (labels .get label) 0) 1))
   (labels .put label count)
-  (if (== count 1) label $"${label}#${count}"))
+  (if (== count 1)
+    label
+    $"${label}#${count}"))
 
 (fn add_item [turn, label : Str, value, ^line line = nil, ^form form = nil, ^function function = nil]
   (require_turn turn)
-  (let item {^id $"${turn/turn}.${(next_label turn label)}" ^value value
-    ^line line ^form form ^function function})
-  ((turn/items .get) .push item)
+  (let item
+    {
+      ^id $"${turn/turn}.${(next_label turn label)}"
+      ^value value
+      ^line line
+      ^form form
+      ^function function})
+  (turn/items
+    .get
+    ; .push item)
   value)
 
 (fn append_prompt_at [turn, label : Str, line : Int, form, value]
   (if ($absent? (#"^[a-z0-9_]+$" .match label))
     (fail (OutcomeError ^message "append_prompt label must match [a-z0-9_]+")))
   (let call `(append_prompt %label %form))
-  (add_item turn label value ^line line ^form call))
+  (add_item ^line line ^form call turn label value))
 
 (fn append_plugin_prompt [label : Str, value]
   (let context ($runtime/context))
@@ -43,7 +57,7 @@
   (require_turn turn)
   (if ($absent? (#"^[a-z0-9_]+$" .match label))
     (fail (OutcomeError ^message "append_prompt label must match [a-z0-9_]+")))
-  (add_item turn label value ^function (?? context/function "plugin")))
+  (add_item ^function (?? context/function "plugin") turn label value))
 
 (fn attachment [turn, name : Str] : Str
   (let text (turn/attachments .get name))
@@ -55,11 +69,15 @@
   (turn/recall id))
 
 (fn value_text [value] : Str
-  (if (== ($head value) Str) value ($to_str value)))
+  (if (== ($head value) Str)
+    value
+    ($to_str value)))
 
 (fn nonempty_prompt? [value] : Bool
   (if (== value void) (return false))
-  (if (== ($head value) Str) (!= value "") true))
+  (if (== ($head value) Str)
+    (!= value "")
+    true))
 
 (fn validate_outcome [turn, value, ^validators validators = {}]
   (let outcome (if (== ($head value) Outcome) value (Outcome ^prompt value)))
@@ -71,12 +89,17 @@
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if (> ($size (turn/items .get)) 0)
         (then
-          (if_not ($absent? turn/console) (turn/console "done Outcome dropped appended prompt items\n"))
+          (if_not ($absent? turn/console)
+            (turn/console """done Outcome dropped appended prompt items
+"""))
           (turn/items .set [])))
       (return {^kind "done" ^outcome outcome ^questions nil})))
   (if_not ($absent? outcome/questions)
-    (return {^kind "questions" ^outcome outcome
-      ^questions (validate_questions outcome/questions ^validators validators)}))
+    (return
+      {
+        ^kind "questions"
+        ^outcome outcome
+        ^questions (validate_questions ^validators validators outcome/questions)}))
   (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size (turn/items .get)) 0))
     (fail (OutcomeError ^message "continuing Outcome requires a prompt or append_prompt items")))
   {^kind "continue" ^outcome outcome ^questions nil})
@@ -88,8 +111,9 @@
     (when (node : Node)
       (let body ($map ($node/body form) plain_form))
       (let props ($map ($node/props form) plain_form))
-      ($node/rebuild form ^body body ^props props ^meta {}))
-    (else form)))
+      ($node/rebuild ^body body ^props props ^meta {} form))
+    (else
+      form)))
 
 (fn rewrite_prompt_calls [forms]
   ($map forms rewrite_prompt_form))
@@ -113,11 +137,12 @@
           (let value_form body/1)
           (let value (rewrite_prompt_form value_form))
           (let quoted `(quote %value_form))
-          (return ($node/rebuild form ^head (quote append_prompt_at)
-            ^body [body/0 line quoted value]))))
-      ($node/rebuild form ^body ($map body rewrite_prompt_form)
-        ^props ($map ($node/props form) rewrite_prompt_form)))
-    (else form)))
+          (return
+            ($node/rebuild ^head (quote append_prompt_at) ^body [body/0 line quoted value] form))))
+      ($node/rebuild ^body ($map body rewrite_prompt_form) ^props ($map ($node/props form) rewrite_prompt_form)
+        form))
+    (else
+      form)))
 
 (fn abbreviated_form [form] : Str
   (let printed ($to_str (plain_form form)))
@@ -128,29 +153,56 @@
 
 (fn item_header [item] : Str
   (var header $"[${item/id}]")
-  (if_not ($absent? item/function)
-    (return $"${header} fn ${item/function}"))
-  (if_not ($absent? item/line)
-    (set header $"${header} line ${item/line}:"))
-  (if_not ($absent? item/form)
-    (set header $"${header} ${(abbreviated_form item/form)}"))
+  (if_not ($absent? item/function) (return $"${header} fn ${item/function}"))
+  (if_not ($absent? item/line) (set header $"${header} line ${item/line}:"))
+  (if_not ($absent? item/form) (set header $"${header} ${(abbreviated_form item/form)}"))
   header)
 
-(fn render_request [turn, validated, ^patch patch = nil, ^error error = nil,
-                    ^error_line error_line = nil, ^answers answers = nil,
-                    ^result_line result_line = nil]
+(fn request_items [turn, validated, ^patch patch = nil, ^error error = nil, ^error_line error_line = nil, ^answers answers = nil, ^result_line result_line = nil]
   (let rendered [])
-  (if_not ($absent? patch) (rendered .push $"[${turn/turn}.patch] ${patch}"))
+  (if_not ($absent? patch)
+    (let id (implicit_id turn "patch"))
+    (rendered .push
+      {^id id ^header $"[${id}]" ^value patch ^^inline}))
   (for item in (turn/items .get)
-    (rendered .push $"${(item_header item)}\n${(value_text item/value)}"))
+    (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
   (if_not ($absent? validated)
     (let outcome validated/outcome)
     (if_not (== outcome/prompt void)
+      (let id (implicit_id turn "result"))
       (let line (if ($absent? result_line) "" $" line ${result_line}: Outcome ^prompt"))
-      (rendered .push $"[${turn/turn}.result]${line}\n${(value_text outcome/prompt)}")))
+      (rendered .push
+        {
+          ^id id
+          ^header $"[${id}]${line}"
+          ^value (value_text outcome/prompt)})))
   (if_not ($absent? error)
+    (let id (implicit_id turn "error"))
     (let line (if ($absent? error_line) "" $" line ${error_line}:"))
-    (rendered .push $"[${turn/turn}.error]${line}\n${error}"))
+    (rendered .push {^id id ^header $"[${id}]${line}" ^value error}))
   (if_not ($absent? answers)
-    (rendered .push $"[${turn/turn}.answers]\n${(value_text answers)}"))
-  ($str/join rendered "\n"))
+    (let id (implicit_id turn "answers"))
+    (rendered .push
+      {^id id ^header $"[${id}]" ^value (value_text answers)}))
+  rendered)
+
+(fn implicit_id [turn, label : Str] : Str
+  (let count (?? (turn/labels .get; .get label) 0))
+  (let suffix (if (== count 0) label $"${label}#${(+ count 1)}"))
+  $"${turn/turn}.${suffix}")
+
+(fn render_request [turn, validated, ^patch patch = nil, ^error error = nil, ^error_line error_line = nil, ^answers answers = nil, ^result_line result_line = nil]
+  (let rendered [])
+  (for item in (request_items ^patch patch ^error error ^error_line error_line ^answers answers ^result_line result_line turn validated)
+    (rendered .push
+      (if (== item/inline true)
+        $"${item/header} ${item/value}"
+        ($
+          item/header
+          """
+"""
+          item/value))))
+  ($str/join
+    rendered
+    """
+"""))

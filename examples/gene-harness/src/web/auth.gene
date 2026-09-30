@@ -1,0 +1,31 @@
+(mod web_auth)
+(type BrowserAuth ^props {^root Str ^secret Str ^sessions Any})
+(type AuthError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for AuthError)
+(fn open_auth [root : Str]
+  (let path $"${root}/web_secret")
+  (if_not ($fs/exists? path) ($fs/write_text_atomic ^^owner_only path ($crypto/random_hex 32)))
+  (let secret ($fs/read_text path))
+  (if (!= ($str/byte_size secret) 64)
+    (fail (AuthError ^code "invalid_secret" ^message "invalid persisted browser secret")))
+  (let sessions
+    (if ($fs/exists? $"${root}/web_sessions")
+      ($serde/read_data ($fs/read_text $"${root}/web_sessions"))
+      {}))
+  (BrowserAuth ^root root ^secret secret ^sessions ($cell sessions)))
+(fn create_cookie [auth : BrowserAuth]
+  (let nonce ($crypto/random_hex 32))
+  (let cookie ($crypto/sha256 $"${auth/secret}:${nonce}"))
+  (let record {^csrf ($crypto/random_hex 32) ^expires (+ ($os/wall_ms) 28800000)})
+  (auth/sessions
+    .get
+    ; .put cookie record)
+  ($fs/write_text_atomic ^^owner_only
+    $"${auth/root}/web_sessions"
+    ($serde/write_data (auth/sessions .get)))
+  {^cookie cookie ^csrf record/csrf ^expires record/expires})
+(fn authenticate [auth : BrowserAuth, cookie : Str]
+  (let record (auth/sessions .get; .get cookie))
+  (if (|| ($absent? record) (> ($os/wall_ms) record/expires))
+    (fail (AuthError ^code "unauthorized" ^message "browser session expired or unknown")))
+  record)

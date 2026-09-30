@@ -1,0 +1,362 @@
+(mod history)
+(import ^from "../storage/state" [core_state core_states record_core_state append_core_event])
+(import ^from "./response" [split_response])
+
+(var ^^private history_gate ($cell false))
+(type HistoryError ^props {^message Str} ^impl [Error])
+(impl Error for HistoryError)
+
+# Body writers lease the blob store from admission through receipt publication.
+# Collection closes admission first and runs only after existing writers leave.
+(fn acquire_body_use [runtime]
+  (while true
+    (while (runtime/body_collecting .get) ($sleep 1))
+    (while true
+      (let count (runtime/body_users .load))
+      (if (runtime/body_users .compare_exchange count (+ count 1)) (break)))
+    (if_not (runtime/body_collecting .get) (return nil))
+    (release_body_use runtime)))
+
+(fn release_body_use [runtime]
+  (while true
+    (let count (runtime/body_users .load))
+    (if (runtime/body_users .compare_exchange count (- count 1)) (break)))
+  nil)
+
+(fn with_body_use [runtime, thunk]
+  (acquire_body_use runtime)
+  (try (thunk) ensure (release_body_use runtime)))
+
+(fn mark_body_references [runtime, value, live]
+  (if (== ($head value) Str)
+    (then
+      (if (|| (!= ($str/byte_size value) 64) (! ($absent? (live .get value)))) (return nil))
+      (let path $"${runtime/state_root}/blobs/${value}")
+      (if_not ($fs/exists? path) (return nil))
+      (live .put value true)
+      (let nested (try ($serde/read_data (read_body runtime value)) catch Any nil))
+      (if_not ($absent? nested) (mark_body_references runtime nested live))
+      (return nil)))
+  (if (== ($head value) Map)
+    (then (for [key item] in value (mark_body_references runtime item live))))
+  (if (== ($head value) List)
+    (then (for item in value (mark_body_references runtime item live))))
+  nil)
+
+(fn collect_unreferenced_bodies [runtime]
+  (if (runtime/body_collecting .swap true) (return false))
+  (try
+    (if (> (runtime/body_users .load) 0) (return false))
+    (let live {})
+    (mark_body_references runtime (core_states runtime/events "workspace" "workspace") live)
+    (for [id record] in (runtime/sessions/index .get)
+      (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live))
+    (for path in ($fs/list_dir $"${runtime/state_root}/blobs")
+      (let parts ($str/split path "/"))
+      (let name ($last parts))
+      (if (&& (== ($str/byte_size name) 64) ($absent? (live .get name)))
+        ($fs/remove $"${runtime/state_root}/blobs/${name}")))
+    (runtime/body_gc_pending .set false)
+    true
+  ensure (runtime/body_collecting .set false)))
+
+(fn history_state [runtime, session : Str]
+  (let ref (core_state runtime/events "session" session "history"))
+  (if ($absent? ref) (return {^messages [] ^outputs {}}))
+  (if_not ($absent? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))
+  ref)
+
+(fn save_history [runtime, session : Str, state]
+  (let text ($serde/write_data state))
+  (let digest ($crypto/sha256 text))
+  (let path $"${runtime/state_root}/blobs/${digest}")
+  (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
+  (record_core_state runtime/events "session" session "session/state" "history" {^digest digest})
+  (if_not ($absent? runtime/sessions)
+    (let loaded (runtime/sessions/loaded .get; .get session))
+    (if_not ($absent? loaded)
+      (loaded/history .set state/messages)
+      (loaded/outputs .set state/outputs)))
+  state)
+
+(fn write_body [runtime, text : Str]
+  (let digest ($crypto/sha256 text))
+  (let path $"${runtime/state_root}/blobs/${digest}")
+  (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
+  digest)
+
+(fn read_body [runtime, digest : Str] : Str
+  (let text ($fs/read_text $"${runtime/state_root}/blobs/${digest}"))
+  (if (!= ($crypto/sha256 text) digest)
+    (fail (HistoryError ^message "recall blob digest mismatch")))
+  text)
+
+(fn store_body [runtime, session : Str, id : Str, text : Str]
+  (while (history_gate .swap true)
+    ($sleep 1))
+  (try
+    (let digest (write_body runtime text))
+    (let state (history_state runtime session))
+    (state/outputs .put id digest)
+    (save_history runtime session state)
+    digest
+  ensure
+    (history_gate .set false)))
+
+(fn recall_body [runtime, session : Str, id : Str] : Str
+  (let state (history_state runtime session))
+  (let digest (state/outputs .get id))
+  (if ($absent? digest) (fail (HistoryError ^message $"unknown or expired recall id ${id}")))
+  (read_body runtime digest))
+
+# Byte bounds never split a UTF-8 sequence. The reader's characters retain
+# byte spelling here; grapheme boundaries are used separately for form headers.
+(fn byte_prefix [text : Str, maximum : Int] : Str
+  (var count ($math/min maximum ($str/byte_size text)))
+  (while (>= count 0)
+    (let prefix (try ($str/slice_bytes text 0 count) catch Any nil))
+    (if_not ($absent? prefix) (return prefix))
+    (set count (- count 1)))
+  "")
+
+(fn byte_suffix [text : Str, maximum : Int] : Str
+  (let size ($str/byte_size text))
+  (var count ($math/min maximum size))
+  (while (>= count 0)
+    (let suffix (try ($str/slice_bytes text (- size count) count) catch Any nil))
+    (if_not ($absent? suffix) (return suffix))
+    (set count (- count 1)))
+  "")
+
+(fn output_stub [id : Str, size : Int] : Str
+  $"elided ${size} bytes; (recall \"${id}\")")
+
+(fn shorten_item [id : Str, value : Str] : Str
+  (let size ($str/byte_size value))
+  (if (<= size 16384) (return value))
+  (let first (byte_prefix value 6144))
+  (let last (byte_suffix value 6144))
+  (let removed (- size (+ ($str/byte_size first) ($str/byte_size last))))
+  ($
+    first
+    """
+… [elided """
+    removed
+    " bytes; (recall \""
+    id
+    """")] …
+"""
+    last))
+
+(fn item_text [item, body : Str] : Str
+  (if (== item/inline true)
+    $"${item/header} ${body}"
+    ($
+      item/header
+      """
+"""
+      body)))
+
+(fn bounded_request [runtime, session : Str, items]
+  (let full []) (let settled [])
+  (var bytes 0)
+  (let entries [])
+  # Reserve stub space so even a long tail of small items fits without losing
+  # output ids. Real turn results are already bounded by their response budget.
+  (for item in items
+    (let size (?? item/original_bytes ($str/byte_size item/value)))
+    (entries .push {^item item ^size size ^stub (item_text item (output_stub item/id size))}))
+  (var remaining_stub_bytes 0)
+  (let saved_items [])
+  (for entry in entries
+    (set remaining_stub_bytes (+ remaining_stub_bytes (+ ($str/byte_size entry/stub) 1))))
+  (for entry in entries
+    (let item entry/item)
+    (set remaining_stub_bytes (- remaining_stub_bytes (+ ($str/byte_size entry/stub) 1)))
+    (var body (if (== item/saved true) item/value (shorten_item item/id item/value)))
+    (var rendered (item_text item body))
+    (let separator (if full/.empty? 0 1))
+    (let overflow (> (+ bytes (+ separator (+ ($str/byte_size rendered) remaining_stub_bytes))) 65536))
+    (if_yes overflow (set body (output_stub item/id entry/size)) (set rendered entry/stub))
+    (if (&& (!= item/saved true) (|| overflow (> entry/size 2048)))
+      (store_body runtime session item/id item/value))
+    (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
+      (fail (HistoryError ^message "output headers exceed the request byte limit")))
+    (full .push rendered)
+    (settled .push (if (> entry/size 2048) entry/stub rendered))
+    (saved_items .push {^id item/id ^header item/header ^value body
+      ^original_bytes entry/size ^inline (== item/inline true) ^^saved})
+    (set bytes (+ bytes (+ separator ($str/byte_size rendered)))))
+  {^full ($str/join full "\n") ^settled ($str/join settled "\n") ^items saved_items})
+
+(fn elide_response [runtime, session : Str, turn : Int, text : Str]
+  (let parsed (split_response text))
+  (let parts [parsed/code])
+  (let refs {})
+  (for block in parsed/blocks
+    (if_not (== block/kind "attachment") (continue))
+    (let name block/name)
+    (let body block/body)
+    (let id $"${turn}.attachment.${name}")
+    (if (> ($str/byte_size body) 1024)
+      (then
+        (refs .put id (store_body runtime session id body))
+        (parts .push
+          ($
+            "<<<"
+            name
+            """ ELIDED
+["""
+            (output_stub id ($str/byte_size body))
+            """]
+ELIDED
+""")))
+      (else
+        (parts .push
+          ($
+            "<<<"
+            name
+            " "
+            block/terminator
+            """
+"""
+            body
+            block/terminator
+            """
+""")))))
+  (if_not ($absent? parsed/patch)
+    (let id $"${turn}.patch_body")
+    (refs .put id (store_body runtime session id parsed/patch))
+    (parts .push
+      ($
+        "# patch body elided; (recall \""
+        id
+        """")
+""")))
+  {
+    ^text ($str/join
+            parts
+            """
+""")
+    ^blobs refs})
+
+(fn append_message [runtime, session : Str, role : Str, text : Str, ^settled settled = nil, ^round round : Str = "", ^turn turn : Int = 0]
+  (while (history_gate .swap true)
+    ($sleep 1))
+  (try
+    (let state (history_state runtime session))
+    (state/messages .push
+      {^role role ^content text ^settled (?? settled text) ^round round ^turn turn})
+    (save_history runtime session state)
+  ensure
+    (history_gate .set false)))
+
+(fn context_from_state [state, instructions : Str]
+  (let messages [{^role "system" ^content instructions}])
+  (let last (- state/messages/.size 1))
+  (var index 0)
+  (for message in state/messages
+    (messages .push
+      {^role message/role ^content (if (== index last) message/content message/settled)})
+    (set index (+ index 1)))
+  messages)
+
+(fn provider_context [runtime, session : Str, instructions : Str]
+  (context_from_state (history_state runtime session) instructions))
+
+(fn context_bytes [state, instructions : Str]
+  (let messages (context_from_state state instructions))
+  (var bytes 0)
+  (for message in messages
+    (set bytes (+ bytes ($str/byte_size message/content))))
+  bytes)
+
+(fn compact_assistant [text : Str] : Str
+  (let kept [])
+  (for line in ($str/split text "\n")
+    (let stripped ($str/trim line))
+    (if (|| ($str/starts_with? stripped "#") ($str/contains? line "append_prompt") ($str/contains? line "Outcome") ($str/contains? line "elided"))
+      (kept .push line)))
+  ($str/join
+    kept
+    """
+"""))
+
+(fn compact_history [runtime, session : Str, instructions : Str, window_tokens : Int, summarize]
+  (let state (history_state runtime session))
+  (let trigger (* window_tokens 2.625))
+  (let target (* window_tokens 1.925))
+  (if (<= (context_bytes state instructions) trigger) (return false))
+  (let last (- state/messages/.size 2))
+  (var index 0)
+  (for message in state/messages
+    (if (< (context_bytes state instructions) target) (break))
+    (if (&& (< index last) (== message/role "assistant") (!= message/compacted true))
+      (then
+        (let shortened (compact_assistant message/content))
+        (message .put "content" shortened)
+        (message .put "settled" shortened)
+        (message .put "compacted" true)))
+    (set index (+ index 1)))
+  (if (>= (context_bytes state instructions) target)
+    (then
+      (let selected []) (let retained []) (let rounds [])
+      (let last_index (- state/messages/.size 1))
+      (let latest state/messages/%last_index/round)
+      (var removed 0)
+      (let reserve ($math/min 16384 ($to_int (* window_tokens 0.5))))
+      (let excess (+ (- (context_bytes state instructions) target) reserve))
+      (for message in state/messages
+        (if (&& (!= message/round latest) (< removed excess))
+          (then
+            (selected .push message)
+            (if_not (rounds .contains? message/round) (rounds .push message/round))
+            (set removed (+ removed ($str/byte_size message/settled))))
+          (else (retained .push message))))
+      # Summarize whole rounds: extend selection to all messages belonging to
+      # a chosen round, even when the byte threshold landed in its middle.
+      (var tail [])
+      (for message in retained
+        (if (rounds .contains? message/round) (selected .push message) (tail .push message)))
+      (if selected/.empty?
+        # A long active round may be the only round. Summarize its completed
+        # prefix while keeping the latest assistant/request pair intact.
+        (set tail [])
+        (var position 0)
+        (for message in state/messages
+          (if (< position (- state/messages/.size 2))
+            (selected .push message)
+            (tail .push message))
+          (set position (+ position 1)))
+        (if_not selected/.empty? (rounds .push latest)))
+      (if_not selected/.empty?
+        (let tail_state {^messages tail})
+        (let prefix "Earlier rounds summary:\n")
+        (let available (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
+        (if (< available 160)
+          (fail (HistoryError ^message "newest context cannot fit below the compaction target; increase context_window or shorten the request")))
+        (let summary (summarize {^purpose "history/summary" ^session session
+          ^max_tokens ($math/max 1 ($to_int (/ available 3.5)))
+          ^messages [{^role "system" ^content $"Summarize earlier work, decisions, outputs and recall ids. Return prose; do not execute code. Stay under ${available} bytes."}
+            {^role "user" ^content ($serde/write_data selected)}]}))
+        (var bounded summary)
+        (if (>= ($str/byte_size summary) available)
+          (then
+            (let id $"summary.${($crypto/sha256 summary)}")
+            (store_body runtime session id summary)
+            (let stub $"\n… (recall \"${id}\")")
+            (set bounded ($ (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))
+        (record_core_state runtime/events "session" session "history/summary" $"summary/${($crypto/sha256 summary)}"
+          {^text bounded ^digest (write_body runtime summary) ^rounds rounds})
+        (state .put "messages" [{^role "user" ^content $"Earlier rounds summary:\n${bounded}"
+          ^settled $"Earlier rounds summary:\n${bounded}" ^round "summary" ^turn 0}])
+        (for message in tail (state/messages .push message)))))
+  (if (>= (context_bytes state instructions) target)
+    (fail (HistoryError ^message "compaction could not fit the current context below its target")))
+  (while (history_gate .swap true) ($sleep 1))
+  (try
+    (let fresh_state (history_state runtime session))
+    (state .put "outputs" fresh_state/outputs)
+    (save_history runtime session state)
+    ensure (history_gate .set false))
+  true)

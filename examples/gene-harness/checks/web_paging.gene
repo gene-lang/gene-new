@@ -1,0 +1,19 @@
+(import ^from "../src/web/session_service" [open_session_service close_session_service create_session snapshot])
+(import ^from "../src/agents/turn_loop" [transcript])
+(fn main [args]
+  (let service (open_session_service ^workspace args/0 ^^offline))
+  (try
+    (let session (create_session service))
+    (repeat number in 230
+      (transcript service/runtime session/id {^type "reply" ^round "history" ^turn number ^text ($to_str number) ^^final}))
+    (let latest (snapshot service session/id))
+    ($assert (== latest/records/.size 200) "latest page was not bounded")
+    ($assert latest/has_older "history did not advertise an earlier page")
+    ($assert (== latest/records/0/text "30") "latest page was not the transcript tail")
+    (let before ($parse/parse_int latest/records/0/seq))
+    (let earlier (snapshot service session/id ^before before))
+    ($assert (== earlier/records/.size 30) "earlier page overlapped or skipped records")
+    ($assert (! earlier/has_older) "earliest page still claimed older content")
+    ($assert (== earlier/records/0/text "0") "earliest record was lost")
+    ($println "web paging: bounded tail, earlier cursor and complete transcript")
+  ensure (close_session_service service)))

@@ -1,0 +1,80 @@
+(mod instructions)
+(import ^from "./harness_turn" [function_instructions])
+(import ^from "../kernel" [rows])
+
+(const response_format """
+Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
+Start with a # goal comment and comment each step for your future self.
+The last value is the outcome. (Outcome ^done true ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
+(Outcome ^prompt value ^reply "optional progress") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
+(append_prompt "label" value) adds a labeled output; labels match [a-z0-9_]+. Errors and patch results become labeled next-request items. Console print/println is not history.
+(Outcome ^questions [{^id "name" ^prompt "Project name?"}]) waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
+Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch failure skips code.
+Use register_plugin with a quoted (mod plugin ...) or attachment text and optional dependencies. It queues publication; contributed functions appear next turn. Generated plugins import only src/plugin_api.gene plus supplied content-addressed dependencies. Activation is a direct (fn [host] ...); use PluginHost:contribute "functions" with name, fn and doc. Standard-library I/O is available directly.
+Use (recall "N.label") for elided bodies and (doc "gene/syntax") for reference chapters.
+Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Audit."}) to schedule workspace work. Kinds: heartbeat (every_ms), scheduled (at, UTC timestamp), cron (cron, timezone). Policies: missed skip/once, overlap skip/queue_one, continue_session boolean, retention keep/days. (list_triggers) lists definitions; (delete_trigger "audit") disables future starts.
+
+# Finish
+(Outcome ^done true ^reply "Finished.")
+# Inspect and continue
+(append_prompt "files" ($fs/list_dir workspace_root))
+(Outcome ^prompt "Review the files above.")
+# Ask
+(Outcome ^questions [{^id "db" ^prompt "Which database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}])
+# Create from a raw attachment
+($fs/write_text "report.txt" (attachment "report"))
+(Outcome ^done true ^reply "Report written.")
+# After a patch block, run verification
+(append_prompt "tests" ($os/exec ^cmd "gene" ^args ["test"]))
+(Outcome ^prompt "Inspect the test result.")
+""")
+
+(fn reference_root []
+  (var directory ($path/parent this_mod/.path))
+  (while true
+    (if ($fs/exists? ($path/join directory "tools/gene-lang-skill/SKILL.md")) (return directory))
+    (let parent ($path/parent directory))
+    (if (== parent directory) (return nil))
+    (set directory parent))
+  nil)
+
+(fn gene_doc [name : Str] : Str
+  (let chapters
+    {
+      ^gene/pitfalls "pitfalls"
+      ^gene/syntax "syntax"
+      ^gene/declarations "declarations"
+      ^gene/control_flow "control-flow"
+      ^gene/stdlib "stdlib"})
+  (let chapter (chapters .get name))
+  (let root (reference_root))
+  (if (|| ($absent? chapter) ($absent? root)) (fail $"unknown documentation ${name}"))
+  ($fs/read_text ($path/join root $"tools/gene-lang-skill/reference/${chapter}.md")))
+
+(fn assemble_instructions [runtime, session_record] : Str
+  (let root (reference_root))
+  (let reference
+    (if ($absent? root)
+      ""
+      ($fs/read_text ($path/join root "tools/gene-lang-skill/SKILL.md"))))
+  (let parts
+    [
+      response_format
+      reference
+      ($
+        "Workspace: "
+        runtime/root
+        """
+Session kind: """
+        session_record/kind
+        """
+Functions:
+"""
+        (function_instructions runtime/h))])
+  (for section in (rows runtime/h "prompt")
+    (if_not (== section/pull_only true) (parts .push section/text)))
+  ($str/join
+    parts
+    """
+
+"""))

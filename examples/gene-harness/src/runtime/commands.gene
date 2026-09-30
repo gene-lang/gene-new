@@ -1,0 +1,419 @@
+(mod commands)
+(import ^from "../kernel" [rows row contribute])
+(import ^from "../plugin_api" [CommandContext CommandResult] ^^export)
+(import ^from "./composition" [acquire_snapshot release_snapshot])
+(import ^from "../agents/harness_turn" [function_bindings])
+(import ^from "../agents/eval_site" [evaluate_response])
+(import ^from "../agents/instructions" [gene_doc])
+(import ^from "../agents/history" [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
+(import ^from "../storage/state" [core_state record_core_state flush_event_store next_sequence stream_key])
+(import ^from "./sessions" [create_session list_sessions load_session])
+
+(type CommandError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for CommandError)
+(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^on_change Any? ^accepting Any ^closed Any ^interface Str})
+
+(fn command_state [runtime, session : Str]
+  (let ref (core_state runtime/events "session" session "commands"))
+  (if ($absent? ref) (return {^next_id 1 ^records [] ^attached []}))
+  ($serde/read_data (read_body runtime ref/digest)))
+
+(fn save_command_state [runtime, session : Str, state]
+  (record_core_state
+    runtime/events
+    "session"
+    session
+    "command"
+    "commands"
+    {^digest (write_body runtime ($serde/write_data state))})
+  (flush_event_store runtime/events)
+  state)
+
+(fn edit_distance [a : Str, b : Str]
+  (let left ($graphemes a))
+  (let right ($graphemes b))
+  (var previous [0])
+  (var j 1)
+  (while (<= j right/.size)
+    (previous .push j)
+    (set j (+ j 1)))
+  (var i 1)
+  (while (<= i left/.size)
+    (let current [i])
+    (set j 1)
+    (while (<= j right/.size)
+      (let before (- j 1))
+      (let row_before (- i 1))
+      (let cost (if (== left/%row_before right/%before) 0 1))
+      (current .push
+        ($math/min (+ previous/%j 1) ($math/min (+ current/%before 1) (+ previous/%before cost))))
+      (set j (+ j 1)))
+    (set previous current)
+    (set i (+ i 1)))
+  (let last right/.size)
+  previous/%last)
+
+(fn parse_submission [h, text : Str]
+  (if ($str/starts_with? text "//")
+    (return {^kind "prompt" ^text ($str/slice_bytes text 1 (- ($str/byte_size text) 1))}))
+  (if_not ($str/starts_with? text "/") (return {^kind "prompt" ^text text}))
+  (let parts ($str/split text " "))
+  (let token parts/0)
+  (let name ($str/slice_bytes token 1 (- ($str/byte_size token) 1)))
+  (let selected (row h "commands" name))
+  (if ($absent? selected)
+    (then
+      (var closest "help")
+      (var distance 1000000)
+      (for command in (rows h "commands")
+        (let score (edit_distance name command/name))
+        (if_yes (< score distance)
+          (set closest command/name)
+          (set distance score)))
+      (fail
+        (CommandError ^code "unknown_command" ^message $"unknown command /${name}; try /${closest}"))))
+  (let offset (+ ($str/byte_size token) 1))
+  (let raw
+    (if (>= offset ($str/byte_size text))
+      ""
+      ($str/slice_bytes text offset (- ($str/byte_size text) offset))))
+  {^kind "command" ^name name ^raw raw ^handler selected/run})
+
+(fn help_command [ctx]
+  (let name ($str/trim ctx/raw))
+  (if (!= name "")
+    (then
+      (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? name))
+        (fail (CommandError ^code "unknown_command" ^message "Use the session sidebar.")))
+      (let command (row ctx/runtime/h "commands" name))
+      (if ($absent? command)
+        (fail (CommandError ^code "unknown_command" ^message $"unknown command /${name}")))
+      (return
+        (CommandResult ^display ($ command/usage "\n" command/doc)))))
+  (let lines [])
+  (for command in (rows ctx/runtime/h "commands")
+    (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? command/name)) (continue))
+    (lines .push $"${command/usage} — ${command/doc}"))
+  (CommandResult ^display ($str/join lines "\n")))
+
+(fn run_command [ctx]
+  (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
+  (let bindings (function_bindings ctx/snapshot))
+  (for [name function] in ctx/runtime/functions (bindings .put name function))
+  (bindings .put "workspace_root" ctx/runtime/root)
+  (bindings .put "doc" gene_doc)
+  (let environment (env ^bindings bindings))
+  (let value (evaluate_response `(scope %forms...) environment))
+  (CommandResult ^display value ^^attached ^status "done"))
+
+(fn shell_command [ctx]
+  (let config ($serde/read_data ($fs/read_text $"${ctx/runtime/state_root}/config.gene")))
+  (let shell (?? ($os/env? "SHELL") "/bin/sh"))
+  (let channel ($channel ^capacity 128))
+  (let process
+    ($os/exec_stream_async ^cmd shell ^args ["-c" ($ "exec 2>&1\n" ctx/raw)] ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
+  (let lines [])
+  (let bytes ($cell 0))
+  (let output
+    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output ($ line "\n")) (if (< (bytes .get) 1048576) (then (lines .push line) (bytes .set (+ (bytes .get) ($str/byte_size line)))))) catch ChannelClosed nil)))
+  (let result
+    (try
+      (await process)
+    ensure
+      (process .cancel)
+      (if_not (process .done?) (process .join))))
+  (output .join)
+  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^^attached))
+
+(fn view_command [ctx]
+  (let specification ($str/trim ctx/raw))
+  (let pieces ($str/split specification ":"))
+  (let relative pieces/0)
+  (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
+    (fail (CommandError ^code "invalid_path" ^message "view needs a workspace-relative path")))
+  (let path ($path/join ctx/runtime/root relative))
+  (let info ($fs/info path))
+  (if (== info/kind "directory")
+    (return
+      (CommandResult ^display ($fs/list_dir path) ^^attached ^view {^path relative ^kind "directory"})))
+  (let bytes ($fs/read_bytes path))
+  (let text (try ($str/from_utf8 ($binary/to_buffer bytes)) catch Any nil))
+  (if (|| ($absent? text) ($str/contains? text "\0"))
+    (return
+      (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached ^view {^path relative ^kind "binary" ^bytes info/size})))
+  (var first 1)
+  (var last 400)
+  (if (> pieces/.size 1)
+    (then
+      (let range ($str/split pieces/1 "-"))
+      (set first ($parse/parse_int range/0))
+      (set last (if (> range/.size 1) ($parse/parse_int range/1) (+ first 399)))))
+  (if (|| (< first 1) (< last first))
+    (fail (CommandError ^code "invalid_range" ^message "invalid line range")))
+  (set last ($math/min last (+ first 399)))
+  (let lines
+    ($str/split
+      text
+      """
+"""))
+  (let page [])
+  (var index (- first 1))
+  (while (&& (< index lines/.size) (< index last))
+    (page .push lines/%index)
+    (set index (+ index 1)))
+  (CommandResult ^display ($str/join page "\n") ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text")) ^from first ^to index ^next (if (< index lines/.size) (+ index 1) nil)}))
+
+(fn install_core_commands [runtime]
+  (let definitions
+    [
+      ["help" "/help [command]" "List commands or show a command's usage." help_command]
+      [
+        "run"
+        "/run <Gene code>"
+        "Evaluate Gene with plugin functions and the standard library."
+        run_command]
+      [
+        "sh"
+        "/sh <shell command>"
+        "Run a non-interactive shell command with streamed output."
+        shell_command]
+      ["view" "/view <path>[:from-to]" "View a file or directory, up to 400 lines." view_command]
+      [
+        "cancel"
+        "/cancel"
+        "Cancel this session's round or pending questions."
+        (fn [ctx]
+          (ctx/manager/cancel ctx/session)
+          (CommandResult ^display "Stopped."))]
+      [
+        "stop"
+        "/stop"
+        "Stop the workspace process."
+        (fn [ctx]
+          (ctx/manager/stop ctx/session 0 (== ($str/trim ctx/raw) "--confirm"))
+          (CommandResult ^display "Stopped." ^stop 0))]
+      [
+        "restart"
+        "/restart"
+        "Stop and restart under the launcher."
+        (fn [ctx]
+          (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
+          (let supervised (== ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
+          (CommandResult ^display (if supervised "Restarting."
+            "Stopped. Direct gene run cannot restart this process; start it again from the terminal.")
+            ^stop (if supervised 75 0)))]
+      [
+        "new"
+        "/new [title]"
+        "Create and select an interactive CLI session."
+        (fn [ctx]
+          (let record
+            (create_session ^title (if (== ctx/raw "") "New conversation" ctx/raw)
+              ctx/runtime/sessions))
+          (CommandResult ^display record/id ^selected record/id))]
+      [
+        "sessions"
+        "/sessions"
+        "List workspace sessions."
+        (fn [ctx]
+          (CommandResult ^display (list_sessions ctx/runtime/sessions)))]])
+  (for entry in definitions
+    (if ($absent? (row runtime/h "commands" entry/0))
+      (contribute
+        runtime/h
+        "core"
+        "commands"
+        {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input}))))
+
+(fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil, ^on_change on_change = nil]
+  (install_core_commands runtime)
+  (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^on_change on_change ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
+
+(fn command_changed [manager, session : Str, record]
+  (if_not ($absent? manager/on_change)
+    (try
+      (manager/on_change session record)
+    catch Any
+      ($println "command notification failed: " $err/message)))
+  nil)
+
+(fn update_command [manager, session : Str, record]
+  (while (manager/gate .swap true)
+    ($sleep 1))
+  (try
+    (let state (command_state manager/runtime session))
+    (let records [])
+    (var found false)
+    (for previous in state/records
+      (if (== previous/id record/id)
+        (then
+          (records .push record)
+          (set found true))
+        (else
+          (records .push previous))))
+    (if_not found (records .push record))
+    (while (> records/.size 128)
+      (records .delete 0))
+    (state .put "records" records)
+    (save_command_state manager/runtime session state)
+  ensure
+    (manager/gate .set false))
+  (command_changed manager session record)
+  record)
+
+(fn append_command_output [manager, session : Str, record, text : Str]
+  (let original (?? record/output ""))
+  (let remaining (- 1048576 ($str/byte_size original)))
+  (if (> remaining 0) (record .put "output" ($ original (byte_prefix text remaining))))
+  (command_changed manager session {^id record/id ^name record/name ^status "running" ^text text ^output record/output})
+  nil)
+
+(fn finish_command [manager, session : Str, record, lease, outcome]
+  (try
+    (match outcome
+      (when (TaskOutcome/ok value)
+        (let result (if (== ($head value) CommandResult) value (CommandResult ^display value)))
+        (let text
+          (if ($absent? result/display)
+            ""
+            (if (== ($head result/display) Str)
+              result/display
+              ($to_str result/display))))
+        (let id $"${record/id}.${record/name}")
+        (let pointer (if (== record/name "view") $"user viewed ${record/raw}" text))
+        (let exit_label (if ($absent? result/exit) "" $" (exit ${result/exit})"))
+        (let header $"[${id}] /${record/name} ${record/raw}${exit_label}")
+        (let bounded
+          (bounded_request manager/runtime session [{^id id ^header header ^value pointer}]))
+        (record .put "status" (?? result/status "done"))
+        (record .put "display" (if (== record/name "view") text bounded/full))
+        (record .put "attached" (== result/attached true))
+        (record .put "item" bounded/items/0)
+        (let properties ($props result))
+        (for key in ["exit" "view" "selected" "stop"]
+          (let field (properties .get key))
+          (if_not ($absent? field) (record .put key field))))
+      (when (TaskOutcome/error error)
+        (record .put "status" "failed")
+        (if_not ($absent? error/code) (record .put "error_code" error/code))
+        (let location (?? error/line "?"))
+        (record .put "display" $"line ${location}: ${error/message}"))
+      (when (TaskOutcome/panic message)
+        (record .put "status" "failed")
+        (record .put "display" message))
+      (when TaskOutcome/cancelled
+        (record .put "status" "cancelled")
+        (record .put "display" $"[${record/id}.${record/name}] /${record/name} ${record/raw}\nStopped.")))
+    (let output (?? record/output ""))
+    (if (!= output "")
+      (then
+        (record .put "output_ref" (write_body manager/runtime output))
+        (record .put "output" (byte_prefix output 16384))))
+    (record .put "finished" ($to_str ($now)))
+    (update_command manager session record)
+    (if (== record/attached true)
+      (then
+        (while (manager/gate .swap true)
+          ($sleep 1))
+        (try
+          (let state (command_state manager/runtime session))
+          (state/attached .push record/item)
+          (save_command_state manager/runtime session state)
+        ensure
+          (manager/gate .set false))))
+  ensure
+    (manager/active
+      .get
+      ; .delete $"${session}:${record/id}")
+    (release_snapshot manager/runtime/h/snapshots lease))
+  record)
+
+(fn submit_command [manager, session : Str, text : Str]
+  (with_body_use manager/runtime (fn [] (submit_command_impl manager session text))))
+
+(fn submit_command_impl [manager, session : Str, text : Str]
+  (if (! (manager/accepting .get))
+    (fail (CommandError ^code "stopped" ^message "workspace is stopping")))
+  (let parsed (parse_submission manager/runtime/h text))
+  (if_not (== parsed/kind "command")
+    (fail (CommandError ^code "invalid_request" ^message "expected a command")))
+  (if (&& (== manager/interface "web") (["new" "sessions"] .contains? parsed/name))
+    (fail (CommandError ^code "invalid_request" ^message "Use the session sidebar to create or list sessions.")))
+  (load_session manager/runtime/sessions session)
+  (while (manager/gate .swap true)
+    ($sleep 1))
+  (let record
+    (try
+      (let state (command_state manager/runtime session))
+      (let id $"c${state/next_id}")
+      (state .put "next_id" (+ state/next_id 1))
+      (let allocated
+        {^id id ^name parsed/name ^raw parsed/raw ^status "running" ^attached false ^output "" ^started_ms ($os/wall_ms)
+         ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
+      (state/records .push allocated)
+      (save_command_state manager/runtime session state)
+      allocated
+    ensure
+      (manager/gate .set false)))
+  (let lease (acquire_snapshot manager/runtime/h/snapshots))
+  (let sink (fn [output] (append_command_output manager session record output)))
+  (let ctx
+    (CommandContext ^manager manager ^runtime manager/runtime ^session session ^raw parsed/raw ^id record/id ^output sink ^snapshot lease/snapshot))
+  (let config ($serde/read_data ($fs/read_text $"${manager/runtime/state_root}/config.gene")))
+  (let budget (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
+  (let timeout (?? budget/timeout_ms 600000))
+  (let invoke
+    ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)} parsed/handler [ctx]))
+  (let task
+    (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id} (fn [] (scope (invoke))))))
+  (acquire_body_use manager/runtime)
+  (manager/active
+    .get
+    ; .put $"${session}:${record/id}" task)
+  (let deadline (spawn ^lane root (do ($sleep timeout) (task .cancel))))
+  (let watcher
+    (spawn ^lane root (do
+      (try
+        (let outcome (try (task .join) ensure (deadline .cancel) (deadline .join)))
+        (finish_command manager session record lease outcome)
+        ensure (release_body_use manager/runtime)))))
+  (manager/watchers
+    .get
+    ; .put $"${session}:${record/id}" watcher)
+  (command_changed manager session record)
+  record)
+
+(fn command_receipt [manager, session : Str, id : Str]
+  (let state (command_state manager/runtime session))
+  (for record in state/records
+    (if (== record/id id) (return record)))
+  nil)
+
+(fn cancel_command [manager, session : Str, id : Str]
+  (let receipt (command_receipt manager session id))
+  (if ($absent? receipt) (fail (CommandError ^code "not_found" ^message "command not found")))
+  (let task ((manager/active .get) .get $"${session}:${id}"))
+  (if_not ($absent? task) (task .cancel))
+  receipt)
+
+(fn take_command_attachments [runtime, session : Str]
+  (let manager runtime/commands)
+  (while (manager/gate .swap true)
+    ($sleep 1))
+  (try
+    (let state (command_state runtime session))
+    (let items state/attached)
+    (state .put "attached" [])
+    (save_command_state runtime session state)
+    items
+  ensure
+    (manager/gate .set false)))
+
+(fn close_command_manager [manager]
+  (if (manager/closed .swap true) (return nil))
+  (manager/accepting .set false)
+  (for [id task] in (manager/active .get)
+    (task .cancel))
+  (for [id watcher] in (manager/watchers .get)
+    (watcher .join))
+  nil)

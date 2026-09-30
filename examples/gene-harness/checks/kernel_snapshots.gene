@@ -1,0 +1,80 @@
+(import ^from "../src/kernel"
+  [new_harness shutdown_harness Plugin Host PluginHost install put_cordis_plugin rows row status_of])
+(import ^from "../src/agents/outcome" [append_plugin_prompt])
+(import ^from "../src/agents/harness_turn" [evaluate_harness_turn function_instructions])
+
+(fn main [args]
+  (let root ($fs/real_path args/0))
+  (let h (new_harness))
+  (let closed ($cell []))
+  (fn plugin [version]
+    (let revisions [])
+    (Plugin ^id "count" ^provides [] ^requires [] ^activate (fn [host] (let revision ($cell false)) (revisions .push {^host host ^disposed revision}) (host .PluginHost:contribute "functions" {^name "count" ^doc "Return the leased version plus an increment." ^fn (fn [^increment increment : Int = 0] ($assert (! (revision .get)) "leased resource was disposed") (+ version increment))}) (host .PluginHost:contribute "functions" {^name "report" ^doc "Append a function-correlated prompt." ^fn (fn [text] (append_plugin_prompt "details" text))})) ^deactivate (fn [host] (for revision in revisions (if (same? revision/host host) (revision/disposed .set true))) (closed .get; .push version))))
+  (try
+    (install h (plugin 1))
+    (let functions (rows h "functions"))
+    ($assert (== functions/.size 2) "functions were not published")
+    ($assert ($str/contains? (function_instructions h) "increment") "function signature was lost")
+    (let payload (row h "functions" "count"))
+    ($assert
+      (try
+        (payload .put "doc" "changed")
+        false
+      catch Any
+        true)
+      "published registry payload is mutable")
+    (let response ($cell nil))
+    (scope
+      (let turn
+        (spawn ^lane root (do (response .set (evaluate_harness_turn h 1 root "(var before (count ^increment 4)) ($sleep 30) (append_prompt \"version\" [before (count)]) (report \"from plugin\") (Outcome ^prompt \"continue\")")))))
+      ($sleep 5)
+      (put_cordis_plugin ^^replace h (plugin 2) {^host false})
+      ($assert (== (closed .get) []) "replacement disposed a leased activation")
+      (await turn))
+    (let result (response .get))
+    ($assert (== result/kind "continue") $"response evaluation failed: ${result/error}")
+    ($assert ($str/contains? result/request "[5 1]") "turn rebound across await or lost named args")
+    ($assert ($str/contains? result/request "fn report") "plugin prompt lost its function name")
+    ($assert (== (closed .get) [1]) "lease release did not retire the old activation")
+    (let next (evaluate_harness_turn h 2 root "(Outcome ^done true ^reply ($to_str (count)))"))
+    ($assert (== next/validated/outcome/reply "2") "new turn did not see the replacement")
+    (let sibling
+      (Plugin ^id "sibling" ^provides [] ^requires [] ^activate (fn [host] (host .PluginHost:create_registry {^name "custom" ^^unique}) (host .PluginHost:contribute "custom" {^name "entry" ^value 42}) (host .PluginHost:contribute "functions" {^name "sibling" ^doc "Independent function." ^fn (fn [] 42)}))))
+    (install h sibling)
+    ($assert
+      (== (status_of h "sibling") "ready")
+      "adding a sibling failed to rebuild the registry candidate")
+    (let sibling_result
+      (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (sibling)))"))
+    ($assert (== sibling_result/validated/outcome/reply "42") "sibling function was not published")
+    (let duplicate
+      (Plugin ^id "duplicate" ^provides [] ^requires [] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "count" ^doc "Duplicate." ^fn (fn [] 99)}))))
+    (install h duplicate)
+    ($assert (== (status_of h "duplicate") "error") "duplicate function name was accepted")
+    (let unchanged (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (count)))"))
+    ($assert
+      (== unchanged/validated/outcome/reply "2")
+      "failed contribution changed the published functions")
+    (let broken
+      (Plugin ^id "count" ^provides [] ^requires [] ^activate (fn [host] ($assert false "activation failure"))))
+    (put_cordis_plugin ^^replace h broken {^host false})
+    (let retained (evaluate_harness_turn h 4 root "(Outcome ^done true ^reply ($to_str (count)))"))
+    ($assert
+      (== retained/validated/outcome/reply "2")
+      $"failed replacement lost the old function: ${retained/error}")
+    (let timed_out
+      (evaluate_harness_turn ^timeout_ms 5
+        h
+        5
+        root
+        "(spawn ^lane root ($sleep 1000)) (Outcome ^done true ^reply \"done\")"))
+    ($assert
+      (== timed_out/error "response budget timed out")
+      "turn did not cancel and join its child")
+    (let invalid (evaluate_harness_turn h 6 root "("))
+    ($assert (== invalid/kind "error") "invalid response was not contained")
+    (for [id counter] in (h/snapshots/counts .get)
+      ($assert (== (counter .load) 0) "response exit leaked a snapshot lease"))
+    ($println "kernel snapshots: functions, named arguments, immutable views, turn leases and deferred retirement")
+  ensure
+    (shutdown_harness h)))

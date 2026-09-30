@@ -3,6 +3,7 @@
 
 (type QuestionError ^props {^message Str} ^impl [Error])
 (impl Error for QuestionError)
+(var answer_gate ^private true ($cell false))
 
 (fn validate_questions [questions, ^validators validators = {}]
   (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))
@@ -37,7 +38,7 @@
     (normalized .push ($freeze copy)))
   ($freeze normalized))
 
-(fn normalize_answers [questions, values, ^dismiss dismiss : Bool = false]
+(fn normalize_answers [questions, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
   (if (!= ($head values) Map)
     (fail (QuestionError ^message "answers must be a map")))
   (let ids {})
@@ -62,22 +63,30 @@
               (if_not (question/choices .contains? value)
                 (fail (QuestionError ^message $"invalid choice for ${question/id}"))))))
         (if (&& (== question/kind "text") (!= ($head value) Str))
-          (fail (QuestionError ^message $"question ${question/id} expects text")))))
+          (fail (QuestionError ^message $"question ${question/id} expects text")))
+        (let validator (validators .get question/kind))
+        (if_not ($absent? validator) (validator value))))
     (answers .put question/id value))
   ($freeze answers))
 
 (fn ask_questions [events, session : Str, id : Str, turn : Int, questions,
-                   ^deadline deadline = nil, ^validators validators = {}]
-  (let batch {^id id ^turn turn ^questions (validate_questions questions ^validators validators)
+                   ^deadline deadline = nil, ^validators validators = {}, ^normalized normalized : Bool = false]
+  # Response evaluation already normalized the batch under its snapshot lease.
+  (let batch {^id id ^turn turn ^questions (if normalized questions (validate_questions questions ^validators validators))
     ^deadline deadline ^status "waiting" ^answers nil ^digest nil})
   (record_core_state events "session" session "question/asked" $"questions/${id}" batch)
   (flush_event_store events)
   batch)
 
-(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false]
+(fn answer_questions [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
+  (while (answer_gate .swap true) ($sleep 1))
+  (try (answer_questions_serial events session id values ^dismiss dismiss ^validators validators)
+    ensure (answer_gate .set false)))
+
+(fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
   (let batch (core_state events "session" session $"questions/${id}"))
   (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
-  (let answers (normalize_answers batch/questions values ^dismiss dismiss))
+  (let answers (normalize_answers batch/questions values ^dismiss dismiss ^validators validators))
   (let digest ($crypto/sha256 ($serde/write_data answers)))
   (if (== batch/status "answered")
     (then

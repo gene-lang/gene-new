@@ -10,7 +10,7 @@
     (for stream in ["a" "b"]
       (record_core_state first "workspace" "workspace" "session/state"
         $"session/${stream}" {^id stream ^title stream})
-      (record_core_state first "session" stream "run/state" "round" {^status "done"})
+      (record_core_state first "session" stream "round/state" "round" {^status "done"})
       (for turn in [1 2 3 4 5]
         (append_core_event first "session" stream {^type "trace" ^turn turn})))
     (flush_event_store first)

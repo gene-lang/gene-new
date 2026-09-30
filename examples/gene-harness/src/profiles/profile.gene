@@ -42,7 +42,7 @@
       {^plugin plugin
        ^options (if ($absent? p/limits)
          {^host true}
-         {^scope "session" ^host true ^limits p/limits})}))
+         {^host true ^limits p/limits})}))
   (put_cordis_plugins h admissions)
   h)
 

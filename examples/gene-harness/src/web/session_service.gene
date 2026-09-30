@@ -1,0 +1,227 @@
+(mod session_service)
+(import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
+(import ^from "../profiles/baseline" [baseline_profile])
+(import ^from "../runtime/round_controller" ^^export
+  [
+    new_round_controller
+    submit_round
+    round_receipt
+    round_state
+    answer_round
+    cancel_round
+    close_round_controller
+    RoundError])
+(import ^from "../runtime/sessions"
+  [
+    create_session
+    :
+    create_record
+    list_sessions
+    :
+    session_records
+    require_record
+    update_session
+    load_session])
+(import ^from "../agents/model_client" [complete_messages public_model_config])
+(import ^from "../storage/state" [events_for])
+(import ^from "./contract" [protocol_version history_page_limit])
+(import [parse_submission submit_command command_receipt command_state cancel_command] ^from "../runtime/commands")
+(import [rows] ^from "../kernel")
+(import ^from "../runtime/triggers"
+  [open_trigger_manager close_trigger_manager list_triggers create_trigger delete_trigger list_occurrences] ^^export)
+
+(type WorkspaceService ^props {^runtime Any ^events Any ^sessions Any ^controller Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^model_info Any})
+
+(fn public_session [service, record]
+  (let copy ($thaw ($freeze record)))
+  (copy .put "revision" ($to_str (?? record/revision 0)))
+  (let loaded (load_session service/sessions record/id))
+  (copy .put "last_round" (loaded/round .get))
+  copy)
+
+(fn publish_message [service, kind : Str, session : Str, data]
+  (let publisher (service/publisher .get))
+  (if_not ($absent? publisher) (publisher {^type kind ^session session ^data data}))
+  nil)
+
+(fn event_record [session : Str, event]
+  (let payload event/payload)
+  {^seq ($to_str event/seq) ^id $"${session}/${event/seq}"
+   ^round_id (?? payload/round "") ^turn (?? payload/turn 0)
+   ^role (if (== payload/initial true) "user" (if (== event/type "console") "log" "assistant"))
+   ^kind event/type ^phase (if (== event/type "turn/response") "code" event/type)
+   ^order (?? payload/at_ms event/seq)
+   ^text (?? payload/text (?? payload/full "")) ^late (== payload/late true)
+   ^final (== payload/final true)
+   ^patch_files (?? payload/patch_files []) ^blobs (?? payload/blobs {}) ^^durable})
+
+(fn publish_transcript [service, session : Str, event]
+  (let kind event/type)
+  (if (["turn/response" "turn/request" "turn/patch"] .contains? kind)
+    (publish_message service "turn" session (event_record session event)))
+  (if (["reply" "console"] .contains? kind)
+    (publish_message service kind session (event_record session event)))
+  nil)
+
+(fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^provider provider = nil]
+  (let runtime
+    (open_runtime ^event_scope "workspace" ^entry ($path/join ($path/parent this_mod/.path) "server.gene")
+      (prepare_workspace_root ^root workspace)
+      "default"
+      (baseline_profile)))
+  (let chosen
+    (if ($absent? provider)
+      (if offline
+        (fn [request] """# Finish
+(Outcome ^done true ^reply "Scripted response.")""")
+        complete_messages)
+      provider))
+  (let service
+    (WorkspaceService ^runtime runtime ^events runtime/events ^sessions runtime/sessions ^controller nil ^epoch ($crypto/random_hex 16) ^publisher ($cell nil) ^revision ($cell 0) ^closed ($cell false) ^model_info (if offline {^provider "scripted" ^model "scripted"} (public_model_config ^settings ($serde/read_data ($fs/read_text $"${runtime/state_root}/config.gene"))))))
+  (set service/controller
+    (new_round_controller ^on_change (fn [session receipt]
+      (publish_message service "round/state" session receipt)
+      (if (== receipt/state "waiting") (publish_message service "questions" session receipt/questions))
+      (publish_message service "snapshot" session (snapshot service session)))
+      runtime
+      chosen))
+  (set runtime/on_event (fn [session event] (publish_transcript service session event)))
+  (set runtime/commands/interface "web")
+  (set service/sessions/on_change (fn [record]
+    (publish_message service "session/list" "" (list_sessions service))
+    (publish_message service "attention" "" {^sessions (session_records service/sessions ^^attention)})))
+  (set runtime/commands/on_change (fn [session record]
+    (if (&& (!= record/name "sh") (! ($absent? record/text)))
+      (publish_message service "console" session
+        {^id $"${session}/${record/id}/console" ^seq "0" ^round_id "" ^turn 0
+         ^role "log" ^phase "console" ^kind "console" ^text record/output ^late false ^durable false})
+      (publish_message service "command" session record))
+    (if ($absent? record/text) (publish_message service "snapshot" session (snapshot service session)))))
+  (open_trigger_manager runtime service/controller)
+  service)
+
+(fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100,
+                   ^kind kind = nil, ^status status = nil, ^attention attention = nil,
+                   ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
+  (let results [])
+  (for record in (session_records service/sessions ^kind kind ^status status ^attention attention
+      ^trigger trigger ^q q ^since since ^until until)
+    (if (&& (!= after "") (<= ($order/compare record/id after) 0)) (continue))
+    (if (>= results/.size limit) (break))
+    (results .push record))
+  {^sessions results ^needs_attention (session_records service/sessions ^^attention) ^next ""})
+
+(fn create_session [service, ^title title : Str = "New conversation"]
+  (let record (create_record ^title title service/sessions))
+  (publish_message service "session/list" "" (list_sessions service))
+  (public_session service record))
+
+(fn rename_session [service, id : Str, title : Str, revision : Int]
+  (edit_session service id {^title title} revision))
+
+(fn edit_session [service, id : Str, changes, revision : Int]
+  (let record (require_record service/sessions id))
+  (if (!= (?? record/revision 0) revision)
+    (fail (RoundError ^code "revision_conflict" ^message "Session changed; refresh before editing it.")))
+  (let update {^revision (+ revision 1)})
+  (if_not ($absent? changes/title)
+    (if (|| (!= ($head changes/title) Str) (== ($str/trim changes/title) "")
+            (> ($str/byte_size changes/title) 256))
+      (fail (RoundError ^code "invalid_request" ^message "Session title must have 1–256 bytes")))
+    (update .put "title" ($str/trim changes/title)))
+  (if_not ($absent? changes/pinned)
+    (if (!= ($head changes/pinned) Bool)
+      (fail (RoundError ^code "invalid_request" ^message "Pinned must be boolean")))
+    (update .put "pinned" changes/pinned))
+  (let next
+    (update_session service/sessions id update))
+  (publish_message service "session/list" "" (list_sessions service))
+  (public_session service next))
+
+(fn acknowledge_attention [service, id : Str]
+  (let record (require_record service/sessions id))
+  (if record/attention (update_session service/sessions id {^attention false}))
+  {^ok true})
+
+(fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str]
+  (let parsed (parse_submission service/runtime/h text))
+  (if (== parsed/kind "command")
+    (submit_command service/runtime/commands session text)
+    (submit_round service/controller session request_id sequence parsed/text)))
+(fn command [service, session : Str, text : Str]
+  (submit_command service/runtime/commands session text))
+(fn cancel_operator_command [service, session : Str, id : Str]
+  (cancel_command service/runtime/commands session id))
+(fn receipt [service, session : Str, id : Str]
+  (round_receipt service/controller session id))
+(fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
+  (answer_round ^dismiss dismiss service/controller session batch_id values))
+(fn cancel [service, session : Str, id : Str]
+  (cancel_round service/controller session id))
+
+(fn snapshot [service, id : Str, ^after after : Int = -1, ^before before : Int = -1]
+  (let metadata (require_record service/sessions id))
+  (let loaded (load_session service/sessions id))
+  (let records [])
+  (var cursor 0)
+  (for event in (events_for service/events "session" id)
+    (set cursor event/seq)
+    (if (&& (>= after 0) (<= event/seq after)) (continue))
+    (if (&& (>= before 0) (>= event/seq before)) (continue))
+    (if (["turn/response" "turn/request" "turn/patch" "reply" "console"] .contains? event/type)
+      (records .push (event_record id event))))
+  (let commands (command_state service/runtime id))
+  (for record in commands/records
+    (let seq (?? record/start_seq 0))
+    (if (&& (>= after 0) (<= seq after)) (continue))
+    (if (&& (>= before 0) (>= seq before)) (continue))
+    (if_yes (&& (!= record/name "sh") (!= (?? record/output "") ""))
+      (records .push {^id $"${id}/${record/id}/console" ^seq ($to_str seq) ^round_id "" ^turn 0
+        ^role "log" ^phase "console" ^kind "console" ^text record/output ^late false ^order (?? record/started_ms 0) ^^durable}))
+    (records .push {^id $"${id}/${record/id}" ^seq ($to_str seq) ^round_id "" ^turn 0
+      ^role "assistant" ^phase "command" ^kind "command" ^text (?? record/display record/output)
+      ^status record/status ^view (?? record/view nil) ^order (?? record/started_ms 0) ^^durable}))
+  (let rounds (round_state service/controller id))
+  (let ordered ($order/sort_by records (fn [record] (?? record/order 0))))
+  (let page [])
+  (let start ($math/max 0 (- ordered/.size history_page_limit)))
+  (var i 0)
+  (for record in ordered
+    (if (>= i start) (page .push record))
+    (set i (+ i 1)))
+  {
+    ^protocol protocol_version
+    ^session (public_session service metadata)
+    ^records page
+    ^cursor ($to_str cursor)
+    ^preview []
+    ^has_older (> start 0)
+    ^rounds rounds/receipts
+    ^next_submission_seq ($to_str rounds/next_seq)
+    ^round (loaded/round .get)
+    ^questions (if (== metadata/status "waiting")
+                 ((Path "questions") (loaded/round .get))
+                 nil)})
+
+(fn host_status [service]
+  (let active (service/controller/active .get))
+  (let commands [])
+  (for row in (rows service/runtime/h "commands")
+    (if (["new" "sessions"] .contains? row/name) (continue))
+    (commands .push {^name row/name ^usage row/usage ^doc row/doc}))
+  {
+    ^protocol protocol_version
+    ^epoch service/epoch
+    ^model service/model_info
+    ^profile "chat"
+    ^plugins []
+    ^commands commands
+    ^offline (== service/model_info/provider "scripted")
+    ^workspace service/runtime/root
+    ^running ($size active)})
+
+(fn close_session_service [service]
+  (if (service/closed .swap true) (return nil))
+  (close_trigger_manager service/runtime/triggers)
+  (close_round_controller service/controller)
+  (close_runtime service/runtime))

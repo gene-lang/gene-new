@@ -2,47 +2,38 @@
 
 (mod plugin_api)
 
-(type Plugin
-  ^props {^id Str ^provides Any ^requires Any?
-          ^activate Any ^deactivate Any? ^contextual Any? ^events Any?})
+(type Plugin ^props {^id Str ^provides Any? ^requires Any? ^activate Any ^deactivate Any? ^events Any?})
+
+(type CommandContext ^props {^manager Any ^runtime Any ^session Str ^raw Str ^id Str ^output Any ^snapshot Any})
+(type CommandResult ^props {^display Any? ^status Str? ^attached Bool? ^exit Int? ^view Any? ^selected Str? ^stop Int?})
 
 # Inert input to descriptor construction. It deliberately implements no host
 # protocol: preflight and boot see only immutable identity, never live registry
 # state or a contribution surface.
-(type DescriptorContext
-  ^props {^module_id Str ^core_interface Str})
+(type DescriptorContext ^props {^module_id Str ^core_interface Str})
 
-# The token is a Cell identity. Generated code can retain or reveal it, but it
-# cannot construct another Cell with the same identity and therefore cannot
-# address another plugin's host context.
-(type PluginContext ^props {^token Any})
 
-# Returned to the host, never executed inside the requesting plugin's scope.
-# A continuation receives the callee's structured result after that call ends.
-(type ToolRequest ^props {^name Str ^input Any ^context PluginContext ^continuation Any?})
-(type ToolTask ^props {^task Any ^continuation Any?})
-(type PluginInputRequest
-  ^props {^request Any ^resume_tool Str ^input Any ^context PluginContext})
-(type ToolError ^props {^code Str ^message Str ^data Any?} ^impl [Error])
-(impl Error for ToolError)
 
-# Admit the error where its canonical Error implementation is visible. A
-# sandbox importing ToolError's type identity cannot inherit that evidence.
-(fn fail_tool [code : Str, message : Str, ^data data = nil]
-  (fail (ToolError ^code code ^message message ^data data)))
 
-(type ExecutionLimits
-  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+
+
+
+
+
+(type ExecutionLimits ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
 
 (fn default_execution_limits [] : ExecutionLimits
   (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000))
 
+(fn response_execution_limits [] : ExecutionLimits
+  (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000))
+
 (protocol PluginHost
   (message registry_names [] : Any)
   (message row_keys [registry : Str] : Any)
-  (message describe_tool [name : Str] : Any)
-  (message request_tool [name : Str, input, ^continuation continuation = nil] : ToolRequest)
-  (message request_input [request, resume_tool : Str, input] : PluginInputRequest)
+
+
+
   (message create_registry [spec] : Any)
   (message resolve [seam : Str] : Any)
   (message provide [seam : Str, value] : Str)
@@ -51,5 +42,9 @@
   (message replace_contribution [registry : Str, payload] : Str)
   (message subscribe [selector, handler] : Any)
   (message emit_event [name : Str, payload] : Any)
-  (message state [] : Any)
-  (message update_state [value] : Any))
+  (message state [^session session = nil] : Any)
+  (message update_state [value, ^session session = nil] : Any))
+
+(import ^from "./agents/outcome" [append_plugin_prompt])
+(fn append_prompt [label : Str, value]
+  (append_plugin_prompt label value))

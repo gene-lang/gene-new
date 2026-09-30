@@ -1356,8 +1356,9 @@ suite "net/http server e2e":
     check bodyOf(httpGet(8214, "/spin")) == "spun"
     let fields = parseJson(bodyOf(httpGet(8214, "/status")))
     check fields.len == 5
-    # pumpScheduler runs up to 128 instruction-budget slices per iteration,
-    # so the 150 ms spin may span iterations; an idle iteration is ~0-2 ms.
-    check fields[0].getInt >= 20
+    # A busy handler contributes work, but the time-bounded scheduler batch
+    # returns to socket polling without consuming the whole 150 ms spin.
+    check fields[0].getInt >= 1
+    check fields[0].getInt < 100
     for field in fields:
       check field.getInt >= 0

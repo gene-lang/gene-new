@@ -1,12 +1,22 @@
 import gene/reader
 import gene/printer
 import gene/types
+import tools/fmt
 import std/[strutils, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
 
 suite "reader — atoms and containers":
+  test "printer and formatter preserve NUL strings without binary source bytes":
+    for text in ["a\0b", "a\n\0b"]:
+      let printed = newStr(text).print()
+      check '\0' notin printed
+      check read(printed).strVal == text
+      let formatted = formatSource(printed)
+      check '\0' notin formatted
+      check read(formatted).strVal == text
+      check formatSource(formatted) == formatted
   test "adjacent paths and messages after compound forms are rejected":
     for source in ["(g)/a", "[1 2]/0", "{^a 1}/a", "#[1]/0",
                    "#(g)/a", "#{^a 1}/a", "{{\"a\" : 1}}/a",

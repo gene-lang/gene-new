@@ -2790,9 +2790,15 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       pollOsExecAsyncCompletions()
       discard wakeExpiredTimers()
       var budget = 128
+      let quantumDeadline = timerDeadline(2)
       while budget > 0 and hasRunnableFiber():
         discard schedulerRunOne()
         dec budget
+        # One CPU-bound fiber can stay runnable forever. A count of 128
+        # instruction quanta is hundreds of milliseconds in a debug build;
+        # bound the batch in time so sockets and cancellation get polled.
+        if getMonoTime() >= quantumDeadline:
+          break
 
     proc wsBeginUpgrade(conn: HttpConn, marker: Value) =
       ## A handler returned (ws_accept req ...): write the 101 handshake;

@@ -1,7 +1,7 @@
 # Ordered, bounded server-to-browser delivery. Commands stay on HTTP POST.
 (mod harness_web_push)
 
-(import [host_status list_sessions snapshot RunError] ^from "../runtime/session_host")
+(import [host_status list_sessions snapshot RoundError] ^from "./session_service")
 (import [protocol_version] ^from "./contract")
 (import [view_session leave_session] ^from "../runtime/sessions")
 (import $net/http [ws_send ws_close])
@@ -30,8 +30,7 @@
 
 (fn broadcast [hub : PushHub, message]
   (for peer in (hub/peers .get)
-    (if_yes (|| (! (["record" "records"] .contains? message/type))
-                (== peer/session message/session))
+    (if_yes (|| (== message/session "") (== peer/session message/session))
       (send_frame hub peer message))))
 
 (fn new_push_hub [host] : PushHub
@@ -45,17 +44,20 @@
   ((hub/peers .get) .push peer)
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status hub/host)})
-    (send_frame hub peer {^type "sessions" ^session "" ^data (list_sessions hub/host)})
+    (if hub/host/runtime/restarted
+      (send_frame hub peer {^type "restarted" ^session "" ^data {^message "Harness restarted."}}))
+    (send_frame hub peer {^type "session/list" ^session "" ^data (list_sessions hub/host)})
     (if_yes (!= session "")
       (try
         (view_session hub/host/sessions session)
         (peer .put "viewing" true)
         (send_frame hub peer {^type "snapshot" ^session session ^data (snapshot hub/host session)})
-      catch RunError
+      catch RoundError
         (send_frame hub peer {^type "error" ^session session
           ^data {^code $err/code ^message $err/message}})))
     (send_frame hub peer {^type "ready" ^session session ^data nil})
   catch Any
+    ($runtime/with_context nil (fn [] ($println $"Browser connection failed: ${$err/message}")))
     (peer .put "closed" true)
     (ws_close connection)))
 

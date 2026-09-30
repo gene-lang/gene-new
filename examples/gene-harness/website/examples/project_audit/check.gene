@@ -10,7 +10,7 @@
 (mod project_audit_check)
 
 (import [module_dir] ^from "../../../src/kernel")
-(import [register_module] ^from "../../../src/storage/workspace")
+(import [register_plugin] ^from "../../../src/storage/workspace")
 (import [prepare_home open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [browser_profile] ^from "../../../src/profiles/browser")
 (import [ask] ^from "../../../src/runtime/cli_driver")
@@ -65,7 +65,7 @@
   (var build (open_runtime home "website_check_build" (browser_profile ^offline true)
     ^project_root project))
   (try
-    (var registered (register_module build/workspace build/h "project_audit"
+    (var registered (register_plugin build/workspace build/h "project_audit"
       (fixture_data "plugin.gene") ^scope "workspace" ^by "website/check"))
     (expect "status" registered/status "ready")
     (expect "digest" registered/digest recorded_digest)

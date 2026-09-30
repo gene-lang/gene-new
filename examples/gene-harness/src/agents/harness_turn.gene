@@ -1,0 +1,88 @@
+(mod harness_turn)
+(import ^from "../kernel" [Harness rows])
+(import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes])
+(import ^from "./turn_eval" [evaluate_turn])
+(import ^from "../storage/workspace" [register_plugin drain_workspace_changes set_plugin_enabled])
+
+# Bind the callable from the leased revision and preserve its argument shape.
+# The function name in context correlates plugin append_prompt calls with the
+# function listed in the workspace instructions.
+(type TurnFunction ^^private ^props {^name Str ^callable Any}
+  (impl Callable
+    (message apply [self call]
+      (let context ($runtime/context))
+      (let named_context (if ($absent? context) {} ($thaw ($freeze_shallow context))))
+      (named_context .put "function" self/name)
+      (let invoke ($runtime/bind_call ^named call/named self/callable call/body))
+      ($runtime/with_context named_context invoke))))
+
+(fn function_bindings [snapshot]
+  (let bindings {})
+  (for record in (?? (snapshot/registries .get "functions") [])
+    (let function record/payload)
+    (bindings .put function/name (TurnFunction ^name function/name ^callable function/fn)))
+  bindings)
+
+(fn question_validators [snapshot]
+  (let validators {})
+  (for record in (?? (snapshot/registries .get "interactions") [])
+    (let handler record/payload)
+    (validators .put handler/name handler/validate_request))
+  validators)
+
+(fn answer_validators [snapshot]
+  (let validators {})
+  (for record in (?? (snapshot/registries .get "interactions") [])
+    (let handler record/payload)
+    (validators .put handler/name handler/validate_reply))
+  validators)
+
+(fn function_instructions [h : Harness] : Str
+  (let lines [])
+  (for function in (rows h "functions")
+    (lines .push
+      ($
+        function/name
+        ": "
+        ($to_str function/signature)
+        """
+"""
+        function/doc)))
+  ($str/join
+    lines
+    """
+
+"""))
+
+(fn evaluate_harness_turn [h : Harness, number : Int, workspace_root : Str, text : Str, ^session session : Str = "default", ^timeout_ms timeout_ms : Int = 600000, ^max_memory_mb max_memory_mb : Int = 1024, ^console_sink console_sink = nil, ^recall recall_function = nil, ^record record = nil, ^bindings extra_bindings = {}, ^lease supplied_lease = nil, ^after_patch_rename after_patch_rename = nil]
+  (let lease (if ($absent? supplied_lease) (acquire_snapshot h/snapshots) supplied_lease))
+  (try
+    (let bindings (function_bindings lease/snapshot))
+    (bindings .put "session_id" session)
+    (let plugins (?? lease/snapshot/plugins []))
+    (bindings .put "plugin_states" (fn [] plugins))
+    (bindings .put "inspect_plugin" (fn [id : Str]
+      (for plugin in plugins (if (== plugin/id id) (return plugin)))
+      nil))
+    (if_not ($absent? h/workspace)
+      (bindings .put
+        "register_plugin"
+        (fn [id : Str source, ^dependencies dependencies = [], ^replace replace : Bool = false]
+          (register_plugin ^dependencies dependencies ^replace replace h/workspace h id source))))
+    (if_not ($absent? h/workspace)
+      (bindings .put "enable_plugin" (fn [id : Str] (set_plugin_enabled h/workspace h id true)))
+      (bindings .put "disable_plugin" (fn [id : Str] (set_plugin_enabled h/workspace h id false))))
+    (for [name value] in extra_bindings
+      (bindings .put name value))
+    (let result
+      (evaluate_turn ^validators (question_validators lease/snapshot) ^bindings bindings ^timeout_ms timeout_ms ^max_memory_mb max_memory_mb ^console_sink console_sink ^recall recall_function ^record record ^after_patch_rename after_patch_rename ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session}
+        number
+        workspace_root
+        text))
+    (if_not ($absent? h/workspace)
+      (result .put "composition_changes" (drain_workspace_changes h/workspace h)))
+    (if ($absent? h/workspace)
+      (for change in (take_composition_changes h/snapshots) (change/apply)))
+    result
+  ensure
+    (if ($absent? supplied_lease) (release_snapshot h/snapshots lease))))

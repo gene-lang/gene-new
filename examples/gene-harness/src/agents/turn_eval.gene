@@ -1,17 +1,28 @@
 (mod turn_eval)
-(import [split_response] ^from "./response")
-(import [Outcome new_turn_items append_prompt_at validate_outcome render_request
-         rewrite_prompt_calls attachment recall]
-  ^from "./outcome")
-(import [evaluate_response] ^from "./eval_site")
-(import [prepare_patch commit_patch] ^from "../runtime/patch")
+(import ^from "./response" [split_response])
+(import ^from "./outcome"
+  [
+    Outcome
+    new_turn_items
+    append_prompt_at
+    validate_outcome
+    render_request
+    request_items
+    rewrite_prompt_calls
+    attachment
+    recall])
+(import ^from "./eval_site" [evaluate_response])
+(import ^from "../runtime/patch" [prepare_patch commit_patch])
+(import ^from "./history" [byte_prefix])
 
 (fn evaluate_turn [number : Int, workspace_root : Str, text : Str,
                    ^bindings bindings = {}, ^timeout_ms timeout_ms : Int = 600000,
                    ^max_memory_mb max_memory_mb : Int = 1024,
                    ^console_sink console_sink = nil, ^recall recall_function = nil,
                    ^record record = nil, ^context inherited = nil,
-                   ^fail_after_renames fail_after_renames : Int = -1]
+                   ^validators validators = {},
+                   ^fail_after_renames fail_after_renames : Int = -1,
+                   ^after_patch_rename after_patch_rename = nil]
   (let console ($cell []))
   (let bytes ($cell 0))
   (let truncated ($cell false))
@@ -20,24 +31,17 @@
   (context .put "turn" turn)
   (context .put "output" (fn [text]
     (let late (!= (turn/state .get) "open"))
-    (if late
-      (then
-        (if_not ($absent? console_sink) (console_sink {^text text ^late true})))
-      (else
-        (if (< (bytes .get) 262144)
-          (then
-            (let length ($str/byte_size text))
-            (var kept text)
-            (if (> (+ (bytes .get) length) 262144)
-              (set kept "[console truncated]\n"))
-            ((console .get) .push {^text kept ^late false})
-            (bytes .set (+ (bytes .get) length))
-            (if_not ($absent? console_sink) (console_sink {^text kept ^late false})))
-          (else
-            (if_not (truncated .swap true)
-              (let marker {^text "[console truncated]\n" ^late false})
-              ((console .get) .push marker)
-              (if_not ($absent? console_sink) (console_sink marker)))))))))
+    (if (truncated .get) (return nil))
+    (let marker "[console truncated]\n")
+    (let remaining (- 262144 (bytes .get)))
+    (let length ($str/byte_size text))
+    (let cutoff (> length (- remaining ($str/byte_size marker))))
+    (let kept (if cutoff ($ (byte_prefix text ($math/max 0 (- remaining ($str/byte_size marker)))) marker) text))
+    (if cutoff (truncated .set true))
+    (bytes .set (+ (bytes .get) ($str/byte_size kept)))
+    (let item {^text kept ^late late})
+    (if_not late ((console .get) .push item))
+    (if_not ($absent? console_sink) (console_sink item))))
   (turn .put "console" (fn [text] (context/output text)))
   (var patch_result nil)
   (var validated nil)
@@ -59,8 +63,9 @@
       (record "turn/response" {^turn number ^response response
         ^patch_files (if ($absent? plan) [] plan/files)}))
     (if_not ($absent? plan)
-      (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames))
-      (if_not ($absent? record) (record "turn/patch" {^turn number ^result patch_result})))
+      (set patch_result (commit_patch plan ^fail_after_renames fail_after_renames ^after_rename after_patch_rename)))
+    (if (&& (! ($absent? patch_result)) (! ($absent? record)))
+      (record "turn/patch" {^turn number ^result patch_result}))
     (if (|| ($absent? patch_result) (== patch_result/status "applied"))
       (then
         (let values ($thaw ($freeze_shallow bindings)))
@@ -78,17 +83,19 @@
             (let last_index (- forms/.size 1))
             (let meta ($node/meta forms/%last_index))
             (set last_line (?? meta/line nil))
-            (let task (spawn ^lane root
-              ($runtime/with_context context (fn []
-                (evaluate_response `(scope %forms...) environment)))))
             (let expired ($cell false))
-            (let deadline (spawn ^lane root
-              (do ($sleep timeout_ms) (expired .set true) (task .cancel))))
-            (let outcome
+            (let outcome (scope
+              # The evaluation task itself is a child of the turn, as well as
+              # owning the ordinary children created by response code.
+              (let task (spawn ^lane root
+                ($runtime/with_context context (fn []
+                  (evaluate_response `(scope %forms...) environment)))))
+              (let deadline (spawn ^lane root
+                (do ($sleep timeout_ms) (expired .set true) (task .cancel))))
               (try (task .join)
-                ensure (deadline .cancel) (deadline .join)))
+                ensure (deadline .cancel) (deadline .join))))
             (match outcome
-              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value)))
+              (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))
                 (set error_line (?? failure/line nil)))
@@ -96,7 +103,7 @@
               (when TaskOutcome/cancelled
                 (if (expired .get) (set error "response budget timed out") (set cancelled true)))))
           (else
-            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text)))))))
+            (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators))))))
     catch Any
       (set error ($to_str $err/message))
       (set error_line (?? $err/line nil))
@@ -107,4 +114,6 @@
   (let kind (if cancelled "cancelled" (if ($absent? error)
     (if ($absent? validated) "error" validated/kind) "error")))
   {^kind kind ^validated validated ^request request ^patch patch_result ^error error
-   ^console (console .get) ^turn turn})
+   ^console (console .get) ^turn turn
+   ^request_items (if (== request "") [] (request_items turn validated ^patch patch_text
+     ^error error ^error_line error_line ^result_line last_line))})

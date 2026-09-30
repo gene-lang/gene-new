@@ -73,6 +73,11 @@ Inside a scheduled fiber, synchronous `$os/exec`, `$fs/read_text`, and
 They retain their synchronous results. Other sessions and cancellation can
 run while the operation is pending.
 
+Captured asynchronous subprocesses own a process group on POSIX. Cancelling
+or timing out the Task sends TERM to the group, waits for the child to exit,
+then sends KILL to remaining descendants before completing the Task. Inherited
+stdio execution retains the caller's terminal behavior.
+
 ## Task context and source locations
 
 `($node/rebuild node ^head head ^props map ^body list ^meta map)` returns a
@@ -94,10 +99,28 @@ may contain Cells for application lifecycle state; the runtime does not close
 them automatically. An application can mark its shared turn state closed and
 reject later operations while continuing to route detached task output.
 
+Tasks spawned through an `eval` site retain its lexical scopes, including
+activations above that site, until their work finishes. This also applies to
+detached tasks started inside `with_context`; returning from the parent does
+not erase inherited bindings or its output sink.
+
 `($runtime/sandbox_namespaces)` returns an immutable List of the namespace
 names accepted by sandbox module grants. A host that grants the complete
 standard library can use this list directly for both its loader ceiling and
 each generated module, without maintaining a second namespace inventory.
+With the complete grant list, canonical protocol implementations remain visible
+through the application's live registry. Partial grant lists retain isolated
+implementation visibility. The experimental `genex` root is still withheld.
+
+`($os/exit status)` terminates the native process with a status in `0..255`.
+It flushes ordinary stdio through native exit and does not unwind Gene
+`ensure` scopes. Flush application state and close owned resources before
+calling it. This operation is unavailable in the WebAssembly host.
+
+Sandbox source directories may be outside the application's package. Their
+relative imports stay inside that directory; package paths explicitly listed
+in `shared` resolve to the application's existing module identities. Loading
+external sources does not change the application's package or entry module.
 
 `($parse/read_all text ^source "response" ^locs true)` returns a Stream of
 forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
@@ -113,6 +136,17 @@ errors. Without `^locs`, the forms retain the ordinary reader representation.
 ```
 
 ## File recipes
+
+`($fs/info path)` returns `{^kind "file" ^size bytes}` or
+`{^kind "directory" ^size bytes}`, following symbolic links. Missing paths
+raise `OsError`. This lets file viewers select directory, text, and binary
+handling without attempting a directory listing as a type test.
+
+`($os/read_line_async)` returns a Task containing one stdin line, or `nil` at
+EOF, on POSIX hosts. It polls readiness without blocking the root lane or
+using a native worker. Only one line read may be pending. Cancel it when the
+input loop stops. Use this consistently instead of mixing it with buffered
+`os/read_line` calls on the same input stream.
 
 `($fs/rename source destination)` publishes a same-filesystem rename. On the
 native POSIX backend it atomically replaces an existing destination and raises
@@ -296,6 +330,12 @@ pass `^compare f` to `sort` or `sort_by` for an explicit policy. These
 callbacks are synchronous on the root lane.
 
 ## Async byte I/O (native VM experimental)
+
+`($io/flush_stdout)` flushes buffered process stdout and returns nil. Use it
+after `$print` or `$println` when a CLI's output must reach a pipe immediately.
+Task-context output sinks manage their own delivery; this operation flushes
+the process stream. Under the wasm profile, output is already captured and
+the operation is a no-op.
 
 `gene/io` exports `AsyncReader`, `AsyncWriter`, and `IoResource`. Generic code
 uses qualified sends such as `(reader .AsyncReader:read 65536)` and

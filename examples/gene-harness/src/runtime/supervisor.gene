@@ -1,0 +1,27 @@
+(mod supervisor)
+(fn main [args]
+  (let arguments [])
+  (for arg in args
+    (arguments .push ($to_str arg)))
+  (let root ($path/parent ($path/parent ($path/parent this_mod/.path))))
+  (let command (if arguments/.empty? "chat" arguments/0))
+  (let child_args
+    [
+      "run"
+      (if (== command "web")
+        ($path/join root "src/web/server.gene")
+        ($path/join root "src/main.gene"))])
+  (if (== command "web")
+    (then
+      (var index 1)
+      (while (< index arguments/.size)
+        (child_args .push arguments/%index)
+        (set index (+ index 1))))
+    (else
+      (for argument in arguments
+        (child_args .push argument))))
+  (while true
+    (let task ($os/exec_stdio_async ^cmd (?? ($os/env? "GENE_BINARY") "gene") ^args child_args))
+    (let status (await task))
+    (if (!= status 75) (return status)))
+  0)

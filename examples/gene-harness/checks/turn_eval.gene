@@ -36,4 +36,16 @@
   (let slow_child (evaluate_turn 11 root "(spawn ^lane root ($sleep 1000))\n(Outcome ^^done ^reply \"done\")" ^timeout_ms 10))
   ($assert (== slow_child/kind "error") "budget did not cancel a child at the turn boundary")
   ($assert (< (- ($os/monotonic_ms) before) 100) "turn budget waited for a slow child")
+  (let pieces [])
+  (repeat i in 1024 (pieces .push "x"))
+  (let noisy (evaluate_turn 12 root "(repeat 300 ($print chunk)) (Outcome ^done true ^reply \"done\")"
+    ^bindings {^chunk ($str/join pieces "")}))
+  ($assert (== noisy/kind "done") $"noisy response failed: ${noisy/error}")
+  (var console_bytes 0)
+  (var markers 0)
+  (for item in noisy/console
+    (set console_bytes (+ console_bytes ($str/byte_size item/text)))
+    (if ($str/contains? item/text "[console truncated]") (set markers (+ markers 1))))
+  ($assert (<= console_bytes 262144) "console exceeded its per-turn cap")
+  ($assert (== markers 1) "console did not write exactly one truncation marker")
   ($println "turn eval: outcomes, console, read/runtime errors, patches, child scope and budget passed"))

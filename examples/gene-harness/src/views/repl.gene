@@ -1,122 +1,127 @@
-# The terminal driver: read a prompt, hand it to the agent, print the answer.
-#
-# It knows nothing about what any prompt means. That is the `HarnessPrompt`
-# seam's job, and the reason this file is short: swapping the agent for a
-# model-backed one changes everything the harness can do and none of this.
-#
-# The driver is itself a plugin contributing a `views` row, so "is this
-# deployment interactive?" is answered by profile composition rather than by a
-# flag in main.gene.
-
 (mod repl)
+(import ^from "../runtime/commands" [parse_submission submit_command])
+(import ^from "../runtime/round_controller" [submit_round round_state answer_round])
+(import ^from "../runtime/sessions" [load_session])
 
-(import [Plugin PluginContext PluginHost Harness HarnessLog] ^from "../kernel")
-(import_impl PluginHost for PluginContext ^from "../kernel")
-(import [ask] ^from "../runtime/cli_driver")
-(import [pending_input] ^from "../runtime/interactions")
-(import [HarnessView view_provider] ^from "./view_api")
+(fn print_question [question]
+  ($println question/prompt)
+  (if_not ($absent? question/choices)
+    (var choice_index 1)
+    (for choice in question/choices
+      ($println choice_index ". " choice)
+      (set choice_index (+ choice_index 1))))
+  (if_not ($absent? question/recommended) ($println "Recommended: " question/recommended))
+  ($println "Enter accepts the recommendation; - skips; /dismiss skips the batch."))
 
-# A literal escape byte, because Gene has no string escape that produces one:
-# `\e`, `\x1b` and `\u001b` are all read errors, `$str/from_utf8` wants a
-# `(Buffer U8)`, and there is no `chr`. So the byte sits in the source between
-# the quotes. It is invisible in most editors and `cat -v` shows it as `^[`.
-(const ESC "")
+(fn answer_value [question, text : Str]
+  (if (== text "-") (return (quote unanswered)))
+  (if (&& (== text "") (! ($absent? question/recommended))) (return question/recommended))
+  (if ($absent? question/choices) (return text))
+  (if (== question/multi true)
+    (then
+      (let values [])
+      (for number in ($str/split text ",")
+        (let picked_index (- ($parse/parse_int ($str/trim number)) 1))
+        (if (|| (< picked_index 0) (>= picked_index question/choices/.size))
+          (fail "invalid choice"))
+        (values .push question/choices/%picked_index))
+      (return values)))
+  (let choice_index (- ($parse/parse_int text) 1))
+  (if (|| (< choice_index 0) (>= choice_index question/choices/.size)) (fail "invalid choice"))
+  question/choices/%choice_index)
 
-(fn colored [text : Str] : Str
-  ($str/join [ESC "[94m" text ESC "[0m"] ""))
-
-(fn user_prompt [] : Str
-  # Colour only when a terminal is on the other end. Piped input is how the
-  # regression sweep drives this, and escape bytes in that output would be
-  # noise in a transcript nobody is looking at in colour.
-  (if ($os/stdin_tty?) (colored "User>") "User>"))
-
-(fn quitting? [line : Str] : Bool
-  (if (== line "quit") true (== line "exit")))
-
-(type TerminalOutput ^props {^raw Bool ^last Any})
-
-(impl Callable for TerminalOutput
-  (message apply [self call]
-    (var event (/0 call))
-    (if_yes (&& (! self/raw) (! ($absent? event/record))
-                (== event/record/phase "raw_response")) (return nil))
-    (if_yes (== event/kind "output")
-      (var previous (self/last .get))
-      (var duplicate false)
-      (if_yes (&& (! ($absent? previous)) (! ($absent? event/record)))
-        (set duplicate (&& (== event/record/phase "command_result")
-          (== previous/phase "tool_result") (== previous/run event/record/run_id)
-          (== previous/text event/text))))
-      (self/last .set {^phase event/record/phase ^run event/record/run_id ^text event/text})
-      (if_not duplicate ($println event/text)))))
-
-# The driver's half of a turn is two calls with main.gene's `$os/read_line`
-# between them, and neither of them waits for a person. That is what makes a
-# wall-clock budget applicable at all: this file used to own both the loop and
-# the read, so the `chat` profile's 120 000 ms deadline covered the whole
-# conversation *and* the pauses in it, and a shell that answered one prompt and
-# then sat idle expired at the keyboard. Handing the read back to the host also
-# retires the active-row handoff that lived here — main.gene re-reads the row
-# each turn, so a committed replacement takes effect at the next prompt without
-# a hand-rolled check or a tail call into the successor.
-
-(fn repl_prompt [greeted h] : Any
-  # The greeting is one-shot state on the view rather than something activation
-  # prints, because activation runs in the middle of boot output and this line
-  # has to be the last thing before the first prompt.
-  (if_not (greeted .get)
-    (greeted .set true)
-    ($println "Gene Agent — `/help` for commands, `quit` / Ctrl-D to leave"))
-  # The prompt goes out with a newline rather than as `User> `. stdout is
-  # line-buffered on a terminal and Gene exposes no flush, so a prompt
-  # without a newline would sit in the buffer until after the answer it was
-  # asking for — invisible exactly when it matters.
-  ($println "")
-  (var pending (pending_input h))
-  (if_not ($absent? pending)
-    ($println pending/request/prompt)
-    (if_yes (== pending/request/kind "select")
-      (var i 1)
-      (for option in pending/request/options
-        ($println $"  ${i}. ${option}") (set i (+ i 1))))
-    (if_yes (== pending/request/kind "confirm") ($println "Enter yes or no."))
-    ($println "Enter your answer, or /cancel to cancel the question."))
-  ($println (user_prompt))
-  nil)
-
-(fn repl_line [h : Harness, line] : Any
-  (if_yes (== line nil)
-    # Ctrl-D. The host reads the line and reports EOF as nil, but what EOF
-    # *means* is the view's call, so the decision to leave stays here.
-    ($println "bye")
-    (return 0))
-  (var text ($str/trim line))
-  (if_yes (quitting? text)
-    ($println "bye")
-    (return 0))
-  (if_not ($absent? (pending_input h))
-    (try (ask h line) catch Any ($println $"error: ${$err/message}"))
-    (return nil))
-  (if_yes (!= text "")
-    # One speaker label per exchange. The agent may take several turns
-    # after this, and those are marked as rounds rather than repeating
-    # the label — the harness is still the one talking.
-    ($println "Gene>")
-    (try (ask h text) catch Any ($println $"error: ${$err/message}")))
-  nil)
-
-(type TerminalView ^props {^greeted Any})
-(impl HarnessView for TerminalView
-  (message show_prompt [h] : Any (repl_prompt self/greeted h))
-  (message handle_line [h, line] : Any (repl_line h line)))
-
-(fn driver_plugin [] : Plugin
-  (Plugin ^id "driver" ^provides [["views" "active"]]
-    ^requires ["HarnessPrompt"] ^contextual true
-    ^activate (fn [] (fn [host]
-      (host .PluginHost:subscribe HarnessLog
-        (TerminalOutput ^raw (== ($os/env? "GENE_HARNESS_RAW") "1") ^last ($cell nil)))
-      (host .PluginHost:contribute "views"
-        {^name "active" ^implementation "terminal"
-         ^value (view_provider (TerminalView ^greeted ($cell false)))})))))
+(fn chat [controller, selected : Str]
+  (let runtime controller/runtime)
+  (let session ($cell selected))
+  (let answers ($cell {}))
+  (let shown ($cell {}))
+  (set controller/on_change
+    (fn [id receipt]
+      (let key $"${receipt/id}:${receipt/state}")
+      (if (== (shown .get; .get key) true) (return nil))
+      (shown
+        .get
+        ; .put key true)
+      (if (== receipt/state "done") ($println $"[${id}] ${receipt/reply}"))
+      (if (== receipt/state "failed") ($println $"[${id}] ${(?? receipt/request receipt/message)}"))
+      (if (== receipt/state "waiting")
+        (then
+          (answers
+            .get
+            ; .put id {^batch receipt/questions/id ^index 0 ^values {}})
+          ($println $"[${id}] Questions:")
+          (print_question receipt/questions/questions/0)))
+      ($io/flush_stdout)
+      nil))
+  (set runtime/commands/on_change
+    (fn [id record]
+      (if_not ($absent? record/text) ($print $"[${id}] ${record/text}"))
+      (if_not ($absent? record/display)
+        ($println $"[${id}] ${record/display}")
+        (if (== record/error_code "confirmation_required")
+          ($println "Repeat /stop --confirm or /restart --confirm to stop those sessions.")))
+      (if_not ($absent? record/selected) (session .set record/selected))
+      ($io/flush_stdout)
+      nil))
+  (while (! (runtime/stopping .get))
+    (let selected_id (session .get))
+    ($print $"${selected_id}> ")
+    (let input ($os/read_line_async))
+    (runtime/stdin_task .set input)
+    (let outcome (input .join))
+    (runtime/stdin_task .set nil)
+    (var text nil)
+    (var halt false)
+    (match outcome
+      (when (TaskOutcome/ok value)
+        (set text value))
+      (when TaskOutcome/cancelled
+        (set halt true))
+      (else
+        ($println outcome)
+        (set halt true)))
+    (if halt (break))
+    (if ($absent? text)
+      (then
+        (for [id watcher] in (controller/watchers .get)
+          (watcher .join))
+        (break)))
+    (try
+      (let state (load_session runtime/sessions selected_id))
+      (let round (state/round .get))
+      (if_yes (&& (! ($absent? round)) (== round/state "waiting") (== text "/dismiss"))
+        (answer_round ^^dismiss controller selected_id round/questions/id {})
+        (continue))
+      (let parsed (parse_submission runtime/h text))
+      (if (== parsed/kind "command")
+        (submit_command runtime/commands selected_id text)
+        (if (&& (! ($absent? round)) (== round/state "waiting"))
+          (then
+            (var current (answers .get; .get selected_id))
+            (if ($absent? current)
+              (then
+                (set current {^batch round/questions/id ^index 0 ^values {}})
+                (answers
+                  .get
+                  ; .put selected_id current)))
+            (let question_index current/index)
+            (let question round/questions/questions/%question_index)
+            (let value (answer_value question text))
+            (if (!= value (quote unanswered)) (current/values .put question/id value))
+            (current .put "index" (+ current/index 1))
+            (if (== current/index round/questions/questions/.size)
+              (answer_round controller selected_id round/questions/id current/values)
+              (do
+                (let next_index current/index)
+                (print_question round/questions/questions/%next_index))))
+          (else
+            (let sequence (round_state controller selected_id))
+            (submit_round
+              controller
+              selected_id
+              $"cli-${sequence/next_seq}"
+              sequence/next_seq
+              parsed/text))))
+    catch Any
+      ($println $err/message)))
+  (runtime/exit_code .get))

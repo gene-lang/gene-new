@@ -103,11 +103,14 @@
 
 (fn unload_event_stream [events : EventStore, scope : Str, stream : Str]
   (var key (stream_key scope stream))
-  (if_not (== ((events/dirty_streams .get) .get key) void)
-    (flush_event_store events))
-  ((events/streams .get) .delete key)
-  ((events/projections .get) .delete key)
-  ((events/core_projections .get) .delete key)
+  (acquire_event_writer events)
+  (try
+    (if_not (== ((events/dirty_streams .get) .get key) void)
+      (flush_event_store_unlocked events))
+    ((events/streams .get) .delete key)
+    ((events/projections .get) .delete key)
+    ((events/core_projections .get) .delete key)
+  ensure (events/writing .set false))
   nil)
 
 (fn set_current_events [events : EventStore, key : Str, values]
@@ -191,8 +194,8 @@
   (if (> (byte_size encoded) events/max_event_bytes)
     (fail (HarnessStateError
       ^message $"event exceeds ${events/max_event_bytes} bytes")))
-  (mark_stream_dirty events key)
   (var values (current_events events key))
+  (mark_stream_dirty events key)
   (values .push envelope)
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
@@ -200,7 +203,7 @@
     (update_projection events key ($to_str event/plugin) envelope/payload/state))
   (if_yes (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
-                "run/state" "input/request" "input/reply"] .contains? event/type))
+                "command" "trigger/state" "trigger/occurrence" "history/summary"] .contains? event/type))
     (update_core_projection events key event/key event/state))
   envelope)
 
@@ -251,7 +254,7 @@
 (fn record_core_state
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
   (if_not (["session/state" "round/state" "question/asked" "question/answered"
-            "run/state" "input/request" "input/reply"] .contains? kind)
+            "command" "trigger/state" "trigger/occurrence" "history/summary"] .contains? kind)
     (fail (HarnessStateError ^message "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))
@@ -435,7 +438,11 @@
       (descriptors .put key descriptor)))
   (var streams (events/streams .get))
   (for [key ignored] in (events/dirty_streams .get)
+    (if (== ignored "deleted")
+      (then (descriptors .delete key) (continue)))
     (var values (streams .get key))
+    (if ($absent? values)
+      (fail (HarnessStateError ^message $"Dirty event stream ${key} is not cached")))
     (var segmented (segment_stream events values))
 
     (var projection
@@ -465,6 +472,19 @@
   (var manifest
     {^format 3 ^generation generation ^streams descriptors ^history history})
   manifest)
+
+# Publication removes the descriptor before reclaiming unreachable segments.
+# Retained older generations age out through the normal event-store GC.
+(fn delete_event_stream [events : EventStore, scope : Str, stream : Str]
+  (require_open events)
+  (let key (stream_key scope stream))
+  ((events/streams .get) .delete key)
+  ((events/projections .get) .delete key)
+  ((events/core_projections .get) .delete key)
+  ((events/next_sequences .get) .delete key)
+  ((events/dirty_streams .get) .put key "deleted")
+  (events/dirty .set true)
+  nil)
 
 (fn manifest_data [events : EventStore, manifest]
   (if_not (== manifest/format 3)
@@ -500,23 +520,25 @@
 (fn flush_event_store [events : EventStore]
   (require_open events)
   (acquire_event_writer events)
-  (try
-    (if_not (events/dirty .get)
-      (return {^generation (events/generation .get) ^manifest (events/last_manifest .get)}))
-    (var published (publish_event_generation events))
-    (var countdown (- (events/gc_countdown .get) 1))
-    (if (<= countdown 0)
-      (then
-        (garbage_collect_segments events published/manifest)
-        (events/gc_countdown .set events/gc_interval))
-      (else (events/gc_countdown .set countdown)))
-    published
+  (try (flush_event_store_unlocked events)
     ensure (events/writing .set false)))
+
+(fn flush_event_store_unlocked [events : EventStore]
+  (if_not (events/dirty .get)
+    (return {^generation (events/generation .get) ^manifest (events/last_manifest .get)}))
+  (var published (publish_event_generation events))
+  (var countdown (- (events/gc_countdown .get) 1))
+  (if (<= countdown 0)
+    (then
+      (garbage_collect_segments events published/manifest)
+      (events/gc_countdown .set events/gc_interval))
+    (else (events/gc_countdown .set countdown)))
+  published)
 
 (fn restore_manifest [events : EventStore, manifest]
   (install_manifest_data events manifest (manifest_data events manifest)))
 
-(fn repair_interrupted_turns [events : EventStore, ^session session = nil] : Int
+(fn repair_interrupted_turns [events : EventStore, ^session session = nil, ^reason reason : Str = "interrupted"] : Int
   (if_not ($absent? session)
     (current_events events (stream_key "session" session)))
   (var repairs (fresh_list))
@@ -535,7 +557,7 @@
   (for started in repairs
     (append_core_event events ($to_str started/scope) ($to_str started/stream)
       {^type "turn/end" ^turn started/payload/turn
-       ^reason "interrupted" ^synthetic true}))
+       ^reason reason ^synthetic true}))
   (if (> repairs/.size 0) (flush_event_store events))
   repairs/.size)
 

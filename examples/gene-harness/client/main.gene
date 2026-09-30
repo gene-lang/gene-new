@@ -4,15 +4,20 @@
 (import [protocol_version] ^from "../src/web/contract.gene")
 (import [block_view step_view run_status_view not_durable] ^from "./view.gene")
 
+(type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int
+  ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
+
 (type Client ^props {
   ^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str
   ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str
   ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool
   ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool
   ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any)
-  ^expanded (List Str) ^runs (List Any)
+  ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str
+  ^tabs (List SessionTab)
+  ^expanded (List Str) ^rounds (List Any)
   ^input_id Str ^answering Bool
-  ^run Any ^pending Any ^status Any ^socket Any ^session_revision Str
+  ^round Any ^pending Any ^status Any ^socket Any ^session_revision Str
   ^root EventTarget ^list EventTarget ^transcript EventTarget
   ^prompt EventTarget ^notice EventTarget ^title EventTarget})
 
@@ -43,6 +48,59 @@
   (var message (string_or result/message "The request could not be completed."))
   (notice client message))
 
+(fn session_tab [client : Client, id : Str] : SessionTab
+  (for tab in client/tabs (if_yes (== tab/id id) (return tab)))
+  (var empty : (List Any) [])
+  (var tab (SessionTab ^id id ^title "Loading…" ^socket nil ^socket_epoch 0 ^sequence 0
+    ^connected false ^closed false ^expanded [] ^server_epoch ""
+    ^cache {^session {^id id ^title "Loading…" ^revision "0"} ^records empty ^preview empty ^rounds empty
+      ^cursor "" ^next_submission_seq "1" ^round nil ^questions nil ^has_older false}))
+  (client/tabs .push tab)
+  tab)
+
+(fn save_tab [client : Client] : Void
+  (var tab (session_tab client client/selected))
+  (var cache : Any tab/cache)
+  (set cache/records client/records)
+  (set cache/preview client/preview)
+  (set cache/rounds client/rounds)
+  (set cache/round client/round)
+  (set cache/cursor client/cursor)
+  (set cache/next_submission_seq client/next_seq)
+  (set cache/has_older client/has_older)
+  (set tab/expanded client/expanded))
+
+(fn render_tabs [client : Client] : Void
+  (var target ($dom/element "session_tabs"))
+  ($dom/clear target)
+  (for tab in client/tabs
+    (if_yes (&& (! tab/closed) (!= tab/id ""))
+      (var id tab/id)
+      (var title tab/title)
+      (var state : Str "")
+      (var cache : Any tab/cache)
+      (if_not ($absent? cache/round) (set state cache/round/state))
+      ($dom/append target ($dom/render
+        `(div ^class_name %(if (== id client/selected) "session_tab selected" "session_tab")
+           (button ^type "button" ^on_click %(fn [event : Any] : Void (select_session client id))
+             %title (small %state))
+           (button ^type "button" ^aria-label %($ "Close " title)
+             ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
+
+(fn close_tab [client : Client, id : Str] : Void
+  (var tab (session_tab client id))
+  (set tab/closed true)
+  (set tab/socket_epoch (+ tab/socket_epoch 1))
+  (if_not ($absent? tab/socket)
+    (var socket : EventTarget tab/socket) ($ws/close socket))
+  (if_yes (== id client/selected)
+    (var next "")
+    (for candidate in client/tabs
+      (if_yes (&& (! candidate/closed) (!= candidate/id ""))
+        (set next candidate/id) (break)))
+    (select_session client next))
+  (render_tabs client))
+
 (fn remember_draft [client : Client] : Void
   (if_yes (! client/ready) (return))
   (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
@@ -55,11 +113,16 @@
   (var stop ($dom/element "stop"))
   ($dom/set_class client/root "working" client/busy)
   ($dom/set_class client/root "sending" client/sending)
-  (set send/disabled (|| (! client/ready) (! client/connected) client/sending client/busy (!= client/input_id "")))
+  (var command (&& (str/starts_with? ($dom/input_value client/prompt) "/")
+    (! (str/starts_with? ($dom/input_value client/prompt) "//"))))
+  (set send/disabled (|| (! client/ready) (! client/connected) client/sending
+    (&& (! command) (|| client/busy (!= client/input_id "")))))
   (var rename ($dom/element "rename_session"))
   (set rename/disabled (|| (! client/ready) (! client/connected) (== client/selected "") client/busy))
+  (var pin ($dom/element "pin_session"))
+  (set pin/disabled (|| (! client/ready) (! client/connected) (== client/selected "")))
   (var create_button ($dom/element "create_session"))
-  (set create_button/disabled (|| (! client/ready) (! client/connected) client/sending client/busy))
+  (set create_button/disabled (|| (! client/ready) (! client/connected) client/sending))
   (set client/prompt/disabled (! client/ready))
   (set stop/hidden (! client/server_busy))
   (set stop/disabled (! client/ready))
@@ -70,61 +133,69 @@
     (if client/sending "Sending…" (if ($absent? client/pending) "Send" "Resolve")))
   (var mode "Local workspace")
   (if_not ($absent? client/status)
-    (var model : Str client/status/model)
-    (var provider : Str client/status/provider)
+    (var model : Str client/status/model/model)
+    (var provider : Str client/status/model/provider)
     (set mode (if client/status/offline "Command demo · no model" $"${model} · ${provider}")))
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
   ($dom/set_text ($dom/element "mode") mode))
 
+(fn choice_label [choice : Any] : Str
+  (var encoded ($json/stringify choice))
+  (if (str/starts_with? encoded "\"")
+    (then (var text : Str ($json/parse encoded)) text)
+    (else encoded)))
+
 (fn render_input [client : Client] : Void
-  (var request : Any nil)
-  (if_not ($absent? client/run)
-    (var status : Str client/run/status)
-    (if_yes (== status "waiting_input") (set request client/run/input)))
-  (var id (if ($absent? request) "" (string_or request/id "")))
+  (var batch : Any nil)
+  (if_not ($absent? client/round)
+    (var state : Str client/round/state)
+    (if_yes (== state "waiting") (set batch client/round/questions)))
+  (var id : Str (if ($absent? batch) "" (string_or batch/id "")))
   (set_hidden "input_panel" (== id ""))
   (if_yes (== id client/input_id) (return))
   (set client/input_id id)
   (if_yes (== id "") (return))
-  (var prompt : Str request/prompt)
-  (var kind : Str request/kind)
-  ($dom/set_text ($dom/element "input_question") prompt)
+  ($dom/set_text ($dom/element "input_question") "Answer any questions; skipped answers are unanswered.")
   (var fields ($dom/element "input_fields"))
   ($dom/clear fields)
-  (set_hidden "input_submit" (== kind "confirm"))
-  (set_hidden "input_yes" (!= kind "confirm"))
-  (set_hidden "input_no" (!= kind "confirm"))
-  (if (== kind "select")
-    (then
-      (var options : (List Str) request/options)
-      (var multi : Bool request/multi)
-      (if multi
-        (then
-          (var defaults : (List Str) [])
-          (if_not ($absent? request/default) (set defaults request/default))
-          (var i 0)
-          (for option in options
-            (var option_id $"input_option_${i}")
-            (var selected false)
-            (for value in defaults (if_yes (== value option) (set selected true)))
-            ($dom/append fields ($dom/render `(label ^class_name "input_option"
-              (input ^id %option_id ^type "checkbox" ^checked %selected) %option)))
-            (set i (+ i 1))))
-        (else
-          (var select ($dom/render `(select ^id "input_answer" ^aria-label %prompt)))
-          (for option in options ($dom/append select ($dom/render `(option ^value %option %option))))
-          ($dom/append fields select)
-          (if_not ($absent? request/default)
-            (var choice : Str request/default) ($dom/set_input_value select choice)))))
-      (elif (!= kind "confirm")
-        (var answer ($dom/render `(textarea ^id "input_answer" ^rows "2" ^aria-label %prompt)))
-        ($dom/append fields answer)
-        (if_not ($absent? request/default)
-          (var initial : Str request/default) ($dom/set_input_value answer initial)))
-      (elif (! ($absent? request/default))
-        (var suggested : Bool request/default)
-        ($dom/append fields ($dom/render `(p ^class_name "muted"
-          %(if suggested "Suggested answer: Yes" "Suggested answer: No"))))))
+  (set_hidden "input_submit" false)
+  (set_hidden "input_yes" true)
+  (set_hidden "input_no" true)
+  (var questions : (List Any) batch/questions)
+  (var index 0)
+  (for question in questions
+    (var prompt : Str question/prompt)
+    (var group ($dom/render `(fieldset (legend %prompt))))
+    (var choices : Any question/choices)
+    (var multi : Bool false)
+    (if_not ($absent? question/multi) (set multi question/multi))
+    (if ($absent? choices)
+      (then ($dom/append group ($dom/render `(textarea ^id %($ "question_" index) ^rows "2"))))
+      (elif multi
+        (var values : (List Any) choices)
+        (var j 0)
+        (for choice in values
+          (var label (choice_label choice))
+          (var checked (== question/recommended choice))
+          ($dom/append group ($dom/render `(label
+            (input ^id %($ "question_" index "_" j) ^type "checkbox" ^checked %checked) %label)))
+          (set j (+ j 1))))
+      (else
+        (var select ($dom/render `(select ^id %($ "question_" index))))
+        ($dom/append select ($dom/render `(option ^value "-1" "Skip")))
+        (var values : (List Any) choices)
+        (var j 0)
+        (for choice in values
+          (var label (choice_label choice))
+          (var option ($dom/render `(option ^value %($ j) %label)))
+          (if_yes (== question/recommended choice) (set option/selected true))
+          ($dom/append select option)
+          (set j (+ j 1)))
+        ($dom/append group select)))
+    ($dom/append group ($dom/render `(label ^class_name "question_skip"
+      (input ^id %($ "question_skip_" index) ^type "checkbox") "Skip this question")))
+    ($dom/append fields group)
+    (set index (+ index 1)))
   (controls client))
 
 (fn send_input_reply [client : Client, payload : Any] : Void
@@ -134,7 +205,7 @@
     (var button ($dom/element id)) (set button/disabled true))
   ($session_storage/set "gene-harness/input-reply" ($json/stringify payload))
   (var session : Str payload/session)
-  (api client "POST" $"/api/v1/sessions/${session}/input" payload
+  (api client "POST" $"/api/v4/sessions/${session}/answers" payload
     (fn [code : Int, data : Any] : Void
       (set client/answering false)
       (for id in ["input_submit" "input_yes" "input_no" "input_cancel"]
@@ -150,50 +221,161 @@
 
 (fn answer_question [client : Client, value : Any, cancelled : Bool] : Void
   (if_yes (== client/input_id "") (return))
-  (send_input_reply client {^session client/selected ^input_id client/input_id
-    ^value value ^cancelled cancelled}))
+  (send_input_reply client {^session client/selected ^batch_id client/input_id ^answers {} ^dismiss cancelled}))
 
 (fn read_answer [client : Client] : Void
   (if_yes (== client/input_id "") (return))
-  (var request : Any client/run/input)
-  (var kind : Str request/kind)
-  (var multi false)
-  (if_yes (== kind "select") (set multi request/multi))
-  (if (&& (== kind "select") multi)
-    (then
-      (var values : (List Str) [])
-      (var options : (List Str) request/options)
-      (var i 0)
-      (for option in options
-        (var box ($dom/element $"input_option_${i}"))
-        (var checked : Bool box/checked)
-        (if_yes checked (values .push option))
-        (set i (+ i 1)))
-      (answer_question client values false))
-    (else (answer_question client ($dom/input_value ($dom/element "input_answer")) false))))
+  (var answers : Any {})
+  (var questions : (List Any) client/round/questions/questions)
+  (var index 0)
+  (for question in questions
+    (var skip ($dom/element ($ "question_skip_" index)))
+    (if_yes skip/checked (set index (+ index 1)) (continue))
+    (var id : Str question/id)
+    (var choices : Any question/choices)
+    (var multi : Bool false)
+    (if_not ($absent? question/multi) (set multi question/multi))
+    (if ($absent? choices)
+      (then
+        (var text ($dom/input_value ($dom/element ($ "question_" index))))
+        (if_yes (!= text "") (set answers/%id text)))
+      (elif multi
+        (var values : (List Any) choices)
+        (var picked : (List Any) [])
+        (var j 0)
+        (for choice in values
+          (var box ($dom/element ($ "question_" index "_" j)))
+          (if_yes box/checked (picked .push choice))
+          (set j (+ j 1)))
+        (set answers/%id picked))
+      (else
+        (var text ($dom/input_value ($dom/element ($ "question_" index))))
+        (var j : Int ($json/parse text))
+        (var values : (List Any) choices)
+        (if_yes (>= j 0) (set answers/%id values/%j))))
+    (set index (+ index 1)))
+  (send_input_reply client {^session client/selected ^batch_id client/input_id ^answers answers ^dismiss false}))
 
 (fn render_sessions [client : Client] : Void
   ($dom/clear client/list)
-  (var filter : Str (str/lower ($dom/input_value ($dom/element "session_filter"))))
+  (var attention ($dom/element "attention_sessions"))
+  ($dom/clear attention)
+  (set_hidden "attention_section" (== ($size client/needs_attention) 0))
+  (for session in client/needs_attention
+    (render_session_button client attention session))
   (for session in client/sessions
-    (var title : Str session/title)
-    (var id : Str session/id)
-    (if_yes (|| (== filter "") (str/contains? (str/lower title) filter))
-      (var cls (if (== id client/selected) "session selected" "session"))
-      (var subtitle : Str "Conversation")
-      (if_not ($absent? session/last_run)
-        (set subtitle (run_label session/last_run)))
-      (var button : EventTarget
-        ($dom/render
-          `(button ^type "button" ^class_name %cls
-             ^on_click %(fn [event : Any] : Void (select_session client id))
-             (span ^class_name "session_name" %title)
-             (span ^class_name "session_meta" %subtitle))))
-      (set button/title title)
-      ($dom/append client/list button)))
+    (render_session_button client client/list session))
   (if_yes (== ($size client/sessions) 0)
     ($dom/append client/list
       ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here.")))))
+
+(fn render_session_button [client : Client, target : EventTarget, session : Any] : Void
+  (var title : Str session/title)
+  (var id : Str session/id)
+  (var kind : Str session/kind)
+  (var status : Str session/status)
+  (var cls (if (== id client/selected) "session selected" "session"))
+  ($dom/append target ($dom/render
+    `(button ^type "button" ^class_name %cls
+       ^on_click %(fn [event : Any] : Void (select_session client id))
+       (span ^class_name "session_name" %title)
+       (span ^class_name "session_meta" %($ kind " · " status))))))
+
+(fn refresh_sessions [client : Client] : Void
+  (if_not client/ready (return))
+  (set client/filter_epoch (+ client/filter_epoch 1))
+  (var epoch client/filter_epoch)
+  (var query "?")
+  (for row in [["q" "session_filter"] ["kind" "kind_filter"] ["status" "status_filter"]
+              ["trigger" "trigger_filter"] ["since" "since_filter"] ["until" "until_filter"]]
+    (var name : Str row/0)
+    (var id : Str row/1)
+    (var value ($dom/input_value ($dom/element id)))
+    (if_yes (!= value "") (set query ($ query name "=" ($url/encode_component value) "&"))))
+  (api client "GET" ($ "/api/v4/sessions" query) nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= epoch client/filter_epoch) (return))
+      (if (== code 200)
+        (then (set client/sessions data/sessions) (set client/needs_attention data/needs_attention)
+          (render_sessions client))
+        (else (show_error client data))))))
+
+(fn trigger_fields [] : Void
+  (var kind ($dom/input_value ($dom/element "trigger_kind")))
+  (set_hidden "trigger_every_field" (!= kind "heartbeat"))
+  (set_hidden "trigger_at_field" (!= kind "scheduled"))
+  (set_hidden "trigger_cron_field" (!= kind "cron"))
+  (set_hidden "trigger_timezone_field" (!= kind "cron")))
+
+(fn trigger_occurrences [client : Client, id : Str] : Void
+  (set client/trigger_selected id)
+  (var target ($dom/element "trigger_occurrences"))
+  ($dom/clear target)
+  ($dom/append target ($dom/render `(h3 %id)))
+  ($dom/set_input_value ($dom/element "trigger_filter") id)
+  (refresh_sessions client)
+  (api client "GET" $"/api/v4/triggers/${($url/encode_component id)}/occurrences" nil
+    (fn [code : Int, data : Any] : Void
+      (if_yes (!= client/trigger_selected id) (return))
+      (if (!= code 200) (then (show_error client data)) (else
+        (var occurrences : (List Any) data/occurrences)
+        (for occurrence in occurrences
+          (var state : Str occurrence/state)
+          (var name : Str occurrence/id)
+          (var session : Str occurrence/session)
+          (var reason : Str (string_or occurrence/outcome (string_or occurrence/reason "")))
+          ($dom/append target ($dom/render
+            `(button ^type "button" ^class_name "occurrence"
+               ^disabled %(|| (== state "due") (== state "skipped"))
+               ^on_click %(fn [event : Any] : Void
+                 (set_hidden "trigger_drawer" true) (select_session client session))
+               (span %name) (span %($ state " " reason)))))))))))
+
+(fn load_triggers [client : Client] : Void
+  (api client "GET" "/api/v4/triggers" nil
+    (fn [code : Int, data : Any] : Void
+      (if (!= code 200) (then (show_error client data)) (else
+        (var target ($dom/element "trigger_list"))
+        ($dom/clear target)
+        (var definitions : (List Any) data/triggers)
+        (if_yes (== ($size definitions) 0)
+          ($dom/append target ($dom/render `(p "No triggers yet."))))
+        (for definition in definitions
+          (var id : Str definition/id)
+          (var kind : Str definition/kind)
+          ($dom/append target ($dom/render
+            `(div ^class_name "trigger_row"
+               (button ^type "button" ^on_click %(fn [event : Any] : Void (trigger_occurrences client id))
+                 %id (small %kind))
+               (button ^type "button" ^on_click %(fn [event : Any] : Void
+                 (api client "DELETE" $"/api/v4/triggers/${($url/encode_component id)}" nil
+                   (fn [status : Int, result : Any] : Void
+                     (if (== status 200) (load_triggers client) (show_error client result))))) "Delete"))))))))))
+
+(fn create_trigger [client : Client] : Void
+  (try
+    (var kind ($dom/input_value ($dom/element "trigger_kind")))
+    (var keep : Int ($json/parse ($dom/input_value ($dom/element "trigger_keep"))))
+    (var checkbox ($dom/element "trigger_continue"))
+    (var continued : Bool checkbox/checked)
+    (var data : Any {^id ($dom/input_value ($dom/element "trigger_id")) ^kind kind
+      ^request ($dom/input_value ($dom/element "trigger_request"))
+      ^missed ($dom/input_value ($dom/element "trigger_missed"))
+      ^overlap ($dom/input_value ($dom/element "trigger_overlap")) ^continue_session continued
+      ^retention {^keep keep}})
+    (if (== kind "heartbeat")
+      (then (var every : Int ($json/parse ($dom/input_value ($dom/element "trigger_every"))))
+        (set data/every_ms every)))
+    (if (== kind "scheduled") (set data/at ($dom/input_value ($dom/element "trigger_at"))))
+    (if_yes (== kind "cron")
+      (set data/cron ($dom/input_value ($dom/element "trigger_cron")))
+      (set data/timezone ($dom/input_value ($dom/element "trigger_timezone"))))
+    (api client "POST" "/api/v4/triggers" data
+      (fn [code : Int, result : Any] : Void
+        (if (== code 201)
+          (then (load_triggers client) (notice client "Trigger created."))
+          (else (show_error client result)))))
+  catch Any (notice client "Check the trigger's interval and retention values.")))
 
 (fn expanded_block [client : Client, id : Str] : Bool
   (for previous in client/expanded (if_yes (== previous id) (return true)))
@@ -225,7 +407,25 @@
       (fn [text : Str] : Void (copy_text client text))
       (expanded_block client id)
       (fn [opened : Bool] : Void
-        (if_yes (== generation client/generation) (toggle_block client id opened))))))
+        (if_yes (== generation client/generation) (toggle_block client id opened)))))
+  (var phase : Str block/phase)
+  (var status (string_or block/status ""))
+  (if_yes (&& (== phase "command") (== status "running"))
+    (var parts : (List Str) (str/split id "/"))
+    (var command_id : Str parts/1)
+    ($dom/append target ($dom/render `(button ^type "button"
+      ^on_click %(fn [event : Any] : Void
+        (api client "POST" $"/api/v4/sessions/${client/selected}/commands/${command_id}/cancel" {}
+          (fn [code : Int, data : Any] : Void
+            (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
+  (var view : Any block/view)
+  (if_yes (! ($absent? view))
+    (var next : Any view/next)
+    (if_yes (! ($absent? next))
+      (var path : Str view/path)
+      (var first : Int next)
+      ($dom/append target ($dom/render `(button ^type "button"
+        ^on_click %(fn [event : Any] : Void (send_command client $"/view ${path}:${first}")) "Next page"))))))
 
 (fn render_run [client : Client, blocks : (List Any), run : Any] : Void
   (var target ($dom/render `(section ^class_name "run")))
@@ -248,7 +448,7 @@
             (else (break))))
         (var active false)
         (if_not ($absent? run)
-          (var status : Str run/status)
+          (var status : Str run/state)
           (set active (&& (! (terminal status)) (== i ($size blocks)))))
         ($dom/append target
           (step_view step (expanded_block client key) active
@@ -304,34 +504,49 @@
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Browse commands"
                (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/")))))))
-  (var visible : (List Any) client/records)
+  (var all_visible : (List Any) client/records)
   # Durable records lead; append previews only when no durable version exists.
   (for block in client/preview
     (var found false)
     (for record in client/records (if_yes (== record/id block/id) (set found true)))
-    (if_not found (set visible (merge_blocks visible [block]))))
+    (if_not found (set all_visible (merge_blocks all_visible [block]))))
+  (var visible : (List Any) [])
+  (var console "")
+  (var count 0)
+  (for block in all_visible
+    (var phase : Str block/phase)
+    (if (== phase "console")
+      (then
+        (var text : Str block/text)
+        (var late : Bool false)
+        (if_not ($absent? block/late) (set late block/late))
+        (set console ($ console (if late "[late] " "") text))
+        (set count (+ count 1)))
+      (else (visible .push block))))
+  ($dom/set_text ($dom/element "console_output") console)
+  ($dom/set_text ($dom/element "console_summary") $"Console · ${count} entries")
   (var i 0)
   (var current_shown false)
   (while (< i ($size visible))
     (var first : Any visible/%i)
-    (var id : Str first/run_id)
+    (var id : Str first/round_id)
     (var blocks : (List Any) [])
     (while (< i ($size visible))
       (var block : Any visible/%i)
-      (var block_run : Str block/run_id)
+      (var block_run : Str block/round_id)
       (if_yes (!= block_run id) (break))
       (blocks .push block) (set i (+ i 1)))
     (var run : Any nil)
-    (for receipt in client/runs
+    (for receipt in client/rounds
       (var receipt_id : Str receipt/id)
       (if_yes (== receipt_id id) (set run receipt)))
-    (if_not ($absent? client/run)
-      (var current_id : Str client/run/id)
-      (if_yes (== current_id id) (set run client/run) (set current_shown true)))
+    (if_not ($absent? client/round)
+      (var current_id : Str client/round/id)
+      (if_yes (== current_id id) (set run client/round) (set current_shown true)))
     (render_run client blocks run))
-  (if_yes (&& (! ($absent? client/run)) (! current_shown))
-    (var status : Str client/run/status)
-    (if_not (terminal status) (render_run client [] client/run)))
+  (if_yes (&& (! ($absent? client/round)) (! current_shown))
+    (var status : Str client/round/state)
+    (if_not (terminal status) (render_run client [] client/round)))
   (if follow
     (then ($dom/scroll_end client/transcript)
       (set_hidden "new_output" true))
@@ -343,6 +558,8 @@
       (set_hidden "new_output" false))))
 
 (fn update_controls [client : Client] : Void
+  (var state : Str (if ($absent? client/round) "" client/round/state))
+  (set client/server_busy (== state "running"))
   (render_input client)
   (set client/busy (|| client/server_busy (!= client/awaiting "")))
   (controls client))
@@ -356,15 +573,14 @@
 (fn apply_status [client : Client, data : Any] : Void
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
-  (set client/server_busy data/busy)
   (update_controls client)
   (if_yes unchanged (return))
   (var drawer ($dom/element "status_content"))
   ($dom/clear drawer)
   (var profile : Str data/profile)
   ($dom/append drawer ($dom/render `(p "Profile: " %profile)))
-  (var model : Str data/model)
-  (var provider : Str data/provider)
+  (var model : Str data/model/model)
+  (var provider : Str data/model/provider)
   ($dom/append drawer ($dom/render `(p "Model: " %model)))
   ($dom/append drawer ($dom/render `(p "Provider: " %provider)))
   (var plugins : (List Any) data/plugins)
@@ -410,7 +626,7 @@
 
 (fn sessions_page [client : Client, after : Str] : Void
   (var epoch client/socket_epoch)
-  (api client "GET" $"/api/v1/sessions?after=${after}" nil
+  (api client "GET" $"/api/v4/sessions?after=${after}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/socket_epoch) (return))
       (if (== code 200)
@@ -435,7 +651,7 @@
   (var generation client/generation)
   (var first : Any client/records/0)
   (var before : Str first/seq)
-  (api client "GET" $"/api/v1/sessions/${client/selected}/snapshot?before=${before}" nil
+  (api client "GET" $"/api/v4/sessions/${client/selected}/snapshot?before=${before}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= generation client/generation) (return))
       (set client/loading_older false)
@@ -443,9 +659,9 @@
         (then
           (var older : (List Any) data/records)
           (var empty_runs : (List Any) [])
-          (var raw_runs : Any (?? data/runs empty_runs))
+          (var raw_runs : Any (?? data/rounds empty_runs))
           (var runs : (List Any) raw_runs)
-          (set client/runs (merge_blocks client/runs runs))
+          (set client/rounds (merge_blocks client/rounds runs))
           (set client/records (bounded_blocks (merge_blocks older client/records) false))
           (set client/has_older data/has_older)
           (set client/autoscroll false)
@@ -460,18 +676,25 @@
     (set client/records (bounded_blocks records true))
     (set client/preview data/preview)
     (set client/has_older data/has_older))
-  (set client/run data/run)
+  (set client/round data/round)
   (var empty_runs : (List Any) [])
-  (var raw_runs : Any (?? data/runs empty_runs))
+  (var raw_runs : Any (?? data/rounds empty_runs))
   (var runs : (List Any) raw_runs)
-  (set client/runs (merge_blocks client/runs runs))
-  (acknowledge_run client data/run client/selected)
+  (set client/rounds (merge_blocks client/rounds runs))
+  (acknowledge_run client data/round client/selected)
   (set client/cursor data/cursor)
   (set client/next_seq data/next_submission_seq)
   (set client/session_revision data/session/revision)
   (var title : Str data/session/title)
   ($dom/set_text client/title title)
+  (var tab (session_tab client client/selected))
+  (set tab/title title)
+  (set tab/cache data)
+  (var pinned : Bool false)
+  (if_not ($absent? data/session/pinned) (set pinned data/session/pinned))
+  ($dom/set_text ($dom/element "pin_session") (if pinned "Unpin" "Pin"))
   (render_transcript client)
+  (render_tabs client)
   (update_controls client))
 
 (fn apply_records [client : Client, incoming : (List Any), cursor : Str] : Void
@@ -496,25 +719,18 @@
   (render_transcript client))
 
 (fn apply_run [client : Client, session : Str, data : Any] : Void
-  (upsert_session client data/session)
-  (acknowledge_run client data/session/last_run session)
+  (acknowledge_run client data session)
   (if_yes (== session client/selected)
-    (set client/run data/session/last_run)
-    (if_not ($absent? client/run)
-      (set client/runs (bounded_blocks (merge_blocks client/runs [client/run]) true)))
-    (set client/next_seq data/next_submission_seq)
-    (set client/session_revision data/session/revision)
-    (var title : Str data/session/title)
-    ($dom/set_text client/title title)
-    (if_not ($absent? client/run)
-      (var status : Str client/run/status)
-      (if_yes (terminal status) (set client/preview [])))
+    (set client/round data)
+    (set client/rounds (bounded_blocks (merge_blocks client/rounds [data]) true))
     (render_transcript client))
-  (apply_status client data/status))
+  (update_controls client))
 
 (fn select_session [client : Client, id : Str] : Void
   (if_yes client/sending (notice client "Resolving your submission…") (return))
   (remember_draft client)
+  (var refresh (&& (== id client/selected) client/viewing_history))
+  (save_tab client)
   (set client/selected id)
   (set client/queued_prompt "")
   (set client/cursor "")
@@ -522,8 +738,8 @@
   (set client/records [])
   (set client/preview [])
   (set client/expanded [])
-  (set client/run nil)
-  (set client/runs [])
+  (set client/round nil)
+  (set client/rounds [])
   (set client/has_older false)
   (set client/loading_older false)
   (set client/viewing_history false)
@@ -534,13 +750,49 @@
   ($dom/set_class client/root "menu_open" false)
   (notice client "")
   (render_sessions client)
+  (var tab (session_tab client id))
+  (set tab/closed false)
+  (set client/connected tab/connected)
+  (set client/socket tab/socket)
+  (set client/socket_epoch tab/socket_epoch)
+  (set client/message_sequence tab/sequence)
+  (apply_snapshot client tab/cache)
+  (set client/expanded tab/expanded)
   (render_transcript client)
-  (connect_socket client))
+  (render_tabs client)
+  (if_not tab/connected (connect_stream client tab))
+  (if_yes (&& refresh tab/connected (!= id ""))
+    (api client "GET" $"/api/v4/sessions/${id}/snapshot" nil
+      (fn [code : Int, data : Any] : Void
+        (if_yes (== id client/selected)
+          (if (== code 200) (apply_snapshot client data) (show_error client data))))))
+  (if_yes (!= id "")
+    (api client "POST" $"/api/v4/sessions/${id}/open" {}
+      (fn [code : Int, data : Any] : Void
+        (if_yes (!= code 200) (show_error client data))))))
+
+(fn pin_session [client : Client] : Void
+  (var id client/selected)
+  (if_yes (== id "") (return))
+  (var tab (session_tab client id))
+  (var cache : Any tab/cache)
+  (var pinned : Bool false)
+  (if_not ($absent? cache/session/pinned) (set pinned cache/session/pinned))
+  (api client "PATCH" $"/api/v4/sessions/${id}"
+    {^pinned (! pinned) ^revision client/session_revision}
+    (fn [code : Int, data : Any] : Void
+      (if (== code 200)
+        (then
+          (set cache/session data)
+          (if_yes (== id client/selected)
+            (set client/session_revision data/revision)
+            ($dom/set_text ($dom/element "pin_session") (if pinned "Pin" "Unpin"))))
+        (else (show_error client data))))))
 
 (fn create [client : Client] : Void
   (var draft (if (== client/selected "") ($dom/input_value client/prompt)
     (?? ($session_storage/get (draft_key "new")) "")))
-  (api client "POST" "/api/v1/sessions" {^title "New conversation"}
+  (api client "POST" "/api/v4/sessions" {^title "New conversation"}
     (fn [code : Int, data : Any] : Void
       (if (== code 201)
         (then
@@ -558,21 +810,21 @@
   (var session : Str pending/session)
   (var request_id : Str pending/request_id)
   (var already_seen false)
-  (if_not ($absent? client/run)
+  (if_not ($absent? client/round)
     (set already_seen (&& (== session client/selected)
-      (== (string_or client/run/request_id "") request_id))))
+      (== (string_or client/round/request_id "") request_id))))
   (if_not already_seen
     (set client/awaiting request_id) (set client/awaiting_session session))
   (set client/sending true)
   (update_controls client)
-  (api client "POST" $"/api/v1/sessions/${session}/runs" pending
+  (api client "POST" $"/api/v4/sessions/${session}/rounds" pending
     (fn [code : Int, data : Any] : Void
       (set client/sending false)
       (if (== code 202)
         (then
           # POST acknowledges admission. A newer WebSocket completion must
           # never be overwritten by this potentially late accepted response.
-          (var status : Str data/status)
+          (var status : Str data/state)
           (if_yes (terminal status) (acknowledge_run client data session))
           ($session_storage/remove "gene-harness/pending")
           (var submitted : Str pending/text)
@@ -623,7 +875,45 @@
     (return))
   (send_pending client))
 
+(fn send_command [client : Client, text : Str] : Void
+  (set client/sending true)
+  (api client "POST" $"/api/v4/sessions/${client/selected}/commands" {^text text}
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false)
+      (if (== code 202)
+        (then ($dom/set_input_value client/prompt "") (remember_draft client))
+        (else (show_error client data)))
+      (update_controls client))))
+
+(fn apply_command [client : Client, session : Str, data : Any] : Void
+  (if_yes (!= session client/selected) (return))
+  (var id : Str data/id)
+  (var status : Str data/status)
+  (var block_id ($ session "/" id))
+  (var text : Str (string_or data/display (string_or data/text "")))
+  (if_yes (== status "running")
+    (for previous in client/preview
+      (var previous_id : Str previous/id)
+      (if_yes (== previous_id block_id)
+        (var prior : Str previous/text)
+        (set text ($ prior text)))))
+  (apply_record client {^id block_id ^round_id "" ^turn 0 ^role "assistant" ^phase "command" ^text text ^status status ^view data/view ^durable false})
+  (var error_code : Str (string_or data/error_code ""))
+  (if_yes (== error_code "confirmation_required")
+    (var name : Str data/name)
+    ($dom/clear client/notice)
+    ($dom/append client/notice ($dom/render `(div ^role "dialog" ^aria-label "Confirm stopping sessions"
+      (p %text)
+      (button ^type "button" ^on_click %(fn [event : Any] : Void
+        (send_command client ($ "/" name " --confirm"))) "Confirm")
+      (button ^type "button" ^on_click %(fn [event : Any] : Void (notice client "")) "Keep running")))))
+  (render_transcript client))
+
 (fn send [client : Client] : Void
+  (var raw ($dom/input_value client/prompt))
+  (if_yes (&& (!= client/selected "") (str/starts_with? raw "/") (! (str/starts_with? raw "//")))
+    (send_command client raw)
+    (return))
   (if_yes (!= client/input_id "")
     (notice client "Answer or cancel the pending question first.") (return))
   (if_yes (|| (! client/ready) (! client/connected) client/sending client/busy) (return))
@@ -634,7 +924,7 @@
   (if_yes (== client/selected "")
     (set client/sending true)
     (update_controls client)
-    (api client "POST" "/api/v1/sessions" {^title "New conversation"}
+    (api client "POST" "/api/v4/sessions" {^title "New conversation"}
       (fn [code : Int, data : Any] : Void
         (set client/sending false)
         (if (== code 201)
@@ -651,15 +941,9 @@
   (stage_submission client text))
 
 (fn stop [client : Client] : Void
-  (if_yes ($absent? client/status) (return))
-  (var active_session (string_or client/status/session ""))
-  (if_yes (!= active_session client/selected)
-    (select_session client active_session)
-    (notice client "The active conversation is shown. Press Stop to stop it.")
-    (return))
-  (if_yes ($absent? client/run) (return))
-  (var id : Str client/run/id)
-  (api client "POST" $"/api/v1/sessions/${client/selected}/runs/${id}/cancel" {}
+  (if_yes ($absent? client/round) (return))
+  (var id : Str client/round/id)
+  (api client "POST" $"/api/v4/sessions/${client/selected}/rounds/${id}/cancel" {}
     (fn [code : Int, data : Any] : Void
       (if (== code 200)
         (then (notice client "Stop requested."))
@@ -686,11 +970,10 @@
     (var session : Str message/session)
     (var data : Any message/data)
     (if (== kind "status") (then (apply_status client data))
-      (elif (== kind "sessions")
-        (set client/sessions data/sessions)
-        (render_sessions client)
-        (var next (string_or data/next ""))
-        (if_yes (!= next "") (sessions_page client next)))
+      (elif (== kind "session/list")
+        (refresh_sessions client))
+      (elif (== kind "attention")
+        (set client/needs_attention data/sessions) (render_sessions client))
       (elif (== kind "session")
         (upsert_session client data)
         (if_yes (== session client/selected)
@@ -699,14 +982,23 @@
           ($dom/set_text client/title title)))
       (elif (== kind "snapshot")
         (if_yes (== session client/selected) (apply_snapshot client data)))
-      (elif (== kind "record")
+      (elif (|| (== kind "turn") (== kind "reply") (== kind "console"))
         (if_yes (== session client/selected) (apply_record client data)))
       (elif (== kind "records")
         (if_yes (== session client/selected)
           (var records : (List Any) data/records)
           (var cursor : Str data/cursor)
           (apply_records client records cursor)))
-      (elif (== kind "run") (apply_run client session data))
+      (elif (== kind "round/state") (apply_run client session data))
+      (elif (== kind "command") (apply_command client session data))
+      (elif (== kind "stopped")
+        (var restarting : Bool data/restart)
+        (set client/ready restarting)
+        (set client/connected false)
+        (var stopped_message : Str data/message)
+        (notice client stopped_message)
+        (controls client))
+      (elif (== kind "restarted") (notice client "Harness restarted."))
       (elif (== kind "error") (show_error client data))
       (elif (== kind "resync")
         (var socket : EventTarget client/socket)
@@ -722,7 +1014,7 @@
         (if_yes (!= saved "")
           (var payload : Any ($json/parse saved))
           (var reply_session : Str payload/session)
-          (var input_id : Str payload/input_id)
+          (var input_id : Str payload/batch_id)
           (if_yes (== reply_session client/selected)
             (if (== input_id client/input_id)
               (send_input_reply client payload)
@@ -741,7 +1033,7 @@
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
     # Only disconnection recovery uses an HTTP status check, including cookie
     # expiry. There is no timer polling while the WebSocket is connected.
-    (api client "GET" "/api/v1/status" nil
+    (api client "GET" "/api/v4/status" nil
       (fn [code : Int, data : Any] : Void
         (if_yes (!= epoch client/socket_epoch) (return))
         (if (== code 200)
@@ -754,32 +1046,93 @@
           (else (reconnect_socket client epoch))))))))
 
 (fn connect_socket [client : Client] : Void
-  (if_yes (! client/ready) (return))
-  (set client/socket_epoch (+ client/socket_epoch 1))
-  (var epoch client/socket_epoch)
-  (set client/connected false)
-  (set client/message_sequence 0)
-  (update_controls client)
-  (if_not ($absent? client/socket)
-    (var old : EventTarget client/socket)
-    ($ws/close old))
+  (connect_stream client (session_tab client client/selected)))
+
+(fn connect_stream [client : Client, tab : SessionTab] : Void
+  (if_yes (|| (! client/ready) tab/closed) (return))
+  (set tab/socket_epoch (+ tab/socket_epoch 1))
+  (var epoch tab/socket_epoch)
+  (set tab/connected false)
+  (set tab/sequence 0)
+  (if_not ($absent? tab/socket)
+    (var old : EventTarget tab/socket) ($ws/close old))
+  (if_yes (== tab/id client/selected)
+    (set client/connected false) (update_controls client))
   (var origin ($browser/origin))
   (var parts : (List Str) (str/split origin "://"))
   (var scheme (if (== parts/0 "https") "wss" "ws"))
-  (var socket ($ws/connect $"${scheme}://${parts/1}/api/v1/events?session=${($url/encode_component client/selected)}"))
-  (set client/socket socket)
+  (var socket ($ws/connect $"${scheme}://${parts/1}/api/v4/events?session=${($url/encode_component tab/id)}"))
+  (set tab/socket socket)
+  (if_yes (== tab/id client/selected)
+    (set client/socket socket) (set client/socket_epoch epoch))
   ($time/after 10000.0 (fn [] : Void
-    (if_yes (&& client/ready (== epoch client/socket_epoch) (! client/connected))
+    (if_yes (&& client/ready (== epoch tab/socket_epoch) (! tab/connected))
       ($ws/close socket))))
   ($ws/on_text socket (fn [text : Str] : Void
-    (if_yes (== epoch client/socket_epoch) (socket_message client text))))
+    (if_yes (== epoch tab/socket_epoch) (stream_message client tab text))))
   ($ws/on_close socket (fn [] : Void
-    (if_yes (!= epoch client/socket_epoch) (return))
-    (set client/connected false)
-    (update_controls client)
-    (if_yes (! client/ready) (return))
-    (notice client "Reconnecting… Your draft is saved.")
-    (reconnect_socket client epoch))))
+    (if_yes (|| (!= epoch tab/socket_epoch) tab/closed) (return))
+    (set tab/connected false)
+    (if_yes (== tab/id client/selected)
+      (set client/connected false) (update_controls client)
+      (notice client "Reconnecting… Your draft is saved."))
+    (reconnect_stream client tab epoch))))
+
+(fn reconnect_stream [client : Client, tab : SessionTab, epoch : Int] : Void
+  ($time/after 1500.0 (fn [] : Void
+    (if_yes (|| (! client/ready) tab/closed (!= epoch tab/socket_epoch)) (return))
+    (api client "GET" "/api/v4/status" nil
+      (fn [code : Int, data : Any] : Void
+        (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
+        (if (== code 200)
+          (then (set client/csrf data/csrf) (connect_stream client tab))
+          (elif (== code 401)
+            (set client/ready false) (set_hidden "auth_notice" false) (show_error client data))
+          (else (reconnect_stream client tab epoch))))))))
+
+(fn stream_message [client : Client, tab : SessionTab, text : Str] : Void
+  (try
+    (var message : Any ($json/parse text))
+    (var version : Int message/protocol)
+    (var sequence_text : Str message/sequence)
+    (var sequence : Int ($json/parse sequence_text))
+    (if_yes (|| (!= version protocol_version) (!= sequence (+ tab/sequence 1)))
+      (connect_stream client tab) (return))
+    (set tab/sequence sequence)
+    (var server_epoch : Str message/epoch)
+    (if_yes (&& (!= tab/server_epoch "") (!= tab/server_epoch server_epoch) (== tab/id client/selected))
+      (notice client "Harness restarted."))
+    (set tab/server_epoch server_epoch)
+    (var kind : Str message/type)
+    (var session : Str message/session)
+    (var data : Any message/data)
+    (if_yes (== kind "ready") (set tab/connected true))
+    (if (== tab/id client/selected)
+      (then
+        (set client/message_sequence (- sequence 1))
+        (socket_message client text)
+        (save_tab client))
+      (else
+        (var cache : Any tab/cache)
+        (if (&& (== kind "snapshot") (== session tab/id))
+          (then (set tab/cache data) (set tab/title data/session/title)))
+        (if_yes (&& (== session tab/id) (|| (== kind "turn") (== kind "reply") (== kind "console")))
+          (var preview : (List Any) cache/preview)
+          (set cache/preview (bounded_blocks (merge_blocks preview [data]) true)))
+        (if_yes (&& (== session tab/id) (== kind "round/state"))
+          (set cache/round data)
+          (var rounds : (List Any) cache/rounds)
+          (set cache/rounds (merge_blocks rounds [data]))
+          (acknowledge_run client data session))
+        (if_yes (&& (== session tab/id) (== kind "command"))
+          (var id : Str data/id)
+          (var output (string_or data/display (string_or data/text "")))
+          (var preview : (List Any) cache/preview)
+          (set cache/preview (bounded_blocks (merge_blocks preview
+            [{^id ($ session "/" id) ^round_id "" ^turn 0 ^role "assistant" ^phase "command"
+              ^text output ^status data/status ^view data/view ^durable false}]) true)))))
+    (render_tabs client)
+  catch Any (connect_stream client tab)))
 
 (fn authenticated [client : Client, data : Any] : Void
   (set client/csrf data/csrf)
@@ -802,12 +1155,12 @@
   (var token (query_value ($browser/hash) "token"))
   ($browser/replace_url (if (== client/selected "") "/" $"/?session=${client/selected}"))
   (if (!= token "")
-    (api client "POST" "/api/v1/auth/exchange" {^token token}
+    (api client "POST" "/api/v4/auth/exchange" {^token token}
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
           (then (authenticated client data))
           (else (show_error client data) (set_hidden "auth_notice" false)))))
-    (api client "GET" "/api/v1/status" nil
+    (api client "GET" "/api/v4/status" nil
       (fn [code : Int, data : Any] : Void
         (if (== code 200)
           (then (authenticated client data))
@@ -819,7 +1172,8 @@
     ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0
     ^busy false ^autoscroll true ^generation 0
     ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false
-    ^records [] ^preview [] ^sessions [] ^expanded [] ^runs [] ^input_id "" ^answering false ^run nil ^pending nil ^status nil
+    ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs []
+    ^expanded [] ^rounds [] ^input_id "" ^answering false ^round nil ^pending nil ^status nil
     ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions")
     ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt")
     ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
@@ -847,7 +1201,19 @@
   ($dom/add_event_listener ($dom/element "create_session") "click"
     (fn [event : Any] : Void (create client)))
   ($dom/add_event_listener ($dom/element "session_filter") "input"
-    (fn [event : Any] : Void (render_sessions client)))
+    (fn [event : Any] : Void
+      ($time/after 300.0 (fn [] : Void (refresh_sessions client)))))
+  (for id in ["kind_filter" "status_filter" "trigger_filter" "since_filter" "until_filter"]
+    ($dom/add_event_listener ($dom/element id) "change"
+      (fn [event : Any] : Void (refresh_sessions client))))
+  ($dom/add_event_listener ($dom/element "triggers_button") "click"
+    (fn [event : Any] : Void (set_hidden "trigger_drawer" false) (load_triggers client)))
+  ($dom/add_event_listener ($dom/element "close_triggers") "click"
+    (fn [event : Any] : Void (set_hidden "trigger_drawer" true)))
+  ($dom/add_event_listener ($dom/element "trigger_kind") "change"
+    (fn [event : Any] : Void (trigger_fields)))
+  ($dom/add_event_listener ($dom/element "trigger_form") "submit"
+    (fn [event : Any] : Void ($dom/prevent_default event) (create_trigger client)))
   ($dom/add_event_listener ($dom/element "stop") "click"
     (fn [event : Any] : Void (stop client)))
   ($dom/add_event_listener ($dom/element "resolve_submission") "click"
@@ -878,14 +1244,25 @@
       (set_hidden "rename_form" false)
       ($dom/set_input_value ($dom/element "rename_title") ($dom/text client/title))
       ($dom/focus ($dom/element "rename_title"))))
+  ($dom/add_event_listener ($dom/element "pin_session") "click"
+    (fn [event : Any] : Void (pin_session client)))
   ($dom/add_event_listener ($dom/element "rename_form") "submit"
     (fn [event : Any] : Void
       ($dom/prevent_default event)
-      (api client "PATCH" $"/api/v1/sessions/${client/selected}"
+      (api client "PATCH" $"/api/v4/sessions/${client/selected}"
         {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
         (fn [code : Int, data : Any] : Void
           (if (== code 200)
-            (then (set_hidden "rename_form" true))
+            (then
+              (set_hidden "rename_form" true)
+              (set client/session_revision data/revision)
+              (var title : Str data/title)
+              ($dom/set_text client/title title)
+              (var tab (session_tab client client/selected))
+              (set tab/title title)
+              (var cache : Any tab/cache)
+              (set cache/session data)
+              (render_tabs client))
             (else (show_error client data)))))))
   ($dom/add_event_listener ($dom/window) "focus"
     (fn [event : Any] : Void

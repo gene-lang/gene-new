@@ -1,12 +1,12 @@
 (mod harness_web_contract ^profile web)
 
-(const protocol_version 3)
+(const protocol_version 4)
 (const prompt_limit 65536)
 (const receipt_limit 128)
 (const history_page_limit 200)
 
-(fn terminal_run [status : Str] : Bool
-  (|| (== status "completed") (== status "failed") (== status "cancelled")
+(fn terminal_round [status : Str] : Bool
+  (|| (== status "done") (== status "failed") (== status "cancelled")
       (== status "interrupted") (== status "recovery_required")))
 
 (fn error_status [code : Str] : Int

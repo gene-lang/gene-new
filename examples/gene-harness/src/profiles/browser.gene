@@ -1,29 +1,3 @@
 (mod browser)
-
-(import [Profile] ^from "./profile")
-(import [ExecutionLimits] ^from "../plugin_api")
-(import [cli_render_plugin] ^from "./cli")
-(import [command_plugin agent_plugin template_codegen_plugin] ^from "../agents/agent")
-(import [code_command_plugin] ^from "../agents/code_command")
-(import [llm_agent_plugin model_codegen_plugin] ^from "../agents/llm")
-(import [filesystem_plugin] ^from "../../plugins/builtin/filesystem")
-(import [interaction_plugin] ^from "../../plugins/builtin/interactions")
-(import [process_plugin] ^from "../../plugins/builtin/process")
-(import [http_plugin] ^from "../../plugins/builtin/http")
-
-(fn browser_profile [^offline offline : Bool = false] : Profile
-  (var plugins [(cli_render_plugin) (command_plugin) (code_command_plugin)
-    (filesystem_plugin) (interaction_plugin) (process_plugin) (http_plugin)])
-  (if offline
-    (then
-      (plugins .push (agent_plugin))
-      (plugins .push (template_codegen_plugin)))
-    (else
-      (plugins .push (llm_agent_plugin))
-      (plugins .push (model_codegen_plugin))))
-  (Profile ^name "browser"
-    # The author may repair twice: three 180-second requests plus registration.
-    # This is the checked-in provider budget; generated callbacks stay bounded
-    # by default_execution_limits when their modules are registered.
-    ^limits (ExecutionLimits ^max_steps 1000000 ^max_memory_mb 64 ^timeout_ms 600000)
-    ^plugins plugins))
+(import [baseline_profile] ^from "./baseline")
+(fn browser_profile [^offline offline : Bool = false] (baseline_profile))

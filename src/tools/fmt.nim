@@ -497,7 +497,7 @@ proc fmtValue(v: Value, indent: int): string
 
 proc rawStr(s: string): string =
   ## Prefer the language's explicit triple-quoted spelling for multiline text.
-  if '\n' in s and "\"\"\"" notin s:
+  if '\n' in s and '\0' notin s and "\"\"\"" notin s:
     return "\"\"\"" & s & "\"\"\""
   ## Fallback for one-line text or content containing a triple delimiter.
   var sb = "\""
@@ -508,6 +508,7 @@ proc rawStr(s: string): string =
     of '\n': sb.add '\n'
     of '\t': sb.add "\\t"
     of '\r': sb.add "\\r"
+    of '\0': sb.add "\\0"
     else: sb.add ch
   sb & "\""
 

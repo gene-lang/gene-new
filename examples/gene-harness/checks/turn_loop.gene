@@ -1,0 +1,63 @@
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/runtime/sessions" [create_session load_session unload_session])
+(import ^from "../src/runtime/round_controller"
+  [new_round_controller submit_round round_receipt answer_round close_round_controller])
+(import ^from "../src/storage/state" [events_for])
+
+(fn main [args]
+  ($fs/make_dir args/0)
+  (let root ($fs/real_path args/0))
+  (let runtime (open_runtime root "default" (Profile ^name "scripted" ^plugins [])))
+  (let calls ($cell {}))
+  (let provider
+    (fn [request]
+      (let count (+ (?? (calls .get; .get request/session) 0) 1))
+      (calls
+        .get
+        ; .put request/session count)
+      (if (== request/session "a")
+        (if (== count 1)
+          """# Inspect
+(append_prompt "value" (+ 2 3)) (Outcome ^prompt "continue")"""
+          """# Finish
+(Outcome ^done true ^reply "a done")""")
+        (if (== count 1)
+          """# Ask
+(Outcome ^questions [{^id "name" ^prompt "Name?"}])"""
+          """# Finish
+(Outcome ^done true ^reply "b done")"""))))
+  (let controller (new_round_controller runtime provider))
+  (try
+    (create_session ^id "a" runtime/sessions)
+    (create_session ^id "b" runtime/sessions)
+    (let a (submit_round controller "a" "request-a" 1 "calculate"))
+    (let b (submit_round controller "b" "request-b" 1 "ask"))
+    (let duplicate (submit_round controller "a" "request-a" 1 "calculate"))
+    ($assert (== duplicate/id a/id) "submission retry changed its round")
+    (for [session watcher] in (controller/watchers .get)
+      (watcher .join))
+    (let a_done (round_receipt controller "a" a/id))
+    (let b_waiting (round_receipt controller "b" b/id))
+    ($assert (== a_done/state "done") $"a failed: ${a_done}")
+    ($assert (== b_waiting/state "waiting") $"b failed: ${b_waiting}")
+    ($assert (unload_session runtime/sessions "b") "waiting session could not unload")
+    (load_session runtime/sessions "b")
+    (answer_round controller "b" b_waiting/questions/id {^name "Ada"})
+    (controller/watchers
+      .get
+      ; .get "b"
+      ; .join)
+    (let b_done (round_receipt controller "b" b/id))
+    ($assert (== b_done/state "done") $"question answer did not resume the round: ${b_done}")
+    (let transcript (events_for runtime/events "session" "a"))
+    (let kinds [])
+    (for event in transcript
+      (kinds .push event/type))
+    ($assert (kinds .contains? "turn/response") "response transcript is missing")
+    ($assert (kinds .contains? "turn/request") "request transcript is missing")
+    ($assert (kinds .contains? "reply") "reply transcript is missing")
+    ($println "turn loop: code responses, concurrent sessions, receipts, waiting unload and question resumption")
+  ensure
+    (close_round_controller controller)
+    (close_runtime runtime)))

@@ -1376,6 +1376,7 @@ proc pumpUntilDone(task: Value, parentTask: Value = NIL)
 proc pollHttpClientCompletions()
 proc pollOwnedHttpClientCompletions()
 proc pollCursesInputCompletions()
+proc pollStdinLineCompletions()
 proc pollOsExecAsyncCompletions()
 proc requestOsExecCancellation(task: Value): bool
 proc pollIoFileCompletions()
@@ -9894,6 +9895,10 @@ proc moduleIdentityFor*(app: Application, absPath: string): string =
   let pkg = app.owningPackage(absPath)
   result =
     if pkg == nil: absPath
+    elif pkg.kind == pkAdHoc and pkg != app.appPackage:
+      # External sandbox roots coexist with the application. The reserved
+      # ad-hoc application identity cannot identify both source trees.
+      pkg.id & "::" & pkg.relativeModulePath(absPath)
     else: pkg.moduleIdentity(absPath)
   app.moduleIdentities[absPath] = result
 
@@ -10292,7 +10297,16 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   # It is empty today, which is exactly when this is cheap to close. An
   # experimental root is withheld until its members are classified, and `genex`
   # is in `reservedStdlibRoots`, so a mod cannot bind the name back.
-  let root = newScope(nil, application = app)
+  var completeGrants = true
+  for name in sandboxableNamespaces:
+    if name notin grants:
+      completeGrants = false
+      break
+  # A host granting the whole standard library also admits its canonical
+  # protocol implementations. Keep that registry live through the parent;
+  # shared contracts and later generations must not see a stale copied list.
+  # Partial grants retain their isolated implementation boundary.
+  let root = newScope(if completeGrants: full else: nil, application = app)
   for name, value in full.vars:
     if name != "gene" and name != "genex":
       root.define(name, value)
@@ -10302,6 +10316,9 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
       continue
     restricted.define(name, value)
   root.define("gene", newNamespace("gene", restricted))
+  if completeGrants:
+    # The incubating root is not part of the namespace grant inventory.
+    root.define("genex", VOID)
   app.sandboxRoots[key] = root
   root
 
@@ -10779,6 +10796,15 @@ proc resolveModuleRef*(app: Application, rawPath: string,
   if pkgName.len > 0:
     return app.resolvePackageModule(
       app.packageForImport(app.currentPackage, pkgName), rawPath)
+  if app.sandboxRoot != nil and app.sandboxRestricting and
+      not rawPath.isUrlModulePath and not rawPath.startsWith("./") and
+      not rawPath.startsWith("../"):
+    # Shared contract paths retain application-package identity even when
+    # owned plugin sources live in a workspace outside that package.
+    let sharedPath = if rawPath.startsWith("/"): rawPath[1 .. ^1] else: rawPath
+    let sharedCandidate = moduleCandidate(app.appPackage.root, sharedPath)
+    if sharedCandidate in app.sandboxShared:
+      return sharedCandidate
   if rawPath.isUrlModulePath:
     return app.validateModuleUrl(rawPath, rawPath)
   if app.currentModuleDir.isUrlModulePath:
@@ -19956,6 +19982,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let body = chunk.subchunks[inst[].intArg]
           let workerSafe = activeTaskContext.kind == vkNil and
                            inst[].flag and scope.spawnCanMoveToWorker(body)
+          if not workerSafe:
+            # Eval inherits its caller's lexical chain. A spawned task can
+            # therefore retain pooled activations above the eval frame, even
+            # when no closure was created directly in those activations.
+            # Preserve their slots and parents before the caller can return.
+            if recycleScope:
+              scope.holdCallScope(chunk.localNames)
+              recycleScope = false
+            for frame in frames.mitems:
+              if frame.recycleScope and scopeChainContains(scope, frame.scope):
+                frame.scope.holdCallScope(frame.chunk.localNames)
+                frame.recycleScope = false
           publishSpawnCapture(scope, body)
           let taskParent =
             if workerSafe: snapshotSpawnScope(scope, body)
@@ -30969,18 +31007,18 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   if not dirExists(sandboxDir):
     raisePackageError(pecModuleNotFound,
       "sandbox directory not found: " & dir)
-  if not app.isWithinPackageRoot(sandboxDir):
-    raisePackageError(pecBoundary,
-      "sandbox directory escapes package root: " & dir,
-      ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
+  if app.owningPackage(sandboxDir) == nil:
+    let sourcePackage = newAdHocPackage(sandboxDir)
+    app.packagesByRoot[sourcePackage.root] = sourcePackage
   # **Not `adoptEntryModule`.** A mod is not the program's entry, and adopting
   # it repoints the package the app resolves against — which made the mod's
   # `core/api.gene` a different module identity from the host's, so the mod's
   # `Game` was not the host's `Game` and `register_all` could not be called.
-  let absPath = app.entryModulePath(sandboxDir / entry)
+  let absPath = moduleCandidate(sandboxDir, entry)
   # An entry that points out of its own directory would be a boundary with the
   # subject on the wrong side of it: the mod's own code would load unrestricted.
-  if not absPath.isRelativeTo(sandboxDir):
+  if not absPath.isRelativeTo(sandboxDir) or
+      not app.packageForModule(absPath).contains(absPath):
     raisePackageError(pecBoundary,
       "sandboxed entry escapes its own directory: " & entry,
       ["directory: " & sandboxDir])

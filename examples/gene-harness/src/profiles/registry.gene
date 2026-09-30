@@ -1,30 +1,6 @@
-# The registry: which profiles this application offers.
-#
-# One file to change when a deployment is added, and the only file that has to
-# know the whole list. `src/profiles/profile.gene` is what a profile *is*; `src/profiles/`
-# holds them; this is the lookup.
-#
-# Note there is no precedence between the entries. Two profiles are
-# *alternatives*, not a stack — `cli` and `web` even reuse the plugin ids `fs`
-# and `render` precisely so they cannot be layered (design §3.8).
-
 (mod profiles)
-
-(import [Profile] ^from "./profile")
-(import [HarnessError] ^from "../kernel")
-(import [cli_profile] ^from "./cli")
-(import [web_profile] ^from "./web")
-(import [chat_profile] ^from "./chat")
-
-(fn profile_names [] : Any
-  ["cli" "web" "chat"])
-
-(fn profile_named [name : Str] : Profile
-  (if (== name "cli")
-    (cli_profile)
-    (if (== name "web")
-      (web_profile)
-      (if (== name "chat")
-        (chat_profile)
-        (fail (HarnessError
-          ^message $"unknown profile ${name}; expected one of $(profile_names)"))))))
+(import [baseline_profile] ^from "./baseline")
+(fn profile_names [] ["chat" "scripted"])
+(fn profile_named [name : Str]
+  (if_not ((profile_names) .contains? name) (fail $"unknown profile ${name}"))
+  (baseline_profile))

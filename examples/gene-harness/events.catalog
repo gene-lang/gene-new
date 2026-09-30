@@ -1,7 +1,5 @@
 # name version required|ignorable schema
 lifecycle 1 required text
-message 2 required transcript
-output 2 required transcript
 trace 1 ignorable text
 turn/start 1 required turn_start
 turn/end 1 required turn_end
@@ -11,6 +9,12 @@ session/state 1 required core_state
 round/state 1 required core_state
 question/asked 1 required core_state
 question/answered 1 required core_state
-run/state 1 required core_state
-input/request 1 required core_state
-input/reply 1 required core_state
+turn/response 1 required turn_response
+turn/patch 1 required turn_patch
+turn/request 1 required turn_request
+reply 1 required reply
+console 1 ignorable console
+command 1 required core_state
+trigger/state 1 required core_state
+trigger/occurrence 1 required core_state
+history/summary 1 required core_state

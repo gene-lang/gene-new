@@ -1,0 +1,22 @@
+(import ^from "../src/web/session_service"
+  [open_session_service close_session_service create_session edit_session acknowledge_attention list_sessions submit])
+(import ^from "../src/runtime/sessions" [update_session require_record])
+(fn main [args]
+  (let service (open_session_service ^workspace args/0 ^^offline))
+  (try
+    (let record (create_session service ^title "Initial"))
+    (let pinned (edit_session service record/id {^pinned true ^title "Changed"} 0))
+    ($assert pinned/pinned "pinning did not persist")
+    ($assert (== pinned/title "Changed") "metadata edit lost title")
+    ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Any true)
+      "stale metadata edit was accepted")
+    (update_session service/sessions record/id {^^attention})
+    (let before (list_sessions service))
+    ($assert (== before/needs_attention/.size 1) "attention list did not include the session")
+    (acknowledge_attention service record/id)
+    (let after (list_sessions service))
+    ($assert (== after/needs_attention/.size 0) "opening an existing tab did not clear attention")
+    ($assert (try (submit service record/id "cli-only" 1 "/new") false catch Any true)
+      "web host admitted a CLI-only command")
+    ($println "web metadata: pinning, titles, revision conflict, attention acknowledgement and CLI-only commands")
+  ensure (close_session_service service)))
