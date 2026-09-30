@@ -21,7 +21,7 @@ security headers. The informational /about/ page is independent of session
 records and model calls.
 
 Use --offline for a simple canned reply, or --script FILE for a list of
-scripted responses. Both are useful for model-free checks.
+scripted responses. Both are useful for model-free testing.
 
 ## Sessions and operator workflow
 
@@ -149,7 +149,7 @@ running. A stopped browser cannot start the process; it directs the operator
 to a terminal. A supervised restart keeps reconnection enabled, retains the
 cookie, changes the process epoch and delivers a restarted notice.
 
-## Implementation and checks
+## Implementation and specs
 
 client/main.gene handles navigation, drafts, commands, answers, sockets and
 record caches. client/state.gene contains merge/grouping helpers.
@@ -162,9 +162,9 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The same runtime runs CLI and browser rounds; there is no per-session plugin
 activation or browser-only model loop.
 
-The package's Gene check runner covers protocol-4 service delivery, live
+The package's `gene test` specs cover protocol-4 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
-concurrent sessions and shutdown. Responsiveness checks run CPU loops,
+concurrent sessions and shutdown. Responsiveness specs run CPU loops,
 native callback loops and synchronous processes while another session,
 a heartbeat and HTTP work continue.

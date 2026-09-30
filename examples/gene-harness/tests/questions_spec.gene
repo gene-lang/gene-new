@@ -1,0 +1,46 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import [open_event_store close_event_store core_state] ^from "../src/storage/state")
+(import [validate_questions normalize_answers ask_questions answer_questions QuestionError]
+  ^from "../src/runtime/questions")
+
+(describe "Harness questions"
+  (it "validates partial answers and resumes idempotently across restart" []
+    (isolated this_mod/.path "validates partial answers and resumes idempotently across restart"
+      (fn [workspace]
+        (let unanswered (quote unanswered))
+        (let questions [{^id "db" ^prompt "Database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}
+          {^id "name" ^prompt "Name?"} {^id "wipe" ^prompt "Wipe?" ^kind "confirm"}])
+        (let batch (validate_questions questions))
+        (let answers (normalize_answers batch {^db "postgres"}))
+        ($assert (== answers {^db "postgres" ^name unanswered ^wipe unanswered}) "partial answers were not normalized")
+        ($assert (== (normalize_answers batch {} ^dismiss true)
+          {^db unanswered ^name unanswered ^wipe unanswered}) "dismiss did not skip the batch")
+        ($assert (try (validate_questions [{^id "x" ^prompt "x"} {^id "x" ^prompt "again"}])
+          false catch QuestionError true) "duplicate question id was accepted")
+        ($assert (try (validate_questions [{^id "x" ^prompt "x" ^choices ["a"] ^recommended "b"}])
+          false catch QuestionError true) "invalid recommendation was accepted")
+        ($assert (try (normalize_answers batch {^db "unknown"}) false catch QuestionError true)
+          "invalid choice was accepted")
+        ($assert (try (normalize_answers batch {^extra "unknown"}) false catch QuestionError true)
+          "unknown question id was accepted")
+        (let root workspace)
+        ($fs/make_dir root)
+        (let first (open_event_store root))
+        (ask_questions first "s" "q" 57 questions ^deadline 1000)
+        (close_event_store first)
+        (let events (open_event_store root))
+        (try
+          (let restored (core_state events "session" "s" "questions/q"))
+          ($assert (== restored/status "waiting") "restart did not preserve waiting questions")
+          ($assert (== restored/questions batch) "restart changed the question batch")
+          (let answered (answer_questions events "s" "q" {^db "postgres" ^wipe false}))
+          ($assert (== answered/answers {^db "postgres" ^name unanswered ^wipe false}) "answer content changed")
+          ($assert (== (answer_questions events "s" "q" {^db "postgres" ^wipe false}) answered)
+            "identical answer retry was rejected")
+          ($assert (try (answer_questions events "s" "q" {^db "sqlite"}) false catch QuestionError true)
+            "conflicting answer retry was accepted")
+          ($println "questions: partial answers, dismissal, validation, restart and idempotence passed")
+          ensure (close_event_store events))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,104 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/profile" [Profile])
+(import ^from "../src/plugin_api" [PluginHost])
+(import ^from "../src/storage/workspace"
+  [register_plugin composition_entries commit_composition prepare_workspace])
+(import ^from "../src/agents/harness_turn" [evaluate_harness_turn])
+
+(describe "Harness plugins"
+  (it "shares only the API while allowing direct activation, I/O and explicit session state" []
+    (isolated this_mod/.path "shares only the API while allowing direct activation, I/O and explicit session state"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let runtime (open_runtime ^^activate root "default" (Profile ^name "test" ^plugins [])))
+        (try
+          (let source
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost append_prompt])
+                (fn init [descriptor]
+                  (Plugin ^id "io_plugin" ^provides [["functions" "write_marker"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "write_marker" ^doc "Write a marker through the standard library." ^fn (fn [path : Str text : Str] ($fs/write_text path text) (append_prompt "written" text) (host ^session "s1" .PluginHost:update_state {^last text}))})))))))
+          (let registered (register_plugin runtime/workspace runtime/h "io_plugin" ($to_str source)))
+          ($assert (== registered/status "ready") $"plugin activation failed: ${registered}")
+          (var entries (composition_entries runtime/workspace))
+          ($assert (== entries/0/scope void) "entry retained a plugin scope")
+          (let result
+            (evaluate_harness_turn ^session "s1"
+              runtime/h
+              1
+              root
+              "(write_marker \"marker.txt\" \"direct I/O\") (Outcome ^prompt \"continue\")"))
+          ($assert (== result/kind "continue") $"code response failed: ${result/error}")
+          ($assert (== ($fs/read_text "marker.txt") "direct I/O") "plugin could not use fs directly")
+          ($assert
+            ($str/contains? result/request "fn write_marker")
+            "append_prompt lost function correlation")
+          (let policy (runtime/h/plugin_policies .get; .get "io_plugin"))
+          (let host policy/context)
+          ($assert (== (host .PluginHost:state) nil) "explicit session state leaked into workspace state")
+          ($assert
+            (== (host ^session "s1" .PluginHost:state) {^last "direct I/O"})
+            "session state was not immediate")
+          (host .PluginHost:update_state {^^shared})
+          ($assert (== (host .PluginHost:state) {^^shared}) "workspace state was not the default")
+          ($assert (== (host ^session "s2" .PluginHost:state) nil) "session state leaked across sessions")
+          (let queued_source
+            (quote
+              (mod plugin
+                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (fn init [descriptor]
+                  (Plugin ^id "queued" ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "ping" ^doc "Queued function." ^fn (fn [] "pong")})))))))
+          (let queued
+            (evaluate_harness_turn
+              runtime/h
+              2
+              root
+              ($
+                "(append_prompt \"registration\" (register_plugin \"queued\" (quote "
+                ($to_str queued_source)
+                "))) (Outcome ^prompt \"registered\")")))
+          ($assert (== queued/kind "continue") $"queued registration failed: ${queued/error}")
+          ($assert
+            ($str/contains? queued/request "queued")
+            "registration published from inside response code")
+          ($assert
+            (== queued/composition_changes/0/status "ready")
+            "root queue did not publish registration")
+          (let next (evaluate_harness_turn runtime/h 3 root "(Outcome ^done true ^reply (ping))"))
+          ($assert
+            (== next/validated/outcome/reply "pong")
+            "next turn did not receive the queued function")
+          (let inspection (evaluate_harness_turn runtime/h 4 root
+            "(Outcome ^done true ^reply ($to_str [(plugin_states) (inspect_plugin \"queued\") session_id]))"))
+          ($assert ($str/contains? inspection/validated/outcome/reply "queued") $"plugin inspection failed: ${inspection/validated/outcome/reply}; ${inspection/error}")
+          (let disabled (evaluate_harness_turn runtime/h 5 root "(disable_plugin \"queued\") (Outcome ^done true ^reply \"disabled\")"))
+          (let hidden (evaluate_harness_turn runtime/h 6 root "(append_prompt \"state\" (inspect_plugin \"queued\")) (ping)"))
+          ($assert (== hidden/kind "error") "disabled plugin function stayed visible")
+          ($assert ($str/contains? hidden/request "disabled") "disabled plugin disappeared from inspection")
+          (evaluate_harness_turn runtime/h 7 root "(enable_plugin \"queued\") (Outcome ^done true ^reply \"enabled\")")
+          (let restored (evaluate_harness_turn runtime/h 8 root "(Outcome ^done true ^reply (ping))"))
+          ($assert (== restored/validated/outcome/reply "pong") $"enable_plugin did not restore function: ${restored/error}")
+          (set entries (composition_entries runtime/workspace))
+          (let obsolete ($serde/read_data ($serde/write_data entries/0)))
+          (obsolete .put "id" "obsolete")
+          (obsolete .put
+            "interfaces"
+            {^core "gene-harness/PluginHost:1" ^plugin_api "gene-harness/Plugin:1"})
+          (entries .push obsolete)
+          (commit_composition runtime/workspace entries)
+          (prepare_workspace runtime/workspace runtime/h)
+          ($assert
+            (==
+              (runtime/workspace/errors
+                .get
+                ; .get "obsolete")
+              "stored plugin predates interface 2; re-register it")
+            "v1 plugin did not receive the re-register quarantine")
+          ($println "plugin v2: direct activation, API-only sharing, full I/O, text registration and explicit session state")
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

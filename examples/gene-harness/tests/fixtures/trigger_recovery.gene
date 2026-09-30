@@ -1,0 +1,22 @@
+(import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../src/profiles/baseline" [baseline_profile])
+(import ^from "../../src/runtime/round_controller" [new_round_controller close_round_controller])
+(import ^from "../../src/runtime/triggers"
+  [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences])
+(import ^from "../../src/runtime/sessions" [require_record])
+(fn crash []
+  ($os/exec ^cmd "/bin/kill" ^args ["-9" ($to_str ($os/process_id))])
+  ($sleep 60000))
+(fn child [root point]
+  (let runtime (open_runtime root "default" (baseline_profile)))
+  (let controller (new_round_controller runtime (fn [request]
+    ($fs/write_text "side-effect.txt" "ran")
+    (if (== point "running") (crash))
+    "(Outcome ^done true ^reply \"done\")")))
+  (let manager (open_trigger_manager runtime controller ^start false ^now 1000
+    ^hook (fn [boundary occurrence] (if (== boundary point) (crash)))))
+  (create_trigger manager {^id "once" ^kind "scheduled" ^at 2000 ^request "inspect"} ^now 1000)
+  (tick_triggers manager ^now 2000)
+  (for [id watcher] in (controller/watchers .get) (watcher .join))
+  ($assert false "Crash hook did not terminate the child"))
+(fn main [args] (child args/0 args/1))

@@ -1,0 +1,66 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/baseline" [baseline_profile])
+(import ^from "../src/runtime/sessions" [create_session load_session])
+(import ^from "../src/agents/history" [append_message])
+(import ^from "../src/runtime/round_controller" [RoundError new_round_controller submit_round answer_round round_receipt request_stop close_round_controller])
+(import ^from "../src/storage/state" [events_for])
+(fn attempt [controller, id]
+  (try {^accepted true ^receipt (submit_round controller "race" id 1 "ask")}
+    catch RoundError {^accepted false ^code $err/code}))
+(describe "Harness rounds"
+  (it "admits one load, submission and answer resumption and publishes one stop receipt" []
+    (isolated this_mod/.path "admits one load, submission and answer resumption and publishes one stop receipt"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let stopped ($cell []))
+        (let controller (new_round_controller runtime (fn [request]
+          (let n (calls .swap (+ (calls .get) 1)))
+          (if (== n 0) "(Outcome ^questions [{^id \"q\" ^prompt \"Answer?\"}])"
+            "(Outcome ^done true ^reply \"answered\")"))
+          ^on_change (fn [session receipt]
+            (if (== receipt/state "cancelled") ((stopped .get) .push receipt)))))
+        (try
+          (create_session runtime/sessions ^id "race")
+          (append_message runtime "race" "user" "stored before the first load")
+          (let loaded (scope
+            (let a (spawn ^lane root (load_session runtime/sessions "race")))
+            (let b (spawn ^lane root (load_session runtime/sessions "race")))
+            [(await a) (await b)]))
+          ($assert (same? loaded/0 loaded/1) "parallel first loads created different session states")
+          (let admitted (scope
+            (let a (spawn ^lane root (attempt controller "one")))
+            (let b (spawn ^lane root (attempt controller "two")))
+            [(await a) (await b)]))
+          (var count 0)
+          (for result in admitted (if result/accepted (set count (+ count 1))))
+          ($assert (== count 1) "parallel submissions both entered the same session")
+          (controller/watchers .get; .get "race"; .join)
+          (let session (load_session runtime/sessions "race"))
+          (let current (session/round .get))
+          ($assert (== current/state "waiting") "admitted round did not wait")
+          (let answered (scope
+            (let a (spawn ^lane root (answer_round controller "race" current/questions/id {^q "yes"})))
+            (let b (spawn ^lane root (answer_round controller "race" current/questions/id {^q "yes"})))
+            [(await a) (await b)]))
+          ($assert (== answered/0/id answered/1/id) "identical concurrent answers were not idempotent")
+          (controller/watchers .get; .get "race"; .join)
+          ($assert (== (calls .get) 2) "concurrent answer resumed the provider twice")
+          (var starts 0)
+          (for event in (events_for runtime/events "session" "race")
+            (if (== event/type "turn/start") (set starts (+ starts 1))))
+          ($assert (== starts 2) "concurrent admission wrote duplicate turn starts")
+          (create_session runtime/sessions ^id "stop")
+          (set controller/provider (fn [request] ($sleep 5000) "(Outcome ^done true ^reply \"late\")"))
+          (let slow (submit_round controller "stop" "stop" 1 "wait"))
+          (request_stop controller "stop" 0 true)
+          (controller/watchers .get; .get "stop"; .join)
+          ($assert (== ($size (stopped .get)) 1) "workspace stop published cancellation twice")
+          (let receipt (round_receipt controller "stop" slow/id))
+          ($assert (== receipt/message "Workspace stopped.") "watcher overwrote the stop receipt")
+          ($println "admission races: one loaded state, one submitted round, one answer resumption and one stop receipt")
+        ensure (close_round_controller controller) (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

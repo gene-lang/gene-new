@@ -1,0 +1,30 @@
+(import $test [describe it assert_equal])
+(import [isolated run_spec fixture_path] ^from "./support")
+(import [recover_patch_temporaries] ^from "../src/runtime/patch")
+
+(describe "Harness patch recovery"
+  (it "reports a partial rename and removes staged siblings after a process crash" []
+    (isolated this_mod/.path "reports a partial rename and removes staged siblings after a process crash"
+      (fn [workspace]
+        (let child ($os/exec_async ^cmd ($os/executable_path)
+          ^args ["run" (fixture_path "patch_crash") workspace] ^timeout_ms 15000))
+        (try
+          (let marker ($path/join workspace "owner-pid"))
+          (let deadline (+ ($os/monotonic_ms) 10000))
+          (while (&& (! ($fs/exists? marker)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          ($assert ($fs/exists? marker) "patch did not reach the first rename")
+          (let killed (await ($os/exec_async ^cmd "/bin/kill"
+            ^args ["-9" ($str/trim ($fs/read_text marker))])))
+          (assert_equal killed/status 0)
+          (let outcome (await child))
+          ($assert (!= outcome/status 0) "crash fixture exited normally")
+          (let saved ($serde/read_data ($fs/read_text ($path/join workspace "response.gene"))))
+          (let note (recover_patch_temporaries workspace saved/files))
+          ($assert ($str/contains? note "patch may be partially applied: a.txt, b.txt"))
+          (assert_equal ($fs/read_text ($path/join workspace "a.txt")) "a1\n")
+          (assert_equal ($fs/read_text ($path/join workspace "b.txt")) "b0\n")
+          ($assert (! ($fs/exists? ($path/join workspace ".b.txt.gene-harness-tmp"))))
+        ensure
+          (if_not (child .done?) (child .cancel) (child .join)))))))
+
+(fn main [args] : Int (run_spec args))

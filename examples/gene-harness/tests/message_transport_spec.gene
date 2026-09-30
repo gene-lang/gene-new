@@ -1,0 +1,29 @@
+(import $test [describe it before_each assert_equal run])
+(import [completion_request] ^from "../src/agents/model_client")
+
+(describe "Harness provider requests"
+  (before_each [t]
+    (let messages [
+      {^role "system" ^content "instructions"}
+      {^role "user" ^content "prompt"}
+      {^role "assistant" ^content "response1"}
+      {^role "user" ^content "request1"}
+      {^role "assistant" ^content "response2"}
+      {^role "user" ^content "request2"}])
+    (set t/spec
+      (completion_request ^messages messages
+        {^provider "anthropic" ^model "test" ^anthropic_key "test" ^effort "none"}
+        "instructions" "request2" 100)))
+
+  (it "retains the conversation history" [t]
+    (assert_equal t/spec/body/messages/.size 5))
+
+  (it "marks the previous assistant cache checkpoint" [t]
+    (assert_equal t/spec/body/messages/1/content/0/cache_control/type "ephemeral"))
+
+  (it "marks the latest assistant cache checkpoint" [t]
+    (assert_equal t/spec/body/messages/3/content/0/cache_control/type "ephemeral")))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

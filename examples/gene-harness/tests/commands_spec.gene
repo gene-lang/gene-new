@@ -1,0 +1,102 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/baseline" [baseline_profile])
+(import ^from "../src/runtime/commands"
+  [submit_command command_receipt parse_submission take_command_attachments])
+(import ^from "../src/runtime/round_controller"
+  [new_round_controller submit_round round_receipt close_round_controller])
+(import ^from "../src/kernel" [Plugin Host PluginHost install row])
+(describe "Harness commands"
+  (it "parses raw commands and preserves run isolation, streamed shell output and attachments" []
+    (isolated this_mod/.path "parses raw commands and preserves run isolation, streamed shell output and attachments"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let manager runtime/commands)
+        (let seen ($cell nil))
+        (let controller
+          (new_round_controller
+            runtime
+            (fn [request]
+              (seen .set request/messages)
+              "(Outcome ^done true ^reply \"done\")")))
+        (try
+          (let parsed
+            (parse_submission
+              runtime/h
+              """/run  (+ 1 2)
+"""))
+          ($assert
+            (==
+              parsed/raw
+              """ (+ 1 2)
+""")
+            "raw command arguments changed")
+          (let literal (parse_submission runtime/h "//path"))
+          ($assert (== literal/text "/path") "literal slash was not escaped")
+          ($assert
+            (try
+              (parse_submission runtime/h "/rnu 1")
+              false
+            catch Any
+              true)
+            "unknown slash command was sent to the model")
+          (let run (submit_command manager "default" "/run (+ 1 2)"))
+          (let joined (manager/watchers .get; .get $"default:${run/id}"; .join))
+          ($assert (== ($head joined) TaskOutcome/ok) "command watcher failed")
+          (let ran (command_receipt manager "default" run/id))
+          ($assert (== ran/status "done") $"run failed: ${ran}")
+          ($assert ($str/contains? ran/display "3") "run did not display its value")
+          (let hidden (submit_command manager "default" "/run Outcome"))
+          (manager/watchers
+            .get
+            ; .get $"default:${hidden/id}"
+            ; .join)
+          (let failure (command_receipt manager "default" hidden/id))
+          ($assert (== failure/status "failed") "run exposed Outcome")
+          (let shell (submit_command manager "default" "/sh printf 'hello\\n'"))
+          (manager/watchers
+            .get
+            ; .get $"default:${shell/id}"
+            ; .join)
+          (let exited (command_receipt manager "default" shell/id))
+          ($assert (== exited/exit 0) $"shell failed: ${exited}")
+          ($assert ($str/contains? exited/display "hello") "shell output was lost")
+          ($fs/write_text
+            "sample.txt"
+            """one
+two
+three
+""")
+          (let view (submit_command manager "default" "/view sample.txt:2-3"))
+          (manager/watchers
+            .get
+            ; .get $"default:${view/id}"
+            ; .join)
+          (let viewed (command_receipt manager "default" view/id))
+          ($assert
+            (==
+              viewed/display
+              """two
+three""")
+            $"view failed: ${viewed}")
+          (let round (submit_round controller "default" "u1" 1 "prompt"))
+          (controller/watchers
+            .get
+            ; .get "default"
+            ; .join)
+          (let messages (seen .get))
+          (let last (- messages/.size 1))
+          ($assert
+            ($str/contains? messages/%last/content "[c1.run]")
+            "run did not attach to the next user request")
+          ($assert
+            ($str/contains? messages/%last/content "user viewed sample.txt:2-3")
+            "view did not attach as a pointer")
+          ($assert (== ($size (take_command_attachments runtime "default")) 0) "attachments were reused")
+          ($println "commands: raw parsing, slash escape, run isolation, streamed shell, view and next-user attachments")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

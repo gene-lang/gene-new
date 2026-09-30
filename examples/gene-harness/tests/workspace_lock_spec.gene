@@ -1,0 +1,21 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import [acquire_workspace_lock close_workspace_lock WorkspaceInUse] ^from "../src/runtime/workspace_lock")
+
+(describe "Harness workspace locking"
+  (it "refuses duplicate owners and preserves the owner identity" []
+    (isolated this_mod/.path "refuses duplicate owners and preserves the owner identity"
+      (fn [workspace]
+        (let lock (acquire_workspace_lock workspace "lock-probe"))
+        (try
+          ($assert
+            (try
+              (let duplicate (acquire_workspace_lock workspace "duplicate"))
+              (close_workspace_lock duplicate)
+              false
+              catch WorkspaceInUse (== $err/owner/pid ($os/process_id)))
+            "workspace lock did not preserve its owner's identity")
+          ($println "locked")
+          ensure (close_workspace_lock lock))))))
+
+(fn main [args] : Int (run_spec args))

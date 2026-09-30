@@ -1,0 +1,38 @@
+(import $test [describe it assert_equal run])
+(import [split_response] ^from "../src/agents/response")
+(import [completion_text response_text] ^from "../src/agents/model_client")
+(import [anthropic_text claude_text] ^from "../src/agents/claude")
+
+(fn raw_blocks [read_text]
+  (for text in ["\n(+ 1 2)\n<<<raw END\nexact body\nEND"
+                "*** Begin Patch\n*** Add File: model.txt\n+ok\n*** End Patch"]
+    (let output (read_text text))
+    (assert_equal output text)
+    (split_response output)
+    (split_response ($str/trim output))))
+
+(describe "Harness provider response bytes"
+  (it "preserves OpenAI output text and EOF blocks" []
+    (raw_blocks (fn [text]
+      (response_text {^status "completed" ^output [{^type "message" ^role "assistant"
+        ^content [{^type "output_text" ^text text}]}]}))))
+
+  (it "preserves OpenRouter output text and EOF blocks" []
+    (raw_blocks (fn [text]
+      (completion_text "openrouter" {^status 200
+        ^body ($json/stringify {^choices [{^message {^content text}}]})}))))
+
+  (it "preserves Anthropic output text and EOF blocks" []
+    (raw_blocks (fn [text]
+      (anthropic_text {^status 200 ^body ($json/stringify
+        {^type "message" ^role "assistant" ^stop_reason "end_turn"
+         ^content [{^type "text" ^text text}]})}))))
+
+  (it "preserves Claude CLI output text and EOF blocks" []
+    (raw_blocks (fn [text]
+      (claude_text {^status 0 ^stdout ($json/stringify
+        {^type "result" ^subtype "success" ^is_error false ^result text})})))))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

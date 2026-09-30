@@ -1,0 +1,13 @@
+(import [prepare_patch commit_patch] ^from "../../src/runtime/patch")
+
+(fn main [args]
+  (let root args/0)
+  ($fs/write_text ($path/join root "a.txt") "a0\n")
+  ($fs/write_text ($path/join root "b.txt") "b0\n")
+  (let plan (prepare_patch root "*** Begin Patch\n*** Update File: a.txt\n@@\n-a0\n+a1\n*** Update File: b.txt\n@@\n-b0\n+b1\n*** End Patch\n"))
+  ($fs/write_text_atomic ($path/join root "response.gene") ($serde/write_data {^files plan/files}))
+  (commit_patch plan ^after_rename (fn [number]
+    (if (== number 1)
+      (then
+        ($fs/write_text ($path/join root "owner-pid") ($to_str ($os/process_id)))
+        ($sleep 60000))))))

@@ -204,18 +204,32 @@ Durable high-water marks prevent collected occurrence ids from replaying.
 `body_gc_interval_ms` defaults to 60000. Idle collection removes superseded
 history blobs while preserving live recall bodies and checkpoint fallbacks.
 
-## Model-free checks
+## Model-free specs
 
-```text
-bin/gene run examples/gene-harness/checks/check.gene /tmp/fresh-harness-checks
-bin/gene run tools/generate_harness_event_catalog.gene --check
+From this package directory:
+
+```sh
+../../bin/gene test
+../../bin/gene test tests/response_spec.gene
+../../bin/gene test --name "Harness trigger recovery"
+../../bin/gene run ../../tools/generate_harness_event_catalog.gene --check
 ```
 
-The Gene runner uses independent workspaces to check parsing, patches,
-questions, history, plugins, sessions, commands, triggers, recovery, live
-delivery, concurrency and shutdown. It measures HTTP and cancellation while
-CPU loops, native collection callbacks and synchronous process calls run.
-Use a fresh check directory on each run.
+The suite uses Gene's `$test` `describe`/`it` declarations, assertions and
+standard failure reports. `gene test` discovers `tests/**/*_spec.gene`;
+`--name` selects examples by their full description. Parsing, provider and
+calendar specs run directly. Runtime specs use `tests/support.gene` to run
+each example in an independent Application and fresh workspace under `tmp/`,
+with the same spec runner in the child. This preserves working-directory,
+lock and scheduler isolation. Failure reports include child diagnostics and
+the workspace path for inspection. Crash and signal programs live under
+`tests/fixtures/` and are excluded from discovery.
+
+The specs cover patches, questions, history, plugins, sessions, commands,
+triggers, recovery, live delivery, concurrency and shutdown. Responsiveness
+specs measure HTTP and cancellation while CPU loops, native collection
+callbacks and synchronous process calls run. New tests should use the same
+`*_spec.gene` convention; see [Gene testing](../../docs/testing.md).
 
 Both entry points accept `--script FILE` for canned responses. The browser
 also has `--offline` for a simple model-free reply.

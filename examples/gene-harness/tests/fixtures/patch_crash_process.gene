@@ -1,0 +1,30 @@
+(import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../../src/profiles/baseline" [baseline_profile])
+(import ^from "../../src/runtime/round_controller" [new_round_controller save_round])
+(import ^from "../../src/runtime/sessions" [require_record])
+(import ^from "../../src/storage/state" [append_core_event record_core_state flush_event_store core_state events_for])
+(import ^from "../../src/agents/harness_turn" [evaluate_harness_turn])
+
+(fn hold_patch [root]
+  (let runtime (open_runtime root "default" (baseline_profile)))
+  (let controller (new_round_controller runtime (fn [request] "")))
+  (save_round controller "default" {^id "p1" ^request_id "p1" ^submission_seq 1 ^state "running" ^last_turn 1})
+  (append_core_event runtime/events "session" "default" {^type "turn/start" ^turn 1 ^round "p1"})
+  ($fs/write_text "a.txt" "a0\n")
+  ($fs/write_text "b.txt" "b0\n")
+  (evaluate_harness_turn runtime/h 1 root
+    "(Outcome ^done true ^reply \"patched\")\n*** Begin Patch\n*** Update File: a.txt\n@@\n-a0\n+a1\n*** Update File: b.txt\n@@\n-b0\n+b1\n*** End Patch\n"
+    ^record (fn [kind data]
+      (if (== kind "turn/response")
+        (then
+          (append_core_event runtime/events "session" "default"
+            {^type "turn/response" ^turn 1 ^round "p1" ^text "two-file patch" ^blobs {} ^patch_files data/patch_files})
+          (record_core_state runtime/events "session" "default" "session/state" "patch/1"
+            {^files data/patch_files ^state "started" ^round "p1" ^turn 1})
+          (flush_event_store runtime/events))))
+    ^after_patch_rename (fn [number]
+      (if_yes (== number 1)
+        ($fs/write_text_atomic "owner-pid" ($to_str ($os/process_id)))
+        ($sleep 60000)))))
+
+(fn main [args] (hold_patch args/0))

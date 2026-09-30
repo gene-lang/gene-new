@@ -1,0 +1,29 @@
+# Runtime specs need independent Applications as well as fresh workspaces:
+# opening a harness changes cwd, and crash fixtures deliberately kill processes.
+# Both the parent and child use the ordinary $test registry and reports.
+(import $test [assert_equal run])
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+(let active_workspace ($cell nil))
+
+(fn fixture_path [name : Str] : Str
+  ($path/join package_root $"tests/fixtures/${name}.gene"))
+
+(fn isolated [spec_path : Str, name : Str, body]
+  (let selected (active_workspace .get))
+  (if_not ($absent? selected) (return (body selected)))
+  (let workspace ($path/join package_root $"tmp/spec-${($crypto/random_hex 12)}"))
+  ($fs/make_dir workspace)
+  (let result (await ($os/exec_async ^cmd ($os/executable_path)
+    ^args ["run" spec_path workspace name] ^dir package_root
+    ^timeout_ms 120000 ^max_bytes 1048576)))
+  (assert_equal result/status 0
+    $"Isolated spec failed. Workspace: ${workspace}\n${result/stdout}${result/stderr}")
+  ($assert (! result/truncated) "isolated spec output exceeded its capture bound"))
+
+# Used by `gene run file_spec.gene` and by isolated children. Ordinary `gene
+# test` discovery registers examples without invoking main or creating files.
+(fn run_spec [args] : Int
+  (if_not ($absent? args/0) (active_workspace .set args/0))
+  (let result (run ^name (?? args/1 "")))
+  result/exit_code)

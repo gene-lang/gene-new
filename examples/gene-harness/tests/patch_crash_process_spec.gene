@@ -1,0 +1,44 @@
+(import $test [describe it])
+(import [isolated run_spec fixture_path] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/baseline" [baseline_profile])
+(import ^from "../src/runtime/round_controller" [new_round_controller save_round])
+(import ^from "../src/runtime/sessions" [require_record])
+(import ^from "../src/storage/state" [append_core_event record_core_state flush_event_store core_state events_for])
+(import ^from "../src/agents/harness_turn" [evaluate_harness_turn])
+
+(describe "Harness patch recovery"
+  (it "reports partial commits and interruption after SIGKILL between real renames" []
+    (isolated this_mod/.path "reports partial commits and interruption after SIGKILL between real renames"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let child ($os/exec_async ^cmd ($os/executable_path)
+          ^args ["run" (fixture_path "patch_crash_process") root] ^timeout_ms 15000))
+        (try
+          (let marker ($path/join root "owner-pid"))
+          (let deadline (+ ($os/monotonic_ms) 10000))
+          (while (&& (! ($fs/exists? marker)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
+          ($assert ($fs/exists? marker) "patch did not reach the first commit rename")
+          (let killed (await ($os/exec_async ^cmd "/bin/kill" ^args ["-9" ($str/trim ($fs/read_text marker))])))
+          ($assert (== killed/status 0) "patch child could not be killed")
+          (await child)
+          (let reopened (open_runtime root "default" (baseline_profile)))
+          (try
+            (let recovery (core_state reopened/events "session" "default" "recovery"))
+            ($assert ($str/contains? recovery/warnings/0 "a.txt, b.txt") "interrupted turn omitted affected patch paths")
+            ($assert (== ($fs/read_text "a.txt") "a1\n") "first file did not commit before the crash")
+            ($assert (== ($fs/read_text "b.txt") "b0\n") "recovery silently committed the second file")
+            ($assert (! ($fs/exists? ".b.txt.gene-harness-tmp")) "recovery retained staging files")
+            (let session (require_record reopened/sessions "default"))
+            ($assert (== session/status "interrupted") "crashed round was replayed or lost")
+            ($assert session/attention "partial patch did not set attention")
+            (var noted false)
+            (for event in (events_for reopened/events "session" "default")
+              (if (&& (== event/type "trace") ($str/contains? event/payload/text "patch may be partially applied")) (set noted true)))
+            ($assert noted "partial patch warning was absent from the transcript")
+            ($println "patch crash: SIGKILL between real renames, interrupted transcript, attention and staging cleanup")
+          ensure (close_runtime reopened))
+        ensure (if_not (child .done?) (child .cancel) (child .join)))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,25 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/web/auth" [open_auth create_cookie authenticate])
+(describe "Harness browser authentication"
+  (it "preserves the secret, cookie and CSRF token across restart" []
+    (isolated this_mod/.path "preserves the secret, cookie and CSRF token across restart"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let auth (open_auth root))
+        (let browser (create_cookie auth))
+        (let reopened (open_auth root))
+        (let retained (authenticate reopened browser/cookie))
+        ($assert (== retained/csrf browser/csrf) "restart lost the browser's CSRF value")
+        ($assert (== reopened/secret auth/secret) "restart changed the persisted secret")
+        ($assert
+          (try
+            (authenticate reopened "invalid")
+            false
+          catch Any
+            true)
+          "unknown cookie was accepted")
+        ($println "browser auth: persisted secret, cookie and CSRF survive restart")))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,33 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
+(import ^from "../src/profiles/baseline" [baseline_profile])
+(import ^from "../src/storage/workspace" [register_plugin])
+(import ^from "../src/runtime/commands" [submit_command command_receipt])
+(describe "Harness plugin commands"
+  (it "shares context and result identity and delivers raw input, output and attachments" []
+    (isolated this_mod/.path "shares context and result identity and delivers raw input, output and attachments"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let source (quote (mod plugin
+            (import ^from "src/plugin_api.gene" [Plugin PluginHost CommandContext CommandResult])
+            (fn init [descriptor]
+              (Plugin ^id "echo" ^activate (fn [host]
+                (host .PluginHost:contribute "commands"
+                  {^name "echo" ^usage "/echo text" ^doc "Echo raw input." ^^raw_input
+                   ^run (fn [ctx : CommandContext]
+                     (ctx/output "plugin console\n")
+                     (CommandResult ^display ctx/raw ^status "done" ^^attached))})))))))
+          (register_plugin runtime/workspace runtime/h "echo" ($to_str source))
+          (let command (submit_command runtime/commands "default" "/echo  a\nb"))
+          (runtime/commands/watchers .get; .get $"default:${command/id}"; .join)
+          (let result (command_receipt runtime/commands "default" command/id))
+          ($assert (== result/status "done") $"generated command failed: ${result}")
+          ($assert result/attached "shared CommandResult lost attachment behavior")
+          ($assert ($str/contains? result/display " a\nb") "raw arguments changed")
+          ($assert ($str/contains? result/output "plugin console") "plugin command output sink was lost")
+          ($println "plugin command: shared context/result identity, raw input, output sink and attachment")
+        ensure (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

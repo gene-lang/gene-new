@@ -1,0 +1,54 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "./support")
+(import [new_composition_state current_snapshot acquire_snapshot release_snapshot publish_snapshot
+         queue_composition_change take_composition_changes queue_retirement close_composition_state]
+  ^from "../src/runtime/composition")
+
+(describe "Harness composition"
+  (it "retains immutable views and turn leases through deferred retirement" []
+    (isolated this_mod/.path "retains immutable views and turn leases through deferred retirement"
+      (fn [workspace]
+        (let retired ($cell []))
+        (let registry {^functions [{^name "f" ^fn (fn [] 1)}]})
+        (let state (new_composition_state registry ["v1"]
+          (fn [ticket] ((retired .get) .push ticket))))
+        (let initial (current_snapshot state))
+        (registry .put "extra" true)
+        ($assert (== initial/registries/extra void) "input mutation changed a snapshot")
+        ($assert (try (initial/registries .put "extra" true) false catch Any true)
+          "snapshot registry map is writable")
+        ($assert (try (initial/registries/functions/0 .put "name" "changed") false catch Any true)
+          "nested registry rows are writable")
+        (let lease (acquire_snapshot state))
+        (scope
+          (let a (spawn ^lane root
+            ($runtime/with_context {^composition state ^snapshot lease/snapshot} (fn []
+              (let first (current_snapshot state))
+              (let function first/registries/functions/0/fn)
+              (let before (function))
+              ($sleep 20)
+              (let second (current_snapshot state))
+              [before ((/fn second/registries/functions/0))]))))
+          ($sleep 2)
+          (publish_snapshot state {^functions [{^name "f" ^fn (fn [] 2)}]} ["v2"])
+          (queue_retirement state "v1-ticket" ["v1"])
+          ($assert (== (retired .get) []) "leased v1 retired before its turn ended")
+          ($assert (== (await a) [1 1]) "a turn observed two different snapshots"))
+        (release_snapshot state lease)
+        ($assert (== (retired .get) ["v1-ticket"]) "last lease did not retire v1")
+        (let next (current_snapshot state))
+        ($assert (== ((/fn next/registries/functions/0)) 2) "next turn did not bind v2")
+        (queue_composition_change state {^kind "contribute" ^name "later"})
+        ($assert (== next/registries/later void) "queued contribution became visible early")
+        ($assert (== ($size (take_composition_changes state)) 1) "composition queue lost its change")
+        ($assert (== ($size (take_composition_changes state)) 0) "composition queue was not drained")
+        (release_snapshot state lease)
+        ($assert (== (retired .get) ["v1-ticket"]) "double release retired twice")
+        (queue_retirement state "v2-ticket" ["v2"])
+        ($assert (== (retired .get) ["v1-ticket"]) "an unpublished replacement retired the current view")
+        (publish_snapshot state {} [])
+        ($assert (== (retired .get) ["v1-ticket" "v2-ticket"]) "publication did not retire the unleased old view")
+        (close_composition_state state)
+        ($println "composition: immutable views, turn leases, deferred retirement and queue passed")))))
+
+(fn main [args] : Int (run_spec args))
