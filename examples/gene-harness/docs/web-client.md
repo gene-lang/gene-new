@@ -28,8 +28,11 @@ scripted responses. Both are useful for model-free testing.
 Interactive and pinned sessions appear by default. Kind, status, trigger,
 search and activity-date controls query the workspace's session index. Search
 covers title and first request. Needs attention lists every kind of session.
-Opening a session acknowledges attention; a later failure, interruption,
+Opening a session or admitting a new user round acknowledges attention; a later failure, interruption,
 expired question batch or explicit Outcome can set it again.
+The first user request supplies a short title when the session still has its
+default name. Custom titles are preserved. The workspace header and status
+drawer show the provider, model and configured reasoning effort.
 
 Each open session tab retains its own socket, frame sequence, snapshot,
 records, round state and reconnect state. Switching tabs preserves the draft

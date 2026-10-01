@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import ^from "./support" [isolated run_spec])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/agents/history"
@@ -12,9 +12,14 @@
     history_state
     compact_history])
 (import ^from "../src/runtime/sessions" [create_session])
-(describe "Harness history"
-  (it "enforces UTF-8 byte bounds and retains recall and stable prefixes across restart" []
-    (isolated this_mod/.path "enforces UTF-8 byte bounds and retains recall and stable prefixes across restart"
+(describe
+  "Harness history"
+  (it
+    "enforces UTF-8 byte bounds and retains recall and stable prefixes across restart"
+    []
+    (isolated
+      this_mod/.path
+      "enforces UTF-8 byte bounds and retains recall and stable prefixes across restart"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let workspace_root runtime/root)
@@ -32,20 +37,28 @@
           ($assert (< ($str/byte_size requests/full) 16384) "large item was not shortened")
           ($assert ($str/starts_with? requests/full "[1.large]") "item header was lost")
           ($assert ($str/contains? requests/full "recall \"1.large\"") "elision omitted recall")
-          ($assert (== (recall_body runtime "default" "1.large") original) "recall changed Unicode bytes")
+          ($assert
+            (== (recall_body runtime "default" "1.large") original)
+            "recall changed Unicode bytes")
           ($assert
             (! ($str/contains? requests/settled "🙂"))
-            "settled request retained a body over 2 KiB")
+            "settled request retained a body over 16 KiB")
           (let items [])
           (let ascii [])
           (repeat position in 12000
             (ascii .push "x"))
           (let large ($str/join ascii ""))
+          (let readable
+            (bounded_request runtime "default" [{^id "2.docs" ^header "[2.docs]" ^value large}]))
+          ($assert (== readable/full readable/settled) "ordinary documentation settled to a stub")
           (repeat item_index in 8
-            (items .push {^id $"2.output${item_index}" ^header $"[2.output${item_index}]" ^value large}))
+            (items .push
+              {^id $"2.output${item_index}" ^header $"[2.output${item_index}]" ^value large}))
           (let capped (bounded_request runtime "default" items))
           ($assert (<= ($str/byte_size capped/full) 65536) "whole request exceeded 64 KiB")
-          ($assert ($str/contains? capped/full "recall \"2.output7\"") "overflow item lacked a stub")
+          ($assert
+            ($str/contains? capped/full "recall \"2.output7\"")
+            "overflow item lacked a stub")
           ($assert (== (recall_body runtime "default" "2.output7") large) "overflow body was lost")
           (append_message ^round "r1" runtime "default" "user" "initial")
           (append_message ^round "r1" ^turn 1 runtime "default" "assistant" "response1")
@@ -103,4 +116,5 @@ END
         ensure
           (close_runtime reopened))))))
 
-(fn main [args] : Int (run_spec args))
+(fn main [args] : Int
+  (run_spec args))

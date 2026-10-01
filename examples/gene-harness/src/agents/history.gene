@@ -11,7 +11,8 @@
 # Collection closes admission first and runs only after existing writers leave.
 (fn acquire_body_use [runtime]
   (while true
-    (while runtime/body_collecting/.get ($sleep 1))
+    (while runtime/body_collecting/.get
+      ($sleep 1))
     (while true
       (let count runtime/body_users/.load)
       (if (runtime/body_users .compare_exchange count (+ count 1)) (break)))
@@ -26,7 +27,10 @@
 
 (fn with_body_use [runtime, thunk]
   (acquire_body_use runtime)
-  (try (thunk) ensure (release_body_use runtime)))
+  (try
+    (thunk)
+  ensure
+    (release_body_use runtime)))
 
 (fn mark_body_references [runtime, value, live]
   (if (== ($head value) Str)
@@ -39,9 +43,13 @@
       (if_not ($absent? nested) (mark_body_references runtime nested live))
       (return nil)))
   (if (== ($head value) Map)
-    (then (for [key item] in value (mark_body_references runtime item live))))
+    (then
+      (for [key item] in value
+        (mark_body_references runtime item live))))
   (if (== ($head value) List)
-    (then (for item in value (mark_body_references runtime item live))))
+    (then
+      (for item in value
+        (mark_body_references runtime item live))))
   nil)
 
 (fn collect_unreferenced_bodies [runtime]
@@ -77,18 +85,26 @@
   (if_not ($absent? runtime/sessions)
     (let loaded (runtime/sessions/loaded/.get .get session))
     (if_not ($absent? loaded)
-      (return {^messages ($thaw ($freeze loaded/history/.get))
-        ^outputs ($thaw ($freeze_shallow loaded/outputs/.get))})))
+      (return
+        {
+          ^messages ($thaw ($freeze loaded/history/.get))
+          ^outputs ($thaw ($freeze_shallow loaded/outputs/.get))})))
   (let ref (core_state runtime/events "session" session "history"))
   (if ($absent? ref) (return {^messages [] ^outputs {}}))
   (if_not ($absent? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))
   ref)
 
+(fn keep_full_message? [messages, index : Int] : Bool
+  (let last (- messages/.size 1))
+  (|| (== index last) (&& (== index (- last 1)) (== messages/%index/role "assistant"))))
+
 (fn save_history [runtime, session : Str, state]
-  (let last (- state/messages/.size 1))
   (var index 0)
   (for message in state/messages
-    (if (< index last) (message .put "content" (?? message/settled message/content)))
+    (if_not (keep_full_message? state/messages index)
+      (message .put
+        "content"
+        (?? message/settled message/content)))
     (set index (+ index 1)))
   (let text ($serde/write_data state))
   (let digest ($crypto/sha256 text))
@@ -208,7 +224,7 @@
     (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
       (fail (HistoryError ^message "output headers exceed the request byte limit")))
     (full .push rendered)
-    (settled .push (if (> entry/size 2048) entry/stub rendered))
+    (settled .push (if (> entry/size 16384) entry/stub rendered))
     (saved_items .push {^id item/id ^header item/header ^value body
       ^original_bytes entry/size ^inline (== item/inline true) ^^saved})
     (set bytes (+ bytes (+ separator ($str/byte_size rendered)))))
@@ -278,11 +294,14 @@ ELIDED
 
 (fn context_from_state [state, instructions : Str]
   (let messages [{^role "system" ^content instructions}])
-  (let last (- state/messages/.size 1))
   (var index 0)
   (for message in state/messages
     (messages .push
-      {^role message/role ^content (if (== index last) message/content message/settled)})
+      {
+        ^role message/role
+        ^content (if (keep_full_message? state/messages index)
+                   message/content
+                   message/settled)})
     (set index (+ index 1)))
   messages)
 
@@ -343,13 +362,16 @@ ELIDED
       (var tail [])
       (for message in retained
         (if (rounds .contains? message/round) (selected .push message) (tail .push message)))
-      (if selected/.empty?
+      (if_yes (|| selected/.empty? (>= (context_bytes {^messages tail} instructions) (- target 160)))
         # A long active round may be the only round. Summarize its completed
-        # prefix while keeping the latest assistant/request pair intact.
+        # prefix too when older rounds alone cannot make enough room. Keep its
+        # initiating task and latest assistant/request pair intact.
+        (let pending tail)
         (set tail [])
         (var position 0)
-        (for message in state/messages
-          (if (< position (- state/messages/.size 2))
+        (for message in pending
+          (if (&& (< position (- pending/.size 2))
+                   (! (&& (== message/round latest) (== message/role "user") (== message/turn 0))))
             (selected .push message)
             (tail .push message))
           (set position (+ position 1)))

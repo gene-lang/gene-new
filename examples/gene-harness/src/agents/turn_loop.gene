@@ -10,11 +10,10 @@
     recall_body
     bounded_request
     compact_history
-    write_body
-    store_body
-    output_stub])
+    write_body])
 (import ^from "./history" [byte_prefix])
-(import ^from "../storage/state" [append_core_event core_state record_core_state flush_event_store copy_data])
+(import ^from "../storage/state"
+  [append_core_event core_state record_core_state flush_event_store copy_data])
 (import ^from "../runtime/questions" [ask_questions])
 (import ^from "../runtime/sessions" [require_record update_session])
 
@@ -23,8 +22,10 @@
   (timed .put "at_ms" ($os/wall_ms))
   (let event (append_core_event runtime/events "session" session timed))
   (if_not ($absent? runtime/on_event)
-    (try (runtime/on_event session event)
-      catch Any ($println $"Transcript notification failed: ${$err/message}")))
+    (try
+      (runtime/on_event session event)
+    catch Any
+      ($println $"Transcript notification failed: ${$err/message}")))
   (if (&& ($absent? runtime/on_event) (== payload/type "reply") (!= payload/final true))
     ($runtime/with_context nil (fn [] ($println payload/text) ($io/flush_stdout))))
   event)
@@ -37,24 +38,36 @@
     (let remaining ($str/slice_bytes item/text offset (- total offset)))
     (let chunk (byte_prefix remaining 16384))
     (set offset (+ offset ($str/byte_size chunk)))
-    (let payload {^type "console" ^session session ^round round ^turn turn ^text chunk ^late item/late ^^ignorable})
+    (let payload
+      {
+        ^type "console"
+        ^session session
+        ^round round
+        ^turn turn
+        ^text chunk
+        ^late item/late
+        ^^ignorable})
     (if (&& item/late ($absent? loaded))
-      (then (append_core_event runtime/events "workspace" "workspace" payload))
+      (then
+        (append_core_event runtime/events "workspace" "workspace" payload))
       (else
         (if_not ($absent? loaded) (loaded/console/.get .push payload))
         (transcript runtime session payload))))
   (if item/late (flush_event_store runtime/events))
   (if ($absent? runtime/on_event)
-    ($runtime/with_context nil (fn []
-      (var running 0)
-      (for [id record] in runtime/sessions/index/.get
-        (if (== record/status "running") (set running (+ running 1))))
-      (let record (runtime/sessions/index/.get .get session))
-      (let title (?? record/title session))
-      (let prefix (if (> running 1) $"[${title}] " ""))
-      (if ($os/stdout_tty?) ($print "\u001b[2m" prefix item/text "\u001b[0m")
-        ($print prefix item/text))
-      ($io/flush_stdout))))
+    ($runtime/with_context
+      nil
+      (fn []
+        (var running 0)
+        (for [id record] in runtime/sessions/index/.get
+          (if (== record/status "running") (set running (+ running 1))))
+        (let record (runtime/sessions/index/.get .get session))
+        (let title (?? record/title session))
+        (let prefix (if (> running 1) $"[${title}] " ""))
+        (if ($os/stdout_tty?)
+          ($print "[2m" prefix item/text "[0m")
+          ($print prefix item/text))
+        ($io/flush_stdout))))
   nil)
 
 (fn run_round [runtime, session : Str, round, provider, ^resume resume : Bool = false]
@@ -85,19 +98,17 @@
       (recovery .put "delivered" true)
       (record_core_state runtime/events "session" session "session/state" "recovery" recovery)))
   (if_not resume
-    (var settled last_request)
-    (if_yes (> ($str/byte_size last_request) 2048)
-      (let id $"${round/id}.prompt")
-      (store_body runtime session id last_request)
-      (set settled
-        ($to_str
-          "["
-          id
-          """]
-"""
-          (output_stub id ($str/byte_size last_request)))))
-    (append_message ^settled settled ^round round/id runtime session "user" last_request)
-    (transcript runtime session {^type "turn/request" ^round round/id ^turn 0 ^full last_request ^settled settled ^initial true}))
+    (append_message ^round round/id runtime session "user" last_request)
+    (transcript
+      runtime
+      session
+      {
+        ^type "turn/request"
+        ^round round/id
+        ^turn 0
+        ^full last_request
+        ^settled last_request
+        ^^initial}))
   (while (< count limit)
     (let current (require_record runtime/sessions session))
     (let number (+ current/turns 1))
@@ -116,16 +127,39 @@
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
           (fn []
             (assemble_instructions runtime (require_record runtime/sessions session)))))
-      (compact_history runtime session instructions (?? config/context_window 128000)
-        (fn [request] (request .put "config" config) (provider request)))
+      (compact_history
+        runtime
+        session
+        instructions
+        (?? config/context_window 128000)
+        (fn [request]
+          (request .put "config" config)
+          (provider request)))
+      (let messages (provider_context runtime session instructions))
+      (let budget {^limit limit ^used count ^remaining (- limit count)})
+      (let latest ($last messages))
+      (latest .put
+        "content"
+        ($to_str
+          latest/content
+          ($to_str
+            """
+[harness_budget] This is turn """
+            count
+            " of "
+            limit
+            " in this round; "
+            budget/remaining
+            " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")))
       (let text
         (provider
           {
             ^session session
             ^round round/id
             ^turn number
+            ^budget budget
             ^config config
-            ^messages (provider_context runtime session instructions)}))
+            ^messages messages}))
       (let elided
         (try
           (elide_response runtime session number text)
@@ -144,7 +178,11 @@
             ^text elided/text
             ^blobs elided/blobs
             ^patch_files files})
-        (append_message ^round round/id ^turn number runtime session "assistant" elided/text)
+        (append_message ^settled elided/text ^round round/id ^turn number
+          runtime
+          session
+          "assistant"
+          text)
         (if_not files/.empty?
           (record_core_state
             runtime/events
@@ -159,14 +197,7 @@
       (let bindings ($thaw ($freeze_shallow runtime/functions)))
       (bindings .put "doc" gene_doc)
       (set result
-        (evaluate_harness_turn ^session session ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^bindings bindings ^recall (fn [id] (recall_body runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data]
-          (if (== kind "turn/response")
-            (record_response data/patch_files)
-            (do
-              (record_core_state runtime/events "session" session "session/state" $"patch/${number}"
-                {^state "completed" ^result data/result ^round round/id ^turn number})
-              (transcript runtime session {^type "turn/patch" ^round round/id ^turn number
-                ^result data/result ^text data/result/text}))))
+        (evaluate_harness_turn ^session session ^lease lease ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^bindings bindings ^recall (fn [id] (recall_body runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
@@ -222,9 +253,17 @@
     (if (== result/kind "questions")
       (then
         (let id $"${round/id}-q-${number}")
-        (let deadline (if (== metadata/kind "interactive") nil
-          (+ ($os/wall_ms) (?? config/question_timeout_ms 86400000))))
-        (let batch (ask_questions runtime/events session id number result/validated/questions ^deadline deadline ^^normalized))
+        (let deadline
+          (if (== metadata/kind "interactive")
+            nil
+            (+ ($os/wall_ms) (?? config/question_timeout_ms 86400000))))
+        (let batch
+          (ask_questions ^deadline deadline ^^normalized
+            runtime/events
+            session
+            id
+            number
+            result/validated/questions))
         (return
           {
             ^state "waiting"
@@ -241,6 +280,14 @@
   (transcript
     runtime
     session
-    {^type "reply" ^turn (?? round/last_turn 0) ^round round/id ^text last_request ^^final})
+    {
+      ^type "reply"
+      ^turn (?? round/last_turn 0)
+      ^round round/id
+      ^text ($to_str
+              "The round reached its "
+              limit
+              "-turn limit. Your files and conversation are saved. Send a continuation message in this conversation to finish the remaining work.")
+      ^^final})
   (flush_event_store runtime/events)
   {^state "failed" ^message "turn limit reached" ^request last_request ^turn_count count})

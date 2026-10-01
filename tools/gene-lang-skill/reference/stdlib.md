@@ -31,8 +31,8 @@ read_all read_one lex_all print println
 Arithmetic is prefix, and **`//` is remainder, not floor division**: `(/ 7 2)`
 is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 
-`map`, `filter`, `take`, and `into` operate on a **Stream** — open one with
-`to_stream`.
+`map`, `filter` and `filter_map` accept eager collections and streams. A
+stream remains lazy; `into` collects it and `each` drains it for effects.
 
 ## Root types
 
@@ -97,6 +97,54 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 | `$device` | `buffer` | `Buffer` `Compute` |
 | `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneError` `SandboxGeneration` `SandboxTransaction` |
 | `$C` | — | C ABI type constructors for FFI (`Int`, `Ptr`, `CStr`, `Slice`, …) |
+
+## Common calls and argument order
+
+String operations are namespace functions, rather than messages on `Str`.
+Byte offsets start at zero. `slice_bytes` takes a maximum byte **count**, not
+an end offset; it shortens the result to a UTF-8 boundary. The start must
+already be a UTF-8 boundary.
+
+```gene
+($str/slice_bytes "abcdef" 2 3)       # "cde": text, start, max_bytes
+($str/byte_size "hello")             # 5
+($str/split "a,b" ",")               # ["a" "b"]
+($str/join ["a" "b"] ",")            # "a,b"
+($str/trim " ok ")                   # "ok"
+```
+
+Regex replacement takes a `Regex` first, then input text, then replacement
+text. `replace` replaces the first match; `replace_all` replaces every match.
+There is no `$str/replace` or `Str .slice` API.
+
+```gene
+($regex/replace #"x" "x x" "y")       # "y x"
+($regex/replace_all #"x" "x x" "y")   # "y y"
+```
+
+Filesystem paths are strings. `$fs/make_dir` creates a directory, including
+missing parent directories; the name is `make_dir`, not `mkdir`.
+
+```gene
+($fs/make_dir "build/assets")
+($fs/read_text "README.md")
+($fs/write_text_atomic "todos.json" ($json/stringify todos))
+($fs/list_dir ".")
+```
+
+`$os/exec` accepts named arguments only: `^cmd Str`, `^args (List Str)`,
+`^dir Str`, `^timeout_ms Int`, `^max_bytes Int`. It does not split command
+strings through a shell. The output cap defaults to 1 MiB; the argument is
+`max_bytes`, not `max_output_bytes`. The returned map includes `status`,
+`stdout`, `stderr`, `timed_out` and truncation flags.
+
+```gene
+($os/exec ^cmd "gene" ^args ["test" "tests.gene"] ^dir workspace_root
+  ^timeout_ms 60000 ^max_bytes 32768)
+```
+
+Imports require a module file executed with `gene run`; `gene eval` accepts
+bindings from its `Env` and cannot load imports.
 
 ## Type message surfaces
 

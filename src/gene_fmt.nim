@@ -9,16 +9,18 @@ import std/os
 import gene/[diagnostics, reader, types]
 import tools/fmt
 
+const usage = "Usage: gene-fmt <file.gene>\n\n" &
+  "Formats a Gene source file to stdout: reader sugar restored, comments\n" &
+  "preserved, forms wrapped and indented by depth. `gene parse` stays canonical."
+
 proc main() =
   if paramCount() < 1:
-    stderr.writeLine "Usage: gene-fmt <file.gene>"
-    stderr.writeLine ""
-    stderr.writeLine "Formats a Gene source file to stdout: reader sugar" &
-      " restored, comments"
-    stderr.writeLine "preserved, forms wrapped and indented by depth." &
-      " `gene parse` stays canonical."
+    stderr.writeLine usage
     quit(1)
   let path = paramStr(1)
+  if path in ["--help", "-h"]:
+    stdout.writeLine usage
+    quit(0)
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
     quit(1)

@@ -1723,6 +1723,10 @@ proc main() =
       stderr.writeLine "Error: BUILD_FEATURE_UNAVAILABLE: portable .gapp " &
         "execution is not implemented"
       quit(1)
+    elif options.path.endsWith(".gene") or options.path.isAbsolute or
+        '/' in options.path or '\\' in options.path:
+      stderr.writeLine "Error: file not found: " & options.path
+      quit(1)
     else:
       cmdProjectRun(options)
   of "runurl":

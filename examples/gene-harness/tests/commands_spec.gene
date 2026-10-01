@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import ^from "./support" [isolated run_spec])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/runtime/commands"
@@ -7,9 +7,14 @@
 (import ^from "../src/runtime/round_controller"
   [new_round_controller submit_round round_receipt close_round_controller])
 (import ^from "../src/kernel" [Plugin Host PluginHost install row])
-(describe "Harness commands"
-  (it "parses raw commands and preserves run isolation, streamed shell output and attachments" []
-    (isolated this_mod/.path "parses raw commands and preserves run isolation, streamed shell output and attachments"
+(describe
+  "Harness commands"
+  (it
+    "parses raw commands and preserves run isolation, streamed shell output and attachments"
+    []
+    (isolated
+      this_mod/.path
+      "parses raw commands and preserves run isolation, streamed shell output and attachments"
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let manager runtime/commands)
@@ -93,10 +98,22 @@ three""")
           ($assert
             ($str/contains? messages/%last/content "user viewed sample.txt:2-3")
             "view did not attach as a pointer")
-          ($assert (== ($size (take_command_attachments runtime "default")) 0) "attachments were reused")
+          ($assert
+            (== ($size (take_command_attachments runtime "default")) 0)
+            "attachments were reused")
+          (let idle_cancel (submit_command manager "default" "/cancel"))
+          (manager/watchers
+            .get
+            ; .get $"default:${idle_cancel/id}"
+            ; .join)
+          (let cancelled (command_receipt manager "default" idle_cancel/id))
+          ($assert
+            ($str/ends_with? cancelled/display "No round is running.")
+            "idle cancel claimed to stop a round")
           ($println "commands: raw parsing, slash escape, run isolation, streamed shell, view and next-user attachments")
         ensure
           (close_round_controller controller)
           (close_runtime runtime))))))
 
-(fn main [args] : Int (run_spec args))
+(fn main [args] : Int
+  (run_spec args))

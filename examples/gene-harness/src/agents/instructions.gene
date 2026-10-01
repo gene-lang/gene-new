@@ -1,18 +1,19 @@
 (mod instructions)
 (import ^from "./harness_turn" [function_instructions])
-(import ^from "../kernel" [rows])
+(import ^from "../kernel" [rows HarnessError])
 
 (const response_format """
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
 Start with a # goal comment and comment each step for your future self.
 The last value is the outcome. (Outcome ^done true ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
 (Outcome ^prompt value ^reply "optional progress") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
-(append_prompt "label" value) adds a labeled output; labels match [a-z0-9_]+. Errors and patch results become labeled next-request items. Console print/println is not history.
+(append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}]) waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
-Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch failure skips code.
+Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use register_plugin with a quoted (mod plugin ...) or attachment text and optional dependencies. It queues publication; contributed functions appear next turn. Generated plugins import only src/plugin_api.gene plus supplied content-addressed dependencies. Activation is a direct (fn [host] ...); use PluginHost:contribute "functions" with name, fn and doc. Standard-library I/O is available directly.
-Use (recall "N.label") for elided bodies and (doc "gene/syntax") for reference chapters.
+Use (recall "N.label") for elided bodies. Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc "gene/stdlib").
+Each round has a turn budget, shown in the latest request as [harness_budget]. Plan exploration, implementation and verification within it. A continuation message starts another round with the existing files and history.
 Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Audit."}) to schedule workspace work. Kinds: heartbeat (every_ms), scheduled (at, UTC timestamp), cron (cron, timezone). Policies: missed skip/once, overlap skip/queue_one, continue_session boolean, retention keep/days. (list_triggers) lists definitions; (delete_trigger "audit") disables future starts.
 
 # Finish
@@ -49,7 +50,10 @@ Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Aud
       ^gene/stdlib "stdlib"})
   (let chapter (chapters .get name))
   (let root (reference_root))
-  (if (|| ($absent? chapter) ($absent? root)) (fail $"unknown documentation ${name}"))
+  (if ($absent? chapter)
+    (fail
+      (HarnessError ^message $"unknown documentation ${name}; valid chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib")))
+  (if ($absent? root) (fail (HarnessError ^message "Gene documentation directory is unavailable")))
   ($fs/read_text ($path/join root $"tools/gene-lang-skill/reference/${chapter}.md")))
 
 (fn assemble_instructions [runtime, session_record] : Str

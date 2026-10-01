@@ -15,6 +15,9 @@
 (import ^from "../runtime/patch" [prepare_patch commit_patch])
 (import ^from "./history" [byte_prefix])
 
+(fn response_error_line [failure]
+  (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) nil)))
+
 (fn evaluate_turn [number : Int, workspace_root : Str, text : Str,
                    ^bindings bindings = {}, ^timeout_ms timeout_ms : Int = 600000,
                    ^max_memory_mb max_memory_mb : Int = 1024,
@@ -49,8 +52,9 @@
   (var error_line nil)
   (var last_line nil)
   (var cancelled false)
+  (var response nil)
   (try
-    (let response (split_response text))
+    (set response (split_response text))
     (validate_execution_attachments response)
     (turn .put "attachments" response/attachments)
     (var plan nil)
@@ -99,7 +103,7 @@
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))
-                (set error_line (?? failure/line nil)))
+                (set error_line (response_error_line failure)))
               (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
               (when TaskOutcome/cancelled
                 (if expired/.get (set error "response budget timed out") (set cancelled true)))))
@@ -107,8 +111,19 @@
             (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators))))))
     catch Any
       (set error ($to_str $err/message))
-      (set error_line (?? $err/line nil))
+      (set error_line (response_error_line $err))
     ensure (turn/state .set "closed"))
+  (if_yes (&& (! ($absent? response)) (> response/forms/.size 0)
+           (== ($head response/forms/0) Sym)
+           (== error $"undefined symbol: ${response/forms/0}"))
+    (var line 0)
+    (for source_line in ($str/split response/code "\n")
+      (set line (+ line 1))
+      (let stripped ($str/trim source_line))
+      (if (|| (== stripped "") ($str/starts_with? stripped "#")) (continue))
+      (set error_line line)
+      (break))
+    (set error ($to_str error "\nReturn executable Gene code only. Put any prose preamble in # comments; evaluation stopped at this symbol.")))
   (let patch_text (if ($absent? patch_result) nil patch_result/text))
   (let request (if (|| cancelled (&& (! ($absent? validated)) (== validated/kind "done"))) ""
     (render_request turn validated ^patch patch_text ^error error ^error_line error_line ^result_line last_line)))

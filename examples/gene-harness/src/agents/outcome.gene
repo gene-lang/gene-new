@@ -2,7 +2,7 @@
 (import ^from "../runtime/questions" [validate_questions])
 
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool?})
-(type OutcomeError ^props {^message Str} ^impl [Error])
+(type OutcomeError ^props {^message Str ^response_line Int?} ^impl [Error])
 (impl Error for OutcomeError)
 (type TurnClosed ^props {^message Str ^turn Int?} ^impl [Error])
 (impl Error for TurnClosed)
@@ -111,6 +111,18 @@
     (when (node : Node)
       (let body ($map ($node/body form) plain_form))
       (let props ($map ($node/props form) plain_form))
+      # These symbols are only printed as headers, never evaluated. Restore
+      # static reader paths so the next request uses the model's source style.
+      (if_yes (&& (== ($head form) (quote path)) (> body/.size 0) (== ($size props) 0))
+        (var static true)
+        (let parts [])
+        (for segment in body
+          (if_not ([Sym Int] .contains? ($head segment)) (set static false))
+          (parts .push ($to_str segment)))
+        (if_yes static
+          (if (&& (== parts/0 "gene") (> parts/.size 1))
+            (return ($to_sym ($to_str "$" ($str/join ($drop parts 1) "/")))))
+          (return ($to_sym ($str/join parts "/")))))
       ($node/rebuild ^head (plain_form ($head form)) ^body body ^props props ^meta {} form))
     (else
       form)))
@@ -128,12 +140,14 @@
       (let body ($node/body form))
       (if (== head (quote append_prompt))
         (then
-          (if (|| (!= body/.size 2) (!= ($head body/0) Str))
-            (fail (OutcomeError ^message "append_prompt requires a literal label and a value")))
-          (if ($absent? (#"^[a-z0-9_]+$" .match body/0))
-            (fail (OutcomeError ^message "append_prompt label must match [a-z0-9_]+")))
           (let meta ($node/meta form))
           (let line (?? meta/line 1))
+          (if (|| (!= body/.size 2) (!= ($head body/0) Str))
+            (fail
+              (OutcomeError ^response_line line ^message "append_prompt requires a literal label and a value")))
+          (if ($absent? (#"^[a-z0-9_]+$" .match body/0))
+            (fail
+              (OutcomeError ^response_line line ^message "append_prompt label must match [a-z0-9_]+")))
           (let value_form body/1)
           (let value (rewrite_prompt_form value_form))
           (let quoted `(quote %value_form))
@@ -162,8 +176,7 @@
   (let rendered [])
   (if_not ($absent? patch)
     (let patch_id (implicit_id turn "patch"))
-    (rendered .push
-      {^id patch_id ^header $"[${patch_id}]" ^value patch ^^inline}))
+    (rendered .push {^id patch_id ^header $"[${patch_id}]" ^value patch ^^inline}))
   (for item in turn/items/.get
     (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
   (if_not ($absent? validated)
@@ -172,18 +185,14 @@
       (let result_id (implicit_id turn "result"))
       (let line (if ($absent? result_line) "" $" line ${result_line}: Outcome ^prompt"))
       (rendered .push
-        {
-          ^id result_id
-          ^header $"[${result_id}]${line}"
-          ^value (value_text outcome/prompt)})))
+        {^id result_id ^header $"[${result_id}]${line}" ^value (value_text outcome/prompt)})))
   (if_not ($absent? error)
     (let error_id (implicit_id turn "error"))
     (let line (if ($absent? error_line) "" $" line ${error_line}:"))
     (rendered .push {^id error_id ^header $"[${error_id}]${line}" ^value error}))
   (if_not ($absent? answers)
     (let answers_id (implicit_id turn "answers"))
-    (rendered .push
-      {^id answers_id ^header $"[${answers_id}]" ^value (value_text answers)}))
+    (rendered .push {^id answers_id ^header $"[${answers_id}]" ^value (value_text answers)}))
   rendered)
 
 (fn implicit_id [turn, label : Str] : Str

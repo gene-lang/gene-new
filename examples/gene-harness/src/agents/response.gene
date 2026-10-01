@@ -1,39 +1,48 @@
 (mod response)
 
-(type ResponseReadError ^props {^message Str ^line Int} ^impl [Error])
+(type ResponseReadError ^props {^message Str ^line Int ^response_line Int} ^impl [Error])
 (impl Error for ResponseReadError)
 
 (fn read_response_code [code : Str, ^source source : Str = "response"]
-  ($into ($parse/read_all code ^source source ^locs true) []))
+  ($into ($parse/read_all ^source source ^^locs code) []))
 
 (fn complete_code? [code : Str]
   (try
     ($into ($parse/read_all code) [])
     true
-    catch Any false))
+  catch Any
+    false))
 
 (fn block_start? [line : Str]
   (|| ($str/starts_with? line "<<<") ($str/starts_with? line "*** Begin Patch")))
 
 (fn read_error [line : Int, message : Str]
-  (fail (ResponseReadError ^line line ^message $"response:${line}: ${message}")))
+  (fail (ResponseReadError ^line line ^response_line line ^message $"response:${line}: ${message}")))
 
 (fn line_text [lines, index : Int] : Str
-  (if (< index (- lines/.size 1)) $"${lines/%index}\n" lines/%index))
+  (if (< index (- lines/.size 1))
+    ($to_str
+      lines/%index
+      """
+""")
+    lines/%index))
 
 (fn structural_line [line : Str] : Str
-  (if ($str/ends_with? line "\r") ($str/slice_bytes line 0 (- ($str/byte_size line) 1)) line))
+  (if ($str/ends_with? line "\r")
+    ($str/slice_bytes line 0 (- ($str/byte_size line) 1))
+    line))
 
 (fn validate_execution_attachments [response]
   (for block in response/blocks
     (if (!= block/kind "attachment") (continue))
     (let body ($str/trim block/body))
-    (if (&& (== block/terminator "ELIDED")
-            ($str/starts_with? body "[elided ")
-            ($str/contains? body "; (recall \"")
-            ($str/ends_with? body "\")]"))
-      (read_error block/line
-        $"attachment ${block/name} is a history placeholder; use recall to recover its original body or provide the full attachment")))
+    (if (&& (== block/terminator "ELIDED") ($str/starts_with? body "[elided ") ($str/contains? body "; (recall \"") ($str/ends_with? body "\")]"))
+      (read_error
+        block/line
+        ($to_str
+          "attachment "
+          block/name
+          " is a history placeholder; use recall to recover its original body or provide the full attachment"))))
   response)
 
 (fn split_response [text : Str]

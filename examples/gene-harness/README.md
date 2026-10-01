@@ -36,6 +36,9 @@ examples/gene-harness/bin/gene-harness web --workspace /path/to/project --port 8
 The supervisor is written in Gene and starts the same entry and arguments again
 after exit status 75.
 
+See [the todo-app replay guide](docs/todo-replay.md) for a complete web workflow
+using Codex OAuth, including continuation, verification and recovery.
+
 ### CLI reference
 
 | Command | Effect |
@@ -105,7 +108,7 @@ host's own origin. Cookies survive process restarts.
 
 The sidebar lists interactive and pinned sessions by default. Kind, status,
 trigger, text and time filters query the durable index. Needs attention lists
-sessions of every kind. Opening a session acknowledges its attention flag;
+sessions of every kind. Opening a session or starting a new user round acknowledges its attention flag;
 another cause can set it again.
 
 Several session tabs can remain open with independent streams. Each turn shows
@@ -226,7 +229,12 @@ to restore originals. A crash can leave a partial multi-file edit; recovery
 names the affected files and removes staging siblings.
 
 An item over 16 KiB keeps its first and last 6 KiB, and a request is capped at
-64 KiB. One turn later, items over 2 KiB settle to a stub in history.
+64 KiB. One turn later, items over 16 KiB settle to a stub in history.
+The initiating task stays intact during its active round. The latest assistant
+response, including attachments and failed patches, stays full for the next
+turn; older attachment and patch bodies settle to recall stubs. The transcript
+uses compact summaries throughout. The model receives its remaining round
+budget in each request; reaching the limit produces continuation instructions.
 `(recall "57.tests")` returns a complete stored body, also after a restart.
 Compaction retains comments, append_prompt and Outcome lines, and can
 summarize old rounds while preserving the newest request.

@@ -356,15 +356,21 @@ History is the model-facing view, with console excluded.
 `tools/generate_harness_event_catalog.gene`; `--check` verifies it.
 
 Output bodies larger than 16 KiB retain bounded head/tail text. Request items
-share a 64 KiB aggregate limit. Bodies over 2 KiB settle to labeled stubs after
-their first full context. Assistant attachments and patches are elided once.
+share a 64 KiB aggregate limit. Bodies over 16 KiB settle to labeled stubs after
+their first full context. The active round's initiating request is preserved,
+including when its older intermediate messages are compacted. The latest
+assistant response stays full through its following request, including failed
+patches; older attachments and patches settle to stubs. Transcript events
+always use the compact rendering.
 Recall maps ids to verified content-addressed blobs and survives restart.
 Loaded history is cached in the session. Older full request bodies are replaced
 by their settled form in storage. Periodic idle blob collection retains the
 latest references and the event store's fallback generations.
 
-Settlement changes the latest previously full request while older message
-content remains stable. Anthropic transport currently places cache checkpoints
+Settlement can change the previous full request and the assistant body from
+the preceding turn; older message content remains stable. A wire-only budget
+advisory changes the newest user message without rewriting stored history or
+the system prefix. Anthropic transport currently places cache checkpoints
 on the last two assistant messages. Compaction is the exceptional operation
 that rewrites old history.
 The stable-prefix invariant compares serialized message-content bytes from

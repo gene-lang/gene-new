@@ -104,6 +104,13 @@ proc agentStateRecordPath(root, key: string): string =
   root / "generations" / readFile(current).strip() / (key & ".gene")
 
 suite "cli — gene run":
+  test "missing source paths report file not found":
+    for path in ["nonexistent.gene", "missing/program.gene"]:
+      let ran = runGene(["run", path])
+      check ran.exitCode == 1
+      check ("Error: file not found: " & path) in ran.output
+      check "package.gene" notin ran.output
+
   test "os exit returns an explicit status without unwinding Gene ensure":
     let ran = runGene(["eval",
       "(try ($println \"before\") ($os/exit 75) ensure ($println \"unwound\"))"])
@@ -1220,6 +1227,13 @@ suite "cli — gene repl":
     check "\n41\n" in ran.output
 
 suite "cli — gene parse/fmt/compile":
+  test "formatter help prints usage successfully":
+    for option in ["--help", "-h"]:
+      let ran = runGene(["fmt", option])
+      check ran.exitCode == 0
+      check "Usage: gene-fmt <file.gene>" in ran.output
+      check "file not found" notin ran.output
+
   test "wrapping println returns nil and formatting keeps the prefix":
     let evaluated = runGene(["eval", "#@$println 42"])
     check evaluated.exitCode == 0

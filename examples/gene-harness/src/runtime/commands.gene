@@ -1,12 +1,14 @@
 (mod commands)
 (import ^from "../kernel" [rows row contribute])
-(import ^from "../plugin_api" [CommandContext CommandResult] ^^export)
+(import ^from "../plugin_api" ^^export [CommandContext CommandResult])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
 (import ^from "../agents/harness_turn" [function_bindings])
 (import ^from "../agents/eval_site" [evaluate_response])
 (import ^from "../agents/instructions" [gene_doc])
-(import ^from "../agents/history" [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
-(import ^from "../storage/state" [core_state record_core_state flush_event_store next_sequence stream_key])
+(import ^from "../agents/history"
+  [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
+(import ^from "../storage/state"
+  [core_state record_core_state flush_event_store next_sequence stream_key])
 (import ^from "./sessions" [create_session list_sessions load_session])
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
@@ -89,17 +91,19 @@
       (if ($absent? command)
         (fail (CommandError ^code "unknown_command" ^message $"unknown command /${name}")))
       (return
-        (CommandResult ^display $"${command/usage}\n${command/doc}"))))
+        (CommandResult ^display ($to_str command/usage "\n" command/doc)))))
   (let lines [])
   (for command in (rows ctx/runtime/h "commands")
-    (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? command/name)) (continue))
+    (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? command/name))
+      (continue))
     (lines .push $"${command/usage} — ${command/doc}"))
   (CommandResult ^display ($str/join lines "\n")))
 
 (fn run_command [ctx]
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
   (let bindings (function_bindings ctx/snapshot))
-  (for [name function] in ctx/runtime/functions (bindings .put name function))
+  (for [name function] in ctx/runtime/functions
+    (bindings .put name function))
   (bindings .put "workspace_root" ctx/runtime/root)
   (bindings .put "doc" gene_doc)
   (let environment (env ^bindings bindings))
@@ -111,15 +115,10 @@
   (let shell (?? ($os/env? "SHELL") "/bin/sh"))
   (let channel ($channel ^capacity 128))
   (let process
-    ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^merge_stderr true ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
+    ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^^merge_stderr ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
   (let output
-    (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output $"${line}\n")) catch ChannelClosed nil)))
-  (let result
-    (try
-      (await process)
-    ensure
-      process/.cancel
-      (if_not process/.done? process/.join)))
+    (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output ($to_str line "\n"))) catch ChannelClosed nil)))
+  (let result (try (await process) ensure process/.cancel (if_not process/.done? process/.join)))
   output/.join
   (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^^attached))
 
@@ -135,7 +134,11 @@
       (let range ($str/split suffix "-"))
       (set first ($parse/parse_int range/0))
       (set last (if (> range/.size 1) ($parse/parse_int range/1) (+ first 399)))
-      (set relative ($str/slice_bytes specification 0 (- ($str/byte_size specification) (+ ($str/byte_size suffix) 1))))))
+      (set relative
+        ($str/slice_bytes
+          specification
+          0
+          (- ($str/byte_size specification) (+ ($str/byte_size suffix) 1))))))
   (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
     (fail (CommandError ^code "invalid_path" ^message "view needs a workspace-relative path")))
   (let path ($path/join ctx/runtime/root relative))
@@ -146,14 +149,18 @@
   (if (|| (< first 1) (< last first))
     (fail (CommandError ^code "invalid_range" ^message "invalid line range")))
   (set last ($math/min last (+ first 399)))
-  (let page ($fs/read_text_page path ^from first ^lines (+ (- last first) 1)))
+  (let page ($fs/read_text_page ^from first ^lines (+ (- last first) 1) path))
   (if page/binary
-    (return (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached
-      ^view {^path relative ^kind "binary" ^bytes info/size})))
-  (let text (if page/truncated ($to_str page/text "\n[page truncated at byte limit]") page/text))
-  (CommandResult ^display text ^^attached ^view {^path relative
-    ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text"))
-    ^from first ^to page/to ^next page/next ^truncated page/truncated}))
+    (return
+      (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached ^view {^path relative ^kind "binary" ^bytes info/size})))
+  (let text
+    (if page/truncated
+      ($to_str
+        page/text
+        """
+[page truncated at byte limit]""")
+      page/text))
+  (CommandResult ^display text ^^attached ^view {^path relative ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text")) ^from first ^to page/to ^next page/next ^truncated page/truncated}))
 
 (fn install_core_commands [runtime]
   (let definitions
@@ -175,8 +182,8 @@
         "/cancel"
         "Cancel this session's round or pending questions."
         (fn [ctx]
-          (ctx/manager/cancel ctx/session)
-          (CommandResult ^display "Stopped."))]
+          (let cancelled (if ($absent? ctx/manager/cancel) false (ctx/manager/cancel ctx/session)))
+          (CommandResult ^display (if cancelled "Stopped." "No round is running.")))]
       [
         "stop"
         "/stop"
@@ -191,9 +198,7 @@
         (fn [ctx]
           (ctx/manager/stop ctx/session 75 (== ($str/trim ctx/raw) "--confirm"))
           (let supervised (== ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
-          (CommandResult ^display (if supervised "Restarting."
-            "Stopped. Direct gene run cannot restart this process; start it again from the terminal.")
-            ^stop (if supervised 75 0)))]
+          (CommandResult ^display (if supervised "Restarting." "Stopped. Direct gene run cannot restart this process; start it again from the terminal.") ^stop (if supervised 75 0)))]
       [
         "new"
         "/new [title]"
@@ -257,7 +262,10 @@
   (let original (?? record/output ""))
   (let remaining (- 1048576 ($str/byte_size original)))
   (if (> remaining 0) (record .put "output" ($to_str original (byte_prefix text remaining))))
-  (command_changed manager session {^id record/id ^name record/name ^status "running" ^text text ^output record/output})
+  (command_changed
+    manager
+    session
+    {^id record/id ^name record/name ^status "running" ^text text ^output record/output})
   nil)
 
 (fn finish_command [manager, session : Str, record, lease, outcome]
@@ -295,7 +303,19 @@
         (record .put "display" message))
       (when TaskOutcome/cancelled
         (record .put "status" "cancelled")
-        (record .put "display" $"[${record/id}.${record/name}] /${record/name} ${record/raw}\nStopped.")))
+        (record .put
+          "display"
+          ($to_str
+            "["
+            record/id
+            "."
+            record/name
+            "] /"
+            record/name
+            " "
+            record/raw
+            """
+Stopped."""))))
     (let output (?? record/output ""))
     (if (!= output "")
       (then
@@ -330,7 +350,8 @@
   (if_not (== parsed/kind "command")
     (fail (CommandError ^code "invalid_request" ^message "expected a command")))
   (if (&& (== manager/interface "web") (["new" "sessions"] .contains? parsed/name))
-    (fail (CommandError ^code "invalid_request" ^message "Use the session sidebar to create or list sessions.")))
+    (fail
+      (CommandError ^code "invalid_request" ^message "Use the session sidebar to create or list sessions.")))
   (load_session manager/runtime/sessions session)
   (while (manager/gate .swap true)
     ($sleep 1))
@@ -340,8 +361,15 @@
       (let id $"c${state/next_id}")
       (state .put "next_id" (+ state/next_id 1))
       (let allocated
-        {^id id ^name parsed/name ^raw parsed/raw ^status "running" ^attached false ^output "" ^started_ms ($os/wall_ms)
-         ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
+        {
+          ^id id
+          ^name parsed/name
+          ^raw parsed/raw
+          ^status "running"
+          ^attached false
+          ^output ""
+          ^started_ms ($os/wall_ms)
+          ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
       (state/records .push allocated)
       (save_command_state manager/runtime session state)
       allocated
@@ -355,7 +383,9 @@
   (let budget (?? config/response_budget {^timeout_ms 600000 ^max_memory_mb 1024}))
   (let timeout (?? budget/timeout_ms 600000))
   (let invoke
-    ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)} parsed/handler [ctx]))
+    ($runtime/bind_call ^policy {^timeout_ms timeout ^max_memory_mb (?? budget/max_memory_mb 1024)}
+      parsed/handler
+      [ctx]))
   (let task
     (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id} (fn [] (scope (invoke))))))
   (acquire_body_use manager/runtime)
@@ -364,11 +394,7 @@
     ; .put $"${session}:${record/id}" task)
   (let deadline (spawn ^lane root (do ($sleep timeout) task/.cancel)))
   (let watcher
-    (spawn ^lane root (do
-      (try
-        (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
-        (finish_command manager session record lease outcome)
-        ensure (release_body_use manager/runtime)))))
+    (spawn ^lane root (do (try (let outcome (try task/.join ensure deadline/.cancel deadline/.join)) (finish_command manager session record lease outcome) ensure (release_body_use manager/runtime)))))
   (manager/watchers
     .get
     ; .put $"${session}:${record/id}" watcher)

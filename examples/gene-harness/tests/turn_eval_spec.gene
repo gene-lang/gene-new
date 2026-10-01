@@ -1,8 +1,27 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
-(import [evaluate_turn] ^from "../src/agents/turn_eval")
+(import ^from "./support" [isolated run_spec])
+(import ^from "../src/agents/turn_eval" [evaluate_turn])
+(import ^from "../src/agents/instructions" [gene_doc])
 
 (describe "Harness turn evaluation"
+  (it "reports actionable response diagnostics without host source line numbers" []
+    (isolated this_mod/.path "reports actionable response diagnostics without host source line numbers"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let unknown (evaluate_turn 1 root "\n(doc \"gene/control-flow\")" ^bindings {^doc gene_doc}))
+        ($assert ($str/contains? unknown/request "unknown documentation gene/control-flow") "doc error was masked")
+        ($assert ($str/contains? unknown/request "gene/control_flow") "doc error omitted valid chapter names")
+        ($assert (! ($str/contains? unknown/request "[1.error] line")) "host source line was presented as a response line")
+        (let label (evaluate_turn 2 root "# goal\n(let label \"value\")\n(append_prompt label 1)"))
+        ($assert ($str/contains? label/request "[2.error] line 3:") "dynamic label lacked its response line")
+        ($assert ($str/contains? label/request "literal label") "dynamic label lacked an explanation")
+        (let prose (evaluate_turn 3 root "I’ll inspect the files.\n# goal\n(Outcome ^done true ^reply \"done\")"))
+        ($assert ($str/contains? prose/request "[3.error] line 1:") "prose preamble lacked its response line")
+        ($assert ($str/contains? prose/request "# comments") "prose error lacked a format hint")
+        (let scalar (evaluate_turn 4 root "42"))
+        ($assert (== scalar/kind "continue") "format diagnostic rejected a valid scalar response"))))
+
   (it "renders an applied patch alongside continuation and error items" []
     (isolated this_mod/.path "renders an applied patch alongside continuation and error items"
       (fn [workspace]
@@ -86,4 +105,5 @@
         ($assert (== markers 1) "console did not write exactly one truncation marker")
         ($println "turn eval: outcomes, console, read/runtime errors, patches, child scope and budget passed")))))
 
-(fn main [args] : Int (run_spec args))
+(fn main [args] : Int
+  (run_spec args))

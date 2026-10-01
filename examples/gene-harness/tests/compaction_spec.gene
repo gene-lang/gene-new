@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import ^from "./support" [isolated run_spec])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/baseline" [baseline_profile])
 (import ^from "../src/agents/history"
@@ -67,8 +67,25 @@
           ($assert (== boundary_calls/.get 1) "compaction did not use one summary call")
           ($assert (< (context_bytes (history_state runtime boundary) "") 1925)
             "oversized summary exceeded the target")
+          (create_session runtime/sessions ^id "active")
+          (append_message ^round "active-round" runtime "active" "user" "Keep the initiating task intact.")
+          (append_message ^round "active-round" ^turn 1 runtime "active" "assistant" "# inspect")
+          (append_message ^round "active-round" ^turn 1 runtime "active" "user" large)
+          (append_message ^round "active-round" ^turn 2 runtime "active" "assistant" "# finish")
+          (append_message ^round "active-round" ^turn 2 runtime "active" "user" "continue")
+          (compact_history runtime "active" "" 1000 (fn [request] "Earlier inspection."))
+          (let active (provider_context runtime "active" ""))
+          ($assert (== active/2/content "Keep the initiating task intact.") "active-round compaction summarized away the task")
+          (append_message ^round "active-round" ^turn 3 runtime "active" "assistant" "# inspect again")
+          (append_message ^round "active-round" ^turn 3 runtime "active" "user" large)
+          (append_message ^round "active-round" ^turn 4 runtime "active" "assistant" "# finish again")
+          (append_message ^round "active-round" ^turn 4 runtime "active" "user" "continue")
+          (compact_history runtime "active" "" 1000 (fn [request] "More inspection."))
+          (let recompacted (provider_context runtime "active" ""))
+          ($assert (== recompacted/2/content "Keep the initiating task intact.") "repeated compaction lost the active task")
           ($println "compaction: threshold, whole-round summary, newest request and durable summary event")
         ensure
           (close_runtime runtime))))))
 
-(fn main [args] : Int (run_spec args))
+(fn main [args] : Int
+  (run_spec args))

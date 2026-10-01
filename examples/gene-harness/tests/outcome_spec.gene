@@ -1,77 +1,109 @@
 (import $test [describe it before_each assert_equal assert_raises run])
-(import [Outcome OutcomeError TurnClosed new_turn_items append_prompt_at append_plugin_prompt
-         validate_outcome render_request rewrite_prompt_calls]
-  ^from "../src/agents/outcome")
-(import [split_response] ^from "../src/agents/response")
-(import [evaluate_response] ^from "../src/agents/eval_site")
+(import ^from "../src/agents/outcome"
+  [
+    Outcome
+    OutcomeError
+    TurnClosed
+    new_turn_items
+    append_prompt_at
+    append_plugin_prompt
+    validate_outcome
+    render_request
+    rewrite_prompt_calls])
+(import ^from "../src/agents/response" [split_response])
+(import ^from "../src/agents/eval_site" [evaluate_response])
 
-(describe "Harness outcomes"
-  (before_each [t]
+(describe
+  "Harness outcomes"
+  (before_each
+    [t]
     (set t/console ($cell []))
-    (set t/turn (new_turn_items 1 ^console (fn [text] (t/console/.get .push text)))))
+    (set t/turn (new_turn_items ^console (fn [text] (t/console/.get .push text)) 1)))
+  (it
+    "correlates output labels with source lines and disambiguates duplicate labels"
+    [t]
+    (let environment
+      (env ^bindings {^Outcome Outcome ^append_prompt_at (fn [label line form value] (append_prompt_at t/turn label line form value))}))
+    (let response
+      (split_response """# goal
+# step
 
-  (it "correlates output labels with source lines and disambiguates duplicate labels" [t]
-    (let environment (env ^bindings {^Outcome Outcome ^append_prompt_at
-      (fn [label line form value] (append_prompt_at t/turn label line form value))}))
-    (let response (split_response "# goal\n# step\n\n(append_prompt \"x\" (+ 1 2))\n(append_prompt \"x\" \"again\")\n(Outcome ^prompt \"next\")"))
+(append_prompt "x" (+ 1 2))
+(append_prompt "x" "again")
+(Outcome ^prompt "next")"""))
     (let forms (rewrite_prompt_calls response/forms))
     (let value (evaluate_response `(do %forms...) environment))
-    (let request (render_request t/turn (validate_outcome t/turn value) ^result_line 6))
-    ($assert ($str/contains? request "[1.x] line 4: (append_prompt \"x\" (+ 1 2))\n3"))
+    (let request (render_request ^result_line 6 t/turn (validate_outcome t/turn value)))
+    ($assert
+      ($str/contains?
+        request
+        """[1.x] line 4: (append_prompt "x" (+ 1 2))
+3"""))
     ($assert ($str/contains? request "[1.x#2] line 5:"))
-    ($assert ($str/contains? request "[1.result] line 6: Outcome ^prompt\nnext"))
+    ($assert
+      ($str/contains?
+        request
+        """[1.result] line 6: Outcome ^prompt
+next"""))
     ($assert (! ($str/contains? request "@line"))))
-
-  (it "keeps implicit result IDs stable when a labeled output uses result" []
+  (it
+    "keeps implicit result IDs stable when a labeled output uses result"
+    []
     (let turn (new_turn_items 8))
     (append_prompt_at turn "result" 1 (quote 1) 1)
     (let value (validate_outcome turn (Outcome ^prompt "next")))
     (let request (render_request turn value))
     ($assert ($str/contains? request "[8.result#2]"))
     (assert_equal request (render_request turn value)))
-
-  (it "omits reader metadata from path heads in output headers" [t]
+  (it
+    "omits reader metadata from path heads in output headers"
+    [t]
     (let response (split_response "($str/trim \" ok \")"))
     (append_prompt_at t/turn "path" 1 response/forms/0 "ok")
     (let request (render_request t/turn nil))
     ($assert ($str/contains? request "[1.path] line 1:"))
-    ($assert ($str/contains? request "gene str trim"))
+    ($assert ($str/contains? request "($str/trim \" ok \")"))
     ($assert (! ($str/contains? request "@source")))
     ($assert (! ($str/contains? request "@line")))
     ($assert (! ($str/contains? request "@col"))))
-
-  (it "continues with a plain result as its prompt" []
+  (it
+    "continues with a plain result as its prompt"
+    []
     (let value (validate_outcome (new_turn_items 2) 42))
     (assert_equal value/outcome/prompt 42))
-
-  (it "rejects completion without a reply" []
-    (assert_raises
-      (fn [] (validate_outcome (new_turn_items 3) (Outcome ^^done))) OutcomeError))
-
-  (it "rejects empty continuations" []
-    (assert_raises
-      (fn [] (validate_outcome (new_turn_items 3) (Outcome))) OutcomeError))
-
-  (it "finishes and reports discarded appended items" [t]
+  (it
+    "rejects completion without a reply"
+    []
+    (assert_raises (fn [] (validate_outcome (new_turn_items 3) (Outcome ^^done))) OutcomeError))
+  (it
+    "rejects empty continuations"
+    []
+    (assert_raises (fn [] (validate_outcome (new_turn_items 3) (Outcome))) OutcomeError))
+  (it
+    "finishes and reports discarded appended items"
+    [t]
     (append_prompt_at t/turn "pending" 1 (quote 1) 1)
     (let done (validate_outcome t/turn (Outcome ^^done ^reply "finished")))
     (assert_equal done/kind "done")
     (assert_equal ($size t/turn/items/.get) 0)
     (assert_equal ($size t/console/.get) 1))
-
-  (it "attributes plugin output to its function" [t]
-    ($runtime/with_context {^turn t/turn ^function "plugin_fn"}
-      (fn [] (append_plugin_prompt "plugin" "body")))
+  (it
+    "attributes plugin output to its function"
+    [t]
+    ($runtime/with_context
+      {^turn t/turn ^function "plugin_fn"}
+      (fn []
+        (append_plugin_prompt "plugin" "body")))
     ($assert ($str/contains? (render_request t/turn nil) "fn plugin_fn")))
-
-  (it "rejects output after turn closure" [t]
+  (it
+    "rejects output after turn closure"
+    [t]
     (t/turn/state .set "closed")
-    (assert_raises
-      (fn [] (append_prompt_at t/turn "late" 1 (quote 1) 1)) TurnClosed))
-
-  (it "rejects dynamic output labels" []
-    (assert_raises
-      (fn [] (rewrite_prompt_calls [(quote (append_prompt label 1))])) OutcomeError)))
+    (assert_raises (fn [] (append_prompt_at t/turn "late" 1 (quote 1) 1)) TurnClosed))
+  (it
+    "rejects dynamic output labels"
+    []
+    (assert_raises (fn [] (rewrite_prompt_calls [(quote (append_prompt label 1))])) OutcomeError)))
 
 (fn main [args] : Int
   (let result (run))
