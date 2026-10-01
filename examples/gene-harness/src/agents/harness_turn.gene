@@ -41,7 +41,7 @@
   (let lines [])
   (for function in (rows h "functions")
     (lines .push
-      ($
+      ($to_str
         function/name
         ": "
         ($to_str function/signature)

@@ -158,17 +158,21 @@ suite "reader — sugars":
     check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")
     check_read("(x @line 7)", "(x @line 7)")
   test "string interpolation":
-    check_read("$\"hello ${name}\"", "($ \"hello \" name)")
-    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
-    check_read("($ \"hello \" name)", "($ \"hello \" name)")
+    check_read("$\"hello ${name}\"", "((path gene to_str) \"hello \" name)")
+    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "((path gene to_str) \"hello \\\"\" name \"\\\"\")")
+    check_read("($to_str \"hello \" name)", "((path gene to_str) \"hello \" name)")
+  test "bare dollar is an ordinary symbol token":
+    check lexAll("$")[0].kind == tkSymbol
+    check_read("$", "$")
+    check_read("($ 1 2)", "($ 1 2)")
   test "interpolation delimiters honor nested lexical forms":
-    check_read("$\"$(do \\\"x)\\\")\"", "($ (do \"x)\"))")
-    check_read("$\"$(match #\\\"[)]\\\" value)\"", "($ (match #\"[)]\" value))")
-    check_read("$\"$(do # ignored )\\n x)\"", "($ (do x))")
-    check_read("$\"${{^label \\\"}\\\"}}\"", "($ {^label \"}\"})")
-    check_read("$\"$(do ')' x)\"", "($ (do ')' x))")
-    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "($ {{\"key\" : \"}\"}})")
-    check_read("$\"\"\"$(do \"x)\")\"\"\"", "($ (do \"x)\"))")
+    check_read("$\"$(do \\\"x)\\\")\"", "((path gene to_str) (do \"x)\"))")
+    check_read("$\"$(match #\\\"[)]\\\" value)\"", "((path gene to_str) (match #\"[)]\" value))")
+    check_read("$\"$(do # ignored )\\n x)\"", "((path gene to_str) (do x))")
+    check_read("$\"${{^label \\\"}\\\"}}\"", "((path gene to_str) {^label \"}\"})")
+    check_read("$\"$(do ')' x)\"", "((path gene to_str) (do ')' x))")
+    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "((path gene to_str) {{\"key\" : \"}\"}})")
+    check_read("$\"\"\"$(do \"x)\")\"\"\"", "((path gene to_str) (do \"x)\"))")
   test "interpolation respects max_depth":
     expect ReadError:
       discard read("$\"$((x))\"", options = ReadOptions(maxDepth: 1))
@@ -265,9 +269,9 @@ suite "reader — unquote":
   test "unquote form":       check_read("%(label self)", "(unquote (label self))")
   test "unquote path":       check_read("%self/tag",     "(unquote (path self tag))")
   test "unquote interpolated string":
-    check_read("%$\"a ${x}\"", "(unquote ($ \"a \" x))")
+    check_read("%$\"a ${x}\"", "(unquote ((path gene to_str) \"a \" x))")
   test "unquote interpolated string with literal dollar":
-    check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
+    check_read("%$\"$${self/price}\"", "(unquote ((path gene to_str) \"$\" (path self price)))")
 
 suite "reader — comments":
   test "datum comment":      check_read("(a #_ b c)",            "(a c)")

@@ -1303,15 +1303,23 @@ suite "vm — strings and interpolation":
     ck "(try ($graphemes 1) catch Any $err/message)",
        "\"graphemes expects a Str\""
 
-  test "dollar concatenates display text":
-    ck "(var concat $) (concat \"name=\" \"Ada\" \" score=\" 10)",
+  test "to_str is an ordinary variadic callable":
+    ck "(var concat $to_str) (concat \"name=\" \"Ada\" \" score=\" 10)",
        "\"name=Ada score=10\""
+    ck "[($to_str) (gene/to_str \"a\" 1 true nil void) " &
+       " (same? $to_str gene/to_str)]", "[\"\" \"a1truenilvoid\" true]"
 
-  test "interpolated strings execute through dollar":
+  test "bare dollar has no builtin behavior and accepts an ordinary binding":
+    expect GeneError:
+      discard run(compileSource("($ 1 2)"), newGlobalScope())
+    ck "(let $ (fn [a b] (- a b))) ($ 9 4)", "5"
+
+  test "interpolated strings execute through gene/to_str":
     ck "(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\""
     ck "(var name \"Ada\") $\"\"\"hello \"${name}\\\"\"\"\"",
        "\"hello \\\"Ada\\\"\""
     ck "$\"sum = $(+ 1 2)\"", "\"sum = 3\""
+    ck "$\"\"", "\"\""
 
 suite "vm — quasiquote templates":
   test "quasiquote evaluates unquoted body values":

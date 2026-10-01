@@ -30,7 +30,7 @@
       "tests/test_native_managed_disabled.nim" "tests/test_native_managed.nim"))
     (let build (await ($os/exec_async ^cmd "nim" ^args command
       ^timeout_ms 600000 ^max_bytes 1048576)))
-    ($fs/write_text $"${output}-build.log" ($ build/stdout build/stderr))
+    ($fs/write_text $"${output}-build.log" ($to_str build/stdout build/stderr))
     ($assert (&& (== build/status 0) (! build/truncated))
       $"build failed: ${output}-build.log")
     ($println ($json/stringify {^mode mode ^phase "run"}))
@@ -49,7 +49,7 @@
        "last owner cleanup runs outside registry and admission locks"] []))
     (let run (await ($os/exec_async ^cmd output ^args filters
       ^timeout_ms 180000 ^max_bytes 1048576)))
-    ($fs/write_text $"${output}-run.log" ($ run/stdout run/stderr))
+    ($fs/write_text $"${output}-run.log" ($to_str run/stdout run/stderr))
     (let sha ($crypto/sha256 ($fs/read_bytes output)))
     (let ok (&& (== run/status 0) (! run/truncated) (! run/timed_out)))
     (results .push {^mode mode ^ok ok ^sha256 sha ^status run/status

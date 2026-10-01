@@ -39,7 +39,7 @@
 (var native (load "build/native-example/libfib.dylib"))
 
 ($println "=== Gene AOT boundary Fibonacci ===")
-($println ($ "Mode: vm vs aot-via-boundary, fib(" n ")"))
+($println ($to_str "Mode: vm vs aot-via-boundary, fib(" n ")"))
 ($println "")
 
 # Compiled fib(28) runs well under the millisecond clock's resolution, so both
@@ -62,24 +62,24 @@
   (set s (+ s 1)))
 (var native_ms (- (monotonic_ms) t1))
 
-($println ($ "Result: vm  fib(" n ") = " vm_result))
-($println ($ "Result: aot fib(" n ") = " native_result))
-($println ($ "Fib calls: " calls " (" reps " x fib(" n "))"))
+($println ($to_str "Result: vm  fib(" n ") = " vm_result))
+($println ($to_str "Result: aot fib(" n ") = " native_result))
+($println ($to_str "Fib calls: " calls " (" reps " x fib(" n "))"))
 ($println "")
-($println ($ "vm   time: " vm_ms " ms"))
-($println ($ "aot  time: " native_ms " ms"))
+($println ($to_str "vm   time: " vm_ms " ms"))
+($println ($to_str "aot  time: " native_ms " ms"))
 (if (> native_ms 0)
-  ($println ($ "Speedup:   " (/ vm_ms native_ms) "x")))
+  ($println ($to_str "Speedup:   " (/ vm_ms native_ms) "x")))
 (if (> vm_ms 0)
-  ($println ($ "vm   rate: " (/ (* calls 1000) vm_ms) " calls/second")))
+  ($println ($to_str "vm   rate: " (/ (* calls 1000) vm_ms) " calls/second")))
 (if (> native_ms 0)
-  ($println ($ "aot  rate: " (/ (* calls 1000) native_ms) " calls/second")))
+  ($println ($to_str "aot  rate: " (/ (* calls 1000) native_ms) " calls/second")))
 
 # The recursion above stays inside compiled code, so the boundary is paid once.
 # Price a crossing on its own: the same trivial function called through the
 # boundary and through the VM.
 ($println "")
-($println ($ "Boundary cost over " crossings " crossings:"))
+($println ($to_str "Boundary cost over " crossings " crossings:"))
 
 (var t2 (monotonic_ms))
 (var i 0)
@@ -95,5 +95,5 @@
   (set j (+ j 1)))
 (var vm_call_ms (- (monotonic_ms) t3))
 
-($println ($ "  aot boundary call: " cross_ms " ms"))
-($println ($ "  vm function call:  " vm_call_ms " ms"))
+($println ($to_str "  aot boundary call: " cross_ms " ms"))
+($println ($to_str "  vm function call:  " vm_call_ms " ms"))

@@ -75,7 +75,7 @@
           """
 """))
       (set last_request
-        ($
+        ($to_str
           """[recovery]
 """
           warning_text
@@ -90,7 +90,7 @@
       (let id $"${round/id}.prompt")
       (store_body runtime session id last_request)
       (set settled
-        ($
+        ($to_str
           "["
           id
           """]

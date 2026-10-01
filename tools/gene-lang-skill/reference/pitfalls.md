@@ -193,7 +193,7 @@ so review its output before adopting it wholesale:
 
 - A **triple-quoted interpolated** string `$"""…${x}…"""` is collapsed to a
   single-quoted one, and when the content has newlines it is desugared into the
-  `($ …)` concat head — the opposite of this project's preference for
+  ordinary `($to_str …)` call — the opposite of this project's preference for
   interpolation. Behavior is preserved (embedded quotes get escaped); only
   readability suffers.
 - A **nested map inside a list** gets its entries aligned far to the right,

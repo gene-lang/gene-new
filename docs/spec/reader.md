@@ -15,6 +15,11 @@
   reader syntax.
 - Reader prefixes, slash paths, interpolation, props/meta flags, immutable
   literals, and malformed-input behavior follow the reader suites.
+- Interpolation reads as an ordinary `gene/to_str` call: `$"a${b}c"` is
+  `($to_str "a" b "c")`. `$to_str` abbreviates `gene/to_str`, whose variadic
+  arguments are evaluated eagerly in order and displayed without separators.
+  No arguments produce an empty string. A bare `$` has no built-in binding or
+  operator behavior.
 - A glued leading slash is a Path literal. A glued non-leading path is a
   context-neutral path classified by the compiler. A delimited `/` is a normal
   symbol.

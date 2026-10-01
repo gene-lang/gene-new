@@ -28,6 +28,21 @@ rejects mixed types. A large Int may lose precision in that conversion.
 
 ## Text and JSON
 
+`$to_str` abbreviates `gene/to_str`. It displays each argument and joins the
+results without separators; no arguments produce an empty string. Strings
+retain their raw contents, and native values implementing `ToStr` use that
+protocol for display. Arguments evaluate once, eagerly, from left to right.
+Interpolation reads as the same ordinary call:
+
+```gene runnable
+(let name "Ada")
+[($to_str "Hello, " name "!") $"Hello, ${name}!" ($to_str)]
+# ["Hello, Ada!" "Hello, Ada!" ""]
+```
+
+The web profile supports scalar display values: Str, Int, F64, Bool, Nil,
+Void and Sym. A bare `$` has no built-in concatenation behavior.
+
 `$str/lower` and `$str/upper` map ASCII letters only on the VM and web
 backends; every other character is unchanged. For example,
 `($str/lower "ÉA")` is `"Éa"` and `($str/upper "éa")` is `"éA"`.

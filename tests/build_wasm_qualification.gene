@@ -53,7 +53,7 @@
     (command .push option))
   (let process (await ($os/exec_async ^cmd "nim" ^args command
     ^timeout_ms 600000 ^max_bytes 1048576)))
-  ($fs/write_text $"${output}/build.log" ($ process/stdout process/stderr))
+  ($fs/write_text $"${output}/build.log" ($to_str process/stdout process/stderr))
   ($assert (== process/status 0) $"wasm build failed; see ${output}/build.log")
   ($assert (! process/truncated) "wasm build output exceeded its capture bound")
   (let artifact ($fs/read_bytes $"${output}/gene.wasm"))

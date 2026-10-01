@@ -197,7 +197,7 @@
     (rendered .push
       (if (== item/inline true)
         $"${item/header} ${item/value}"
-        ($
+        ($to_str
           item/header
           """
 """

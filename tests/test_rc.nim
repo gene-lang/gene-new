@@ -124,7 +124,7 @@ when defined(geneRcStats):
           (type B ^props {} (message m [] : Str "B"))
           (fn make [p label]
             (type C : p ^props {}
-              (message up [] : Str ($ label (super .m)))
+              (message up [] : Str ($to_str label (super .m)))
               (message own_type [] C))
             C)
           (var C1 (make A "first:"))

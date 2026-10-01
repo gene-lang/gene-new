@@ -57,7 +57,7 @@
     (let name (quoted row/name))
     (lines .push $"${prefix}#{^name ${name} ^version ${row/version} ^ignorable ${row/ignorable} ^origin \"core\" ^owner \"core\" ^schema validate_${row/schema}_event}${suffix}")
     (set index (+ index 1)))
-  ($ ($str/join lines "\n") "\n"))
+  ($to_str ($str/join lines "\n") "\n"))
 (fn main [argv]
   (let args [])
   (for arg in argv (args .push ($to_str arg)))

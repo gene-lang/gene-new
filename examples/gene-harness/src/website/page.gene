@@ -399,7 +399,7 @@
   (var open_app (if (== mode "embedded") "/" app_url))
   (var code_ids ($str/join copyable_ids " "))
   (var highlight_ids ($str/join highlighted_ids " "))
-  ($ "<!doctype html>\n"
+  ($to_str "<!doctype html>\n"
     (render
       `(html ^lang "en"
          (head

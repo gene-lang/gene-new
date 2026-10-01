@@ -162,7 +162,7 @@
   (let first (byte_prefix value 6144))
   (let last (byte_suffix value 6144))
   (let removed (- size (+ ($str/byte_size first) ($str/byte_size last))))
-  ($
+  ($to_str
     first
     """
 … [elided """
@@ -176,7 +176,7 @@
 (fn item_text [item, body : Str] : Str
   (if (== item/inline true)
     $"${item/header} ${body}"
-    ($
+    ($to_str
       item/header
       """
 """
@@ -227,7 +227,7 @@
       (then
         (refs .put id (store_body runtime session id body))
         (parts .push
-          ($
+          ($to_str
             "<<<"
             name
             """ ELIDED
@@ -238,7 +238,7 @@ ELIDED
 """)))
       (else
         (parts .push
-          ($
+          ($to_str
             "<<<"
             name
             " "
@@ -253,7 +253,7 @@ ELIDED
     (let id $"${turn}.patch_body")
     (refs .put id (store_body runtime session id parsed/patch))
     (parts .push
-      ($
+      ($to_str
         "# patch body elided; (recall \""
         id
         """")
@@ -370,7 +370,7 @@ ELIDED
             (let id $"summary.${($crypto/sha256 summary)}")
             (store_body runtime session id summary)
             (let stub $"\n… (recall \"${id}\")")
-            (set bounded ($ (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))
+            (set bounded ($to_str (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))
         (record_core_state runtime/events "session" session "history/summary" $"summary/${($crypto/sha256 summary)}"
           {^text bounded ^digest (write_body runtime summary) ^rounds rounds})
         (state .put "messages" [{^role "user" ^content $"Earlier rounds summary:\n${bounded}"

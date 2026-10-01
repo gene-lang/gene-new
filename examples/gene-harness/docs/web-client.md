@@ -115,7 +115,8 @@ All API paths use /api/v4.
 | GET /triggers/ID/occurrences | List occurrence state |
 
 Session query parameters are kind, status, attention, q, trigger, since and
-until. Index queries do not load transcript streams. Decimal sequence and
+until, plus an after cursor for paging. Index queries do not load transcript
+streams. Decimal sequence and
 revision values are sent as text where the contract requires them.
 
 Input errors preserve structured diagnostics: unknown command, busy session,

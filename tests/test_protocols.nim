@@ -90,8 +90,16 @@ suite "protocols — declarations and dispatch":
     ck "(type User ^props {^name Str}) " &
        "(impl ToStr for User (message to_str [self] : Str self/name)) " &
        "(var user (User ^name \"Ada\")) " &
-       "[($to_str user) ($ \"hello \" user) $\"hi ${user}\"]",
+       "[($to_str user) ($to_str \"hello \" user) $\"hi ${user}\"]",
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
+    ck "(var events []) " &
+       "(type Label ^props {^text Str}) " &
+       "(impl ToStr for Label (message to_str [self] : Str " &
+       "  (events .push self/text) self/text)) " &
+       "(let text ($to_str " &
+       "  (do (events .push \"arg1\") (Label ^text \"a\")) " &
+       "  (do (events .push \"arg2\") (Label ^text \"b\")))) " &
+       "[text events]", "[\"ab\" [\"arg1\" \"arg2\" \"a\" \"b\"]]"
     ck "(type Bad ^props {}) " &
        "(impl ToStr for Bad (message to_str [self] 1)) " &
        "(try ($to_str (Bad)) catch TypeError $err/where)",

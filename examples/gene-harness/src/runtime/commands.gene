@@ -89,7 +89,7 @@
       (if ($absent? command)
         (fail (CommandError ^code "unknown_command" ^message $"unknown command /${name}")))
       (return
-        (CommandResult ^display ($ command/usage "\n" command/doc)))))
+        (CommandResult ^display $"${command/usage}\n${command/doc}"))))
   (let lines [])
   (for command in (rows ctx/runtime/h "commands")
     (if (&& (== ctx/manager/interface "web") (["new" "sessions"] .contains? command/name)) (continue))
@@ -113,7 +113,7 @@
   (let process
     ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^merge_stderr true ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
   (let output
-    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output ($ line "\n"))) catch ChannelClosed nil)))
+    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output $"${line}\n")) catch ChannelClosed nil)))
   (let result
     (try
       (await process)
@@ -150,7 +150,7 @@
   (if page/binary
     (return (CommandResult ^display $"${relative}: ${info/size} bytes, binary" ^^attached
       ^view {^path relative ^kind "binary" ^bytes info/size})))
-  (let text (if page/truncated ($ page/text "\n[page truncated at byte limit]") page/text))
+  (let text (if page/truncated ($to_str page/text "\n[page truncated at byte limit]") page/text))
   (CommandResult ^display text ^^attached ^view {^path relative
     ^kind (if ($str/ends_with? relative ".gene") "gene" (if ($str/ends_with? relative ".md") "markdown" "text"))
     ^from first ^to page/to ^next page/next ^truncated page/truncated}))
@@ -256,7 +256,7 @@
 (fn append_command_output [manager, session : Str, record, text : Str]
   (let original (?? record/output ""))
   (let remaining (- 1048576 ($str/byte_size original)))
-  (if (> remaining 0) (record .put "output" ($ original (byte_prefix text remaining))))
+  (if (> remaining 0) (record .put "output" ($to_str original (byte_prefix text remaining))))
   (command_changed manager session {^id record/id ^name record/name ^status "running" ^text text ^output record/output})
   nil)
 

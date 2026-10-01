@@ -203,11 +203,9 @@ suite "spec — reader surface from design":
     check_read("$x", "(path gene x)")
     check_read("gene/str/join", "(path gene str join)")
     check_read("$Actor", "(path gene Actor)")
-    # The bare `$` concat head and `$"..."` interpolation are unaffected: `\"`
-    # is not a symbol character, so neither can be read as a member path.
-    check_read("($ \"a\" 1)", "($ \"a\" 1)")
+    check_read("($to_str \"a\" 1)", "((path gene to_str) \"a\" 1)")
     check_eval("($println \"x\") (gene/str/join [\"a\" \"b\"] \"-\")", "\"a-b\"")
-    check_eval("[(same? $Actor Actor) (same? $Env Env) ($ \"a\" 1)]",
+    check_eval("[(same? $Actor Actor) (same? $Env Env) ($to_str \"a\" 1)]",
                "[true true \"a1\"]")
     check_eval("(var x 5) $\"v=${x}\"", "\"v=5\"")
 
@@ -227,9 +225,9 @@ suite "spec — reader surface from design":
                "((x .parse) (|| _ default))")
 
   test "template unquote supports interpolation and dynamic paths":
-    check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
+    check_read("%$\"$${self/price}\"", "(unquote ((path gene to_str) \"$\" (path self price)))")
     check_read("`(td %$\"$${self/price}\")",
-               "(quasiquote (td (unquote ($ \"$\" (path self price)))))")
+               "(quasiquote (td (unquote ((path gene to_str) \"$\" (path self price)))))")
     check_read("`(div %children...)", "(quasiquote (div (unquote (... children))))")
 
   test "datum comments are spacing, not values":
@@ -242,17 +240,18 @@ suite "spec — reader surface from design":
     check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
     check_read("\"\"\"say \"hi\" now\"\"\"", "\"say \\\"hi\\\" now\"")
 
-  test "dollar interpolation keeps the canonical call form distinct":
-    check_read("$\"hello ${name}\"", "($ \"hello \" name)")
-    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
-    check_read("($ \"hello \" name)", "($ \"hello \" name)")
+  test "interpolation lowers to an ordinary gene/to_str call":
+    check_read("$\"hello ${name}\"", "((path gene to_str) \"hello \" name)")
+    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "((path gene to_str) \"hello \\\"\" name \"\\\"\")")
+    check_read("($to_str \"hello \" name)", "((path gene to_str) \"hello \" name)")
+    check_read("$\"\"", "((path gene to_str))")
 
   test "interpolation closes only at lexer-visible delimiters":
-    check_read("$\"$(do \\\"x)\\\")\"", "($ (do \"x)\"))")
-    check_read("$\"$(match #\\\"[)]\\\" value)\"", "($ (match #\"[)]\" value))")
-    check_read("$\"${{^label \\\"}\\\"}}\"", "($ {^label \"}\"})")
-    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "($ {{\"key\" : \"}\"}})")
-    check_read("$\"\"\"$(do \"x)\")\"\"\"", "($ (do \"x)\"))")
+    check_read("$\"$(do \\\"x)\\\")\"", "((path gene to_str) (do \"x)\"))")
+    check_read("$\"$(match #\\\"[)]\\\" value)\"", "((path gene to_str) (match #\"[)]\" value))")
+    check_read("$\"${{^label \\\"}\\\"}}\"", "((path gene to_str) {^label \"}\"})")
+    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "((path gene to_str) {{\"key\" : \"}\"}})")
+    check_read("$\"\"\"$(do \"x)\")\"\"\"", "((path gene to_str) (do \"x)\"))")
 
   test "ordered literal dispatch covers every documented prefix family":
     check_read("[#(x) #[1] #{^a 1} {{\"k\" : 2}}]",
@@ -265,7 +264,7 @@ suite "spec — reader surface from design":
     check_read("[2026-07-04 09:30 2026-07-04T09:30Z]",
                "[2026-07-04 09:30 2026-07-04T09:30:00Z]")
     check_read("['a' \"s\" \"\"\"long\"\"\" $\"x ${name}\"]",
-               "['a' \"s\" \"long\" ($ \"x \" name)]")
+               "['a' \"s\" \"long\" ((path gene to_str) \"x \" name)]")
     let forms = readAll("#B64#QQ== # comment\n#\"x#y\"")
     check forms.len == 2
     check forms[0].kind == vkBytes
@@ -3338,7 +3337,19 @@ suite "spec — strings from design":
     let s = "e\u0301x"
     check_eval("($graphemes \"" & s & "\")", "[\"e\u0301\" \"x\"]")
 
-  test "dollar interpolation calls to_str-style display conversion":
+  test "to_str joins display conversions through either standard library spelling":
+    check_eval("[($to_str) (gene/to_str \"a\" 1 true nil void) " &
+               " (same? $to_str gene/to_str)]", "[\"\" \"a1truenilvoid\" true]")
+    check_eval("(let render $to_str) (render \"n=\" 42)", "\"n=42\"")
+    check_eval("(fn render [n : Int] : Str ^errors [] ($to_str \"n=\" n)) " &
+               "(render 42)", "\"n=42\"")
+
+  test "bare dollar is an ordinary unbound or locally bound symbol":
+    expect GeneError:
+      discard run(compileSource("($ 1 2)"), newGlobalScope())
+    check_eval("(let $ (fn [a b] (- a b))) ($ 9 4)", "5")
+
+  test "interpolation calls gene/to_str display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
     check_eval("(type User ^props {^name Str}) " &
@@ -5540,9 +5551,9 @@ suite "spec — implicit self in message bodies from design §10":
   test "super delegates to the implementation above, relative to the enclosing type":
     check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message greet [] : Str ^^override ($ \"B+\" (super .greet)))) " &
+               "  (message greet [] : Str ^^override ($to_str \"B+\" (super .greet)))) " &
                "(type C : B ^props {} " &
-               "  (message greet [] : Str ^^override ($ \"C+\" (super .greet)))) " &
+               "  (message greet [] : Str ^^override ($to_str \"C+\" (super .greet)))) " &
                "[((B) .greet) ((C) .greet)]",
                "[\"B+A\" \"C+B+A\"]")
 
@@ -5574,16 +5585,16 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
                "(type B : A ^props {}) " &
-               "(impl P for B (message m [] : Str ($ \"B+\" (super .P:m)))) " &
+               "(impl P for B (message m [] : Str ($to_str \"B+\" (super .P:m)))) " &
                "((B) .P:m)",
                "\"B+A\"")
     # Three deep, and the inline-impl spelling, which shares the enclosing type.
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
                "(type B : A ^props {} " &
-               "  (impl P (message m [] : Str ($ \"B+\" (super .P:m))))) " &
+               "  (impl P (message m [] : Str ($to_str \"B+\" (super .P:m))))) " &
                "(type C : B ^props {} " &
-               "  (impl P (message m [] : Str ($ \"C+\" (super .P:m))))) " &
+               "  (impl P (message m [] : Str ($to_str \"C+\" (super .P:m))))) " &
                "((C) .P:m)",
                "\"C+B+A\"")
     # A level with no provider is skipped rather than erroring: nearest
@@ -5592,7 +5603,7 @@ suite "spec — implicit self in message bodies from design §10":
                "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
                "(type B : A ^props {}) " &
                "(type C : B ^props {}) " &
-               "(impl P for C (message m [] : Str ($ \"C+\" (super .P:m)))) " &
+               "(impl P for C (message m [] : Str ($to_str \"C+\" (super .P:m)))) " &
                "((C) .P:m)",
                "\"C+A\"")
     # Nothing above at all is a recoverable MessageError naming the parent.
@@ -5605,7 +5616,7 @@ suite "spec — implicit self in message bodies from design §10":
     # `Self:` names no qualifier, so it is exactly the bare super send.
     check_eval("(type A ^props {} (message g [] : Str \"A\")) " &
                "(type B : A ^props {} " &
-               "  (message g [] : Str ^^override ($ \"B+\" (super .Self:g)))) " &
+               "  (message g [] : Str ^^override ($to_str \"B+\" (super .Self:g)))) " &
                "((B) .g)",
                "\"B+A\"")
 
@@ -5637,7 +5648,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B : A ^props {} " &
                "  (message m [] : Str ^^override (var f (fn [] (super .m))) " &
-               "                      ($ \"B+\" (f)))) " &
+               "                      ($to_str \"B+\" (f)))) " &
                "((B) .m)",
                "\"B+A\"")
 

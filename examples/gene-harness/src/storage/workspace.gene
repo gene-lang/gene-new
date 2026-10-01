@@ -294,7 +294,7 @@
       (fail (CompositionError ^message $"plugin ${entry/id} blob digest mismatch: ${digest}"))))
   (var root_file $"${(digest_hex entry/module_digest)}.gene")
   (var isolation_key
-    ($
+    ($to_str
       entry/id
       ":"
       (sha256 (write_data {^digest entry/module_digest ^limits (entry_limits entry)}))))

@@ -26,7 +26,7 @@
 (var about_page (website_page ^mode "embedded"))
 
 (fn page [] : Str
-  ($ "<!doctype html>"
+  ($to_str "<!doctype html>"
     (render
       `(html ^lang "en"
          (head (meta ^charset "utf-8")

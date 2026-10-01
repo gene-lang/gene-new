@@ -358,7 +358,7 @@ suite "net/http server e2e":
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
     (if ($nil? part) (then (break)))
-    (set payload ($ payload ($binary/to_str part))))
+    (set payload ($to_str payload ($binary/to_str part))))
   (text payload))
 (serve (Server ^host "127.0.0.1" ^port 8198) handle
   ^body_mode "stream" ^max_requests 1)
@@ -775,7 +775,7 @@ suite "net/http server e2e":
     let p = startHttpServer("post.gene", """
 (import $net/http [Server serve text])
 (fn handle [req]
-  (text ($ req/method ":" req/params/k ":" req/body)))
+  (text ($to_str req/method ":" req/params/k ":" req/body)))
 (serve (Server ^host "127.0.0.1" ^port 8183) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -876,7 +876,7 @@ suite "net/http server e2e":
   (text "home-discovered"))
 (fn job [req]
   @route (route ^method "GET" ^path "/job/:id")
-  (text ($ "job-" req/params/id)))
+  (text ($to_str "job-" req/params/id)))
 (fn not-a-route [x] x)
 (fn routed? [d]
   (not (== d/%$meta/route void)))
@@ -909,7 +909,7 @@ suite "net/http server e2e":
       (var last-err (error-entries .get))
       (if (== last nil)
         (text "no-log")
-        (text ($ "logged:" last/method ":" last/path ":" last/status
+        (text ($to_str "logged:" last/method ":" last/path ":" last/status
                  ":auth=" last/headers/authorization
                  ":err=" (if (== last-err nil) "none" last-err/message)))))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
@@ -936,7 +936,7 @@ suite "net/http server e2e":
     let p = startHttpServer("routes.gene", """
 (import $net/http [Server serve text route])
 (fn job-handler [req]
-  (text ($ "job:" req/params/id ":verbose=" req/params/verbose)))
+  (text ($to_str "job:" req/params/id ":verbose=" req/params/verbose)))
 (fn home [req] (text "home"))
 (serve (Server ^host "127.0.0.1" ^port 8192)
   ^max_requests 3
@@ -968,7 +968,7 @@ suite "net/http server e2e":
         (when TryRecv/empty
           (reply .send (text "no-failures")))
         (when (TryRecv/value failure)
-          (reply .send (text ($ "saw:" failure/message)))))
+          (reply .send (text ($to_str "saw:" failure/message)))))
       ($actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
   ^max_requests 2

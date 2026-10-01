@@ -18,7 +18,7 @@
             (let child ($str/trim ($fs/read_text ready)))
             (if_not (== mode "exit")
               (let parent ($str/trim ($fs/read_text $"${directory}/gene.pid")))
-              (let killed (await ($os/exec_async ^cmd "/bin/kill" ^args [($ "-" mode) ($ "-" parent)])))
+              (let killed (await ($os/exec_async ^cmd "/bin/kill" ^args [$"-${mode}" $"-${parent}"])))
               ($assert (== killed/status 0) "signal could not reach the Gene process group"))
             (let result (await process))
             ($assert (if (== mode "exit") (== result/status 0) (!= result/status 0)) $"wrong process exit for ${mode}")

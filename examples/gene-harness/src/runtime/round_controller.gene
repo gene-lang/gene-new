@@ -225,7 +225,7 @@
         (let rendered (bounded_request controller/runtime session items))
         (receipt .put
           "request"
-          ($
+          ($to_str
             rendered/full
             """
 """

@@ -84,7 +84,7 @@
         `(div ^class_name %(if (== id client/selected) "session_tab selected" "session_tab")
            (button ^type "button" ^on_click %(fn [event : Any] : Void (select_session client id))
              %title (small %state))
-           (button ^type "button" ^aria-label %($ "Close " title)
+           (button ^type "button" ^aria-label %$"Close ${title}"
              ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
 
 (fn close_tab [client : Client, id : Str] : Void
@@ -170,7 +170,7 @@
     (var multi : Bool false)
     (if_not ($absent? question/multi) (set multi question/multi))
     (if ($absent? choices)
-      (then ($dom/append group ($dom/render `(textarea ^id %($ "question_" index) ^rows "2"))))
+      (then ($dom/append group ($dom/render `(textarea ^id %$"question_${index}" ^rows "2"))))
       (elif multi
         (var values : (List Any) choices)
         (var j 0)
@@ -178,22 +178,22 @@
           (var label (choice_label choice))
           (var checked (== question/recommended choice))
           ($dom/append group ($dom/render `(label
-            (input ^id %($ "question_" index "_" j) ^type "checkbox" ^checked %checked) %label)))
+            (input ^id %$"question_${index}_${j}" ^type "checkbox" ^checked %checked) %label)))
           (set j (+ j 1))))
       (else
-        (var select ($dom/render `(select ^id %($ "question_" index))))
+        (var select ($dom/render `(select ^id %$"question_${index}")))
         ($dom/append select ($dom/render `(option ^value "-1" "Skip")))
         (var values : (List Any) choices)
         (var j 0)
         (for choice in values
           (var label (choice_label choice))
-          (var option ($dom/render `(option ^value %($ j) %label)))
+          (var option ($dom/render `(option ^value %($to_str j) %label)))
           (if_yes (== question/recommended choice) (set option/selected true))
           ($dom/append select option)
           (set j (+ j 1)))
         ($dom/append group select)))
     ($dom/append group ($dom/render `(label ^class_name "question_skip"
-      (input ^id %($ "question_skip_" index) ^type "checkbox") "Skip this question")))
+      (input ^id %$"question_skip_${index}" ^type "checkbox") "Skip this question")))
     ($dom/append fields group)
     (set index (+ index 1)))
   (controls client))
@@ -229,7 +229,7 @@
   (var questions : (List Any) client/round/questions/questions)
   (var index 0)
   (for question in questions
-    (var skip ($dom/element ($ "question_skip_" index)))
+    (var skip ($dom/element $"question_skip_${index}"))
     (if_yes skip/checked (set index (+ index 1)) (continue))
     (var id : Str question/id)
     (var choices : Any question/choices)
@@ -237,19 +237,19 @@
     (if_not ($absent? question/multi) (set multi question/multi))
     (if ($absent? choices)
       (then
-        (var text ($dom/input_value ($dom/element ($ "question_" index))))
+        (var text ($dom/input_value ($dom/element $"question_${index}")))
         (if_yes (!= text "") (set answers/%id text)))
       (elif multi
         (var values : (List Any) choices)
         (var picked : (List Any) [])
         (var j 0)
         (for choice in values
-          (var box ($dom/element ($ "question_" index "_" j)))
+          (var box ($dom/element $"question_${index}_${j}"))
           (if_yes box/checked (picked .push choice))
           (set j (+ j 1)))
         (set answers/%id picked))
       (else
-        (var text ($dom/input_value ($dom/element ($ "question_" index))))
+        (var text ($dom/input_value ($dom/element $"question_${index}")))
         (var j : Int ($json/parse text))
         (var values : (List Any) choices)
         (if_yes (>= j 0) (set answers/%id values/%j))))
@@ -279,7 +279,7 @@
     `(button ^type "button" ^class_name %cls
        ^on_click %(fn [event : Any] : Void (select_session client id))
        (span ^class_name "session_name" %title)
-       (span ^class_name "session_meta" %($ kind " · " status))))))
+       (span ^class_name "session_meta" %$"${kind} · ${status}")))))
 
 (fn refresh_sessions [client : Client] : Void
   (if_not client/ready (return))
@@ -291,8 +291,8 @@
     (var name : Str row/0)
     (var id : Str row/1)
     (var value ($dom/input_value ($dom/element id)))
-    (if_yes (!= value "") (set query ($ query name "=" ($url/encode_component value) "&"))))
-  (api client "GET" ($ "/api/v4/sessions" query) nil
+    (if_yes (!= value "") (set query ($to_str query name "=" ($url/encode_component value) "&"))))
+  (api client "GET" $"/api/v4/sessions${query}" nil
     (fn [code : Int, data : Any] : Void
       (if_yes (!= epoch client/filter_epoch) (return))
       (if (== code 200)
@@ -329,7 +329,7 @@
                ^disabled %(|| (== state "due") (== state "skipped"))
                ^on_click %(fn [event : Any] : Void
                  (set_hidden "trigger_drawer" true) (select_session client session))
-               (span %name) (span %($ state " " reason)))))))))))
+               (span %name) (span %$"${state} ${reason}"))))))))))
 
 (fn load_triggers [client : Client] : Void
   (api client "GET" "/api/v4/triggers" nil
@@ -520,7 +520,7 @@
         (var text : Str block/text)
         (var late : Bool false)
         (if_not ($absent? block/late) (set late block/late))
-        (set console ($ console (if late "[late] " "") text))
+        (set console ($to_str console (if late "[late] " "") text))
         (set count (+ count 1)))
       (else (visible .push block))))
   ($dom/set_text ($dom/element "console_output") console)
@@ -605,7 +605,7 @@
   (for command in commands
     (var name : Str command/name)
     (var doc : Str command/doc)
-    (if_yes (str/starts_with? ($ "/" name) (str/lower text))
+    (if_yes (str/starts_with? $"/${name}" (str/lower text))
       (set matched true)
       ($dom/append picker
         ($dom/render
@@ -615,7 +615,7 @@
                (remember_draft client)
                ($dom/focus client/prompt)
                (set picker/hidden true))
-             (strong %($ "/" name)) (span %doc))))))
+             (strong %$"/${name}") (span %doc))))))
   (if_not matched
     ($dom/append picker ($dom/render `(p ^class_name "muted"
       %(if (== ($size commands) 0) "Use /help to load available commands." "No matching commands. Use /help for the full list."))))))
@@ -889,14 +889,14 @@
   (if_yes (!= session client/selected) (return))
   (var id : Str data/id)
   (var status : Str data/status)
-  (var block_id ($ session "/" id))
+  (var block_id $"${session}/${id}")
   (var text : Str (string_or data/display (string_or data/text "")))
   (if_yes (== status "running")
     (for previous in client/preview
       (var previous_id : Str previous/id)
       (if_yes (== previous_id block_id)
         (var prior : Str previous/text)
-        (set text ($ prior text)))))
+        (set text $"${prior}${text}"))))
   (apply_record client {^id block_id ^round_id "" ^turn 0 ^role "assistant" ^phase "command" ^text text ^status status ^view data/view ^durable false})
   (var error_code : Str (string_or data/error_code ""))
   (if_yes (== error_code "confirmation_required")
@@ -905,7 +905,7 @@
     ($dom/append client/notice ($dom/render `(div ^role "dialog" ^aria-label "Confirm stopping sessions"
       (p %text)
       (button ^type "button" ^on_click %(fn [event : Any] : Void
-        (send_command client ($ "/" name " --confirm"))) "Confirm")
+        (send_command client $"/${name} --confirm")) "Confirm")
       (button ^type "button" ^on_click %(fn [event : Any] : Void (notice client "")) "Keep running")))))
   (render_transcript client))
 
@@ -1129,7 +1129,7 @@
           (var output (string_or data/display (string_or data/text "")))
           (var preview : (List Any) cache/preview)
           (set cache/preview (bounded_blocks (merge_blocks preview
-            [{^id ($ session "/" id) ^round_id "" ^turn 0 ^role "assistant" ^phase "command"
+            [{^id $"${session}/${id}" ^round_id "" ^turn 0 ^role "assistant" ^phase "command"
               ^text output ^status data/status ^view data/view ^durable false}]) true)))))
     (render_tabs client)
   catch Any (connect_stream client tab)))

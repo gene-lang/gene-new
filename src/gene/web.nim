@@ -2811,6 +2811,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       var paramTypes: seq[WebType]
       var returnType: WebType
       case builtin
+      of "to_str":
+        const displayable = {wtkStr, wtkInt, wtkF64, wtkBool, wtkNil, wtkVoid,
+                             wtkSym}
+        result = WebExpr(kind: wekBuiltin, typ: webType(wtkStr), loc: loc,
+                         text: builtin)
+        for item in value.body:
+          let part = analysis.analyzeExpr(item, bindings)
+          var kinds: set[WebTypeKind]
+          if part.typ.kind == wtkUnion:
+            for member in part.typ.members: kinds.incl member.kind
+          else:
+            kinds.incl part.typ.kind
+          if not (kinds <= displayable):
+            raise webError(loc, "web to_str displays Str, Int, F64, Bool, Nil, Void, " &
+              "and Sym values, got " & typeName(part.typ))
+          result.children.add part
+        return
       of "actor/spawn":
         raise webError(loc,
           "actors are outside the web profile: actors require the VM scheduler")
@@ -4207,44 +4224,6 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   # The closed operator set of design §7.4. `//` is the truncated remainder,
   # not integer division: `%` is the unquote prefix and `mod` names the module
   # form, so `%` never denotes arithmetic and is deliberately absent here.
-  if name == "$":
-    # Concatenation is variadic, because `$"a ${x} b"` desugars to one `$` per
-    # *segment*: capping it at two operands rejected every interpolation with
-    # more than one hole, which is most of them.
-    if value.body.len == 0:
-      raise webError(loc, "web $ requires at least one Str value")
-    # Every scalar the VM's `$` displays. Restricting this to `Str` made
-    # `$"n=${count}"` compile on the server and fail in the browser — the exact
-    # silent-divergence class §5 of the proposal exists to prevent. Containers
-    # stay out: their display is `print` semantics, a much larger contract than
-    # interpolation needs.
-    const displayable = {wtkStr, wtkInt, wtkF64, wtkBool, wtkNil, wtkVoid,
-                         wtkSym}
-    var parts: seq[WebExpr]
-    for item in value.body:
-      let part = analysis.analyzeExpr(item, bindings)
-      var kinds: set[WebTypeKind]
-      if part.typ.kind == wtkUnion:
-        for member in part.typ.members: kinds.incl member.kind
-      else:
-        kinds.incl part.typ.kind
-      if not (kinds <= displayable):
-        raise webError(loc, "web $ displays Str, Int, F64, Bool, Nil, Void, " &
-          "and Sym values, got " & typeName(part.typ))
-      parts.add part
-    if parts.len == 1 and parts[0].typ.kind == wtkStr:
-      return parts[0]
-    if parts.len == 1:
-      # `$"${n}"` is a conversion, not a concatenation. Folding against an
-      # empty literal keeps one code path and still yields a Str — returning
-      # the operand unchanged would silently type the whole expression as Int.
-      parts.insert(WebExpr(kind: wekStr, typ: webType(wtkStr), loc: loc,
-                           text: ""), 0)
-    result = parts[0]
-    for i in 1 ..< parts.len:
-      result = WebExpr(kind: wekBinary, typ: webType(wtkStr), loc: loc,
-                       text: "$", children: @[result, parts[i]])
-    return
   if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">=",
               "==", "!=", "same?"]:
     if value.body.len != 2:
@@ -5676,6 +5655,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "buffer": "new " & jsTypedArrayName(expr.keys[0]) & "(" &
       "$gene_buffer_length(" & arguments[0] & "))"
     of "to_int": "$gene_to_int(" & arguments[0] & ")"
+    of "to_str": "$gene_to_str(" & arguments.join(", ") & ")"
     # Widening needs no guard: `Number` on a bigint is exact below 2^53 and the
     # nearest double above it, which is what the VM's `float64(intVal)` does.
     of "to_float": "Number(" & arguments[0] & ")"
@@ -5951,14 +5931,6 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekBinary:
     var left = emitter.emitExpr(expr.children[0])
     var right = emitter.emitExpr(expr.children[1])
-    if expr.text == "$":
-      # JS `+` on a non-string does not agree with Gene display — `null` prints
-      # as "null", not "nil" — so anything that is not already a Str goes
-      # through the display helper.
-      if expr.children[0].typ.kind != wtkStr:
-        left = "$gene_str(" & left & ")"
-      if expr.children[1].typ.kind != wtkStr:
-        right = "$gene_str(" & right & ")"
     if expr.text in ["==", "!="] and expr.children[0].typ.kind in
         {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal}:
       (if expr.text == "!=": "!" else: "") &
@@ -5968,7 +5940,6 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         if expr.text == "==": "==="
         elif expr.text == "!=": "!=="
         elif expr.text == "same?": "==="
-        elif expr.text == "$": "+"
         elif expr.text == "//": "%" # Gene `//` is the truncated remainder.
         else: expr.text
       # `/` truncates for two Ints (bigint division already does) and `//` is
@@ -6701,19 +6672,6 @@ proc usesStructuralEquality(expr: WebExpr): bool =
 
 proc moduleUsesStructuralEquality(module: WebModule): bool =
   module.moduleAny(usesStructuralEquality)
-
-proc usesDisplayConcat(expr: WebExpr): bool =
-  ## A `$` with a non-Str operand, which is what needs the display helper. A
-  ## Str-only concatenation stays a plain `+`.
-  if expr.kind == wekBinary and expr.text == "$" and
-      (expr.children[0].typ.kind != wtkStr or
-       expr.children[1].typ.kind != wtkStr):
-    return true
-  for child in expr.children:
-    if usesDisplayConcat(child): return true
-
-proc moduleUsesDisplayConcat(module: WebModule): bool =
-  module.moduleAny(usesDisplayConcat)
 
 proc usesExprKind(expr: WebExpr, kinds: set[WebExprKind]): bool =
   if expr.kind in kinds: return true
@@ -8188,20 +8146,24 @@ proc emitModule(module: WebModule, typescript: bool,
       " { target.removeEventListener(type, handler" &
       (if typescript: " as EventListener" else: "") & "); }")
     emitter.line()
-  if moduleUsesDisplayConcat(module):
+  if moduleUsesBuiltin(module, ["to_str"]):
     # Gene display, not JS `String()`: `null` is "nil", `undefined` is "void",
     # and a symbol is its name. Interpolation is the one place the two
     # backends have to agree character-for-character, since the result is
     # usually what the user sees.
-    emitter.line("function $gene_str(value" &
-      (if typescript: ": unknown" else: "") & ")" &
+    emitter.line("function $gene_to_str(...values" &
+      (if typescript: ": unknown[]" else: "") & ")" &
       (if typescript: ": string" else: "") & " {")
+    inc emitter.indent
+    emitter.line("return values.map(value => {")
     inc emitter.indent
     emitter.line("if (typeof value === \"string\") return value;")
     emitter.line("if (value === null) return \"nil\";")
     emitter.line("if (value === undefined) return \"void\";")
     emitter.line("if (typeof value === \"symbol\") return Symbol.keyFor(value) ?? value.description ?? \"\";")
     emitter.line("return String(value);")
+    dec emitter.indent
+    emitter.line("}).join(\"\");")
     dec emitter.indent
     emitter.line("}")
     emitter.line()

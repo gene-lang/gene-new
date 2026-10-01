@@ -6,7 +6,7 @@
 ## - forms wrap at a max width with 2-space indentation and special-form
 ##   aware layouts (fn/if/match/type/... bodies indent under a head line);
 ## - reader sugar prints back as sugar: slash paths (`a/b`), quasiquote
-##   (`` `x ``) / unquote (`%x`), and `($ ...)` interpolation as `$"a${b}c"`;
+##   (`` `x ``) / unquote (`%x`), and `gene/to_str` calls as `$"a${b}c"`;
 ## - strings containing newlines print as raw multiline strings;
 ## - comments and blank lines BETWEEN top-level forms are preserved; a form
 ##   whose span contains interior comments is emitted verbatim (the reader
@@ -191,7 +191,7 @@ proc resugarPath(v: Value): string =
   parts.join("/")
 
 proc resugarInterp(v: Value): string =
-  ## ($ "a" b "c") -> $"a${b}c", or "" when unsafe (a literal `$` in any
+  ## ($to_str "a" b "c") -> $"a${b}c", or "" when unsafe (a literal `$` in any
   ## string part would re-parse as interpolation).
   if v.props.len > 0 or v.meta.len > 0 or v.body.len == 0: return ""
   var sawStr = false
@@ -402,6 +402,11 @@ proc oneLine(v: Value): string =
     let send = sendOneLine(v)
     if send.len > 0:
       return send
+    if not v.nodeImmutable and v.head.kind == vkNode and
+        v.head.head.isSym("path") and v.head.body.len == 2 and
+        v.head.body[0].isSym("gene") and v.head.body[1].isSym("to_str"):
+      let interpolated = resugarInterp(v)
+      if interpolated.len > 0: return interpolated
     if not v.nodeImmutable and v.head.kind == vkSymbol:
       case v.head.symVal
       of "#Ref":
@@ -421,9 +426,6 @@ proc oneLine(v: Value): string =
       of "...":
         if v.body.len == 1 and v.props.len == 0:
           return oneLine(v.body[0]) & "..."
-      of "$":
-        let s = resugarInterp(v)
-        if s.len > 0: return s
       else: discard
     var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
     let head = if v.head.kind == vkSymbol: v.head.symVal else: ""

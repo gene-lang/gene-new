@@ -58,7 +58,7 @@
               (set recorded true)))
           ($assert recorded "answer request was absent from the operator transcript")
           (let huge ($cell "x"))
-          (repeat i in 18 (huge .set ($ (huge .get) (huge .get))))
+          (repeat i in 18 (huge .set ($to_str (huge .get) (huge .get))))
           (service/runtime/functions .put "noise" (fn [] ($print (huge .get))))
           (set service/controller/provider (fn [request] "(noise) (Outcome ^done true ^reply \"bounded console\")"))
           (let noisy (submit service record/id "noisy" 3 "print"))

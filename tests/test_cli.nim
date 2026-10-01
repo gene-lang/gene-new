@@ -4,7 +4,7 @@ when defined(posix):
   import std/posix
 when defined(macosx):
   const SigWinch = 28
-import gene/[digest, package, repl, vm, web]
+import gene/[digest, package, reader, repl, vm, web]
 
 # The no-follow source profile requires a physical fixture root. On macOS,
 # getTempDir() commonly starts with the /var symlink.
@@ -1269,6 +1269,15 @@ suite "cli — gene parse/fmt/compile":
     check lexicalFmt.output.count("# after ") == 5
     check "#\"a#b\"im" in lexicalFmt.output
 
+    let conversion = writeCliProgram("fmt_to_str.gene",
+      "($to_str \"hello \" name)\n(let $ (fn [a b] (+ a b)))\n($ 1 2)\n")
+    let conversionFmt = runGene(["fmt", conversion])
+    check conversionFmt.exitCode == 0
+    check conversionFmt.output ==
+      "$\"hello ${name}\"\n(let $ (fn [a b] (+ a b)))\n($ 1 2)\n"
+    check readAll(conversionFmt.output).mapIt(it.print()) ==
+      readAll(readFile(conversion)).mapIt(it.print())
+
     let pipeline = writeCliProgram("fmt_pipeline.gene",
       "(source -> parse options => validate schema -> save db _)\n")
     let pipelineFmt = runGene(["fmt", pipeline])
@@ -1638,7 +1647,7 @@ suite "cli — gene parse/fmt/compile":
       "(mod web_interop ^profile web)\n" &
       "(js/fn host_upper ^from \"./web_host.mjs\" ^import \"upper\" " &
       "  [value : Str callback : (Fn [Str] Str)] : Str)\n" &
-      "(fn decorate [value : Str] : Str ($ \"<\" value))\n" &
+      "(fn decorate [value : Str] : Str ($to_str \"<\" value))\n" &
       "(fn run [value : Str] : Str (host_upper value decorate))\n" &
       "(fn run_with [value : Str callback : (Fn [Str] Str)] : Str " &
       "  (host_upper value callback))\n")

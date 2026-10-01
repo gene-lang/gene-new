@@ -5,7 +5,7 @@
 import std/strutils
 import ./types
 
-const NativeErrorModelVersion* = "4"
+const NativeErrorModelVersion* = "5"
 
 proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
   var local = if name.startsWith("gene/"): name[5..^1] else: name
@@ -22,7 +22,7 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
   case local
   of "assert", "test/assert_equal", "test/assert_raises",
      "==", "!=", "same?", "not", "nil?", "void?", "present?",
-     "+", "-", "*", "<", ">", "<=", ">=", "/", "//", "$", "to_str",
+     "+", "-", "*", "<", ">", "<=", ">=", "/", "//", "to_str",
      "range", "to_stream", "map", "filter", "filter_map", "each",
      "into", "take",
      "read_one", "read_all", "parse_int", "size", "empty?", "List/push",
@@ -44,7 +44,7 @@ proc nativeErrorAcceptsCall*(metadata: NativeErrorMetadata,
   case metadata.identity
   of "gene/assert": positionalCount in 1..2
   of "gene/test/assert_equal", "gene/test/assert_raises": positionalCount in 2..3
-  of "gene/not", "gene/nil?", "gene/void?", "gene/present?", "gene/to_str",
+  of "gene/not", "gene/nil?", "gene/void?", "gene/present?",
      "gene/to_stream", "gene/read_one", "gene/read_all", "gene/parse_int",
      "gene/size", "gene/empty?", "gene/Stream/next", "gene/Stream/peek",
      "gene/Stream/has_next", "gene/Stream/try_next", "gene/Stream/close",

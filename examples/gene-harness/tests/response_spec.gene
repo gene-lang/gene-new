@@ -37,7 +37,7 @@
 
   (it "accepts patch-only responses with either a newline or EOF terminator" []
     (for suffix in ["\n" ""]
-      (let response (split_response ($ "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch" suffix)))
+      (let response (split_response ($to_str "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch" suffix)))
       (assert_equal response/forms/.size 0)
       ($assert (! ($absent? response/patch)))))
 

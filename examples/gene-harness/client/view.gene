@@ -105,7 +105,7 @@
   (var detail "")
   (if_not ($absent? run/message)
     (var message : Str run/message)
-    (if (str/starts_with? message ($ label "."))
+    (if (str/starts_with? message $"${label}.")
       (set label message) (set detail message)))
   (var root ($dom/render `(div ^class_name %(if failed "run_status run_error" "run_status")
     (span %label))))

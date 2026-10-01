@@ -36,7 +36,7 @@
     (let remaining (- 262144 (bytes .get)))
     (let length ($str/byte_size text))
     (let cutoff (> length (- remaining ($str/byte_size marker))))
-    (let kept (if cutoff ($ (byte_prefix text ($math/max 0 (- remaining ($str/byte_size marker)))) marker) text))
+    (let kept (if cutoff ($to_str (byte_prefix text ($math/max 0 (- remaining ($str/byte_size marker)))) marker) text))
     (if cutoff (truncated .set true))
     (bytes .set (+ (bytes .get) ($str/byte_size kept)))
     (let item {^text kept ^late late})

@@ -957,8 +957,8 @@ proc tokenizeImpl(r: var Reader,
     of '$':
       # `$x` is sugar for the `gene/x` member path, so the stdlib is reachable
       # without occupying a bare name (design §2.1). A `"` is not a symbol
-      # char, so `$"..."` interpolation and the bare `$` concat head both fall
-      # through to the plain dollar token.
+      # char, so `$"..."` interpolation falls through to the dollar token.
+      # A bare `$` is an ordinary symbol with no built-in binding.
       if r.pos + 1 < r.src.len and r.src[r.pos + 1].isSymbolChar:
         r.advance()
         let lexStart = r.pos
@@ -967,8 +967,10 @@ proc tokenizeImpl(r: var Reader,
         r.addToken(tkGeneMember, r.src[lexStart ..< r.pos],
                    startLine, startCol, startByte)
       else:
+        let interpolated = r.pos + 1 < r.src.len and r.src[r.pos + 1] == '"'
         r.advance()
-        r.addToken(tkDollar, "$", startLine, startCol, startByte)
+        r.addToken(if interpolated: tkDollar else: tkSymbol,
+                   "$", startLine, startCol, startByte)
     of '^':
       r.advance()
       if r.nextChar() == '^':
@@ -1975,7 +1977,7 @@ proc parseInterpolatedString(lexeme, sourceName: string,
     else:
       inc i
   if last < lexeme.len: body.add newStr(lexeme[last..^1])
-  newNode(newSym("$"), body = body)
+  newNode(geneMemberPath("to_str"), body = body)
 
 proc parseWrapOperand(r: var Reader, marker: Token, label: string): Value =
   r.skipDatumComments()
@@ -2153,13 +2155,9 @@ proc parseForm(r: var Reader, inList = false): Value =
       "between segments of one parenthesized form")
   of tkDotDotDot: finish newSym("...")
   of tkDollar:
-    let nextTok = r.peek()
-    if nextTok.kind == tkString and nextTok.line == tok.line and
-        nextTok.col == tok.col + 1:
-      let s = r.next()
-      finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col,
-                                     r.options, r.wraps)
-    finish newSym("$")
+    let s = r.next()
+    finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col,
+                                   r.options, r.wraps)
   of tkRParen, tkRBracket, tkRBrace:
     r.raiseReadErrorAt(tok, "unexpected closing delimiter '" & tok.lexeme & "'")
   of tkEof:

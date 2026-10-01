@@ -481,7 +481,7 @@ if "embedded ajax handler passed" notin ajaxRun.output:
   stderr.write(ajaxRun.output)
   fail("ajax", "the AJAX toggle path did not behave as specified")
 
-# --- 11. `$` matches the VM for every scalar it displays --------------------
+# --- 11. `gene/to_str` matches VM scalar display ---------------------------
 #
 # `$"n=${count}"` compiling on the server and failing in the browser is the
 # silent-divergence class §5 exists to prevent, so the conformance claim is
@@ -519,7 +519,7 @@ console.log("embedded display concat passed");
 let displayRun = execCmdEx("node " & quoteShell(displayRunnerPath))
 if "embedded display concat passed" notin displayRun.output:
   stderr.write(displayRun.output)
-  fail("display", "web `$` does not display scalars the way the VM does")
+  fail("display", "web gene/to_str does not display scalars the way the VM does")
 
 # --- 12. a static export writes exactly what the application answers for ----
 #

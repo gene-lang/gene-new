@@ -22,7 +22,7 @@
   (|| (== char "") (space char) (str/contains? "()[]{}\"'`,;#" char)))
 
 (fn member [words : Str, word : Str] : Bool
-  (str/contains? words ($ " " word " ")))
+  (str/contains? words $" ${word} "))
 
 (fn number_atom [word : Str] : Bool
   (var chars : (List Str) (str/split word ""))
@@ -94,7 +94,7 @@
         (var depth 1)
         (set i (+ i 2))
         (while (&& (< i n) (> depth 0))
-          (var pair ($ (char_at chars i) (char_at chars (+ i 1))))
+          (var pair ($to_str (char_at chars i) (char_at chars (+ i 1))))
           (if (== pair "#<") (then (set depth (+ depth 1)) (set i (+ i 2)))
             (elif (== pair ">#") (set depth (- depth 1)) (set i (+ i 2)))
             (else (set i (+ i 1))))))
@@ -150,5 +150,5 @@
     (var kind : Str token/kind)
     (var part : Str token/text)
     ($dom/append code ($dom/render
-      `(span ^class_name %(if (== kind "") "" ($ "gene_" kind)) %part))))
+      `(span ^class_name %(if (== kind "") "" $"gene_${kind}") %part))))
   code)

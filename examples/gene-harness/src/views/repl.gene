@@ -41,9 +41,9 @@
     (match outcome
       (when (TaskOutcome/ok line)
         (if ($absent? line) (return nil))
-        (set code ($ code "\n" line)))
+        (set code $"${code}\n${line}"))
       (else (return nil))))
-  ($ "/run " code))
+  $"/run ${code}")
 
 (fn chat [controller, selected : Str]
   (let runtime controller/runtime)

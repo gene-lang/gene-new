@@ -668,8 +668,8 @@
     },
     {
       "id": "string.concatenation",
-      "source": "($ \"gene\" \"web\")",
-      "web_source": "(mod string_concatenation ^profile web) (fn run [] : Str ($ \"gene\" \"web\"))",
+      "source": "($to_str \"gene\" \"web\")",
+      "web_source": "(mod string_concatenation ^profile web) (fn run [] : Str ($to_str \"gene\" \"web\"))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -680,6 +680,36 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "string.to_str_empty",
+      "source": "($to_str)",
+      "web_source": "(mod string_to_str_empty ^profile web) (fn run [] : Str ($to_str))",
+      "web_export": "run",
+      "expected_value": { "kind": "str", "value": "" },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": { "status": "eligible" }
+    },
+    {
+      "id": "string.to_str_scalars",
+      "source": "(gene/to_str \"n=\" 42 \";\" nil \";\" void \";\" true)",
+      "web_source": "(mod string_to_str_scalars ^profile web) (fn run [] : Str (gene/to_str \"n=\" 42 \";\" nil \";\" void \";\" true))",
+      "web_export": "run",
+      "expected_value": { "kind": "str", "value": "n=42;nil;void;true" },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": { "status": "eligible" }
+    },
+    {
+      "id": "string.to_str_interpolation",
+      "source": "(let a \"hello\") (let b 42) $\"${a}${b}\"",
+      "web_source": "(mod string_to_str_interpolation ^profile web) (fn run [] : Str (let a \"hello\") (let b 42) $\"${a}${b}\")",
+      "web_export": "run",
+      "expected_value": { "kind": "str", "value": "hello42" },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": { "status": "eligible" }
     },
     {
       "id": "list.structural_equality",
@@ -753,8 +783,8 @@
     },
     {
       "id": "module.declaration_imports",
-      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child : Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
-      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] ^from \"./fixture_decl_dep.gene\") (type Child : Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
+      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child : Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($to_str (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
+      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] ^from \"./fixture_decl_dep.gene\") (type Child : Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($to_str (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
       "web_files": {
         "fixture_decl_dep.gene": "(mod fixture_decl_dep ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (enum Choice none (some Int))"
       },
@@ -970,8 +1000,8 @@
     },
     {
       "id": "protocol.super_chain",
-      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
-      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
+      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($to_str \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
+      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($to_str \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",

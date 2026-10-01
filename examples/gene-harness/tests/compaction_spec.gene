@@ -21,7 +21,7 @@
             runtime
             "default"
             "assistant"
-            ($
+            ($to_str
               """# old goal
 (var large """"
               large

@@ -79,7 +79,7 @@
 # --- pages -------------------------------------------------------------------------
 
 (fn game_page [] : Str
-  ($ "<!doctype html>"
+  ($to_str "<!doctype html>"
     (render
       `(html ^lang "en"
          (head (meta ^charset "utf-8")
@@ -131,7 +131,7 @@
            %(script client_asset ^mount "commons_root"))))))
 
 (fn login_page [message : Str] : Str
-  ($ "<!doctype html>"
+  ($to_str "<!doctype html>"
     (render
       `(html ^lang "en"
          (head (meta ^charset "utf-8")

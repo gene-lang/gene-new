@@ -7725,9 +7725,11 @@ proc displayStr(v: Value, scope: Scope = nil): string =
   print(v)
 
 proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("to_str", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  newStr(displayStr(args[0], scope))
+  var resultStr = ""
+  for arg in args:
+    resultStr.add displayStr(arg, scope)
+  newStr(resultStr)
 
 proc biToInt(args: openArray[Value]): Value {.nimcall.} =
   ## The explicit `Float` -> `Int` hop design.md §7.8 points at: rounding is
@@ -7798,13 +7800,6 @@ proc biGraphemes(args: openArray[Value]): Value {.nimcall.} =
     items.add newStr(s.substr(i, i + width - 1))
     i += width
   newList(items)
-
-proc biDollar(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
-  var resultStr = ""
-  for arg in args:
-    resultStr.add displayStr(arg, scope)
-  newStr(resultStr)
 
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
   let v = if args.len >= 1: args[0] else: newStr("panic")
@@ -9198,7 +9193,6 @@ proc buildBuiltins(app: Application): Scope =
   result.define("chars", builtinNativeFn("chars", biChars))
   result.define("bytes", builtinNativeFn("bytes", biBytes))
   result.define("graphemes", builtinNativeFn("graphemes", biGraphemes))
-  result.define("$", builtinNativeCallFn("$", biDollar, acceptsNamed = false))
   result.define("freeze_shallow", builtinNativeFn("freeze_shallow", biFreezeShallow))
   result.define("freeze", builtinNativeFn("freeze", biFreeze))
   result.define("thaw", builtinNativeFn("thaw", biThaw))

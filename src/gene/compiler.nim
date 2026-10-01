@@ -300,13 +300,12 @@ const bareOperatorNames* = [
   # Operators are a closed, language-defined set (design §2.2): a program is not
   # expected to declare them, so pre-binding them costs no name and `($+ 1 2)`
   # would be noise. (Binding one is still accepted today and shadows it, as for
-  # any other name.) `//` is the remainder (§7.4), `$` the concat/interpolation
-  # head.
+  # any other name.) `//` is the remainder (§7.4).
   # `|` builds a union type expression (design §7.4.1). It is already language
   # syntax in annotation and pattern position, so pre-binding it is what makes
   # `(| A B)` mean one thing everywhere rather than only where a type is
   # expected.
-  "+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!=", "$", "|",
+  "+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!=", "|",
 ]
 
 const bareCoreNames* = [
@@ -638,8 +637,6 @@ proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
         c.exprKnownExactResult(v.body[1], typeName)
     of "!", "==", "<", ">", "<=", ">=":
       typeName == "Bool" and not c.hasLexicalBinding(v.head.symVal)
-    of "$":
-      typeName == "Str" and not c.hasLexicalBinding(v.head.symVal)
     else:
       let sig = c.lexicalFunctionSig(v.head.symVal)
       sig.found and sig.sig.arity == v.body.len and

@@ -1,7 +1,7 @@
 # Claude providers
 
-Gene Harness supports two explicit Claude connections, shared by browser chat,
-the terminal, and plugin authoring:
+Gene Harness supports two explicit Claude connections, shared by the browser
+and the terminal:
 
 | Provider | Connection | Credentials and billing |
 | --- | --- | --- |
@@ -17,18 +17,18 @@ claude auth login
 claude auth status
 ```
 
-From `examples/gene-harness`, start the browser host:
+From `examples/gene-harness`, start the browser host on a project workspace:
 
 ```sh
-mkdir -p /tmp/harness-claude
 env GENE_HARNESS_PROVIDER=claude \
   ../../bin/gene run \
-  src/web/server.gene --home /tmp/harness-claude
+  src/web/server.gene --workspace /path/to/project
 ```
 
 Open the connection URL printed by the server. To use the terminal instead,
-replace the entry and arguments with `src/main.gene chat` and set
-`GENE_HARNESS_HOME=/tmp/harness-claude` in the environment.
+run `src/main.gene --workspace /path/to/project chat`. Instead of the
+environment variable, you can set `^provider "claude"` in the workspace's
+`.gene-harness/config.gene`; a non-empty `GENE_HARNESS_PROVIDER` still wins.
 
 The default CLI model is `sonnet`, resolved by Claude Code. Set
 `GENE_HARNESS_MODEL` to another CLI alias or exact supported model ID. Set
@@ -59,10 +59,14 @@ launch command with `GENE_HARNESS_PROVIDER=anthropic`. No Claude Code executable
 or Claude login is required. OAuth setup-tokens are not accepted as API keys.
 
 The default API model is `claude-sonnet-5`; `GENE_HARNESS_MODEL` overrides it.
-The adapter sends the system prompt and user/history text to
-`https://api.anthropic.com/v1/messages`, with `x-api-key` authentication and
-`anthropic-version: 2023-06-01`. It extracts assistant text blocks and ignores
-thinking blocks. [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
+The adapter sends the instructions as the system prompt and the session history
+as user/assistant messages to `https://api.anthropic.com/v1/messages`, with
+`x-api-key` authentication and `anthropic-version: 2023-06-01`. It extracts
+assistant text blocks and ignores thinking blocks. [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
+
+The last two assistant messages carry `cache_control` checkpoints. History
+rewrites at most one older message per turn, so everything before the previous
+response stays cached; see the history section of [the design](design.md).
 
 The API path uses adaptive thinking and `output_config.effort`. Supported effort
 levels depend on the selected model. `none` sends disabled thinking and omits
@@ -71,9 +75,9 @@ configuration; for older models without adaptive thinking, select `none` if the
 model supports disabled thinking. The API rejects unsupported model/effort
 combinations rather than silently changing models. [Thinking controls](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 
-Default API response budgets are 8,192 tokens for normal turns and 16,384 for
-plugin authoring, including thinking. A token-limit stop is an error even if
-the partial text happens to look like valid Gene.
+The default API response budget is 8,192 tokens per turn, including thinking.
+A compaction summary call computes its own smaller budget. A token-limit stop
+is an error even if the partial text happens to look like valid Gene.
 
 ## Execution boundary and limits
 
@@ -81,7 +85,7 @@ Claude Code is used as a text-generation backend. The Harness passes its own
 system prompt, disables native tools and MCP tools, skips customizations with
 safe mode, disables hooks and slash commands, and disables session persistence.
 It does not bypass permissions. The CLI is limited to one turn; the Harness
-continues to own conversation history, tool dispatch, and plugin evaluation.
+continues to own conversation history, response evaluation, and plugins.
 Managed administrative policy still applies to the CLI. The subprocess is not
 a Gene filesystem sandbox. [Claude Code CLI options](https://code.claude.com/docs/en/cli-reference)
 
@@ -91,18 +95,20 @@ while disabling ordinary customizations. A current CLI with `--safe-mode` and
 `--effort` is required; flags were checked against Claude Code 2.1.263.
 [Programmatic Claude Code](https://code.claude.com/docs/en/headless)
 
-Both new providers return completed responses; raw token previews are currently
-specific to Codex. Only successful, nonempty text enters the existing Gene
-envelope validator. CLI nonzero exits, reported errors, timeouts, malformed JSON,
-and output truncation are rejected. API refusals, tool-use stops, and incomplete
-turns are also rejected. Cancelling the Harness run cancels its CLI subprocess.
+Both providers return completed responses. Only successful, nonempty text
+reaches the response splitter, byte for byte. CLI nonzero exits, reported
+errors, timeouts, malformed JSON, and output truncation are rejected. API
+refusals, tool-use stops, and incomplete turns are also rejected. Cancelling
+the round cancels its CLI subprocess.
 
 Requests have a 180-second timeout and a 2 MB captured-response limit. The CLI
-uses argument arrays without shell interpolation. System and user text together
-are limited to 128 KiB to stay below common process argument limits; use the
-native API for larger contexts. Prompts are process arguments, so local process
-inspection may expose them. The CLI controls its own token budget; the API's
-`max_tokens` setting is not forwarded to it.
+uses argument arrays without shell interpolation. Because the CLI takes one
+prompt, the Harness serializes the session's message history into it. System
+and prompt text together are limited to 128 KiB to stay below common process
+argument limits, so long sessions need the `anthropic` provider. Prompts are
+process arguments, so local process inspection may expose them. The CLI
+controls its own token budget; the API's `max_tokens` setting is not forwarded
+to it.
 
 Provider errors are summarized without copying raw API error bodies or CLI
 stderr into the transcript. Credentials never enter model prompts or persisted
@@ -124,11 +130,10 @@ depend on token extraction, setup-token reuse, client impersonation, or a proxy.
 
 ## Verification
 
-Focused provider checks cover configuration, API request fields, content/stop
-validation, CLI arguments, error redaction, and subprocess cancellation. A
-controlled CLI fixture exercised the real browser-profile runtime through chat,
-plugin generation, activation, and a tool call returning `42`. The installed
-Claude CLI accepted the invocation flags but reported no authenticated account
-on this machine at implementation time; no API key was configured. A real
-subscription/API success requires the user's login/key. No package test suite
-was run, following the Harness development workflow.
+The package specs run without a model. `tests/provider_prefix_spec.gene`
+serializes actual Anthropic requests across turns and checks that message
+content stays byte-stable while the two cache checkpoints move.
+`tests/provider_blocks_spec.gene` checks that the Anthropic, Claude CLI,
+OpenAI and OpenRouter transports preserve response bytes, so blocks that end
+at EOF still split correctly. A real subscription or API success requires the
+user's login or key.

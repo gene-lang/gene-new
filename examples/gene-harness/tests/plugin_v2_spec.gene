@@ -56,7 +56,7 @@
               runtime/h
               2
               root
-              ($
+              ($to_str
                 "(append_prompt \"registration\" (register_plugin \"queued\" (quote "
                 ($to_str queued_source)
                 "))) (Outcome ^prompt \"registered\")")))

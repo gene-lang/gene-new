@@ -309,7 +309,7 @@
   # inline hash, and nothing for a `Str` return type to have to carry.
   # Referring to the asset is what publishes it; there is no route table to
   # forget to mount.
-  ($ "<!doctype html>"
+  ($to_str "<!doctype html>"
      (render
        `(html
           (head (title "Gene TODO")

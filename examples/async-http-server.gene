@@ -100,7 +100,7 @@
     (if (not (job_counter .compare_exchange next (+ next 1)))
       (set next (job_counter .load))
       (break)))
-  ($ "job-" next))
+  ($to_str "job-" next))
 
 (fn set_job_state [id state ms]
   (var done false)
@@ -269,7 +269,7 @@
    .into [(route ^method "GET" ^path "/" ^handler help)]))
 
 ($println "async HTTP server listening on http://127.0.0.1:8091")
-($println ($ "    " ($size routes) " routes (1 manual + discovered @route decls)"))
+($println ($to_str "    " ($size routes) " routes (1 manual + discovered @route decls)"))
 ($println "    GET  /help                    usage")
 ($println "    GET  /status                  live metrics")
 ($println "    GET  /sleep?ms=1000           parked handler fiber")

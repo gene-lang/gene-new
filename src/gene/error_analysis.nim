@@ -494,7 +494,7 @@ proc newErrorAnalysis*(root: Chunk,
     summary: CallableErrorSummary(name: "message", identity: "builtin:Error/message",
       declared: true, resultType: newSym("Str")))
   result.types["builtin:Error"] = errorProtocol
-  for name in ["+", "-", "*", "/", "//", "==", "!=", "<", ">", "<=", ">=", "$", "same?", "not", "|"]:
+  for name in ["+", "-", "*", "/", "//", "==", "!=", "<", ">", "<=", ">=", "same?", "not", "|"]:
     builtins.values[name] = ErrorBinding(immutable: true,
       value: AbstractValue(kind: avNative, name: name))
   builtins.values["gene"] = ErrorBinding(immutable: true,
@@ -883,7 +883,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
   of "/", "//":
     result.errors = oneError("RuntimeError")
     result.value = scalarValue("Int")
-  of "$", "to_str":
+  of "to_str":
     for arg in args:
       if arg.kind != avScalar: result.errors.open = true
     result.value = scalarValue("Str")

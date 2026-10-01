@@ -6,7 +6,7 @@
   [value : Str callback : (Fn [Str] Str)] : Str)
 
 (fn decorate [value : Str] : Str
-  ($ "<" value))
+  ($to_str "<" value))
 
 (fn invoke [value : Str] : Str
   (host_apply value decorate))

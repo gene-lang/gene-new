@@ -53,8 +53,9 @@ line two"""                       # multiline
 reads as `void`, while an omitted named parameter binds `nil`. `$absent?` covers
 both; `$nil?` and `$void?` separate them.
 
-Prefer interpolation over the `$` concat head: write `$"a${x}b"`, not
-`($ "a" x "b")`.
+Use `$to_str` (`gene/to_str`) to join display values, or write `$"a${x}b"`
+when interpolation is clearer than `($to_str "a" x "b")`. Interpolation
+reads as the same ordinary call; a bare `$` has no built-in meaning.
 
 ## Collections
 
