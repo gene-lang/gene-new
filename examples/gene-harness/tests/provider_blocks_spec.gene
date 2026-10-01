@@ -1,38 +1,190 @@
 (import $test [describe it assert_equal run])
-(import [split_response] ^from "../src/agents/response")
-(import [completion_text response_text] ^from "../src/agents/model_client")
-(import [anthropic_text claude_text] ^from "../src/agents/claude")
+(import ^from "../src/agents/response" [split_response])
+(import ^from "../src/agents/model_client"
+  [completion_text response_text with_provider_timeout model_config])
+(import ^from "../src/agents/claude" [anthropic_text claude_text])
+(import ^from "./support" [isolated run_spec])
+(import $net/http [listen serve stop json])
+(import $net/http_client [request])
 
 (fn raw_blocks [read_text]
-  (for text in ["\n(+ 1 2)\n<<<raw END\nexact body\nEND"
-                "*** Begin Patch\n*** Add File: model.txt\n+ok\n*** End Patch"]
+  (for text in ["\n(+ 1 2)\n<<<raw END\nexact body\nEND" "*** Begin Patch\n*** Add File: model.txt\n+ok\n*** End Patch"]
     (let output (read_text text))
     (assert_equal output text)
     (split_response output)
     (split_response ($str/trim output))))
 
-(describe "Harness provider response bytes"
-  (it "preserves OpenAI output text and EOF blocks" []
-    (raw_blocks (fn [text]
-      (response_text {^status "completed" ^output [{^type "message" ^role "assistant"
-        ^content [{^type "output_text" ^text text}]}]}))))
+(describe
+  "Harness provider response bytes"
+  (it
+    "selects final answers from phased Codex output without duplicating code"
+    []
+    (raw_blocks
+      (fn [text]
+        (response_text
+          {
+            ^status "completed"
+            ^output [
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "commentary"
+                        ^content [{^type "output_text" ^text "I’ll inspect the files."}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "commentary"
+                        ^content [{^type "output_text" ^text text}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^content [{^type "output_text" ^text "unphased commentary"}]}
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^phase "final_answer"
+                        ^content [{^type "output_text" ^text text}]}]}))))
+  (it
+    "selects phased final answers when completed SSE output arrives as separate items"
+    []
+    (let code """# goal
+(Outcome ^done true ^reply "done")""")
+    (let messages
+      [
+        {
+          ^type "message"
+          ^role "assistant"
+          ^phase "commentary"
+          ^content [{^type "output_text" ^text code}]}
+        {
+          ^type "message"
+          ^role "assistant"
+          ^phase "final_answer"
+          ^content [{^type "output_text" ^text code}]}])
+    (let lines [])
+    (for item in messages
+      (lines .push
+        ($to_str
+          "data: "
+          ($json/stringify {^type "response.output_item.done" ^item item})
+          """
 
-  (it "preserves OpenRouter output text and EOF blocks" []
-    (raw_blocks (fn [text]
-      (completion_text "openrouter" {^status 200
-        ^body ($json/stringify {^choices [{^message {^content text}}]})}))))
+""")))
+    (lines .push
+      ($to_str
+        "data: "
+        ($json/stringify {^type "response.completed" ^response {^status "completed" ^output []}})
+        """
 
-  (it "preserves Anthropic output text and EOF blocks" []
-    (raw_blocks (fn [text]
-      (anthropic_text {^status 200 ^body ($json/stringify
-        {^type "message" ^role "assistant" ^stop_reason "end_turn"
-         ^content [{^type "text" ^text text}]})}))))
-
-  (it "preserves Claude CLI output text and EOF blocks" []
-    (raw_blocks (fn [text]
-      (claude_text {^status 0 ^stdout ($json/stringify
-        {^type "result" ^subtype "success" ^is_error false ^result text})})))))
+"""))
+    (assert_equal (completion_text "codex" {^status 200 ^body ($str/join lines "")}) code))
+  (it
+    "retries one provider timeout and preserves other failures"
+    []
+    (let config {^provider "codex" ^provider_timeout_ms 1500})
+    (let calls ($cell 0))
+    (let result
+      (with_provider_timeout
+        config
+        (fn []
+          (calls .set (+ calls/.get 1))
+          (if (== calls/.get 1)
+            (fail (HttpClientError ^message "net/http_client: Timeout was reached")))
+          "complete response")))
+    (assert_equal result "complete response")
+    (assert_equal calls/.get 2)
+    (calls .set 0)
+    (let exhausted
+      (try
+        (with_provider_timeout
+          config
+          (fn []
+            (calls .set (+ calls/.get 1))
+            (fail (HttpClientError ^message "net/http_client: Timeout was reached"))))
+        "accepted"
+      catch Any
+        $err/message))
+    (assert_equal calls/.get 2)
+    ($assert ($str/contains? exhausted "codex model provider request exceeded 1.5 s (2 attempts)"))
+    (calls .set 0)
+    (let other
+      (try
+        (with_provider_timeout
+          config
+          (fn []
+            (calls .set (+ calls/.get 1))
+            (fail (HttpClientError ^message "certificate rejected"))))
+        "accepted"
+      catch HttpClientError
+        $err/message))
+    (assert_equal calls/.get 1)
+    (assert_equal other "certificate rejected")
+    (let configured (model_config ^settings {^provider_timeout_ms 900000}))
+    (assert_equal configured/provider_timeout_ms 900000))
+  (it
+    "wraps real HTTP timeout errors and retries the transfer once"
+    []
+    (isolated
+      this_mod/.path
+      "wraps real HTTP timeout errors and retries the transfer once"
+      (fn [workspace]
+        (let server (listen ^host "127.0.0.1" ^port 0))
+        (let calls ($cell 0))
+        (let tester
+          (spawn ^lane root (try (let failure (try (with_provider_timeout {^provider "codex" ^provider_timeout_ms 30} (fn [] (calls .set (+ calls/.get 1)) (let pending (request ^url $"http://127.0.0.1:${server/port}/slow" ^timeout_ms 30)) (let response (try (await pending) ensure pending/.cancel)) response/body)) "accepted" catch Any $err/message)) ($assert (== calls/.get 2) "real transfer timeout was not retried once") ($assert ($str/contains? failure "codex model provider request exceeded 0.03 s") "real timeout was not identified as provider failure") ensure (stop server))))
+        (serve ^handler (fn [req] ($sleep 200) (json "{}")) server)
+        (match tester/.join
+          (when (TaskOutcome/ok value)
+            value)
+          (when (TaskOutcome/error error)
+            (fail error))
+          (else
+            ($assert false "timeout test task did not finish"))))))
+  (it
+    "preserves OpenAI output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (response_text
+          {
+            ^status "completed"
+            ^output [
+                      {
+                        ^type "message"
+                        ^role "assistant"
+                        ^content [{^type "output_text" ^text text}]}]}))))
+  (it
+    "preserves OpenRouter output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (completion_text
+          "openrouter"
+          {^status 200 ^body ($json/stringify {^choices [{^message {^content text}}]})}))))
+  (it
+    "preserves Anthropic output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (anthropic_text
+          {
+            ^status 200
+            ^body ($json/stringify
+                    {
+                      ^type "message"
+                      ^role "assistant"
+                      ^stop_reason "end_turn"
+                      ^content [{^type "text" ^text text}]})}))))
+  (it
+    "preserves Claude CLI output text and EOF blocks"
+    []
+    (raw_blocks
+      (fn [text]
+        (claude_text
+          {
+            ^status 0
+            ^stdout ($json/stringify
+                      {^type "result" ^subtype "success" ^is_error false ^result text})})))))
 
 (fn main [args] : Int
-  (let result (run))
-  result/exit_code)
+  (run_spec args))

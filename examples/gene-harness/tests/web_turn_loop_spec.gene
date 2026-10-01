@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "./support")
+(import ^from "./support" [isolated run_spec])
 (import ^from "../src/web/session_service"
   [
     open_session_service
@@ -10,9 +10,48 @@
     answer
     snapshot
     host_status])
-(describe "Harness web turn loop"
-  (it "serves code responses and questions with deduplicated replies" []
-    (isolated this_mod/.path "serves code responses and questions with deduplicated replies"
+(describe
+  "Harness web turn loop"
+  (it
+    "publishes provider failures as timed turn records for live delivery and snapshots"
+    []
+    (isolated
+      this_mod/.path
+      "publishes provider failures as timed turn records for live delivery and snapshots"
+      (fn [workspace]
+        (let calls ($cell 0))
+        (let service
+          (open_session_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^message "provider timeout")))))
+        (let published ($cell []))
+        (service/publisher .set (fn [message] (published/.get .push message)))
+        (try
+          (let session (create_session ^title "Failure" service))
+          (let round (submit service session/id "failed" 1 "start"))
+          (service/controller/watchers
+            .get
+            ; .get session/id
+            ; .join)
+          (let failed (receipt service session/id round/id))
+          ($assert (== failed/state "failed") "provider failure did not fail the round")
+          (let view (snapshot service session/id))
+          (let failures (view/records .filter (fn [record] (== record/phase "turn/error"))))
+          ($assert (== failures/.size 1) "failed provider turn was absent from the snapshot")
+          ($assert (== failures/0/turn 2) "failure was attached to the wrong turn")
+          ($assert (> failures/0/order 1000000000000) "failure record had no timestamp")
+          ($assert ($str/contains? failures/0/text "provider timeout") "failure detail was lost")
+          (let live
+            (published/.get .filter
+              (fn [message]
+                (&& (== message/type "turn") (== message/data/phase "turn/error")))))
+          ($assert (== live/.size 1) "failed turn was not published live")
+        ensure
+          (close_session_service service)))))
+  (it
+    "serves code responses and questions with deduplicated replies"
+    []
+    (isolated
+      this_mod/.path
+      "serves code responses and questions with deduplicated replies"
       (fn [workspace]
         (let calls ($cell 0))
         (let service
@@ -49,4 +88,5 @@
         ensure
           (close_session_service service))))))
 
-(fn main [args] : Int (run_spec args))
+(fn main [args] : Int
+  (run_spec args))

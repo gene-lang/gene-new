@@ -86,6 +86,7 @@ CRLF delimiters are accepted while attachment bodies retain their line endings.
 | --- | --- | --- |
 | `provider`, `model` | `""` | Empty selects from the environment, as described above |
 | `effort` | `"medium"` | none, minimal, low, medium, high, xhigh or max |
+| `provider_timeout_ms` | `600000` | HTTP provider timeout per attempt; one retry on timeout |
 | `response_budget` | `{^timeout_ms 600000 ^max_memory_mb 1024}` | Runaway limit for each response evaluation and command |
 | `turn_limit` | `24` | Turns per user round; reaching it fails the round |
 | `trigger_turn_limit` | `12` | Turns per trigger round |

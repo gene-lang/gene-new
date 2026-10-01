@@ -30,9 +30,12 @@ search and activity-date controls query the workspace's session index. Search
 covers title and first request. Needs attention lists every kind of session.
 Opening a session or admitting a new user round acknowledges attention; a later failure, interruption,
 expired question batch or explicit Outcome can set it again.
-The first user request supplies a short title when the session still has its
+The first sentence of the first user request supplies a short title when the session still has its
 default name. Custom titles are preserved. The workspace header and status
 drawer show the provider, model and configured reasoning effort.
+Provider failures appear in their turn disclosure with a timestamp and error
+detail, including when generation never produced response code. Accepted
+slash commands clear both the composer and its hint row.
 
 Each open session tab retains its own socket, frame sequence, snapshot,
 records, round state and reconnect state. Switching tabs preserves the draft

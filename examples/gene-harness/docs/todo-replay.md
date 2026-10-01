@@ -97,8 +97,13 @@ root in a second terminal:
 bin/gene eval '(let path "tmp/harness-todo-replay/.gene-harness/config.gene") (let config ($serde/read_data ($fs/read_text path))) (config .put "turn_limit" 48) ($fs/write_text_atomic path ($serde/write_data config))'
 ```
 
-The next round reads the new value. Provider HTTP timeouts (currently 180
-seconds) and response-evaluation timeouts are separate from the turn limit.
+The next round reads the new value. HTTP providers default to 600 seconds per
+attempt, with one retry on timeout. Set `provider_timeout_ms` in the same
+config file to change this independently of turn and evaluation limits.
+The older 180-second timeout appeared as `net/http_client: Timeout was reached`.
+Current failures identify the provider and configured duration, for example
+`codex model provider request exceeded 600.0 s (2 attempts)`, with continuation
+and configuration guidance. Only a completed response reaches evaluation.
 
 | Composer command | Effect |
 | --- | --- |
@@ -123,7 +128,8 @@ data you want to keep. Then run the README's serve command and open
 1. Add tasks with Enter and the Add button.
 2. Edit a title, save with Enter, and cancel an edit with Escape.
 3. Complete/uncomplete tasks and check the remaining count and all filters.
-4. Delete a disposable task and clear completed tasks, checking confirmations.
+4. Delete a disposable task and clear completed tasks; check confirmations if
+   the app asks for them.
 5. Reload, then stop/relaunch the server and verify persistence.
 6. Check a narrow window, keyboard-only use, and browser console errors.
 

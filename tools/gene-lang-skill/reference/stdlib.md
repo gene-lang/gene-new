@@ -115,11 +115,14 @@ already be a UTF-8 boundary.
 
 Regex replacement takes a `Regex` first, then input text, then replacement
 text. `replace` replaces the first match; `replace_all` replaces every match.
+Replacement text is literal: `$1` is not a capture reference, and no captured
+group substitution is performed.
 There is no `$str/replace` or `Str .slice` API.
 
 ```gene
 ($regex/replace #"x" "x x" "y")       # "y x"
 ($regex/replace_all #"x" "x x" "y")   # "y y"
+($regex/replace #"(abc)" "abc" "$1XYZ") # "$1XYZ", literally
 ```
 
 Filesystem paths are strings. `$fs/make_dir` creates a directory, including
@@ -145,6 +148,23 @@ strings through a shell. The output cap defaults to 1 MiB; the argument is
 
 Imports require a module file executed with `gene run`; `gene eval` accepts
 bindings from its `Env` and cannot load imports.
+
+`(map .get key)` takes one argument after its receiver and returns `void` for
+a missing key. Supply a fallback using `??`, rather than a second argument:
+
+```gene
+(let settings {^port 8098})
+(?? (settings .get "missing") 42)     # 42
+```
+
+`$net/http/json` takes a string containing JSON text, not a Map or List.
+Serialize values first. The helper returns an HTTP Response with JSON content
+type and status 200. Its two-argument form takes the status code first.
+
+```gene
+($net/http/json ($json/stringify {^ok true}))
+($net/http/json 201 ($json/stringify {^ok true}))
+```
 
 ## Type message surfaces
 

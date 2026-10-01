@@ -1049,6 +1049,7 @@
       (if (== code 202)
         (then
           ($dom/set_input_value client/prompt "")
+          (render_commands client)
           (remember_draft client))
         (else
           (show_error client data)))

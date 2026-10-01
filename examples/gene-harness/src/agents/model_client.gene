@@ -4,8 +4,8 @@
 
 (import $net/http_client [request stream : http_stream])
 (import $fs [read_text])
-(import [HarnessError] ^from "../kernel")
-(import [anthropic_request anthropic_text claude_completion] ^from "./claude")
+(import ^from "../kernel" [HarnessError])
+(import ^from "./claude" [anthropic_request anthropic_text claude_completion])
 
 (fn nonempty [value] : Any
   (if ($absent? value)
@@ -18,15 +18,28 @@
   (var key (?? (nonempty environment/OPENROUTER_API_KEY) (nonempty environment/OPENROUTER_KEY)))
   (var anthropic_key (nonempty environment/ANTHROPIC_API_KEY))
   (var provider
-    (?? (nonempty environment/GENE_HARNESS_PROVIDER)
-      (if (! ($absent? key)) "openrouter" (if (! ($absent? anthropic_key)) "anthropic" "codex"))))
+    (??
+      (nonempty environment/GENE_HARNESS_PROVIDER)
+      (if (! ($absent? key))
+        "openrouter"
+        (if (! ($absent? anthropic_key))
+          "anthropic"
+          "codex"))))
   (if_not (["codex" "openrouter" "claude" "anthropic"] .contains? provider)
-    (fail (HarnessError ^message "GENE_HARNESS_PROVIDER must be codex, openrouter, claude, or anthropic")))
+    (fail
+      (HarnessError ^message "GENE_HARNESS_PROVIDER must be codex, openrouter, claude, or anthropic")))
   (var model (nonempty environment/GENE_HARNESS_MODEL))
   (if_yes (== provider "openrouter") (set model (?? model (nonempty environment/OPENROUTER_MODEL))))
-  (set model (?? model (if (== provider "codex") "gpt-6-astra"
-    (if (== provider "claude") "sonnet"
-      (if (== provider "anthropic") "claude-sonnet-5" "openai/gpt-6-astra")))))
+  (set model
+    (??
+      model
+      (if (== provider "codex")
+        "gpt-6-astra"
+        (if (== provider "claude")
+          "sonnet"
+          (if (== provider "anthropic")
+            "claude-sonnet-5"
+            "openai/gpt-6-astra")))))
   (var effort (?? (nonempty environment/GENE_HARNESS_THINKING_EFFORT) "medium"))
   (var valid_effort false)
   (for supported in ["none" "minimal" "low" "medium" "high" "xhigh" "max"]
@@ -43,18 +56,27 @@
       (var user_home (nonempty environment/HOME))
       (if_not ($absent? user_home) (set home $"${user_home}/.codex")))
     (if_not ($absent? home) (set auth_file $"${home}/auth.json")))
-  {^provider provider ^model model ^effort effort ^api_key key ^auth_file auth_file
-   ^anthropic_key anthropic_key
-   ^claude_command (?? (nonempty environment/GENE_HARNESS_CLAUDE_COMMAND) "claude")})
+  {
+    ^provider provider
+    ^model model
+    ^effort effort
+    ^api_key key
+    ^auth_file auth_file
+    ^anthropic_key anthropic_key
+    ^claude_command (?? (nonempty environment/GENE_HARNESS_CLAUDE_COMMAND) "claude")})
 
 (fn model_config [^settings settings = {}] : Any
   (var environment {})
   (for name in ["GENE_HARNESS_PROVIDER" "GENE_HARNESS_MODEL" "GENE_HARNESS_THINKING_EFFORT" "GENE_HARNESS_CLAUDE_COMMAND" "ANTHROPIC_API_KEY" "OPENROUTER_API_KEY" "OPENROUTER_KEY" "OPENROUTER_MODEL" "CODEX_AUTH_FILE" "CODEX_HOME" "HOME"]
     (environment .put name ($os/env? name)))
   (for [key name] in {^provider "GENE_HARNESS_PROVIDER" ^model "GENE_HARNESS_MODEL" ^effort "GENE_HARNESS_THINKING_EFFORT"}
-    (if ($absent? (nonempty (environment .get name)))
-      (environment .put name (settings .get key))))
-  (resolve_config environment))
+    (if ($absent? (nonempty (environment .get name))) (environment .put name (settings .get key))))
+  (let config (resolve_config environment))
+  (let timeout (?? settings/provider_timeout_ms 600000))
+  (if (|| (!= ($head timeout) Int) (<= timeout 0) (> timeout 86400000))
+    (fail (HarnessError ^message "provider_timeout_ms must be an integer between 1 and 86400000")))
+  (config .put "provider_timeout_ms" timeout)
+  config)
 
 (fn model_name [] : Str
   (var config (model_config))
@@ -131,8 +153,12 @@
   (if_not (== response/status "completed")
     (fail (HarnessError ^message "codex response did not complete")))
   (var texts [])
+  (var phased false)
+  (for item in (?? response/output [])
+    (if (&& (== item/type "message") (! ($absent? item/phase))) (set phased true)))
   (for item in (?? response/output [])
     (if_yes (&& (== item/type "message") (== item/role "assistant"))
+      (if (&& phased (!= item/phase "final_answer")) (continue))
       (for part in (?? item/content [])
         (if_yes (== part/type "refusal") (fail (HarnessError ^message "codex refused the request")))
         (if_yes (== part/type "output_text") (texts .push part/text)))))
@@ -199,7 +225,8 @@
       (var text parsed/choices/0/message/content)
       (if ($absent? text)
         ""
-        (if (== ($head text) Str) text
+        (if (== ($head text) Str)
+          text
           (fail (HarnessError ^message "provider returned invalid text content")))))))
 
 (fn feed_codex_preview [state, chunk : Str]
@@ -226,10 +253,9 @@
     (set i (+ i 1)))
   state/text)
 
-(fn stream_codex_completion [spec, on_delta] : Str
-  (var transfer (http_stream ^method "POST" ^url spec/url ^headers spec/headers
-    ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000
-    ^max_pending_bytes 2000000 ^channel_capacity 256))
+(fn stream_codex_completion [spec, on_delta, ^timeout_ms timeout_ms : Int = 600000] : Str
+  (var transfer
+    (http_stream ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms timeout_ms ^max_bytes 2000000 ^max_pending_bytes 2000000 ^channel_capacity 256))
   (var state {^pending "" ^data [] ^text ""})
   (var emitted "")
   (try
@@ -240,28 +266,49 @@
         (if_yes (!= text emitted)
           (set emitted text)
           (on_delta text)))
-    catch ChannelClosed nil)
+    catch ChannelClosed
+      nil)
     (var response (await transfer/task))
     (completion_text "codex" response)
-  ensure transfer/task/.cancel))
+  ensure
+    transfer/task/.cancel))
 
-(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens = nil,
-                     ^on_delta on_delta = nil, ^messages messages = nil, ^config configured = nil] : Str
+(fn with_provider_timeout [config, operation] : Str
+  (let timeout (?? config/provider_timeout_ms 600000))
+  (repeat attempt in 2
+    (try
+      (return (operation))
+    catch HttpClientError
+      (if_not ($str/contains? ($str/lower $err/message) "timeout") (fail $err))
+      (if (== attempt 1)
+        (fail
+          (HarnessError ^message $"${config/provider} model provider request exceeded ${(/ timeout 1000.0)} s (2 attempts). Send a continuation message or increase provider_timeout_ms.")))))
+  "")
+
+(fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens = nil, ^on_delta on_delta = nil, ^messages messages = nil, ^config configured = nil] : Str
   (var config (?? configured (model_config)))
   (if_yes (== config/provider "claude")
-    (return (claude_completion config system
-      (if ($absent? messages) user ($serde/write_data messages)))))
+    (return
+      (claude_completion config system (if ($absent? messages) user ($serde/write_data messages)))))
   (var budget (?? max_tokens (if (== config/provider "anthropic") 8192 3000)))
-  (var spec (completion_request config system user budget ^messages messages))
+  (var spec (completion_request ^messages messages config system user budget))
   (if_yes (&& (== config/provider "codex") (! ($absent? on_delta)))
-    (return (stream_codex_completion spec on_delta)))
-  (let pending (request ^method "POST" ^url spec/url ^headers spec/headers
-    ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000))
-  (var response (try (await pending) ensure pending/.cancel))
-  (completion_text config/provider response))
+    (return
+      (with_provider_timeout
+        config
+        (fn []
+          (stream_codex_completion ^timeout_ms (?? config/provider_timeout_ms 600000) spec on_delta)))))
+  (with_provider_timeout
+    config
+    (fn []
+      (let pending
+        (request ^method "POST" ^url spec/url ^headers spec/headers ^body ($json/stringify spec/body) ^timeout_ms (?? config/provider_timeout_ms 600000) ^max_bytes 2000000))
+      (var response (try (await pending) ensure pending/.cancel))
+      (completion_text config/provider response))))
 
 (fn complete_messages [request] : Str
   (let messages request/messages)
   (let last (- messages/.size 1))
-  (chat_completion messages/0/content messages/%last/content ^messages messages ^max_tokens (?? request/max_tokens nil)
-    ^config (model_config ^settings (?? request/config {}))))
+  (chat_completion ^messages messages ^max_tokens (?? request/max_tokens nil) ^config (model_config ^settings (?? request/config {}))
+    messages/0/content
+    messages/%last/content))

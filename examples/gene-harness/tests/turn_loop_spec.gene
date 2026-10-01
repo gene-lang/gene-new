@@ -101,8 +101,8 @@ END
             "limit reply dumped a pending request")
           (let metadata (require_record runtime/sessions "default"))
           ($assert
-            (== ($size ($graphemes metadata/title)) 64)
-            "default conversation was not titled from its task")
+            (== metadata/title "Build the app")
+            "default conversation title did not use the task's first sentence")
           (submit_round controller "default" "first" 1 prompt)
           (let retried_metadata (require_record runtime/sessions "default"))
           ($assert retried_metadata/attention "idempotent retry acknowledged failure")

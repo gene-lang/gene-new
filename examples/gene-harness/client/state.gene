@@ -1,6 +1,6 @@
 (mod harness_client_state ^profile web)
 
-(import [terminal_round : terminal] ^from "../src/web/contract.gene" ^export true)
+(import ^from "../src/web/contract.gene" ^^export [terminal_round : terminal])
 
 (fn merge_blocks [previous : (List Any), incoming : (List Any)] : (List Any)
   (var out : (List Any) [])
@@ -21,8 +21,7 @@
   (set normalized (str/join (str/split normalized "#") ""))
   (for part in (str/split normalized "&")
     (var pair : (List Str) (str/split part "="))
-    (if_yes (&& (== ($size pair) 2) (== pair/0 name))
-      (return ($url/decode_component pair/1))))
+    (if_yes (&& (== ($size pair) 2) (== pair/0 name)) (return ($url/decode_component pair/1))))
   "")
 
 (fn draft_key [session : Str] : Str
@@ -49,8 +48,14 @@
   (var final : Bool false)
   (if_not ($absent? block/final) (set final block/final))
   (if_yes (&& (== phase "reply") final) (return false))
-  (&& (> round 0)
-      (|| (== phase "code") (== phase "turn/request") (== phase "turn/patch") (== phase "reply"))))
+  (&&
+    (> round 0)
+    (||
+      (== phase "code")
+      (== phase "turn/request")
+      (== phase "turn/patch")
+      (== phase "turn/error")
+      (== phase "reply"))))
 
 (fn marker_block [block : Any] : Bool
   false)
@@ -60,11 +65,20 @@
   (var value : Any (?? run/outcome ""))
   (var outcome : Str value)
   (if (== status "waiting") (return "Waiting for your answer"))
-  (if (== outcome "code_error") "Code error"
-    (if (== status "done") "Completed"
-      (if (== status "cancelled") "Stopped"
-        (if (== status "failed") "Failed"
-          (if (== status "interrupted") "Interrupted"
-            (if (== status "running") "Generating response…"
-              (if (== status "accepted") "Starting…"
-                (if (== status "stopping") "Stopping…" "Recovery required")))))))))
+  (if (== outcome "code_error")
+    "Code error"
+    (if (== status "done")
+      "Completed"
+      (if (== status "cancelled")
+        "Stopped"
+        (if (== status "failed")
+          "Failed"
+          (if (== status "interrupted")
+            "Interrupted"
+            (if (== status "running")
+              "Generating response…"
+              (if (== status "accepted")
+                "Starting…"
+                (if (== status "stopping")
+                  "Stopping…"
+                  "Recovery required")))))))))

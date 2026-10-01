@@ -137,14 +137,14 @@
     (for event in (events_for controller/runtime/events "session" session)
       (if (&& (== event/type "turn/end") (== event/payload/turn saved/last_turn)) (set ended true)))
     (if_not ended
-      (append_core_event
-        controller/runtime/events
-        "session"
+      (transcript
+        controller/runtime
         session
         {
           ^type "turn/end"
           ^turn saved/last_turn
           ^round saved/id
+          ^text (?? saved/message "Response cancelled.")
           ^reason (if (== saved/state "cancelled")
                     "cancelled"
                     "error")
@@ -224,14 +224,15 @@
   (if_yes (== metadata/first_request "")
     (changes .put "first_request" text)
     (if_yes (&& (== initiator "user") (== metadata/title "New conversation"))
-      (let title ($str/trim ($regex/replace_all #"\s+" text " ")))
+      (let normalized ($str/trim ($regex/replace_all #"\s+" text " ")))
+      (let title ($first ($regex/split #"[.!?](?:\s|$)" normalized)))
       (if_yes (!= title "")
         (var prefix "")
         (for character in ($take ($graphemes title) 64)
           (if (> ($str/byte_size ($to_str prefix character)) 256) (break))
           (set prefix ($to_str prefix character)))
         (if (== prefix "") (set prefix "New conversation"))
-        (changes .put "title" prefix)
+        (changes .put "title" ($str/trim prefix))
         (changes .put "revision" (+ (?? metadata/revision 0) 1)))))
   (if (> ($size changes) 0) (update_session controller/runtime/sessions session changes))
   (let receipt
