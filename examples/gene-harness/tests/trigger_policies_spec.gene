@@ -18,7 +18,7 @@
         ($fs/write_text_atomic $"${runtime/state_root}/config.gene" ($serde/write_data config))
         (let release ($cell false))
         (let controller (new_round_controller runtime (fn [request]
-          (while (! (release .get)) ($sleep 1))
+          (while (! release/.get) ($sleep 1))
           "(Outcome ^done true ^reply \"nothing to do\")")))
         (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
         (try
@@ -32,9 +32,9 @@
           ($assert (== pending/2/state "skipped") "queue_one did not coalesce")
           ($assert (== pending/2/reason "coalesced") "wrong skipped reason")
           (release .set true)
-          (for [id watcher] in (controller/watchers .get) (watcher .join))
+          (for [id watcher] in controller/watchers/.get watcher/.join)
           (tick_triggers manager ^now 1300)
-          (for [id watcher] in (controller/watchers .get) (watcher .join))
+          (for [id watcher] in controller/watchers/.get watcher/.join)
           (tick_triggers manager ^now 1300)
           (let finished (list_occurrences manager ^trigger "queue"))
           ($assert (== finished/1/state "finished") "queued occurrence did not start when slot freed")
@@ -59,7 +59,7 @@
           ($assert (== skipped/0/at_ms 180000) "missed cron was not coalesced to latest time")
           (contribute runtime/h "core" "triggers" {^id "plugin-trigger" ^kind "scheduled" ^at 999999 ^request "plugin work"})
           (tick_triggers manager ^now 180000)
-          ($assert (! ($absent? ((manager/definitions .get) .get "plugin-trigger"))) "plugin trigger was not durable")
+          ($assert (! ($absent? (manager/definitions/.get .get "plugin-trigger"))) "plugin trigger was not durable")
           ($println "trigger policies: cap, queue_one, coalescing, slot release, retention protections, attention and missed cron")
         ensure
           (close_trigger_manager manager)

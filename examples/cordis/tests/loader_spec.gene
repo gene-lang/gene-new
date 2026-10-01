@@ -15,7 +15,7 @@
 
 (describe "Cordis loader"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "publishes staged revisions and preserves the live composition on rejection" [t]
     (fn uid_for [snapshot, plugin : Str]
@@ -28,10 +28,10 @@
     (var direct_value ($cell 0))
     (fn activate_direct_consumer [ctx, config]
       (var service (ctx .require loaded_key))
-      (direct_value .set (service .LoadedValue:value))
-      (direct_activations .set (+ (direct_activations .get) 1))
+      (direct_value .set service/.LoadedValue:value)
+      (direct_activations .set (+ direct_activations/.get 1))
       (ctx .defer
-        (fn [] (direct_cleanups .set (+ (direct_cleanups .get) 1)))))
+        (fn [] (direct_cleanups .set (+ direct_cleanups/.get 1)))))
     (var direct_consumer_spec
       (PluginSpec ^id "direct/consumer" ^config_schema nil
         ^requires [(Requirement ^key loaded_key ^config nil)]
@@ -44,9 +44,9 @@
     (set t/runtime runtime)
     (runtime .admit_service_key loaded_key)
     (var direct_consumer
-      (runtime .install (runtime .root) direct_consumer_spec nil))
-    (runtime .await_settled)
-    (assert_equal (direct_consumer .state) InstanceState/pending
+      (runtime .install runtime/.root direct_consumer_spec nil))
+    runtime/.await_settled
+    (assert_equal direct_consumer/.state InstanceState/pending
       "a direct consumer starts pending before loader publication")
     (var loader
       (runtime .loader
@@ -65,12 +65,12 @@
     (var first (loader .reconcile first_manifest ReconcileMode/staged))
     (assert_equal first/entries/0/state "active"
       "incremental reconcile must load and activate the sandboxed plugin")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 40
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 40
       "a loader provider must publish through the ordinary runtime index")
-    ($assert (&& (== (direct_consumer .state) InstanceState/active)
-                (== (direct_value .get) 40))
+    ($assert (&& (== direct_consumer/.state InstanceState/active)
+                (== direct_value/.get 40))
       "staged publication must wake directly installed consumers")
-    (var original_inspection (runtime .inspect))
+    (var original_inspection runtime/.inspect)
     (var original_provider_uid
       (uid_for original_inspection "fixture/provider"))
     (var original_consumer_uid
@@ -87,7 +87,7 @@
       (fn [] (loader .reconcile rejected_candidate ReconcileMode/staged))
       CompositionError
       "staged reconciliation must reject a candidate that cannot activate")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 40
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 40
       "a rejected staged candidate must leave the old instance active")
 
     (var invalid
@@ -96,7 +96,7 @@
                   ^unknown true}]})
     (assert_raises (fn [] (loader .reconcile invalid)) CompositionError
       "the complete manifest must validate before reconciliation")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 40
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 40
       "invalid manifest data must not mutate the live composition")
 
     (var updated
@@ -105,14 +105,14 @@
          {^id "provider" ^module "provider.gene" ^config 42}
        ]})
     (var second (loader .reconcile updated ReconcileMode/staged))
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 42
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 42
       "config-only reconciliation must restart the retained entry")
-    ($assert (&& (== (direct_value .get) 42)
-                (== (direct_activations .get) 2)
-                (== (direct_cleanups .get) 1)
-                (== (direct_consumer .state) InstanceState/active))
+    ($assert (&& (== direct_value/.get 42)
+                (== direct_activations/.get 2)
+                (== direct_cleanups/.get 1)
+                (== direct_consumer/.state InstanceState/active))
       "staged provider replacement must quiesce and restart direct consumers")
-    (var updated_inspection (runtime .inspect))
+    (var updated_inspection runtime/.inspect)
     ($assert (&& (== (uid_for updated_inspection "fixture/provider")
                     original_provider_uid)
                 (== (uid_for updated_inspection "direct/consumer")
@@ -125,13 +125,13 @@
          ^entries [{^id "provider" ^module "provider.gene"
                     ^config (+ 50 offset)}]}
         ReconcileMode/staged))
-    (var repeated_inspection (runtime .inspect))
+    (var repeated_inspection runtime/.inspect)
     ($assert (&& (== ($size repeated_inspection/instances) 2)
                 (== ($size repeated_inspection/services) 1)
-                (== (((runtime .root) .require loaded_key) .LoadedValue:value) 52))
+                (== ((runtime/.root .require loaded_key) .LoadedValue:value) 52))
       "repeated staged swaps must leave no duplicate instance or provider roots")
 
-    (var loader_inspection (loader .inspect))
+    (var loader_inspection loader/.inspect)
     (var shared_path nil)
     (for node in loader_inspection/entries/0/graph/nodes
       (if_not node/owned (set shared_path node/path)))
@@ -140,7 +140,7 @@
     (var shared_change (loader .reload [shared_path]))
     (assert_equal shared_change/status "restart_required"
       "a shared contract change must request full process restart")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 52
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 52
       "restart-required reload must not mutate the live composition")
 
     (var disabled
@@ -150,15 +150,15 @@
           ^children [{^id "provider" ^module "provider.gene" ^config 1}]}
        ]})
     (var third (loader .reconcile disabled))
-    (assert_equal ((runtime .root) .get loaded_key) void
+    (assert_equal (runtime/.root .get loaded_key) void
       "inherited disable must remove descendant plugin instances")
-    (assert_equal (direct_consumer .state) InstanceState/pending
+    (assert_equal direct_consumer/.state InstanceState/pending
       "withdrawing a loader provider must quiesce direct consumers")
     (assert_equal third/entries/0/state "group"
       "a disabled group remains visible in composition inspection")
 
-    (loader .dispose)
-    (loader .dispose))
+    loader/.dispose
+    loader/.dispose)
 
   (it "reconciles host plugins per entry and keeps activation failures local" [t]
     (fn entry_for [snapshot, id : Str]
@@ -168,7 +168,7 @@
 
     (var activations ($cell 0))
     (fn activate_counted [ctx, config]
-      (activations .set (+ (activations .get) 1)))
+      (activations .set (+ activations/.get 1)))
     (fn activate_failing [ctx, config]
       (fail (LoaderBoom ^message "unlucky")))
     (var counted
@@ -208,12 +208,12 @@
       "a failed entry must report its activation error")
 
     (var second (loader .reconcile_plugins manifest {^counted counted ^failing failing}))
-    ($assert (&& (== second/changed/.size 0) (== (activations .get) 1))
+    ($assert (&& (== second/changed/.size 0) (== activations/.get 1))
       "an unchanged reconcile must keep live host plugins without reactivation")
 
     (var third (loader .reconcile_plugins manifest {^counted counted ^failing repaired}))
     (var repaired_entry (entry_for third "failing"))
-    ($assert (&& (== repaired_entry/state "active") (== (activations .get) 2))
+    ($assert (&& (== repaired_entry/state "active") (== activations/.get 2))
       "replacing one host plugin must restart only that entry")
 
     (var fourth
@@ -223,6 +223,6 @@
     (var remaining (entry_for fourth "counted"))
     ($assert (&& (== fourth/entries/.size 1)
                  (== remaining/state "active")
-                 (== (activations .get) 2))
+                 (== activations/.get 2))
       "removing an entry must leave its sibling live")
-    (loader .dispose)))
+    loader/.dispose))

@@ -30,17 +30,17 @@
   (let context (if ($absent? inherited) {} ($thaw ($freeze_shallow inherited))))
   (context .put "turn" turn)
   (context .put "output" (fn [text]
-    (let late (!= (turn/state .get) "open"))
-    (if (truncated .get) (return nil))
+    (let late (!= turn/state/.get "open"))
+    (if truncated/.get (return nil))
     (let marker "[console truncated]\n")
-    (let remaining (- 262144 (bytes .get)))
+    (let remaining (- 262144 bytes/.get))
     (let length ($str/byte_size text))
     (let cutoff (> length (- remaining ($str/byte_size marker))))
     (let kept (if cutoff ($to_str (byte_prefix text ($math/max 0 (- remaining ($str/byte_size marker)))) marker) text))
     (if cutoff (truncated .set true))
-    (bytes .set (+ (bytes .get) ($str/byte_size kept)))
+    (bytes .set (+ bytes/.get ($str/byte_size kept)))
     (let item {^text kept ^late late})
-    (if_not late ((console .get) .push item))
+    (if_not late (console/.get .push item))
     (if_not ($absent? console_sink) (console_sink item))))
   (turn .put "console" (fn [text] (context/output text)))
   (var patch_result nil)
@@ -92,9 +92,9 @@
                 ($runtime/with_context context (fn []
                   (evaluate_response `(scope %forms...) environment)))))
               (let deadline (spawn ^lane root
-                (do ($sleep timeout_ms) (expired .set true) (task .cancel))))
-              (try (task .join)
-                ensure (deadline .cancel) (deadline .join))))
+                (do ($sleep timeout_ms) (expired .set true) task/.cancel)))
+              (try task/.join
+                ensure deadline/.cancel deadline/.join)))
             (match outcome
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)
@@ -102,7 +102,7 @@
                 (set error_line (?? failure/line nil)))
               (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
               (when TaskOutcome/cancelled
-                (if (expired .get) (set error "response budget timed out") (set cancelled true)))))
+                (if expired/.get (set error "response budget timed out") (set cancelled true)))))
           (else
             (set validated (validate_outcome turn (if ($absent? patch_result) nil patch_result/text) ^validators validators))))))
     catch Any
@@ -115,6 +115,6 @@
   (let kind (if cancelled "cancelled" (if ($absent? error)
     (if ($absent? validated) "error" validated/kind) "error")))
   {^kind kind ^validated validated ^request request ^patch patch_result ^error error
-   ^console (console .get) ^turn turn
+   ^console console/.get ^turn turn
    ^request_items (if (== request "") [] (request_items turn validated ^patch patch_text
      ^error error ^error_line error_line ^result_line last_line))})

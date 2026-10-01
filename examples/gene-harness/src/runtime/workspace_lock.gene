@@ -32,10 +32,10 @@
     ($fs/write_text_atomic $"${state_root}/.gitignore" "*\n")
     (set ready true)
     (WorkspaceLock ^root canonical ^state_root state_root ^handle handle ^closed ($cell false))
-    ensure (if_not ready (handle .close))))
+    ensure (if_not ready handle/.close)))
 
 (fn close_workspace_lock [lock : WorkspaceLock]
-  (if_not (lock/closed .get)
-    (lock/handle .close)
+  (if_not lock/closed/.get
+    lock/handle/.close
     (lock/closed .set true))
   nil)

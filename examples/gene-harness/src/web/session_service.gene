@@ -36,11 +36,11 @@
   (let copy ($thaw ($freeze record)))
   (copy .put "revision" ($to_str (?? record/revision 0)))
   (let loaded (load_session service/sessions record/id))
-  (copy .put "last_round" (loaded/round .get))
+  (copy .put "last_round" loaded/round/.get)
   copy)
 
 (fn publish_message [service, kind : Str, session : Str, data]
-  (let publisher (service/publisher .get))
+  (let publisher service/publisher/.get)
   (if_not ($absent? publisher) (publisher {^type kind ^session session ^data data}))
   nil)
 
@@ -198,13 +198,13 @@
     ^has_older (> start 0)
     ^rounds rounds/receipts
     ^next_submission_seq ($to_str rounds/next_seq)
-    ^round (loaded/round .get)
+    ^round loaded/round/.get
     ^questions (if (== metadata/status "waiting")
-                 ((Path "questions") (loaded/round .get))
+                 ((Path "questions") loaded/round/.get)
                  nil)})
 
 (fn host_status [service]
-  (let active (service/controller/active .get))
+  (let active service/controller/active/.get)
   (let commands [])
   (for row in (rows service/runtime/h "commands")
     (if (["new" "sessions"] .contains? row/name) (continue))

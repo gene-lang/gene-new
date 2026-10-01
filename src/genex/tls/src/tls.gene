@@ -4,10 +4,10 @@
 # own context and connection handles when direct TLS is wired into its loop.
 (fn adapter_abi []
   (let lease ($pkg/native_binary this_pkg "native"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (try
     (let abi ($ffi/bind library "gene_tls_abi" [] C/Int))
     (abi)
     ensure
       ($ffi/Library/close library)
-      (lease .close)))
+      lease/.close))

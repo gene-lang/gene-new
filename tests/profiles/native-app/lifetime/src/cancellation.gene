@@ -27,9 +27,9 @@
         (do
           (eval form ^in (env))
           (started .send true)
-          (blocker .recv))))
-      (started .recv)
-      (task .cancel)))
+          blocker/.recv)))
+      started/.recv
+      task/.cancel))
   (repeat 100 (one))
   (checkpoint "warm" 100)
   (for batch in [1 100 1000 count]

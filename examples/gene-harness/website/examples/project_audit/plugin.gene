@@ -107,7 +107,7 @@
       {^report_path input/report_path ^files [] ^totals {^non_empty 0 ^todo 0 ^fixme 0}}))
 
   (fn last [host input]
-    (host .PluginHost:state))
+    host/.PluginHost:state)
 
   (fn init [ctx : DescriptorContext] : Plugin
     (Plugin

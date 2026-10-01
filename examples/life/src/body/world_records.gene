@@ -66,8 +66,8 @@
 (fn str_before? [a, b]
   (let x ($str/to_utf8 a))
   (let y ($str/to_utf8 b))
-  (let nx (x .len))
-  (let ny (y .len))
+  (let nx x/.len)
+  (let ny y/.len)
   (var i 0)
   (while (&& (< i nx) (< i ny))
     (let bx (x .get i))

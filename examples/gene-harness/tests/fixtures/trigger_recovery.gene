@@ -17,6 +17,6 @@
     ^hook (fn [boundary occurrence] (if (== boundary point) (crash)))))
   (create_trigger manager {^id "once" ^kind "scheduled" ^at 2000 ^request "inspect"} ^now 1000)
   (tick_triggers manager ^now 2000)
-  (for [id watcher] in (controller/watchers .get) (watcher .join))
+  (for [id watcher] in controller/watchers/.get watcher/.join)
   ($assert false "Crash hook did not terminate the child"))
 (fn main [args] (child args/0 args/1))

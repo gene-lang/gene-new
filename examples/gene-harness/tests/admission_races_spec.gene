@@ -17,11 +17,11 @@
         (let calls ($cell 0))
         (let stopped ($cell []))
         (let controller (new_round_controller runtime (fn [request]
-          (let n (calls .swap (+ (calls .get) 1)))
+          (let n (calls .swap (+ calls/.get 1)))
           (if (== n 0) "(Outcome ^questions [{^id \"q\" ^prompt \"Answer?\"}])"
             "(Outcome ^done true ^reply \"answered\")"))
           ^on_change (fn [session receipt]
-            (if (== receipt/state "cancelled") ((stopped .get) .push receipt)))))
+            (if (== receipt/state "cancelled") (stopped/.get .push receipt)))))
         (try
           (create_session runtime/sessions ^id "race")
           (append_message runtime "race" "user" "stored before the first load")
@@ -39,7 +39,7 @@
           ($assert (== count 1) "parallel submissions both entered the same session")
           (controller/watchers .get; .get "race"; .join)
           (let session (load_session runtime/sessions "race"))
-          (let current (session/round .get))
+          (let current session/round/.get)
           ($assert (== current/state "waiting") "admitted round did not wait")
           (let answered (scope
             (let a (spawn ^lane root (answer_round controller "race" current/questions/id {^q "yes"})))
@@ -47,7 +47,7 @@
             [(await a) (await b)]))
           ($assert (== answered/0/id answered/1/id) "identical concurrent answers were not idempotent")
           (controller/watchers .get; .get "race"; .join)
-          ($assert (== (calls .get) 2) "concurrent answer resumed the provider twice")
+          ($assert (== calls/.get 2) "concurrent answer resumed the provider twice")
           (var starts 0)
           (for event in (events_for runtime/events "session" "race")
             (if (== event/type "turn/start") (set starts (+ starts 1))))
@@ -57,7 +57,7 @@
           (let slow (submit_round controller "stop" "stop" 1 "wait"))
           (request_stop controller "stop" 0 true)
           (controller/watchers .get; .get "stop"; .join)
-          ($assert (== ($size (stopped .get)) 1) "workspace stop published cancellation twice")
+          ($assert (== ($size stopped/.get) 1) "workspace stop published cancellation twice")
           (let receipt (round_receipt controller "stop" slow/id))
           ($assert (== receipt/message "Workspace stopped.") "watcher overwrote the stop receipt")
           ($println "admission races: one loaded state, one submitted round, one answer resumption and one stop receipt")

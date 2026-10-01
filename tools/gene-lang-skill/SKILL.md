@@ -54,8 +54,12 @@ type annotations resolve structurally.
 (fn f [x : Int] : Str …)            # types stay bare
 ```
 
-**A send with no arguments is `receiver/.message`.** With arguments it is
-`(receiver .message args…)`. Chain with a leading `;` on continuation lines.
+**Prefer `receiver/.message` for a send with no arguments.** Rewrite
+`(a .x)` as `a/.x` when the receiver is a simple symbol or path, including
+`resource/.IoResource:close` for a qualified send. With arguments, use
+`(receiver .message args…)`. Literal/computed receivers and parent dispatch
+keep their explicit sends: `([1 2] .size)`, `((make_a) .x)`, `(super .x)`.
+Preserve quoted syntax as data. Chain with a leading `;` on continuation lines.
 
 ```gene
 (var n xs/.size)

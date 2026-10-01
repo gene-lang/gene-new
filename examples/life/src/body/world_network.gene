@@ -138,7 +138,7 @@
 
 (fn view_of [host, tx]
   (let view (p/tx_get tx "world_view"))
-  (let state (host/world .get))
+  (let state host/world/.get)
   # A disconnected Life's view is what it last observed, and says so (§12.3).
   (view .put "freshness" (if (== state/phase "ready") "synchronized" "last_observed"))
   (view .put "connection" state/phase)
@@ -160,7 +160,7 @@
                ^places (?? view/places {}) ^rules_revision (?? binding/rules_revision nil)
                ^world_id (?? binding/world_id nil)})))
   (if (== op "world_refresh")
-    (then ((host/world .get) .put "refresh" true) (return "queued")))
+    (then (host/world/.get .put "refresh" true) (return "queued")))
   (if (== op "world_on_result")
     (return (records/register_continuation host tx record data/ref data/revision (?? data/inputs {}))))
   (if (== op "world_cancel")
@@ -187,7 +187,7 @@
 # --- the connection ------------------------------------------------------------------
 
 (fn transport_of [host]
-  (let state (host/world .get))
+  (let state host/world/.get)
   (if ($absent? state/transport)
     (state .put "transport" (?? host/world_transport (wire/socket_transport))))
   state/transport)
@@ -223,7 +223,7 @@
   (state .put "in_flight" nil)
   # Any attempt without a recorded outcome — in flight, or interrupted between
   # its attempt commit and the send — can only be settled by a receipt query.
-  (if_yes (&& ($absent? (host/store/fault .get)) (! (host/store/closed .get)))
+  (if_yes (&& ($absent? host/store/fault/.get) (! host/store/closed/.get))
     (for attempted in (p/peek_where host/store "world_op/" (fn [op] (== op/status "attempting")))
       (let op (p/get host/store $"world_op/${attempted/id}"))
       (delivery_state/uncertain host/store $"world_op/${op/id}" op "Connection lost before a receipt")))
@@ -245,9 +245,9 @@
 
 (fn tick [host]
   (if_not (records/network? host) (return nil))
-  (if (host/stopped .get) (return nil))
+  (if host/stopped/.get (return nil))
   (p/require_writable host/store)
-  (let state (host/world .get))
+  (let state host/world/.get)
   (let binding (p/get host/store "world_binding"))
   (if ($absent? binding) (return nil))
   (if_yes ($absent? state/socket)
@@ -261,7 +261,7 @@
     (poll host state)
     (send_next host state (p/get host/store "world_binding"))
     catch Any
-      (if_not ($absent? (host/store/fault .get)) (fail $err))
+      (if_not ($absent? host/store/fault/.get) (fail $err))
       (disconnect host state $"Connection failed: ${$err/message}")))
 
 # Handlers read the binding afresh: a `welcome` earlier in the same poll may
@@ -731,7 +731,7 @@
 
 (fn dispatch [host]
   (if_not (records/network? host) (return false))
-  (if (host/stopped .get) (return false))
+  (if host/stopped/.get (return false))
   (let cursor (p/get host/store "world_cursor"))
   (let routing (p/get host/store "world_routing"))
   (let dispatcher (p/get host/store "world_dispatcher"))
@@ -786,7 +786,7 @@
 # no longer run as registered — the world, its history or its rules changed —
 # for which it is invalidated visibly, for reconsideration, never rerun.
 (fn continuation_gate [host, record]
-  (let state (host/world .get))
+  (let state host/world/.get)
   (if (!= state/phase "ready") (return "wait"))
   (let cont (p/get host/store $"world_cont/${record/operation_id}"))
   (let binding (p/get host/store "world_binding"))
@@ -800,7 +800,7 @@
 # --- operator view and shutdown ----------------------------------------------------------
 
 (fn status [host]
-  (let state (host/world .get))
+  (let state host/world/.get)
   {^phase state/phase ^last_error state/last_error ^connects state/connects
    ^generation state/generation ^server_epoch state/epoch ^in_flight state/in_flight
    ^messages_in state/messages_in ^commands_sent state/commands_sent ^queries_sent state/queries_sent
@@ -811,7 +811,7 @@
 # motor activity under its disconnect policy (§6.3, §12.4).
 (fn stop [host]
   (if_not (records/network? host) (return nil))
-  (let state (host/world .get))
+  (let state host/world/.get)
   (if_not ($absent? state/socket)
     (try ((state/transport .get "close") state/socket) catch Any nil))
   (state .put "socket" nil)

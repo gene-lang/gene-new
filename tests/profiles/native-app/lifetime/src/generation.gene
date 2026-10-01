@@ -31,12 +31,12 @@
       {^dir plugin_dir ^entry entry ^grants [] ^shared []
        ^label "vm3" ^policy {^max_steps 1000 ^max_memory_mb 16
                              ^timeout_ms 1000}}))
-    (let candidate (generation .module))
+    (let candidate generation/.module)
     (if (== entry "plugin.gene")
       ($assert (== candidate/item/n 7))
       ($assert (== candidate/answer 42)))
-    (tx .commit)
-    (generation .release))
+    tx/.commit
+    generation/.release)
   (repeat 100 (one))
   (checkpoint "warm" 100)
   (for batch in [1 100 1000 count]

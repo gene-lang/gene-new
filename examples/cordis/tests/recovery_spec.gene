@@ -10,7 +10,7 @@
 
 (describe "Cordis recovery"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "keeps the published replacement visible after old cleanup fails" [t]
     (fn manifest [value : Int]
@@ -35,6 +35,6 @@
       (fn [] (loader .reconcile (manifest 2) ReconcileMode/staged))
       RecoveryRequired
       "cleanup failure after publication must report RecoveryRequired")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 2
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 2
       "post-commit cleanup failure must not roll visibility backward")
-    (loader .dispose)))
+    loader/.dispose))

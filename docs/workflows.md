@@ -150,7 +150,10 @@ invokes its `main`; use this mode for those package test targets.
 
 Use two-space indentation, snake_case names, and ordinary names for mutation
 methods such as `push` or `put`. A trailing `!` is reserved for fexprs. The
-[style example](../examples/style_guide.gene) is the formatter's canonical fixture.
+preferred spelling for a zero-argument send is `a/.x` rather than `(a .x)`
+when the receiver is a simple symbol or path. Sends with arguments, computed
+receivers, and `super` keep the explicit form. Preserve quoted syntax values.
+The [style example](../examples/style_guide.gene) is the formatter's canonical fixture.
 See the [VS Code extension](../tools/vscode-extension/README.md) for editor setup.
 
 The language server recognizes `#@greet name` like `(greet name)` for hover

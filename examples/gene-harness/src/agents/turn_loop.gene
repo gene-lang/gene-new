@@ -30,7 +30,7 @@
   event)
 
 (fn console_output [runtime, session : Str, round : Str, turn : Int, item]
-  (let loaded ((runtime/sessions/loaded .get) .get session))
+  (let loaded (runtime/sessions/loaded/.get .get session))
   (var offset 0)
   (let total ($str/byte_size item/text))
   (while (< offset total)
@@ -41,15 +41,15 @@
     (if (&& item/late ($absent? loaded))
       (then (append_core_event runtime/events "workspace" "workspace" payload))
       (else
-        (if_not ($absent? loaded) ((loaded/console .get) .push payload))
+        (if_not ($absent? loaded) (loaded/console/.get .push payload))
         (transcript runtime session payload))))
   (if item/late (flush_event_store runtime/events))
   (if ($absent? runtime/on_event)
     ($runtime/with_context nil (fn []
       (var running 0)
-      (for [id record] in (runtime/sessions/index .get)
+      (for [id record] in runtime/sessions/index/.get
         (if (== record/status "running") (set running (+ running 1))))
-      (let record ((runtime/sessions/index .get) .get session))
+      (let record (runtime/sessions/index/.get .get session))
       (let title (?? record/title session))
       (let prefix (if (> running 1) $"[${title}] " ""))
       (if ($os/stdout_tty?) ($print "\u001b[2m" prefix item/text "\u001b[0m")
@@ -133,7 +133,7 @@
           {^text text ^blobs {}}))
       (let response_recorded ($cell false))
       (fn record_response [files]
-        (if (response_recorded .get) (return nil))
+        (if response_recorded/.get (return nil))
         (transcript
           runtime
           session

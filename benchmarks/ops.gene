@@ -30,7 +30,7 @@
 (fn send_value [n meter]
   (var i 0)
   (while (< i n)
-    (meter .value)
+    meter/.value
     (set i (+ i 1))))
 
 (fn get_buffer [n buffer]

@@ -38,7 +38,7 @@
     $"--user-data-dir=${profile}" $"http://127.0.0.1:${server/port}/"]
     ^timeout_ms 185000 ^max_bytes 1048576))
   (fn tick []
-    (if (|| (>= ($os/monotonic_ms) deadline) (task .done?)) (stop server)))
+    (if (|| (>= ($os/monotonic_ms) deadline) task/.done?) (stop server)))
   (fn handle [request]
     (if (== request/method "POST")
       (do
@@ -60,8 +60,8 @@
     (set shutdown (serve server ^handler handle ^max_body_bytes 1048576
       ^on_tick tick ^tick_ms 50 ^drain_timeout_ms 5000))
     ensure
-      (if (! (task .done?)) (task .cancel))
-      (match (task .join)
+      (if (! task/.done?) task/.cancel)
+      (match task/.join
         (when (TaskOutcome/ok process)
           ($fs/write_text $"${build}/browser.stderr.log" process/stderr))
         (else nil)))

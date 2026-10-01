@@ -38,12 +38,12 @@
             "append_prompt lost function correlation")
           (let policy (runtime/h/plugin_policies .get; .get "io_plugin"))
           (let host policy/context)
-          ($assert (== (host .PluginHost:state) nil) "explicit session state leaked into workspace state")
+          ($assert (== host/.PluginHost:state nil) "explicit session state leaked into workspace state")
           ($assert
             (== (host ^session "s1" .PluginHost:state) {^last "direct I/O"})
             "session state was not immediate")
           (host .PluginHost:update_state {^^shared})
-          ($assert (== (host .PluginHost:state) {^^shared}) "workspace state was not the default")
+          ($assert (== host/.PluginHost:state {^^shared}) "workspace state was not the default")
           ($assert (== (host ^session "s2" .PluginHost:state) nil) "session state leaked across sessions")
           (let queued_source
             (quote

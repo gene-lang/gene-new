@@ -19,7 +19,7 @@
     (if (== req/path "/hold")
       (do
         (hold_entered .send true)
-        (hold_release .recv)
+        hold_release/.recv
         (return (text 200 "held"))))
     (if (== req/path "/sink")
       (do
@@ -97,23 +97,23 @@
   (fn one []
     (let client (await ($net/http_client/open)))
     (let held (client .request ^url $"${base}/hold"))
-    (hold_entered .recv)
-    (held .cancel)
-    (held .join)
+    hold_entered/.recv
+    held/.cancel
+    held/.join
     (hold_release .send true)
     (let endpoints ($io/pipe))
     (let upload (client .request ^url $"${base}/sink" ^method "POST"
                                  ^body endpoints/0))
     (await (endpoints/1 .AsyncWriter:write ($binary/from_str "partial")))
-    (sink_entered .recv)
-    (upload .cancel)
-    (upload .join)
-    (endpoints/1 .IoResource:close)
-    (await (endpoints/1 .IoResource:wait_closed))
-    (endpoints/0 .IoResource:close)
-    (await (endpoints/0 .IoResource:wait_closed))
-    (client .IoResource:close)
-    (await (client .IoResource:wait_closed))
+    sink_entered/.recv
+    upload/.cancel
+    upload/.join
+    endpoints/1/.IoResource:close
+    (await endpoints/1/.IoResource:wait_closed)
+    endpoints/0/.IoResource:close
+    (await endpoints/0/.IoResource:wait_closed)
+    client/.IoResource:close
+    (await client/.IoResource:wait_closed)
     (settle))
   (let driver (spawn ^lane root
     # A failure must stop the server, or serve never returns to report it.

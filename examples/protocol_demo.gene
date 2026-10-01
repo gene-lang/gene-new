@@ -11,8 +11,8 @@
 #   - per-protocol Self bindings and default-body result checks
 #   - universal defaults and callable message values
 #
-# Bare (x .name) and (Self:name x) reach type-direct messages.
-# (x .Protocol:name) and (Protocol:name x) reach a protocol message.
+# Bare x/.name and (Self:name x) reach type-direct messages.
+# x/.Protocol:name and (Protocol:name x) reach a protocol message.
 # Message names are not automatically bound as bare functions named `name`.
 # =============================================================================
 
@@ -66,7 +66,7 @@
   (message Sized:size_of [] : Int self/weight)
   (message Scored:size_of [] : Int (* self/weight 2))
   (message blurb [] : Str
-    $"${self/name}: ${(self .Sized:size_of)} lbs, score ${(self .Scored:size_of)}"))
+    $"${self/name}: ${self/.Sized:size_of} lbs, score ${self/.Scored:size_of}"))
 
 # -----------------------------------------------------------------------------
 # 3. Self stays bound to Dog in the inherited Eq contract.
@@ -130,7 +130,7 @@
   (message copy [] : Self self))
 
 (protocol Duplicable ^inherit [Copyable]
-  (message duplicate [] : Self (self .Copyable:copy)))
+  (message duplicate [] : Self self/.Copyable:copy))
 
 # Copyable.Self stays Dog; the newly introduced Duplicable.Self becomes Pup.
 # The reused copy body returns the actual Pup, satisfying duplicate's result.
@@ -165,37 +165,37 @@
 (let faulty_puppy (FaultyPup ^name "Rex" ^breed "Labrador" ^weight 12))
 (let point (Point ^x 3 ^y 4))
 
-(show "Inherited type-direct message" (rex .greet))
-(show "Dog's own message" (rex .tag))
+(show "Inherited type-direct message" rex/.greet)
+(show "Dog's own message" rex/.tag)
 (show "Type-direct message value" (Self:tag rex))
-(show "Inherited protocol impl" (rex .Describable:describe))
-(show "Direct override with super" (puppy .greet))
+(show "Inherited protocol impl" rex/.Describable:describe)
+(show "Direct override with super" puppy/.greet)
 (show "Comparable inherited through Ord" (rex .Comparable:compare fido)) # 52
 (show "Ord result followed by another send" ((rex .Ord:bigger fido) .tag))
-(show "Same name, separate identities" [(rex .Sized:size_of) (rex .Scored:size_of)]) # [70 140]
-(show "Summary" (rex .Summary:blurb))
+(show "Same name, separate identities" [rex/.Sized:size_of rex/.Scored:size_of]) # [70 140]
+(show "Summary" rex/.Summary:blurb)
 
 (show "All Dog/Pup pairs retain the Dog input contract"
   [(compare_dogs rex rex) (compare_dogs rex puppy)
    (compare_dogs puppy rex) (compare_dogs puppy puppy)]) # [true true true true]
-(show "Inheriting impl copies the ancestor label" (puppy .Eq:label)) # Dog implementation
-(show "Empty inheriting impl" (grand_puppy .Eq:label))               # Dog implementation
-(show "Complete impl uses the protocol default" (complete_puppy .Eq:label)) # protocol default
+(show "Inheriting impl copies the ancestor label" puppy/.Eq:label) # Dog implementation
+(show "Empty inheriting impl" grand_puppy/.Eq:label)               # Dog implementation
+(show "Complete impl uses the protocol default" complete_puppy/.Eq:label) # protocol default
 (show "Complete impl still accepts Dog" (complete_puppy .Eq:eq rex)) # true
 (show "Unrelated conformance" (point .Eq:eq (Point ^x 3 ^y 4)))       # true
 
 (let held_eq : (Callable [Dog Dog] Bool) Eq:eq)
 (show "Held protocol message" (held_eq puppy rex)) # true
-(let check_name (puppy .checker))
+(let check_name puppy/.checker)
 (show "Escaping checker still accepts Dog" (check_name rex)) # true
 (show "Protocol values still enforce concrete inputs"
   (try (compare_eq_values rex point) catch TypeError "rejected Dog/Point pair"))
 
-(show "Inherited copy returns the actual Pup" (same? ($head (puppy .Copyable:copy)) Pup)) # true
-(show "Mixed-binding default accepts an actual Pup" (same? ($head (puppy .Duplicable:duplicate)) Pup)) # true
+(show "Inherited copy returns the actual Pup" (same? ($head puppy/.Copyable:copy) Pup)) # true
+(show "Mixed-binding default accepts an actual Pup" (same? ($head puppy/.Duplicable:duplicate) Pup)) # true
 (show "Mixed-binding default rejects a Dog result"
-  (try (faulty_puppy .Duplicable:duplicate) catch TypeError "rejected Dog result"))
-(show "Universal default dispatches the receiver's direct override" (puppy .Greeting:greeting))
+  (try faulty_puppy/.Duplicable:duplicate catch TypeError "rejected Dog result"))
+(show "Universal default dispatches the receiver's direct override" puppy/.Greeting:greeting)
 
 # Declaration mistakes to try separately (each would stop module initialization):
 #

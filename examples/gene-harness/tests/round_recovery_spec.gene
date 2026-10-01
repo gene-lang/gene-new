@@ -19,7 +19,7 @@
         (flush_event_store runtime/events)
         # Simulate loss of a running task without altering its durable metadata.
         (let loaded (load_session runtime/sessions "recover"))
-        ((loaded/round .get) .put "state" "done")
+        (loaded/round/.get .put "state" "done")
         (close_runtime runtime)
         (let reopened (open_runtime root "default" (baseline_profile)))
         (try
@@ -27,7 +27,7 @@
           (let receipt (round_receipt fresh "recover" "r1"))
           ($assert (== receipt/state "interrupted") "historical receipt was not repaired")
           (let restored (load_session reopened/sessions "recover"))
-          (let current (restored/round .get))
+          (let current restored/round/.get)
           ($assert (== current/state "interrupted") "blobbed current round was not repaired")
           (let endings [])
           (for event in (events_for reopened/events "session" "recover")

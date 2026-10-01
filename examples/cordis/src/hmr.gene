@@ -12,8 +12,8 @@
   ^props {^loader Any ^watcher Any ^root Str ^task Any ^active Any
           ^failures Any ^last_error Any ^reloads Any}
   (message inspect []
-    {^active (self/active .get) ^failures (self/failures .get)
-     ^last_error (self/last_error .get) ^reloads (self/reloads .get)})
+    {^active self/active/.get ^failures self/failures/.get
+     ^last_error self/last_error/.get ^reloads self/reloads/.get})
   (message close [] : Nil (close_loader_watcher self))
   (message dispose [] : Nil (close_loader_watcher self))
   (impl Disposable
@@ -30,10 +30,10 @@
 
 (fn watch_change ^^private [adapter, debounce_ms : Int] : Bool
   (try
-    (var change (adapter/watcher .recv))
+    (var change adapter/watcher/.recv)
     (if (> debounce_ms 0) ($sleep debounce_ms))
     (adapter/loader .reload (changed_paths adapter change))
-    (adapter/reloads .set (+ (adapter/reloads .get) 1))
+    (adapter/reloads .set (+ adapter/reloads/.get 1))
   catch WatcherClosed
     (return false)
   catch Any
@@ -41,13 +41,13 @@
     # A rejected candidate leaves the old composition live. The adapter
     # continues observing so a later save can repair it.
     (adapter/last_error .set
-      (try (failure .Error:message)
+      (try failure/.Error:message
        catch Any "watcher failure (message unavailable)"))
-    (adapter/failures .set (+ (adapter/failures .get) 1)))
+    (adapter/failures .set (+ adapter/failures/.get 1)))
   true)
 
 (fn watch_loop ^^private [adapter, debounce_ms : Int]
-  (while (adapter/active .get)
+  (while adapter/active/.get
     (if_not (watch_change adapter debounce_ms) (return))))
 
 (fn watch_loader
@@ -61,17 +61,17 @@
                    ^task ($cell nil) ^active ($cell true)
                    ^failures ($cell 0) ^last_error ($cell nil) ^reloads ($cell 0)))
   (var task (spawn ^lane root (watch_loop adapter debounce_ms)))
-  (task .detach)
+  task/.detach
   (adapter/task .set task)
   (register_loader_watcher loader adapter))
 
 (fn close_loader_watcher ^^private [adapter : LoaderWatcher] : Nil
-  (if_not (adapter/active .get) (return nil))
+  (if_not adapter/active/.get (return nil))
   (adapter/active .set false)
-  (adapter/watcher .close)
-  (var task (adapter/task .get))
+  adapter/watcher/.close
+  (var task adapter/task/.get)
   (if_not ($absent? task)
-    (task .cancel)
-    (task .join))
+    task/.cancel
+    task/.join)
   (adapter/task .set nil)
   nil)

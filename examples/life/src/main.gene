@@ -53,7 +53,7 @@
   (if (== op "world") (return (world_network/status host)))
   (if (== op "decision")
     (then
-      ((host/decisions .get) .push (brain/response request/note request/program))
+      (host/decisions/.get .push (brain/response request/note request/program))
       (let tx (p/begin host/store "operator"))
       (body/event host tx "operator_wake" {})
       (p/commit tx)

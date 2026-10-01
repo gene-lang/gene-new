@@ -16,7 +16,7 @@
 (let test_record {^id "test" ^organization "starter@1" ^owner nil ^events []})
 
 (fn configure [host, peer]
-  (let state (host/world .get))
+  (let state host/world/.get)
   (state .put "transport" (world_peer/transport peer))
   (state .put "commands_per_second" 1000)
   host)
@@ -39,7 +39,7 @@
 (fn reopen [home, peer, ^fault fault = nil]
   (configure (runtime/open_life home ^clock (fn [] 1000) ^fault fault) peer))
 
-(fn close [host] (if_not (host/store/closed .get) (runtime/close_life host)))
+(fn close [host] (if_not host/store/closed/.get (runtime/close_life host)))
 
 (fn wait_for [host, predicate, label, ^timeout_ms timeout_ms = 15000]
   (let deadline (+ ($os/monotonic_ms) timeout_ms))
@@ -50,7 +50,7 @@
 (fn pump [host, ^times times = 20]
   (var i 0)
   (while (< i times) (runtime/heartbeat host) (set i (+ i 1))))
-(fn phase [host] (let state (host/world .get)) state/phase)
+(fn phase [host] (let state host/world/.get) state/phase)
 (fn ready? [host] (== (phase host) "ready"))
 (fn result [host, op_id] (p/get host/store $"world_result/${op_id}"))
 (fn cont [host, op_id] (p/get host/store $"world_cont/${op_id}"))
@@ -58,8 +58,8 @@
 (fn cont_status [host, op_id] (let c (cont host op_id)) (?? c/status nil))
 (fn op [host, op_id] (p/get host/store $"world_op/${op_id}"))
 (fn op_status [host, op_id] (let o (op host op_id)) (?? o/status nil))
-(fn queries_sent [host] (let state (host/world .get)) state/queries_sent)
-(fn connects [host] (let state (host/world .get)) state/connects)
+(fn queries_sent [host] (let state host/world/.get) state/queries_sent)
+(fn connects [host] (let state host/world/.get) state/connects)
 (fn field [host, key, name] (let record (p/get host/store key)) (if ($absent? record) nil (record .get name)))
 (fn terminal? [host, op_id]
   (let r (result host op_id))
@@ -226,7 +226,7 @@
       (assert_equal (p/count_where host/store "world_op/" (fn [o] true)) 70)
       (peer .put "down" false)
       # Registration took a while; don't wait out the grown reconnect backoff.
-      ((host/world .get) .put "next_connect_ms" 0)
+      (host/world/.get .put "next_connect_ms" 0)
       (wait_for host (fn [] (== (p/count_where host/store "world_result/" (fn [r] r/terminal)) 70)) "70 results" ^timeout_ms 120000)
       (wait_for host (fn [] (== (p/count_where host/store "world_cont/" (fn [c] (== c/status "waiting"))) 0)) "routing")
       (let registration (p/get host/store "world_dispatcher"))
@@ -310,7 +310,7 @@
         (assert_equal (echoes/1 .get "operation_id") second/operation_id)
         (assert_equal ((echoes/1 .get "input") .get "second") true)
         ensure (close again))
-      ensure (if_not (host/store/closed .get) (runtime/abandon host))))
+      ensure (if_not host/store/closed/.get (runtime/abandon host))))
 
   (it "drops replayed events by sequence and blocks at a skipped one until a resynchronization fills it" []
     (let a (attach))
@@ -346,7 +346,7 @@
 
   (it "restores routing after a crash between the receipt cursor and the dispatcher commit" []
     (let armed ($cell false))
-    (let a (attach ^fault (fn [at] (if_yes (&& (armed .get) (== at "world_before_dispatch_commit"))
+    (let a (attach ^fault (fn [at] (if_yes (&& armed/.get (== at "world_before_dispatch_commit"))
                                       (p/problem "crash before the routing commit")))))
     (let host a/host)
     (let peer a/peer)

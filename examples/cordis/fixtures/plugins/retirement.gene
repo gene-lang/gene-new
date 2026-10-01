@@ -5,7 +5,7 @@
 (type RetiringValue ^props {^n Int ^closed Any})
 (impl LoadedValue for RetiringValue
   (message value [] : Int
-    ($assert (! (self/closed .get)) "retired provider is closed")
+    ($assert (! self/closed/.get) "retired provider is closed")
     self/n))
 
 (fn activate [ctx config]

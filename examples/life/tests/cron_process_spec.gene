@@ -9,7 +9,7 @@
     ^args ["run" "examples/life/tests/cron_crash_fixture.gene" home kind] ^timeout_ms 10000 ^max_bytes 16384))
   ($assert (!= child/status 0))
   ($assert ($fs/exists? home) child/stderr)
-  (runtime/open_life home ^clock (fn [] (now .get))))
+  (runtime/open_life home ^clock (fn [] now/.get)))
 
 (describe "Cron process recovery"
   (it "dispatches a committed queued occurrence once under its original identity" []

@@ -14,7 +14,7 @@
   (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
   (create_trigger manager {^id "queue" ^kind "heartbeat" ^every_ms 100 ^request "check" ^overlap "queue_one"} ^now 1000)
   (tick_triggers manager ^now 1100)
-  (for [id watcher] in (controller/watchers .get) (watcher .join))
+  (for [id watcher] in controller/watchers/.get watcher/.join)
   (tick_triggers manager ^now 1200)
   (tick_triggers manager ^now 1300)
   ($os/exec ^cmd "/bin/kill" ^args ["-9" ($to_str ($os/process_id))])

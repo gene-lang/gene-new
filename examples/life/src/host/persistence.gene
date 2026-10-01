@@ -77,19 +77,19 @@
       (DurableStore ^db db ^claim claim ^home home ^backend backend ^records ($cell records)
         ^closed ($cell false) ^fail_next ($cell false) ^fault ($cell nil))
       catch Any
-        (db .Db:close)
+        db/.Db:close
         (fail $err))
     catch Any
-      (claim .close)
+      claim/.close
       (fail $err)))
 
 (fn read [store, key]
-  (if (store/closed .get) (problem "Store is closed"))
-  (copy (?? ((store/records .get) .get key) {^revision nil ^value nil})))
+  (if store/closed/.get (problem "Store is closed"))
+  (copy (?? (store/records/.get .get key) {^revision nil ^value nil})))
 (fn get [store, key] (let row (read store key)) row/value)
 (fn keys [store, prefix = ""]
   (let result [])
-  (for pair in (store/records .get)
+  (for pair in store/records/.get
     (if_yes ($str/starts_with? ($to_str pair/0) prefix) (result .push ($to_str pair/0))))
   result)
 (fn values [store, prefix = ""]
@@ -99,9 +99,9 @@
 # Count committed records under a prefix that satisfy `predicate`, without
 # copying them. `predicate` must only read its argument.
 (fn count_where [store, prefix, predicate]
-  (if (store/closed .get) (problem "Store is closed"))
+  (if store/closed/.get (problem "Store is closed"))
   (var n 0)
-  (for pair in (store/records .get)
+  (for pair in store/records/.get
     (if_yes (&& ($str/starts_with? ($to_str pair/0) prefix) (! ($absent? pair/1/value))
                 (predicate pair/1/value))
       (set n (+ n 1))))
@@ -110,23 +110,23 @@
 # Callers only read them; anything they intend to change is re-read in a
 # transaction first.
 (fn peek_where [store, prefix, predicate]
-  (if (store/closed .get) (problem "Store is closed"))
+  (if store/closed/.get (problem "Store is closed"))
   (let out [])
-  (for pair in (store/records .get)
+  (for pair in store/records/.get
     (if_yes (&& ($str/starts_with? ($to_str pair/0) prefix) (! ($absent? pair/1/value))
                 (predicate pair/1/value))
       (out .push pair/1/value)))
   out)
 (fn require_writable [store]
-  (if (store/closed .get) (problem "Store is closed"))
-  (if_not ($absent? (store/fault .get))
-    (problem $"Store requires recovery after a persistent write failure: ${(store/fault .get)}")))
+  (if store/closed/.get (problem "Store is closed"))
+  (if_not ($absent? store/fault/.get)
+    (problem $"Store requires recovery after a persistent write failure: ${store/fault/.get}")))
 (fn begin [store, cause]
   (require_writable store)
-  (Transaction ^store store ^cause cause ^base (copy (store/records .get))
+  (Transaction ^store store ^cause cause ^base (copy store/records/.get)
     ^reads {} ^writes {} ^closed ($cell false)))
 (fn tx_get [tx, key]
-  (if (tx/closed .get) (problem "Transaction handle is no longer active"))
+  (if tx/closed/.get (problem "Transaction handle is no longer active"))
   (let record (?? (tx/base .get key) {^revision nil ^value nil}))
   (tx/reads .put key record/revision)
   (copy (if (!= (tx/writes .get key) void) (tx/writes .get key) record/value)))
@@ -143,7 +143,7 @@
   result)
 (fn abort [tx] (tx/closed .set true))
 (fn commit [tx]
-  (if (tx/closed .get) (problem "Transaction handle is no longer active"))
+  (if tx/closed/.get (problem "Transaction handle is no longer active"))
   (tx/closed .set true)
   (require_writable tx/store)
   (for pair in tx/reads
@@ -151,11 +151,11 @@
     (if_not (== current/revision pair/1)
       (problem $"Revision conflict: ${pair/0}")))
   (let db tx/store/db)
-  (let next (copy (tx/store/records .get)))
+  (let next (copy tx/store/records/.get))
   (let revisions {})
   (try
     (db .Db:exec "BEGIN")
-    (if_yes (tx/store/fail_next .get)
+    (if_yes tx/store/fail_next/.get
       (tx/store/fail_next .set false)
       (problem "Injected persistent write failure"))
     (for pair in tx/writes
@@ -196,7 +196,7 @@
   (if (== rows/.size 0) (problem "Missing immutable revision"))
   {^key rows/0/key ^value (read_data rows/0/value) ^cause rows/0/cause})
 (fn close_store [store]
-  (if_not (store/closed .get)
-    (store/db .Db:close)
-    (store/claim .close)
+  (if_not store/closed/.get
+    store/db/.Db:close
+    store/claim/.close
     (store/closed .set true)))

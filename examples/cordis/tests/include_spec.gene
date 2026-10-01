@@ -12,7 +12,7 @@
 
 (describe "Cordis include"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "patches stable entries and rejects writes to a read-only include" [t]
     (var runtime
@@ -31,13 +31,13 @@
       (include_file loader "fixtures/composition.gene"
         ^patches [{^entry "provider" ^expected_module "provider.gene"
                    ^config 43}]))
-    (var snapshot (include .load))
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 43
+    (var snapshot include/.load)
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 43
       "include patches must target stable entry ids before reconciliation")
-    (var include_snapshot (include .inspect))
+    (var include_snapshot include/.inspect)
     (assert_equal include_snapshot/warnings #[]
       "matching expected modules must apply without warning")
     (assert_raises (fn [] (include .write {^format 1 ^entries []})) CompositionError
       "read-only includes must reject persistence")
-    (include .dispose)
-    (loader .dispose)))
+    include/.dispose
+    loader/.dispose))

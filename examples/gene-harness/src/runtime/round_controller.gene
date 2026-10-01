@@ -21,7 +21,7 @@
     (set runtime/commands/cancel
       (fn [session]
         (let loaded (load_session runtime/sessions session))
-        (let receipt (loaded/round .get))
+        (let receipt loaded/round/.get)
         (if_not ($absent? receipt) (cancel_round controller session receipt/id)))))
   (if_not ($absent? runtime/commands)
     (set runtime/commands/stop
@@ -91,7 +91,7 @@
   receipt)
 
 (fn finish_round [controller : RoundController, session : Str, receipt, outcome, ^completion completion = nil]
-  (let claim (?? completion ((controller/completions .get) .get session)))
+  (let claim (?? completion (controller/completions/.get .get session)))
   (if (&& (! ($absent? claim)) (claim .swap true)) (return nil))
   (with_session_gate controller/runtime/sessions $"round/${session}"
     (fn [] (finish_round_unlocked controller session receipt outcome))))
@@ -110,7 +110,7 @@
       (saved .put "message" message))
     (when TaskOutcome/cancelled
       (saved .put "state" "cancelled")))
-  (if_yes (controller/runtime/stopping .get)
+  (if_yes controller/runtime/stopping/.get
     (saved .put "state" "cancelled")
     (saved .put "message" "Workspace stopped.")
     (saved .put "last_turn" (/turns (require_record controller/runtime/sessions session))))
@@ -143,14 +143,14 @@
   nil)
 
 (fn start_round_task [controller : RoundController, session : Str, receipt, ^resume resume : Bool = false]
-  (if_yes (controller/runtime/stopping .get)
+  (if_yes controller/runtime/stopping/.get
     (receipt .put "state" "cancelled")
     (receipt .put "message" "Workspace stopped.")
     (save_round controller session receipt)
     (return receipt))
   (acquire_body_use controller/runtime)
   (let completion ($cell false))
-  ((controller/completions .get) .put session completion)
+  (controller/completions/.get .put session completion)
   (let task
     (spawn ^lane root (run_round ^resume resume controller/runtime session receipt controller/provider)))
   (controller/active
@@ -164,13 +164,13 @@
         (do
           ($sleep ($math/max 0 (- receipt/deadline_ms ($os/wall_ms))))
           (expired .set true)
-          (task .cancel)))))
+          task/.cancel))))
   (let watcher (spawn ^lane root (do
     (try
-      (let outcome (try (task .join) ensure
-        (if_not ($absent? deadline) (deadline .cancel) (deadline .join))))
+      (let outcome (try task/.join ensure
+        (if_not ($absent? deadline) deadline/.cancel deadline/.join)))
       (finish_round ^completion completion controller session receipt
-        (if (expired .get) (TaskOutcome/ok {^state "failed" ^message "trigger round budget timed out"}) outcome))
+        (if expired/.get (TaskOutcome/ok {^state "failed" ^message "trigger round budget timed out"}) outcome))
     ensure (release_body_use controller/runtime)))))
   (controller/watchers
     .get
@@ -183,7 +183,7 @@
       (submit_round_impl controller session request_id sequence text ^initiator initiator ^on_admit on_admit))))))
 
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
-  (if (controller/runtime/stopping .get)
+  (if controller/runtime/stopping/.get
     (fail (RoundError ^code "stopped" ^message "workspace is stopping")))
   (let state (round_state controller session))
   (let digest ($crypto/sha256 text))
@@ -195,7 +195,7 @@
         (fail
           (RoundError ^code "submission_conflict" ^message "submission identity has different content")))))
   (let loaded (load_session controller/runtime/sessions session))
-  (if (|| (session_busy? loaded) (! ($absent? ((controller/active .get) .get session))))
+  (if (|| (session_busy? loaded) (! ($absent? (controller/active/.get .get session))))
     (fail (RoundError ^code "busy" ^message "this session already has a round")))
   (if (!= sequence state/next_seq)
     (fail (RoundError ^code "submission_conflict" ^message "unexpected submission sequence")))
@@ -245,7 +245,7 @@
 
 (fn answer_round_impl [controller : RoundController, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (let loaded (load_session controller/runtime/sessions session))
-  (let receipt (loaded/round .get))
+  (let receipt loaded/round/.get)
   (if (|| ($absent? receipt) (!= receipt/questions/id batch_id))
     (fail (RoundError ^code "invalid_request" ^message "session is not waiting on this batch")))
   (let lease (acquire_snapshot controller/runtime/h/snapshots))
@@ -293,11 +293,11 @@
 
 (fn cancel_round [controller : RoundController, session : Str, id : Str]
   (let loaded (load_session controller/runtime/sessions session))
-  (let receipt (loaded/round .get))
+  (let receipt loaded/round/.get)
   (if (|| ($absent? receipt) (!= receipt/id id))
     (fail (RoundError ^code "not_found" ^message "round not found")))
   (let task (controller/active .get; .get session))
-  (if_not ($absent? task) (task .cancel))
+  (if_not ($absent? task) task/.cancel)
   (if (== receipt/state "waiting")
     (then
       (answer_questions ^^dismiss controller/runtime/events session receipt/questions/id {})
@@ -306,16 +306,16 @@
   receipt)
 
 (fn close_round_controller [controller : RoundController]
-  (for [session task] in (controller/active .get)
-    (task .cancel))
-  (for [session watcher] in (controller/watchers .get)
-    (watcher .join))
+  (for [session task] in controller/active/.get
+    task/.cancel)
+  (for [session watcher] in controller/watchers/.get
+    watcher/.join)
   (controller/active .set {})
   nil)
 
 (fn request_stop [controller : RoundController, session : Str, code : Int, confirmed : Bool]
   (let others [])
-  (for [id task] in (controller/active .get)
+  (for [id task] in controller/active/.get
     (if (!= ($to_str id) session) (others .push ($to_str id))))
   (let names ($str/join others ", "))
   (if (&& (! others/.empty?) (! confirmed))
@@ -330,34 +330,34 @@
       ($println "Direct gene run: restart stops this process; start it again from the terminal.")
       (set exit_code 0)))
   (runtime/exit_code .set exit_code)
-  (if ($absent? (runtime/shutdown_watchdog .get))
+  (if ($absent? runtime/shutdown_watchdog/.get)
     (then
       (let watchdog (spawn ^lane root (do
         ($sleep 5000)
-        (if_not (runtime/closed .get)
+        (if_not runtime/closed/.get
           (if runtime/owns_ownership (close_workspace_lock runtime/ownership))
-          ($os/exit (runtime/exit_code .get))))))
-      (watchdog .detach)
+          ($os/exit runtime/exit_code/.get)))))
+      watchdog/.detach
       (runtime/shutdown_watchdog .set watchdog)))
   (if (== exit_code 75)
     ($fs/write_text_atomic $"${runtime/state_root}/restart_notice" ($to_str ($now))))
-  (let input (runtime/stdin_task .get))
-  (if_not ($absent? input) (input .cancel))
+  (let input runtime/stdin_task/.get)
+  (if_not ($absent? input) input/.cancel)
   (let running [])
-  (for [id task] in (controller/active .get)
+  (for [id task] in controller/active/.get
     (running .push {^id ($to_str id) ^task task}))
   (let cancelled {})
   (for entry in running
-    (entry/task .cancel)
+    entry/task/.cancel
     (let state (load_session runtime/sessions entry/id))
-    (let receipt (state/round .get))
+    (let receipt state/round/.get)
     (if_not ($absent? receipt) (cancelled .put receipt/id true)))
   # One durable admission marker covers every active round before any slow
   # receipt publication or uncooperative cleanup can consume the grace time.
   ($fs/write_text_atomic $"${runtime/state_root}/shutdown.gene" ($serde/write_data cancelled))
   (for entry in running
     (let state (load_session runtime/sessions entry/id))
-    (let receipt (state/round .get))
+    (let receipt state/round/.get)
     (if_not ($absent? receipt)
       (receipt .put "state" "cancelled")
       (receipt .put "message" "Workspace stopped.")

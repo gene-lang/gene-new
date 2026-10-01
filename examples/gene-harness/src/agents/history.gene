@@ -11,16 +11,16 @@
 # Collection closes admission first and runs only after existing writers leave.
 (fn acquire_body_use [runtime]
   (while true
-    (while (runtime/body_collecting .get) ($sleep 1))
+    (while runtime/body_collecting/.get ($sleep 1))
     (while true
-      (let count (runtime/body_users .load))
+      (let count runtime/body_users/.load)
       (if (runtime/body_users .compare_exchange count (+ count 1)) (break)))
-    (if_not (runtime/body_collecting .get) (return nil))
+    (if_not runtime/body_collecting/.get (return nil))
     (release_body_use runtime)))
 
 (fn release_body_use [runtime]
   (while true
-    (let count (runtime/body_users .load))
+    (let count runtime/body_users/.load)
     (if (runtime/body_users .compare_exchange count (- count 1)) (break)))
   nil)
 
@@ -47,14 +47,14 @@
 (fn collect_unreferenced_bodies [runtime]
   (if (runtime/body_collecting .swap true) (return false))
   (try
-    (if (> (runtime/body_users .load) 0) (return false))
+    (if (> runtime/body_users/.load 0) (return false))
     (let live {})
     (mark_body_references runtime (core_states runtime/events "workspace" "workspace") live)
-    (for [id record] in (runtime/sessions/index .get)
+    (for [id record] in runtime/sessions/index/.get
       (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
-    (let manifest (runtime/events/last_manifest .get))
+    (let manifest runtime/events/last_manifest/.get)
     (if_not ($absent? manifest)
       (let seen {})
       (for generation in manifest/history
@@ -75,10 +75,10 @@
 
 (fn history_state [runtime, session : Str]
   (if_not ($absent? runtime/sessions)
-    (let loaded ((runtime/sessions/loaded .get) .get session))
+    (let loaded (runtime/sessions/loaded/.get .get session))
     (if_not ($absent? loaded)
-      (return {^messages ($thaw ($freeze (loaded/history .get)))
-        ^outputs ($thaw ($freeze_shallow (loaded/outputs .get)))})))
+      (return {^messages ($thaw ($freeze loaded/history/.get))
+        ^outputs ($thaw ($freeze_shallow loaded/outputs/.get))})))
   (let ref (core_state runtime/events "session" session "history"))
   (if ($absent? ref) (return {^messages [] ^outputs {}}))
   (if_not ($absent? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))

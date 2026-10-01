@@ -18,11 +18,11 @@
   ($fs/write_text_atomic $"${fixture/home}/state.data" ($serde/write_data state))
   (fixture/state .set state))
 (fn bump [fixture key]
-  (let state (copy (fixture/state .get)))
+  (let state (copy fixture/state/.get))
   (state .put key (+ (state .get key) 1))
   (save fixture state))
 (fn delay [fixture route]
-  (let state (fixture/state .get))
+  (let state fixture/state/.get)
   (let ms (state/delay_ms .get route))
   (if (> ms 0) ($sleep ms)))
 
@@ -34,7 +34,7 @@
   (if (== limit 0) (invalid "Poll limit must be positive"))
   (bump fixture "polls")
   (delay fixture "poll")
-  (let state (fixture/state .get))
+  (let state fixture/state/.get)
   (let gap (if (< data/cursor state/floor)
     {^from data/cursor ^to state/floor ^reason "retention"} nil))
   (var cursor ($math/max data/cursor state/floor))
@@ -57,7 +57,7 @@
     (require_text (data .get key)))
   (let digest ($crypto/sha256 raw))
   (delay fixture "send")
-  (let state (copy (fixture/state .get)))
+  (let state (copy fixture/state/.get))
   (let previous (state/deliveries .get data/operation_id))
   (if_yes (! ($absent? previous))
     (if (!= previous/digest digest)
@@ -75,7 +75,7 @@
 (fn receipt_for [fixture data]
   (for key in ["peer_id" "operation_id" "digest"] (require_text (data .get key)))
   (bump fixture "receipts")
-  (let state (fixture/state .get))
+  (let state fixture/state/.get)
   (let result {^peer_id data/peer_id ^operation_id data/operation_id ^digest data/digest
     ^status (if state/unknown_receipts "unknown" "not_found")})
   (if state/unknown_receipts (return (response 200 result)))
@@ -88,7 +88,7 @@
 (fn inject [fixture data]
   (for key in ["id" "speaker" "text" "conversation" "thread"]
     (require_text (data .get key)))
-  (let state (copy (fixture/state .get)))
+  (let state (copy fixture/state/.get))
   (state .put "cursor" (+ state/cursor 1))
   (let message {^id data/id ^speaker data/speaker ^text data/text
     ^conversation data/conversation ^thread data/thread ^cursor state/cursor})
@@ -98,7 +98,7 @@
   (response 200 message))
 
 (fn configure [fixture data]
-  (let state (copy (fixture/state .get)))
+  (let state (copy fixture/state/.get))
   (if_yes (! ($absent? data/floor))
     (require_int data/floor state/cursor)
     (state .put "floor" data/floor))
@@ -128,7 +128,7 @@
     (when "/receipt" (receipt_for fixture data))
     (when "/inject" (inject fixture data))
     (when "/configure" (configure fixture data))
-    (when "/inspect" (response 200 (fixture/state .get)))
+    (when "/inspect" (response 200 fixture/state/.get))
     (when "/stop"
       (stop fixture/server)
       (response 200 {^status "stopping"}))
@@ -173,5 +173,5 @@
       # serve releases its runtime; stop is only needed if setup failed before it.
       (try (stop server) catch HttpError nil)
       (if ($fs/exists? $"${home}/ready.data") ($fs/remove $"${home}/ready.data")))
-  ensure (claim .close))
+  ensure claim/.close)
   0)

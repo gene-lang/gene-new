@@ -14,7 +14,7 @@
 (fn activate_observer [ctx, config]
   (ctx .on hmr_reloaded
     (fn [payload]
-      (reload_events .set (+ (reload_events .get) 1)))))
+      (reload_events .set (+ reload_events/.get 1)))))
 (var observer_plugin
   (PluginSpec ^id "hmr/observer" ^config_schema nil ^requires []
               ^provides [] ^reload nil ^activate activate_observer))
@@ -59,8 +59,8 @@
                       ^default_limits (invocation_limits))))
   (runtime .admit_service_key loaded_key)
   (var observer
-    (runtime .install (runtime .root) observer_plugin nil))
-  (observer .await_ready)
+    (runtime .install runtime/.root observer_plugin nil))
+  observer/.await_ready
   (var loader
     (runtime .loader
       (LoaderOptions
@@ -84,27 +84,27 @@
     (var reloaded (loader .reload [source_path]))
     (assert (== reloaded/status "reloaded")
       "owned source changes must use candidate-swap reload")
-    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+    (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
       "successful reload must publish the new generation")
-    (assert (== (reload_events .get) 1)
+    (assert (== reload_events/.get 1)
       "successful reload must emit hmr_reloaded once")
 
     (write_text source_path source_bad)
     (assert
       (try (loader .reload [source_path]) false catch ReloadRejected true)
       "invalid source must reject before publication")
-    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+    (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
       "rejected reload must preserve the last live generation")
-    (assert (== (reload_events .get) 1)
+    (assert (== reload_events/.get 1)
       "rejected reload must not emit hmr_reloaded")
   ensure
     (write_text source_path original_source))
   # Bring the live generation back to the restored source, then prove the
   # optional bounded watcher adapter drives the same reload seam.
   (loader .reload [source_path])
-  (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 1)
+  (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 1)
     "manual reload must observe the restored source")
-  (assert (== (reload_events .get) 2)
+  (assert (== reload_events/.get 2)
     "restoring through reload must emit one more event")
   (var watcher
     (watch_loader loader "fixtures/plugins" ^debounce_ms 10))
@@ -115,29 +115,29 @@
     (while (&& (! delivered) (< ($os/monotonic_ms) deadline))
       (set delivered
         (try
-          (&& (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
-              (== (reload_events .get) 3))
+          (&& (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
+              (== reload_events/.get 3))
         catch Any false))
       (if_not delivered ($sleep 1)))
     (assert delivered
-      $"watcher did not publish the expected event/value: ${(watcher .inspect)}")
-    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+      $"watcher did not publish the expected event/value: ${watcher/.inspect}")
+    (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
       "filesystem watcher changes must reach Loader/reload")
-    (assert (== (reload_events .get) 3)
+    (assert (== reload_events/.get 3)
       "watch-driven reload must emit hmr_reloaded")
     (write_text source_path source_bad)
     (set deadline (+ ($os/monotonic_ms) 5000))
-    (var diagnostics (watcher .inspect))
+    (var diagnostics watcher/.inspect)
     (while (&& (== diagnostics/failures 0)
                (< ($os/monotonic_ms) deadline))
       ($sleep 1)
-      (set diagnostics (watcher .inspect)))
-    (var rejected (watcher .inspect))
+      (set diagnostics watcher/.inspect))
+    (var rejected watcher/.inspect)
     (assert (> rejected/failures 0)
       "watcher diagnostics must record rejected candidates")
     (assert (! ($absent? rejected/last_error))
       "watcher diagnostics must retain the last failure")
-    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+    (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
       "a rejected watched candidate must preserve the live provider")
     (write_text source_path original_source)
     (set deadline (+ ($os/monotonic_ms) 5000))
@@ -145,15 +145,15 @@
     (while (&& (! delivered) (< ($os/monotonic_ms) deadline))
       (set delivered
         (try
-          (&& (== (((runtime .root) .require loaded_key) .LoadedValue:value) 1)
-              (== (reload_events .get) 4))
+          (&& (== ((runtime/.root .require loaded_key) .LoadedValue:value) 1)
+              (== reload_events/.get 4))
         catch Any false))
       (if_not delivered ($sleep 1)))
     (assert delivered
-      $"watcher did not recover after rejection: ${(watcher .inspect)}")
+      $"watcher did not recover after rejection: ${watcher/.inspect}")
   ensure
-    (watcher .close)
+    watcher/.close
     (write_text source_path original_source))
-  (loader .dispose)
-  (runtime .close)
+  loader/.dispose
+  runtime/.close
   ($println "hmr: ok"))

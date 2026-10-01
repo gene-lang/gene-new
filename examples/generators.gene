@@ -39,5 +39,5 @@
   (let stream (owned))
   (try
     ($println "prefix:" (stream -> $take 1 -> $into []))
-    ensure (stream .close))
+    ensure stream/.close)
   0)

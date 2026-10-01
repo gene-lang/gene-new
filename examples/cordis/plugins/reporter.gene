@@ -5,7 +5,7 @@
 
 (fn activate [ctx, config]
   (var clock (ctx .require clock_key))
-  ($println $"reporter observed tick ${(clock .Clock:tick)}"))
+  ($println $"reporter observed tick ${clock/.Clock:tick}"))
 
 (var plugin
   (PluginSpec

@@ -4,6 +4,6 @@
 (fn scripted_provider [responses]
   (let index ($cell 0))
   (fn [request]
-    (let next (index .swap (+ (index .get) 1)))
+    (let next (index .swap (+ index/.get 1)))
     (if (>= next responses/.size) (fail (ScriptedError ^message "scripted provider exhausted")))
     responses/%next))

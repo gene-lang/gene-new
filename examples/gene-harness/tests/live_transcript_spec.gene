@@ -14,17 +14,17 @@
         (let service (open_session_service ^workspace workspace ^provider (fn [request]
           (if (== request/turn 1)
             "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
-            (do (entered .set true) (while (! (release .get)) ($sleep 1))
+            (do (entered .set true) (while (! release/.get) ($sleep 1))
               "(Outcome ^done true ^reply \"Finished.\")")))))
         (let messages ($cell []))
-        (service/publisher .set (fn [message] ((messages .get) .push message)))
+        (service/publisher .set (fn [message] (messages/.get .push message)))
         (try
           (let record (create_session service))
           (let round (submit service record/id "live" 1 "original prompt"))
-          (while (! (entered .get)) ($sleep 1))
+          (while (! entered/.get) ($sleep 1))
           ($assert (== (/state (receipt service record/id round/id)) "running") "stream check happened after completion")
           (let kinds [])
-          (for message in (messages .get)
+          (for message in messages/.get
             (if (== message/session record/id)
               (kinds .push message/type)))
           ($assert (kinds .contains? "turn") "response code was not sent while running")
@@ -39,18 +39,18 @@
           (let validations ($cell 0))
           (let answers ($cell []))
           (contribute service/runtime/h "core" "interactions" {^name "custom" ^validate_request (fn [question]
-            (validations .set (+ (validations .get) 1)) question) ^validate_reply (fn [value]
-              ((answers .get) .push value) value)})
+            (validations .set (+ validations/.get 1)) question) ^validate_reply (fn [value]
+              (answers/.get .push value) value)})
           (set service/controller/provider (fn [request] "(append_prompt \"answers\" \"reserved label\") (Outcome ^questions [{^id \"choice\" ^kind \"custom\" ^prompt \"Choose a value.\"}])"))
           (let custom (submit service record/id "custom" 2 "ask"))
           (service/controller/watchers .get; .get record/id; .join)
           ($assert (== (/state (receipt service record/id custom/id)) "waiting") "custom interaction did not wait")
-          ($assert (== (validations .get) 1) "custom question was not validated under its turn lease")
+          ($assert (== validations/.get 1) "custom question was not validated under its turn lease")
           (set service/controller/provider (fn [request] "(Outcome ^done true ^reply \"answered\")"))
           (let waiting (receipt service record/id custom/id))
           (answer service record/id waiting/questions/id {^choice "ok"})
           (service/controller/watchers .get; .get record/id; .join)
-          ($assert (== (answers .get) ["ok"]) "custom answer bypassed its validator")
+          ($assert (== answers/.get ["ok"]) "custom answer bypassed its validator")
           (let answered (snapshot service record/id))
           (var recorded false)
           (for block in answered/records
@@ -58,8 +58,8 @@
               (set recorded true)))
           ($assert recorded "answer request was absent from the operator transcript")
           (let huge ($cell "x"))
-          (repeat i in 18 (huge .set ($to_str (huge .get) (huge .get))))
-          (service/runtime/functions .put "noise" (fn [] ($print (huge .get))))
+          (repeat i in 18 (huge .set ($to_str huge/.get huge/.get)))
+          (service/runtime/functions .put "noise" (fn [] ($print huge/.get)))
           (set service/controller/provider (fn [request] "(noise) (Outcome ^done true ^reply \"bounded console\")"))
           (let noisy (submit service record/id "noisy" 3 "print"))
           (service/controller/watchers .get; .get record/id; .join)

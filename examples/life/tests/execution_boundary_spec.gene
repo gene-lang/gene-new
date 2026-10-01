@@ -11,7 +11,7 @@
   (runtime/settle host)
   host)
 (fn decide [host, source]
-  ((host/decisions .get) .push (brain/response "Boundary fixture" source))
+  (host/decisions/.get .push (brain/response "Boundary fixture" source))
   (let event (body/receive host "Exercise the supported Gene boundary"))
   (runtime/settle host)
   (for cycle in (p/values host/store "cycle/")
@@ -23,7 +23,7 @@
   (it "rejects suspension and task creation inside grouped callbacks before publication" []
     (let host (fixture))
     (try
-      (for operation in ["($sleep 1)" "(spawn nil)" "(do (let waiting ($channel ^capacity 1)) (waiting .recv))"]
+      (for operation in ["($sleep 1)" "(spawn nil)" "(do (let waiting ($channel ^capacity 1)) waiting/.recv)"]
         (let result (decide host $"(store .commit (fn [tx]
           (state .put \"staged\" true ^tx tx) ${operation}))"))
         (assert_equal result/status "failed" result/result)
@@ -73,7 +73,7 @@
           (state .put \"iterations\" (+ 1 (?? (state .get \"iterations\") 0))) local)"))
         (assert_equal result/status "succeeded" result/result)
         (assert_equal result/result "1")
-        ($assert ($absent? (host/active .get)))
+        ($assert ($absent? host/active/.get))
         (set index (+ index 1)))
       (assert_equal (p/get host/store "state/iterations") 24)
       ensure (runtime/close_life host)))

@@ -5,4 +5,4 @@
   (let captured ($cell value))
   (Plugin ^id "direct-activation" ^provides []
     ^activate (fn [host]
-      (host "captured" (fn [] (captured .get))))))
+      (host "captured" (fn [] captured/.get)))))

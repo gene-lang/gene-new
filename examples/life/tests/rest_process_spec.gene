@@ -19,7 +19,7 @@
     (try
       (assert_equal (p/get before/store "model/rest") nil)
       (assert_equal (p/values before/store "routine/") [])
-      (assert_equal (before/calls .get) 0)
+      (assert_equal before/calls/.get 0)
       ensure (runtime/close_life before))
     (let after (crash "entry" "after_commit"))
     (try
@@ -30,7 +30,7 @@
       (let registrations (p/values after/store "routine/"))
       (assert_equal registrations/.size 1)
       (assert_equal registrations/0/generation 1)
-      (assert_equal (after/calls .get) 0)
+      (assert_equal after/calls/.get 0)
       (body/tick after 60000)
       (runtime/settle after)
       (let continued (p/get after/store "model/rest"))
@@ -47,7 +47,7 @@
         ($assert (! ($absent? registration/pending)))
         (let model (p/get host/store "model/rest"))
         (assert_equal model/energy (if (== point "before_commit") 24.0 42.0))
-        (assert_equal (host/calls .get) 0)
+        (assert_equal host/calls/.get 0)
         (runtime/settle host)
         (let continued (p/get host/store "model/rest"))
         (assert_equal continued/energy 42.0)
@@ -56,5 +56,5 @@
         (assert_equal finished/dispatches 1)
         (assert_equal finished/last_outcome/execution_id registration/pending)
         (assert_equal finished/pending nil)
-        (assert_equal (host/calls .get) 0)
+        (assert_equal host/calls/.get 0)
         ensure (runtime/close_life host)))))

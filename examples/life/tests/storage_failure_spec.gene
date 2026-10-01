@@ -17,17 +17,17 @@
 (describe "Life persistent failure boundaries"
   (it "fails actual filesystem publication, preserves the preceding image, and stops dependent work" []
     (let host (fixture))
-    ((host/decisions .get) .push (brain/response "Attempt a write, then an action"
+    (host/decisions/.get .push (brain/response "Attempt a write, then an action"
       "(do (try (state .put \"unsaved\" true) catch Any nil) (body/world .take \"watering-can\"))"))
     (body/receive host "trigger" ^external_id "accepted" ^cursor "cursor-1")
     (let deadline (+ ($os/monotonic_ms) 5000))
     (loop
       (runtime/heartbeat host)
       ($sleep 1)
-      (let active (host/active .get))
+      (let active host/active/.get)
       (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break))
       (if (> ($os/monotonic_ms) deadline) (p/problem "Execution did not start")))
-    (let running (host/active .get))
+    (let running host/active/.get)
     (let cycle_id running/record/id)
     (let home host/store/home)
     (let image ($fs/read_bytes $"${home}/life.sqlite"))
@@ -37,7 +37,7 @@
       (chmod home "500")
       (let failed (try (runtime/settle host) false catch Any true))
       ($assert failed "A real publication failure must not report success")
-      ($assert (! ($absent? (host/store/fault .get))))
+      ($assert (! ($absent? host/store/fault/.get)))
       (assert_equal ($fs/read_bytes $"${home}/life.sqlite") image)
       (chmod home "700")
       (assert_raises (fn [] (p/put host/store "later" true)) p/LifeError)

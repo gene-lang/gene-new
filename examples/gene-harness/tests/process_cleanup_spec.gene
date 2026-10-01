@@ -28,7 +28,7 @@
               ($sleep 10)
               (set alive ($os/exec ^cmd "/bin/kill" ^args ["-0" child])))
             ($assert (!= alive/status 0) $"${mode} orphaned captured process ${child}")
-          ensure (if_not (process .done?) (process .cancel) (process .join))))
+          ensure (if_not process/.done? process/.cancel process/.join)))
         ($println "process cleanup: INT/TERM/HUP and normal exit terminate live captured groups")))))
 
 (fn main [args] : Int (run_spec args))

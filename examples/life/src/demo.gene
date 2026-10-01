@@ -8,7 +8,7 @@
 (import * : organization ^from "./code/organization")
 
 (fn decide [host, text, note, source]
-  ((host/decisions .get) .push (brain/response note source))
+  (host/decisions/.get .push (brain/response note source))
   (body/receive host text ^speaker "visitor-1" ^conversation "garden" ^thread "shade")
   (runtime/settle host))
 (fn show [host, stage]
@@ -22,7 +22,7 @@
   (let name (p/id "demo"))
   (let home (?? args/0 $"examples/life/tmp/${name}"))
   (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
-    ^decisions [(brain/response "I will inspect my surroundings before choosing an activity." "(body/world .observe)")]))
+    ^decisions [(brain/response "I will inspect my surroundings before choosing an activity." "body/world/.observe")]))
   (runtime/settle host)
   (decide host "I prefer a shaded garden."
     "I will retain the visitor's preference, take the watering can, and begin walking toward the garden."
@@ -44,7 +44,7 @@
   (runtime/close_life host)
 
   (let walking (runtime/open_life home ^clock (fn [] 1000)))
-  ($assert (== (walking/calls .get) 0))
+  ($assert (== walking/calls/.get 0))
   ($assert (== (p/get walking/store "world") saved_world))
   ($assert (== (p/get walking/store "state/activity") saved_job))
   (show walking "restored before inference")
@@ -86,14 +86,14 @@
     ($assert (== (p/get resting/store "model/rest") checkpoint))
     (body/receive resting "A message retained while you sleep." ^speaker "visitor-2")
     (runtime/settle resting)
-    ($assert (== (resting/calls .get) 0))
+    ($assert (== resting/calls/.get 0))
     (show resting "sleep restored without inference or offline growth")
     (body/tick resting 840000)
     (runtime/settle resting)
     (let awake (p/get resting/store "model/rest"))
     ($assert (== awake/energy 70.0))
     ($assert (== awake/mode "awake"))
-    ($assert (== (resting/calls .get) 1))
+    ($assert (== resting/calls/.get 1))
     (show resting "awake after one cognitive wake")
     ($println $"Inspect the retained experiment with: bin/gene run examples/life/src/main.gene inspect ${home}")
     ensure (runtime/close_life resting))

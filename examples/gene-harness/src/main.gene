@@ -98,7 +98,7 @@
         (ask controller session ($str/join prompt " ")))
       (else
         (chat controller session)))
-    (runtime/exit_code .get)
+    runtime/exit_code/.get
   ensure
     (if_not ($absent? runtime/triggers) (close_trigger_manager runtime/triggers))
     (if_not ($absent? controller) (close_round_controller controller))

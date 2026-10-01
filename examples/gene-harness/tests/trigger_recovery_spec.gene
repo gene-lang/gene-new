@@ -21,11 +21,11 @@
           (let runtime (open_runtime workspace "default" (baseline_profile)))
           (let calls ($cell 0))
           (let controller (new_round_controller runtime (fn [request]
-            (calls .set (+ (calls .get) 1))
+            (calls .set (+ calls/.get 1))
             "(Outcome ^done true ^reply \"recovered\")")))
           (let manager (open_trigger_manager runtime controller ^start false ^now 2000))
           (try
-            (for [id watcher] in (controller/watchers .get) (watcher .join))
+            (for [id watcher] in controller/watchers/.get watcher/.join)
             (tick_triggers manager ^now 2000)
             (let records (list_occurrences manager))
             ($assert (== records/.size 1) $"Duplicate occurrence after ${point}: ${records}")
@@ -33,10 +33,10 @@
             ($assert (== record/state "finished") $"Occurrence lost after ${point}: ${record}")
             (if (["due" "session"] .contains? point)
               (then
-                ($assert (== (calls .get) 1) $"Due occurrence not started after ${point}")
+                ($assert (== calls/.get 1) $"Due occurrence not started after ${point}")
                 ($assert (== record/outcome "done") "recovered due occurrence did not finish"))
               (else
-                ($assert (== (calls .get) 0) $"Admitted round replayed after ${point}")
+                ($assert (== calls/.get 0) $"Admitted round replayed after ${point}")
                 ($assert (== record/outcome "interrupted") $"Wrong crash outcome: ${record}")
                 (let metadata (require_record runtime/sessions record/session))
                 ($assert metadata/attention "interrupted trigger needs attention")))

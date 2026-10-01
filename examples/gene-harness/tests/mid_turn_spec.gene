@@ -18,11 +18,11 @@
                 (host .PluginHost:contribute "functions" {^name "later" ^doc "Added function." ^fn (fn [] "later")})
                 ($assert ($absent? (row runtime/h "functions" "later")) "host lookup saw mid-turn mutation")
                 (entered .set true)
-                (while (! (release .get)) ($sleep 1))
+                (while (! release/.get) ($sleep 1))
                 "queued")}))))
           (let task (spawn ^lane root (evaluate_harness_turn runtime/h 1 runtime/root
             "(add_later) (Outcome ^done true ^reply session_id)" ^session "a")))
-          (while (! (entered .get)) ($sleep 1))
+          (while (! entered/.get) ($sleep 1))
           (let other (evaluate_harness_turn runtime/h 1 runtime/root "(Outcome ^done true ^reply \"other\")" ^session "b"))
           ($assert ($absent? (row runtime/h "functions" "later")) "another turn published the still-open origin's queue")
           (release .set true)

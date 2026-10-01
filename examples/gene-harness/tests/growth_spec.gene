@@ -52,7 +52,7 @@
         (let restored (open_trigger_manager reopened again ^start false ^boot false))
         (try
           ($assert (== ($size (list_occurrences restored)) 3) "pruned occurrences returned after restart")
-          (let restored_definition ((restored/definitions .get) .get "bounded"))
+          (let restored_definition (restored/definitions/.get .get "bounded"))
           ($assert ($absent? (record_due restored restored_definition 1000)) "restart lost the no-replay high-water mark")
           ($println "growth: bounded terminal occurrences, durable no-replay marker, periodic blob GC and settled stored history")
         ensure (close_trigger_manager restored) (close_round_controller again) (close_runtime reopened))))))

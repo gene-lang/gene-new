@@ -145,13 +145,13 @@
   (request .put "connector" registration/id)
   (request .put "cursor" registration/cursor)
   (request .put "id" id)
-  (let network (host/network .get))
+  (let network host/network/.get)
   (network/requests .put key request))
 
 (fn tick [host]
   (p/require_writable host/store)
-  (if (host/stopped .get) (return nil))
-  (let network (host/network .get))
+  (if host/stopped/.get (return nil))
+  (let network host/network/.get)
   # A send whose owner was retired stops waiting on its HTTP handle. Cancelling
   # the local task cannot retract a launched remote effect, so the delivery
   # completes as an ordinary failure and stays uncertain until a receipt arrives.
@@ -161,21 +161,21 @@
       (let delivery (p/get host/store $"delivery/${request/id}"))
       (if_yes (== delivery/cancellation_requested true)
         (request .put "cancelled" true)
-        (request/task .cancel))))
+        request/task/.cancel)))
   (let completed [])
   (for pair in network/requests
-    (if_not ($absent? (pair/1/done .get)) (completed .push ($to_str pair/0))))
+    (if_not ($absent? pair/1/done/.get) (completed .push ($to_str pair/0))))
   (for key in completed
     (let request (network/requests .get key))
     (network/requests .delete key)
-    (request/monitor .join)
-    (let result (request/done .get))
+    request/monitor/.join
+    (let result request/done/.get)
     (var ok result/ok)
     (if_yes ok
       (try
         (if (== request/kind "poll") (accept_poll host request result/value) (accept_delivery host request result/value))
         catch Any
-          (if_not ($absent? (host/store/fault .get)) (fail $err))
+          (if_not ($absent? host/store/fault/.get) (fail $err))
           (set ok false)))
     (if_not ok (failed host request))
     (let registration (p/get host/store $"connector/${request/connector}"))
@@ -233,6 +233,6 @@
       (break))))
 
 (fn stop [host]
-  (let network (host/network .get))
+  (let network host/network/.get)
   (for pair in network/requests (mailbox/stop pair/1))
   (host/network .set {^requests {} ^next {} ^lanes {}}))

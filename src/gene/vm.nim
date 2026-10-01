@@ -17748,17 +17748,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opApplySelector:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
-          let target = spop()
-          let selector = spop()
-          spush materializedModuleRefValue(
+          # A path message may suspend. Like opCall, retain its operands until
+          # it completes so the scheduler can retry this opcode on resume.
+          let argsStart = sp - 2
+          let selector = stack[argsStart]
+          let target = stack[argsStart + 1]
+          let value = materializedModuleRefValue(
             scope, applySelector(selector, target, scope))
+          strunc(argsStart)
+          spush value
         of opApplySelectorTop:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
-          let selector = spop()
-          let target = spop()
-          spush materializedModuleRefValue(
+          let argsStart = sp - 2
+          let target = stack[argsStart]
+          let selector = stack[argsStart + 1]
+          let value = materializedModuleRefValue(
             scope, applySelector(selector, target, scope))
+          strunc(argsStart)
+          spush value
         of opMakeFn:
           let proto = normalizeOptionalParameters(chunk.functions[inst[].intArg], scope)
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
@@ -20128,7 +20136,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # as the receiver when falling through.
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          if stack[sp - 1].isAbsent:
+          # Path traversal stops on void; an ordinary optional send also
+          # stops on nil. The compiler marks the former with flag=true.
+          if (if inst[].flag: stack[sp - 1].kind == vkVoid
+              else: stack[sp - 1].isAbsent):
             ip = inst[].intArg
         of opNot:
           if sp == 0:

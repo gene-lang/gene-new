@@ -24,7 +24,7 @@
   value)
 
 (fn require_open [state : CompositionState]
-  (if (state/closed .get) (fail (CompositionClosed ^message "workspace composition is closed")))
+  (if state/closed/.get (fail (CompositionClosed ^message "workspace composition is closed")))
   state)
 
 (fn new_composition_state [registries, instances, retire] : CompositionState
@@ -52,7 +52,7 @@
 
 (fn adjust_count [counter, delta : Int]
   (while true
-    (let before (counter .load))
+    (let before counter/.load)
     (let after (+ before delta))
     (if (counter .compare_exchange before after) (return after)))
   nil)
@@ -62,18 +62,18 @@
   (let context ($runtime/context))
   (if (&& (! ($absent? context)) (same? context/composition state) (! ($absent? context/snapshot)))
     (return context/snapshot))
-  (state/current .get))
+  state/current/.get)
 
 (fn acquire_snapshot [state : CompositionState] : SnapshotLease
   (require_open state)
   (while true
-    (let snapshot (state/current .get))
-    (let counter ((state/counts .get) .get ($to_str snapshot/id)))
+    (let snapshot state/current/.get)
+    (let counter (state/counts/.get .get ($to_str snapshot/id)))
     (if ($absent? counter) (continue))
     (adjust_count counter 1)
     # Publication can occur at any VM safepoint. Recheck after incrementing so
     # a reader never acquires a revision whose retirement already started.
-    (if (same? snapshot (state/current .get))
+    (if (same? snapshot state/current/.get)
       (return (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false))))
     (adjust_count counter -1)
     (drain_retirements state))
@@ -99,9 +99,9 @@
   (require_open state)
   (let ready []) (let waiting [])
   (for change in (state/pending .swap [])
-    (if (&& (! ($absent? change/origin_turn)) (== (change/origin_turn/state .get) "open"))
+    (if (&& (! ($absent? change/origin_turn)) (== change/origin_turn/state/.get "open"))
       (waiting .push change) (ready .push change)))
-  (for change in waiting ((state/pending .get) .push change))
+  (for change in waiting (state/pending/.get .push change))
   ready)
 
 (fn publish_snapshot [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
@@ -114,23 +114,23 @@
     (state/publishing .set false)))
 
 (fn publish_snapshot_serial [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
-  (let id (state/next_id .swap (+ (state/next_id .get) 1)))
+  (let id (state/next_id .swap (+ state/next_id/.get 1)))
   (let snapshot ($freeze_shallow
     (CompositionSnapshot ^id id ^registries (immutable_view registries)
       ^instances ($freeze_shallow instances) ^plugins (immutable_view plugins))))
-  ((state/snapshots .get) .put ($to_str id) snapshot)
-  ((state/counts .get) .put ($to_str id) ($atomic_cell 0))
+  (state/snapshots/.get .put ($to_str id) snapshot)
+  (state/counts/.get .put ($to_str id) ($atomic_cell 0))
   # Publication itself is one native Cell operation and cannot yield.
   (state/current .set snapshot)
   (drain_retirements state)
   snapshot)
 
 (fn instance_is_leased? [state : CompositionState, instance] : Bool
-  (let current (state/current .get))
+  (let current state/current/.get)
   (for live in current/instances
     (if (== live instance) (return true)))
-  (for [id counter] in (state/counts .get)
-    (if (> (counter .load) 0)
+  (for [id counter] in state/counts/.get
+    (if (> counter/.load 0)
       (then
         (let snapshot (state/snapshots .get; .get id))
         (for live in snapshot/instances
@@ -154,22 +154,22 @@
       (if (instance_is_leased? state instance) (set leased true)))
     (if leased (waiting .push retirement) (ready .push retirement)))
   # Publish the waiting queue before cleanup, which can run application code.
-  (for retirement in waiting ((state/retiring .get) .push retirement))
+  (for retirement in waiting (state/retiring/.get .push retirement))
   (for retirement in ready (state/retire retirement/ticket))
   (let expired [])
-  (let current (state/current .get))
-  (for [id counter] in (state/counts .get)
-    (if (&& (== (counter .load) 0) (!= ($to_str id) ($to_str current/id)))
+  (let current state/current/.get)
+  (for [id counter] in state/counts/.get
+    (if (&& (== counter/.load 0) (!= ($to_str id) ($to_str current/id)))
       (expired .push id)))
   (for id in expired
-    ((state/counts .get) .delete id)
-    ((state/snapshots .get) .delete id))
+    (state/counts/.get .delete id)
+    (state/snapshots/.get .delete id))
   nil)
 
 (fn close_composition_state [state : CompositionState]
-  (if (state/closed .get) (return nil))
-  (for [id counter] in (state/counts .get)
-    (if (> (counter .load) 0)
+  (if state/closed/.get (return nil))
+  (for [id counter] in state/counts/.get
+    (if (> counter/.load 0)
       (fail (CompositionClosed ^message "composition still has active turn leases"))))
   (drain_retirements state)
   (state/pending .set [])

@@ -9,7 +9,7 @@
   (runtime/open_life $"examples/life/tmp/${name}" ^create true
     ^clock (fn [] 1000) ^decisions (?? decisions [])))
 (fn decide [host, source, note = "Test decision"]
-  ((host/decisions .get) .push (brain/response note source))
+  (host/decisions/.get .push (brain/response note source))
   (let observation (body/receive host "Please consider"))
   (runtime/settle host)
   (for cycle in (p/values host/store "cycle/")
@@ -63,10 +63,10 @@
     (let host (quiet))
     (try
       (decide host "nil" "Choosing silence")
-      (let calls (host/calls .get))
+      (let calls host/calls/.get)
       (runtime/heartbeat host)
       (runtime/heartbeat host)
-      (assert_equal (host/calls .get) calls)
+      (assert_equal host/calls/.get calls)
       (let chat (p/get host/store "conversation/garden"))
       (assert_equal chat/messages/.size 1)
       (assert_equal chat/pending/.size 1)
@@ -144,7 +144,7 @@
     (try
       (let restored_meta (p/get restored/store "meta"))
       (assert_equal restored_meta/id meta/id)
-      (assert_equal (restored/calls .get) 0)
+      (assert_equal restored/calls/.get 0)
       (for pair in before (assert_equal (p/get restored/store pair/0) pair/1 ($to_str pair/0)))
       (body/tick restored 7000)
       (let world (p/get restored/store "world"))
@@ -160,12 +160,12 @@
     (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
       ^brain (fn [snapshot]
         (started .set true)
-        (while (! (release .get)) ($sleep 5))
+        (while (! release/.get) ($sleep 5))
         (brain/response "Earlier events only" "nil"))))
     (try
       (let first (body/receive host "first"))
       (runtime/heartbeat host)
-      (while (! (started .get)) ($sleep 5))
+      (while (! started/.get) ($sleep 5))
       (let later (body/receive host "later"))
       (release .set true)
       (loop
@@ -179,13 +179,13 @@
 
   (it "retains receipt and settles pause during a runaway Gene program" []
     (let host (quiet))
-    ((host/decisions .get) .push (brain/response "Runaway" "(loop nil)"))
+    (host/decisions/.get .push (brain/response "Runaway" "(loop nil)"))
     (body/receive host "start")
     (try
       (loop
         (runtime/heartbeat host)
         ($sleep 1)
-        (let active (host/active .get))
+        (let active host/active/.get)
         (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break)))
       (let during (body/receive host "during runaway"))
       (let started ($os/monotonic_ms))
@@ -195,7 +195,7 @@
       (assert_equal meta/mode "paused")
       (let receipt (p/get host/store $"event/${during/id}"))
       (assert_equal receipt/data/text "during runaway")
-      ($assert ($absent? (host/active .get)))
+      ($assert ($absent? host/active/.get))
       ensure (runtime/close_life host)))
 
   (it "rejects malformed framing without guessing executable fragments" []
@@ -209,7 +209,7 @@
     (let now ($cell 1000))
     (let name (p/id "scheduled"))
     (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true
-      ^clock (fn [] (now .get)) ^decisions [(brain/response "Quiet" "nil")]))
+      ^clock (fn [] now/.get) ^decisions [(brain/response "Quiet" "nil")]))
     (try
       (runtime/settle host)
       (let cycle (decide host "(do
@@ -233,21 +233,21 @@
       (let deliveries (p/values host/store "delivery/"))
       (assert_equal deliveries/.size 1)
       (assert_equal deliveries/0/destination/conversation "garden")
-      (let count (host/calls .get))
+      (let count host/calls/.get)
       (runtime/heartbeat host)
-      (assert_equal (host/calls .get) count)
+      (assert_equal host/calls/.get count)
       ensure (runtime/close_life host)))
 
   (it "keeps operator controls responsive while a Gene adapter waits" []
     (let host (quiet))
-    ((host/decisions .get) .push (brain/response "Waiting adapter"
+    (host/decisions/.get .push (brain/response "Waiting adapter"
       "(do (fn wait_for_adapter [] ($sleep 60000)) (wait_for_adapter))"))
     (body/receive host "start waiting")
     (try
       (loop
         (runtime/heartbeat host)
         ($sleep 1)
-        (let active (host/active .get))
+        (let active host/active/.get)
         (if_yes (&& (! ($absent? active)) (== active/mode "run")) (break)))
       (body/receive host "still receiving")
       (let started ($os/monotonic_ms))

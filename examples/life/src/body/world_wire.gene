@@ -27,7 +27,7 @@
   $"${default_library}.dylib")
 
 (fn native_library []
-  (if_not ($absent? (native_cell .get)) (return (native_cell .get)))
+  (if_not ($absent? native_cell/.get) (return native_cell/.get))
   (let path (library_path))
   (if_not ($fs/exists? path)
     (fail (new WebSocketError

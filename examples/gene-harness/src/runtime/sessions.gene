@@ -25,11 +25,11 @@
 (fn with_session_gate [manager, key : Str, thunk]
   (while (manager/gate_mutex .swap true) ($sleep 1))
   (let gate (try
-    (let previous ((manager/gates .get) .get key))
+    (let previous (manager/gates/.get .get key))
     (if ($absent? previous)
       (then
         (let created ($cell false))
-        ((manager/gates .get) .put key created)
+        (manager/gates/.get .put key created)
         created)
       (else previous))
     ensure (manager/gate_mutex .set false)))
@@ -43,7 +43,7 @@
   nil)
 
 (fn require_open [manager : SessionManager]
-  (if (manager/closed .get)
+  (if manager/closed/.get
     (fail (SessionError ^code "closed" ^message "the session manager is closed")))
   manager)
 
@@ -74,7 +74,7 @@
   (try
     ($fs/write_text_atomic
       $"${manager/state_root}/sessions/index"
-      ($serde/write_data {^format 1 ^sessions (manager/index .get)}))
+      ($serde/write_data {^format 1 ^sessions manager/index/.get}))
   ensure
     (manager/index_writing .set false)))
 
@@ -100,7 +100,7 @@
   (let marker $"${manager/state_root}/shutdown.gene")
   (let cancelled (if ($fs/exists? marker) ($serde/read_data ($fs/read_text marker)) {}))
   (let interrupted [])
-  (for [id record] in (manager/index .get)
+  (for [id record] in manager/index/.get
     (if (["running" "cancelled"] .contains? record/status) (interrupted .push ($to_str id))))
   (for id in interrupted
     (let previous (require_record manager id))
@@ -262,7 +262,7 @@
       (!= until "")))
   (let query ($str/lower q))
   (let results [])
-  (for [id record] in (manager/index .get)
+  (for [id record] in manager/index/.get
     (if (&& (! filtered) (!= record/kind "interactive") (! record/pinned)) (continue))
     (if (&& (! ($absent? kind)) (!= record/kind kind)) (continue))
     (if (&& (! ($absent? status)) (!= record/status status)) (continue))
@@ -276,11 +276,11 @@
   ($order/sort_by ^compare (fn [a b] ($order/compare b a)) results (fn [record] record/last_active)))
 
 (fn session_busy? [state : SessionState] : Bool
-  (let round (state/round .get))
+  (let round state/round/.get)
   (&& (! ($absent? round)) (["running" "waiting"] .contains? round/state)))
 
 (fn session_running? [state : SessionState] : Bool
-  (let round (state/round .get))
+  (let round state/round/.get)
   (&& (! ($absent? round)) (== round/state "running")))
 
 (fn load_session [manager : SessionManager, id : Str] : SessionState
@@ -288,7 +288,7 @@
 
 (fn load_session_unlocked [manager : SessionManager, id : Str] : SessionState
   (require_record manager id)
-  (let loaded (manager/loaded .get))
+  (let loaded manager/loaded/.get)
   (let previous (loaded .get id))
   (if_not ($absent? previous)
     (previous/last_access .set ($os/monotonic_ms))
@@ -302,7 +302,7 @@
 (fn view_session [manager : SessionManager, id : Str] : SessionState
   (let state (with_session_gate manager $"load/${id}" (fn []
     (let loaded (load_session_unlocked manager id))
-    (loaded/viewers .set (+ (loaded/viewers .get) 1))
+    (loaded/viewers .set (+ loaded/viewers/.get 1))
     loaded)))
   (let record (require_record manager id))
   (if record/attention (update_session manager id {^attention false}))
@@ -311,7 +311,7 @@
 (fn leave_session [manager : SessionManager, id : Str]
   (let state (manager/loaded .get; .get id))
   (if_not ($absent? state)
-    (state/viewers .set ($math/max 0 (- (state/viewers .get) 1)))
+    (state/viewers .set ($math/max 0 (- state/viewers/.get 1)))
     (state/last_access .set ($os/monotonic_ms)))
   nil)
 
@@ -323,7 +323,7 @@
   (require_open manager)
   (let state (manager/loaded .get; .get id))
   (if ($absent? state) (return false))
-  (if (|| (session_running? state) (> (state/viewers .get) 0)) (return false))
+  (if (|| (session_running? state) (> state/viewers/.get 0)) (return false))
   (flush_event_store manager/events)
   (unload_event_stream manager/events "session" id)
   (manager/loaded
@@ -335,8 +335,8 @@
   (require_open manager)
   (let due [])
   (let now ($os/monotonic_ms))
-  (for [id state] in (manager/loaded .get)
-    (if (>= (- now (state/last_access .get)) manager/idle_timeout_ms) (due .push ($to_str id))))
+  (for [id state] in manager/loaded/.get
+    (if (>= (- now state/last_access/.get) manager/idle_timeout_ms) (due .push ($to_str id))))
   (var count 0)
   (for id in due
     (if (unload_session manager id) (set count (+ count 1))))
@@ -347,17 +347,17 @@
   (while (manager/mutating .swap true) ($sleep 1))
   (try
     (let record (require_record manager id))
-    (let loaded ((manager/loaded .get) .get id))
+    (let loaded (manager/loaded/.get .get id))
     (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
-            (&& (! ($absent? loaded)) (> (loaded/viewers .get) 0)))
+            (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))
       (return false))
     (let tombstone (copy_data record))
     (tombstone .put "deleted" true)
     (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" tombstone)
     (delete_event_stream manager/events "session" id)
     (flush_event_store manager/events)
-    ((manager/index .get) .delete id)
-    ((manager/loaded .get) .delete id)
+    (manager/index/.get .delete id)
+    (manager/loaded/.get .delete id)
     (write_index manager)
     (manager/runtime/body_gc_pending .set true)
     (notify_session manager tombstone)
@@ -365,13 +365,13 @@
   ensure (manager/mutating .set false)))
 
 (fn close_session_manager [manager : SessionManager]
-  (if (manager/closed .get) (return nil))
-  (for [id state] in (manager/loaded .get)
+  (if manager/closed/.get (return nil))
+  (for [id state] in manager/loaded/.get
     (if (session_running? state)
       (fail (SessionError ^code "busy" ^message $"session ${id} still has a round"))))
   (flush_event_store manager/events)
   (let ids [])
-  (for [id state] in (manager/loaded .get)
+  (for [id state] in manager/loaded/.get
     (ids .push ($to_str id)))
   (for id in ids
     (unload_event_stream manager/events "session" id))

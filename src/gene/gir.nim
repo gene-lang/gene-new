@@ -137,6 +137,7 @@ type
     opJumpIfPresentOrPop # present top (not nil/void): jump keeping it; absent: pop (??)
     opJumpIfAbsent     # absent top (nil/void): jump keeping it; present: fall through
                        # keeping it too — the receiver is still needed (?~)
+                       # flag=true tests only void (path traversal)
     opNot              # replace the top with the Bool inverse of its truthiness
     opJump
     opReturn
@@ -1227,6 +1228,8 @@ proc formatInstruction(inst: Instruction): string =
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
      opJumpIfPresentOrPop, opJumpIfAbsent, opJump:
     result.add " target=" & $inst.intArg
+    if inst.op == opJumpIfAbsent and inst.flag:
+      result.add " void-only=true"
   of opSyntaxCall, opRejectSyntaxSend:
     discard
   of opResolveQualifiedMessage, opQualifiedSend, opBindMessage:

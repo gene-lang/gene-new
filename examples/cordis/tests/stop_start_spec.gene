@@ -10,7 +10,7 @@
 
 (describe "Cordis stop_start"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "tears down and replaces plugins with the reduced reload guarantee" [t]
     (var runtime
@@ -33,6 +33,6 @@
       "stop_start descriptors must select the reduced reload guarantee")
     ($assert result/reduced_guarantee
       "stop_start results must report their reduced guarantee")
-    (assert_equal (((runtime .root) .require loaded_key) .LoadedValue:value) 5
+    (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 5
       "stop_start must activate the prepared replacement after teardown")
-    (loader .dispose)))
+    loader/.dispose))

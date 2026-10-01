@@ -58,7 +58,7 @@
   (assert_equal retained/digest delivered/digest)
   (assert_equal retained/receipt $"receipt:${saved/operation_id}")
   (if (!= before/delivery/status "pending") ($assert (> remote/receipts 0)))
-  (assert_equal (host/calls .get) 0))
+  (assert_equal host/calls/.get 0))
 
 (fn delivery_crash [phase, durable_status, effects, attempts]
   (let fixture (mailbox/start))
@@ -172,6 +172,6 @@
           (let remote (mailbox/call fixture "/inspect" {}))
           (assert_equal remote/sends 0)
           (assert_equal remote/effects 0)
-          (assert_equal (host/calls .get) 0)
+          (assert_equal host/calls/.get 0)
         ensure (support/close_host host))
       ensure (mailbox/stop fixture)))))

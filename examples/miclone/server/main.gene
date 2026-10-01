@@ -803,8 +803,8 @@
   (serve (listen ^host "127.0.0.1" ^port port)
     ^tick_ms tick_ms
     ^on_tick (fn []
-      (step .set (+ (step .get) ($to_float samples_per_pass)))
-      (run_abms game world ($to_float ($os/monotonic_ms)) (step .get)
+      (step .set (+ step/.get ($to_float samples_per_pass)))
+      (run_abms game world ($to_float ($os/monotonic_ms)) step/.get
                 sky lq lq_seed bounds)
       # §8's entities, after the nodes. The order matters and it is one line of
       # reasoning: an ABM may have dug the node an item was resting on, and an
@@ -839,7 +839,7 @@
       # `^on_open` and `^on_close` close over the same one. It is what
       # `drop_connection` matches on — see the note beside `connections` for why
       # it cannot be the handle.
-      (var my_id (next_connection_id .get))
+      (var my_id next_connection_id/.get)
       (next_connection_id .set (+ my_id 1.0))
       (ws_accept req
         ^on_open (fn [conn]
@@ -875,7 +875,7 @@
           # (§10), and without it a disconnected player stands in the world
           # forever — the thing §8 said entities were for, failing in the other
           # direction.
-          (var slot (my_slot .get))
+          (var slot my_slot/.get)
           (if_yes (>= slot 0.0)
             (broadcast_entity_except game/entities slot true my_id)
             (despawn game/entities slot)
@@ -937,8 +937,8 @@
             (var ax (act .get act_x))
             (var ay (act .get act_y))
             (var az (act .get act_z))
-            (var same_form (&& (!= (open_name .get) "")
-                               (== (open_name .get) form_name)))
+            (var same_form (&& (!= open_name/.get "")
+                               (== open_name/.get form_name)))
             (var open_here (&& (== (open_at .get 0.0) ax)
                                (&& (== (open_at .get 1.0) ay)
                                    (== (open_at .get 2.0) az))))
@@ -1107,7 +1107,7 @@
                     # message for §8's pickup (§8.1) — it is the same trust
                     # decision and now it has a second use, which is what makes
                     # a player visible to another player at all.
-                    (var mine (my_slot .get))
+                    (var mine my_slot/.get)
                     (if_yes (>= mine 0.0)
                       (var was_x (entity_x game/entities mine))
                       (var was_y (entity_y game/entities mine))

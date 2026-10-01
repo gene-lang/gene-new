@@ -6,7 +6,7 @@
 (type CounterClock ^props {^counter Cell})
 (impl Clock for CounterClock
   (message tick [] : Int
-    (var current (self/counter .get))
+    (var current self/counter/.get)
     (self/counter .set (+ current 1))
     current))
 

@@ -15,7 +15,7 @@
     (p/commit tx)
     # Format strings as Gene data; a digest is an inert string, not a symbol.
     (let literal ($json/stringify revision))
-    ((host/decisions .get) .push (brain/response "Use a saved module"
+    (host/decisions/.get .push (brain/response "Use a saved module"
       $"(do (let library (code .load ${literal})) (state .put \"answer\" (library/answer 20)))"))
     (runtime/settle host)
     (let cycles (p/values host/store "cycle/"))

@@ -103,6 +103,10 @@ xs/.size        # 2
 ([1 2] .size)  # 2
 ```
 
+**Parent dispatch keeps its explicit send.** `(super .x)` selects the parent's
+implementation; `super/.x` attempts to resolve an ordinary `super` binding and
+fails. The zero-argument style preference does not apply to this special receiver.
+
 **`#(…)` is an immutable literal, not a quote.** In code position its head still
 evaluates. Quote for data.
 
@@ -183,7 +187,8 @@ The transformations `fmt` will *not* make for you:
 - Replacing `(if cond (do …))` with `if_yes`, or `(if cond nil …)` with `if_not`.
 - Introducing `elif` instead of a nested `else (if …)`.
 - Dropping an explicit trailing `nil` arm from a one-sided `if`.
-- Choosing `receiver/.message` over `(receiver .message)` for a bare send.
+- Choosing `receiver/.message` over `(receiver .message)` for an unqualified
+  bare send. Qualified zero-argument sends restore the short spelling.
 
 So write those correctly the first time; `fmt` then makes the layout canonical.
 Run it on anything you produce — a clean `gene fmt` is also a parse check.

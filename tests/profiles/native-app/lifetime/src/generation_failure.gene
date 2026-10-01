@@ -34,15 +34,15 @@
   (fn one []
     (let discarded ($runtime/sandbox_transaction))
     (let generation (discarded .prepare (options plugin_dir "plugin.gene")))
-    (let candidate (generation .module))
+    (let candidate generation/.module)
     ($assert (== candidate/item/n 7))
-    (discarded .discard)
+    discarded/.discard
     (let failed ($runtime/sandbox_transaction))
     ($assert (try
       (failed .prepare (options plugin_dir "failing.gene"))
       false
       catch Any true))
-    (failed .discard))
+    failed/.discard)
   (repeat 100 (one))
   (checkpoint "warm" 100)
   (for batch in [1 100 1000 count]

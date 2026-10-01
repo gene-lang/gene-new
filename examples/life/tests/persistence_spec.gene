@@ -40,6 +40,6 @@
       (assert_raises (fn [] (p/commit tx)) p/LifeError)
       (assert_equal (p/get store "a") 4)
       (assert_equal (p/get store "b") nil)
-      (assert_equal (store/fault .get) nil)
+      (assert_equal store/fault/.get nil)
       (p/put store "after-conflict" true)
       ensure (p/close_store store))))

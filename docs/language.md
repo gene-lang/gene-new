@@ -83,6 +83,13 @@ with `.` names a zero-argument message. The longer form
 `$key` marks a literal key that would otherwise look like a message.
 Paths are values and may be stored, passed as callbacks, and annotated `Path`.
 
+For a zero-argument send on a simple symbol or path receiver, prefer `a/.x`
+over `(a .x)`, including qualified sends such as `resource/.IoResource:close`.
+Sends with arguments keep their parentheses: `(a .x value)`. Use the explicit
+form for literal or computed receivers, such as `([1 2] .size)` or
+`((make_a) .x)`, and for parent dispatch, `(super .x)`. This is a source-style
+preference; preserve the structure of quoted syntax values.
+
 A receiver path such as `data/%key` evaluates `data` first, resolves its
 dynamic segments next, then traverses the completed Path. If the base raises,
 those segments are not evaluated. A Path expression written as a call, such

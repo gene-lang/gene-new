@@ -38,7 +38,7 @@
   state_root)
 
 (fn close_runtime [runtime : HarnessRuntime]
-  (if (runtime/closed .get) (return nil))
+  (if runtime/closed/.get (return nil))
   (var outcome nil)
   (try
     (try
@@ -46,7 +46,7 @@
       (if_not ($absent? runtime/commands) (close_command_manager runtime/commands))
       (close_session_manager runtime/sessions)
       (set outcome (shutdown_harness runtime/h))
-      (if (runtime/body_gc_pending .get) (collect_unreferenced_bodies runtime))
+      (if runtime/body_gc_pending/.get (collect_unreferenced_bodies runtime))
     ensure (close_workspace runtime/workspace))
   ensure
     (try
@@ -55,8 +55,8 @@
     ensure
       (if runtime/owns_ownership (close_workspace_lock runtime/ownership))
       (runtime/closed .set true)
-      (let watchdog (runtime/shutdown_watchdog .get))
-      (if_not ($absent? watchdog) (watchdog .cancel) (watchdog .join))))
+      (let watchdog runtime/shutdown_watchdog/.get)
+      (if_not ($absent? watchdog) watchdog/.cancel watchdog/.join)))
   (if_yes (&& (! ($absent? outcome)) (== outcome/status "recovery_required"))
     (fail (RuntimeCleanupError ^message "Composition cleanup requires recovery. Inspect the Harness output.")))
   nil)

@@ -28,7 +28,7 @@
           (let channel ($channel ^capacity 4))
           (let process ($os/exec_stream_async ^cmd "/bin/sh" ^args ["-c" "printf 'out\\n'; printf 'err\\n' >&2"] ^stdout_chan channel ^merge_stderr true))
           (let lines [])
-          (try (loop (lines .push (channel .recv))) catch ChannelClosed nil)
+          (try (loop (lines .push channel/.recv)) catch ChannelClosed nil)
           (let result (await process))
           ($assert (== lines ["out" "err"]) "merged stderr did not stream in order")
           ($assert (== result/stderr "") "merged stderr was duplicated")

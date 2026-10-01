@@ -324,6 +324,25 @@ proc sendOneLine(v: Value): string =
   let send = sendParts(v)
   if not send.found:
     return
+  # Qualified path sends read back as ordinary send nodes. Restore their
+  # preferred spelling when it preserves the complete reader value. Bare
+  # path sends already pass through resugarPath below.
+  if not send.leading and not send.optional and not v.nodeImmutable and
+      v.body.len == send.argsStart and v.props.len == 0 and v.meta.len == 0 and
+      send.callee.kind == vkNode and send.callee.head.isSym("msg"):
+    var receiver = ""
+    if send.receiver.kind == vkSymbol and not send.receiver.isSym("super"):
+      receiver = send.receiver.symVal
+    elif send.receiver.kind == vkNode and send.receiver.head.isSym("path"):
+      receiver = resugarPath(send.receiver)
+    if receiver.len > 0:
+      let short = receiver & "/" & sendDescriptor(send.callee, false)
+      try:
+        let parsed = readAll(short)
+        if parsed.len == 1 and print(parsed[0]) == print(v):
+          return short
+      except ReadError:
+        discard
   result = if v.nodeImmutable: "#(" else: "("
   if not send.leading:
     result.add oneLine(send.receiver)

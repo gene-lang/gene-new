@@ -18,13 +18,13 @@
     ^console console})
 
 (fn require_turn [turn]
-  (if (|| ($absent? turn) (!= (turn/state .get) "open"))
+  (if (|| ($absent? turn) (!= turn/state/.get "open"))
     (fail
       (TurnClosed ^turn (if ($absent? turn) nil turn/turn) ^message (if ($absent? turn) "operation requires an open turn" $"turn ${turn/turn} is closed"))))
   turn)
 
 (fn next_label [turn, label : Str]
-  (let labels (turn/labels .get))
+  (let labels turn/labels/.get)
   (let count (+ (?? (labels .get label) 0) 1))
   (labels .put label count)
   (if (== count 1)
@@ -87,7 +87,7 @@
         (fail (OutcomeError ^message "done Outcome requires a non-empty reply")))
       (if (|| (!= outcome/prompt void) (!= outcome/questions void))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
-      (if (> ($size (turn/items .get)) 0)
+      (if (> ($size turn/items/.get) 0)
         (then
           (if_not ($absent? turn/console)
             (turn/console """done Outcome dropped appended prompt items
@@ -100,7 +100,7 @@
         ^kind "questions"
         ^outcome outcome
         ^questions (validate_questions ^validators validators outcome/questions)}))
-  (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size (turn/items .get)) 0))
+  (if (&& (! (nonempty_prompt? outcome/prompt)) (== ($size turn/items/.get) 0))
     (fail (OutcomeError ^message "continuing Outcome requires a prompt or append_prompt items")))
   {^kind "continue" ^outcome outcome ^questions nil})
 
@@ -164,7 +164,7 @@
     (let patch_id (implicit_id turn "patch"))
     (rendered .push
       {^id patch_id ^header $"[${patch_id}]" ^value patch ^^inline}))
-  (for item in (turn/items .get)
+  (for item in turn/items/.get
     (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
   (if_not ($absent? validated)
     (let outcome validated/outcome)

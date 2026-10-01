@@ -97,7 +97,7 @@
                  ^active ($cell true) ^warnings ($cell ($thaw #[]))))
 
 (fn require_active ^^private [include : IncludeHandle]
-  (if_not (include/active .get)
+  (if_not include/active/.get
     (include_failure "composition include is disposed"))
   include)
 
@@ -107,7 +107,7 @@
   # node and is rejected by loader validation rather than executed.
   (var parsed ($read_one (read_text include/path)))
   (var manifest
-    (apply_patches parsed include/patches (include/warnings .get)))
+    (apply_patches parsed include/patches include/warnings/.get))
   (if ($absent? mode)
     (include/loader .reconcile manifest)
     (include/loader .reconcile manifest mode)))
@@ -124,8 +124,8 @@
 
 (fn include_inspect ^^private [include : IncludeHandle]
   ($freeze {^path include/path ^writable include/writable
-            ^active (include/active .get)
-            ^warnings (copy_list (include/warnings .get))}))
+            ^active include/active/.get
+            ^warnings (copy_list include/warnings/.get)}))
 
 (fn include_dispose ^^private [include : IncludeHandle] : Nil
   (include/active .set false)

@@ -216,8 +216,8 @@
         (return (text 400 $"This endpoint speaks the ${subprotocol} subprotocol.")))
       (if_yes (&& native (>= (pending_native_count w) 8))
         (return (text 503 "Too many connections are still authenticating; try again shortly.")))
-      (next_conn .set (+ (next_conn .get) 1))
-      (let conn_id $"conn-$(next_conn .get)")
+      (next_conn .set (+ next_conn/.get 1))
+      (let conn_id $"conn-${next_conn/.get}")
       (return (ws_accept request ^subprotocol subprotocol
         ^on_open (fn [ws]
           (connection_opened w

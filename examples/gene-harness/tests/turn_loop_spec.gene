@@ -67,8 +67,8 @@
           (let b (submit_round controller "b" "request-b" 1 "ask"))
           (let duplicate (submit_round controller "a" "request-a" 1 "calculate"))
           ($assert (== duplicate/id a/id) "submission retry changed its round")
-          (for [session watcher] in (controller/watchers .get)
-            (watcher .join))
+          (for [session watcher] in controller/watchers/.get
+            watcher/.join)
           (let a_done (round_receipt controller "a" a/id))
           (let b_waiting (round_receipt controller "b" b/id))
           ($assert (== a_done/state "done") $"a failed: ${a_done}")

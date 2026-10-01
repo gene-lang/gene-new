@@ -26,10 +26,10 @@
   (it "coalesces clock firings without a model call and restores one registration" []
     (let host (fixture))
     (register host "counter" "(fn [api input] (api/state .put \"tick\" {^at input/now ^elapsed input/elapsed_ms}))")
-    (let calls (host/calls .get))
+    (let calls host/calls/.get)
     (body/tick host 5000)
     (runtime/settle host)
-    (assert_equal (host/calls .get) calls)
+    (assert_equal host/calls/.get calls)
     (assert_equal (p/get host/store "state/tick") {^at 5000 ^elapsed 5000})
     (let before (p/get host/store "routine/counter"))
     (assert_equal before/dispatches 1)
@@ -136,7 +136,7 @@
     (body/receive host "New message alongside routines")
     (try
       (runtime/settle host)
-      ($assert (<= (observed .get) 1))
+      ($assert (<= observed/.get 1))
       (assert_equal (p/get host/store "state/completed") 4)
       ensure (runtime/close_life host)))
 
@@ -174,7 +174,7 @@
     (p/commit tx)
     (body/tick host 1000)
     (runtime/heartbeat host)
-    ($assert (! ($absent? (host/active .get))))
+    ($assert (! ($absent? host/active/.get)))
     (let cancel (p/begin host/store "withdrawal"))
     (body/apply_operation host cancel {^id "withdrawal" ^organization "starter@1"} "cancel_owner" {^id "owned"})
     (p/commit cancel)

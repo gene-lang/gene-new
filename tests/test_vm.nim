@@ -1904,6 +1904,12 @@ suite "vm — dynamic Paths":
   test "dynamic Path keys are evaluated":
     ck "(var field \"name\") (var user {^name \"Ada\"}) user/%field", "\"Ada\""
     ck "(var field (quote name)) (var user {^name \"Ada\"}) user/%field", "\"Ada\""
+  test "dynamic segments are captured before path message traversal":
+    ck "(var field \"value\") " &
+       "(type Carrier ^props {} " &
+       "  (message child [] (set field \"other\") {^value 7 ^other 9})) " &
+       "(let carrier (Carrier)) " &
+       "[carrier/.child/%field field]", "[7 \"other\"]"
   test "dynamic Path indexes are evaluated":
     ck "(var i 1) (var xs [10 20 30]) xs/%i", "20"
   test "Path values capture dynamic segments":
@@ -2673,6 +2679,40 @@ suite "vm — cooperative scheduler":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (spawn (do ($sleep 5) (ch .send 7))) " &
        "  (ch .recv))", "7"
+  test "zero-argument path sends retain operands across suspension":
+    ck "(scope " &
+       "  (let ch ($channel ^capacity 1)) " &
+       "  (let nested {^channel ch}) " &
+       "  (let reader (spawn ^lane root nested/channel/.recv)) " &
+       "  (spawn ^lane root (do ($sleep 1) (ch .send 7))) " &
+       "  (await reader))", "7"
+    ck "(scope " &
+       "  (let ch ($channel ^capacity 1)) " &
+       "  (let nested {^channel ch}) (let key \"channel\") " &
+       "  (let reader (spawn ^lane root nested/%key/.recv)) " &
+       "  (spawn ^lane root (do ($sleep 1) (ch .send 7))) " &
+       "  (await reader))", "7"
+    ck "(let entered ($cell 0)) " &
+       "(type Receiver ^props {^input Any} " &
+       "  (message read [] (entered .set (+ entered/.get 1)) self/input/.recv)) " &
+       "(scope (let ch ($channel ^capacity 1)) " &
+       "  (let nested {^receiver (Receiver ^input ch)}) " &
+       "  (let reader (spawn ^lane root nested/receiver/.read)) " &
+       "  (spawn ^lane root (do ($sleep 1) (ch .send 7))) " &
+       "  [(await reader) entered/.get])", "[7 1]"
+
+  test "path message calls preserve void and nil traversal":
+    ck "(let data {}) data/missing/.size", "void"
+    ck "(let data {^value nil}) " &
+       "(try data/value/.size catch MessageError \"nil was sent\")",
+       "\"nil was sent\""
+    ck "(let calls ($cell 0)) " &
+       "(type Stop ^props {} " &
+       "  (message first [] void) " &
+       "  (message second [] (calls .set 1) 7)) " &
+       "(let value (Stop)) " &
+       "[value/.first/.second calls/.get]", "[void 0]"
+
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (ch .recv) " &

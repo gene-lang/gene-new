@@ -8,12 +8,12 @@
 
 (describe "Cordis quiescence"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "waits for entered hook calls before running owner cleanup" [t]
     (var hook (hook_key "slow" HookMode/emit))
     (var events ($cell ($thaw #[])))
-    (fn record [name : Str] ((events .get) .push name))
+    (fn record [name : Str] (events/.get .push name))
 
     (fn slow_handler [payload]
       (record "handler-start")
@@ -33,13 +33,13 @@
                         ^default_limits (invocation_limits))))
     (set t/runtime runtime)
     (runtime .admit_hook_key hook)
-    (var instance (runtime .install (runtime .root) plugin nil))
-    (instance .await_ready)
+    (var instance (runtime .install runtime/.root plugin nil))
+    instance/.await_ready
     (var dispatch
-      (spawn ^lane root ((runtime .root) .dispatch hook nil)))
+      (spawn ^lane root (runtime/.root .dispatch hook nil)))
     ($sleep 2)
-    (instance .dispose)
-    (runtime .await_settled)
-    (dispatch .join)
-    (assert_equal (events .get) ["handler-start" "handler-end" "cleanup"]
+    instance/.dispose
+    runtime/.await_settled
+    dispatch/.join
+    (assert_equal events/.get ["handler-start" "handler-end" "cleanup"]
       "unload must wait for entered calls before running cleanup")))

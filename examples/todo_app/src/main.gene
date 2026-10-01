@@ -289,7 +289,7 @@
 
 (fn filter_link [flt : TodoFilter, target : TodoFilter] : Node
   (var cls (if (== flt target) "filter on" "filter"))
-  (var key (target .backing))
+  (var key target/.backing)
   (var href (if (== target TodoFilter/all) "/" $"/?filter=${key}"))
   `(a ^class %cls ^href %href %key))
 

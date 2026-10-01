@@ -26,7 +26,7 @@
 # Reachable mutable values retain their identities.
 (var counter ($cell 0))
 (unless! false (counter .set 1))
-(show "Shared Cell after fexpr" (counter .get)) # 1
+(show "Shared Cell after fexpr" counter/.get) # 1
 
 # A closure keeps its own captured binding authority when called via eval.
 (fn update_x [] (set x 3))

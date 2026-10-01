@@ -31,7 +31,7 @@
     ^args ["run" host/worker request] ^dir root
     ^timeout_ms 3000 ^max_bytes 16384))
   (let done ($cell nil))
-  (let monitor (spawn ^lane root (done .set (task .join))))
+  (let monitor (spawn ^lane root (done .set task/.join)))
   {^record record ^mode mode ^task task ^monitor monitor ^done done ^rpc rpc ^result result ^root root
    ^tx ($cell nil) ^tx_id ($cell nil) ^cancelled ($cell false)
    ^read_view (if (== mode "context") (p/begin host/store record/id) nil)})
@@ -40,7 +40,7 @@
   (if (== execution/mode "validate") (p/problem "Validation cannot perform application operations"))
   (let meta (p/get host/store "meta"))
   (let recovery (&& (== execution/mode "migration") (== execution/selection/recovery true)))
-  (if (|| (execution/cancelled .get) (&& (!= meta/mode "running") (! recovery)))
+  (if (|| execution/cancelled/.get (&& (!= meta/mode "running") (! recovery)))
     (p/problem "Execution is no longer admitted"))
   (let admission (p/begin host/store "operation-admission"))
   (if (|| (! (body/valid_basis admission execution/record))
@@ -58,15 +58,15 @@
       (p/problem "Context construction is read-only")))
   (if (== op "begin")
     (then
-      (if_not ($absent? (execution/tx .get)) (p/problem "Nested groups are not supported"))
+      (if_not ($absent? execution/tx/.get) (p/problem "Nested groups are not supported"))
       (execution/tx .set (p/begin host/store execution/record/id))
       (execution/tx_id .set (p/id "tx"))
-      (return (execution/tx_id .get))))
-  (let grouped (! ($absent? (execution/tx .get))))
+      (return execution/tx_id/.get)))
+  (let grouped (! ($absent? execution/tx/.get)))
   (if grouped
-    (if_not (== request/tx (execution/tx_id .get)) (p/problem "An operation inside a group must forward tx"))
+    (if_not (== request/tx execution/tx_id/.get) (p/problem "An operation inside a group must forward tx"))
     (if_not ($absent? request/tx) (p/problem "Expired or foreign transaction handle")))
-  (let tx (if grouped (execution/tx .get)
+  (let tx (if grouped execution/tx/.get
     (if (== execution/mode "context") execution/read_view (p/begin host/store execution/record/id))))
   (if (["commit" "abort"] .contains? op)
     (then
@@ -87,17 +87,17 @@
   value)
 
 (fn poll [host, execution]
-  (if_yes (&& (! (execution/cancelled .get)) ($fs/exists? execution/rpc))
+  (if_yes (&& (! execution/cancelled/.get) ($fs/exists? execution/rpc))
     (let request ($serde/read_data ($fs/read_text execution/rpc)))
     ($fs/remove execution/rpc)
     (let reply (try {^ok true ^value (operation host execution request)}
       catch Any {^ok false ^error $err/message}))
     ($fs/write_text_atomic $"${execution/rpc}.reply" ($serde/write_data reply)))
-  (let done (execution/done .get))
+  (let done execution/done/.get)
   (if ($absent? done) (return nil))
-  (if_yes (&& (!= execution/mode "migration") (! ($absent? (execution/tx .get))))
-    (p/abort (execution/tx .get)))
-  (if (execution/cancelled .get)
+  (if_yes (&& (!= execution/mode "migration") (! ($absent? execution/tx/.get)))
+    (p/abort execution/tx/.get))
+  (if execution/cancelled/.get
     (return {^status (?? execution/cancel_status "interrupted") ^result "Execution cancelled"}))
   (match done
     (when (TaskOutcome/ok result)
@@ -113,4 +113,4 @@
 
 (fn cancel [execution]
   (execution/cancelled .set true)
-  (execution/task .cancel))
+  execution/task/.cancel)

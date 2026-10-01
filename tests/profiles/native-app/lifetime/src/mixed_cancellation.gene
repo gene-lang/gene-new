@@ -20,18 +20,18 @@
               (let nested (spawn ^lane root
                 (try
                   (nested_entered .send true)
-                  (blocker .recv)
+                  blocker/.recv
                  ensure (set nested_cleanups (+ nested_cleanups 1)))))
-              (nested_entered .recv)
+              nested_entered/.recv
               (entered .send true)
               (await nested))
             (do
               (entered .send true)
-              (if (== mode 0) (blocker .recv) ($sleep 60000))))
+              (if (== mode 0) blocker/.recv ($sleep 60000))))
          ensure (set cleanups (+ cleanups 1))))))
-    (entered .recv)
-    (task .cancel)
-    (task .join))
+    entered/.recv
+    task/.cancel
+    task/.join)
   ($assert (== cleanups (+ before 1)))
   ($assert (== nested_cleanups (+ nested_before (if (== mode 2) 1 0)))))
 

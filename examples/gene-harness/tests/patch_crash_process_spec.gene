@@ -39,6 +39,6 @@
             ($assert noted "partial patch warning was absent from the transcript")
             ($println "patch crash: SIGKILL between real renames, interrupted transcript, attention and staging cleanup")
           ensure (close_runtime reopened))
-        ensure (if_not (child .done?) (child .cancel) (child .join)))))))
+        ensure (if_not child/.done? child/.cancel child/.join))))))
 
 (fn main [args] : Int (run_spec args))

@@ -14,15 +14,15 @@
 (fn rpc [op, data = nil, tx = nil]
   # Ordinary Gene tasks may call application methods concurrently. Serialize
   # transport ownership so responses cannot be consumed by the wrong caller.
-  (transport_lock .recv)
+  transport_lock/.recv
   (try
-    ($fs/write_text_atomic (rpc_path .get)
+    ($fs/write_text_atomic rpc_path/.get
       ($serde/write_data {^op op ^data data ^tx tx}))
-    (let response $"${(rpc_path .get)}.reply")
+    (let response $"${rpc_path/.get}.reply")
     # Inside a synchronous callback, local transport must not pump Gene's
     # scheduler. The bounded worker-only wait leaves the body responsive.
     (while (! ($fs/exists? response))
-      (if (== (synchronous_depth .get) 0) ($sleep 5)))
+      (if (== synchronous_depth/.get 0) ($sleep 5)))
     (let reply ($serde/read_data ($fs/read_text response)))
     ($fs/remove response)
     (if_not reply/ok (fail (LifeError ^message reply/error)))
@@ -33,16 +33,16 @@
   # The existing native row-visitor contract is a real VM no-suspend boundary:
   # it rejects sleep, await, spawn and blocking channel operations transitively.
   # This private in-memory connection owns no Life records or transactions.
-  (if ($absent? (callback_db .get)) (callback_db .set (open ":memory:")))
+  (if ($absent? callback_db/.get) (callback_db .set (open ":memory:")))
   (let result ($cell nil))
-  (visit_text_rows (callback_db .get) "SELECT 1"
+  (visit_text_rows callback_db/.get "SELECT 1"
     (fn [columns values]
       (synchronous_depth .set 1)
       (try
         (result .set (callback tx))
         true
         ensure (synchronous_depth .set 0))))
-  (result .get))
+  result/.get)
 
 (type Store
   (message get [key, ^tx tx = nil] (rpc "get" {^key key} tx))
@@ -135,7 +135,7 @@
   (message load [revision, ^tx tx = nil]
     (let saved (rpc "load_code" {^revision revision} tx))
     (if (== saved/kind "module") (return (load_module saved)))
-    (program/evaluate (execution_root .get) saved/source {}))
+    (program/evaluate execution_root/.get saved/source {}))
   (message select [definition, ^migration migration = nil, ^queued queued = "defer",
                    ^invalidate_inflight invalidate = false]
     (rpc "select" {^definition definition ^migration (if ($absent? migration) nil ($to_str migration))

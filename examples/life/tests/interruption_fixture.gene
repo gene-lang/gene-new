@@ -12,10 +12,10 @@
   (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet" "nil")]
     ^fault (fn [phase]
-      (if_yes (&& (armed .get) (== kind "queued-job") (== phase "after_commit")) (die)))))
+      (if_yes (&& armed/.get (== kind "queued-job") (== phase "after_commit")) (die)))))
   (runtime/settle host)
   (if_yes (== kind "queued-job")
-    ((host/decisions .get) .push (brain/response "Prepare an arbitrary job"
+    (host/decisions/.get .push (brain/response "Prepare an arbitrary job"
       "(store .commit (fn [tx]
         (let job (life .start_job (quote
           (state .put \"runs\" (+ 1 (?? (state .get \"runs\") 0)))) ^tx tx))

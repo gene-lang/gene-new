@@ -90,8 +90,8 @@
       (let endpoints ($io/pipe))
       (await (endpoints/1 .AsyncWriter:write
         ($binary/from_str "stream-ok")))
-      (endpoints/1 .IoResource:close)
-      (await (endpoints/1 .IoResource:wait_closed))
+      endpoints/1/.IoResource:close
+      (await endpoints/1/.IoResource:wait_closed)
       (return (stream endpoints/0 ^content_length 9 ^own_reader true))))
   (if (== request/path "/stop")
     (do
@@ -108,7 +108,7 @@
   ($println ($json/stringify {^event "ready" ^port port}))
   (let shutdown (serve server ^handler handle ^body_mode "stream"
     ^drain_timeout_ms 5000 ^on_tick heartbeat ^tick_ms 50))
-  (db .Db:close)
+  db/.Db:close
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
     {^event "stopped" ^ok true ^max_heartbeat_gap_ms max_tick_gap_ms

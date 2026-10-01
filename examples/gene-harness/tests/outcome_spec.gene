@@ -8,7 +8,7 @@
 (describe "Harness outcomes"
   (before_each [t]
     (set t/console ($cell []))
-    (set t/turn (new_turn_items 1 ^console (fn [text] ((t/console .get) .push text)))))
+    (set t/turn (new_turn_items 1 ^console (fn [text] (t/console/.get .push text)))))
 
   (it "correlates output labels with source lines and disambiguates duplicate labels" [t]
     (let environment (env ^bindings {^Outcome Outcome ^append_prompt_at
@@ -56,8 +56,8 @@
     (append_prompt_at t/turn "pending" 1 (quote 1) 1)
     (let done (validate_outcome t/turn (Outcome ^^done ^reply "finished")))
     (assert_equal done/kind "done")
-    (assert_equal ($size (t/turn/items .get)) 0)
-    (assert_equal ($size (t/console .get)) 1))
+    (assert_equal ($size t/turn/items/.get) 0)
+    (assert_equal ($size t/console/.get) 1))
 
   (it "attributes plugin output to its function" [t]
     ($runtime/with_context {^turn t/turn ^function "plugin_fn"}

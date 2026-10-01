@@ -13,9 +13,9 @@
 
 (fn wait_round [controller, session : Str]
   (let watcher (controller/watchers .get; .get session))
-  (if_not ($absent? watcher) (watcher .join))
+  (if_not ($absent? watcher) watcher/.join)
   (let state (load_session controller/runtime/sessions session))
-  (state/round .get))
+  state/round/.get)
 
 (fn cli_questions [controller, session : Str, receipt]
   (let answers {})

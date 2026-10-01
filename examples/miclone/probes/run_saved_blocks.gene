@@ -20,4 +20,4 @@
       ($assert (== edited/data ($fs/read_bytes $"${argv/0}/recovery-block.bin"))
         "recovery must preserve the existing edited block byte for byte"))
     ($println row/n)
-    ensure (db .Db:close)))
+    ensure db/.Db:close))

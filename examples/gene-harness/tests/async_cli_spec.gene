@@ -25,17 +25,17 @@
             (spawn ^lane root (do
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "slow\n") .to_list))))
               (let deadline (+ ($os/monotonic_ms) 7000))
-              (while (&& (! (console_seen .get)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
+              (while (&& (! console_seen/.get) (< ($os/monotonic_ms) deadline)) ($sleep 5))
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/run (+ 2\n  3)\n") .to_list))))
               ($sleep 150)
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/cancel\n") .to_list))))
               ($sleep 150)
               (await (write_all stdin/1 ($binary/from_list (($str/to_utf8 "/stop\n") .to_list))))
-              (stdin/1 .IoResource:close))))
+              stdin/1/.IoResource:close)))
           (let output [])
           (try
             (loop
-              (let line (lines .recv))
+              (let line lines/.recv)
               (output .push line)
               (if ($str/contains? line "response console visible") (console_seen .set true)))
           catch ChannelClosed

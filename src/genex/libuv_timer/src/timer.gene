@@ -9,27 +9,27 @@
     (set self/library library)
     (set self/lease lease)
     (set self/released ($cell false)))
-  (message status [] (self/subscription .status)))
+  (message status [] self/subscription/.status))
 
 (impl IoResource for Timer
   (message close [] : Nil
-    (self/subscription .IoResource:close)
+    self/subscription/.IoResource:close
     nil)
   (message wait_closed [] : (Task Nil Error)
     (spawn ^lane root
       (try
-        (await (self/subscription .IoResource:wait_closed))
+        (await self/subscription/.IoResource:wait_closed)
         ensure
-          (if (&& (not (self/released .get))
-                  (== (/state (self/subscription .status)) "closed"))
+          (if (&& (not self/released/.get)
+                  (== (/state self/subscription/.status) "closed"))
             (do
               (self/released .set true)
               ($ffi/Library/close self/library)
-              (self/lease .close)))))))
+              self/lease/.close))))))
 
 (fn open [handler]
   (let lease ($pkg/native_binary this_pkg "native"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (let subscription
     ($native/ingress/open library handler
       ^register "gene_timer_register"

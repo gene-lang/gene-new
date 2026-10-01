@@ -48,7 +48,7 @@
     (let definition (candidate host))
     (let literal ($to_str definition))
     (let migrate (migration))
-    ((host/decisions .get) .push (brain/response "Reorganize retained memory"
+    (host/decisions/.get .push (brain/response "Reorganize retained memory"
       $"(do (code .select ${literal} ^migration (quote ${migrate}) ^queued \"invalidate\")
         (state .put \"commitment\" {^status \"unfinished\" ^owner \"garden-plan\"}))"))
     (body/receive host "Reorganize")
@@ -59,7 +59,7 @@
       (assert_equal work/commitment/status "unfinished")
       (let visitor (p/get host/store "mind/visitor"))
       (assert_equal visitor/preference "shade")
-      ((host/decisions .get) .push (brain/response "Use the selected library"
+      (host/decisions/.get .push (brain/response "Use the selected library"
         "(do (state .put \"recalled\" (memory .recall \"visitor\")) nil)"))
       (body/receive host "Recall")
       (runtime/settle host)
@@ -78,7 +78,7 @@
     (let restored (runtime/open_life host/store/home ^clock (fn [] 1000)))
     (try
       (assert_equal (selected restored) definition/id)
-      (assert_equal (restored/calls .get) 0)
+      (assert_equal restored/calls/.get 0)
       (let restored_visitor (p/get restored/store "mind/visitor"))
       (assert_equal restored_visitor/preference "shade")
       (runtime/settle restored)
@@ -88,9 +88,9 @@
     (let release ($cell false))
     (let count ($cell 0))
     (let host (fixture ^provider (fn [snapshot]
-      (count .set (+ (count .get) 1))
-      (if_yes (== (count .get) 1)
-        (while (! (release .get)) ($sleep 5))
+      (count .set (+ count/.get 1))
+      (if_yes (== count/.get 1)
+        (while (! release/.get) ($sleep 5))
         (return (brain/response "Old organization still valid" "(state .put \"preference\" \"shade\")")))
       (brain/response "New organization" "nil"))))
     (runtime/heartbeat host)
@@ -114,20 +114,20 @@
     (let release ($cell false))
     (let count ($cell 0))
     (let host (fixture ^provider (fn [snapshot]
-      (count .set (+ (count .get) 1))
-      (if_yes (== (count .get) 1)
-        (while (! (release .get)) ($sleep 5))
+      (count .set (+ count/.get 1))
+      (if_yes (== count/.get 1)
+        (while (! release/.get) ($sleep 5))
         (return (brain/response "Stale response" "(state .put \"stale\" true)")))
       (brain/response "Fresh response" "nil"))))
     (runtime/heartbeat host)
     ($sleep 5)
     (p/put host/store "state/preference" "shade")
-    (let thought (host/thought .get))
+    (let thought host/thought/.get)
     (let definition (candidate host))
     (request host definition (migration) ^invalidate true)
     (try
       (await_selected host definition/id)
-      (assert_equal (release .get) false)
+      (assert_equal release/.get false)
       (release .set true)
       (runtime/settle host)
       (runtime/heartbeat host)
@@ -138,7 +138,7 @@
       (assert_equal (p/get host/store "state/stale") nil)
       (let work (p/get host/store "mind/working"))
       ($assert ($absent? work/stale))
-      ($assert (> (host/calls .get) 1))
+      ($assert (> host/calls/.get 1))
       ensure (release .set true) (runtime/close_life host)))
 
   (it "rolls back a failed migration and keeps later conversations and memories" []
@@ -265,7 +265,7 @@
     (loop
       (runtime/heartbeat host)
       ($sleep 5)
-      (let active (host/active .get))
+      (let active host/active/.get)
       (if_yes (&& (! ($absent? active)) (== active/mode "context")
                    (! ($absent? (active/read_view/reads .get "state/counter"))))
         (set building active/record/id)

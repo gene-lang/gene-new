@@ -160,7 +160,7 @@
 (fn world_summary [host]
   (let view (p/get host/store "world_view"))
   (let binding (p/get host/store "world_binding"))
-  (let state (host/world .get))
+  (let state host/world/.get)
   {^freshness (if (== state/phase "ready") "synchronized" "last_observed")
    ^world_revision (?? view/world_revision nil) ^committed_sim_time_ms (?? view/committed_sim_time_ms nil)
    ^self (?? view/self nil) ^entities (?? view/entities []) ^places (?? view/places {})
@@ -244,24 +244,24 @@
   (let done ($cell nil))
   (let task (spawn ^lane root
     (try
-      (host/calls .set (+ (host/calls .get) 1))
+      (host/calls .set (+ host/calls/.get 1))
       (let raw (if ($absent? host/brain) (brain/fake host/decisions snapshot) (host/brain snapshot)))
       (done .set {^ok true ^raw raw})
       catch Any (done .set {^ok false ^error $err/message}))))
   (host/thought .set {^cycle cycle ^task task ^done done ^started ($os/monotonic_ms)}))
 
 (fn poll_thought [host]
-  (let thought (host/thought .get))
+  (let thought host/thought/.get)
   (if ($absent? thought) (return nil))
   (let retained (p/get host/store $"cycle/${thought/cycle/id}"))
   (if_not (== retained/status "thinking")
-    ((host/late .get) .push thought)
+    (host/late/.get .push thought)
     (host/thought .set nil)
     (return nil))
   (if_yes (> (- ($os/monotonic_ms) thought/started) 30000)
-    (thought/task .cancel)
+    thought/task/.cancel
     (thought/done .set {^ok false ^error "Brain deadline exceeded"}))
-  (let reply (thought/done .get))
+  (let reply thought/done/.get)
   (if ($absent? reply) (return nil))
   (let cycle (p/get host/store $"cycle/${thought/cycle/id}"))
   (let meta (p/get host/store "meta"))
@@ -273,7 +273,7 @@
     (p/put host/store $"cycle/${cycle/id}" cycle)
     (host/thought .set nil)
     (return nil))
-  (if_not ($absent? (host/active .get)) (return nil))
+  (if_not ($absent? host/active/.get) (return nil))
   (host/thought .set nil)
   (try
     (if_not reply/ok (p/problem reply/error))
@@ -297,11 +297,11 @@
 
 (fn poll_late [host]
   (let remaining [])
-  (for thought in (host/late .get)
+  (for thought in host/late/.get
     (if_yes (> (- ($os/monotonic_ms) thought/started) 30000)
-      (thought/task .cancel)
+      thought/task/.cancel
       (thought/done .set {^ok false ^error "Superseded request deadline exceeded"}))
-    (let reply (thought/done .get))
+    (let reply thought/done/.get)
     (if_yes ($absent? reply) (remaining .push thought) (continue))
     (let cycle (p/get host/store $"cycle/${thought/cycle/id}"))
     (cycle .put "diagnostic" ($to_str reply))
@@ -331,7 +331,7 @@
 
 (fn finish_selection [host, active, result]
   (let request active/selection)
-  (let tx (active/tx .get))
+  (let tx active/tx/.get)
   (if_not (== result/status "succeeded")
     (p/abort tx)
     (organization/reject host/store request result/status result/result)
@@ -425,9 +425,9 @@
   fresh)
 
 (fn heartbeat [host]
-  (if (host/stopped .get) (return nil))
-  (if_not ($absent? (host/store/fault .get))
-    (let reason (host/store/fault .get))
+  (if host/stopped/.get (return nil))
+  (if_not ($absent? host/store/fault/.get)
+    (let reason host/store/fault/.get)
     (abandon host)
     (p/problem $"Body stopped after a persistent write failure; reopen for recovery: ${reason}"))
   (connector/tick host)
@@ -435,11 +435,11 @@
   # heartbeat, whether the brain is thinking, idle or paused (§8.4, §9.7).
   (world_network/tick host)
   (world_network/dispatch host)
-  (let active (host/active .get))
+  (let active host/active/.get)
   (if_not ($absent? active)
     # A known terminal process supplies its actual outcome. A later withdrawal
     # must not relabel completed execution as a successful cancellation.
-    (if_yes ($absent? (active/done .get))
+    (if_yes ($absent? active/done/.get)
       (let admission (p/begin host/store "active-ownership"))
       (if_not (body/valid_basis admission active/record)
         (active .put "cancel_status" "cancelled")
@@ -459,22 +459,22 @@
   (let meta (p/get host/store "meta"))
   (let pending (organization/pending host/store))
   (if_yes (!= meta/mode "running")
-    (if_yes (&& ($absent? (host/active .get)) (! ($absent? pending)) (== pending/recovery true))
+    (if_yes (&& ($absent? host/active/.get) (! ($absent? pending)) (== pending/recovery true))
       (start_selection host pending))
     (return nil))
-  (if_not ($absent? (host/active .get)) (return nil))
+  (if_not ($absent? host/active/.get) (return nil))
   (if_yes ($absent? pending) (body/due host) (routines/due host))
   # Bounded queue fairness: a stream of successful callbacks cannot prevent
   # attention admission or keep an already accepted decision queued forever.
-  (if_yes (&& ($absent? pending) (>= (host/background_dispatches .get) 1) ($absent? (host/thought .get)))
+  (if_yes (&& ($absent? pending) (>= host/background_dispatches/.get 1) ($absent? host/thought/.get))
     (let events (eligible_events host))
     (var queued_cycle false)
     (for cycle in (p/values host/store "cycle/")
       (if_yes (== cycle/status "queued") (set queued_cycle true)))
     (if_yes (&& (! queued_cycle) (> events/.size 0) (budget/available? host))
       (think host events)
-      (if_not ($absent? (host/active .get)) (return nil))))
-  (let order (if (>= (host/background_dispatches .get) 1)
+      (if_not ($absent? host/active/.get) (return nil))))
+  (let order (if (>= host/background_dispatches/.get 1)
     ["cycle/" "execution/" "job/"] ["execution/" "cycle/" "job/"]))
   (for prefix in (if ($absent? pending) order ["cycle/"])
     (for record in (p/values host/store prefix)
@@ -502,13 +502,13 @@
           (cont .put "status" "running")
           (p/tx_put claim $"world_cont/${record/operation_id}" cont))
         (p/commit claim)
-        (host/background_dispatches .set (if (== prefix "cycle/") 0 (+ (host/background_dispatches .get) 1)))
+        (host/background_dispatches .set (if (== prefix "cycle/") 0 (+ host/background_dispatches/.get 1)))
         (let execution (execution/launch host record
           (if (["routine" "continuation"] .contains? record/kind) "routine" "run")))
         (execution .put "prefix" prefix)
         (host/active .set execution)
         (return nil))))
-  (if_not ($absent? (host/thought .get)) (return nil))
+  (if_not ($absent? host/thought/.get) (return nil))
   (if_not ($absent? pending) (start_selection host pending) (return nil))
   (let eligible (eligible_events host))
   (if (&& (> eligible/.size 0) (budget/available? host)) (think host eligible)))
@@ -528,16 +528,16 @@
     (for prefix in ["cycle/" "execution/" "job/"]
       (for item in (p/values host/store prefix)
         (if_yes (&& (== item/status "queued") (!= item/kind "walk")) (set pending true))))
-    (if (&& (! pending) ($absent? (host/active .get)) ($absent? (host/thought .get))) (return nil))))
+    (if (&& (! pending) ($absent? host/active/.get) ($absent? host/thought/.get)) (return nil))))
 
 (fn pause [host]
   (let meta (p/get host/store "meta"))
   (meta .put "mode" "paused")
   (p/put host/store "meta" meta "pause-request")
-  (let active (host/active .get))
+  (let active host/active/.get)
   (if_not ($absent? active)
     (execution/cancel active)
-    (while (! ($absent? (host/active .get))) (heartbeat host) ($sleep 5)))
+    (while (! ($absent? host/active/.get)) (heartbeat host) ($sleep 5)))
   (for cycle in (p/values host/store "cycle/")
     (if_yes (["thinking" "queued"] .contains? cycle/status)
       (cycle .put "status" "superseded")
@@ -556,16 +556,16 @@
   # remains usable when persistence itself cannot record execution outcomes.
   (connector/stop host)
   (world_network/stop host)
-  (let active (host/active .get))
+  (let active host/active/.get)
   (if_not ($absent? active)
     (execution/cancel active)
-    (active/task .join)
-    (active/monitor .join)
-    (if_not ($absent? (active/tx .get)) (p/abort (active/tx .get)))
+    active/task/.join
+    active/monitor/.join
+    (if_not ($absent? active/tx/.get) (p/abort active/tx/.get))
     (host/active .set nil))
-  (let thought (host/thought .get))
-  (if_not ($absent? thought) (thought/task .cancel) (thought/task .join))
-  (for late in (host/late .get) (late/task .cancel) (late/task .join))
+  (let thought host/thought/.get)
+  (if_not ($absent? thought) thought/task/.cancel thought/task/.join)
+  (for late in host/late/.get late/task/.cancel late/task/.join)
   (host/stopped .set true)
   (p/close_store host/store))
 
@@ -575,9 +575,9 @@
   (pause host)
   (connector/stop host)
   (world_network/stop host)
-  (let thought (host/thought .get))
-  (if_not ($absent? thought) (thought/task .cancel) (thought/task .join))
-  (for late in (host/late .get) (late/task .cancel) (late/task .join))
+  (let thought host/thought/.get)
+  (if_not ($absent? thought) thought/task/.cancel thought/task/.join)
+  (for late in host/late/.get late/task/.cancel late/task/.join)
   (meta .put "mode" mode)
   (meta .put "clean" true)
   (meta .put "last_wall" (host/clock))

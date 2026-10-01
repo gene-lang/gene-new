@@ -235,7 +235,7 @@
   (try
     (try
       (loop
-        (var chunk (transfer/channel .recv))
+        (var chunk transfer/channel/.recv)
         (var text (feed_codex_preview state chunk))
         (if_yes (!= text emitted)
           (set emitted text)
@@ -243,7 +243,7 @@
     catch ChannelClosed nil)
     (var response (await transfer/task))
     (completion_text "codex" response)
-  ensure (transfer/task .cancel)))
+  ensure transfer/task/.cancel))
 
 (fn chat_completion [system : Str, user : Str, ^max_tokens max_tokens = nil,
                      ^on_delta on_delta = nil, ^messages messages = nil, ^config configured = nil] : Str
@@ -257,7 +257,7 @@
     (return (stream_codex_completion spec on_delta)))
   (let pending (request ^method "POST" ^url spec/url ^headers spec/headers
     ^body ($json/stringify spec/body) ^timeout_ms 180000 ^max_bytes 2000000))
-  (var response (try (await pending) ensure (pending .cancel)))
+  (var response (try (await pending) ensure pending/.cancel))
   (completion_text config/provider response))
 
 (fn complete_messages [request] : Str

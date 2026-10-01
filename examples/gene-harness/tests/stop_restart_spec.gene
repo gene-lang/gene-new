@@ -39,13 +39,13 @@
           ($assert
             (== refused/error_code "confirmation_required")
             "stop did not require other-session confirmation")
-          ($assert (! (runtime/stopping .get)) "stop acted before confirmation")
+          ($assert (! runtime/stopping/.get) "stop acted before confirmation")
           (let confirmed (submit_command runtime/commands "default" "/stop --confirm"))
           (runtime/commands/watchers
             .get
             ; .get $"default:${confirmed/id}"
             ; .join)
-          ($assert (runtime/stopping .get) "confirmed stop did not stop admissions")
+          ($assert runtime/stopping/.get "confirmed stop did not stop admissions")
           ($assert
             (try
               (submit_round controller "default" "late" 1 "no")
@@ -60,7 +60,7 @@
         (let reopened (open_runtime root "default" (baseline_profile)))
         (try
           (let waiting (load_session reopened/sessions "waiting"))
-          (let round (waiting/round .get))
+          (let round waiting/round/.get)
           ($assert (== round/state "waiting") "stop discarded pending questions")
           ($println "stop: workspace lock released and pending questions survive reopen")
         ensure

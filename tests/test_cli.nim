@@ -4,7 +4,7 @@ when defined(posix):
   import std/posix
 when defined(macosx):
   const SigWinch = 28
-import gene/[digest, package, reader, repl, vm, web]
+import gene/[digest, package, printer, reader, repl, vm, web]
 
 # The no-follow source profile requires a physical fixture root. On macOS,
 # getTempDir() commonly starts with the /var symlink.
@@ -1293,6 +1293,21 @@ suite "cli — gene parse/fmt/compile":
     let typeHeaderFmt = runGene(["fmt", typeHeader])
     check typeHeaderFmt.exitCode == 0
     check typeHeaderFmt.output == "(type Child : Parent ^props {})\n"
+
+  test "fmt retains preferred qualified zero-argument path sends":
+    let source = "a/.x\n(db .Db:close)\n(session/db .Db:close)\n" &
+      "(db .Db:exec \"select 1\")\n((open_db) .Db:close)\n" &
+      "(super .Read:x)\n(quote (db .Db:close))\n#(db .Db:close)\n"
+    let path = writeCliProgram("fmt_zero_arg_sends.gene", source)
+    let formatted = runGene(["fmt", path])
+    check formatted.exitCode == 0
+    check formatted.output == "a/.x\ndb/.Db:close\nsession/db/.Db:close\n" &
+      "(db .Db:exec \"select 1\")\n((open_db) .Db:close)\n" &
+      "(super .Read:x)\n(quote db/.Db:close)\n#(db .Db:close)\n"
+    check readAll(formatted.output).mapIt(it.print()) ==
+      readAll(source).mapIt(it.print())
+    let second = writeCliProgram("fmt_zero_arg_sends_again.gene", formatted.output)
+    check runGene(["fmt", second]).output == formatted.output
 
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()

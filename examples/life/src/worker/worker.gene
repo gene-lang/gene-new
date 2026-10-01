@@ -45,8 +45,8 @@
   (let request ($serde/read_data ($fs/read_text args/0)))
   (configure request/rpc_path request/root)
   (let forms (read_all request/program))
-  (let parsed (forms .next))
-  (if_yes (forms .has_next) (panic "Expected one complete Gene program"))
+  (let parsed forms/.next)
+  (if_yes forms/.has_next (panic "Expected one complete Gene program"))
   (let base (bindings request/context request/input))
   # Validate the candidate's module graph before a migration can stage writes.
   (if_not ($absent? request/candidate_module)

@@ -6,19 +6,19 @@
   (let schema ($json/parse text))
   (let dependency ($pkg/dependency this_pkg "support"))
   (let lease ($pkg/materialize this_pkg "data/schema.json"))
-  (let cached ($json/parse ($fs/read_text (lease .path))))
+  (let cached ($json/parse ($fs/read_text lease/.path)))
   (let leased (/materialized_resource_leases ($runtime/gc_stats)))
-  (lease .close)
+  lease/.close
   (let released (/materialized_resource_leases ($runtime/gc_stats)))
   (var abandoned ($pkg/materialize this_pkg "data/schema.json"))
   (set abandoned nil)
   (let dropped (/materialized_resource_leases ($runtime/gc_stats)))
   (let native_lease ($pkg/native_binary this_pkg "native"))
-  (let native_lib ($ffi/open (native_lease .path)))
+  (let native_lib ($ffi/open native_lease/.path))
   (let score ($ffi/bind native_lib "native_score" [C/Int64] C/Int64))
   (let native_result (score 41))
   ($ffi/Library/close native_lib)
-  (native_lease .close)
+  native_lease/.close
   ($println ($json/stringify {^workload "cli"
                              ^ok (&& (== text ($binary/to_str bytes))
                                      (== dependency/name "gene/native_app_support")

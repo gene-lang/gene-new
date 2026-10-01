@@ -25,6 +25,6 @@
           (assert_equal ($fs/read_text ($path/join workspace "b.txt")) "b0\n")
           ($assert (! ($fs/exists? ($path/join workspace ".b.txt.gene-harness-tmp"))))
         ensure
-          (if_not (child .done?) (child .cancel) (child .join)))))))
+          (if_not child/.done? child/.cancel child/.join))))))
 
 (fn main [args] : Int (run_spec args))

@@ -24,7 +24,7 @@
       (impl ValueEq for Parked
         (message equal [other : Parked] : Bool (== self/text other/text)))
       (started .send true)
-      (blocker .recv)
+      blocker/.recv
       (impl Hash for Parked (message hash [] : Int 1))
       Parked)
   """))
@@ -60,8 +60,8 @@
       (let started ($channel ^capacity 1))
       (let blocker ($channel ^capacity 1))
       (let task (spawn ^lane root (eval parked_form ^in (env))))
-      (started .recv)
-      (task .cancel))
+      started/.recv
+      task/.cancel)
     ($assert (try (eval nested_compile_form ^in (env)) false
                catch CompileError true))
     ($assert (try (eval runtime_between_form ^in (env)) false

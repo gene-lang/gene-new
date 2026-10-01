@@ -34,7 +34,7 @@
           (let occurrences (list_occurrences read ^trigger "hb"))
           ($assert (== occurrences/.size 1) "read-only trigger commands scheduled new occurrences")
           ($assert (== occurrences/0/state "due") "trigger administration consumed due work")
-          ($assert ($absent? ((reopened/sessions/index .get) .get occurrences/0/session)) "administration created an execution session")
+          ($assert ($absent? (reopened/sessions/index/.get .get occurrences/0/session)) "administration created an execution session")
           ($println "trigger administration: list/occurrences/create leave due work untouched; plain maps accepted")
         ensure (close_trigger_manager read) (close_round_controller again) (close_runtime reopened))))))
 

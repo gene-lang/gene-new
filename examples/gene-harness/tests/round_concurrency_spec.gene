@@ -31,7 +31,7 @@
             catch Any
               true)
             "busy session accepted another round")
-          (while (! (entered .get))
+          (while (! entered/.get)
             ($sleep 1))
           (let fast (submit_round controller "fast" "fast" 1 "finish"))
           (controller/watchers

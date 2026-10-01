@@ -7,14 +7,14 @@
     (message put [key value] (self/inner .Store:put key value))
     (message get [key] (self/inner .Store:get key))
     (message has? [key]
-      (if ($str/starts_with? key "segment/") (self/lookups .set (+ (self/lookups .get) 1)))
+      (if ($str/starts_with? key "segment/") (self/lookups .set (+ self/lookups/.get 1)))
       (self/inner .Store:has? key))
     (message delete [key] (self/inner .Store:delete key))
-    (message keys [] (self/inner .Store:keys))
-    (message clear [] (self/inner .Store:clear))
+    (message keys [] self/inner/.Store:keys)
+    (message clear [] self/inner/.Store:clear)
     (message checkpoint [generation records] (self/inner .Store:checkpoint generation records))
-    (message load_checkpoint [] (self/inner .Store:load_checkpoint))
-    (message close [] (self/inner .Store:close))))
+    (message load_checkpoint [] self/inner/.Store:load_checkpoint)
+    (message close [] self/inner/.Store:close)))
 (describe "Harness event storage"
   (it "reuses sealed segment digests and safely changes segment sizes" []
     (isolated this_mod/.path "reuses sealed segment digests and safely changes segment sizes"
@@ -25,7 +25,7 @@
         (try
           (repeat n in 2048 (append_core_event events "session" "test" {^type "trace" ^text ($to_str n)}))
           (flush_event_store events)
-          (let original_manifest (events/last_manifest .get))
+          (let original_manifest events/last_manifest/.get)
           (let original (original_manifest/streams .get "session:test"))
           (set events/backend (ObservedStore ^inner events/backend ^lookups lookups))
           (let before ($os/monotonic_ms))
@@ -33,8 +33,8 @@
             (lookups .set 0)
             (append_core_event events "session" "test" {^type "trace" ^text ($to_str turn)})
             (flush_event_store events)
-            ($assert (== (lookups .get) 1) "flush revisited sealed event segments"))
-          (let current_manifest (events/last_manifest .get))
+            ($assert (== lookups/.get 1) "flush revisited sealed event segments"))
+          (let current_manifest events/last_manifest/.get)
           (let current (current_manifest/streams .get "session:test"))
           (repeat index in original/segments/.size
             ($assert (== original/segments/%index current/segments/%index) "sealed segment digest changed"))

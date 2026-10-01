@@ -36,7 +36,7 @@
     ($print "... ")
     (let input ($os/read_line_async))
     (runtime/stdin_task .set input)
-    (let outcome (input .join))
+    (let outcome input/.join)
     (runtime/stdin_task .set nil)
     (match outcome
       (when (TaskOutcome/ok line)
@@ -78,12 +78,12 @@
       (if_not ($absent? record/selected) (session .set record/selected))
       ($io/flush_stdout)
       nil))
-  (while (! (runtime/stopping .get))
-    (let selected_id (session .get))
+  (while (! runtime/stopping/.get)
+    (let selected_id session/.get)
     ($print $"${selected_id}> ")
     (let input ($os/read_line_async))
     (runtime/stdin_task .set input)
-    (let outcome (input .join))
+    (let outcome input/.join)
     (runtime/stdin_task .set nil)
     (var text nil)
     (var halt false)
@@ -98,12 +98,12 @@
     (if halt (break))
     (if ($absent? text)
       (then
-        (for [id watcher] in (controller/watchers .get)
-          (watcher .join))
+        (for [id watcher] in controller/watchers/.get
+          watcher/.join)
         (break)))
     (try
       (let state (load_session runtime/sessions selected_id))
-      (let round (state/round .get))
+      (let round state/round/.get)
       (if_yes (&& (! ($absent? round)) (== round/state "waiting") (== text "/dismiss"))
         (answer_round ^^dismiss controller selected_id round/questions/id {})
         (continue))
@@ -142,4 +142,4 @@
               parsed/text)))))
     catch Any
       ($println $err/message)))
-  (runtime/exit_code .get))
+  runtime/exit_code/.get)

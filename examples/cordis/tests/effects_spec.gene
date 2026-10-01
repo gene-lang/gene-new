@@ -13,7 +13,7 @@
 
 (describe "Cordis effects"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "owns acquired values and unwinds cleanup and tasks deterministically" [t]
     (var order ($cell ($thaw #[])))
@@ -22,7 +22,7 @@
     (var async_lease ($cell nil))
 
     (fn push_order [name : Str]
-      ((order .get) .push name))
+      (order/.get .push name))
 
     (fn accept_owner [owner : EffectOwner] : Bool true)
 
@@ -77,36 +77,36 @@
         (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
                         ^default_limits (invocation_limits))))
     (set t/runtime runtime)
-    (var instance (runtime .install (runtime .root) plugin nil))
-    (instance .await_ready)
+    (var instance (runtime .install runtime/.root plugin nil))
+    instance/.await_ready
     ($sleep 10)
 
-    (assert_equal ((child_lease .get) .value) 7
+    (assert_equal child_lease/.get/.value 7
       "an effect lease must retain the acquisition value")
-    ((child_lease .get) .dispose)
-    (assert_equal (order .get) ["partial" "started" "second" "first"]
+    child_lease/.get/.dispose
+    (assert_equal order/.get ["partial" "started" "second" "first"]
       "nested cleanup must run once in reverse acquisition order")
-    (assert_raises (fn [] ((child_lease .get) .value)) EffectDisposed
+    (assert_raises (fn [] child_lease/.get/.value) EffectDisposed
       "disposed effect values must be inaccessible")
-    ((child_lease .get) .dispose)
-    (assert_equal (order .get) ["partial" "started" "second" "first"]
+    child_lease/.get/.dispose
+    (assert_equal order/.get ["partial" "started" "second" "first"]
       "effect disposal must be idempotent")
 
-    (assert_raises (fn [] ((failing_lease .get) .dispose)) PluginCleanupError
+    (assert_raises (fn [] failing_lease/.get/.dispose) PluginCleanupError
       "explicit effect disposal must return aggregate cleanup failure")
-    (assert_equal (order .get)
+    (assert_equal order/.get
       ["partial" "started" "second" "first"
        "error" "after-error"]
       "cleanup must continue after an earlier failure")
-    ((async_lease .get) .dispose)
-    (assert_equal (order .get)
+    async_lease/.get/.dispose
+    (assert_equal order/.get
       ["partial" "started" "second" "first"
        "error" "after-error" "async"]
       "effect disposal must await suspending cleanup")
 
-    (runtime .close)
-    (runtime .close)
-    (assert_equal (order .get)
+    runtime/.close
+    runtime/.close
+    (assert_equal order/.get
       ["partial" "started" "second" "first"
        "error" "after-error" "async" "task"]
       "instance disposal must cancel and join owned tasks")))

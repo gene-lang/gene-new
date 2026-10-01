@@ -13,7 +13,7 @@
   (let armed ($cell false))
   (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet start" "nil")]
-    ^fault (fn [phase] (if_yes (&& (armed .get) (== phase point)) (die)))))
+    ^fault (fn [phase] (if_yes (&& armed/.get (== phase point)) (die)))))
   (runtime/settle host)
   (let tx (p/begin host/store "rest-candidate"))
   (let source ($fs/read_text "examples/life/src/organizations/rest.gene"))
@@ -23,7 +23,7 @@
   (p/commit tx)
   (runtime/settle host)
   (let literal ($json/stringify revision))
-  ((host/decisions .get) .push (brain/response "Enter sleep" $"(rest .sleep ${literal})"))
+  (host/decisions/.get .push (brain/response "Enter sleep" $"(rest .sleep ${literal})"))
   (body/receive host "Please rest" ^external_id "rest-request")
   (if_yes (== stage "entry") (armed .set true))
   (runtime/settle host)

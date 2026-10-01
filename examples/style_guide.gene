@@ -93,6 +93,10 @@ line two"""
     (target .push value))
   target)
 
+# Zero-argument sends prefer path spelling on a simple receiver.
+(fn user_role_count [user : User] : Int
+  user/roles/.size)
+
 (fn active_names [users : (List User)] : (List Str)
   ((path users %$to_stream)
     .filter (fn [user] user/active)
@@ -219,7 +223,7 @@ line two"""
 
 (fn user_card [user : User]
   `(article ^class "user-card"
-     (h2 %(user .label))
+     (h2 %user/.label)
      (ul %((path user roles %$to_stream) .map (fn [role] `(li %role)); .into []) ...)))
 
 (fn path_examples [session, field]

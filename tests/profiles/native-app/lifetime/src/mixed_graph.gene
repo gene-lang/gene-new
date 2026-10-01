@@ -14,5 +14,5 @@
 (fn graph_ok [graph]
   (let m graph/0)
   (let n (m .get "held"))
-  (let f (n/held .get))
+  (let f n/held/.get)
   (same? (f) graph))

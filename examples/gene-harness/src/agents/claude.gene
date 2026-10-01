@@ -17,7 +17,7 @@
   (for message in conversation
     (if (== message/role "assistant") (assistant_indices .push index))
     (set index (+ index 1)))
-  (let cached ($into ($take (assistant_indices .reverse) 2) []))
+  (let cached ($into ($take assistant_indices/.reverse 2) []))
   (let wire [])
   (set index 0)
   (for message in conversation
@@ -114,5 +114,5 @@
   (var response
     (try (await task)
       catch Any (fail (HarnessError ^message "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND"))
-      ensure (task .cancel)))
+      ensure task/.cancel))
   (claude_text response))

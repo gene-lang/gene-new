@@ -120,5 +120,5 @@
       (let rejected ($cell false))
       (try (mailbox/call fixture "/missing" {})
         catch mailbox/MailboxError (rejected .set true))
-      ($assert (rejected .get))
+      ($assert rejected/.get)
     ensure (mailbox/stop fixture))))

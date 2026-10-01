@@ -157,10 +157,10 @@
         (tx .Db:exec $"PRAGMA user_version=${store_format}")))
       (WorldStore ^db db ^claim claim ^root root ^open ($cell true))
       catch Any
-        (db .Db:close)
+        db/.Db:close
         (fail $err))
     catch Any
-      (claim .close)
+      claim/.close
       (fail $err)))
 
 # Open an existing store. A missing or incompatible store is a failure, not a
@@ -188,22 +188,22 @@
         (store_problem "The world store failed its integrity check."))
       (WorldStore ^db db ^claim claim ^root root ^open ($cell true))
       catch Any
-        (db .Db:close)
+        db/.Db:close
         (fail $err))
     catch Any
-      (claim .close)
+      claim/.close
       (fail $err)))
 
 (fn close_store [store : WorldStore] : Nil
-  (if_yes (store/open .get)
+  (if_yes store/open/.get
     (store/open .set false)
-    (store/db .Db:close)
-    (store/claim .close)))
+    store/db/.Db:close
+    store/claim/.close))
 
 # Run `body` inside one transaction. A failure rolls everything back and
 # propagates; nothing the body wrote is visible afterwards.
 (fn in_transaction [store : WorldStore body]
-  (if_not (store/open .get) (store_problem "The world store is closed."))
+  (if_not store/open/.get (store_problem "The world store is closed."))
   (store/db .Db:transaction (fn [tx] (body))))
 
 (fn encode [value] : Str ($json/stringify value))

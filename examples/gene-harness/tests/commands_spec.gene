@@ -85,7 +85,7 @@ three""")
             .get
             ; .get "default"
             ; .join)
-          (let messages (seen .get))
+          (let messages seen/.get)
           (let last (- messages/.size 1))
           ($assert
             ($str/contains? messages/%last/content "[c1.run]")

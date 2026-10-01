@@ -34,11 +34,11 @@
 (type HarnessInvoker ^^private ^props {^host RegistryHost ^delegate PluginInvoker}
   (impl PluginInvoker
     (message invoke [call] : Any
-      (self/host .RegistryHost:enter_call)
+      self/host/.RegistryHost:enter_call
       (try
         (self/delegate .PluginInvoker:invoke call)
       ensure
-        (self/host .RegistryHost:leave_call)))))
+        self/host/.RegistryHost:leave_call))))
 
 (type Composition ^props {^token Any}
   (message reconcile [plugins, ^entries entries = #{}]
@@ -47,20 +47,20 @@
     (reconcile_available_plugins self plugins entries failed_ids))
   (message instances []
     (let record (composition_record self))
-    (record/loader .instances))
+    record/loader/.instances)
   (message retire [ticket]
     (let record (composition_record self))
     (record/loader .retire ticket))
   (message current_plugins []
     (let record (composition_record self))
     (let plugins {})
-    (for [id revision] in (record/current .get)
+    (for [id revision] in record/current/.get
       (plugins .put id revision/plugin))
     plugins)
   (message inspect []
     (let record (composition_record self))
     (let snapshot ($thaw #{}))
-    (for [name value] in (record/loader .inspect)
+    (for [name value] in record/loader/.inspect
       (snapshot .put name value))
     (let selected ($thaw #[]))
     (for [id projection] in record/projections
@@ -97,14 +97,14 @@
   (let registry ($to_str pair/0))
   (let name ($to_str pair/1))
   (let id (binding_id registry name))
-  (let keys (record/keys .get))
+  (let keys record/keys/.get)
   (if_yes (== (keys .get id) void)
     (let key (service_key $"harness/entry/${id}" EntrySelection ^check check_selection))
     (record/runtime .admit_service_key key)
     (keys .put id {^registry registry ^name name ^key key})
     # The bindings entry projected the keys known when it activated. A key
     # admitted later is projected now, before any plugin requiring it installs.
-    (if_not ($absent? (record/base_owner .get))
+    (if_not ($absent? record/base_owner/.get)
       (selection_changed record registry name)))
   (let binding (keys .get id))
   (Requirement ^key binding/key ^config nil))
@@ -129,19 +129,19 @@
 
 (fn reconcile_selection ^^private [record, registry : Str, key : Str]
   (let id (binding_id registry key))
-  (let binding ((record/keys .get) .get id))
+  (let binding (record/keys/.get .get id))
   (if (== binding void) (return nil))
   (let selected (record/host .RegistryHost:selected registry key))
   (let previous (record/projections .get id))
   (if_yes (!= previous void)
     (if (&& (! ($absent? selected)) (== previous/row_id selected/row_id)) (return nil))
-    (previous/instance .dispose)
+    previous/instance/.dispose
     # dispose queues retirement while a provider validation is admitted. Wait
     # for Cordis to release that reservation before installing its successor.
-    (while (!= (previous/instance .state) InstanceState/disposed) ($sleep 1))
+    (while (!= previous/instance/.state InstanceState/disposed) ($sleep 1))
     (record/projections .delete id))
   (if ($absent? selected) (return nil))
-  (let owner (if ($absent? selected/effects) (record/base_owner .get) selected/effects))
+  (let owner (if ($absent? selected/effects) record/base_owner/.get selected/effects))
   (if ($absent? owner) (return nil))
   (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
   (let projection
@@ -155,7 +155,7 @@
 (var ^^private compositions ($cell ($thaw #[])))
 
 (fn composition_record [handle] ^^private
-  (for record in (compositions .get)
+  (for record in compositions/.get
     (if_yes (== record/token handle/token) (return record)))
   (fail (EffectDisposed ^message "Harness composition is closed or foreign")))
 
@@ -185,10 +185,10 @@
         (ctx .effect "registry bindings" (fn [fx]
           (record/base_owner .set fx)
           (fx .defer (fn []
-            (if (same? (record/base_owner .get) fx) (record/base_owner .set nil))))
-          (for [id binding] in (record/keys .get)
+            (if (same? record/base_owner/.get fx) (record/base_owner .set nil))))
+          (for [id binding] in record/keys/.get
             (selection_changed record binding/registry binding/name)))))))
-  ((compositions .get) .push record)
+  (compositions/.get .push record)
   # Without a publication participant, Cordis reconciles entry by entry like
   # upstream `Entry.update`: unchanged entries keep their instances, changed
   # ones restart, and a failed activation stays local to its entry.
@@ -215,7 +215,7 @@
         (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
   (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits))
   (var expected nil)
-  (for descriptor in (record/pending .get)
+  (for descriptor in record/pending/.get
     (if (== descriptor/id row/id) (set expected descriptor)))
   (if (|| ($absent? expected) (!= (?? expected/requires #[]) (?? plugin/requires #[])) (!= expected/provides plugin/provides))
     (fail (CompositionError ^message $"source ${row/id} descriptor changed after preflight")))
@@ -252,10 +252,10 @@
       (let receiver
         (record/host .RegistryHost:context plugin fx
           (fn [registry, key]
-            (if (ready .get)
+            (if ready/.get
               (selection_changed record registry key)
               (changed .put (binding_id registry key) [registry key])))
-          ((record/policies .get) .get plugin/id)))
+          (record/policies/.get .get plugin/id)))
       (record/host .RegistryHost:activate (fn [] (plugin/activate receiver)))
       (if_not ($absent? plugin/deactivate)
         (fx .defer (fn []
@@ -315,7 +315,7 @@
 
 (fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options]
   (let record (composition_record handle))
-  (if (record/busy .get)
+  (if record/busy/.get
     (fail (EffectDisposed ^message "Harness reconciliation is already active")))
   (let entries ($thaw #[]))
   (let admitted ($thaw #{}))
@@ -356,7 +356,7 @@
   (record/policies .set ($freeze metadata))
   (record/busy .set true)
   (let previous_projections record/projections)
-  (let previous_base (record/base_owner .get))
+  (let previous_base record/base_owner/.get)
   # Staged reconciliation creates new activation revisions. Their projections
   # belong to the candidate; disposing the prior projection here would cascade
   # into a revision still leased by a turn.
@@ -374,7 +374,7 @@
     (record/busy .set false))
   # A failed plugin keeps whatever last active revision it had.
   (let failed (failure_ids (failed_entries snapshot)))
-  (let previous (record/current .get))
+  (let previous record/current/.get)
   (let live ($thaw #{}))
   (for plugin in plugins
     (let prior (previous .get plugin/id))
@@ -386,12 +386,12 @@
 
 (fn close_composition [handle] ^^private
   (var record nil)
-  (for current in (compositions .get)
+  (for current in compositions/.get
     (if (== current/token handle/token) (set record current)))
   (if ($absent? record) (return nil))
-  (record/runtime .close)
+  record/runtime/.close
   (let kept ($thaw #[]))
-  (for current in (compositions .get)
+  (for current in compositions/.get
     (if_not (== current/token handle/token) (kept .push current)))
   (compositions .set kept)
   nil)
@@ -407,13 +407,13 @@
 
 (fn expire_callback [token] ^^private
   (var kept ($thaw #[]))
-  (for record in (callbacks .get)
+  (for record in callbacks/.get
     (if_not (== record/token token) (kept .push record)))
   (callbacks .set kept)
   nil)
 
 (fn invoke_retained [token, call] ^^private
-  (for record in (callbacks .get)
+  (for record in callbacks/.get
     (if_yes (== record/token token)
       (var forwarded ($thaw #[]))
       (for arg in call/body
@@ -431,7 +431,7 @@
   # revision's single cleanup runs `expire_scope_callbacks`; acquiring a child
   # effect per callback cost a bounded plugin invocation per contributed row.
   (var token ($cell nil))
-  ((callbacks .get) .push
+  (callbacks/.get .push
     (CallbackRecord ^token token ^scope owner ^callable callable
       ^host_context host_context ^inject_context inject_context))
   (RetainedCallback ^token token))
@@ -441,7 +441,7 @@
 
 (fn expire_scope_callbacks [scope]
   (var kept ($thaw #[]))
-  (for record in (callbacks .get)
+  (for record in callbacks/.get
     (if_not (same? record/scope scope) (kept .push record)))
   (callbacks .set kept)
   nil)

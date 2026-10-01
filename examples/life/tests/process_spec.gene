@@ -16,7 +16,7 @@
   (it "recovers committed world and conversations without a shutdown hook or brain call" []
     (let host (crash "walking"))
     (try
-      (assert_equal (host/calls .get) 0)
+      (assert_equal host/calls/.get 0)
       (assert_equal (p/get host/store "state/preference") "shade")
       (let world (p/get host/store "world"))
       (assert_equal world/position 4.0)
@@ -76,7 +76,7 @@
         (assert_equal (p/get host/store "selection/pending") nil)
         (let chat (p/get host/store "conversation/garden"))
         (assert_equal chat/messages/.size 1)
-        (assert_equal (host/calls .get) 0)
+        (assert_equal host/calls/.get 0)
         ensure (runtime/close_life host))))
 
   (it "restores the complete new code and data when killed immediately after selection commit" []
@@ -88,7 +88,7 @@
       (assert_equal visitor/preference "shade")
       (let work (p/get host/store "mind/working"))
       (assert_equal work/status "unfinished")
-      (assert_equal (host/calls .get) 0)
+      (assert_equal host/calls/.get 0)
       (runtime/settle host)
       (var succeeded false)
       (for cycle in (p/values host/store "cycle/")

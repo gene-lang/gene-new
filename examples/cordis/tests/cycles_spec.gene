@@ -17,7 +17,7 @@
 
 (describe "Cordis cycles"
   (after_each [t]
-    (if_not ($absent? t/runtime) (t/runtime .close)))
+    (if_not ($absent? t/runtime) t/runtime/.close))
 
   (it "keeps a provider cycle pending and reports unavailable dependencies" [t]
     (fn check_marker [value : Marker] : Marker value)
@@ -43,11 +43,11 @@
     (set t/runtime runtime)
     (runtime .admit_service_key a_key)
     (runtime .admit_service_key b_key)
-    (var a (runtime .install (runtime .root) a_plugin nil))
-    (var b (runtime .install (runtime .root) b_plugin nil))
-    (runtime .await_settled)
-    ($assert (&& (== (a .state) InstanceState/pending)
-                (== (b .state) InstanceState/pending))
+    (var a (runtime .install runtime/.root a_plugin nil))
+    (var b (runtime .install runtime/.root b_plugin nil))
+    runtime/.await_settled
+    ($assert (&& (== a/.state InstanceState/pending)
+                (== b/.state InstanceState/pending))
       "a declared provider cycle must remain pending rather than half-activate")
-    (assert_raises (fn [] (a .await_ready)) DependenciesUnavailable
+    (assert_raises (fn [] a/.await_ready) DependenciesUnavailable
       "await_ready must diagnose an unresolved provider cycle")))

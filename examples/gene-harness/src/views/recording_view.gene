@@ -11,7 +11,7 @@
 
 (impl Callable for RecordingSink
   (message apply [self call]
-    ((self/lines .get) .push (/0 call))))
+    (self/lines/.get .push (/0 call))))
 
 (impl HarnessView for RecordingView
   # Stops from the prompt, which is what makes this view usable with no

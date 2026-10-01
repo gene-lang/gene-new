@@ -28,8 +28,8 @@
         ^module "reporter.gene" ^config nil}
      ]}
     ReconcileMode/staged)
-  (var clock ((runtime .root) .require clock_key))
-  ($println $"host observed tick ${(clock .Clock:tick)}")
-  (loader .dispose)
-  (runtime .close)
+  (var clock (runtime/.root .require clock_key))
+  ($println $"host observed tick ${clock/.Clock:tick}")
+  loader/.dispose
+  runtime/.close
   0)

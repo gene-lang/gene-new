@@ -10,7 +10,7 @@
   ($path/join package_root $"tests/fixtures/${name}.gene"))
 
 (fn isolated [spec_path : Str, name : Str, body]
-  (let selected (active_workspace .get))
+  (let selected active_workspace/.get)
   (if_not ($absent? selected) (return (body selected)))
   (let workspace ($path/join package_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)

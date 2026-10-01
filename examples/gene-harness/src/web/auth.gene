@@ -22,7 +22,7 @@
     ; .put cookie record)
   ($fs/write_text_atomic ^^owner_only
     $"${auth/root}/web_sessions"
-    ($serde/write_data (auth/sessions .get)))
+    ($serde/write_data auth/sessions/.get))
   {^cookie cookie ^csrf record/csrf ^expires record/expires})
 (fn authenticate [auth : BrowserAuth, cookie : Str]
   (let record (auth/sessions .get; .get cookie))

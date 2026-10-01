@@ -4,6 +4,12 @@ When working on any Gene feature, example, library, or application, keep the **s
 
 Applications and examples are also opportunities to test the language itself. If something feels awkward, unnecessarily difficult, inconsistent, or missing, do not simply work around it. Consider whether the underlying language, standard library, tooling, or runtime should be improved instead. Record such issues and, when appropriate, fix them as part of the work.
 
+### Preferred Gene style
+
+Prefer the path spelling for a zero-argument message send on a simple symbol or path receiver: `(a .x)` becomes `a/.x`. This also applies to protocol-qualified messages, such as `resource/.IoResource:close`.
+
+Keep sends with arguments parenthesized, such as `(a .x value)`. Keep the explicit send for literal or computed receivers, such as `([1 2] .size)` and `((make_a) .x)`, and for parent dispatch, such as `(super .x)`. Preserve quoted syntax as data rather than rewriting its structure for style.
+
 ### Preserve the language design
 
 Do not introduce or change Gene syntax without consulting the project owner first.

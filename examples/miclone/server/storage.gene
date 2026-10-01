@@ -65,7 +65,7 @@
 
 (fn close_world [w : WorldStore] : Nil
   (var db w/db)
-  (db .Db:close))
+  db/.Db:close)
 
 # --- metadata ----------------------------------------------------------------
 #

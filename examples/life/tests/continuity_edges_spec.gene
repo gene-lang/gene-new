@@ -12,7 +12,7 @@
   (runtime/settle host)
   host)
 (fn decide [host, note, source]
-  ((host/decisions .get) .push (brain/response note source))
+  (host/decisions/.get .push (brain/response note source))
   (let observation (body/receive host note))
   (runtime/settle host)
   (for cycle in (p/values host/store "cycle/")
@@ -30,7 +30,7 @@
       (assert_equal (p/get host/store "state/activity") nil)
       (body/tick host 3000)
       (let repaired (decide host "Recover the actual published job"
-        "(for pair in (store .roots)
+        "(for pair in store/.roots
           (if_yes ($str/starts_with? ($to_str pair/0) \"job/\")
             (let job pair/1)
             (if_yes (== job/kind \"walk\") (state .put \"activity\" job/id))))"))
@@ -50,16 +50,16 @@
     (let release ($cell false))
     (let count ($cell 0))
     (set host/brain (fn [snapshot]
-      (count .set (+ (count .get) 1))
-      (if_yes (== (count .get) 1)
-        (while (! (release .get)) ($sleep 5))
+      (count .set (+ count/.get 1))
+      (if_yes (== count/.get 1)
+        (while (! release/.get) ($sleep 5))
         (return (brain/response "Water the observed dry plant"
           "(body/world .water \"plant-a\" ^expected 1)")))
       (brain/response "Consider the updated outcome" "nil")))
     (body/receive host "Please water the plant")
     (runtime/heartbeat host)
     ($sleep 5)
-    (let thought (host/thought .get))
+    (let thought host/thought/.get)
     (let tx (p/begin host/store "other-world-actor"))
     (body/apply_operation host tx {^id "other-world-actor" ^organization "starter@1"}
       "water" {^id "plant-a" ^expected 1})
@@ -80,7 +80,7 @@
 
   (it "uses fresh context and lateness rules on resume without executing a late paused response" []
     (let now ($cell 1000))
-    (let host (fixture (fn [] (now .get))))
+    (let host (fixture (fn [] now/.get)))
     (let tx (p/begin host/store "pause-fixture"))
     (let late (body/apply_operation host tx {^id "fixture" ^organization "starter@1"} "after"
       {^delay 1000 ^source "(state .put \"expired\" true)" ^missed {^run_within_ms 100 ^otherwise "expire"}}))
@@ -90,15 +90,15 @@
     (let release ($cell false))
     (let count ($cell 0))
     (set host/brain (fn [snapshot]
-      (count .set (+ (count .get) 1))
-      (if_yes (== (count .get) 1)
-        (while (! (release .get)) ($sleep 5))
+      (count .set (+ count/.get 1))
+      (if_yes (== count/.get 1)
+        (while (! release/.get) ($sleep 5))
         (return (brain/response "Late paused response" "(state .put \"stale\" true)")))
       (brain/response "Fresh resume context" "nil")))
     (body/receive host "Start deliberation")
     (runtime/heartbeat host)
     ($sleep 5)
-    (let thought (host/thought .get))
+    (let thought host/thought/.get)
     (runtime/pause host)
     (let before (p/get host/store "world"))
     (body/tick host 1000)
@@ -169,9 +169,9 @@
       {^source "nil" ^owner owner}))
     (p/commit tx)
     (runtime/heartbeat host)
-    (let active (host/active .get))
+    (let active host/active/.get)
     (let deadline (+ ($os/monotonic_ms) 5000))
-    (while ($absent? (active/done .get))
+    (while ($absent? active/done/.get)
       ($sleep 5)
       (if (> ($os/monotonic_ms) deadline) (p/problem "Process did not complete")))
     (let request (p/begin host/store "late-withdrawal"))

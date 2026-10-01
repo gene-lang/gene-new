@@ -6914,6 +6914,44 @@ proc compilePathSend(c: var Compiler, part, site: Value) =
     c.patchJump(shortCircuit)
 
 
+proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
+                       site: Value) =
+  # Static path messages use the ordinary VM call path, so Gene message
+  # bodies can suspend without a nested synchronous invocation. Property
+  # traversal still stops the complete path when a segment produces void.
+  # Dynamic segments are resolved before any traversal by the Path contract;
+  # retain the complete selector for those paths rather than interleave them
+  # with message calls.
+  for i in start ..< parts.len:
+    let part = parts[i]
+    if (part.kind == vkNode and part.head.isSymbol("unquote")) or
+        part.pathSendSegment.dynamic:
+      compileSelectorParts(c, parts.toOpenArray(start, parts.high))
+      discard c.emit(opApplySelectorTop)
+      return
+  var first = start
+  var missingJumps: seq[int]
+  for i in start ..< parts.len:
+    if not parts[i].isPathSendSegment:
+      continue
+    if i > first:
+      compileSelectorParts(c, parts.toOpenArray(first, i - 1))
+      discard c.emit(opApplySelectorTop)
+      let missing = c.emitJump(opJumpIfAbsent)
+      c.chunk.instructions[missing].flag = true
+      missingJumps.add missing
+    c.compilePathSend(parts[i], site)
+    first = i + 1
+    if first < parts.len:
+      let missing = c.emitJump(opJumpIfAbsent)
+      c.chunk.instructions[missing].flag = true
+      missingJumps.add missing
+  if first < parts.len:
+    compileSelectorParts(c, parts.toOpenArray(first, parts.high))
+    discard c.emit(opApplySelectorTop)
+  for missing in missingJumps:
+    c.patchJump(missing)
+
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
   if parts.len == 0:
@@ -6933,8 +6971,7 @@ proc compilePath(c: var Compiler, node: Value) =
     c.emitLoadBinding(CatchErrorBindingName)
     c.compilePathSend(newSym("~Error:message"), node)
     if parts.len > 2:
-      compileSelectorParts(c, parts.toOpenArray(2, parts.high))
-      discard c.emit(opApplySelectorTop)
+      c.compilePathSuffix(parts, 2, node)
     return
   if parts.len >= 2 and parts[0].isSymbol("gene") and
       parts[1].isSymbol("err"):
@@ -6944,8 +6981,7 @@ proc compilePath(c: var Compiler, node: Value) =
         "$err is only available inside a catch body")
     c.emitLoadBinding(CatchErrorBindingName)
     if parts.len > 2:
-      compileSelectorParts(c, parts.toOpenArray(2, parts.high))
-      discard c.emit(opApplySelectorTop)
+      c.compilePathSuffix(parts, 2, node)
     return
   if parts.len == 1:
     compileExpr(c, parts[0])
@@ -6959,8 +6995,7 @@ proc compilePath(c: var Compiler, node: Value) =
       "macro '" & spelling.join("/") &
       "' cannot be used as a value; call it in head position")
   compileExpr(c, parts[0])
-  compileSelectorParts(c, parts.toOpenArray(1, parts.high))
-  discard c.emit(opApplySelectorTop)
+  c.compilePathSuffix(parts, 1, node)
 
 proc compileSetPath(c: var Compiler, node: Value) =
   ## `(set path value)` — checked in-place assignment (design §12.1). A symbol

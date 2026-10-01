@@ -36,10 +36,10 @@
 
 # The tool result a command adds to the transcript.
 (fn tool_result [h, command : Str] : Str
-  (var before (h/log .get))
+  (var before h/log/.get)
   (var start before/.size)
   (ask h command)
-  (var records (h/log .get))
+  (var records h/log/.get)
   (var result "")
   (var i start)
   (while (< i records/.size)

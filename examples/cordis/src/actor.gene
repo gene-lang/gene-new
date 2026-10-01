@@ -36,4 +36,4 @@
   (var guarded_handler (GuardedActorHandler ^owner owner ^callable handler))
   (spawn_effect_call owner label supervise_actor
     [ready initial guarded_handler mailbox message_type])
-  (ready .recv))
+  ready/.recv)

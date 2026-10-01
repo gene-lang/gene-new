@@ -21,7 +21,7 @@
     (fail $err)))
 
 (fn close_host [host]
-  (if_not (host/store/closed .get) (runtime/close_life host)))
+  (if_not host/store/closed/.get (runtime/close_life host)))
 (fn wait_for [host, predicate, label, ^timeout_ms timeout_ms = 10000]
   (let deadline (+ ($os/monotonic_ms) timeout_ms))
   (while (! (predicate))
@@ -77,7 +77,7 @@
   (let fixture {^endpoint args/2})
   (let armed ($cell false))
   (let host (open_host fixture ^home home
-    ^fault (fn [at] (if_yes (&& (armed .get) (== at phase)) (die home phase)))))
+    ^fault (fn [at] (if_yes (&& armed/.get (== at phase)) (die home phase)))))
   (if_yes (["connector_before_commit" "connector_after_commit"] .contains? phase)
     (armed .set true)
     (seed host fixture)

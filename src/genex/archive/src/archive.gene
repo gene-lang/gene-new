@@ -18,27 +18,27 @@
     (set self/error_fn error_fn)
     (set self/closed ($cell false)))
   (message feed [data : Bytes]
-    (if (self/closed .get) (fail (new ArchiveError "codec is closed")))
+    (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (let bytes ($buffer C/UInt8 ($binary/to_list data)))
     (let count (self/feed_fn self/state bytes))
     (if (< count 0)
       (fail (new ArchiveError "codec has pending input or is finished")))
     count)
   (message pull [max_bytes : Int]
-    (if (self/closed .get) (fail (new ArchiveError "codec is closed")))
+    (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (if (< max_bytes 1)
       (fail (new ArchiveError "codec pull size must be positive")))
     (let capacity (if (> max_bytes 65536) 65536 max_bytes))
     (let zero ($buffer U8 capacity))
-    (let output ($buffer C/UInt8 (zero .to_list)))
+    (let output ($buffer C/UInt8 zero/.to_list))
     (let count (self/pull_fn self/state output))
     (if (> count 0)
-      ($binary/slice ($binary/from_list (output .to_list)) 0 count)
+      ($binary/slice ($binary/from_list output/.to_list) 0 count)
       (if (== count 0) nil
         (if (== count -1) void
           (fail (new ArchiveError (self/error_fn self/state)))))))
   (message action [kind : Int]
-    (if (self/closed .get) (fail (new ArchiveError "codec is closed")))
+    (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (if (< (self/action_fn self/state kind) 0)
       (do
         (let detail (self/error_fn self/state))
@@ -46,17 +46,17 @@
           (if (== detail "") "codec action is invalid or busy" detail)))))
     nil)
   (message close []
-    (if (not (self/closed .get))
+    (if (not self/closed/.get)
       (do
         (self/closed .set true)
         ($C/close self/state)
         ($ffi/Library/close self/library)
-        (self/lease .close)))
+        self/lease/.close))
     nil))
 
 (fn _open_codec [mode : Int]
   (let lease ($pkg/native_binary this_pkg "codec"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (var state nil)
   (try
     (let open ($ffi/bind library "gene_archive_stream_open"
@@ -77,7 +77,7 @@
     catch Error
       (if (!= state nil) ($C/close state))
       ($ffi/Library/close library)
-      (lease .close)
+      lease/.close
       (fail (new ArchiveError $err_msg))))
 
 (type GzipReader ^props {^source Any ^own_source Bool ^codec Any
@@ -93,17 +93,17 @@
     (set self/pending ($cell nil))
     (set self/cleanup ($cell nil)))
   (message status []
-    {^closed (self/closed .get) ^eof (self/eof .get)
-     ^busy (self/busy .get)}))
+    {^closed self/closed/.get ^eof self/eof/.get
+     ^busy self/busy/.get}))
 
 (impl AsyncReader for GzipReader
   (message read [max_bytes : Int] : (Task Bytes? Error)
-    (if (self/closed .get)
+    (if self/closed/.get
       (fail (IoClosed ^message "gzip reader is closed" ^operation "read")))
-    (if (&& (self/busy .get) (!= (self/pending .get) nil)
-            ((self/pending .get) .done?))
+    (if (&& self/busy/.get (!= self/pending/.get nil)
+            self/pending/.get/.done?)
       (self/busy .set false))
-    (if (self/busy .get)
+    (if self/busy/.get
       (fail (IoBusy ^message "gzip read is already pending" ^operation "read")))
     (if (|| (< max_bytes 1) (> max_bytes 1048576))
       (fail (IoError ^message "read size must be in 1..1048576"
@@ -111,7 +111,7 @@
     (self/busy .set true)
     (let operation (fn []
       (try
-        (if (self/eof .get) (return nil))
+        (if self/eof/.get (return nil))
         (while true
           (let output (self/codec .pull max_bytes))
           (if (== output void)
@@ -135,29 +135,29 @@
 
 (impl IoResource for GzipReader
   (message close [] : Nil
-    (if (not (self/closed .get))
+    (if (not self/closed/.get)
       (do
         (self/closed .set true)
-        (let pending (self/pending .get))
-        (if (!= pending nil) (pending .cancel))
+        (let pending self/pending/.get)
+        (if (!= pending nil) pending/.cancel)
         (let operation (fn []
           (if (!= pending nil)
-            (while (not (pending .done?)) ($sleep 10)))
-          (try (self/codec .close)
+            (while (not pending/.done?) ($sleep 10)))
+          (try self/codec/.close
             ensure
               (if self/own_source
                 (do
-                  (self/source .IoResource:close)
-                  (await (self/source .IoResource:wait_closed)))))
+                  self/source/.IoResource:close
+                  (await self/source/.IoResource:wait_closed))))
           nil))
         (self/cleanup .set
           ($io/_retain_cleanup (spawn ^lane root (operation))))))
     nil)
   (message wait_closed [] : (Task Nil Error)
-    (self .IoResource:close)
-    (let cleanup (self/cleanup .get))
+    self/.IoResource:close
+    (let cleanup self/cleanup/.get)
     (spawn ^lane root
-      (match (cleanup .join)
+      (match cleanup/.join
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
         (when (TaskOutcome/panic message) (panic message))
@@ -181,18 +181,18 @@
     (set self/pending ($cell nil))
     (set self/cleanup ($cell nil)))
   (message status []
-    {^closed (self/closed .get) ^finishing (self/finishing .get)
-     ^finished (self/finished .get) ^busy (self/busy .get)})
+    {^closed self/closed/.get ^finishing self/finishing/.get
+     ^finished self/finished/.get ^busy self/busy/.get})
   (message finish [] : (Task Nil Error)
-    (if (self/closed .get)
+    (if self/closed/.get
       (fail (IoClosed ^message "gzip writer is closed" ^operation "finish")))
-    (if (&& (self/busy .get) (!= (self/pending .get) nil)
-            ((self/pending .get) .done?))
+    (if (&& self/busy/.get (!= self/pending/.get nil)
+            self/pending/.get/.done?)
       (self/busy .set false))
-    (if (self/busy .get)
+    (if self/busy/.get
       (fail (IoBusy ^message "gzip write is pending" ^operation "finish")))
-    (if (self/finished .get) (return (spawn ^lane root nil)))
-    (if (self/finishing .get)
+    (if self/finished/.get (return (spawn ^lane root nil)))
+    (if self/finishing/.get
       (fail (IoBusy ^message "gzip finish is pending" ^operation "finish")))
     (self/finishing .set true)
     (self/busy .set true)
@@ -205,7 +205,7 @@
             (fail (new ArchiveError "gzip finish made no progress")))
           (await ($io/write_all self/sink part))
           (set part (self/codec .pull 65536)))
-        (await (self/sink .AsyncWriter:flush))
+        (await self/sink/.AsyncWriter:flush)
         (self/finished .set true)
         nil
         ensure (self/busy .set false))))
@@ -215,13 +215,13 @@
 
 (impl AsyncWriter for GzipWriter
   (message write [data : Bytes] : (Task Int Error)
-    (if (|| (self/closed .get) (self/finishing .get))
+    (if (|| self/closed/.get self/finishing/.get)
       (fail (IoClosed ^message "gzip writer cannot accept data"
                       ^operation "write")))
-    (if (&& (self/busy .get) (!= (self/pending .get) nil)
-            ((self/pending .get) .done?))
+    (if (&& self/busy/.get (!= self/pending/.get nil)
+            self/pending/.get/.done?)
       (self/busy .set false))
-    (if (self/busy .get)
+    (if self/busy/.get
       (fail (IoBusy ^message "gzip write is already pending"
                     ^operation "write")))
     (let length ($binary/size data))
@@ -249,13 +249,13 @@
     (self/pending .set task)
     task)
   (message flush [] : (Task Nil Error)
-    (if (|| (self/closed .get) (self/finishing .get))
+    (if (|| self/closed/.get self/finishing/.get)
       (fail (IoClosed ^message "gzip writer cannot flush"
                       ^operation "flush")))
-    (if (&& (self/busy .get) (!= (self/pending .get) nil)
-            ((self/pending .get) .done?))
+    (if (&& self/busy/.get (!= self/pending/.get nil)
+            self/pending/.get/.done?)
       (self/busy .set false))
-    (if (self/busy .get)
+    (if self/busy/.get
       (fail (IoBusy ^message "gzip write is pending" ^operation "flush")))
     (self/busy .set true)
     (let operation (fn []
@@ -267,7 +267,7 @@
             (fail (new ArchiveError "gzip ended during flush")))
           (await ($io/write_all self/sink part))
           (set part (self/codec .pull 65536)))
-        (await (self/sink .AsyncWriter:flush))
+        (await self/sink/.AsyncWriter:flush)
         nil
         ensure (self/busy .set false))))
     (let task (spawn ^lane root (operation)))
@@ -276,29 +276,29 @@
 
 (impl IoResource for GzipWriter
   (message close [] : Nil
-    (if (not (self/closed .get))
+    (if (not self/closed/.get)
       (do
         (self/closed .set true)
-        (let pending (self/pending .get))
-        (if (!= pending nil) (pending .cancel))
+        (let pending self/pending/.get)
+        (if (!= pending nil) pending/.cancel)
         (let operation (fn []
           (if (!= pending nil)
-            (while (not (pending .done?)) ($sleep 10)))
-          (try (self/codec .close)
+            (while (not pending/.done?) ($sleep 10)))
+          (try self/codec/.close
             ensure
               (if self/own_sink
                 (do
-                  (self/sink .IoResource:close)
-                  (await (self/sink .IoResource:wait_closed)))))
+                  self/sink/.IoResource:close
+                  (await self/sink/.IoResource:wait_closed))))
           nil))
         (self/cleanup .set
           ($io/_retain_cleanup (spawn ^lane root (operation))))))
     nil)
   (message wait_closed [] : (Task Nil Error)
-    (self .IoResource:close)
-    (let cleanup (self/cleanup .get))
+    self/.IoResource:close
+    (let cleanup self/cleanup/.get)
     (spawn ^lane root
-      (match (cleanup .join)
+      (match cleanup/.join
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
         (when (TaskOutcome/panic message) (panic message))
@@ -313,19 +313,19 @@
 # being integrated with IO-1 retirement.
 (fn codec_abi []
   (let lease ($pkg/native_binary this_pkg "codec"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (try
     (let abi ($ffi/bind library "gene_archive_codec_abi" [] C/Int))
     (abi)
     ensure
       ($ffi/Library/close library)
-      (lease .close)))
+      lease/.close))
 
 # Metadata inspection checks the supported ZIP subset and rejects unsafe
 # paths. It never creates a destination or claims checksum verification.
 (fn inspect_zip [path : Str]
   (let lease ($pkg/native_binary this_pkg "codec"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (try
     (let validate ($ffi/bind library "gene_archive_zip_validate"
                          [C/CStr] C/Int))
@@ -336,13 +336,13 @@
     count
     ensure
       ($ffi/Library/close library)
-      (lease .close)))
+      lease/.close))
 
 # ZIP verification and publication currently run synchronously on this lane.
 # A later Task wrapper will put the same native transaction on a bounded worker.
 (fn extract_zip_sync [archive_path : Str destination_path : Str]
   (let lease ($pkg/native_binary this_pkg "codec"))
-  (let library ($ffi/open (lease .path)))
+  (let library ($ffi/open lease/.path))
   (try
     (let extract ($ffi/bind library "gene_archive_zip_extract"
                         [C/CStr C/CStr] C/Int))
@@ -353,7 +353,7 @@
     count
     ensure
       ($ffi/Library/close library)
-      (lease .close)))
+      lease/.close))
 
 (fn extract_zip [archive_path : Str destination_path : Str]
   (let operation (fn []
@@ -366,7 +366,7 @@
     (var cleanup_issue nil)
     (var final_status nil)
     (try
-      (set library ($ffi/open (lease .path)))
+      (set library ($ffi/open lease/.path))
       (let start ($ffi/bind library "gene_archive_zip_job_start"
                          [C/CStr C/CStr] (quote (C/OwnedPtr C/Void))
                          "gene_archive_zip_job_release"))
@@ -398,7 +398,7 @@
               (set cleanup_issue message))
             ($C/close job)))
         (if (!= library nil) ($ffi/Library/close library))
-        (lease .close)
+        lease/.close
         (if (!= cleanup_issue nil)
           (fail (new ArchiveError cleanup_issue)))
         (if (&& (!= final_status nil) (> final_status 0))

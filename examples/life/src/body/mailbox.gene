@@ -7,7 +7,7 @@
   (let task (request ^method "POST" ^url $"${endpoint}${route}"
     ^headers {^content-type "application/json"} ^body payload ^timeout_ms 2000 ^max_bytes 1048576))
   (let monitor (spawn ^lane root (do
-    (let outcome (task .join))
+    (let outcome task/.join)
     (let result (match outcome
       (when (TaskOutcome/ok response)
         (if (&& (== response/status 200) (! response/truncated))
@@ -18,6 +18,6 @@
   {^task task ^monitor monitor ^done done})
 
 (fn stop [request]
-  (request/task .cancel)
-  (request/task .join)
-  (request/monitor .join))
+  request/task/.cancel
+  request/task/.join
+  request/monitor/.join)

@@ -18,7 +18,7 @@
   (let eval_form ($read_one
     "(do (type Local ^props {^n Int} (message value [] : Int self/n)) ((Local ^n 7) .value))"))
   (let closure_form ($read_one
-    "(do (let c ($cell 7)) (fn [] (c .get)))"))
+    "(do (let c ($cell 7)) (fn [] c/.get))"))
   (let cycle_form ($read_one
     "(do (let c ($cell nil)) (c .set c) nil)"))
   (let failure_form ($read_one

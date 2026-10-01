@@ -20,7 +20,7 @@
   value)
 
 (fn fake [decisions, context]
-  (let items (decisions .get))
+  (let items decisions/.get)
   (if (> items/.size 0)
     (then
       (let first items/0)
@@ -35,7 +35,7 @@
   (for observation in context/observations
     (if_yes (== observation/kind "first_start")
       (return (response "I am curious about the garden. I will inspect it and revisit later."
-        "(do (memory .remember {^kind \"first_observation\" ^world (body/world .observe)})
+        "(do (memory .remember {^kind \"first_observation\" ^world body/world/.observe})
           (scheduler .wake_after 60000 \"Revisit the garden\") nil)"))))
   (response "I have considered the observations and will remain quiet for now." "nil"))
 

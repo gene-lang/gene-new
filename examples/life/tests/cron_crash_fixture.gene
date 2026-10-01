@@ -6,7 +6,7 @@
 (fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
 (fn main [args]
   (let now ($cell 1000))
-  (let host (runtime/open_life args/0 ^create true ^clock (fn [] (now .get))
+  (let host (runtime/open_life args/0 ^create true ^clock (fn [] now/.get)
     ^decisions [(brain/response "Quiet" "nil")]))
   (runtime/settle host)
   (let tx (p/begin host/store "cron-fixture"))

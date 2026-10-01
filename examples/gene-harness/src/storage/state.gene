@@ -28,7 +28,7 @@
   $"${scope}:${stream}")
 
 (fn require_open [events : EventStore]
-  (if (events/closed .get)
+  (if events/closed/.get
     (fail (HarnessStateError ^message "event store is closed")))
   events)
 
@@ -46,16 +46,16 @@
 
 (fn mark_stream_dirty [events : EventStore, key : Str]
   (ensure_projections_loaded events key)
-  ((events/dirty_streams .get) .put key true)
+  (events/dirty_streams/.get .put key true)
   (events/dirty .set true))
 
 (fn current_events [events : EventStore, key : Str]
   (require_open events)
-  (var streams (events/streams .get))
+  (var streams events/streams/.get)
   (var found (streams .get key))
   (if_not (== found void) (return found))
   (var values (fresh_list))
-  (var manifest (events/last_manifest .get))
+  (var manifest events/last_manifest/.get)
   (if_not ($absent? manifest)
     (var descriptor (manifest/streams .get key))
     (if_not (== descriptor void)
@@ -70,11 +70,11 @@
   values)
 
 (fn ensure_projections_loaded [events : EventStore, key : Str]
-  (var projections (events/projections .get))
+  (var projections events/projections/.get)
   (if_not (== (projections .get key) void) (return nil))
   (var plugin (fresh_map))
   (var core (fresh_map))
-  (var manifest (events/last_manifest .get))
+  (var manifest events/last_manifest/.get)
   (if_not ($absent? manifest)
     (var descriptor (manifest/streams .get key))
     (if_not ($absent? descriptor)
@@ -84,16 +84,16 @@
       (set plugin (copy_data saved/plugin))
       (set core (copy_data saved/core))))
   (projections .put key plugin)
-  ((events/core_projections .get) .put key core)
+  (events/core_projections/.get .put key core)
   nil)
 
 (fn validate_loaded_envelope [events : EventStore, envelope]
   (if_not (== envelope/format 2)
     (fail (HarnessStateError ^message "unsupported event envelope; start a fresh workspace")))
-  (var catalog (events/catalog .get))
+  (var catalog events/catalog/.get)
   (if_not ($absent? catalog)
     (var known (catalog .get envelope/type))
-    (var quarantined (events/quarantined .get))
+    (var quarantined events/quarantined/.get)
     (var seen (fresh_map))
     (for owner in quarantined (seen .put owner true))
     (if (== known void)
@@ -105,31 +105,31 @@
   (var key (stream_key scope stream))
   (acquire_event_writer events)
   (try
-    (if_not (== ((events/dirty_streams .get) .get key) void)
+    (if_not (== (events/dirty_streams/.get .get key) void)
       (flush_event_store_unlocked events))
-    ((events/streams .get) .delete key)
-    ((events/projections .get) .delete key)
-    ((events/core_projections .get) .delete key)
+    (events/streams/.get .delete key)
+    (events/projections/.get .delete key)
+    (events/core_projections/.get .delete key)
   ensure (events/writing .set false))
   nil)
 
 (fn set_current_events [events : EventStore, key : Str, values]
-  (var streams (events/streams .get))
+  (var streams events/streams/.get)
   (streams .put key values)
   (events/streams .set streams))
 
 (fn next_sequence [events : EventStore, key : Str] : Int
-  (var sequences (events/next_sequences .get))
+  (var sequences events/next_sequences/.get)
   (var found (sequences .get key))
   (if (== found void) 1 found))
 
 (fn set_next_sequence [events : EventStore, key : Str, value : Int]
-  (var sequences (events/next_sequences .get))
+  (var sequences events/next_sequences/.get)
   (sequences .put key value)
   (events/next_sequences .set sequences))
 
 (fn update_projection [events : EventStore, key : Str, plugin : Str, state]
-  (var all (events/projections .get))
+  (var all events/projections/.get)
   (var stream_states (all .get key))
   (if (== stream_states void) (set stream_states (fresh_map)))
   (stream_states .put plugin state)
@@ -139,7 +139,7 @@
 (fn copy_data [value] ($thaw ($freeze value)))
 
 (fn update_core_projection [events : EventStore, key : Str, name : Str, state]
-  (var all (events/core_projections .get))
+  (var all events/core_projections/.get)
   (var states (all .get key))
   (if (== states void) (set states (fresh_map)))
   (if ($absent? state) (states .delete name) (states .put name (copy_data state)))
@@ -262,7 +262,7 @@
 (fn core_state [events : EventStore, scope : Str, stream : Str, key : Str]
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
-  (var states ((events/core_projections .get) .get (stream_key scope stream)))
+  (var states (events/core_projections/.get .get (stream_key scope stream)))
   (if (== states void) (return nil))
   (var state (states .get key))
   (if ($absent? state) nil (copy_data state)))
@@ -270,7 +270,7 @@
 (fn core_states [events : EventStore, scope : Str, stream : Str]
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
-  (var states ((events/core_projections .get) .get (stream_key scope stream)))
+  (var states (events/core_projections/.get .get (stream_key scope stream)))
   (if (== states void) (fresh_map) (copy_data states)))
 
 (fn events_for [events : EventStore, scope : Str, stream : Str]
@@ -286,7 +286,7 @@
   [events : EventStore, scope : Str, stream : Str, plugin : Str]
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
-  (var all (events/projections .get))
+  (var all events/projections/.get)
   (var stream_states (all .get (stream_key scope stream)))
   (if_not (== stream_states void)
     (var found (stream_states .get plugin))
@@ -355,12 +355,12 @@
   (require_open events)
   (events/catalog .set known_types)
   (events/quarantined .set (fresh_list))
-  (for [stream values] in (events/streams .get)
+  (for [stream values] in events/streams/.get
     (for envelope in values (validate_loaded_envelope events envelope)))
-  (copy_data (events/quarantined .get)))
+  (copy_data events/quarantined/.get))
 
 (fn validate_envelope_formats [events : EventStore]
-  (for [stream values] in (events/streams .get)
+  (for [stream values] in events/streams/.get
     (for envelope in values (validate_loaded_envelope events envelope)))
   (events/formats_validated .set true)
   events)
@@ -429,7 +429,7 @@
   (var retained (fresh_map))
   (for digest in (all_manifest_digests manifest)
     (retained .put digest true))
-  (for key in (backend .Store:keys)
+  (for key in backend/.Store:keys
     (if_yes (|| (starts_with? key "segment/") (starts_with? key "projection/"))
       (var prefix (if (starts_with? key "segment/") 8 11))
       (var digest (slice_bytes key prefix (- (byte_size key) prefix)))
@@ -438,12 +438,12 @@
 
 (fn build_event_manifest [events : EventStore, generation : Int]
   (var descriptors (fresh_map))
-  (var previous (events/last_manifest .get))
+  (var previous events/last_manifest/.get)
   (if_not ($absent? previous)
     (for [key descriptor] in previous/streams
       (descriptors .put key descriptor)))
-  (var streams (events/streams .get))
-  (for [key ignored] in (events/dirty_streams .get)
+  (var streams events/streams/.get)
+  (for [key ignored] in events/dirty_streams/.get
     (if (== ignored "deleted")
       (then (descriptors .delete key) (continue)))
     (var values (streams .get key))
@@ -453,8 +453,8 @@
     (var segmented (segment_stream events values prior))
 
     (var projection
-      {^plugin ((events/projections .get) .get key)
-       ^core ((events/core_projections .get) .get key)})
+      {^plugin (events/projections/.get .get key)
+       ^core (events/core_projections/.get .get key)})
     (var projection_digest (sha256 (write_data projection)))
     (if_not (events/backend .Store:has? $"projection/${projection_digest}")
       (events/backend .Store:put $"projection/${projection_digest}" projection))
@@ -490,11 +490,11 @@
 (fn delete_event_stream_unlocked [events : EventStore, scope : Str, stream : Str]
   (require_open events)
   (let key (stream_key scope stream))
-  ((events/streams .get) .delete key)
-  ((events/projections .get) .delete key)
-  ((events/core_projections .get) .delete key)
-  ((events/next_sequences .get) .delete key)
-  ((events/dirty_streams .get) .put key "deleted")
+  (events/streams/.get .delete key)
+  (events/projections/.get .delete key)
+  (events/core_projections/.get .delete key)
+  (events/next_sequences/.get .delete key)
+  (events/dirty_streams/.get .put key "deleted")
   (events/dirty .set true)
   nil)
 
@@ -521,7 +521,7 @@
   (events/dirty_streams .set (fresh_map)))
 
 (fn publish_event_generation [events : EventStore]
-  (var generation (+ (events/generation .get) 1))
+  (var generation (+ events/generation/.get 1))
   (var manifest (build_event_manifest events generation))
   (events/backend .Store:checkpoint generation {^event_manifest manifest})
   (events/generation .set generation)
@@ -536,10 +536,10 @@
     ensure (events/writing .set false)))
 
 (fn flush_event_store_unlocked [events : EventStore]
-  (if_not (events/dirty .get)
-    (return {^generation (events/generation .get) ^manifest (events/last_manifest .get)}))
+  (if_not events/dirty/.get
+    (return {^generation events/generation/.get ^manifest events/last_manifest/.get}))
   (var published (publish_event_generation events))
-  (var countdown (- (events/gc_countdown .get) 1))
+  (var countdown (- events/gc_countdown/.get 1))
   (if (<= countdown 0)
     (then
       (garbage_collect_segments events published/manifest)
@@ -554,7 +554,7 @@
   (if_not ($absent? session)
     (current_events events (stream_key "session" session)))
   (var repairs (fresh_list))
-  (for [key values] in (events/streams .get)
+  (for [key values] in events/streams/.get
     (if_yes (&& (! ($absent? session)) (!= ($to_str key) (stream_key "session" session)))
       (continue))
     (var open_turns (fresh_map))
@@ -605,7 +605,7 @@
                 ^max_event_bytes max_event_bytes
                 ^max_state_bytes max_state_bytes
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
-  (var loaded (backend .Store:load_checkpoint))
+  (var loaded backend/.Store:load_checkpoint)
   (if_yes (! ($absent? loaded))
     (var manifest (loaded/records .get "event_manifest"))
     (restore_manifest events manifest))
@@ -613,8 +613,8 @@
   events)
 
 (fn close_event_store [events : EventStore]
-  (if (events/closed .get) (return))
-  (if (events/dirty .get) (flush_event_store events))
-  (events/backend .Store:close)
+  (if events/closed/.get (return))
+  (if events/dirty/.get (flush_event_store events))
+  events/backend/.Store:close
   (events/closed .set true)
   nil)

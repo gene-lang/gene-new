@@ -113,14 +113,14 @@
   (let process
     ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^merge_stderr true ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
   (let output
-    (spawn ^lane root (try (loop (let line (channel .recv)) (ctx/output $"${line}\n")) catch ChannelClosed nil)))
+    (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output $"${line}\n")) catch ChannelClosed nil)))
   (let result
     (try
       (await process)
     ensure
-      (process .cancel)
-      (if_not (process .done?) (process .join))))
-  (output .join)
+      process/.cancel
+      (if_not process/.done? process/.join)))
+  output/.join
   (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^^attached))
 
 (fn view_command [ctx]
@@ -324,7 +324,7 @@
   (with_body_use manager/runtime (fn [] (submit_command_impl manager session text))))
 
 (fn submit_command_impl [manager, session : Str, text : Str]
-  (if (! (manager/accepting .get))
+  (if (! manager/accepting/.get)
     (fail (CommandError ^code "stopped" ^message "workspace is stopping")))
   (let parsed (parse_submission manager/runtime/h text))
   (if_not (== parsed/kind "command")
@@ -362,11 +362,11 @@
   (manager/active
     .get
     ; .put $"${session}:${record/id}" task)
-  (let deadline (spawn ^lane root (do ($sleep timeout) (task .cancel))))
+  (let deadline (spawn ^lane root (do ($sleep timeout) task/.cancel)))
   (let watcher
     (spawn ^lane root (do
       (try
-        (let outcome (try (task .join) ensure (deadline .cancel) (deadline .join)))
+        (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
         (finish_command manager session record lease outcome)
         ensure (release_body_use manager/runtime)))))
   (manager/watchers
@@ -384,8 +384,8 @@
 (fn cancel_command [manager, session : Str, id : Str]
   (let receipt (command_receipt manager session id))
   (if ($absent? receipt) (fail (CommandError ^code "not_found" ^message "command not found")))
-  (let task ((manager/active .get) .get $"${session}:${id}"))
-  (if_not ($absent? task) (task .cancel))
+  (let task (manager/active/.get .get $"${session}:${id}"))
+  (if_not ($absent? task) task/.cancel)
   receipt)
 
 (fn take_command_attachments [runtime, session : Str]
@@ -404,8 +404,8 @@
 (fn close_command_manager [manager]
   (if (manager/closed .swap true) (return nil))
   (manager/accepting .set false)
-  (for [id task] in (manager/active .get)
-    (task .cancel))
-  (for [id watcher] in (manager/watchers .get)
-    (watcher .join))
+  (for [id task] in manager/active/.get
+    task/.cancel)
+  (for [id watcher] in manager/watchers/.get
+    watcher/.join)
   nil)

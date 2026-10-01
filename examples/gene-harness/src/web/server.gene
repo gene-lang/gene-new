@@ -257,7 +257,7 @@
     (if_yes (&& (== request/method "POST") (== request/path "/api/v4/auth/exchange"))
       (var data (request_data request))
       (var token (field data "token"))
-      (if (|| (== (bootstrap .get) "") (!= token (bootstrap .get))
+      (if (|| (== bootstrap/.get "") (!= token bootstrap/.get)
               (> (monotonic_ms) bootstrap_until))
         (fail_request "unauthorized" "This connection link has expired or was already used. Restart the server for a new link."))
       (bootstrap .set "")
@@ -360,7 +360,7 @@
 
   (var server (listen ^host "127.0.0.1" ^port port))
   ($println "Gene Harness is ready.")
-  ($println $"Open ${origin}/#token=${(bootstrap .get)}")
+  ($println $"Open ${origin}/#token=${bootstrap/.get}")
   ($io/flush_stdout)
   ($println (if offline
     "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
@@ -371,11 +371,11 @@
       ^tick_ms 1000
       ^on_tick (fn []
         (expire_peers push) (unload_idle_sessions host/sessions)
-        (if (host/runtime/stopping .get)
+        (if host/runtime/stopping/.get
           (then
-            (let restarting (== (host/runtime/exit_code .get) 75))
+            (let restarting (== host/runtime/exit_code/.get 75))
             (broadcast push {^type "stopped" ^session "" ^data {^restart restarting
               ^message (if restarting "Harness restarting…" "Harness stopped. Restart it from a terminal.")}})
             (stop server)))))
   ensure (close_session_service host))
-  (host/runtime/exit_code .get))
+  host/runtime/exit_code/.get)

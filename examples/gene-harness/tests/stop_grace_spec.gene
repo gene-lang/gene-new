@@ -25,7 +25,7 @@
         ($assert ($fs/exists? $"${root}/workspace/entered") "round did not enter its uncooperative cleanup fixture")
         (let before ($os/monotonic_ms))
         (await (write_all input/1 ($binary/from_str "/stop\n")))
-        (input/1 .IoResource:close)
+        input/1/.IoResource:close
         (let result (await process))
         (let elapsed (- ($os/monotonic_ms) before))
         ($assert (== result/status 0) $"stop did not exit zero: ${result}")
