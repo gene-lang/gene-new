@@ -8,6 +8,33 @@
 (import ^from "../src/storage/state" [events_for])
 
 (describe "Harness turn loop"
+  (it "executes full attachment bytes while recording elided history" []
+    (isolated this_mod/.path "executes full attachment bytes while recording elided history"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let runtime (open_runtime root "default" (Profile ^name "scripted" ^plugins [])))
+        (let lines [])
+        (repeat index in 200 (lines .push $"asset line ${index}"))
+        (let body ($to_str ($str/join lines "\n") "\n"))
+        (let path $"${root}/asset.txt")
+        (let provider (fn [request]
+          ($to_str "($fs/write_text " ($json/stringify path) " (attachment \"asset\"))\n"
+            "(Outcome ^done true ^reply \"written\")\n<<<asset END\n" body "END\n")))
+        (let controller (new_round_controller runtime provider))
+        (try
+          (let receipt (submit_round controller "default" "attachment" 1 "write attachment"))
+          (controller/watchers .get; .get "default"; .join)
+          (let finished (round_receipt controller "default" receipt/id))
+          ($assert (== finished/state "done") $"attachment round failed: ${finished}")
+          ($assert (== ($fs/read_text path) body) "attachment execution wrote an elided stub")
+          (let responses ((events_for runtime/events "session" "default") .filter
+            (fn [event] (== event/type "turn/response"))))
+          ($assert ($str/contains? responses/0/payload/text "elided") "history retained the full attachment")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
   (it "handles concurrent code responses, receipts and waiting question resumption" []
     (isolated this_mod/.path "handles concurrent code responses, receipts and waiting question resumption"
       (fn [workspace]

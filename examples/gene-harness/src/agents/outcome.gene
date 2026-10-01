@@ -111,7 +111,7 @@
     (when (node : Node)
       (let body ($map ($node/body form) plain_form))
       (let props ($map ($node/props form) plain_form))
-      ($node/rebuild ^body body ^props props ^meta {} form))
+      ($node/rebuild ^head (plain_form ($head form)) ^body body ^props props ^meta {} form))
     (else
       form)))
 
@@ -161,29 +161,29 @@
 (fn request_items [turn, validated, ^patch patch = nil, ^error error = nil, ^error_line error_line = nil, ^answers answers = nil, ^result_line result_line = nil]
   (let rendered [])
   (if_not ($absent? patch)
-    (let id (implicit_id turn "patch"))
+    (let patch_id (implicit_id turn "patch"))
     (rendered .push
-      {^id id ^header $"[${id}]" ^value patch ^^inline}))
+      {^id patch_id ^header $"[${patch_id}]" ^value patch ^^inline}))
   (for item in (turn/items .get)
     (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
   (if_not ($absent? validated)
     (let outcome validated/outcome)
     (if_not (== outcome/prompt void)
-      (let id (implicit_id turn "result"))
+      (let result_id (implicit_id turn "result"))
       (let line (if ($absent? result_line) "" $" line ${result_line}: Outcome ^prompt"))
       (rendered .push
         {
-          ^id id
-          ^header $"[${id}]${line}"
+          ^id result_id
+          ^header $"[${result_id}]${line}"
           ^value (value_text outcome/prompt)})))
   (if_not ($absent? error)
-    (let id (implicit_id turn "error"))
+    (let error_id (implicit_id turn "error"))
     (let line (if ($absent? error_line) "" $" line ${error_line}:"))
-    (rendered .push {^id id ^header $"[${id}]${line}" ^value error}))
+    (rendered .push {^id error_id ^header $"[${error_id}]${line}" ^value error}))
   (if_not ($absent? answers)
-    (let id (implicit_id turn "answers"))
+    (let answers_id (implicit_id turn "answers"))
     (rendered .push
-      {^id id ^header $"[${id}]" ^value (value_text answers)}))
+      {^id answers_id ^header $"[${answers_id}]" ^value (value_text answers)}))
   rendered)
 
 (fn implicit_id [turn, label : Str] : Str

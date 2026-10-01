@@ -1,5 +1,5 @@
 (mod turn_eval)
-(import ^from "./response" [split_response])
+(import ^from "./response" [split_response validate_execution_attachments])
 (import ^from "./outcome"
   [
     Outcome
@@ -51,6 +51,7 @@
   (var cancelled false)
   (try
     (let response (split_response text))
+    (validate_execution_attachments response)
     (turn .put "attachments" response/attachments)
     (var plan nil)
     (if_not ($absent? response/patch)

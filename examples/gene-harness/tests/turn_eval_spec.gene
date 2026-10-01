@@ -3,6 +3,37 @@
 (import [evaluate_turn] ^from "../src/agents/turn_eval")
 
 (describe "Harness turn evaluation"
+  (it "renders an applied patch alongside continuation and error items" []
+    (isolated this_mod/.path "renders an applied patch alongside continuation and error items"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let continued (evaluate_turn 20 root
+          "(Outcome ^prompt \"next\")\n*** Begin Patch\n*** Add File: continued.txt\n+written\n*** End Patch\n"))
+        ($assert (== continued/kind "continue") "patched continuation did not continue")
+        ($assert ($str/contains? continued/request "[20.patch] applied:") "patch result was lost")
+        ($assert ($str/contains? continued/request "[20.result]") "continuation result was lost")
+        (let errored (evaluate_turn 21 root
+          "(/ 1 0)\n*** Begin Patch\n*** Add File: errored.txt\n+written\n*** End Patch\n"))
+        ($assert (== errored/kind "error") "patched error did not return a diagnostic")
+        ($assert ($str/contains? errored/request "[21.patch] applied:") "error lost its patch result")
+        ($assert ($str/contains? errored/request "[21.error]") "code error diagnostic was lost"))))
+
+  (it "rejects copied history attachment placeholders before file writes" []
+    (isolated this_mod/.path "rejects copied history attachment placeholders before file writes"
+      (fn [workspace]
+        ($fs/make_dir workspace)
+        (let root ($fs/real_path workspace))
+        (let path $"${root}/asset.txt")
+        ($fs/write_text path "original")
+        (let code ($to_str "($fs/write_text " ($json/stringify path)
+          " (attachment \"asset\"))\n(Outcome ^done true ^reply \"written\")\n"
+          "<<<asset ELIDED\n[elided 2048 bytes; (recall \"14.attachment.asset\")]\nELIDED\n"))
+        (let result (evaluate_turn 15 root code))
+        ($assert (== result/kind "error") "copied history placeholder was executed")
+        ($assert ($str/contains? result/request "history placeholder") "recovery diagnostic was missing")
+        ($assert (== ($fs/read_text path) "original") "invalid attachment overwrote the file"))))
+
   (it "captures outcomes, errors, console and patches within the child scope and budget" []
     (isolated this_mod/.path "captures outcomes, errors, console and patches within the child scope and budget"
       (fn [workspace]
