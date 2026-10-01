@@ -46,6 +46,9 @@
 (fn step_block [block : Any] : Bool
   (var round : Int block/turn)
   (var phase : Str block/phase)
+  (var final : Bool false)
+  (if_not ($absent? block/final) (set final block/final))
+  (if_yes (&& (== phase "reply") final) (return false))
   (&& (> round 0)
       (|| (== phase "code") (== phase "turn/request") (== phase "turn/patch") (== phase "reply"))))
 

@@ -103,7 +103,7 @@
   (var status : Str run/state)
   (var failed (|| (== status "failed") (== status "recovery_required")))
   (var detail "")
-  (if_not ($absent? run/message)
+  (if_not (|| (== status "done") ($absent? run/message))
     (var message : Str run/message)
     (if (str/starts_with? message $"${label}.")
       (set label message) (set detail message)))
