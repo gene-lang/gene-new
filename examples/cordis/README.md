@@ -60,6 +60,12 @@ exact `EffectScope` for callbacks belonging to an activation revision. The
 lease covers that invocation; a returned stream or task still needs an owned
 consumer/effect until its deferred work finishes.
 
+`spawn_host_call(runtime, label, callable, args)` starts trusted host work on
+the runtime executor, outside the submitting invocation's execution budget.
+This is useful for request-driven rendering and other host adapters. The
+caller owns the returned task and must cancel/join it when interrupted; plugin
+callbacks inside that work still enter their activation owner and budget.
+
 For trusted host compositions, `Loader.reconcile_plugins(manifest, plugins)`
 stages already loaded `PluginSpec` values keyed by manifest entry ID. Entries
 without a host admission still use sandbox module loading. These admissions

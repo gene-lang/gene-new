@@ -1,21 +1,37 @@
 (mod harness_web_server)
 
-(import [open_session_service close_session_service list_sessions create_session rename_session
-         snapshot submit receipt cancel answer command cancel_operator_command host_status edit_session acknowledge_attention RoundError]
-  ^from "./session_service")
-(import [styles] ^from "./style")
-(import [module_dir] ^from "../kernel")
-(import [error_status] ^from "./contract")
-(import [new_push_hub add_peer remove_peer expire_peers broadcast] ^from "./push")
-(import [website_page] ^from "../website/page")
-(import [unload_idle_sessions] ^from "../runtime/sessions")
-(import [SessionError] ^from "../runtime/sessions")
-(import [CommandError] ^from "../runtime/commands")
-(import [QuestionError] ^from "../runtime/questions")
-(import [list_triggers create_trigger delete_trigger list_occurrences TriggerError] ^from "../runtime/triggers")
-(import [scripted_provider] ^from "../agents/scripted")
+(import ^from "./session_service"
+  [
+    open_session_service
+    close_session_service
+    list_sessions
+    create_session
+    rename_session
+    snapshot
+    submit
+    receipt
+    cancel
+    answer
+    command
+    cancel_operator_command
+    host_status
+    edit_session
+    acknowledge_attention
+    RoundError])
+(import ^from "./style" [styles])
+(import ^from "../kernel" [module_dir])
+(import ^from "./contract" [error_status])
+(import ^from "./push" [new_push_hub add_peer remove_peer expire_peers broadcast])
+(import ^from "../website/page" [website_page])
+(import ^from "../runtime/sessions" [unload_idle_sessions])
+(import ^from "../runtime/sessions" [SessionError])
+(import ^from "../runtime/commands" [CommandError])
+(import ^from "../runtime/questions" [QuestionError])
+(import ^from "../runtime/triggers"
+  [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
+(import ^from "../agents/scripted" [scripted_provider])
 (import $net/http [listen serve stop html json redirect ws_accept])
-(import [open_auth create_cookie authenticate] ^from "./auth")
+(import ^from "./auth" [open_auth create_cookie authenticate])
 (import $html [render])
 (import $web [script stylesheet])
 (import $crypto [random_hex])
@@ -26,24 +42,27 @@
 (var about_page (website_page ^mode "embedded"))
 
 (fn page [] : Str
-  ($to_str "<!doctype html>"
+  ($to_str
+    "<!doctype html>"
     (render
       `(html ^lang "en"
-         (head (meta ^charset "utf-8")
+         (head
+           (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
            (title "Gene Harness")
            %(stylesheet "gene-harness" styles))
          (body
            (div ^id "harness_root" ^class "app"
              (aside ^class "sidebar"
-               (div ^class "brand" (span ^class "brand_name" "Gene")
+               (div ^class "brand"
+                 (span ^class "brand_name" "Gene")
                  (span ^class "brand_detail" "Harness")
                  (span ^class "local" "Local"))
                (button ^id "close_menu" ^class "mobile_only close_menu" ^type "button" "Close menu")
                (button ^id "create_session" ^class "new_session" ^type "button"
-                 (span ^class "plus" ^aria-hidden "true" "+") "New conversation")
-               (input ^id "session_filter" ^class "filter" ^type "search"
-                 ^placeholder "Search conversations…" ^aria-label "Find a conversation")
+                 (span ^class "plus" ^aria-hidden "true" "+")
+                 "New conversation")
+               (input ^id "session_filter" ^class "filter" ^type "search" ^placeholder "Search conversations…" ^aria-label "Find a conversation")
                (div ^class "session_filters"
                  (select ^id "kind_filter" ^aria-label "Session kind"
                    (option ^value "" "Interactive + pinned")
@@ -52,11 +71,15 @@
                    (option ^value "scheduled" "Scheduled")
                    (option ^value "cron" "Cron"))
                  (select ^id "status_filter" ^aria-label "Round status"
-                   (option ^value "" "Any status") (option ^value "running" "Running")
-                   (option ^value "waiting" "Waiting") (option ^value "done" "Done")
-                   (option ^value "failed" "Failed") (option ^value "cancelled" "Cancelled")
+                   (option ^value "" "Any status")
+                   (option ^value "running" "Running")
+                   (option ^value "waiting" "Waiting")
+                   (option ^value "done" "Done")
+                   (option ^value "failed" "Failed")
+                   (option ^value "cancelled" "Cancelled")
                    (option ^value "interrupted" "Interrupted"))
-                 (details (summary "More filters")
+                 (details
+                   (summary "More filters")
                    (input ^id "trigger_filter" ^placeholder "Trigger id" ^aria-label "Trigger id")
                    (label "Active since" (input ^id "since_filter" ^type "date"))
                    (label "Active until" (input ^id "until_filter" ^type "date"))))
@@ -64,6 +87,7 @@
                  (div ^class "section_label" "Needs attention")
                  (nav ^id "attention_sessions" ^aria-label "Needs attention"))
                (div ^class "section_label" "Conversations")
+               (div ^id "web_sidebar" ^class "web_components")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
                (div ^class "sidebar_footer"
                  (button ^id "triggers_button" ^type "button" "Triggers")
@@ -78,6 +102,7 @@
                    (div ^id "mode" ^class "mode" "Local workspace"))
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
+               (div ^id "web_toolbar" ^class "web_components web_toolbar")
                (form ^id "rename_form" ^class "rename_form" ^^hidden
                  (input ^id "rename_title" ^type "text" ^maxlength "256" ^aria-label "Conversation title")
                  (button ^type "submit" "Save title"))
@@ -93,6 +118,7 @@
                  (pre ^id "console_output" ^aria-label "Session console"))
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
                (div ^class "composer_wrap"
+                 (div ^id "web_composer" ^class "web_components")
                  (section ^id "input_panel" ^class "input_panel" ^^hidden
                    (strong ^id "input_question")
                    (form ^id "input_form"
@@ -104,8 +130,7 @@
                        (button ^id "input_cancel" ^type "button" "Dismiss all"))))
                  (div ^id "commands" ^class "commands" ^^hidden)
                  (form ^id "composer" ^class "composer"
-                   (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…"
-                     ^aria-label "Message Gene")
+                   (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
                    (div ^class "composer_actions"
                      (span ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "stop" ^class "stop" ^type "button" ^^hidden "Stop")
@@ -115,38 +140,54 @@
              (aside ^id "status_drawer" ^class "drawer" ^^hidden
                (div ^class "drawer_header"
                  (h2 "Workspace status")
-                 (button ^id "close_status" ^class "drawer_close" ^type "button"
-                   ^aria-label "Close workspace status" "×"))
-               (div ^id "status_content")))
-             (aside ^id "trigger_drawer" ^class "drawer" ^^hidden
-               (div ^class "drawer_header"
-                 (h2 "Triggers") (button ^id "close_triggers" ^type "button" "Close"))
-               (div ^id "trigger_list")
-               (section ^id "trigger_occurrences")
-               (details ^class "trigger_create"
-                 (summary "Create trigger")
-                 (form ^id "trigger_form"
-                   (label "Id" (input ^id "trigger_id" ^required true ^placeholder "nightly-audit"))
-                   (label "Kind" (select ^id "trigger_kind"
-                     (option ^value "heartbeat" "Heartbeat") (option ^value "scheduled" "One-shot schedule")
+                 (button ^id "close_status" ^class "drawer_close" ^type "button" ^aria-label "Close workspace status" "×"))
+               (div ^id "status_content")
+               (div ^id "web_status" ^class "web_components")))
+           (aside ^id "trigger_drawer" ^class "drawer" ^^hidden
+             (div ^class "drawer_header"
+               (h2 "Triggers")
+               (button ^id "close_triggers" ^type "button" "Close"))
+             (div ^id "trigger_list")
+             (section ^id "trigger_occurrences")
+             (details ^class "trigger_create"
+               (summary "Create trigger")
+               (form ^id "trigger_form"
+                 (label "Id" (input ^id "trigger_id" ^^required ^placeholder "nightly-audit"))
+                 (label
+                   "Kind"
+                   (select ^id "trigger_kind"
+                     (option ^value "heartbeat" "Heartbeat")
+                     (option ^value "scheduled" "One-shot schedule")
                      (option ^value "cron" "Cron")))
-                   (label ^id "trigger_every_field" "Interval in milliseconds"
-                     (input ^id "trigger_every" ^type "number" ^min "1" ^value "60000"))
-                   (label ^id "trigger_at_field" ^^hidden "At (UTC)"
-                     (input ^id "trigger_at" ^placeholder "2026-10-01T12:00:00Z"))
-                   (label ^id "trigger_cron_field" ^^hidden "Cron (five fields)"
-                     (input ^id "trigger_cron" ^value "0 3 * * *"))
-                   (label ^id "trigger_timezone_field" ^^hidden "Timezone"
-                     (input ^id "trigger_timezone" ^value "UTC"))
-                   (label "Request" (textarea ^id "trigger_request" ^rows "3" ^required true))
-                   (label "After downtime" (select ^id "trigger_missed"
-                     (option ^value "skip" "Skip missed work") (option ^value "once" "Run once")))
-                   (label "Overlapping work" (select ^id "trigger_overlap"
-                     (option ^value "skip" "Skip") (option ^value "queue_one" "Queue one")))
-                   (label (input ^id "trigger_continue" ^type "checkbox") "Continue previous session")
-                   (label "Sessions to keep" (input ^id "trigger_keep" ^type "number" ^min "0" ^value "30"))
-                   (button ^type "submit" "Create"))))
-           %(script harness_ui ^mount "harness_root"))))))
+                 (label ^id "trigger_every_field"
+                   "Interval in milliseconds"
+                   (input ^id "trigger_every" ^type "number" ^min "1" ^value "60000"))
+                 (label ^id "trigger_at_field" ^^hidden
+                   "At (UTC)"
+                   (input ^id "trigger_at" ^placeholder "2026-10-01T12:00:00Z"))
+                 (label ^id "trigger_cron_field" ^^hidden
+                   "Cron (five fields)"
+                   (input ^id "trigger_cron" ^value "0 3 * * *"))
+                 (label ^id "trigger_timezone_field" ^^hidden
+                   "Timezone"
+                   (input ^id "trigger_timezone" ^value "UTC"))
+                 (label "Request" (textarea ^id "trigger_request" ^rows "3" ^^required))
+                 (label
+                   "After downtime"
+                   (select ^id "trigger_missed"
+                     (option ^value "skip" "Skip missed work")
+                     (option ^value "once" "Run once")))
+                 (label
+                   "Overlapping work"
+                   (select ^id "trigger_overlap"
+                     (option ^value "skip" "Skip")
+                     (option ^value "queue_one" "Queue one")))
+                 (label (input ^id "trigger_continue" ^type "checkbox") "Continue previous session")
+                 (label
+                   "Sessions to keep"
+                   (input ^id "trigger_keep" ^type "number" ^min "0" ^value "30"))
+                 (button ^type "submit" "Create"))))
+           %(script ^mount "harness_root" harness_ui))))))
 
 (fn response [status : Int, value]
   (json status ($json/stringify value)))
@@ -155,8 +196,10 @@
   (fail (RoundError ^code code ^message message)))
 
 (fn optional_field [data, key : Str]
-  (let value (field data key ^default ""))
-  (if (== value "") nil value))
+  (let value (field ^default "" data key))
+  (if (== value "")
+    nil
+    value))
 
 (fn field [data, key : Str, ^default fallback = nil] : Str
   (var value (try (data .get key) catch Any nil))
@@ -164,20 +207,23 @@
     (if ($absent? fallback)
       (fail_request "invalid_request" $"Missing ${key}.")
       (return fallback)))
-  (if_not (== ($head value) Str)
-    (fail_request "invalid_request" $"${key} must be text."))
+  (if_not (== ($head value) Str) (fail_request "invalid_request" $"${key} must be text."))
   value)
 
 (fn number [data, key : Str, ^default fallback : Str = ""] : Int
-  (var value (field data key ^default fallback))
+  (var value (field ^default fallback data key))
   (if (|| (== value "") (> ($str/byte_size value) 24))
     (fail_request "invalid_request" $"Invalid ${key}."))
-  (try ($parse/parse_int value)
-    catch Any (fail_request "invalid_request" $"Invalid ${key}.")))
+  (try
+    ($parse/parse_int value)
+  catch Any
+    (fail_request "invalid_request" $"Invalid ${key}.")))
 
 (fn request_data [request]
-  (try ($json/parse request/body)
-    catch Any (fail_request "invalid_request" "The request must contain JSON.")))
+  (try
+    ($json/parse request/body)
+  catch Any
+    (fail_request "invalid_request" "The request must contain JSON.")))
 
 (fn cookie_value [header : Str, name : Str] : Str
   (for part in ($str/split header ";")
@@ -190,7 +236,8 @@
     (result/headers .put "cache-control" "no-store")
     (result/headers .put "x-content-type-options" "nosniff")
     (result/headers .put "referrer-policy" "no-referrer")
-    (result/headers .put "content-security-policy"
+    (result/headers .put
+      "content-security-policy"
       "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))
   result)
 

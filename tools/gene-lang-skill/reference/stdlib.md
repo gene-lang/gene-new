@@ -202,6 +202,19 @@ Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 string, so length is `($str/byte_size s)` for bytes or `($size ($chars s))` for
 code points.
 
+In the web profile, DOM code can create elements and text nodes and set
+attributes without embedding JavaScript:
+
+```gene
+($dom/create_element "section")
+($dom/create_text "A plain text child")
+($dom/set_attribute element "aria-label" "Workspace summary")
+($dom/append element child)
+```
+
+These DOM operations belong to the browser profile, rather than native VM
+bindings. `set_attribute` accepts an EventTarget followed by name/value strings.
+
 Where a name appears both as a root function and a message (`size`, `empty?`,
 `first`, `last`, `contains?`, `to_stream`), they are the *same* function value,
 so `($size xs)` and `xs/.size` are interchangeable.

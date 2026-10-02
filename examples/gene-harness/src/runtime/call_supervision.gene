@@ -1,0 +1,17 @@
+(mod call_supervision)
+
+# Keep owned callbacks on resumable VM frames, with an explicit deadline and
+# a join boundary for errors, panics and cancellation.
+(fn supervised_call [callable, args, limits]
+  (scope
+    (let invoke
+      ($runtime/bind_call ^policy {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms}
+        callable
+        args))
+    (let task (spawn ^lane root (scope (invoke))))
+    (let deadline (spawn ^lane root (do ($sleep limits/timeout_ms) task/.cancel)))
+    (try
+      task/.join
+    ensure
+      deadline/.cancel
+      deadline/.join)))

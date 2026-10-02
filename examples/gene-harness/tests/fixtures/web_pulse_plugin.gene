@@ -1,0 +1,41 @@
+# goal: Show current workspace, model and conversation activity from immutable render context.
+(mod plugin
+  (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+
+  # Count exact statuses; unknown statuses remain visible rather than masquerading as completed.
+  (fn count_status [sessions, status]
+    ($size ($filter sessions (fn [session] (== (?? session/status "unknown") status)))))
+
+  (fn pulse_view [context]
+    # Only read context: no I/O, polling, host mutations or background work.
+    (let sessions (?? context/sessions []))
+    (let running (count_status sessions "running"))
+    (let waiting (count_status sessions "waiting"))
+    (let completed (count_status sessions "done"))
+    (let model (?? context/model {}))
+    (let provider (?? (model .get "provider") "Unavailable"))
+    (let model_name (?? (model .get "model") "Unavailable"))
+    (let selected (if (== context/session_id "") "No conversation selected"
+                    (?? context/session/status "unknown")))
+    `(section ^class_name "web_card" ^aria_label "Workspace pulse"
+       (h3 "Workspace pulse")
+       (small ^class_name "web_muted" "WORKSPACE")
+       (p ^title %context/workspace (code %context/workspace))
+       (small ^class_name "web_muted" "MODEL / PROVIDER")
+       (p (strong %model_name) " / " %provider)
+       (div ^class_name "web_grid"
+         (div (strong ^class_name "web_metric" %sessions/.size) (small " Conversations"))
+         (div (strong ^class_name "web_metric" %running) (small " Running"))
+         (div (strong ^class_name "web_metric" %waiting) (small " Waiting for input"))
+         (div (strong ^class_name "web_metric" %completed) (small " Completed")))
+       (p ^class_name "web_muted" "Other statuses: " %(- sessions/.size (+ running waiting completed)))
+       (p (small "Selected: ") (span ^class_name "web_badge" %selected))
+       (small ^class_name "web_muted" "Refreshes with Harness snapshots; counts cover listed workspace conversations.")))
+
+  # Publish one additive sidebar panel, leaving navigation intact.
+  (fn init [descriptor]
+    (Plugin ^id "workspace_pulse"
+      ^provides [["web_components" "workspace_pulse"]]
+      ^activate (fn [host]
+        (host .PluginHost:contribute "web_components"
+          {^name "workspace_pulse" ^slot "sidebar" ^render pulse_view})))))

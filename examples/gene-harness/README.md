@@ -274,7 +274,9 @@ quarantined with a re-register message.
 
 Plugins import the shared `src/plugin_api.gene` contract and activate through
 an ordinary function receiving PluginHost. They can contribute functions,
-commands, prompt sections and trigger definitions. Command handlers receive
+commands, prompt sections, trigger definitions and web components. Web plugins
+add panels to named slots or replace the welcome/status summary through
+[the web component API](docs/web-components.md). Command handlers receive
 CommandContext and return CommandResult. Generations receive the full standard
 library namespace grants. A turn leases one immutable composition; replacing
 a plugin waits for old leases before disposal.

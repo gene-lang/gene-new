@@ -28,6 +28,9 @@
 (import ^from "../runtime/commands"
   [parse_submission submit_command command_receipt command_state cancel_command])
 (import ^from "../kernel" [rows])
+(import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
+(import ^from "../runtime/cordis_adapter" [spawn_composition_call])
+(import ^from "./component_spec" [bounded_component_view WebComponentError])
 (import ^from "../runtime/triggers" ^^export
   [
     open_trigger_manager
@@ -255,22 +258,99 @@
     ^rounds rounds/receipts
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round loaded/round/.get
+    ^status (host_status ^session id service)
     ^questions (if (== metadata/status "waiting")
                  ((Path "questions") loaded/round/.get)
                  nil)})
 
-(fn host_status [service]
+(fn render_component [service, callback, context]
+  (let started ($os/monotonic_ms))
+  (let outcome
+    (scope
+      (let task
+        (spawn_composition_call
+          service/runtime/h/composition
+          callback
+          [context]
+          {^timeout_ms 1000 ^max_memory_mb 32}
+          ($runtime/context)))
+      (let deadline (spawn ^lane root (do ($sleep 1000) task/.cancel)))
+      (var result nil)
+      (try
+        (set result task/.join)
+        result
+      ensure
+        (if_yes ($absent? result)
+          task/.cancel
+          task/.join)
+        deadline/.cancel
+        deadline/.join)))
+  (match outcome
+    (when (TaskOutcome/ok value)
+      (bounded_component_view value))
+    (when (TaskOutcome/error error)
+      (fail
+        (WebComponentError ^message $"${error/message} (render elapsed ${(- ($os/monotonic_ms) started)} ms)")))
+    (when (TaskOutcome/panic message)
+      (fail (WebComponentError ^message $"component render panicked: ${message}")))
+    (when TaskOutcome/cancelled
+      (fail (WebComponentError ^message "component render exceeded its budget or was cancelled")))))
+
+(fn web_components [service, session : Str]
+  (let metadata (if (== session "") nil (require_record service/sessions session)))
+  (let loaded (if (== session "") nil (load_session service/sessions session)))
+  (let context
+    ($freeze
+      {
+        ^session_id session
+        ^session metadata
+        ^round (if ($absent? loaded)
+                 nil
+                 loaded/round/.get)
+        ^workspace service/runtime/root
+        ^model service/model_info
+        ^sessions (session_records service/sessions)}))
+  (let components [])
+  (for candidate in (rows service/runtime/h "web_components")
+    (let item {^name candidate/name ^slot candidate/slot})
+    (try
+      (let view
+        (if ($absent? candidate/render)
+          candidate/view
+          (render_component service candidate/render context)))
+      (item .put "view" view)
+    catch Any
+      (item .put "error" $err/message))
+    (components .push item))
+  components)
+
+(fn host_status [service, ^session session : Str = ""]
+  (let lease (acquire_snapshot service/runtime/h/snapshots))
+  (try
+    ($runtime/with_context
+      {^composition service/runtime/h/snapshots ^snapshot lease/snapshot ^session session}
+      (fn []
+        (host_status_in_snapshot service session)))
+  ensure
+    (release_snapshot service/runtime/h/snapshots lease)))
+
+(fn host_status_in_snapshot [service, session : Str]
   (let active service/controller/active/.get)
   (let commands [])
   (for row in (rows service/runtime/h "commands")
     (if (["new" "sessions"] .contains? row/name) (continue))
     (commands .push {^name row/name ^usage row/usage ^doc row/doc}))
+  (let plugins [])
+  (let composition (current_snapshot service/runtime/h/snapshots))
+  (for plugin in composition/plugins
+    (plugins .push {^id plugin/id ^state plugin/status}))
   {
     ^protocol protocol_version
     ^epoch service/epoch
     ^model service/model_info
     ^profile "chat"
-    ^plugins []
+    ^plugins plugins
+    ^web_components (web_components service session)
     ^commands commands
     ^offline (== service/model_info/provider "scripted")
     ^workspace service/runtime/root

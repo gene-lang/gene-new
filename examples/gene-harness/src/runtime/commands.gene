@@ -9,6 +9,7 @@
   [write_body read_body byte_prefix bounded_request acquire_body_use release_body_use with_body_use])
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
+(import ^from "../storage/workspace" [set_plugin_enabled])
 (import ^from "./sessions" [create_session list_sessions load_session])
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
@@ -106,6 +107,14 @@
     (bindings .put name function))
   (bindings .put "workspace_root" ctx/runtime/root)
   (bindings .put "doc" gene_doc)
+  (bindings .put
+    "enable_plugin"
+    (fn [id : Str]
+      (set_plugin_enabled ctx/runtime/workspace ctx/runtime/h id true)))
+  (bindings .put
+    "disable_plugin"
+    (fn [id : Str]
+      (set_plugin_enabled ctx/runtime/workspace ctx/runtime/h id false)))
   (let environment (env ^bindings bindings))
   (let value (evaluate_response `(scope %forms...) environment))
   (CommandResult ^display value ^^attached ^status "done"))

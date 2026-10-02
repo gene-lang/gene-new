@@ -2912,11 +2912,17 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/create_element":
         paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkDomTarget)
+      of "dom/create_text":
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkDomTarget)
       of "dom/append":
         paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget)]
         returnType = webType(wtkVoid)
       of "dom/set_text":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "dom/set_attribute":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkVoid)
       of "dom/clear", "dom/focus", "dom/scroll_end":
         paramTypes = @[webType(wtkDomTarget)]
@@ -5668,6 +5674,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "console/error": "console.error(" & arguments[0] & ")"
     of "dom/element": "$gene_dom_element(" & arguments[0] & ")"
     of "dom/create_element": "document.createElement(" & arguments[0] & ")"
+    of "dom/create_text": "document.createTextNode(" & arguments[0] & ")"
     of "dom/append":
       let parent = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
       let child = if emitter.typescript: "(" & arguments[1] & " as Node)" else: arguments[1]
@@ -5675,6 +5682,9 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "dom/set_text":
       let node = if emitter.typescript: "(" & arguments[0] & " as Node)" else: arguments[0]
       "(" & node & ".textContent = " & arguments[1] & ", undefined)"
+    of "dom/set_attribute":
+      let element = if emitter.typescript: "(" & arguments[0] & " as Element)" else: arguments[0]
+      "(" & element & ".setAttribute(" & arguments[1] & ", " & arguments[2] & "), undefined)"
     of "dom/clear", "dom/focus", "dom/scroll_end", "dom/near_end",
        "dom/scroll_top", "dom/scroll_height", "dom/set_scroll_top":
       let element = if emitter.typescript:

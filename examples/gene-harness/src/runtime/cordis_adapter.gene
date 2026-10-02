@@ -7,6 +7,7 @@
     PluginCallKind
     EffectDisposed
     invoke_effect_owner
+    spawn_host_call
     RuntimeOptions
     LoaderOptions
     PluginSpec
@@ -18,7 +19,8 @@
     invocation_limits
     default_plugin_invoker
     new_runtime])
-(import ^from "../plugin_api" [Plugin PluginHost default_execution_limits response_execution_limits])
+(import ^from "../plugin_api"
+  [Plugin PluginHost default_execution_limits response_execution_limits])
 
 # Activations contribute directly to the live registries. Each activation
 # revision owns its rows and callbacks and releases them in its own cleanup, so
@@ -438,6 +440,19 @@
 
 (fn retained_callback? [value] : Bool
   (== ($head value) RetainedCallback))
+
+(fn invoke_host_callback [callback, args, policy, context] ^^private
+  (scope
+    (let invoke ($runtime/bind_call ^policy policy callback args))
+    ($runtime/with_context context invoke)))
+
+(fn spawn_composition_call [handle, callback, args, policy, context]
+  (let record (composition_record handle))
+  (spawn_host_call
+    record/runtime
+    "harness callback"
+    invoke_host_callback
+    [callback args policy context]))
 
 (fn expire_scope_callbacks [scope]
   (var kept ($thaw #[]))

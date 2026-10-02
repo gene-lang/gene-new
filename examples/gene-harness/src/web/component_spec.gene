@@ -1,0 +1,117 @@
+(mod web_component_spec)
+
+(type WebComponentError ^props {^message Str} ^impl [Error])
+(impl Error for WebComponentError)
+
+(const component_slots ["sidebar" "toolbar" "composer" "status" "welcome" "status_summary"])
+(const component_tags
+  [
+    "div"
+    "section"
+    "p"
+    "h2"
+    "h3"
+    "h4"
+    "span"
+    "strong"
+    "small"
+    "em"
+    "ul"
+    "ol"
+    "li"
+    "button"
+    "a"
+    "details"
+    "summary"
+    "pre"
+    "code"
+    "progress"
+    "hr"
+    "br"])
+(const component_attributes
+  [
+    "class"
+    "class_name"
+    "title"
+    "role"
+    "aria-label"
+    "aria_label"
+    "type"
+    "href"
+    "value"
+    "max"
+    "open"
+    "disabled"
+    "command"
+    "prompt"])
+
+(fn component_error [message : Str]
+  (fail (WebComponentError ^message message)))
+
+(fn component_view [value, ^depth depth : Int = 0]
+  (if (> depth 24) (component_error "web component view exceeds 24 levels"))
+  (if ([Str Int Float Bool Nil] .contains? ($head value))
+    (return (if ($absent? value) "" ($to_str value))))
+  (var tag nil)
+  (var props {})
+  (var children [])
+  (match value
+    (when (node : Node)
+      (set tag ($to_str ($head node)))
+      (set props ($node/props node))
+      (set children ($node/body node)))
+    (when (data : Map)
+      (set tag data/tag)
+      (set props (?? data/props {}))
+      (set children (?? data/children [])))
+    (else
+      (component_error "web component view must be a quoted element or data tree")))
+  (if_not (component_tags .contains? tag)
+    (component_error $"unsupported web component element ${tag}"))
+  (if (|| (!= ($head props) Map) (!= ($head children) List))
+    (component_error "web component props and children must be a map and list"))
+  (let attributes {})
+  (for [key item] in props
+    (let name ($to_str key))
+    (if_not (component_attributes .contains? name)
+      (component_error $"unsupported web component attribute ${name}"))
+    (if_not ([Str Int Float Bool Nil] .contains? ($head item))
+      (component_error "web component attributes must be scalar data"))
+    (if (|| ($absent? item) (== item false)) (continue))
+    (if_yes (["command" "prompt"] .contains? name)
+      (if (|| (!= tag "button") (!= ($head item) Str))
+        (component_error "component actions require a button and text"))
+      (if (&& (== name "command") (! ($str/starts_with? item "/")))
+        (component_error "component command actions must start with /")))
+    (if_yes (== name "href")
+      (if (|| (!= ($head item) Str) (! (|| ($str/starts_with? item "#") (&& ($str/starts_with? item "/") (! ($str/starts_with? item "//"))) ($str/starts_with? item "https://"))))
+        (component_error "component links require a local path, fragment or HTTPS URL")))
+    (attributes .put ($regex/replace_all #"_" name "-") (if (== item true) "" ($to_str item))))
+  (if_not ($absent? attributes/class-name)
+    (attributes .put "class" attributes/class-name)
+    (attributes .delete "class-name"))
+  (if (&& (! ($absent? attributes/command)) (! ($absent? attributes/prompt)))
+    (component_error "a component button needs one action"))
+  (let body ($map children (fn [child] (component_view ^depth (+ depth 1) child))))
+  {^tag tag ^props attributes ^children body})
+
+(fn bounded_component_view [value]
+  (let view (component_view value))
+  (if (> ($str/byte_size ($json/stringify view)) 65536)
+    (component_error "web component view exceeds 64 KiB"))
+  view)
+
+(fn validate_web_component [candidate]
+  (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match candidate/name)))
+    (component_error "web component requires a stable name"))
+  (if_not (component_slots .contains? candidate/slot)
+    (component_error "unknown web component slot"))
+  (if (&& (["welcome" "status_summary"] .contains? candidate/slot) (!= candidate/name candidate/slot))
+    (component_error "replacement component name must equal its slot"))
+  (if (== ($absent? candidate/view) ($absent? candidate/render))
+    (component_error "web component requires exactly one of view or render"))
+  (if (&& (! ($absent? candidate/render)) (! ($runtime/callable? candidate/render)))
+    (component_error "web component render must be callable"))
+  (let checked ($thaw ($freeze_shallow candidate)))
+  (if_not ($absent? candidate/view) (checked .put "view" (bounded_component_view candidate/view)))
+  checked)

@@ -31,6 +31,8 @@
     flush_event_store])
 (import ^from "./storage/generated_event_catalog" [core_event_types])
 (import ^from "./views/view_api" [HarnessView view_provider])
+(import ^from "./web/component_spec" [validate_web_component])
+(import ^from "./runtime/call_supervision" [supervised_call])
 (import ^from "./runtime/cordis_adapter"
   [RegistryHost retain_callback retained_callback? expire_scope_callbacks new_composition])
 (import ^from "." ^pkg "cordis" [LoaderOptions])
@@ -56,7 +58,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
- (type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^registry_commit Any? ^registry_record Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^registry_commit Any? ^registry_record Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any})
 
@@ -121,12 +123,27 @@
 (fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false, ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core"] : Registry
   (if (queue_registry_change? h)
     (then
-      (let placeholder (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^rows ($cell [])))
-      (queue_composition_change h/snapshots {^id owner ^kind "registry"
-        ^apply (fn [] (registry h name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner))})
+      (let placeholder
+        (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^rows ($cell [])))
+      (queue_composition_change
+        h/snapshots
+        {
+          ^id owner
+          ^kind "registry"
+          ^apply (fn []
+                   (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner
+                     h
+                     name))})
       (return placeholder)))
   (if (serialize_registry_change? h)
-    (return (registry_change h owner (fn [] (registry h name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner)))))
+    (return
+      (registry_change
+        h
+        owner
+        (fn []
+          (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner
+            h
+            name)))))
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
   (if_not (== (registries .get name) void)
@@ -140,29 +157,39 @@
 
 (fn queue_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
-  (&& (! ($absent? h/snapshots)) (! ($absent? context))
-      (! ($absent? context/turn)) (== context/turn/state/.get "open")
-      (! (&& (! ($absent? context/publication)) context/publication/.get))))
+  (&&
+    (! ($absent? h/snapshots))
+    (! ($absent? context))
+    (! ($absent? context/turn))
+    (== context/turn/state/.get "open")
+    (! (&& (! ($absent? context/publication)) context/publication/.get))))
 
 (fn serialize_registry_change? [h : Harness] : Bool
   (let context ($runtime/context))
-  (&& (! ($absent? h/snapshots))
-      (!= context/registry_step true)
-      (! (&& (! ($absent? context/publication)) context/publication/.get))))
+  (&&
+    (! ($absent? h/snapshots))
+    (!= context/registry_step true)
+    (! (&& (! ($absent? context/publication)) context/publication/.get))))
 
 (fn registry_change [h : Harness, owner : Str, thunk]
-  (run_composition_change h/snapshots (fn []
-    (let context (?? ($runtime/context) {}))
-    (let scoped ($thaw ($freeze_shallow context)))
-    (scoped .put "registry_step" true)
-    (let publication ($cell true))
-    (scoped .put "publication" publication)
-    (try ($runtime/with_context scoped (fn []
-      (let revision (if ($absent? h/registry_commit) nil (h/registry_commit owner)))
-      (let result (thunk))
-      (if_not ($absent? h/registry_record) (h/registry_record owner revision))
-      result))
-    ensure (publication .set false)))))
+  (run_composition_change
+    h/snapshots
+    (fn []
+      (let context (?? ($runtime/context) {}))
+      (let scoped ($thaw ($freeze_shallow context)))
+      (scoped .put "registry_step" true)
+      (let publication ($cell true))
+      (scoped .put "publication" publication)
+      (try
+        ($runtime/with_context
+          scoped
+          (fn []
+            (let revision (if ($absent? h/registry_commit) nil (h/registry_commit owner)))
+            (let result (thunk))
+            (if_not ($absent? h/registry_record) (h/registry_record owner revision))
+            result))
+      ensure
+        (publication .set false)))))
 
 (fn registry_names [h : Harness]
   (var out (fresh_list))
@@ -261,13 +288,24 @@
     (let seen {})
     (for [id plugin] in h/plugins/.get
       (seen .put id true)
-      (plugins .push {^id ($to_str id) ^status (status_of h ($to_str id)) ^provides plugin/provides ^requires plugin/requires}))
+      (plugins .push
+        {
+          ^id ($to_str id)
+          ^status (status_of h ($to_str id))
+          ^provides plugin/provides
+          ^requires plugin/requires}))
     (if_not ($absent? h/workspace)
       (for entry in h/workspace/entries/.get
         (if ($absent? (seen .get entry/id))
-          (plugins .push {^id entry/id ^status (if entry/disabled "disabled" "error") ^module_digest entry/module_digest
-            ^error (h/workspace/errors/.get .get entry/id)}))))
-    (publish_snapshot h/snapshots (snapshot_registries h) h/composition/.instances ^plugins plugins))
+          (plugins .push
+            {
+              ^id entry/id
+              ^status (if entry/disabled
+                        "disabled"
+                        "error")
+              ^module_digest entry/module_digest
+              ^error (h/workspace/errors/.get .get entry/id)}))))
+    (publish_snapshot ^plugins plugins h/snapshots (snapshot_registries h) h/composition/.instances))
   nil)
 
 (fn publish_direct_registry_change [h : Harness]
@@ -318,11 +356,17 @@
   (if (== record void) (return false))
   (if (queue_registry_change? h)
     (then
-      (queue_composition_change h/snapshots {^id record/owner ^kind "removal"
-        ^apply (fn [] (remove_registry_row h row_id ^cleanup cleanup))})
+      (queue_composition_change
+        h/snapshots
+        {
+          ^id record/owner
+          ^kind "removal"
+          ^apply (fn []
+                   (remove_registry_row ^cleanup cleanup h row_id))})
       (return true)))
   (if (serialize_registry_change? h)
-    (return (registry_change h record/owner (fn [] (remove_registry_row h row_id ^cleanup cleanup)))))
+    (return
+      (registry_change h record/owner (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
   (var r (registry_named h record/registry))
   (var kept (fresh_list))
   (for candidate in r/rows/.get
@@ -380,6 +424,10 @@
     (for [name value] in checked (guarded .put name value))
     (guarded .put "signature" ($runtime/signature checked/fn))
     (guarded .put "fn" (guard_callback h owner checked/fn false))
+    (set checked guarded))
+  (if_yes (&& (== registry_name "web_components") (! ($absent? checked/render)))
+    (let guarded ($thaw ($freeze_shallow checked)))
+    (guarded .put "render" (guard_callback h owner checked/render false))
     (set checked guarded))
   (if_yes (&& (== registry_name "seams")
               (!= checked/value void)
@@ -482,7 +530,9 @@
 (fn remove_owner [h : Harness, owner : Str]
   (if (queue_registry_change? h)
     (then
-      (queue_composition_change h/snapshots {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
+      (queue_composition_change
+        h/snapshots
+        {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
       (return [])))
   (if (serialize_registry_change? h)
     (return (registry_change h owner (fn [] (remove_owner h owner)))))
@@ -511,7 +561,9 @@
   (if (== r/owner "core") (fail (HarnessError ^message $"core registry ${name} cannot be removed")))
   (if (queue_registry_change? h)
     (then
-      (queue_composition_change h/snapshots {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
+      (queue_composition_change
+        h/snapshots
+        {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
       (return [])))
   (if (serialize_registry_change? h)
     (return (registry_change h r/owner (fn [] (remove_registry h name)))))
@@ -626,8 +678,7 @@
   candidate)
 
 (fn validate_trigger_row [candidate]
-  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str)
-          (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
+  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
     (fail (HarnessError ^message "a trigger row requires id, kind and request")))
   candidate)
 
@@ -710,6 +761,7 @@
   (registry h "interactions" ^unique true ^schema validate_interaction_row)
   (registry h "prompt" ^unique false ^ordered true ^schema validate_prompt_row)
   (registry h "views" ^unique true ^schema validate_view_row)
+  (registry h "web_components" ^unique true ^ordered true ^schema validate_web_component)
   (registry h "event_types" ^unique true ^schema validate_event_type_row)
   (registry h "subscriptions" ^unique false
     ^on_remove cancel_subscription_row)
@@ -1087,6 +1139,18 @@
 (fn apply_argument_list [bundle]
   (bundle/callable bundle/args...))
 
+(fn invoke_supervised [callable, args, limits : ExecutionLimits]
+  (let outcome (supervised_call callable args limits))
+  (match outcome
+    (when (TaskOutcome/ok value)
+      value)
+    (when (TaskOutcome/error error)
+      (fail error))
+    (when (TaskOutcome/panic message)
+      (fail (HarnessError ^message $"plugin panic: ${message}")))
+    (when TaskOutcome/cancelled
+      (fail (HarnessError ^message "plugin invocation was cancelled or exceeded its deadline")))))
+
 (fn configure_plugin_module [module, limits : ExecutionLimits]
   (var policy
     {^max_steps limits/max_steps ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
@@ -1124,8 +1188,7 @@
       # supervised task. Wrapping that in a second bounded evaluator would make
       # the join suspend outside a fiber.
       (apply_argument_list {^callable callable ^args args})
-      (invoke_bounded apply_argument_list {^callable callable ^args args}
-        policy/limits))
+      (invoke_supervised callable args policy/limits))
   ensure
     # PluginHost state mutations are queued while the bounded callback is
     # active. Flush only after it has unwound, at the core boundary that owns
@@ -1151,7 +1214,6 @@
   (message row_keys [registry_name : Str] : Any
     (var record self)
     (registry_row_keys record/h registry_name))
-
   (message create_registry [spec] : Any
     (var record self)
     (if (== spec/name void) (fail (HarnessError ^message "registry spec requires ^name")))

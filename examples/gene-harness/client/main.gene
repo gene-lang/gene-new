@@ -13,10 +13,67 @@
     run_label])
 (import ^from "../src/web/contract.gene" [protocol_version])
 (import ^from "./view.gene" [block_view step_view run_status_view not_durable])
+(import ^from "./components.gene" [render_slot])
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 
-(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^pending Any ^status Any ^socket Any ^session_revision Str ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+(type Client ^props {^selected Str ^csrf Str ^cursor Str ^next_seq Str ^epoch Str ^ready Bool ^connected Bool ^server_busy Bool ^awaiting Str ^awaiting_session Str ^queued_prompt Str ^message_sequence Int ^sending Bool ^busy Bool ^autoscroll Bool ^has_older Bool ^loading_older Bool ^socket_epoch Int ^viewing_history Bool ^generation Int ^records (List Any) ^preview (List Any) ^sessions (List Any) ^needs_attention (List Any) ^filter_epoch Int ^trigger_selected Str ^tabs (List SessionTab) ^expanded (List Str) ^rounds (List Any) ^input_id Str ^answering Bool ^round Any ^pending Any ^status Any ^components (List Any) ^component_buttons PropMap ^socket Any ^session_revision Str ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget ^title EventTarget})
+
+(fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
+  (var components client/components)
+  (var buttons : (List Any) [])
+  (if_yes ($absent? client/component_buttons) (set client/component_buttons {}))
+  (set client/component_buttons/%slot buttons)
+  (render_slot
+    target
+    components
+    slot
+    (fn [text : Str] : Void
+      (component_command client text))
+    (fn [text : Str] : Void
+      (if_yes (&& client/ready client/connected (! client/sending)) (edit_prompt client text)))
+    (&& client/ready client/connected (! client/sending))
+    buttons))
+
+(fn render_extensions [client : Client] : Void
+  (for slot in ["sidebar" "toolbar" "composer" "status"]
+    (var target ($dom/element $"web_${slot}"))
+    ($dom/clear target)
+    (render_plugin_slot client target slot))
+  (if_not ($absent? client/component_buttons)
+    (var slots : PropMap client/component_buttons)
+    (for [slot entries] in slots
+      (var buttons : (List Any) entries)
+      (for item in buttons
+        (var button : EventTarget item/element)
+        (var disabled : Bool item/disabled)
+        (set button/disabled (|| disabled (! client/ready) (! client/connected) client/sending))))))
+
+(fn component_command [client : Client, text : Str] : Void
+  (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
+  (if_yes (!= client/selected "")
+    (send_command ^clear false client text)
+    (return))
+  (var draft ($dom/input_value client/prompt))
+  (set client/sending true)
+  (update_controls client)
+  (api
+    client
+    "POST"
+    "/api/v4/sessions"
+    {^title "Plugin tools"}
+    (fn [code : Int, data : Any] : Void
+      (set client/sending false)
+      (if (== code 201)
+        (then
+          (var id : Str data/id)
+          (select_session client id)
+          ($dom/set_input_value client/prompt draft)
+          (remember_draft client)
+          (send_command ^clear false client text))
+        (else
+          (show_error client data)))
+      (update_controls client))))
 
 (fn notice [client : Client, text : Str] : Void
   ($dom/set_text client/notice text))
@@ -159,7 +216,8 @@
       (var effort : Str client/status/model/effort)
       (set mode $"${mode} · ${effort}")))
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
-  ($dom/set_text ($dom/element "mode") mode))
+  ($dom/set_text ($dom/element "mode") mode)
+  (render_extensions client))
 
 (fn choice_label [choice : Any] : Str
   (var encoded ($json/stringify choice))
@@ -601,7 +659,8 @@
            ^on_click %(fn [event : Any] : Void (load_older client))
            %(if client/loading_older "Loading…" "Load earlier messages")))))
   (if (&& (== ($size client/records) 0) (== ($size client/preview) 0))
-    ($dom/append client/transcript
+    (if_not (render_plugin_slot client client/transcript "welcome")
+      ($dom/append client/transcript
       ($dom/render
         `(div ^class_name "empty_state"
            (h2 "What would you like to work on?")
@@ -616,7 +675,7 @@
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Browse commands"
-               (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/")))))))
+               (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/"))))))))
   (var all_visible : (List Any) client/records)
   # Durable records lead; append previews only when no durable version exists.
   (for block in client/preview
@@ -661,7 +720,10 @@
     (var status : Str client/round/state)
     (if_not (terminal status) (render_run client [] client/round)))
   (if follow
-    (then ($dom/scroll_end client/transcript)
+    (then
+      (if (&& (== client/records/.size 0) (== client/preview/.size 0))
+        ($dom/set_scroll_top client/transcript 0.0)
+        ($dom/scroll_end client/transcript))
       (set_hidden "new_output" true))
     (else
       ($dom/set_scroll_top client/transcript
@@ -687,25 +749,39 @@
 (fn apply_status [client : Client, data : Any] : Void
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
+  (var components : (List Any) [])
+  (if_not ($absent? data/web_components) (set components data/web_components))
+  (var components_changed (!= ($json/stringify client/components) ($json/stringify components)))
+  (set client/components components)
   (update_controls client)
   (if_yes unchanged (return))
   (var drawer ($dom/element "status_content"))
   ($dom/clear drawer)
-  (var profile : Str data/profile)
-  ($dom/append drawer ($dom/render `(p "Profile: " %profile)))
-  (var model : Str data/model/model)
-  (var provider : Str data/model/provider)
-  ($dom/append drawer ($dom/render `(p "Model: " %model)))
-  ($dom/append drawer ($dom/render `(p "Provider: " %provider)))
-  (if_not ($absent? data/model/effort)
-    (var effort : Str data/model/effort)
-    ($dom/append drawer ($dom/render `(p "Reasoning effort: " %effort))))
+  (var summary ($dom/create_element "div"))
+  ($dom/append drawer summary)
+  (if_not (render_plugin_slot client summary "status_summary")
+    (var profile : Str data/profile)
+    ($dom/append drawer ($dom/render `(p "Profile: " %profile)))
+    (var model : Str data/model/model)
+    (var provider : Str data/model/provider)
+    ($dom/append drawer ($dom/render `(p "Model: " %model)))
+    ($dom/append drawer ($dom/render `(p "Provider: " %provider)))
+    (if_not ($absent? data/model/effort)
+      (var effort : Str data/model/effort)
+      ($dom/append drawer ($dom/render `(p "Reasoning effort: " %effort)))))
   (var plugins : (List Any) data/plugins)
   (for plugin in plugins
     (var id : Str plugin/id)
     (var state : Str plugin/state)
     ($dom/append drawer ($dom/render `(div ^class_name "plugin_status" (span %id) (span %state)))))
-  (render_commands client))
+  (for component in components
+    (if_not ($absent? component/error)
+      (var name : Str component/name)
+      (var error : Str component/error)
+      ($dom/append drawer ($dom/render `(p ^class_name "web_muted" %$"${name}: ${error}")))))
+  (render_commands client)
+  (if_yes (&& components_changed (== client/records/.size 0) (== client/preview/.size 0))
+    (render_transcript client)))
 
 (fn render_commands [client : Client] : Void
   (var picker ($dom/element "commands"))
@@ -802,6 +878,7 @@
           (show_error client data))))))
 
 (fn apply_snapshot [client : Client, data : Any] : Void
+  (if_not ($absent? data/status) (apply_status client data/status))
   (if_not client/viewing_history
     (var records : (List Any) data/records)
     (set client/records (bounded_blocks records true))
@@ -1037,7 +1114,7 @@
     (return))
   (send_pending client))
 
-(fn send_command [client : Client, text : Str] : Void
+(fn send_command [client : Client, text : Str, ^clear clear : Bool = true] : Void
   (set client/sending true)
   (api
     client
@@ -1048,8 +1125,9 @@
       (set client/sending false)
       (if (== code 202)
         (then
-          ($dom/set_input_value client/prompt "")
-          (render_commands client)
+          (if_yes clear
+            ($dom/set_input_value client/prompt "")
+            (render_commands client))
           (remember_draft client))
         (else
           (show_error client data)))
@@ -1226,7 +1304,9 @@
         (if_yes (!= client/queued_prompt "")
           (var queued client/queued_prompt)
           (set client/queued_prompt "")
-          (stage_submission client queued))))
+          (if (&& (str/starts_with? queued "/") (! (str/starts_with? queued "//")))
+            (send_command client queued)
+            (stage_submission client queued)))))
   catch Any
     (notice client "Refreshing the live connection…")
     (connect_socket client)))
@@ -1423,7 +1503,7 @@
 
 (fn main [root : EventTarget] : Void
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^ready false ^sending false ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^busy false ^^autoscroll ^generation 0 ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^answering false ^round nil ^pending nil ^status nil ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^ready false ^sending false ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^busy false ^^autoscroll ^generation 0 ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^answering false ^round nil ^pending nil ^status nil ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
   ($dom/add_event_listener
     ($dom/element "composer")
     "submit"

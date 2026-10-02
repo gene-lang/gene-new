@@ -12,6 +12,7 @@ The last value is the outcome. (Outcome ^done true ^reply "...") finishes with a
 Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use register_plugin with a quoted (mod plugin ...) or attachment text and optional dependencies. It queues publication; contributed functions appear next turn. Generated plugins import only src/plugin_api.gene plus supplied content-addressed dependencies. Activation is a direct (fn [host] ...); use PluginHost:contribute "functions" with name, fn and doc. Standard-library I/O is available directly.
+Plugins can enhance the existing web frontend through the web_components registry. Read (doc "harness/web_components") for its slots, quoted views, dynamic render callbacks, actions and examples before implementing a web component.
 Use (recall "N.label") for elided bodies. Documentation chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib; for example (doc "gene/stdlib").
 Each round has a turn budget, shown in the latest request as [harness_budget]. Plan exploration, implementation and verification within it. A continuation message starts another round with the existing files and history.
 Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Audit."}) to schedule workspace work. Kinds: heartbeat (every_ms), scheduled (at, UTC timestamp), cron (cron, timezone). Policies: missed skip/once, overlap skip/queue_one, continue_session boolean, retention keep/days. (list_triggers) lists definitions; (delete_trigger "audit") disables future starts.
@@ -47,14 +48,20 @@ Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Aud
       ^gene/syntax "syntax"
       ^gene/declarations "declarations"
       ^gene/control_flow "control-flow"
-      ^gene/stdlib "stdlib"})
+      ^gene/stdlib "stdlib"
+      ^harness/web_components "harness-web-components"})
   (let chapter (chapters .get name))
   (let root (reference_root))
   (if ($absent? chapter)
     (fail
-      (HarnessError ^message $"unknown documentation ${name}; valid chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib")))
+      (HarnessError ^message $"unknown documentation ${name}; valid chapters: gene/pitfalls, gene/syntax, gene/declarations, gene/control_flow, gene/stdlib, harness/web_components")))
   (if ($absent? root) (fail (HarnessError ^message "Gene documentation directory is unavailable")))
-  ($fs/read_text ($path/join root $"tools/gene-lang-skill/reference/${chapter}.md")))
+  ($fs/read_text
+    ($path/join
+      root
+      (if (== chapter "harness-web-components")
+        "examples/gene-harness/docs/web-components.md"
+        $"tools/gene-lang-skill/reference/${chapter}.md"))))
 
 (fn assemble_instructions [runtime, session_record] : Str
   (let root (reference_root))
