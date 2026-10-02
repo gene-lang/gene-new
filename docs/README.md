@@ -13,4 +13,5 @@ Each guide starts with ordinary examples and introduces advanced features later.
 You do not need to read every page in order.
 
 For contributors: [development, status, and roadmap](development.md).
+For macro implementation work: [template macro design and repair plan](macro.md).
 For precise rules: [the implemented specification](spec/README.md).
