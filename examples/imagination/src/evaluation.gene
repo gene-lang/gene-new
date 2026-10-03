@@ -153,14 +153,15 @@
 
 # Validate the (review ...) of a response against the goal. Returns
 # {^checks {id -> check node} ^issues [issue nodes]}. A check for an unknown
-# requirement, or for a structural one, is an error: structure is not the
-# model's to judge.
+# requirement is an error. A check for a structural one is dropped: structure
+# is not the model's to judge, and the application computes that check itself.
 (fn read_review [review, goal] : Any
   (if_not (&& (node? review) (== (kind_of review) "review"))
     (reject "invalid_review" "expected a (review ...) node"))
   (if (> ($size ($props review)) 0)
     (reject "invalid_review" "review takes no properties"))
   (let visual (requirement_ids goal "visual"))
+  (let structural (requirement_ids goal "structural"))
   (var checks {})
   (var issues [])
   (for item in ($body review)
@@ -169,21 +170,22 @@
       (when "check"
         (only_props item ["requirement" "result" "evidence"] "check")
         (if (> ($size ($body item)) 0) (reject "invalid_review" "check takes properties only"))
-        (if_not (visual .contains? item/requirement)
-          (reject "invalid_review"
-            $"${item/requirement} is not a visual requirement of the goal; report one check for each of: ${($str/join visual \", \")}"
-            ^target item/requirement ^field ["requirement"]))
-        (if ($has_key? checks item/requirement)
-          (reject "invalid_review" $"requirement ${item/requirement} is checked twice"
-            ^target item/requirement))
-        (if_not (results .contains? item/result)
-          (reject "invalid_review" "^result is pass, partial, fail, or unknown"
-            ^target item/requirement ^field ["result"]))
-        (if_not (short_text? item/evidence 1000)
-          (reject "invalid_review" "a check cites visible ^evidence in one short string"
-            ^target item/requirement ^field ["evidence"]))
-        (checks .put item/requirement
-          (check_node item/requirement item/result item/evidence "visual")))
+        (if_not (structural .contains? item/requirement)
+          (if_not (visual .contains? item/requirement)
+            (reject "invalid_review"
+              $"${item/requirement} is not a visual requirement of the goal; report one check for each of: ${($str/join visual \", \")}"
+              ^target item/requirement ^field ["requirement"]))
+          (if ($has_key? checks item/requirement)
+            (reject "invalid_review" $"requirement ${item/requirement} is checked twice"
+              ^target item/requirement))
+          (if_not (results .contains? item/result)
+            (reject "invalid_review" "^result is pass, partial, fail, or unknown"
+              ^target item/requirement ^field ["result"]))
+          (if_not (short_text? item/evidence 1000)
+            (reject "invalid_review" "a check cites visible ^evidence in one short string"
+              ^target item/requirement ^field ["evidence"]))
+          (checks .put item/requirement
+            (check_node item/requirement item/result item/evidence "visual"))))
       (when "issue"
         (only_props item ["severity" "target"] "issue")
         (if_not (severities .contains? item/severity)

@@ -1,0 +1,60 @@
+# Console logging for the application (stdout of `imagination serve`, `run`,
+# and `spike`). IMAGINATION_LOG=quiet silences it; =debug adds request and
+# socket detail.
+(mod imagination_log)
+
+(fn log_level [] : Str
+  (let value ($os/env? "IMAGINATION_LOG"))
+  (if (|| ($absent? value) (== value "")) "info" value))
+
+(fn clock [] : Str
+  ($str/slice_bytes ($temporal/format_rfc3339 ($now)) 11 8))
+
+(fn note [component : Str, message : Str] : Nil
+  (if (== (log_level) "quiet") (return nil))
+  ($println $"${(clock)} [${component}] ${message}")
+  ($io/flush_stdout)
+  nil)
+
+(fn debug [component : Str, message : Str] : Nil
+  (if (== (log_level) "debug") (note component message))
+  nil)
+
+(fn seconds [ms] : Str
+  (let tenths ($to_int ($math/round (/ (* ms 1.0) 100.0))))
+  $"${(/ tenths 10)}.${(// tenths 10)} s")
+
+(fn first_line [text] : Str
+  (if ($absent? text) (return ""))
+  (let line (($str/split ($to_str text) "\n") .first))
+  (if (> ($str/byte_size line) 240) $"${($str/slice_bytes line 0 240)}…" line))
+
+# One readable line for a run event, or nil for events not worth a line.
+(fn event_line [kind : Str, data] : Any
+  (match kind
+    (when "run_started"
+      $"run started on ${data/head} for ${data/goal}, up to ${data/budgets/max_iterations} edits")
+    (when "model_request"
+      (let pending (if ($absent? data/pending) "" $" and candidate ${data/pending}"))
+      $"call ${data/call}: asking ${data/model} to review ${data/head}${pending} and decide… (this can take a minute)")
+    (when "model_call"
+      $"model replied in ${(seconds data/ms)}: ${data/usage/input} tokens in, ${data/usage/output} out")
+    (when "invalid_response"
+      $"the reply was rejected (${data/code}): ${(first_line data/message)}; asking for a repair (${data/repair} of ${data/repairs})")
+    (when "invalid_patch"
+      $"the patch was rejected (${data/code}): ${(first_line data/message)}; asking for a repair (${data/repair} of ${data/repairs})")
+    (when "reply_closed"
+      $"the reply stopped ${data/missing} closing parenthesis short of its end; closed and read")
+    (when "inspection_limit" "too many inspections in a row; asking for an edit")
+    (when "no_op" "the patch changed nothing; the working revision is unchanged")
+    (when "inspected" $"the model inspected objects ${data/objects} and crops ${data/crops}")
+    (when "candidate_rendered" $"rendered candidate ${data/revision}: ${(first_line data/plan)}")
+    (when "render_failed" $"render failed at ${data/stage} (${data/code}): ${(first_line data/message)}")
+    (when "revision_published" $"${data/revision} ${data/quality}: ${(first_line data/reason)}")
+    (when "review_recorded" $"stored the model's review of ${data/revision}")
+    (when "done_refused" $"done was refused: ${(first_line data/reasons)}")
+    (when "model_failed" $"the model call failed (${data/code}): ${(first_line data/message)}")
+    (when "goal_changed" $"the goal changed to ${data/goal}")
+    (when "run_finished"
+      $"run finished ${data/status} at ${data/revision} after ${data/calls} model calls (${data/usage/input} tokens in, ${data/usage/output} out): ${(first_line data/reason)}")
+    (else nil)))

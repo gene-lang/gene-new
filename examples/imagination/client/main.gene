@@ -8,16 +8,23 @@
 
 (import ^from "./api.gene" [api hash_value message_of text_or])
 
+# `phase` is the newest phase heard on the socket since the last snapshot;
+# `phase_from` and `run_from` are `$time/now` readings the clock counts from.
 (type Bench ^props {^token Str ^project Str ^line Str ^viewing Str ^follow Bool
                     ^show_trials Bool ^vector Bool ^last_seq Int ^socket Any ^socket_epoch Int
                     ^job Str ^data Any ^history Any ^revision Any ^refresh_queued Bool
-                    ^canvas EventTarget ^notice EventTarget})
+                    ^busy Bool ^dropped Bool ^phase Str ^phase_from F64 ^run_from F64
+                    ^ticking Bool ^canvas EventTarget ^notice EventTarget})
 
-(fn notice [bench : Bench, text : Str] : Void
+(fn say [bench : Bench, tone : Str, text : Str] : Void
+  ($dom/set_attribute bench/notice "class" (if (== tone "") "notice" $"notice ${tone}"))
   ($dom/set_text bench/notice text))
 
+(fn notice [bench : Bench, text : Str] : Void
+  (say bench "" text))
+
 (fn show_error [bench : Bench, result : Any] : Void
-  (notice bench (message_of result "The request could not be completed.")))
+  (say bench "error" (message_of result "The request could not be completed.")))
 
 (fn set_hidden [id : Str, hidden : Bool] : Void
   (var element ($dom/element id))
@@ -58,7 +65,7 @@
       (if (== chosen "")
         (then
           (set_hidden "new_project" false)
-          (notice bench "Create a project to start drawing."))
+          (notice bench "Describe a picture to start drawing."))
         (else
           (open_project bench chosen (hash_value ($browser/hash) "line")
             (hash_value ($browser/hash) "rev")))))))
@@ -70,6 +77,9 @@
   # The socket opens after the first snapshot, from its event sequence.
   (set bench/last_seq -1)
   (set bench/job "")
+  (set bench/revision nil)
+  (set bench/phase "")
+  (set bench/phase_from 0.0)
   (refresh bench (== revision "")))
 
 # Whether a project snapshot is loaded. A failed load leaves the previous
@@ -92,13 +102,40 @@
   (var head : Str line/head)
   head)
 
-(fn run_by_id [bench : Bench, id : Str] : Any
+# The goal the shown line is working toward now.
+(fn line_goal [bench : Bench] : Any
+  (var line : Any (line_record bench))
+  (if_yes ($absent? line) (return nil))
+  (var goal_id : Str line/goal)
+  (var goals : Any bench/data/goals)
+  goals/%goal_id)
+
+# The newest run of the shown line: its active run, or the last one to end.
+# The snapshot lists runs newest first.
+(fn line_run [bench : Bench] : Any
   (if_not (loaded bench) (return nil))
   (var runs : (List Any) bench/data/runs)
   (for run in runs
-    (var run_id : Str run/id)
-    (if_yes (== run_id id) (return run)))
+    (var line : Str run/line)
+    (if_yes (== line bench/line) (return run)))
   nil)
+
+# The candidate the line's active run is holding for review, as
+# [revision, render bundle], or an empty list.
+(fn held [bench : Bench] : (List Str)
+  (var none : (List Str) [])
+  (var run : Any (line_run bench))
+  (if_yes ($absent? run) (return none))
+  (var status : Str run/status)
+  (var pending : Str (text_or run/pending ""))
+  (var render : Str (text_or run/pending_render ""))
+  (if_yes (|| (!= status "running") (== pending "") (== render "")) (return none))
+  [pending render])
+
+# Following live shows the newest image: the candidate the run is holding for
+# review, when there is one, in place of the head it was drawn on.
+(fn showing_candidate [bench : Bench] : Bool
+  (&& bench/follow (== ($size (held bench)) 2) (== bench/viewing (line_head bench))))
 
 (fn render_project [bench : Bench] : Void
   (var lines : (List Any) bench/data/lines)
@@ -115,31 +152,76 @@
   (var goals : Any bench/data/goals)
   (var goal : Any goals/%goal_id)
   (var request : Str (text_or goal/request ""))
-  ($dom/set_text ($dom/element "goal_text") $"${goal_id}: ${request}")
+  (var goal_text ($dom/element "goal_text"))
+  ($dom/set_text goal_text $"${goal_id}: ${request}")
+  ($dom/set_attribute goal_text "title" request)
   (var active : Str (text_or line/active_run ""))
   (set bench/job (if (== active "") "" $"${bench/project}.${active}"))
-  (set_hidden "cancel_button" (== active ""))
-  (set_hidden "steer_form" (== active ""))
-  (var run_button ($dom/element "run_button"))
-  (set run_button/disabled (!= active ""))
-  (render_status bench "")
-  (render_model_view bench))
+  # The snapshot is newer than any phase heard before it.
+  (set bench/phase "")
+  (sync_clock bench)
+  (render_status bench)
+  (render_composer bench)
+  (render_choice bench)
+  (render_model_view bench)
+  (load_activity bench))
 
-(fn render_status [bench : Bench, phase : Str] : Void
-  (if_not (loaded bench) (return))
-  (var runs : (List Any) bench/data/runs)
-  (var target ($dom/element "run_status"))
-  (if_yes (== ($size runs) 0)
-    ($dom/set_text target "No runs yet")
+# ── run status ─────────────────────────────────────────────────────────────
+
+(fn clock_text [ms : F64] : Str
+  (var total : Int ($to_int ($math/floor (/ ($math/max ms 0.0) 1000.0))))
+  (var minutes : Int (/ total 60))
+  (var seconds : Int (// total 60))
+  (var pad (if (< seconds 10) "0" ""))
+  $"${minutes}:${pad}${seconds}")
+
+(fn running? [bench : Bench] : Bool
+  (var run : Any (line_run bench))
+  (if_yes ($absent? run) (return false))
+  (var status : Str run/status)
+  (== status "running"))
+
+# Model calls take from seconds to a minute. A clock that keeps counting says
+# the run is alive when nothing else on the page moves.
+(fn tick [bench : Bench] : Void
+  (if_not (running? bench)
+    (set bench/ticking false)
+    ($dom/set_text ($dom/element "run_clock") "")
     (return))
-  (var run : Any runs/0)
-  (var line : Any (line_record bench))
-  (var active : Str (text_or line/active_run ""))
-  (if_yes (!= active "") (set run (run_by_id bench active)))
-  (if_yes ($absent? run) (return))
+  (var now : F64 ($time/now))
+  ($dom/set_text ($dom/element "run_clock")
+    $"this step ${(clock_text (- now bench/phase_from))} · run ${(clock_text (- now bench/run_from))}")
+  ($time/after 1000.0 (fn [] : Void (tick bench))))
+
+# Take the run's ages from the snapshot. The step clock is only set from it
+# when no phase change has been heard on the socket.
+(fn sync_clock [bench : Bench] : Void
+  (if_not (running? bench)
+    (set bench/phase_from 0.0)
+    (return))
+  (var run : Any (line_run bench))
+  (var now : F64 ($time/now))
+  (var age : Int run/age_ms)
+  (var phase_age : Int run/phase_age_ms)
+  (set bench/run_from (- now ($to_float age)))
+  (if_yes (== bench/phase_from 0.0)
+    (set bench/phase_from (- now ($to_float phase_age))))
+  (if_not bench/ticking
+    (set bench/ticking true)
+    (tick bench)))
+
+(fn render_status [bench : Bench] : Void
+  (if_not (loaded bench) (return))
+  (var target ($dom/element "run_status"))
+  (var strip ($dom/element "run_strip"))
+  (var run : Any (line_run bench))
+  (if_yes ($absent? run)
+    ($dom/set_text target "No run on this line yet.")
+    ($dom/set_attribute strip "class" "run_strip")
+    (set_hidden "run_queue" true)
+    (return))
   (var id : Str run/id)
   (var status : Str run/status)
-  (var shown_phase : Str (if (== phase "") (text_or run/phase "") phase))
   (var iteration : Int run/iteration)
   (var accepted : Str (text_or run/accepted ""))
   (var reason : Str (text_or run/reason ""))
@@ -147,10 +229,65 @@
   (var calls : Int usage/calls)
   (var budgets : Any run/budgets)
   (var limit : Int budgets/max_iterations)
+  (var phase : Str (if (== bench/phase "") (text_or run/phase "") bench/phase))
+  ($dom/set_attribute strip "class" $"run_strip ${status}")
   (if (== status "running")
     ($dom/set_text target
-      $"${id} running · ${shown_phase} · edit ${iteration} of ${limit} · last accepted ${accepted} · ${calls} model calls")
-    ($dom/set_text target $"${id} ${status} · ${reason}")))
+      $"${id} · ${phase} · edit ${iteration} of ${limit} · last accepted ${accepted} · ${calls} model calls")
+    ($dom/set_text target (if (== reason "") $"${id} ${status}" $"${id} ${status} — ${reason}")))
+  (var waiting : Str (text_or run/steering ""))
+  (set_hidden "run_queue" (|| (!= status "running") (== waiting "")))
+  ($dom/set_text ($dom/element "run_queue") $"Waiting for the next step: ${waiting}"))
+
+# ── the composer ───────────────────────────────────────────────────────────
+
+# What the one instruction box does now: "steer" a running drawing, "draw" on
+# the line from its head, or "branch" from an older or unaccepted revision.
+(fn composer_mode [bench : Bench] : Str
+  (if_yes (!= bench/job "") (return "steer"))
+  (var head (line_head bench))
+  (if (|| (== bench/viewing "") (== bench/viewing head)) "draw" "branch"))
+
+(fn composer_text [] : Str
+  (str/trim ($dom/input_value ($dom/element "composer_text"))))
+
+(fn render_composer [bench : Bench] : Void
+  (if_not (loaded bench) (return))
+  (var mode (composer_mode bench))
+  (var text (composer_text))
+  (var head (line_head bench))
+  (var box ($dom/element "composer_text"))
+  (var button ($dom/element "run_button"))
+  (var hint ($dom/element "composer_hint"))
+  (set_hidden "cancel_button" (!= mode "steer"))
+  (set_hidden "budget_label" (== mode "steer"))
+  (if (== mode "steer")
+    (then
+      ($dom/set_text button "Send to the running drawing")
+      (set button/disabled (|| bench/busy (== text "")))
+      ($dom/set_attribute box "placeholder"
+        "Tell the running drawing what to change, e.g. make the sail larger")
+      ($dom/set_text hint "It joins the goal at the run's next step."))
+    (elif (== mode "draw")
+      ($dom/set_text button (if (== text "") "Draw" "Revise and draw"))
+      (set button/disabled bench/busy)
+      ($dom/set_attribute box "placeholder"
+        "What should change? Leave this empty to keep drawing toward the goal.")
+      ($dom/set_text hint
+        (if (== text "")
+          $"Continues line ${bench/line} from ${head}."
+          $"Adds this to the goal of line ${bench/line} and draws on from ${head}.")))
+    (else
+      ($dom/set_text button $"Draw from ${bench/viewing} on a new line")
+      (set button/disabled bench/busy)
+      ($dom/set_attribute box "placeholder"
+        $"What should change from ${bench/viewing}? Leave this empty to keep its goal.")
+      ($dom/set_text hint
+        $"${bench/viewing} is not the head of ${bench/line} (that is ${head}), so this starts a new line and leaves ${bench/line} alone."))))
+
+(fn set_busy [bench : Bench, busy : Bool] : Void
+  (set bench/busy busy)
+  (render_composer bench))
 
 # ── refresh ────────────────────────────────────────────────────────────────
 
@@ -183,7 +320,44 @@
         (then
           (var head (line_head bench))
           (if_yes (!= head "") (view_revision bench head)))
-        (else (render_history bench))))))
+        (elif ($absent? bench/revision)
+          # A page opened on a revision named in its address has yet to load it.
+          (view_revision bench bench/viewing))
+        (else
+          (render_canvas bench)
+          (render_composer bench)
+          (render_history bench))))))
+
+# ── activity ───────────────────────────────────────────────────────────────
+
+# What the line's newest run has done, as the server tells it: one line per
+# committed step, stamped with the time since the run began.
+(fn load_activity [bench : Bench] : Void
+  (var list ($dom/element "activity"))
+  (var run : Any (line_run bench))
+  (if_yes ($absent? run)
+    ($dom/clear list)
+    ($dom/set_text ($dom/element "activity_run") "")
+    ($dom/append list
+      ($dom/render `(li ^class_name "muted" "Nothing has run on this line yet.")))
+    (return))
+  (var id : Str run/id)
+  (var project bench/project)
+  (api bench/token "GET" $"/jobs/${project}.${id}/activity" nil
+    (fn [status : Int, data : Any] : Void
+      (if_yes (|| (!= status 200) (!= project bench/project)) (return))
+      # Stay at the newest line unless the reader has scrolled back.
+      (var at_end ($dom/near_end list 48.0))
+      ($dom/clear list)
+      ($dom/set_text ($dom/element "activity_run") id)
+      (var lines : (List Any) data/lines)
+      (for line in lines
+        (var at : Str line/at)
+        (var tone : Str line/tone)
+        (var text : Str line/text)
+        ($dom/append list
+          ($dom/render `(li ^class_name %tone (span ^class_name "at" %at) (span %text)))))
+      (if_yes at_end ($dom/scroll_end list)))))
 
 # ── history graph ──────────────────────────────────────────────────────────
 
@@ -198,6 +372,9 @@
 
 (fn render_history [bench : Bench] : Void
   (var target ($dom/element "history"))
+  (var kept ($dom/scroll_top target))
+  (var scroller : Any target)
+  (var kept_left : F64 scroller/scrollLeft)
   ($dom/clear target)
   (if_yes ($absent? bench/history) (return))
   (var history : Any bench/history)
@@ -212,6 +389,8 @@
   ($dom/append surface lines_image)
   (var nodes : (List Any) history/nodes)
   (var selected_result : Str (text_or history/selected ""))
+  (var shown_x : Int -1)
+  (var shown_y : Int -1)
   (for node in nodes
     (var id : Str node/id)
     (var quality : Str node/quality)
@@ -223,35 +402,79 @@
     (var trial (!= quality "accepted"))
     (if_yes (&& trial (! bench/show_trials)) (continue))
     (var cls $"node ${quality}")
-    (if_yes (== id bench/viewing) (set cls $"${cls} viewing"))
-    (if_yes (== id selected_result) (set cls $"${cls} chosen"))
-    (var head_names : Str (str/join heads ", "))
-    (var label (if (> ($size heads) 0) $"${id} · ${head_names}" id))
+    (if_yes (== id bench/viewing)
+      (set cls $"${cls} viewing")
+      (set shown_x x)
+      (set shown_y y))
     (var mark (if (== quality "accepted") "" $" · ${quality}"))
+    (var tip (if (== intent "") id $"${id}: ${intent}"))
     (var button
       ($dom/render
-        `(button ^type "button" ^class_name %cls ^title %intent
+        `(button ^type "button" ^class_name %cls ^title %tip
            ^aria-label %$"Revision ${id}, ${quality}"
            ^on_click %(fn [event : Any] : Void
              (set bench/follow false)
              (var follow_box ($dom/element "follow_live"))
              (set follow_box/checked false)
-             (view_revision bench id))
-           (span ^class_name "caption" %$"${label}${mark}"))))
+             (view_revision bench id)))))
     (var picture ($dom/render `(img ^alt "")))
     ($dom/set_attribute picture "src" thumbnail)
     ($dom/append button picture)
+    # Line heads and the chosen result are tags, so the caption keeps the ID.
+    (var tags ($dom/render `(span ^class_name "tags")))
+    (for name in heads
+      ($dom/append tags ($dom/render `(span ^class_name "tag" %name))))
+    (if_yes (== id selected_result)
+      ($dom/append tags ($dom/render `(span ^class_name "tag result" "result"))))
+    ($dom/append button tags)
+    ($dom/append button ($dom/render `(span ^class_name "caption" %$"${id}${mark}")))
     (place button x y -1 -1)
     ($dom/append surface button))
-  ($dom/append target surface))
+  ($dom/append target surface)
+  # Following live keeps the shown revision in sight; otherwise the reader's
+  # own scroll position survives the redraw.
+  (var box : Any target)
+  (if (&& bench/follow (>= shown_y 0))
+    (then
+      ($dom/set_scroll_top target (- ($to_float shown_y) 150.0))
+      (set box/scrollLeft (- ($to_float shown_x) 150.0)))
+    (else
+      ($dom/set_scroll_top target kept)
+      (set box/scrollLeft kept_left))))
 
 # ── the selected revision ──────────────────────────────────────────────────
 
 (fn section [title : Str] : EventTarget
   ($dom/render `(section ^class_name "block" (h3 %title))))
 
+# A collapsed part of the inspector.
+(fn fold [title : Str, open : Bool] : EventTarget
+  (var block ($dom/render `(details (summary %title))))
+  (if_yes open ($dom/set_attribute block "open" ""))
+  block)
+
 (fn line_item [text : Str] : EventTarget
   ($dom/render `(li %text)))
+
+# A digest is evidence, not reading matter: its start is shown and the whole
+# value is the tooltip.
+(fn digest_mark [digest : Str] : EventTarget
+  ($dom/render `(span ^class_name "digest" ^title %digest %(digest_hex digest))))
+
+(fn goal_block [title : Str, goal : Any] : EventTarget
+  (var block (section title))
+  (var goal_id : Str goal/id)
+  (var request : Str goal/request)
+  ($dom/append block ($dom/render `(p %$"${goal_id}: ${request}")))
+  (var requirements : (List Any) goal/requirements)
+  (var list ($dom/render `(ul)))
+  (for requirement in requirements
+    (var rid : Str requirement/id)
+    (var strength : Str requirement/strength)
+    (var description : Str requirement/description)
+    ($dom/append list (line_item $"${rid} (${strength}): ${description}")))
+  ($dom/append block list)
+  block)
 
 (fn render_inspector [bench : Bench, data : Any] : Void
   (var target ($dom/element "inspector"))
@@ -261,7 +484,8 @@
   (var actor : Str data/actor)
   (var parents : (List Str) data/parents)
   (var run : Str (text_or data/run "no run"))
-  ($dom/set_text ($dom/element "inspector_title") $"${id} · ${quality}")
+  ($dom/set_text ($dom/element "inspector_title")
+    (if (showing_candidate bench) $"${id} · the last accepted revision" $"${id} · ${quality}"))
   (var facts (section "Revision"))
   (var parent_text (if (== ($size parents) 0) "none (root)" (str/join parents ", ")))
   ($dom/append facts ($dom/render `(p %$"Parent ${parent_text} · ${actor} · ${run}")))
@@ -272,21 +496,27 @@
   ($dom/append target facts)
 
   (var evaluation : Any data/evaluation)
-  (var review (section "Evaluation"))
+  (var checks : (List Any) evaluation/checks)
+  (var passed 0)
+  (for item in checks
+    (var outcome : Str item/result)
+    (if_yes (== outcome "pass") (set passed (+ passed 1))))
+  (var review (section $"Evaluation · ${passed} of ${($size checks)} pass"))
   (var reviewer : Str evaluation/reviewer)
   (var image : Str evaluation/image)
-  ($dom/append review
-    ($dom/render `(p ^class_name "muted" %$"Reviewer: ${reviewer} · image ${image}")))
-  (var checks : (List Any) evaluation/checks)
+  (var seen ($dom/render `(p ^class_name "muted" %$"Reviewer: ${reviewer} · image ")))
+  ($dom/append seen (digest_mark image))
+  ($dom/append review seen)
   (var list ($dom/render `(ul ^class_name "checks")))
   (for check in checks
     (var requirement : Str check/requirement)
     (var result : Str check/result)
     (var evidence : Str check/evidence)
-    (var item ($dom/render
-      `(li ^class_name %$"check ${result}"
-         (strong %$"${requirement}: ${result}") %$" — ${evidence}")))
-    ($dom/append list item))
+    ($dom/append list
+      ($dom/render
+        `(li ^class_name %$"check ${result}"
+           (span ^class_name "badge" %result)
+           (span (strong %requirement) %$" — ${evidence}")))))
   ($dom/append review list)
   (var issues : (List Any) evaluation/issues)
   (if_yes (> ($size issues) 0)
@@ -298,34 +528,34 @@
     ($dom/append review issue_list))
   ($dom/append target review)
 
+  # A revision is judged against the goal it was drawn for. When the line has
+  # moved on to another goal, that one comes first: it is what a run draws.
+  (var goal : Any data/goal_record)
+  (var goal_id : Str goal/id)
+  (var current : Any (line_goal bench))
+  (var moved false)
+  (if_not ($absent? current)
+    (var current_id : Str current/id)
+    (set moved (!= current_id goal_id)))
+  (if_yes moved
+    ($dom/append target (goal_block $"Goal of line ${bench/line} now" current)))
+  ($dom/append target
+    (goal_block (if moved "Goal this revision was judged against" "Goal") goal))
+
   (var changes : (List Str) data/changes)
   (if_yes (> ($size changes) 0)
-    (var diff (section "Changes from parent"))
+    (var diff (fold $"Changes from parent (${($size changes)})" (<= ($size changes) 6)))
     (var change_list ($dom/render `(ul)))
     (for change in changes ($dom/append change_list (line_item change)))
     ($dom/append diff change_list)
     ($dom/append target diff))
 
-  (var goal : Any data/goal_record)
-  (var goal_block (section "Goal"))
-  (var goal_id : Str goal/id)
-  (var request : Str goal/request)
-  ($dom/append goal_block ($dom/render `(p %$"${goal_id}: ${request}")))
-  (var requirements : (List Any) goal/requirements)
-  (var requirement_list ($dom/render `(ul)))
-  (for requirement in requirements
-    (var rid : Str requirement/id)
-    (var strength : Str requirement/strength)
-    (var description : Str requirement/description)
-    ($dom/append requirement_list (line_item $"${rid} (${strength}): ${description}")))
-  ($dom/append goal_block requirement_list)
-  ($dom/append target goal_block)
-
-  (var render_block (section "Render"))
+  (var render_block (fold "Render" false))
   (var profile : Str (text_or data/render_profile ""))
   (var output : (List Int) data/output)
-  ($dom/append render_block
-    ($dom/render `(p %$"${profile} · ${output/0} × ${output/1} px · observation ${image}")))
+  (var rendered ($dom/render `(p %$"${profile} · ${output/0} × ${output/1} px · observation ")))
+  ($dom/append rendered (digest_mark image))
+  ($dom/append render_block rendered)
   ($dom/append target render_block)
 
   (var patch : Str (text_or data/patch ""))
@@ -334,6 +564,14 @@
     ($dom/append target details)))
 
 (fn render_canvas [bench : Bench] : Void
+  (var image ($dom/element "canvas_image"))
+  (var label ($dom/element "canvas_label"))
+  (if_yes (showing_candidate bench)
+    (var candidate (held bench))
+    ($dom/set_attribute image "src" (artifact bench candidate/1 "observation.png"))
+    ($dom/set_text label $"${candidate/0} · under review")
+    (set_hidden "canvas_hint" true)
+    (return))
   (if_yes ($absent? bench/revision) (return))
   (var data : Any bench/revision)
   (var artifacts : Any data/artifacts)
@@ -341,12 +579,29 @@
   (var svg_kind "scene.svg")
   (var observation : Str artifacts/%png_kind)
   (var vector : Str artifacts/%svg_kind)
-  (var image ($dom/element "canvas_image"))
   ($dom/set_attribute image "src" (if bench/vector vector observation))
   (var id : Str data/id)
   (var quality : Str data/quality)
-  (var suffix (if bench/vector " · vector preview, browser renderer" " · clean observation PNG"))
-  ($dom/set_text ($dom/element "canvas_label") $"${id} · ${quality}${suffix}"))
+  # The clean observation PNG is the default and is what the model sees; only
+  # the browser's own rendering is called out.
+  (var suffix (if bench/vector " · vector preview, browser renderer" ""))
+  ($dom/set_text label $"${id} · ${quality}${suffix}")
+  (var parents : (List Str) data/parents)
+  (var blank (== ($size parents) 0))
+  (set_hidden "canvas_hint" (! blank))
+  (if_yes blank
+    ($dom/set_text ($dom/element "canvas_hint")
+      (if (== bench/job "")
+        "A blank canvas. Press Draw to start."
+        "The first edit is on its way…"))))
+
+(fn render_choice [bench : Bench] : Void
+  (if_not (loaded bench) (return))
+  (var chosen : Str (text_or bench/data/selected ""))
+  (var button ($dom/element "select_button"))
+  (var same (&& (!= bench/viewing "") (== bench/viewing chosen)))
+  ($dom/set_text button (if same "Chosen as result ✓" "Choose as result"))
+  (set button/disabled same))
 
 (fn view_revision [bench : Bench, id : Str] : Void
   (api bench/token "GET" (project_path bench $"/revisions/${id}") nil
@@ -356,6 +611,8 @@
       (set bench/revision data)
       (render_canvas bench)
       (render_inspector bench data)
+      (render_composer bench)
+      (render_choice bench)
       (var exports : Str (project_path bench "/exports"))
       (var base : Str $"/api/v1${exports}?revision=${id}")
       ($dom/set_attribute ($dom/element "export_svg") "href" $"${base}&format=svg")
@@ -368,28 +625,21 @@
       (update_hash bench)
       (render_history bench))))
 
-# A held candidate, shown while its review is pending.
-(fn show_candidate [bench : Bench, id : Str, render : Str] : Void
-  (var image ($dom/element "canvas_image"))
-  ($dom/set_attribute image "src" (artifact bench render "observation.png"))
-  ($dom/set_text ($dom/element "canvas_label") $"${id} · under review · clean observation PNG"))
-
 # ── model view ─────────────────────────────────────────────────────────────
 
 (fn render_model_view [bench : Bench] : Void
   (var target ($dom/element "model_view_body"))
   (if_not (loaded bench) (return))
-  (if_yes (== bench/job "")
-    (var runs : (List Any) bench/data/runs)
-    (if_yes (== ($size runs) 0)
-      ($dom/clear target)
-      ($dom/append target ($dom/render `(p ^class_name "muted" "No model call yet.")))
-      (return))
-    (var latest : Any runs/0)
-    (var latest_id : Str latest/id)
-    (load_model_view bench $"${bench/project}.${latest_id}")
+  (var panel ($dom/element "model_view"))
+  (var open : Bool panel/open)
+  (if_not open (return))
+  (var run : Any (line_run bench))
+  (if_yes ($absent? run)
+    ($dom/clear target)
+    ($dom/append target ($dom/render `(p ^class_name "muted" "No model call yet.")))
     (return))
-  (load_model_view bench bench/job))
+  (var id : Str run/id)
+  (load_model_view bench $"${bench/project}.${id}"))
 
 (fn load_model_view [bench : Bench, job : Str] : Void
   (api bench/token "GET" $"/jobs/${job}" nil
@@ -433,13 +683,20 @@
   (var socket
     ($ws/connect $"${scheme}://${parts/1}/api/v1/projects/${bench/project}/events?last=${bench/last_seq}"))
   (set bench/socket socket)
+  ($ws/on_open socket
+    (fn [] : Void
+      (if_yes (&& (== epoch bench/socket_epoch) bench/dropped)
+        (set bench/dropped false)
+        (notice bench "Reconnected to the application.")
+        (refresh bench bench/follow))))
   ($ws/on_text socket
     (fn [text : Str] : Void
       (if_yes (== epoch bench/socket_epoch) (on_event bench text))))
   ($ws/on_close socket
     (fn [] : Void
       (if_yes (!= epoch bench/socket_epoch) (return))
-      (notice bench "Reconnecting to the application…")
+      (set bench/dropped true)
+      (say bench "warn" "The connection to the application dropped. Reconnecting…")
       ($time/after 1500.0
         (fn [] : Void
           (if_yes (== epoch bench/socket_epoch) (connect bench)))))))
@@ -457,50 +714,117 @@
   (if_yes (<= seq bench/last_seq) (return))
   (set bench/last_seq seq)
   (var data : Any message/data)
+  (var job : Str (text_or message/job ""))
+  # Only the shown line's run moves the status strip and the notices.
+  (var ours (&& (!= bench/job "") (== job bench/job)))
   (if_yes (== kind "phase_changed")
-    (var phase : Str (text_or data/phase ""))
-    (render_status bench phase)
+    (if_yes ours
+      (set bench/phase (text_or data/phase ""))
+      (set bench/phase_from ($time/now))
+      (render_status bench))
     (return))
-  (if_yes (&& (== kind "candidate_rendered") bench/follow)
-    (var id : Str data/revision)
-    (var render : Str data/render)
-    (show_candidate bench id render))
-  (if_yes (== kind "run_finished")
+  (if_yes (&& (== kind "run_note") ours)
+    (var noted : Str (text_or data/kind ""))
+    (var run_id : Str (text_or message/run ""))
+    (var said : Str (text_or data/message ""))
+    (if_yes (!= noted "reply_closed")
+      (say bench "warn" $"${run_id}: ${said}")))
+  (if_yes (&& (== kind "run_finished") ours)
     (var status : Str (text_or data/status ""))
     (var reason : Str (text_or data/reason ""))
-    (notice bench $"The run finished: ${status}. ${reason}"))
+    (say bench (if (== status "complete") "" (if (== status "failed") "error" "warn"))
+      $"The run finished: ${status}. ${reason}"))
   (schedule_refresh bench))
 
 # ── actions ────────────────────────────────────────────────────────────────
 
-(fn start_run [bench : Bench] : Void
+# Start a run on the shown line from its head. A non-empty instruction joins
+# the line's goal before the first edit.
+(fn start_run [bench : Bench, instruction : Str] : Void
   (var head (line_head bench))
   (var budget : Any ($json/parse ($dom/input_value ($dom/element "max_edits"))))
+  (set_busy bench true)
+  (notice bench "Starting the run…")
   (api bench/token "POST" (project_path bench "/runs")
-    {^line bench/line ^expected_head head ^max_iterations budget
+    {^line bench/line ^expected_head head ^max_iterations budget ^instruction instruction
      ^idempotency_key ($browser/request_id)}
     (fn [status : Int, data : Any] : Void
+      (set bench/busy false)
       (if (== status 202)
         (then
           (var job : Str data/job)
           (set bench/job job)
           (set bench/follow true)
+          (set bench/phase_from 0.0)
           (var follow_box ($dom/element "follow_live"))
           (set follow_box/checked true)
-          (notice bench $"Started ${job}. New renders appear here as they are reviewed.")
+          ($dom/set_input_value ($dom/element "composer_text") "")
+          (notice bench
+            (if (== instruction "")
+              $"Started ${job}. Each edit appears here while it is reviewed."
+              $"Started ${job}. Your instruction is planned into the goal first."))
           (refresh bench true))
         (elif (== status 409)
           (var problem : Str (message_of data "The line changed."))
-          (notice bench $"${problem} Refresh, or continue from your revision on a new line.")
+          (say bench "error" $"${problem} The page now shows the current state; try again.")
           (refresh bench false))
-        (else (show_error bench data))))))
+        (else
+          (show_error bench data)
+          (render_composer bench))))))
 
-(fn job_action [bench : Bench, action : Str, payload : Any] : Void
+# Draw from the shown revision on a line of its own: the fork, then the run.
+(fn branch_and_draw [bench : Bench, instruction : Str] : Void
+  (var from bench/viewing)
+  (set_busy bench true)
+  (notice bench
+    (if (== instruction "")
+      $"Creating a line from ${from}…"
+      $"Planning the new direction from ${from}…"))
+  (api bench/token "POST" (project_path bench "/lines")
+    {^from from ^name "" ^prompt instruction ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (if_yes (!= status 201)
+        (set_busy bench false)
+        (show_error bench data)
+        (return))
+      (var name : Str data/line)
+      (set bench/line name)
+      (set bench/data data)
+      (start_run bench ""))))
+
+(fn steer [bench : Bench, instruction : Str] : Void
+  (set_busy bench true)
+  (api bench/token "POST" $"/jobs/${bench/job}/steer"
+    {^instruction instruction ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (set bench/busy false)
+      (if (|| (== status 200) (== status 202))
+        (then
+          ($dom/set_input_value ($dom/element "composer_text") "")
+          (notice bench "Your instruction waits for the run's next step.")
+          (refresh bench bench/follow))
+        (else
+          (show_error bench data)
+          (render_composer bench))))))
+
+(fn submit_composer [bench : Bench] : Void
+  (if_yes (|| bench/busy (! (loaded bench))) (return))
+  (var mode (composer_mode bench))
+  (var text (composer_text))
+  (if (== mode "steer")
+    (then
+      (if_yes (!= text "") (steer bench text)))
+    (elif (== mode "draw")
+      (start_run bench text))
+    (else
+      (branch_and_draw bench text))))
+
+(fn cancel_run [bench : Bench] : Void
   (if_yes (== bench/job "") (return))
-  (api bench/token "POST" $"/jobs/${bench/job}/${action}" payload
+  (api bench/token "POST" $"/jobs/${bench/job}/cancel" {^idempotency_key ($browser/request_id)}
     (fn [status : Int, data : Any] : Void
       (if (|| (== status 200) (== status 202))
-        (notice bench (if (== action "cancel") "Cancelling before the next step…" "The instruction applies at the next step."))
+        (notice bench "Cancelling: the run stops before its next step.")
         (show_error bench data)))))
 
 (fn choose_result [bench : Bench] : Void
@@ -517,34 +841,45 @@
 (fn fork_line [bench : Bench] : Void
   (var name : Str ($dom/input_value ($dom/element "fork_name")))
   (var prompt : Str ($dom/input_value ($dom/element "fork_prompt")))
-  (if_yes (|| (== bench/viewing "") (== name "")) (notice bench "Choose a revision and name the new line.") (return))
+  (if_yes (== bench/viewing "") (notice bench "Choose a revision first.") (return))
   (notice bench (if (== prompt "") "Creating the line…" "Planning the new direction…"))
   (api bench/token "POST" (project_path bench "/lines")
     {^from bench/viewing ^name name ^prompt prompt ^idempotency_key ($browser/request_id)}
     (fn [status : Int, data : Any] : Void
       (if (== status 201)
         (then
-          (set bench/line name)
+          (var created : Str data/line)
+          (set bench/line created)
           ($dom/set_input_value ($dom/element "fork_name") "")
           ($dom/set_input_value ($dom/element "fork_prompt") "")
-          (notice bench $"Line ${name} continues from ${bench/viewing}. Start a run to draw on it.")
+          (notice bench $"Line ${created} continues from ${bench/viewing}. Press Draw to draw on it.")
           (refresh bench false))
         (else (show_error bench data))))))
 
 (fn create_project [bench : Bench] : Void
-  (var name : Str ($dom/input_value ($dom/element "new_name")))
+  (var name : Str (str/trim ($dom/input_value ($dom/element "new_name"))))
   (var prompt : Str ($dom/input_value ($dom/element "new_prompt")))
   (var width : Any ($json/parse ($dom/input_value ($dom/element "new_width"))))
   (var height : Any ($json/parse ($dom/input_value ($dom/element "new_height"))))
+  # Planning is a model call: say so, and take one request at a time.
+  (var submit ($dom/element "new_project_submit"))
+  (set submit/disabled true)
+  ($dom/set_text ($dom/element "new_project_note")
+    "Planning the goal from your request. This is one model call, usually 10 to 20 seconds.")
   (notice bench "Planning the goal from your request…")
   (api bench/token "POST" "/projects"
     {^name name ^prompt prompt ^width width ^height height ^idempotency_key ($browser/request_id)}
     (fn [status : Int, data : Any] : Void
+      (set submit/disabled false)
+      ($dom/set_text ($dom/element "new_project_note") "")
       (if (== status 201)
         (then
+          (var created : Str data/name)
           (set_hidden "new_project" true)
-          (notice bench $"Created ${name}. Start a run to draw.")
-          ($browser/replace_url $"/#project=${name}")
+          ($dom/set_input_value ($dom/element "new_name") "")
+          ($dom/set_input_value ($dom/element "new_prompt") "")
+          (notice bench $"Created ${created}. Press Draw to start drawing.")
+          ($browser/replace_url $"/#project=${created}")
           (load_projects bench))
         (else (show_error bench data))))))
 
@@ -589,6 +924,7 @@
     (Bench ^token ($dom/text ($dom/element "imagination_token")) ^project "" ^line "main"
       ^viewing "" ^follow true ^show_trials true ^vector false ^last_seq 0 ^socket nil
       ^socket_epoch 0 ^job "" ^data nil ^history nil ^revision nil ^refresh_queued false
+      ^busy false ^dropped false ^phase "" ^phase_from 0.0 ^run_from 0.0 ^ticking false
       ^canvas ($dom/element "canvas_image") ^notice ($dom/element "notice")))
   ($dom/add_event_listener ($dom/element "project_select") "change"
     (fn [event : Any] : Void
@@ -596,6 +932,7 @@
   ($dom/add_event_listener ($dom/element "line_select") "change"
     (fn [event : Any] : Void
       (set bench/line ($dom/input_value ($dom/element "line_select")))
+      (set bench/phase_from 0.0)
       (refresh bench true)))
   ($dom/add_event_listener ($dom/element "follow_live") "change"
     (fn [event : Any] : Void
@@ -609,16 +946,24 @@
     (fn [event : Any] : Void
       (set bench/show_trials (checkbox "show_trials"))
       (render_history bench)))
-  ($dom/add_event_listener ($dom/element "run_button") "click"
-    (fn [event : Any] : Void (start_run bench)))
-  ($dom/add_event_listener ($dom/element "cancel_button") "click"
-    (fn [event : Any] : Void (job_action bench "cancel" {^idempotency_key ($browser/request_id)})))
-  ($dom/add_event_listener ($dom/element "steer_form") "submit"
+  ($dom/add_event_listener ($dom/element "composer_form") "submit"
     (fn [event : Any] : Void
       ($dom/prevent_default event)
-      (var instruction : Str ($dom/input_value ($dom/element "steer_text")))
-      ($dom/set_input_value ($dom/element "steer_text") "")
-      (job_action bench "steer" {^instruction instruction ^idempotency_key ($browser/request_id)})))
+      (submit_composer bench)))
+  # The button says what it will do, which depends on whether there is text.
+  ($dom/add_event_listener ($dom/element "composer_text") "input"
+    (fn [event : Any] : Void (render_composer bench)))
+  # Return adds a line; with Command or Control it sends.
+  ($dom/add_event_listener ($dom/element "composer_text") "keydown"
+    (fn [event : Any] : Void
+      (var key ($event/key event))
+      (var command : Bool event/metaKey)
+      (var control : Bool event/ctrlKey)
+      (if_yes (&& (== key "Enter") (|| command control))
+        ($dom/prevent_default event)
+        (submit_composer bench))))
+  ($dom/add_event_listener ($dom/element "cancel_button") "click"
+    (fn [event : Any] : Void (cancel_run bench)))
   ($dom/add_event_listener ($dom/element "select_button") "click"
     (fn [event : Any] : Void (choose_result bench)))
   ($dom/add_event_listener ($dom/element "fork_form") "submit"
@@ -630,7 +975,9 @@
   ($dom/add_event_listener ($dom/element "model_view") "toggle"
     (fn [event : Any] : Void (render_model_view bench)))
   ($dom/add_event_listener ($dom/element "new_project_button") "click"
-    (fn [event : Any] : Void (set_hidden "new_project" false)))
+    (fn [event : Any] : Void
+      (set_hidden "new_project" false)
+      ($dom/focus ($dom/element "new_prompt"))))
   ($dom/add_event_listener ($dom/element "new_project_cancel") "click"
     (fn [event : Any] : Void (set_hidden "new_project" true)))
   ($dom/add_event_listener ($dom/element "new_project_form") "submit"

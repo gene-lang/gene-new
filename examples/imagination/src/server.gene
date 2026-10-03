@@ -23,6 +23,7 @@
          replay_exact goal_of effective_evaluation next_goal_id] ^from "./evolution")
 (import [start_run execute_run cancel_run steer_run resume_run run_row runs active_run
          model_view] ^from "./jobs")
+(import [first_line] ^from "./log")
 (import [events_after last_event_seq get_node get_object artifact_path artifact_kinds hex_of verify_bundle]
   ^from "./store")
 (import [styles] ^from "./style")
@@ -129,6 +130,16 @@
    ^cancel_requested (== row/cancel_requested 1)
    ^created_ms row/created_ms ^updated_ms row/updated_ms})
 
+# The render bundle of a run's held candidate, so a page loaded while the
+# candidate is under review can show it.
+(fn pending_render [evolution, row] : Any
+  (if ($absent? row/pending) (return nil))
+  (let event
+    (evolution/project/db .Db:query_one
+      "SELECT body FROM events WHERE kind = 'candidate_rendered' AND run = ? AND revision = ? ORDER BY seq DESC LIMIT 1"
+      row/id row/pending))
+  (if ($absent? event) nil (hex_of (/render (read_canonical event/body)))))
+
 (fn project_json [bench, name : Str] : Any
   (let evolution (project_of bench name))
   (var line_list [])
@@ -142,7 +153,14 @@
     (if (&& (== row/kind "working") (! ($has_key? goals row/goal)))
       (goals .put row/goal (goal_json (goal_of evolution row/goal)))))
   (var recent [])
-  (for row in ($take (runs evolution) 10) (recent .push (run_json name row)))
+  (let now ($os/wall_ms))
+  (for row in ($take (runs evolution) 10)
+    (var item (run_json name row))
+    # Ages rather than clock times: the browser's clock is not the server's.
+    (item .put "age_ms" (- now row/created_ms))
+    (item .put "phase_age_ms" (- now row/updated_ms))
+    (item .put "pending_render" (pending_render evolution row))
+    (recent .push item))
   {^name name ^id evolution/project/record/id
    ^render_profile evolution/project/record/render_profile
    ^selected (selected evolution) ^metadata_version (metadata_version evolution)
@@ -389,14 +407,33 @@
   (bench/tasks .push task)
   nil)
 
+# A project name from the request's first distinctive words:
+# "A striped lighthouse on a rocky island" gives striped-lighthouse-rocky.
+(let filler ["a" "an" "the" "of" "on" "in" "at" "with" "and" "to" "by" "for" "is" "its"])
+
+(fn name_from [bench, prompt : Str] : Str
+  (var words [])
+  (for found in ($regex/find_all (Regex "[a-z][a-z0-9]*") ($str/lower prompt))
+    (if (&& (< words/.size 3) (! (filler .contains? found/text)))
+      (words .push found/text)))
+  (let base
+    (if (== words/.size 0) "drawing" ($str/slice_bytes ($str/join words "-") 0 40)))
+  (var name base)
+  (var n 2)
+  (while (|| (! (valid_id? name)) ($fs/exists? (project_dir bench name)))
+    (set name $"${base}-${n}")
+    (set n (+ n 1)))
+  name)
+
 (fn create_project_from [bench, data] : Any
-  (let name (text_field data "name" ^limit 64))
+  (let prompt (text_field data "prompt"))
+  (if (== ($str/trim prompt) "") (api_failure 400 "invalid_request" "Describe what to draw."))
+  (let given ($str/trim (text_field data "name" ^default "" ^limit 64)))
+  (let name (if (== given "") (name_from bench prompt) given))
   (if_not (valid_id? name)
     (api_failure 400 "invalid_request" "A project name is a letter followed by letters, digits, _ or -."))
   (if ($fs/exists? (project_dir bench name))
     (api_failure 409 "exists" $"A project named ${name} already exists."))
-  (let prompt (text_field data "prompt"))
-  (if (== ($str/trim prompt) "") (api_failure 400 "invalid_request" "Describe what to draw."))
   (let width (int_field data "width" ^default 1024))
   (let height (int_field data "height" ^default 1024))
   (let goal (plan_goal (require_agent bench) ($str/trim prompt) "goal-01"))
@@ -407,10 +444,23 @@
   (bench/projects .put name evolution)
   (project_json bench name))
 
+# A name for a line forked without one: from-r006, then from-r006-2.
+(fn free_line_name [evolution, from : Str] : Str
+  (var taken [])
+  (for row in (lines evolution) (taken .push row/id))
+  (let base $"from-${from}")
+  (var name base)
+  (var n 2)
+  (while (taken .contains? name)
+    (set name $"${base}-${n}")
+    (set n (+ n 1)))
+  name)
+
 (fn fork_line [bench, name : Str, data] : Any
   (let evolution (project_of bench name))
   (let from (text_field data "from" ^limit 32))
-  (let line_name (text_field data "name" ^limit 64))
+  (let given ($str/trim (text_field data "name" ^default "" ^limit 64)))
+  (let line_name (if (== given "") (free_line_name evolution from) given))
   (let direction ($str/trim (text_field data "prompt" ^default "")))
   (let source (try (revision_row evolution from)
                 catch StoreError (api_failure 404 "not_found" $"there is no revision ${from}")))
@@ -426,7 +476,9 @@
       ($node/rebuild planned
         ^props {^id goal_id ^request request ^predecessor predecessor ^instruction direction})))
   (fork evolution from line_name ^goal goal)
-  (project_json bench name))
+  (var result (project_json bench name))
+  (result .put "line" line_name)
+  result)
 
 (fn start_job [bench, name : Str, data] : Any
   (let evolution (project_of bench name))
@@ -436,9 +488,78 @@
   (var budgets {})
   (let edits (field data "max_iterations" ^default 0))
   (if (&& (== ($head edits) Int) (> edits 0) (<= edits 40)) (budgets .put "max_iterations" edits))
+  # A follow-up instruction is steering the run meets at its first step: the
+  # goal gets a successor that records the instruction, on this same line.
+  (let instruction ($str/trim (text_field data "instruction" ^default "" ^limit 2000)))
   (let row (start_run evolution line_id ^expected_head expected ^budgets budgets))
+  (if (!= instruction "") (steer_run evolution row/id instruction))
   (launch bench name row/id)
-  (run_json name row))
+  (run_json name (run_row evolution row/id)))
+
+# ── activity ───────────────────────────────────────────────────────────────
+
+(fn stamp [ms : Int] : Str
+  (let total (/ ($math/max 0 ms) 1000))
+  (let seconds (// total 60))
+  $"${(/ total 60)}:${(if (< seconds 10) \"0\" \"\")}${seconds}")
+
+(fn without_prefix [text : Str, prefix : Str] : Str
+  (if ($str/starts_with? text prefix)
+    ($str/slice_bytes text ($str/byte_size prefix) (- ($str/byte_size text) ($str/byte_size prefix)))
+    text))
+
+(fn capitalized [text : Str] : Str
+  (if (== text "") (return text))
+  $"${($str/upper ($str/slice_bytes text 0 1))}${($str/slice_bytes text 1 (- ($str/byte_size text) 1))}")
+
+# One readable line for a committed project event of a run, or nil.
+(fn activity_item [row] : Any
+  (let data (read_canonical row/body))
+  (match row/kind
+    (when "run_started"
+      (if ($absent? data/goal)
+        {^tone "info" ^text $"Resumed from ${data/head}."}
+        {^tone "info" ^text $"Started on ${data/head}, working toward ${data/goal}."}))
+    (when "goal_changed"
+      {^tone "info" ^text $"The goal changed to ${data/goal}: the instruction is now part of it."})
+    (when "candidate_rendered"
+      {^tone "info" ^text $"Drew ${data/revision}: ${(first_line data/plan)}"})
+    (when "revision_published"
+      (if (== data/quality "accepted")
+        {^tone "good" ^text $"${data/revision} accepted."}
+        (if (== data/quality "rejected")
+          {^tone "warn" ^text $"${data/revision} rejected: ${(without_prefix data/reason \"Rejected: \")}"}
+          {^tone "warn" ^text $"${data/revision} kept as an unreviewed trial. ${data/reason}"})))
+    (when "run_note"
+      {^tone (if (== data/kind "reply_closed") "info" "warn") ^text (capitalized data/message)})
+    (when "run_finished"
+      {^tone (if (== data/status "complete") "good" (if (== data/status "failed") "bad" "warn"))
+       ^text $"Finished ${data/status}. ${data/reason}"})
+    (else nil)))
+
+# A run's committed events as readable lines, oldest first, each stamped with
+# the time since the run began. A goal change carries no run, so those of the
+# run's line between its first and last event are included.
+(fn activity_json [evolution, run_id : Str] : Any
+  (let row (run_row evolution run_id))
+  (let db evolution/project/db)
+  (let span
+    (db .Db:query_one "SELECT MIN(seq) AS first, MAX(seq) AS last FROM events WHERE run = ?" run_id))
+  (var items [])
+  (if ($absent? span/first) (return {^run run_id ^status row/status ^lines items}))
+  (for event in
+    (db .Db:query
+      "SELECT seq, kind, run, body, created_ms FROM events WHERE seq >= ? AND (run = ? OR (run IS NULL AND kind = 'goal_changed' AND seq <= ?)) ORDER BY seq"
+      span/first run_id span/last)
+    (let item (try (activity_item event) catch Any nil))
+    (if_yes (! ($absent? item))
+      (if (|| (!= event/kind "goal_changed") (== (/line (read_canonical event/body)) row/line))
+        (then
+          (item .put "at" (stamp (- event/created_ms row/created_ms)))
+          (item .put "kind" event/kind)
+          (items .push item)))))
+  {^run run_id ^status row/status
+   ^lines ($drop items ($math/max 0 (- items/.size 200)))})
 
 # ── the page ───────────────────────────────────────────────────────────────
 
@@ -461,45 +582,63 @@
                (label ^class "picker" "Project" (select ^id "project_select" ^aria-label "Project"))
                (label ^class "picker" "Line" (select ^id "line_select" ^aria-label "Line"))
                (div ^id "goal_text" ^class "goal_text")
-               (div ^id "run_status" ^class "run_status" ^role "status" ^aria-live "polite")
                (button ^id "new_project_button" ^type "button" "New project"))
              (section ^id "new_project" ^class "new_project" ^^hidden
                (form ^id "new_project_form"
-                 (label "Name" (input ^id "new_name" ^^required ^maxlength "64" ^placeholder "cat-window"))
                  (label "What should be drawn?"
-                   (textarea ^id "new_prompt" ^rows "3" ^^required ^placeholder "A cat at a window overlooking a rainy city at night."))
+                   (textarea ^id "new_prompt" ^rows "3" ^^required ^maxlength "4000" ^placeholder "A cat at a window overlooking a rainy city at night."))
                  (div ^class "row"
+                   (label ^class "grow" "Name (optional)"
+                     (input ^id "new_name" ^maxlength "64" ^placeholder "taken from the request when empty"))
                    (label "Width" (input ^id "new_width" ^type "number" ^min "16" ^max "4096" ^value "1024"))
                    (label "Height" (input ^id "new_height" ^type "number" ^min "16" ^max "4096" ^value "1024")))
                  (div ^class "row"
-                   (button ^type "submit" ^class "primary" "Create and plan the goal")
-                   (button ^id "new_project_cancel" ^type "button" "Cancel"))))
+                   (button ^id "new_project_submit" ^type "submit" ^class "primary" "Create and plan the goal")
+                   (button ^id "new_project_cancel" ^type "button" "Cancel")
+                   (span ^id "new_project_note" ^class "muted"))))
              (main ^class "workspace"
                (section ^class "stage"
                  (div ^class "stage_header"
-                   (strong ^id "canvas_label" "No revision")
+                   (strong ^id "canvas_label" ^title "The clean observation PNG: the image the model is shown" "No revision")
                    (label ^class "toggle" (input ^id "follow_live" ^type "checkbox" ^^checked) "Follow live")
-                   (label ^class "toggle" (input ^id "vector_preview" ^type "checkbox") "Vector preview (browser renderer)"))
+                   (label ^class "toggle" ^title "The scene as this browser renders it. The model is shown the PNG."
+                     (input ^id "vector_preview" ^type "checkbox") "Vector preview"))
                  (div ^class "canvas_frame"
-                   (img ^id "canvas_image" ^alt "Clean observation render of the selected revision"))
+                   (img ^id "canvas_image" ^alt "Clean observation render of the selected revision")
+                   (p ^id "canvas_hint" ^class "canvas_hint" ^^hidden))
+                 (div ^id "run_strip" ^class "run_strip" ^role "status" ^aria-live "polite"
+                   (span ^class "dot")
+                   (span ^id "run_status" ^class "run_status" "No run on this line yet.")
+                   (span ^id "run_clock" ^class "run_clock"))
+                 (p ^id "run_queue" ^class "run_queue" ^^hidden)
+                 (form ^id "composer_form" ^class "composer"
+                   (textarea ^id "composer_text" ^rows "2" ^maxlength "2000"
+                     ^aria-label "What should change in the drawing")
+                   (div ^class "row"
+                     (button ^id "run_button" ^type "submit" ^class "primary" "Draw")
+                     (button ^id "cancel_button" ^type "button" ^^hidden "Cancel run")
+                     (label ^id "budget_label" ^class "budget" "Edit budget"
+                       (input ^id "max_edits" ^type "number" ^min "1" ^max "40" ^value "12"))
+                     (span ^id "composer_hint" ^class "composer_hint")))
                  (div ^class "controls"
-                   (button ^id "run_button" ^type "button" ^class "primary" "Draw on this line")
-                   (input ^id "max_edits" ^type "number" ^min "1" ^max "40" ^value "12" ^aria-label "Edit budget")
-                   (button ^id "cancel_button" ^type "button" ^^hidden "Cancel run")
                    (button ^id "select_button" ^type "button" "Choose as result")
+                   (span ^class "muted" "Export")
                    (a ^id "export_svg" ^href "#" "SVG") (a ^id "export_pdf" ^href "#" "PDF") (a ^id "export_png" ^href "#" "PNG"))
-                 (form ^id "steer_form" ^class "steer" ^^hidden
-                   (input ^id "steer_text" ^maxlength "2000" ^placeholder "Steer the running drawing, e.g. make the rain heavier")
-                   (button ^type "submit" "Steer"))
-                 (form ^id "fork_form" ^class "fork"
-                   (strong "Continue from this revision")
-                   (input ^id "fork_name" ^maxlength "64" ^placeholder "new line name, e.g. watercolor")
-                   (input ^id "fork_prompt" ^maxlength "2000" ^placeholder "optional new direction")
-                   (button ^type "submit" "Create line")))
+                 (details ^id "fork_panel" ^class "fork_panel"
+                   (summary "Branch from this revision under a name")
+                   (form ^id "fork_form" ^class "fork"
+                     (input ^id "fork_name" ^maxlength "64" ^placeholder "line name, e.g. watercolor"
+                       ^aria-label "New line name")
+                     (input ^id "fork_prompt" ^maxlength "2000" ^placeholder "optional new direction"
+                       ^aria-label "New direction")
+                     (button ^type "submit" "Create line"))))
                (section ^class "history_panel"
                  (div ^class "panel_header" (strong "History")
                    (label ^class "toggle" (input ^id "show_trials" ^type "checkbox" ^^checked) "Show trials"))
-                 (div ^id "history" ^class "history" ^aria-label "Revision history"))
+                 (div ^id "history" ^class "history" ^aria-label "Revision history")
+                 (div ^class "panel_header activity_header" (strong "Activity")
+                   (span ^id "activity_run" ^class "muted"))
+                 (ol ^id "activity" ^class "activity" ^aria-label "What the run on this line has done"))
                (aside ^class "inspector"
                  (div ^class "panel_header" (strong ^id "inspector_title" "Revision"))
                  (div ^id "inspector" ^class "inspector_body")
@@ -586,6 +725,8 @@
         (let shown (model_view evolution run_id))
         (result .put "model_view" (if ($absent? shown) nil (record_json shown)))
         (return (respond 200 result))))
+    (if (&& (== count 3) (== method "GET") (== rest/2 "activity"))
+      (return (respond 200 (activity_json evolution run_id))))
     (if (&& (== count 3) (== method "POST") (== rest/2 "cancel"))
       (return (respond 200 (run_json name (cancel_run evolution run_id)))))
     (if (&& (== count 3) (== method "POST") (== rest/2 "steer"))

@@ -19,6 +19,7 @@
          major_issues] ^from "./evaluation")
 (import [system_prompt planner_prompt reviewer_prompt prompt_version] ^from "./prompts/agent")
 (import [VisionAgent] ^from "./adapters/model")
+(import [note seconds first_line] ^from "./log")
 
 # What the loop needs from wherever revisions are kept. The CLI spike keeps
 # them as files in a run directory; the application keeps them in an Evolution.
@@ -119,11 +120,60 @@
   (if (== issue "") (reject "invalid_response" "blocked needs (issue \"...\")"))
   {^issue issue ^remaining remaining})
 
+(const max_closers 3)
+
+# How many closing parentheses a reply is short of, counted outside strings.
+# 0 when it is balanced, stops inside a string, or leaves a [ or { open.
+(fn missing_closers [text : Str] : Int
+  (let bytes ($binary/from_str text))
+  (let size ($binary/size bytes))
+  (var depth 0)
+  (var other 0)
+  (var quoted false)
+  (var escaped false)
+  (var i 0)
+  (while (< i size)
+    (let b ($binary/get bytes i))
+    (if quoted
+      (then
+        (if escaped (set escaped false)
+          (if (== b 92) (set escaped true)
+            (if (== b 34) (set quoted false)))))
+      (else
+        (if (== b 34) (set quoted true)
+          (if (== b 40) (set depth (+ depth 1))
+            (if (== b 41) (set depth (- depth 1))
+              (if (|| (== b 91) (== b 123)) (set other (+ other 1))
+                (if (|| (== b 93) (== b 125)) (set other (- other 1)))))))))
+    (set i (+ i 1)))
+  (if (|| quoted (!= other 0) (< depth 1)) 0 depth))
+
+# Read the one (agent_response ...) node of a reply. A long reply often stops
+# a closing parenthesis or two short of its end. Those are added, and the
+# completed text is read and validated like any other; nothing else is
+# repaired, and a reply that still does not read keeps its first error.
+# Returns [node, closers added].
+(fn read_reply [text : Str] : Any
+  (try
+    [(read_domain text ^head "agent_response") 0]
+  catch DomainError
+    (let first $err)
+    (let missing (missing_closers text))
+    (if (|| (!= first/code "unreadable") (< missing 1) (> missing max_closers)) (fail first))
+    (var closed text)
+    (repeat n in missing (set closed $"${closed})"))
+    (try
+      [(read_domain closed ^head "agent_response") missing]
+    catch DomainError
+      (fail first))))
+
 # Parse and validate one model response as domain data. Nothing is evaluated.
 # Returns {^action ^observed_revision ^observed_image ^review ^plan ^patch
-#          ^inspect ^summary ^blocked}; absent parts are nil.
+#          ^inspect ^summary ^blocked ^closed}; absent parts are nil. ^closed
+# is the number of closing parentheses the reply was short of.
 (fn read_response [text : Str] : Any
-  (let node (read_domain (unfenced text) ^head "agent_response"))
+  (let read (read_reply (unfenced text)))
+  (let node read/0)
   (for name in (sorted_keys ($props node))
     (if_not (["schema" "observed_revision" "observed_image" "action"] .contains? name)
       (reject "invalid_response" $"agent_response has no property ^${name}" ^field [name])))
@@ -151,7 +201,7 @@
     {^action node/action ^observed_revision node/observed_revision
      ^observed_image node/observed_image
      ^review (?? (parts .get "review") nil) ^plan "" ^patch nil ^inspect nil ^summary ""
-     ^blocked nil})
+     ^blocked nil ^closed read/1})
   (if ($has_key? parts "plan") (response .put "plan" (one_string parts/plan "plan" 1000)))
   (match node/action
     (when "edit"
@@ -323,10 +373,13 @@
 (fn plan_goal [agent, request : Str, goal_id : Str, ^attempts attempts : Int = 3] : Any
   (var feedback "")
   (repeat attempt in attempts
+    (note "planner" $"asking ${(model_name agent)} to turn the request into a goal (attempt ${(+ attempt 1)} of ${attempts})…")
+    (let asked ($os/monotonic_ms))
     (let reply
       (agent .VisionAgent:plan
         {^system (planner_prompt) ^max_tokens 4000
          ^parts [(text_part $"Goal id: ${goal_id}\nRequest: ${request}${feedback}")]}))
+    (note "planner" $"model replied in ${(seconds (- ($os/monotonic_ms) asked))}")
     (try
       (let goal (validate_goal (read_domain (unfenced reply/text) ^head "goal")))
       (if (!= goal/id goal_id) (reject "invalid_goal" $"the goal ^id must be ${goal_id}"))
@@ -335,6 +388,7 @@
         (return (validate_goal ($node/rebuild goal ^props {^id goal_id ^request request}))))
       (return goal)
     catch DomainError
+      (note "planner" $"the goal was rejected: ${(first_line (describe_error $err))}")
       (set feedback $"\n\nYour last answer was rejected: ${(describe_error $err)}. Answer again with one valid (goal ...) node.")))
   (fail (ModelError ^code "invalid_response"
     ^message $"the model did not produce a valid goal record after ${attempts} attempts.${feedback}"
@@ -374,6 +428,14 @@
   (if_not ($absent? overrides)
     (for [name value] in overrides (budgets .put ($to_str name) value)))
   budgets)
+
+(fn model_name [agent] : Str
+  (try (?? agent/config/model "the model") catch Any "the model"))
+
+# Whether the digest a response cites is the image it was shown. Models often
+# drop the "sha256:" prefix; the hex still has to match.
+(fn same_image? [claimed : Str, actual : Str] : Bool
+  (|| (== claimed actual) (== $"sha256:${claimed}" actual)))
 
 (fn unknown_visual? [goal, evaluation] : Bool
   (if (|| (== evaluation/reviewer "none") (!= evaluation/goal goal/id)) (return true))
@@ -429,9 +491,13 @@
 
   (fn repair [code : Str, line : Str, data] : Bool
     # Returns true while the repair budget lasts.
-    (session .DrawingSession:event code data)
-    (state/feedback .push line)
     (state .put "repairs" (+ state/repairs 1))
+    (var detail {})
+    (for [key value] in data (detail .put ($to_str key) value))
+    (detail .put "repair" state/repairs)
+    (detail .put "repairs" budgets/max_repairs)
+    (session .DrawingSession:event code detail)
+    (state/feedback .push line)
     (<= state/repairs budgets/max_repairs))
 
   # One decision. Returns the run's outcome when it ends, or nil to go on.
@@ -461,6 +527,10 @@
       {^phase "deciding" ^iteration state/iterations ^head state/head/id
        ^pending (if ($absent? state/pending) nil state/pending/id)})
     (let request (build_request state))
+    (session .DrawingSession:event "model_request"
+      {^call (+ state/calls 1) ^model (model_name agent) ^head state/head/id
+       ^pending (if ($absent? state/pending) nil state/pending/id)})
+    (let asked ($os/monotonic_ms))
     (var reply nil)
     (try
       (set reply (agent .VisionAgent:decide request))
@@ -472,7 +542,7 @@
     (state .put "output_tokens" (+ state/output_tokens reply/usage/output))
     (session .DrawingSession:event "model_call"
       {^purpose "decide" ^model reply/model ^usage reply/usage ^prompt prompt_version
-       ^submitted reply/submitted ^response reply/text})
+       ^submitted reply/submitted ^response reply/text ^ms (- ($os/monotonic_ms) asked)})
     # What was asked for is consumed by this response, whatever it says.
     (state .put "feedback" [])
     (state .put "inspection" [])
@@ -488,8 +558,11 @@
     catch DomainError
       (set problem $err))
     (var review nil)
+    (if_yes (&& ($absent? problem) (> decision/closed 0))
+      (session .DrawingSession:event "reply_closed" {^missing decision/closed}))
     (if_yes ($absent? problem)
-      (if (|| (!= decision/observed_revision newest/id) (!= decision/observed_image newest/image))
+      (if (|| (!= decision/observed_revision newest/id)
+              (! (same_image? decision/observed_image newest/image)))
         (then
           (set problem
             (DomainError ^code "wrong_observation"
@@ -607,6 +680,7 @@
         (if report/complete
           (return (finish "complete" final decision/summary)))
         (state .put "refused_done" (+ state/refused_done 1))
+        (session .DrawingSession:event "done_refused" {^reasons ($str/join report/reasons "; ")})
         (if (>= state/refused_done 2)
           (return (finish "partial" state/best
             $"The agent reported done twice while requirements were open: ${($str/join report/reasons \"; \")}")))

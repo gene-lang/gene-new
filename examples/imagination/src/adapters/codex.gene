@@ -7,7 +7,7 @@
 (import [ModelError] ^from "../types")
 
 (const codex_url "https://chatgpt.com/backend-api/codex/responses")
-(const codex_default_model "gpt-6-astra")
+(const codex_default_model "gpt-6-sol")
 
 (fn codex_failure [code : Str, message : Str]
   (fail (ModelError ^code code ^message message ^detail nil)))

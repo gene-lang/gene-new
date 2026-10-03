@@ -136,6 +136,18 @@
     (assert_equal (/goal (/context (/input agent/received/1))) "goal-02")
     (close_evolution evolution))
 
+  (it "keeps an instruction that is still waiting when another arrives" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (steer_run evolution started/id "Make the circle blue.")
+    (let row (steer_run evolution started/id " Add a border. "))
+    (assert_equal row/steering "Make the circle blue.\nAdd a border.")
+    (assert_equal
+      (error_code (fn [] (steer_run evolution started/id "   ")))
+      "invalid_instruction")
+    (cancel_run evolution started/id)
+    (close_evolution evolution))
+
   (it "resumes a stopped run from the saved line head without repeating published work" []
     (let evolution (new_evolution))
     (let started (start_run evolution "main"))

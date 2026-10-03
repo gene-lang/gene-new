@@ -11,6 +11,7 @@
 (import [render_scene render_crop profile_manifest] ^from "./render")
 (import [build_evaluation] ^from "./evaluation")
 (import [DrawingSession] ^from "./agent")
+(import [note event_line] ^from "./log")
 
 (type RunDirectory ^props {^root Str ^profile Any ^state Any})
 
@@ -158,9 +159,9 @@
     (let path ($path/join self/root "events.gene"))
     (let existing (if ($fs/exists? path) ($fs/read_text path) ""))
     ($fs/write_text path $"${existing}${line}\n")
-    (if_yes (&& (!= kind "model_call") (! self/state/quiet))
-      ($println $"  [${kind}] ${(canonical body)}")
-      ($io/flush_stdout))
+    (if_yes (! self/state/quiet)
+      (let line (event_line kind data))
+      (if_not ($absent? line) (note "spike" line)))
     nil)
 
   (message crop [revision, rectangle] : Any

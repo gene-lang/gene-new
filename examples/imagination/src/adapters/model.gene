@@ -45,7 +45,7 @@
 #   IMAGINATION_PROVIDER   anthropic | openrouter | codex (default: an Anthropic
 #                          or OpenRouter key if set, else a Codex login if found)
 #   IMAGINATION_MODEL      model id (default: Claude Opus 5.5 on Anthropic and
-#                          OpenRouter, gpt-6-astra on Codex)
+#                          OpenRouter, gpt-6-sol on Codex)
 #   IMAGINATION_EFFORT     low | medium | high | xhigh | max (default: medium)
 #   ANTHROPIC_API_KEY, OPENROUTER_API_KEY
 #   CODEX_AUTH_FILE, CODEX_HOME   where the Codex CLI keeps auth.json

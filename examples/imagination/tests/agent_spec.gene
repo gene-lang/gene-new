@@ -84,6 +84,36 @@
     (assert_equal (/digest (submitted .last)) (/digest second/1))
     (assert_equal (/preprocessing (submitted .last)) "none"))
 
+  (it "accepts the newest image's digest without its sha256: prefix" []
+    (let run (new_run))
+    (fn bare [answer] : Any
+      (fn [input]
+        (var context {})
+        (for [name value] in input/context (context .put ($to_str name) value))
+        (context .put "image" (($str/split input/context/image ":") .last))
+        (answer {^context context})))
+    (let agent (fixture_agent [(bare first_edit) (bare (done "pass" "pass"))]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "complete")
+    (let problems (events_of run "invalid_response"))
+    (assert_equal problems/.size 0))
+
+  (it "closes a reply that stops a parenthesis short, without a repair call" []
+    (let run (new_run))
+    (fn short [answer, by : Int] : Any
+      (fn [input]
+        (let text (answer input))
+        ($str/slice_bytes text 0 (- ($str/byte_size text) by))))
+    (let agent (fixture_agent [(short first_edit 2) (short (done "pass" "pass") 1)]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "complete")
+    (assert_equal outcome/calls 2)
+    (let problems (events_of run "invalid_response"))
+    (assert_equal problems/.size 0)
+    (let closed (events_of run "reply_closed"))
+    (assert_equal closed/.size 2)
+    (assert_equal (/missing (($body closed/0) .first)) 2))
+
   (it "recovers from malformed output and a wrong image digest within the repair budget" []
     (let run (new_run))
     (let agent
@@ -236,10 +266,21 @@
     (assert_equal report/complete false)
     ($assert ($str/contains? ($str/join report/reasons "; ") "no visual review") "an unreviewed image cannot complete"))
 
-  (it "refuses a model check of a structural requirement" []
+  (it "ignores a model check of a structural requirement and refuses an unknown one" []
+    (let read
+      (read_review
+        (read_domain "(review (check ^requirement \"circle\" ^result \"pass\" ^evidence \"x\") (check ^requirement \"medium\" ^result \"fail\" ^evidence \"x\"))" ^head "review")
+        (goal)))
+    (assert_equal ($has_key? read/checks "circle") true)
+    (assert_equal ($has_key? read/checks "medium") false)
+    # The application's own structural check is the one recorded.
+    (let scene (/scene (run_head_with_label)))
+    (let record (build_evaluation (goal) "r001" "sha256:aa" "rsvg-pdf-poppler/v1" scene read))
+    (for check in (children_named record "check")
+      (if (== check/requirement "medium") (assert_equal check/result "pass")))
     (assert_equal
       (error_code (fn []
-        (read_review (read_domain "(review (check ^requirement \"medium\" ^result \"pass\" ^evidence \"x\"))" ^head "review") (goal))))
+        (read_review (read_domain "(review (check ^requirement \"dog\" ^result \"pass\" ^evidence \"x\"))" ^head "review") (goal))))
       "invalid_review"))
 
   (it "invalidates a completion review when the goal changes" []

@@ -147,7 +147,30 @@ made by another client reached an open page over the event socket.
   takes only the final answer of a completed response, so commentary or a
   severed stream never becomes a response. Parser errors on `auth.json` are
   never echoed. Checked live: `doctor`'s image transport and a complete
-  poster run with `gpt-6-astra`.
+  poster run with `gpt-6-sol`.
+- **Tolerated reply slips.** Three slips recurred in live `gpt-6-sol` runs,
+  each costing a repair call of most of a minute, and three in a row ended a
+  run as failed after its first candidate was drawn. They are now read rather
+  than refused: an `^observed_image` without its `sha256:` prefix (the hex
+  still has to match the newest image); a `(check ...)` for a structural
+  requirement, which is dropped, since the application computes that check
+  itself; and a reply that stops up to three closing parentheses short of its
+  end, which is closed, recorded as a `reply_closed` run event, and then read
+  and validated like any other. A check for an unknown requirement, a wrong
+  digest, and every other unreadable reply are still refused.
+- **Follow-up instructions.** `POST /projects/{p}/runs` takes an optional
+  `instruction`. It is stored as the new run's steering, so the run's first
+  step plans a successor goal that records it, on the same line: a finished
+  drawing can be revised without forking. A steering instruction that arrives
+  while another is waiting is appended to it instead of replacing it.
+  `POST /projects` and `POST /projects/{p}/lines` accept an empty name and
+  choose one (`striped-lighthouse-rocky`, `from-r006`).
+- **Workbench.** One instruction box under the canvas steers a running
+  drawing, revises a finished one, or branches from the revision being
+  viewed, and its button says which. While a run holds a candidate for
+  review, follow-live shows that candidate (also after a page reload: the
+  project snapshot names its render bundle). `GET /jobs/{j}/activity` returns
+  the run's committed events as readable lines for the Activity list.
 - **Sandboxing.** The tools receive only SVG the serializer generated, which
   can hold no URL, script, or external reference; there is no additional
   network sandbox around the processes.
@@ -183,8 +206,13 @@ documented in `docs/stdlib.md`):
 - Export bundles with a reachable DAG and import (§12.3) are not built.
 - The optional `inkscape-pdf-poppler/v1` profile and a 2048-pixel profile are
   not implemented; the profile edge is configurable in code.
-- The browser checks were run with Playwright; there is no committed browser
-  test suite.
+- The browser checks were run with Playwright and by driving Chrome; there is
+  no committed browser test suite.
+- A reply that stops inside a string or leaves a `[` open is still refused and
+  repaired by another model call.
+- After a server restart an open page's token is stale: the next change is
+  refused with "Reload the page before making a change" rather than the page
+  reloading itself.
 - The compare panel shows both images and the computed changes; the optional
   slider, heat map, and AI explanation of a diff (§11.2) are not built.
 - §17.5 scenario 2 (clicking an older thumbnail during a live run keeps the

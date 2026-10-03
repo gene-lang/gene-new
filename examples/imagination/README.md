@@ -23,7 +23,7 @@ the decisions made during implementation, and what is still open.
   under those versions.
 - For drawing runs, a model: `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`
   (default model Claude Opus 5.5), or a ChatGPT sign-in through the Codex CLI
-  (`codex login`; default model `gpt-6-astra`), used as in gene-harness. With
+  (`codex login`; default model `gpt-6-sol`), used as in gene-harness. With
   no key set, a Codex login is picked up from `CODEX_AUTH_FILE`,
   `$CODEX_HOME/auth.json`, or `~/.codex/auth.json`. `IMAGINATION_PROVIDER`
   (`anthropic`, `openrouter`, `codex`), `IMAGINATION_MODEL`, and
@@ -45,10 +45,19 @@ bin/imagination serve                        # prints http://127.0.0.1:<port>/
 `bin/imagination` runs `${GENE_BINARY:-gene}`. Projects live in
 `$IMAGINATION_HOME` (default `examples/imagination/projects/`).
 
-In the browser: create a project from a prompt, press **Draw on this line**,
-watch candidates appear under review, click any thumbnail to inspect it (this
-turns follow-live off), **Continue from this revision** to fork a line, and
-**Compare** two revisions. **Choose as result** records the selection.
+In the browser: describe a picture to create a project, press **Draw**, and
+watch each edit appear while it is under review. The line under the canvas
+says what the run is doing and for how long; **Activity** lists what it has
+done. To change the drawing, type in the box under the canvas:
+
+- during a run, the instruction joins the goal at the run's next step;
+- after a run, **Revise and draw** adds it to the line's goal and draws on
+  from the head;
+- on an older or unaccepted revision, it starts a new line from there and
+  leaves the current line alone.
+
+Click any thumbnail to inspect it (this turns follow-live off), **Compare**
+two revisions, and **Choose as result** to record the selection.
 
 ## Commands
 

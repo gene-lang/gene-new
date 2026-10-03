@@ -16,6 +16,7 @@
 (import [Evolution view line_row policy_of goal_of stage publish record_review
          allocate_prefix id_taken? crop_of change_goal next_goal_id] ^from "./evolution")
 (import [DrawingSession run_drawing plan_goal] ^from "./agent")
+(import [note event_line first_line] ^from "./log")
 
 # One run's session on one working line of an Evolution.
 (type EvolutionSession
@@ -119,6 +120,8 @@
     (let project self/evolution/project)
     (let run self/run)
     (let body (as_data data))
+    (let line (event_line kind data))
+    (if_not ($absent? line) (note $"${project/record/name} ${run}" line))
     (in_transaction project
       (fn []
         (project/db .Db:execute
@@ -134,6 +137,21 @@
             "UPDATE runs SET usage = ?, updated_ms = ? WHERE id = ?"
             (canonical (add_usage (read_canonical (/usage (run_row self/evolution run))) usage))
             ($os/wall_ms) run))
+        # What the run is doing right now, for the browser's status line.
+        (let activity
+          (if (== kind "model_request") $"asking the model (call ${data/call})"
+            (if (== kind "model_call") "checking the reply"
+              (if (== kind "candidate_rendered") $"reviewing ${data/revision}" nil))))
+        (if_yes (! ($absent? activity))
+          (project/db .Db:execute "UPDATE runs SET phase = ?, updated_ms = ? WHERE id = ?"
+            activity ($os/wall_ms) run)
+          (append_event project "phase_changed" run nil
+            `(event ^phase %activity)))
+        # Repairs and failures reach the browser as notes.
+        (if_yes (&& (! ($absent? line))
+                    (["invalid_response" "invalid_patch" "render_failed" "model_failed"
+                      "no_op" "done_refused" "inspection_limit" "reply_closed"] .contains? kind))
+          (append_event project "run_note" run nil `(event ^kind %kind ^message %line)))
         (if_yes (|| (== kind "invalid_response") (== kind "invalid_patch")
                     (== kind "render_failed") (== kind "model_failed"))
           (project/db .Db:execute "UPDATE runs SET last_error = ?, updated_ms = ? WHERE id = ?"
@@ -267,15 +285,19 @@
       "UPDATE runs SET cancel_requested = 1, updated_ms = ? WHERE id = ?" ($os/wall_ms) run_id))
   (run_row evolution run_id))
 
-# Record a goal instruction for the run's next safe iteration boundary.
+# Record a goal instruction for the run's next safe iteration boundary. An
+# instruction that arrives while another is still waiting is added to it, not
+# put in its place.
 (fn steer_run [evolution, run_id : Str, instruction : Str] : Any
   (let row (run_row evolution run_id))
   (if (!= row/status "running")
     (store_failure "run_finished" $"run ${run_id} is ${row/status}" ^detail row/status))
-  (if (|| (== ($str/trim instruction) "") (> ($str/byte_size instruction) 2000))
-    (store_failure "invalid_instruction" "an instruction is 1 to 2000 bytes of text"))
+  (let text ($str/trim instruction))
+  (let queued (if ($absent? row/steering) text $"${row/steering}\n${text}"))
+  (if (|| (== text "") (> ($str/byte_size queued) 2000))
+    (store_failure "invalid_instruction" "the waiting instructions are 1 to 2000 bytes of text"))
   ((db_of evolution) .Db:execute "UPDATE runs SET steering = ?, updated_ms = ? WHERE id = ?"
-    ($str/trim instruction) ($os/wall_ms) run_id)
+    queued ($os/wall_ms) run_id)
   (run_row evolution run_id))
 
 # Make a stopped run runnable again from the line's current head. Completed
