@@ -1,0 +1,139 @@
+#!/usr/bin/env gene run
+# Run: bin/gene run examples/macro.gene
+# A macro receives syntax and returns code for its call site. Its body uses
+# ordinary Gene evaluation; quasiquote is one way to construct that code.
+# Module-level macros expand during compilation. Local macros expand when
+# execution reaches their calls, using that invocation's captured bindings.
+
+(fn show [label value expected]
+  ($assert (== value expected))
+  ($println $"${label}: ${value}"))
+
+# --- 1. Generate an expression with quasiquote and unquote ---------------
+
+(macro twice [value]
+  `(+ %value %value))
+
+(show "expression" (twice (+ 2 3)) 10)
+
+# Arguments are syntax, so using an argument twice evaluates it twice.
+(var calls 0)
+(show "repeated evaluation"
+  (twice (do (set calls (+ calls 1)) calls)) 3)
+(show "evaluation count" calls 2)
+
+# Bind an argument once when the generated code needs its value repeatedly.
+# Expansion-local declarations stay inside the result's scope.
+(macro twice_once [expression]
+  `(do (let saved %expression) (+ saved saved)))
+
+(let saved 100)
+(show "single evaluation"
+  (twice_once (do (set calls (+ calls 1)) calls)) 6)
+(show "caller binding survives" saved 100)
+(show "evaluation count after single evaluation" calls 3)
+
+# --- 2. Control whether and when caller code executes --------------------
+
+(macro unless [condition body...]
+  `(if_not %condition %body...))
+
+(var events [])
+(unless true (events .push "skipped"))
+(unless false
+  (events .push "first")
+  (events .push "second"))
+(show "conditional evaluation" events ["first" "second"])
+
+# Rest arguments splice a sequence of forms into a scoped binding helper.
+(macro with_value [name : Sym value body...]
+  `(do (let %name %value) %body...))
+
+(show "scoped binding" (with_value answer 21 (* answer 2)) 42)
+(show "binding stays local" (try answer catch Any "hidden") "hidden")
+
+# --- 3. Named parameters, defaults, and syntax destructuring -------------
+
+(macro increase [value ^by amount = 1]
+  `(+ %value %amount))
+
+(show "default syntax argument" (increase 7) 8)
+(show "named syntax argument" (increase 7 ^by (+ 2 3)) 12)
+
+# The first entry is discarded as syntax; it is never evaluated.
+(macro second [[_ expression]]
+  `%expression)
+
+(show "destructured syntax" (second [unused_name (+ 3 4)]) 7)
+
+# --- 4. Ordinary macro bodies can compute values or choose syntax --------
+
+# This body computes during expansion; it returns the literal value 5.
+# Its argument must supply numeric syntax, rather than a runtime expression.
+(macro add_one [number : Int]
+  (+ number 1))
+
+(show "value computed during expansion" (add_one 4) 5)
+
+# The boolean is also supplied at expansion time. The selected expression
+# becomes caller code; the other expression is not executed.
+(macro choose [enabled : Bool when_enabled when_disabled]
+  (if enabled when_enabled when_disabled))
+
+(show "syntax chosen during expansion"
+  (choose true (+ 20 22) (fail "unselected")) 42)
+
+# --- 5. Local macros call helpers and read live captured bindings --------
+
+(fn shifted [offset value]
+  (fn build_sum [expression amount]
+    `(+ %expression %amount))
+  (macro add_offset [expression]
+    (build_sum expression offset))
+  (macro emit_offset []
+    `offset)
+  (fn caller [offset]
+    [(add_offset value) (emit_offset)])
+  (caller 100))
+
+# add_offset reads its definition's offset and inserts that value.
+# emit_offset emits a free name, which reads the caller's offset instead.
+(show "definition values and caller names" (shifted 2 5) [7 100])
+(show "fresh captured values" (shifted 9 5) [14 100])
+
+(fn live_value [value]
+  (macro current [] value)
+  (set value (+ value 1))
+  (current))
+
+(show "mutation before local expansion" (live_value 7) 8)
+
+# --- 6. Generated control flow uses the caller's targets -----------------
+
+(fn find_first_large [values]
+  (for value in values
+    (unless (<= value 10) (return value)))
+  nil)
+
+(show "caller return" (find_first_large [3 8 12 20]) 12)
+
+(var total 0)
+(for value in [1 2 3 4 5]
+  (unless (!= value 1) (continue))
+  (unless (!= value 4) (break))
+  (set total (+ total value)))
+(show "caller continue and break" total 5)
+
+# --- 7. Namespaces organize macros; ordinary bindings can shadow them ----
+
+(ns arithmetic
+  (macro square [value]
+    `(* %value %value)))
+
+(show "namespace macro" (arithmetic/square 6) 36)
+
+(fn call_twice [twice]
+  (twice 3))
+
+(show "parameter shadows macro" (call_twice (fn [x] (* x 10))) 30)
+(show "outer macro remains visible" (twice 3) 6)

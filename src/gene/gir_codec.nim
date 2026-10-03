@@ -10,7 +10,7 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 25
+const GirArtifactFormat* = 26
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -32,6 +32,14 @@ proc fromJsonHook(scope: var Scope, node: JsonNode) =
   if node.kind != JNull:
     raise newException(ValueError, "encoded GIR must not contain a live scope")
   scope = nil
+
+proc toJsonHook(cache: CompilerPreparationCache): JsonNode =
+  newJNull()
+
+proc fromJsonHook(cache: var CompilerPreparationCache, node: JsonNode) =
+  if node.kind != JNull:
+    raise newException(ValueError, "encoded GIR must not contain a compiler cache")
+  cache = CompilerPreparationCache()
 
 proc validateInertValue(value: Value, seen: var HashSet[uint64]) =
   if value.kind > vkPipeline:
@@ -626,6 +634,8 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
   when T is Value or T is Scope or T is MacroDef or
       T is MacroDefinitionContext or T is MacroBindings:
     result = source
+  elif T is CompilerPreparationCache:
+    result = CompilerPreparationCache()
   elif T is RootRef and not (T is FunctionProto):
     result = source
   elif T is ref:

@@ -472,7 +472,12 @@ type
     history*: seq[Value] # successful REPL source, for definition-side execution
     capturedDefinitions*: seq[MacroDef] # aligned with Env's owned macro closures
 
+  CompilerPreparationCache* = ref object
+    ## Owner-local derived compiler data; excluded from portable artifacts.
+    state*: RootRef
+
   RuntimeExpansionContext* = object
+    compilerPreparation*: CompilerPreparationCache
     macros*: MacroBindings
     sourceContext*: MacroDefinitionContext
     sourceLoc*: SourceLoc

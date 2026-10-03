@@ -18,6 +18,7 @@ type
 
   MacroExecutionSession* = ref object
     runtimeState*: RootRef
+    compilerState: RootRef
     hostContext*: RootRef
     rootContext*: MacroDefinitionContext
     expansionDepth*: int
@@ -158,6 +159,7 @@ type
     aliasInterfaces: Table[string, StaticAliasInterface]
     parameterAliases: Table[string, Value]
     declaredUnitNames: HashSet[string]
+    preparedUnitNames: ref HashSet[string] # immutable source-context prepass
     namespacePath: seq[string]
     moduleMacroExports: ref Table[string, MacroDef]
     moduleSyntaxFnExports: ref HashSet[string]
@@ -173,6 +175,19 @@ type
     budget: CompileBudget
     deferErrorChecks: bool
     errorModeOverride: string
+
+  MacroCompilerPreparation = ref object of RootObj
+    context: MacroDefinitionContext
+    compileInterface: CompileNamespaceInterface
+    declaredNames: ref HashSet[string]
+    importedEntries: Table[string, CompileInterfaceEntry]
+    wildcards: Table[string, seq[StaticWildcardCandidate]]
+    aliases: Table[string, StaticAliasInterface]
+
+  MacroCompilerState = ref object of RootObj
+    preparations: Table[tuple[context: pointer, path: seq[string]], MacroCompilerPreparation]
+    runtimePreparations: Table[pointer, tuple[context: MacroDefinitionContext,
+      cache: CompilerPreparationCache]]
 
   ParamSpecs = object
     positional: seq[string]
@@ -207,6 +222,15 @@ type
 var macroEvaluator*: MacroEvaluator
 var activeMacroSession* {.threadvar.}: MacroExecutionSession
 var activeMacroHostContext* {.threadvar.}: RootRef
+
+proc unitDeclares(c: Compiler, name: string): bool =
+  name in c.declaredUnitNames or
+    (c.preparedUnitNames != nil and name in c.preparedUnitNames[])
+
+proc macroCompilerState(session: MacroExecutionSession): MacroCompilerState =
+  if session.compilerState == nil:
+    session.compilerState = MacroCompilerState()
+  MacroCompilerState(session.compilerState)
 
 proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
   if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
@@ -610,7 +634,7 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
       of "+", "-", "*":
         not c.dynamicNameLookup and v.body.len == 2 and c.localSlot(v.head.symVal) < 0 and
           c.parentSlot(v.head.symVal).slot < 0 and
-          not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames) and
+          not (c.macroPhaseCompilation and c.unitDeclares(v.head.symVal)) and
           c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
       of "if":
         if v.body.len >= 2 and v.body[1].kind == vkNode and
@@ -733,12 +757,12 @@ proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
     of "+", "-", "*":
       not c.dynamicNameLookup and typeName in ["Int", "F64"] and v.body.len == 2 and
         not c.hasLexicalBinding(v.head.symVal) and
-        not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames) and
+        not (c.macroPhaseCompilation and c.unitDeclares(v.head.symVal)) and
         c.exprKnownExactResult(v.body[0], typeName) and
         c.exprKnownExactResult(v.body[1], typeName)
     of "!", "==", "<", ">", "<=", ">=":
       not c.dynamicNameLookup and typeName == "Bool" and not c.hasLexicalBinding(v.head.symVal) and
-        not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames)
+        not (c.macroPhaseCompilation and c.unitDeclares(v.head.symVal))
     else:
       let sig = c.lexicalFunctionSig(v.head.symVal)
       sig.found and sig.sig.arity == v.body.len and
@@ -772,7 +796,7 @@ proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
     # These names map to compiler-known ordinary native operators. Every other
     # ambient name can come from a caller-supplied Scope/Env and stays guarded.
     c.allowAmbientImports and not c.dynamicNameLookup and not c.hasLexicalBinding(callee.symVal) and
-      not (c.macroPhaseCompilation and callee.symVal in c.declaredUnitNames) and
+      not (c.macroPhaseCompilation and c.unitDeclares(callee.symVal)) and
       nativeFastLoadKind(callee.symVal) != nfkNone
   of vkNode:
     callee.head.kind == vkSymbol and callee.head.symVal == "fn"
@@ -860,7 +884,7 @@ proc emitLoadBinding(c: var Compiler, name: string) =
       c.reportBareName(name)
       let fastKind = nativeFastLoadKind(name)
       if fastKind != nfkNone and c.allowAmbientImports and not c.dynamicNameLookup and
-          not (c.macroPhaseCompilation and name in c.declaredUnitNames):
+          not (c.macroPhaseCompilation and c.unitDeclares(name)):
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
       else:
         discard c.emit(opLoadName, name = name)
@@ -1026,6 +1050,7 @@ proc childCompiler(c: Compiler): Compiler =
            aliasInterfaces: c.aliasInterfaces,
            parameterAliases: c.parameterAliases,
            declaredUnitNames: c.declaredUnitNames,
+           preparedUnitNames: c.preparedUnitNames,
            namespacePath: c.namespacePath,
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
@@ -1877,7 +1902,8 @@ proc rejectOptionalSuffix(s, what, hint: string): string =
       "type: " & hint)
   s
 
-proc parseParamAdornment(c: Compiler, items: openArray[Value],
+proc parseParamAdornment(c: Compiler, paramList: Value,
+                         defaultContext: var ref Compiler, items: openArray[Value],
                          i: var int): ParamAdornment =
   ## Parse type annotations and compile call-time defaults.
   while i < items.len:
@@ -1894,7 +1920,10 @@ proc parseParamAdornment(c: Compiler, items: openArray[Value],
       if i >= items.len:
         raise newException(GeneError, "parameter default requires a value")
       result.defaultValue.optional = true
-      result.defaultValue.defaultChunk = c.compileDefaultExpr(items[i])
+      if defaultContext == nil:
+        new(defaultContext)
+        defaultContext[] = c.signatureCompiler(paramList)
+      result.defaultValue.defaultChunk = defaultContext[].compileDefaultExpr(items[i])
       inc i
     else:
       break
@@ -1904,7 +1933,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
   ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
   if paramList.kind != vkList: return
-  let defaultContext = c.signatureCompiler(paramList)
+  var defaultContext: ref Compiler
   let items = paramList.listItems
   var i = 0
   var sawRest = false
@@ -1937,7 +1966,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
           if local.len == 0:
             raise newException(GeneError, "named parameter local requires a name")
           inc i
-      var adornment = defaultContext.parseParamAdornment(items, i)
+      var adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
       if not adornment.defaultValue.optional and
           c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
         # ^name : T? — optional named parameter; omitted binds nil (the
@@ -1962,7 +1991,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         # A rest parameter may carry a type (`xs... : T`): every gathered
         # argument is boundary-checked against T. It still cannot have a
         # default — a rest binder is always the (possibly empty) tail.
-        let restAdornment = defaultContext.parseParamAdornment(items, i)
+        let restAdornment = c.parseParamAdornment(paramList, defaultContext, items, i)
         if restAdornment.defaultValue.optional:
           raise newException(GeneError, "rest parameter cannot have a default")
         result.restType = restAdornment.typeExpr
@@ -1974,7 +2003,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
-        var adornment = defaultContext.parseParamAdornment(items, i)
+        var adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
         if c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
           adornment.defaultValue.optional = true
         if adornment.defaultValue.optional:
@@ -2591,7 +2620,15 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
   c.evaluateMacroValue(def, c.matchMacroArguments(def, node), node.head.print())
 
 proc runtimeExpansionContext(c: Compiler): RuntimeExpansionContext =
+  var preparation = CompilerPreparationCache()
+  if c.macroSession != nil and c.macroContext != nil:
+    let state = c.macroSession.macroCompilerState()
+    let key = cast[pointer](c.macroContext)
+    if not state.runtimePreparations.hasKey(key):
+      state.runtimePreparations[key] = (c.macroContext, preparation)
+    preparation = state.runtimePreparations[key].cache
   result = RuntimeExpansionContext(macros: c.visibleMacroBindings(),
+    compilerPreparation: preparation,
     sourceContext: c.macroContext, sourceLoc: c.currentLoc,
     namespacePath: c.namespacePath, inFunction: c.inFunction,
     inGenerator: c.inGenerator, inStatementFn: c.inStatementFn,
@@ -6104,7 +6141,7 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
   for i in first .. forms.high:
     c.prepareStaticImportForm(forms[i])
   for name, candidates in c.wildcardCandidates:
-    if candidates.len != 1 or name in c.declaredUnitNames:
+    if candidates.len != 1 or c.unitDeclares(name):
       continue
     let candidate = candidates[0]
     if not c.importedInterfaces.hasKey(candidate.importKey):
@@ -6124,7 +6161,7 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
 
 proc importedCandidates(c: Compiler,
                         name: string): seq[StaticWildcardCandidate] =
-  if name in c.declaredUnitNames or c.hasLexicalBinding(name):
+  if c.unitDeclares(name) or c.hasLexicalBinding(name):
     return
   result = c.wildcardCandidates.getOrDefault(name)
 
@@ -9475,7 +9512,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       h.symVal notin ["path", "msg", "quasiquote"]:
     let name = h.symVal
     if c.hasLexicalBinding(name) or name in c.declaredNames or
-        name in c.declaredUnitNames or c.importedCandidates(name).len > 0:
+        c.unitDeclares(name) or c.importedCandidates(name).len > 0:
       raise newException(GeneError,
         name & " is a special form, but a binding named " & name &
         " is in scope; a call (" & name &
@@ -9607,7 +9644,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "select":
       if not c.hasLexicalBinding("select") and
-          "select" notin c.declaredUnitNames and
+          not c.unitDeclares("select") and
           (not c.hasMacros or not c.macros.hasKey("select")) and
           c.importedCandidates("select").len == 0:
         raise newException(GeneError,
@@ -10721,10 +10758,37 @@ proc compileForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms)
 
+proc macroNamespaceBody(forms: openArray[Value], name: string): seq[Value]
+
+proc prepareMacroCompiler(context: MacroDefinitionContext,
+                          path: seq[string] = @[]): MacroCompilerPreparation =
+  var c = Compiler(importedMacroSets: context.importedMacros,
+    importedSyntaxFnSets: context.importedSyntaxFns,
+    importedInterfaces: context.importedInterfaces)
+  c.prepareStaticImports(context.forms)
+  var forms = context.forms
+  for namespace in path:
+    forms = macroNamespaceBody(forms, namespace)
+    c.prepareStaticImports(forms)
+  result = MacroCompilerPreparation(context: context,
+    compileInterface: buildCompileInterface(context.forms, context.sourceName),
+    importedEntries: move c.importedCompileEntries,
+    wildcards: move c.wildcardCandidates, aliases: move c.aliasInterfaces)
+  new(result.declaredNames)
+  result.declaredNames[] = move c.declaredUnitNames
+
+proc useMacroPreparation(c: var Compiler, prepared: MacroCompilerPreparation) =
+  c.ownCompileInterface = prepared.compileInterface
+  c.preparedUnitNames = prepared.declaredNames
+  c.importedCompileEntries = prepared.importedEntries
+  c.wildcardCandidates = prepared.wildcards
+  c.aliasInterfaces = prepared.aliases
+
 proc macroExecutionCompiler(context: MacroDefinitionContext,
                             definitions: Table[string, MacroDef],
                             session: MacroExecutionSession,
-                            budget: CompileBudget): Compiler =
+                            budget: CompileBudget,
+                            namespacePath: seq[string] = @[]): Compiler =
   result = Compiler(chunk: newChunk(), allowAmbientImports: true,
     ffiLibraryNames: initTable[string, bool](),
     sourceLocs: sharedSourceLocs(initTable[uint64, SourceLoc]()),
@@ -10738,8 +10802,11 @@ proc macroExecutionCompiler(context: MacroDefinitionContext,
     result.importedMacroSets = context.importedMacros
     result.importedSyntaxFnSets = context.importedSyntaxFns
     result.importedInterfaces = context.importedInterfaces
-    result.ownCompileInterface = buildCompileInterface(context.forms, context.sourceName)
-    result.prepareStaticImports(context.forms)
+    let state = session.macroCompilerState()
+    let key = (cast[pointer](context), namespacePath)
+    if not state.preparations.hasKey(key):
+      state.preparations[key] = prepareMacroCompiler(context, namespacePath)
+    result.useMacroPreparation(state.preparations[key])
 
 proc macroNamespaceBody(forms: openArray[Value], name: string): seq[Value] =
   for form in forms:
@@ -10756,15 +10823,11 @@ proc compileMacroBody*(definition: MacroDef, names: seq[string],
                        session: MacroExecutionSession,
                        budget: CompileBudget = nil): Chunk =
   ## Compile an ordinary function over already matched syntax arguments.
-  var c = macroExecutionCompiler(definition.context, definitions, session, budget)
+  var c = macroExecutionCompiler(definition.context, definitions, session, budget,
+    definition.namespacePath)
   c.dynamicNameLookup = session.runtimeDefinitionScope != nil
   c.currentLoc = definition.sourceLoc
   c.namespacePath = definition.namespacePath
-  if definition.context != nil:
-    var forms = definition.context.forms
-    for namespace in definition.namespacePath:
-      forms = macroNamespaceBody(forms, namespace)
-      c.prepareStaticImports(forms)
   if definition.name.len > 0:
     c.macros[definition.name] = definition
     c.hasMacros = true
@@ -10825,9 +10888,14 @@ proc runtimeExpansionCompiler(context: RuntimeExpansionContext,
     result.importedMacroSets = context.sourceContext.importedMacros
     result.importedSyntaxFnSets = context.sourceContext.importedSyntaxFns
     result.importedInterfaces = context.sourceContext.importedInterfaces
-    result.ownCompileInterface = buildCompileInterface(context.sourceContext.forms,
-      context.sourceContext.sourceName)
-    result.prepareStaticImports(context.sourceContext.forms)
+    var prepared: MacroCompilerPreparation
+    if context.compilerPreparation != nil:
+      if context.compilerPreparation.state == nil:
+        context.compilerPreparation.state = prepareMacroCompiler(context.sourceContext)
+      prepared = MacroCompilerPreparation(context.compilerPreparation.state)
+    else:
+      prepared = prepareMacroCompiler(context.sourceContext)
+    result.useMacroPreparation(prepared)
 
 proc runtimeMacroDiagnostic(call: RuntimeMacroCall): string =
   let definition = call.definition

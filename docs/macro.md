@@ -870,6 +870,13 @@ invokes a runtime local macro stays on its owner lane. Its complete capture set
 is not known when a worker snapshot would be created. This preserves ordinary
 task execution and suspension without claiming that such a call is Send-safe.
 
+A macro body that constructs syntax with quasiquote and one that calls helpers
+use the same evaluation and scoping rules. "Template" and "computed" describe
+body implementations, not distinct semantic categories. Compilers may cache
+compiled bodies and source-context preparation, but must evaluate each
+invocation with its own syntax arguments and definition environment; expansion
+results and live captured bindings are not cached.
+
 **Phase initialization, approved 2026-10-02:** when expansion needs definition-
 side bindings, initialize the defining module on demand in a separate compile-
 time instance. Ordinary helpers and computed top-level bindings are available

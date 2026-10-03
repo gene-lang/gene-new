@@ -14,12 +14,19 @@ type
     failure: string
     loaderOwned: bool
 
+  CompiledMacroBody = ref object
+    definition: MacroDef # retain the identity used by the cache key
+    initial: Chunk
+    initialized: Chunk
+    needsBindings: bool
+
   MacroRuntimeStateData = object of RootObj
     application: Application
     instances: Table[string, MacroPhaseInstance]
     contextKeys: Table[pointer, tuple[context: MacroDefinitionContext, key: string]]
     builtinInstance: MacroPhaseInstance
     activeBudget: EvalBudget
+    bodies: Table[tuple[definition: pointer, names: seq[string]], CompiledMacroBody]
 
   MacroRuntimeState = ref MacroRuntimeStateData
 
@@ -374,8 +381,13 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
     var arguments: seq[Value]
     for name in names:
       arguments.add bindings[name]
-    var definitions = definition.lexicalMacros
-    var body = compileMacroBody(definition, names, definitions, session, budget)
+    let bodyKey = (cast[pointer](definition), names)
+    if not state.bodies.hasKey(bodyKey):
+      let code = compileMacroBody(definition, names, definition.lexicalMacros, session, budget)
+      state.bodies[bodyKey] = CompiledMacroBody(definition: definition,
+        initial: code, needsBindings: macroNeedsDefinitionBindings(code))
+    let compiled = state.bodies[bodyKey]
+    var body = compiled.initial
     let savedBudget = instance.scope.evalBudget
     let previousBudget = state.activeBudget
     let parentBudget = if previousBudget != nil: previousBudget
@@ -398,11 +410,19 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       var lexical = instance.scope
       if instance.status == misReady:
         lexical = macroDefinitionScope(instance, definition.namespacePath)
-      if macroNeedsDefinitionBindings(body):
+      if compiled.needsBindings:
         state.initializeMacroInstance(instance, session, budget)
-        for name, macroDefinition in instance.definitions:
-          definitions[name] = macroDefinition
-        body = compileMacroBody(definition, names, definitions, session, budget)
+        if compiled.initialized != nil and instance.status == misReady:
+          body = compiled.initialized
+        else:
+          var definitions = definition.lexicalMacros
+          for name, macroDefinition in instance.definitions:
+            definitions[name] = macroDefinition
+          body = compileMacroBody(definition, names, definitions, session, budget)
+          # Reentrant initializers have only partially populated bindings.
+          # Cache the definitive body only after initialization completes.
+          if instance.status == misReady:
+            compiled.initialized = body
         lexical = macroDefinitionScope(instance, definition.namespacePath)
       # A namespace can outlive the invocation that initialized it. Bind this
       # invocation's budget dynamically instead of reusing its captured one.

@@ -1414,6 +1414,27 @@ suite "vm — quasiquote templates":
     expect GeneError: discard compileSource("(quasiquote (unquote))")
 
 suite "vm — macros":
+  test "cached macro bodies evaluate fresh syntax arguments and lexical definitions":
+    ck "(macro emit [x] `(+ %x 1)) [(emit 2) (emit 8) (emit 2)]", "[3 9 3]"
+    ck "(fn helper [x] `(+ %x 1)) (macro emit [x] (helper x)) " &
+       "[(emit 2) (emit 8) (emit 2)]", "[3 9 3]"
+    ck "(ns first (fn helper [x] `(+ %x 1)) " &
+       "(macro emit [x] (helper x))) " &
+       "(ns second (fn helper [x] `(* %x 2)) " &
+       "(macro emit [x] (helper x))) " &
+       "[(first/emit 3) (second/emit 3) (first/emit 7) (second/emit 7)]",
+       "[4 6 8 14]"
+
+  test "runtime compiler preparations remain inert across artifact round trips":
+    let source = "(fn work [n] (macro emit [x] `(+ %x n)) (emit 3)) " &
+      "[(work 2) (work 8)]"
+    let compiled = compileSource(source)
+    check run(compiled, newGlobalScope()).print() == "[5 11]"
+    check run(cloneCompiledChunk(compiled), newGlobalScope()).print() == "[5 11]"
+    let module = CompiledModule(identity: "app::entry", chunk: compiled,
+      compileInterface: buildCompileInterface(readAll(source)))
+    check run(cloneModuleExecutionTemplate(module).chunk, newGlobalScope()).print() == "[5 11]"
+
   test "local macro bodies expand against each live function invocation":
     ck "(let n 100) (fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", "[3 10]"
     ck "(fn f [n] (macro m [] n) (set n (+ n 1)) (m)) (f 2)", "3"
