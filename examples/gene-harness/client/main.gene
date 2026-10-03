@@ -1434,11 +1434,11 @@
         (if_yes (&& (== session tab/id) (== kind "command"))
           (var id : Str data/id)
           (var output (string_or data/display (string_or data/text "")))
-          (var preview : (List Any) cache/preview)
+          (var command_preview : (List Any) cache/preview)
           (set cache/preview
             (bounded_blocks
               (merge_blocks
-                preview
+                command_preview
                 [
                   {
                     ^id $"${session}/${id}"

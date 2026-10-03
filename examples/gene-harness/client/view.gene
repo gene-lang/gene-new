@@ -4,18 +4,18 @@
 (import [code_view] ^from "./highlight.gene")
 (import [run_label terminal] ^from "./state.gene")
 
-(fn execution_view [text : Str, summary : Str, gene : Bool,
+(fn execution_view [text : Str, summary : Str, is_gene : Bool,
                     expanded : Bool, on_copy : (Fn [Str] Void),
                     on_toggle : (Fn [Bool] Void)] : EventTarget
   (var pre ($dom/render `(pre)))
-  (var colored (&& gene expanded))
+  (var colored (&& is_gene expanded))
   ($dom/append pre (code_view text colored))
   (var details ($dom/render
     `(details ^class_name "execution"
        ^open %expanded
        ^on_toggle %(fn [event : Any] : Void
          (var opened : Bool event/current_target/open)
-         (if_yes (&& opened gene (! colored))
+         (if_yes (&& opened is_gene (! colored))
            ($dom/clear pre)
            ($dom/append pre (code_view text true))
            (set colored true))

@@ -143,8 +143,8 @@
     (out .push {^kind kind ^text (source_slice chars start i)}))
   out)
 
-(fn code_view [text : Str, gene : Bool] : EventTarget
-  (if_not gene (return ($dom/render `(code %text))))
+(fn code_view [text : Str, is_gene : Bool] : EventTarget
+  (if_not is_gene (return ($dom/render `(code %text))))
   (var code ($dom/render `(code ^class_name "gene_code")))
   (for token in (gene_tokens text)
     (var kind : Str token/kind)
