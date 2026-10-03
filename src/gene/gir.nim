@@ -13,6 +13,7 @@ const
   PipelineMessageName* = "\x00gene_prepared_message"
   PipelineArgumentsName* = "\x00gene_prepared_arguments"
   PipelineItemName* = "\x00gene_prepared_item"
+  BlockBindingPrefix* = "\x00gene_block:"
   MaxCaptureLevels* = 8 # activation levels a closure copies from (CapturePlan)
 
 type
@@ -145,6 +146,10 @@ type
     opCheckType
     opDeclareType
     opSyntaxCall  # pop raw call node + fexpr callee, apply the syntax call (design §3/§11.1)
+    opDefineRuntimeMacro # store a definition-side closure in an activation's private slot
+    opInvokeRuntimeMacro # match raw syntax arguments and call that ordinary closure
+    opExecuteRuntimeMacro # compile/enter returned syntax; flag: normalize pipeline operand only
+    opRuntimePipelineStage # execute direct macro operands before classifying slots
     opRejectSyntaxSend # reject an fexpr at a .send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
     opQualifiedSend # pop receiver + protocol (`P` of `P:msg`); dispatch `name` on the receiver
@@ -154,6 +159,9 @@ type
     opMakePipelineStream  # normal conversion followed by a lazy mapping adapter
     opCheckCallableArguments # checked view payload -> target, prepared args, slot
     opCheckCallableResult    # result + checked view payload -> checked result
+    opBlockScope             # lexical block; caller control-flow targets survive
+    opLoopEnter              # record inline loop exit/continue targets and operand base
+    opLoopLeave              # retire the inline loop target
 
   Instruction* = object
     op*: OpCode
@@ -380,6 +388,7 @@ type
     fastBindRequiredNamed*: bool
     isGenerator*: bool
     isSyntaxFn*: bool
+    isMacroBody*: bool # keep the complete live definition environment
     preparedPipelineItem*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
@@ -427,7 +436,7 @@ type
     pattern*: Value
     defaultValue*: MacroDefault
 
-  MacroDef* = object
+  MacroDef* = ref object
     ## Portable compile-time data carried by library artifacts. Macros are
     ## reader values, not executable host closures, so their definitions can
     ## cross an artifact boundary deterministically.
@@ -435,6 +444,53 @@ type
     named*: seq[MacroNamedParam]
     rest*: string
     body*: seq[Value]
+    name*: string
+    sourceLoc*: SourceLoc
+    context*: MacroDefinitionContext
+    namespacePath*: seq[string]
+    lexicalMacros*: Table[string, MacroDef]
+    runtime*: bool
+    runtimeParamNames*: seq[string]
+
+  MacroDefinitionContext* = ref object
+    ## Source and dependency identity for definition-side execution. Runtime
+    ## instances belong to a compilation session, never this portable definition.
+    sourceName*: string
+    moduleIdentity*: string
+    moduleSourcePath*: string # package-relative file path, including extension
+    forms*: seq[Value]
+    locs*: Table[uint64, SourceLoc]
+    importedMacros*: Table[string, Table[string, MacroDef]]
+    importedSyntaxFns*: Table[string, seq[string]]
+    importedInterfaces*: Table[string, CompileNamespaceInterface]
+
+  MacroBindings* = ref object of RootObj
+    definitions*: Table[string, MacroDef]
+    hiddenNames*: seq[string]
+    exportedNames*: seq[string]
+    ownedNames*: seq[string]
+    history*: seq[Value] # successful REPL source, for definition-side execution
+    capturedDefinitions*: seq[MacroDef] # aligned with Env's owned macro closures
+
+  RuntimeExpansionContext* = object
+    macros*: MacroBindings
+    sourceContext*: MacroDefinitionContext
+    sourceLoc*: SourceLoc
+    namespacePath*: seq[string]
+    letNames*: seq[string]
+    inFunction*, inGenerator*, inStatementFn*, selfAvailable*: bool
+    loopDepth*: int
+    allowAmbientImports*: bool
+
+  RuntimeMacroDefinition* = object
+    definition*: MacroDef
+    slot*: int
+
+  RuntimeMacroCall* = object
+    definition*: MacroDef
+    syntax*: Value
+    context*: RuntimeExpansionContext
+    pipeline*: bool
 
   CompileBindingCategory* = enum
     cbcValue
@@ -799,6 +855,7 @@ type
     owner* {.cursor.}: FunctionProto
     functions*: seq[FunctionProto]
     localNames*: seq[string]
+    privateLocalSlots*: seq[int] # storage for confined inline macro-result locals
     mirrorSlots*: bool
     immutableBindings*: seq[string]
     moduleRefNames*: seq[string] # predeclared before source-unit execution
@@ -829,6 +886,11 @@ type
     monomorphizations*: seq[MonomorphizationSpec]
     directProtocolCalls*: seq[DirectProtocolCallSpec]
     callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
+    macroContexts*: seq[MacroBindings] # Env/fexpr sites capture lexical visibility
+    runtimeMacroDefinitions*: seq[RuntimeMacroDefinition]
+    runtimeMacroCalls*: seq[RuntimeMacroCall]
+    runtimeMacroExpansion*: bool # code executing as part of an active expansion
+    finalMacroContext*: MacroBindings # persistent top-level compiler state
     superType*: Value        # for a type-direct message body (and closures
                              # nested in it): the enclosing type's nominal parent,
                              # stamped in by opMakeType. `(super .m)` reads it
@@ -839,6 +901,7 @@ type
                              # with a different parent copies the body instead
                              # of re-stamping it (`stampSuperType`), so a stamp
                              # never changes meaning under a running send.
+    macroRuntimeLease*: RootRef # runtime-only; destroyed after generated Values
 
   CompiledModule* = object
     ## One portable module identity plus everything another package's compiler
@@ -882,6 +945,84 @@ proc newChunk*(sourceName = ""): Chunk =
         ffiSignatures: @[],
         monomorphizations: @[], directProtocolCalls: @[],
         callSites: initTable[int, Value]())
+
+proc collectMacroValues[T](data: T, values: var seq[Value],
+                           seen: var HashSet[pointer]) =
+  ## Traverse compiler-owned metadata, stopping at Value edges. Consumers use
+  ## their ordinary Value walkers for borrowed-authority checks/publication.
+  when T is Value:
+    values.add data
+  elif T is Scope:
+    discard # portable macro metadata never owns a live lexical frame
+  elif T is ref:
+    if data != nil and not seen.containsOrIncl(cast[pointer](data)):
+      collectMacroValues(data[], values, seen)
+  elif T is Table:
+    for _, item in data: collectMacroValues(item, values, seen)
+  elif T is seq or T is array:
+    for item in data: collectMacroValues(item, values, seen)
+  elif T is object or T is tuple:
+    for name, field in fieldPairs(data):
+      when name != "locs":
+        collectMacroValues(field, values, seen)
+
+proc macroContextValues*(context: RootRef,
+                         seen: var HashSet[pointer]): seq[Value] =
+  if context != nil and context of MacroBindings:
+    collectMacroValues(MacroBindings(context), result, seen)
+
+proc macroContextValues*(context: RootRef): seq[Value] =
+  var seen: HashSet[pointer]
+  macroContextValues(context, seen)
+
+proc runtimeMacroValues*(chunk: Chunk, seen: var HashSet[pointer]): seq[Value] =
+  collectMacroValues(chunk.runtimeMacroDefinitions, result, seen)
+  collectMacroValues(chunk.runtimeMacroCalls, result, seen)
+
+proc hasRuntimeMacroCalls*(root: Chunk): bool =
+  ## A task snapshot must account for dynamic caller access inside functions
+  ## constructed by the task as well as directly executed instructions.
+  var seen = initHashSet[pointer]()
+  proc visit(chunk: Chunk): bool
+  proc visitFunction(fn: FunctionProto): bool =
+    if fn == nil: return false
+    if visit(fn.chunk): return true
+    for value in fn.paramDefaults:
+      if visit(value.defaultChunk): return true
+    for parameter in fn.namedParams:
+      if visit(parameter.defaultValue.defaultChunk): return true
+  proc visit(chunk: Chunk): bool =
+    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)): return false
+    if chunk.runtimeMacroCalls.len > 0: return true
+    for fn in chunk.functions:
+      if visitFunction(fn): return true
+    for body in chunk.subchunks:
+      if visit(body): return true
+    for loop in chunk.forLoops:
+      if visit(loop.body): return true
+    for branch in chunk.matches:
+      for clause in branch.clauses:
+        if visit(clause.body): return true
+      if visit(branch.elseBody): return true
+    for attempt in chunk.tries:
+      if visit(attempt.body) or visit(attempt.ensureBody): return true
+      for clause in attempt.catches:
+        if visit(clause.body): return true
+    template messages(entries: untyped) =
+      for entry in entries:
+        if visitFunction(entry.fn): return true
+    for typ in chunk.typeProtos:
+      if visitFunction(typ.ctorFn): return true
+      messages(typ.messages)
+      for implementation in typ.inlineImpls: messages(implementation.messages)
+    for typ in chunk.enumProtos:
+      messages(typ.messages)
+      for implementation in typ.inlineImpls: messages(implementation.messages)
+    for protocol in chunk.protocolProtos:
+      if visitFunction(protocol.deriveFn): return true
+      messages(protocol.messages)
+    for implementation in chunk.implProtos: messages(implementation.messages)
+  visit(root)
 
 proc addListBuild*(chunk: Chunk, lp: ListBuildProto): int =
   result = chunk.listBuilds.len
@@ -1213,8 +1354,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
-  of opTaskScope:
+  of opTaskScope, opBlockScope:
     result.add " body=" & $inst.intArg
+  of opLoopEnter:
+    result.add " break=" & $inst.intArg & " continue=" & $inst.depth
   of opSpawn:
     result.add " body=" & $inst.intArg
     if inst.flag:
@@ -1232,10 +1375,12 @@ proc formatInstruction(inst: Instruction): string =
       result.add " void-only=true"
   of opSyntaxCall, opRejectSyntaxSend:
     discard
+  of opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
+    result.add " macro=" & $inst.intArg
   of opResolveQualifiedMessage, opQualifiedSend, opBindMessage:
     result.add " name=" & inst.name
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
-     opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield,
+     opIteratorClose, opLoopBreak, opLoopContinue, opLoopLeave, opAwait, opYield,
      opExplicitReturn, opReturn, opReturnBareInt:
     discard
   if inst.tail:

@@ -439,6 +439,8 @@ type
   ## type; the value layer keeps only this base reference.
   RuntimeContext* = ref object of RootObj
     errorFunctionCreated*: proc(value: Value, scope: Scope) {.nimcall.}
+    privateCompilerContext*: bool
+    compilerOwnerLane*: int
 
   ## Shared instruction budget for policy-limited eval scopes. Budgets can be
   ## chained so nested evals with their own policy still consume the outer budget.
@@ -503,6 +505,8 @@ type
     retirementPublished: int # permanent raw/worker publication exclusion
     application*: RuntimeContext
     strictErrorLease*: RootRef
+    compilerMacros*: RootRef # immutable compiler context; never a borrowed frame
+    runtimeMacroSlots*: RootRef # immutable definition-to-private-slot registry
     parent*: Scope
     vars*: Table[string, Value]
     managedBindingPins*: Table[string, seq[Scope]]
@@ -513,6 +517,7 @@ type
     slotDefinedBits*: uint64
     slotDefinedOverflow*: seq[bool]
     slotNames*: seq[string]
+    privateSlots*: seq[int] # inline lexical locals are unavailable to name lookup
     slotMirror*: bool
     varsDirty*: bool  # mirrored slot writes pending materialization into vars
     simpleCallScope*: bool
@@ -529,6 +534,7 @@ type
     implValidationEpoch*: uint64
     implValidationActive*: bool
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
+    scopedImplImports*: bool # macro-result lexical boundary, not an eval unit
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
@@ -883,6 +889,8 @@ type
     ## live scope would defeat the point of naming them.
     closedScope: bool
     policy: Value
+    compilerMacros: RootRef
+    compilerMacroFunctions: seq[Value]
     borrowed: bool
     borrowedActive: bool
     borrowedScope: Scope
@@ -2055,6 +2063,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
   of okEnv:
     let d = EnvData(data)
     emit(d.parent)
+    for val in d.compilerMacroFunctions: emit(val)
     for val in d.bindings.values:
       emit(val)
     for val in d.imports:
@@ -2252,6 +2261,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.policy)
     d.borrowedActive = false
     d.borrowedScope = nil
+    d.compilerMacros = nil
+    d.compilerMacroFunctions.setLen(0)
   of okCell, okAtomicCell:
     let d = CellData(data)
     clearValueSlot(d.value)
@@ -2494,9 +2505,16 @@ proc markObjectShared(data: GeneObjectData) {.inline.} =
       if managedPublicationDepth == 0: markSharedFlag(data.rawPublished)
 
 proc pinPublishedScope*(scope: Scope) =
-  ## Qualification-only provenance. Record lexical ancestors before handing a
-  ## graph to another lane; never enumerate a published Scope during retirement.
+  ## Record private compiler roots, plus qualification-only generation provenance,
+  ## before handing a graph to another lane. Never inspect a published Scope
+  ## during owner-lane retirement.
   ## This does not make concurrent Scope mutation or raw SDK refs safe.
+  if scope != nil and scope.application != nil and scope.application.privateCompilerContext:
+    let context {.cursor.} = scope.application
+    var current {.cursor.} = scope
+    while current != nil and current.application == context:
+      markSharedFlag(current.retirementPublished)
+      current = current.parent
   when defined(geneAtomicGenerationRetirementProbe):
     if managedPublicationDepth > 0: return
     var current {.cursor.} = scope
@@ -2527,13 +2545,16 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     return
   seen.incl key
   markObjectShared(data)
-  when defined(geneAtomicGenerationRetirementProbe):
+  block:
+    # Private compiler scopes also need publication pins in ordinary builds:
+    # a published object may retain a non-owning link into its defining scope.
     template pin(scope: Scope) = pinPublishedScope(scope)
     case data.objKind
     of okNamespace: pin(NamespaceData(data).scope)
     of okType:
       let d {.cursor.} = TypeData(data)
-      markSharedBits(d.annotationRefBits, seen)
+      when defined(geneAtomicGenerationRetirementProbe):
+        markSharedBits(d.annotationRefBits, seen)
       pin(d.scope)
       pin(cast[Scope](d.weakScope))
       for field in d.fields:
@@ -2547,16 +2568,21 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
       pin(cast[Scope](EnumData(data).weakScope))
     of okProtocol: pin(cast[Scope](ProtocolData(data).weakScope))
     of okProtocolMessage:
-      markSharedBits(ProtocolMessageData(data).protocolBits, seen)
+      when defined(geneAtomicGenerationRetirementProbe):
+        markSharedBits(ProtocolMessageData(data).protocolBits, seen)
     of okBoundMessage:
       let message = BoundMessageData(data)
-      if message.boundScope == nil and message.weakScope != nil:
-        message.boundScope = cast[Scope](message.weakScope)
-        message.weakScope = nil
+      when defined(geneAtomicGenerationRetirementProbe):
+        if message.boundScope == nil and message.weakScope != nil:
+          message.boundScope = cast[Scope](message.weakScope)
+          message.weakScope = nil
       pin(message.boundScope)
-      markSharedBits(message.protocolBits, seen)
+      pin(cast[Scope](message.weakScope))
+      when defined(geneAtomicGenerationRetirementProbe):
+        markSharedBits(message.protocolBits, seen)
     of okEnumVariant:
-      markSharedBits(EnumVariantData(data).enumBits, seen)
+      when defined(geneAtomicGenerationRetirementProbe):
+        markSharedBits(EnumVariantData(data).enumBits, seen)
     of okCell, okAtomicCell: pin(CellData(data).valueScope)
     of okEnv: pin(EnvData(data).borrowedScope)
     of okCallableView: pin(CallableViewData(data).typeScope)
@@ -2987,8 +3013,9 @@ proc kind*(v: Value): ValueKind {.inline, raises: [].}
 # constants, error evidence, `RootRef` state, other lanes — is left out, so its
 # targets look externally owned and stay alive.
 
-# AtomicArc builds run Gene worker lanes. Shared graphs there are excluded
-# until a threaded collector is qualified, so retirement stays off there.
+# AtomicArc builds run Gene worker lanes. Shared graphs remain excluded unless
+# the threaded collector is qualified. A private compiler context can use the
+# same probed count adapter on its owner lane without inspecting shared graphs.
 # Single-threaded wasm uses the same
 # layout-probed adapter for evaluation and activation scopes (not filesystem
 # sandbox qualification). `int` follows the target's ORC header word size.
@@ -2997,8 +3024,7 @@ when defined(geneAtomicGenerationRetirementProbe) and
      not compileOption("threads")):
   {.error: "geneAtomicGenerationRetirementProbe requires genuine AtomicArc and geneRcStats".}
 
-when (defined(gcOrc) and not defined(gcAtomicArc) or
-      defined(geneAtomicGenerationRetirementProbe)) and
+when (defined(gcOrc) or defined(gcAtomicArc)) and
     not (defined(nimArcDebug) or defined(nimArcIds) or
          defined(nimOrcLeakDetector)):
   type NimRefHeader = object
@@ -3053,7 +3079,10 @@ proc retirementSupported(): bool =
 proc generationRetirementAvailable*(): bool =
   ## Whether this build has its count adapter. AtomicArc remains unavailable
   ## without the qualification flag; a true probe result is not production support.
-  retirementSupported()
+  when defined(gcAtomicArc) and not defined(geneAtomicGenerationRetirementProbe):
+    false
+  else:
+    retirementSupported()
 
 type
   RetireNodeKind = enum
@@ -3074,6 +3103,7 @@ type
 
   RetireGraph = object
     complete: bool
+    privateContext: RuntimeContext
     nodes: seq[RetireNode]
     refIndex: Table[uint64, int]  # Scopes and `#Ref` tables/entries
     valueIndex: Table[uint64, int]
@@ -3125,6 +3155,21 @@ when defined(geneAtomicGenerationRetirementProbe):
         (value.bits and PAYLOAD_MASK) == 0: return false
     retirementValuePublished(value.bits)
 
+proc retirementValueShared(bits: uint64): bool =
+  let payload = bits and PAYLOAD_MASK
+  case bits shr TAG_SHIFT
+  of STRING_TAG: isSharedFlag(cast[ptr GeneString](payload).shared)
+  of INT64_TAG: isSharedFlag(cast[ptr GeneInt64](payload).shared)
+  of LIST_TAG: isSharedFlag(cast[ptr GeneList](payload).shared)
+  of MAP_TAG: isSharedFlag(cast[ptr GeneMap](payload).shared)
+  of NODE_TAG: isSharedFlag(cast[ptr GeneNode](payload).shared)
+  of FUNCTION_TAG: isSharedFlag(cast[ptr GeneFunction](payload).shared)
+  of NATIVE_FN_TAG: isSharedFlag(cast[ptr GeneNativeFn](payload).shared)
+  of OBJECT_TAG, CYCLE_OBJECT_TAG:
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+    isSharedFlag(data.shared)
+  else: false
+
 proc valueNode(g: var RetireGraph, bits: uint64): int =
   if bits shr TAG_SHIFT < MANAGED_MIN or (bits and PAYLOAD_MASK) == 0:
     return -1
@@ -3134,6 +3179,8 @@ proc valueNode(g: var RetireGraph, bits: uint64): int =
     g.nodes.add RetireNode(bits: bits, total: retireValueTotal(bits))
     when defined(geneAtomicGenerationRetirementProbe):
       g.nodes[result].pinned = retirementValuePublished(bits)
+    if g.privateContext != nil and retirementValueShared(bits):
+      g.nodes[result].pinned = true
     g.valueIndex[bits] = result
 
 proc refNode(g: var RetireGraph, address: pointer,
@@ -3151,6 +3198,8 @@ proc refNode(g: var RetireGraph, address: pointer,
 proc scopeNode(g: var RetireGraph, scope: Scope): int =
   result = g.refNode(cast[pointer](scope), rnkScope)
   if result >= 0 and scope.scopePublishedForRetirement:
+    g.nodes[result].pinned = true
+  if result >= 0 and g.privateContext != nil and scope.application != g.privateContext:
     g.nodes[result].pinned = true
 
 proc strongEdge(g: var RetireGraph, source, target: int) =
@@ -3451,6 +3500,7 @@ proc takeRetiredBindings(s: Scope): RetiredScopeBindings =
   result.ownedCleanupTasks = move s.ownedCleanupTasks
   result.ownedActors = move s.ownedActors
   s.slotNames.setLen(0)
+  s.privateSlots.setLen(0)
   s.slotDefinedBits = 0
   s.slotDefinedOverflow.setLen(0)
   s.slotMirror = false
@@ -3477,10 +3527,34 @@ proc moduleHeldOutside(root: Scope): bool =
     cast[NamespaceData](namespace).scope == root and
     nimStrongRefs(cast[pointer](data)) > 1
 
+type RuntimeContextRoots* = object
+  ## Exact owning fields of a private runtime context being relinquished.
+  ## The lists add one temporary owner; owner tables count the original fields.
+  scopes*: seq[Scope]
+  values*: seq[Value]
+  scopeOwners: Table[uint64, int]
+  valueOwners: Table[uint64, int]
+
+proc addOwnedScope*(roots: var RuntimeContextRoots, scope: Scope) =
+  if scope == nil: return
+  let key = cast[uint64](cast[pointer](scope))
+  if not roots.scopeOwners.hasKey(key): roots.scopes.add scope
+  roots.scopeOwners[key] = roots.scopeOwners.getOrDefault(key) + 1
+
+proc addOwnedValue*(roots: var RuntimeContextRoots, value: Value) =
+  if value.bits shr TAG_SHIFT < MANAGED_MIN or
+      (value.bits and PAYLOAD_MASK) == 0: return
+  if not roots.valueOwners.hasKey(value.bits): roots.values.add value
+  roots.valueOwners[value.bits] = roots.valueOwners.getOrDefault(value.bits) + 1
+
+proc currentEventLane*(): int {.inline.}
+
 proc retirePendingScopes(pending: var seq[Scope], generations: bool,
                          extraOwners = 0, assumed = 0'u64,
                          assumedInternal: ptr int = nil,
-                         complete = false): int =
+                         complete = false,
+                         context: RuntimeContext = nil,
+                         contextRoots: ptr RuntimeContextRoots = nil): int =
   ## Trial deletion over `pending` roots; see retireReleasedGenerations.
   ## `extraOwners` counts known references to each root beyond the list.
   ## A nonzero `assumed` is a dry run: that value is expanded as though its
@@ -3489,15 +3563,17 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
   ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
+  let privateRetirement = context != nil and context.privateCompilerContext and
+    context.compilerOwnerLane == currentEventLane()
   when defined(gcAtomicArc):
     # Qualification-only: activation/returned-value collection has no worker
     # barrier. Generation callers must enter the VM's paused-root boundary.
     when defined(geneAtomicGenerationRetirementProbe):
-      if not generations or atomicGenerationRetirementBoundary == 0 or
-          not retirementNativeAnalysisAdmitted():
+      if not privateRetirement and (not generations or atomicGenerationRetirementBoundary == 0 or
+          not retirementNativeAnalysisAdmitted()):
         return 0
     else:
-      return 0
+      if not privateRetirement: return 0
   if pending.len == 0 or generationRetiring or not retirementSupported():
     return 0
   # Do not inspect a raw-exported root's mutable tables. The entire candidate
@@ -3507,7 +3583,8 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       return 0
   generationRetiring = true
   try:
-    var g = RetireGraph(complete: complete)
+    var g = RetireGraph(complete: complete,
+      privateContext: if privateRetirement: context else: nil)
     var roots: seq[int]
     for root in pending:
       if root == nil:
@@ -3518,15 +3595,28 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
       let idx = g.scopeNode(root)
       if g.nodes[idx].expanded:
         continue
+      if privateRetirement and g.nodes[idx].pinned: continue
       g.nodes[idx].total -= 1 + extraOwners # the pending list and known holders
+      if contextRoots != nil:
+        g.nodes[idx].total -= contextRoots[].scopeOwners.getOrDefault(cast[uint64](cast[pointer](root)))
       roots.add idx
       g.expandRetireScope(idx, counting = true)
+    if contextRoots != nil:
+      for value in contextRoots[].values:
+        let idx = g.valueNode(value.bits)
+        if idx >= 0:
+          g.nodes[idx].total -= 1 + contextRoots[].valueOwners.getOrDefault(value.bits)
+          if not g.nodes[idx].expanded: g.ready.add idx
     let assumedIdx = if assumed == 0: -1 else: g.valueNode(assumed)
     if assumedIdx >= 0 and not g.nodes[assumedIdx].expanded:
       g.expandRetireValue(assumedIdx, counting = true)
     while g.ready.len > 0:
       let idx = g.ready.pop()
       if g.nodes[idx].expanded:
+        continue
+      if privateRetirement and g.nodes[idx].pinned:
+        # Private compiler cleanup has no cross-lane barrier. Shared Values
+        # and foreign Scopes must remain opaque, including in normal builds.
         continue
       when defined(geneAtomicGenerationRetirementProbe):
         # A worker pause does not quiesce foreign native readers/mutators.
@@ -3560,7 +3650,7 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     while queue.len > 0:
       let idx = queue.pop()
       if not g.nodes[idx].expanded and not g.nodes[idx].weakScanned:
-        if g.nodes[idx].kind == rnkScope and g.nodes[idx].pinned:
+        if g.nodes[idx].pinned and (privateRetirement or g.nodes[idx].kind == rnkScope):
           # Do not enumerate a raw-exported Scope on another lane.
           continue
         # An externally owned node can still hold a non-owning pointer into a
@@ -3585,6 +3675,20 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
         if not g.nodes[idx].live:
           inc result
       return
+    if context != nil:
+      # Scope.application is not an edge in ordinary activation retirement.
+      # For a whole private context, every such reference must be accounted
+      # for, in addition to its one relinquishing owner. An unlisted scope,
+      # native lease or SDK owner therefore prevents teardown conservatively.
+      var owners = 1 + (if g.privateContext == context: 1 else: 0)
+      for node in g.nodes:
+        if node.kind == rnkScope and cast[Scope](node.address).application == context:
+          inc owners
+      if nimStrongRefs(cast[pointer](context)) != owners:
+        return 0
+      for idx in roots:
+        if g.nodes[idx].live:
+          return 0
     var doomed: seq[Scope]
     for i in 0 ..< g.nodes.len:
       if g.nodes[i].kind == rnkScope and g.nodes[i].expanded and
@@ -3608,7 +3712,7 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
     when defined(geneAtomicGenerationRetirementProbe):
       # Scope edges are detached and pinned Values remain in `held`. Reopen
       # native admission before invoking arbitrary last-owner cleanup.
-      finishRetirementNativeAnalysis()
+      if not privateRetirement: finishRetirementNativeAnalysis()
     held.setLen(0)
     result = doomed.len
   finally:
@@ -3641,6 +3745,19 @@ proc retireEvaluationScope*(scope: Scope): int =
   var pending = @[scope]
   retirePendingScopes(pending, generations = false, extraOwners = 1,
                       complete = true)
+
+proc retireRuntimeContextScopes*(context: RuntimeContext,
+                                roots: var RuntimeContextRoots): bool =
+  ## All-or-nothing trial deletion for a private, quiescent runtime context.
+  ## On success the caller must release the owning fields recorded in roots.
+  ## Outside references preserve the entire context. AtomicArc admits only an
+  ## unpublished private compiler context on its owner lane; shared graphs retain
+  ## the existing qualified-retirement requirement.
+  if context != nil and context.privateCompilerContext and
+      context.compilerOwnerLane != currentEventLane():
+    return false
+  retirePendingScopes(roots.scopes, generations = false, complete = true,
+    context = context, contextRoots = addr roots) > 0
 
 proc scopeHasOtherOwners*(scope: Scope): bool {.inline.} =
   ## Whether something besides the caller's one reference owns `scope`: the
@@ -5084,6 +5201,26 @@ proc envClosedScope*(v: Value): bool =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).closedScope
+
+proc envCompilerMacros*(v: Value): RootRef =
+  if v.kind notin {vkEnv, vkCallerEnv}:
+    raise newException(FieldDefect, "compiler context requires Env or CallerEnv")
+  EnvData(objData(v)).compilerMacros
+
+proc setEnvCompilerMacros*(v: Value, context: RootRef) =
+  if v.kind notin {vkEnv, vkCallerEnv}:
+    raise newException(FieldDefect, "compiler context requires Env or CallerEnv")
+  EnvData(objData(v)).compilerMacros = context
+
+proc envMacroFunctions*(v: Value): seq[Value] =
+  if v.kind notin {vkEnv, vkCallerEnv}:
+    raise newException(FieldDefect, "macro closures require Env or CallerEnv")
+  EnvData(objData(v)).compilerMacroFunctions
+
+proc setEnvMacroFunctions*(v: Value, functions: sink seq[Value]) =
+  if v.kind notin {vkEnv, vkCallerEnv}:
+    raise newException(FieldDefect, "macro closures require Env or CallerEnv")
+  EnvData(objData(v)).compilerMacroFunctions = functions
 
 proc setEnvClosedScope*(v: Value, closed: bool) =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
@@ -8300,6 +8437,11 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     let data = EnvData(objData(v))
     let escapedParent = escapeNested(data.parent)
     var changed = escapedParent.bits != data.parent.bits
+    var macroFunctions: seq[Value]
+    for function in data.compilerMacroFunctions:
+      let escaped = escapeNested(function)
+      macroFunctions.add escaped
+      if escaped.bits != function.bits: changed = true
     var bindings = initTable[string, Value]()
     for key, val in data.bindings:
       let escaped = escapeNested(val)
@@ -8319,7 +8461,11 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       changed = true
     if not changed:
       return v
-    newEnv(bindings, escapedParent, imports, escapedModule, escapedPolicy)
+    let escaped = newEnv(bindings, escapedParent, imports, escapedModule, escapedPolicy)
+    escaped.setEnvCompilerMacros(data.compilerMacros)
+    escaped.setEnvMacroFunctions(macroFunctions)
+    escaped.setEnvClosedScope(data.closedScope)
+    escaped
   of vkCallerEnv:
     v
   of vkCPtr:

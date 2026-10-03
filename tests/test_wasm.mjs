@@ -46,6 +46,22 @@ const cases = [
   ["void", 0, "void", ""],
   ["(+ 1 2)", 0, "3", ""],
   ["(if true 1 2)", 0, "1", ""],
+  ["(fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", 0, "[3 10]", ""],
+  ["(fn f [] (macro spin [] (while true nil)) " +
+   "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " +
+   "catch Any ($str/contains? $err/message \"max steps\"))) (f)", 0, "true", ""],
+  ["(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (computed 2)",
+   0, "9", ""],
+  ["(macro add_one [value] `(do (let tmp 1) (+ tmp %value))) " +
+   "(let tmp 100) [(add_one tmp) tmp]", 0, "[2 100]", ""],
+  ["(fn helper [x] (* x 100)) (macro computed [x] (helper x)) " +
+   "(macro emitted [x] `(helper %x)) " +
+   "(fn caller [helper] [(computed 2) (emitted 2)]) " +
+   "(caller (fn [x] (+ x 1)))", 0, "[200 3]", ""],
+  ["(macro finish [] `(do (let value 9) (return value))) " +
+   "(fn f [] (finish) 0) (f)", 0, "9", ""],
+  ["(fn show! [expression] (eval expression ^in caller_env)) " +
+   "(fn f [x] (show! (+ x 1))) (f 5)", 0, "6", ""],
   ["[true false nil]", 0, "[true false nil]", ""],
   ['($println "hi")', 0, "nil", "hi\n"],
   ['(let pending ([1 2] => $println)) (pending .close)', 0, "nil", ""],

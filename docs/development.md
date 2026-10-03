@@ -80,7 +80,8 @@ qualification and the two-hour SERVICE heartbeat failure remain deferred.
 | `src/gene/reader.nim`, `printer.nim`, `types.nim` | Syntax and runtime values |
 | `src/gene/compiler.nim`, `gir.nim`, `vm.nim` | Compilation and execution |
 | `src/gene/package.nim`, `build.nim` | Source graphs and artifact builds |
-| `src/gene/web.nim` | Web-profile analysis and emission |
+| `src/gene/web.nim` | Public web compiler entry point, including macro execution |
+| `src/gene/web_backend.nim` | Web-profile analysis and emission |
 | `src/gene/stdlib.nim`, `src/gene/ext/` | Libraries and native adapters |
 | `src/gene/native_api.nim`, `aot_runtime.nim` | Native boundaries |
 | `tests/`, `examples/`, `benchmarks/` | Contracts, usage, and measurements |
@@ -156,6 +157,11 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-10-03 | Local macros expand when execution reaches their call, using their captured definition environment. Module macros retain compile-time expansion. | Each invocation observes its own enclosing values. Returned syntax still uses caller bindings and control-flow targets. Runtime local expansion has compilation cost; it leaves existing caller slots intact. |
+| 2026-10-03 | REPL macro definitions commit after successful compilation. | A runtime error retains those definitions and any runtime effects already performed. A compile error leaves the previous macro context intact. |
+| 2026-10-02 | Macro bodies execute ordinary Gene code during expansion; active unquotes use that body's environment. | Use quote/quasiquote to construct code. Quasiquote node splices now include properties; splice a list from `$body` for body-only insertion. Construct residual pins/paths with `%(quote (unquote name))`. See [macro execution](macro.md#d2b-definition-side-lexical-evaluation--decided). |
+| 2026-10-02 | Macro results use conditional lexical scopes and ordinary shadowing, without automatic renaming. | Declarations and owned impl imports stay inside the expansion. Pass dependent code as body arguments or bind a returned value. Avoid temporary-name collisions, including `generated_logger` in log message/payload syntax. |
+| 2026-10-02 | Vector unquotes normalize to unquote nodes; macros expand in expression and direct pipeline-slot positions on both backends. | Quoted `[%x]` now contains `(unquote x)`. A macro cannot provide an `else` or `when` clause; generate the whole surrounding expression instead. |
 | 2026-09-29 | A visible binding sharing an executable special-form head now causes a compile error at that head. | Rename the binding or alias its import; values remain usable outside call-head position. Intrinsic Path, Message, and quasiquote forms retain their syntax meaning. |
 | 2026-09-29 | Paths are callable `Path` values; their constructor uses ordered string, message, and index segments. Receiver paths evaluate the base before dynamic segments. | Replace `Selector` annotations and `(select …)` construction with `Path` and `(Path …)`; use quoted strings for literal property names. Rename catches of `SelectorMissing` to `PathMissing`. |
 | 2026-09-29 | Non-callable errors name the authored call head and missing namespace segment. | Ordinary missing reads still return void; update any checks of the old generic diagnostic text. |
@@ -171,7 +177,7 @@ version is a language compatibility promise.
 
 Current open areas include hosted registry publication/signing, native
 build recipes and broader application distribution, JIT, production M:N scheduling,
-full compile-time function macros/hygiene, static effects and exhaustiveness,
+static effects and exhaustiveness,
 general foreign callback factories and retained/queued callback modes, and
 optional runtime event instrumentation. Call-scoped synchronous native callbacks
 on the owning root lane are implemented, with SQLite text-row visitation as

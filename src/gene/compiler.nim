@@ -8,12 +8,24 @@ export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 type
   CompileBudget* = ref object
     remaining*: int64
+    runtimeBudget*: EvalBudget # shared counter while executable macro bodies run
     hasDeadline*: bool
     deadline*: MonoTime
     hasMemoryLimit*: bool
     memoryBaseline*: int64
     memoryLimitBytes*: int64
     sampleCountdown*: int
+
+  MacroExecutionSession* = ref object
+    runtimeState*: RootRef
+    hostContext*: RootRef
+    rootContext*: MacroDefinitionContext
+    expansionDepth*: int
+    runtimeDefinitionScope*: Scope # transient, only while matching runtime defaults
+
+  MacroEvaluator* = proc(definition: MacroDef, bindings: Table[string, Value],
+                         session: MacroExecutionSession,
+                         budget: CompileBudget): Value {.nimcall, gcsafe.}
 
   KnownFunctionSig = object
     arity: int
@@ -29,12 +41,6 @@ type
     importKey: string
     exportPrefix: seq[string]
     namespace: CompileNamespaceInterface
-
-  LoopCompileContext = object
-    isInline: bool
-    continueTarget: int
-    breakJumps: seq[int]
-    continueJumps: seq[int]
 
   Compiler = object
     chunk: Chunk
@@ -62,7 +68,6 @@ type
     inFunction: bool
     inGenerator: bool
     loopDepth: int
-    loopStack: seq[LoopCompileContext]
     repeatBindings: bool # shared-scope chunks reentered by an enclosing loop
     gensym: ref int   # shared with child compilers; see nextGensym
     useLocalSlots: bool
@@ -71,10 +76,21 @@ type
     localTypes: Table[string, Value]
     localFunctionSigs: Table[string, KnownFunctionSig]
     localNames: seq[string]
+    inlineBlockPrefix: string
+    inlineBlockBindings: HashSet[string]
     parentSlots: seq[Table[string, int]]
     parentFunctionSigs: seq[Table[string, KnownFunctionSig]]
     ffiLibraryNames: Table[string, bool]
     macros: Table[string, MacroDef]
+    ownMacroNames: HashSet[string] # definitions/imports in this lexical scope
+    ownValueNames: HashSet[string]
+    publicMacroNames: HashSet[string]
+    macroContext: MacroDefinitionContext
+    macroSession: MacroExecutionSession
+    macroPhaseCompilation: bool
+    dynamicNameLookup: bool # runtime-generated code resolves live caller bindings
+    compiledMacroResults: Table[uint64, Value]
+    repeatedMacroSites: HashSet[uint64]
     hasMacros: bool
     macroExpansionDepth: int
     allowAmbientImports: bool
@@ -184,6 +200,13 @@ type
     expanded*: SourceUnit
     provenance*: Table[uint64, ExpansionProvenance]
     macroExports*: Table[string, MacroDef]
+    macroRuntimeLease*: RootRef # released after any expanded runtime Values
+
+# The VM installs this immutable dispatch hook to avoid a compiler/VM import
+# cycle. Reentrant compilation during a macro invocation shares its session.
+var macroEvaluator*: MacroEvaluator
+var activeMacroSession* {.threadvar.}: MacroExecutionSession
+var activeMacroHostContext* {.threadvar.}: RootRef
 
 proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
   if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
@@ -203,6 +226,25 @@ proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
 proc consumeCompileStep(budget: CompileBudget) =
   if budget == nil:
     return
+  if budget.runtimeBudget != nil:
+    var current = budget.runtimeBudget
+    while current != nil:
+      if current.remaining <= 0:
+        raise newException(GeneError, "compile max steps exceeded")
+      if current.hasDeadline or current.hasMemoryLimit:
+        if current.sampleCountdown <= 0:
+          current.sampleCountdown = 64
+          if current.hasDeadline and getMonoTime() >= current.deadline:
+            raise newException(GeneError, "compile timeout exceeded")
+          if current.hasMemoryLimit and getOccupiedMem().int64 -
+              current.memoryBaseline > current.memoryLimitBytes:
+            raise newException(GeneError, "compile memory limit exceeded")
+        else:
+          dec current.sampleCountdown
+      dec current.remaining
+      current = current.parent
+    budget.remaining = budget.runtimeBudget.remaining
+    return
   if budget.remaining <= 0:
     raise newException(GeneError, "compile max steps exceeded")
   if budget.hasDeadline or budget.hasMemoryLimit:
@@ -220,7 +262,7 @@ proc consumeCompileStep(budget: CompileBudget) =
 
 proc parseImportSpec*(node: Value): ImportSpec
 
-const MaxMacroExpansionDepth = 100
+const MaxMacroExpansionDepth* = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
@@ -361,7 +403,7 @@ proc validateBindingName(name: string, allowFexprName = false) =
       "only a named fexpr may bind a name ending in !: " & name)
 
 proc reserveLocal(c: var Compiler, name: string,
-                  allowFexprName = false): int =
+                  allowFexprName = false, importing = false): int =
   validateBindingName(name, allowFexprName)
   # `self` is the compiler-owned receiver and is reserved throughout a message
   # or ctor body, nested scopes included (design §10/§12.1) — otherwise an inner
@@ -372,15 +414,23 @@ proc reserveLocal(c: var Compiler, name: string,
     raise newException(GeneError,
       "'self' is the receiver and cannot be rebound in a message body " &
       "(design §10)")
-  # One name, one meaning: a binding may not reuse a visible macro's name —
-  # head-position dispatch would still pick the macro, so the binding could
-  # never mean the same thing in both positions (design §11).
-  if c.hasMacros and c.macros.hasKey(name):
+  # D4: same-scope declarations conflict, but ordinary locals/parameters may
+  # shadow an inherited macro. Remove that compiler binding before later
+  # call-head or value-position lookup can bypass the new local.
+  if name in c.ownMacroNames:
     raise newException(GeneError,
       "binding '" & name & "' conflicts with a macro of the same name")
+  if c.hasMacros:
+    c.macros.del(name)
+    var hiddenPaths: seq[string]
+    for path in c.macros.keys:
+      if path.startsWith(name & "/"): hiddenPaths.add path
+    for path in hiddenPaths: c.macros.del(path)
+  if not importing: c.aliasInterfaces.del(name)
   c.ordinaryFnNames.del(name)
   c.generatorFnNames.del(name)
   c.declaredNames.incl name
+  c.ownValueNames.incl name
   # A fresh binding is rebindable until something says otherwise, so it clears
   # any `let` mark inherited from an outer scope — branch-local `for`/`match`/
   # `catch` bindings and parameters shadow an outer `let` rather than freezing
@@ -388,11 +438,24 @@ proc reserveLocal(c: var Compiler, name: string,
   c.letNames.excl name
   if not c.useLocalSlots:
     return -1
-  if c.localSlots.hasKey(name):
+  let newBlockBinding = c.inlineBlockPrefix.len > 0 and
+    name notin c.inlineBlockBindings
+  if newBlockBinding:
+    c.localTypes.del(name)
+    c.fastLocalLoads.del(name)
+    c.localFunctionSigs.del(name)
+    c.constValues.del(name)
+    c.aotConstants.del(name)
+  if c.localSlots.hasKey(name) and not newBlockBinding:
     return c.localSlots[name]
   result = c.localNames.len
   c.localSlots[name] = result
-  c.localNames.add name
+  if c.inlineBlockPrefix.len > 0:
+    c.inlineBlockBindings.incl name
+    c.localNames.add c.inlineBlockPrefix & name
+    c.chunk.privateLocalSlots.add result
+  else:
+    c.localNames.add name
 
 proc localSlot(c: Compiler, name: string): int =
   if c.useLocalSlots and c.localSlots.hasKey(name):
@@ -497,12 +560,45 @@ proc isSelfEvaluatingFastConst(v: Value): bool =
   else:
     false
 
+proc ownsResultBindings(value: Value): bool
+
+proc normalizedMacroExpression(c: Compiler, value: Value): Value =
+  if value.kind == vkNode and c.compiledMacroResults.hasKey(value.bits):
+    return c.normalizedMacroExpression(c.compiledMacroResults[value.bits])
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "do" and value.body.len == 1 and
+      not ownsResultBindings(value.body[0]):
+    return c.normalizedMacroExpression(value.body[0])
+  value
+
+proc normalizedMacroTree(c: Compiler, value: Value): Value =
+  ## Optimization input uses expansions already compiled at this exact site.
+  ## Do not execute a macro twice or flatten a block that changes bindings.
+  let normalized = c.normalizedMacroExpression(value)
+  if normalized.bits != value.bits: return c.normalizedMacroTree(normalized)
+  if value.kind != vkNode or ownsResultBindings(value) or
+      (value.head.kind == vkSymbol and value.head.symVal in
+        ["quote", "quasiquote", "fn", "macro", "scope"]):
+    return value
+  var body: seq[Value]
+  var changed = false
+  for item in value.body:
+    let replacement = c.normalizedMacroTree(item)
+    changed = changed or replacement.bits != item.bits
+    body.add replacement
+  if changed:
+    newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+  else: value
+
 proc exprKnownBareInt(c: Compiler, v: Value): bool
 
 proc formsKnownBareInt(c: Compiler, forms: openArray[Value], start = 0): bool =
   forms.len > start and c.exprKnownBareInt(forms[forms.high])
 
 proc exprKnownBareInt(c: Compiler, v: Value): bool =
+  let normalized = c.normalizedMacroExpression(v)
+  if normalized.bits != v.bits:
+    return c.exprKnownBareInt(normalized)
   case v.kind
   of vkInt:
     true
@@ -512,8 +608,9 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
     if v.props.len == 0 and v.head.kind == vkSymbol:
       case v.head.symVal
       of "+", "-", "*":
-        v.body.len == 2 and c.localSlot(v.head.symVal) < 0 and
+        not c.dynamicNameLookup and v.body.len == 2 and c.localSlot(v.head.symVal) < 0 and
           c.parentSlot(v.head.symVal).slot < 0 and
+          not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames) and
           c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
       of "if":
         if v.body.len >= 2 and v.body[1].kind == vkNode and
@@ -555,6 +652,9 @@ proc formsKnownExactResult(c: Compiler, forms: openArray[Value],
   forms.len > start and c.exprKnownExactResult(forms[forms.high], typeName)
 
 proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
+  let normalized = c.normalizedMacroExpression(v)
+  if normalized.bits != v.bits:
+    return c.exprKnownExactResult(normalized, typeName)
   if typeName == "Any":
     return true
   case v.kind
@@ -631,12 +731,14 @@ proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
           known = known and c.exprKnownExactResult(item, typeName)
         known
     of "+", "-", "*":
-      typeName in ["Int", "F64"] and v.body.len == 2 and
+      not c.dynamicNameLookup and typeName in ["Int", "F64"] and v.body.len == 2 and
         not c.hasLexicalBinding(v.head.symVal) and
+        not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames) and
         c.exprKnownExactResult(v.body[0], typeName) and
         c.exprKnownExactResult(v.body[1], typeName)
     of "!", "==", "<", ">", "<=", ">=":
-      typeName == "Bool" and not c.hasLexicalBinding(v.head.symVal)
+      not c.dynamicNameLookup and typeName == "Bool" and not c.hasLexicalBinding(v.head.symVal) and
+        not (c.macroPhaseCompilation and v.head.symVal in c.declaredUnitNames)
     else:
       let sig = c.lexicalFunctionSig(v.head.symVal)
       sig.found and sig.sig.arity == v.body.len and
@@ -669,7 +771,8 @@ proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
       return true
     # These names map to compiler-known ordinary native operators. Every other
     # ambient name can come from a caller-supplied Scope/Env and stays guarded.
-    c.allowAmbientImports and not c.hasLexicalBinding(callee.symVal) and
+    c.allowAmbientImports and not c.dynamicNameLookup and not c.hasLexicalBinding(callee.symVal) and
+      not (c.macroPhaseCompilation and callee.symVal in c.declaredUnitNames) and
       nativeFastLoadKind(callee.symVal) != nfkNone
   of vkNode:
     callee.head.kind == vkSymbol and callee.head.symVal == "fn"
@@ -756,7 +859,8 @@ proc emitLoadBinding(c: var Compiler, name: string) =
         return
       c.reportBareName(name)
       let fastKind = nativeFastLoadKind(name)
-      if fastKind != nfkNone and c.allowAmbientImports:
+      if fastKind != nfkNone and c.allowAmbientImports and not c.dynamicNameLookup and
+          not (c.macroPhaseCompilation and name in c.declaredUnitNames):
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
       else:
         discard c.emit(opLoadName, name = name)
@@ -797,8 +901,9 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false,
   # so a `fn` defined inside a loop starts fresh and keeps the strict rule.
   let inLoop = c.loopDepth > 0 or c.repeatBindings
   if c.useLocalSlots:
+    let slot = c.reserveLocal(name, allowFexprName)
     discard c.emit(if inLoop: opRedefineLocal else: opDefineLocal,
-                   c.reserveLocal(name, allowFexprName), name = name)
+                   slot, name = c.localNames[slot])
   else:
     discard c.emit(if inLoop: opRedefineName else: opDefineName, name = name)
   # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
@@ -811,7 +916,7 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false,
 proc emitSetBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
-    discard c.emit(opSetLocal, slot, name = name)
+    discard c.emit(opSetLocal, slot, name = c.localNames[slot])
   else:
     let outer = c.parentSlot(name)
     if outer.slot >= 0:
@@ -820,9 +925,18 @@ proc emitSetBinding(c: var Compiler, name: string) =
       discard c.emit(opSetName, name = name)
 
 proc emitDeclareType(c: var Compiler, name: string, typeExpr: Value) =
-  discard c.emit(opDeclareType, c.chunk.addConst(typeExpr), name = name)
+  let slot = c.localSlot(name)
+  let storageName = if slot >= 0: c.localNames[slot] else: name
+  discard c.emit(opDeclareType, c.chunk.addConst(typeExpr), name = storageName)
+
+proc containsRuntimeSyntaxValue(value: Value, seen: var HashSet[uint64]): bool
 
 proc emitConst(c: var Compiler, value: Value) =
+  if not c.macroPhaseCompilation and c.macroSession != nil and
+      c.macroSession.runtimeState != nil:
+    var seen: HashSet[uint64]
+    if containsRuntimeSyntaxValue(value, seen):
+      c.chunk.macroRuntimeLease = c.macroSession.runtimeState
   discard c.emit(opPushConst, c.chunk.addConst(value))
 
 proc compileFn(c: var Compiler, node: Value, inferredName = "")
@@ -838,23 +952,14 @@ proc compileBreak(c: var Compiler, node: Value) =
     raise newException(GeneError, "break expects no arguments")
   if c.loopDepth <= 0:
     raise newException(GeneError, "break is only valid inside a loop")
-  if c.loopStack.len > 0 and c.loopStack[^1].isInline:
-    c.loopStack[^1].breakJumps.add c.emitJump(opJump)
-  else:
-    discard c.emit(opLoopBreak)
+  discard c.emit(opLoopBreak)
 
 proc compileContinue(c: var Compiler, node: Value) =
   if node.body.len != 0 or node.props.len != 0:
     raise newException(GeneError, "continue expects no arguments")
   if c.loopDepth <= 0:
     raise newException(GeneError, "continue is only valid inside a loop")
-  if c.loopStack.len > 0 and c.loopStack[^1].isInline:
-    if c.loopStack[^1].continueTarget >= 0:
-      discard c.emit(opJump, c.loopStack[^1].continueTarget)
-    else:
-      c.loopStack[^1].continueJumps.add c.emitJump(opJump)
-  else:
-    discard c.emit(opLoopContinue)
+  discard c.emit(opLoopContinue)
 
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
@@ -877,6 +982,8 @@ proc validModuleRefName(name: string): bool =
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
                  tail = false)
+proc visibleMacroBindings(c: Compiler): MacroBindings
+proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first = 0)
 proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value])
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
 proc builtinNamespaceMacros(segments: openArray[string]):
@@ -897,6 +1004,9 @@ proc childCompiler(c: Compiler): Compiler =
            ffiLibraryNames: c.ffiLibraryNames,
            constValues: c.constValues,
            macros: c.macros, hasMacros: c.hasMacros,
+           macroContext: c.macroContext, macroSession: c.macroSession,
+           macroPhaseCompilation: c.macroPhaseCompilation,
+           dynamicNameLookup: c.dynamicNameLookup,
            macroExpansionDepth: c.macroExpansionDepth,
            allowAmbientImports: c.allowAmbientImports,
            importedMacroSets: c.importedMacroSets,
@@ -932,6 +1042,21 @@ proc nextGensym(c: var Compiler): int =
     c.gensym = new(int)
   inc c.gensym[]
   c.gensym[]
+
+proc prepareMacroContext(c: var Compiler, forms: openArray[Value]) =
+  if c.macroContext == nil:
+    c.macroContext = MacroDefinitionContext(sourceName: c.sourceName,
+      forms: @forms,
+      locs: if c.sourceLocs == nil: initTable[uint64, SourceLoc]() else: c.sourceLocs[],
+      importedMacros: c.importedMacroSets,
+      importedSyntaxFns: c.importedSyntaxFnSets,
+      importedInterfaces: c.importedInterfaces)
+  if c.macroSession == nil:
+    c.macroPhaseCompilation = activeMacroSession != nil
+    c.macroSession = if activeMacroSession != nil: activeMacroSession
+                     else: MacroExecutionSession(hostContext: activeMacroHostContext)
+  if c.macroSession.rootContext == nil:
+    c.macroSession.rootContext = c.macroContext
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   "__gene_" & prefix & "_" & $c.nextGensym()
@@ -1279,6 +1404,8 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
        opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
        opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return true
+    of opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
+      return true
     else:
       discard
   false
@@ -1332,6 +1459,8 @@ proc chunkCanPoolCallScope(chunk: Chunk, closures = false): bool =
        opMatchBindReplace,
        opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return false
+    of opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
+      return false
     else:
       discard
   true
@@ -1339,7 +1468,10 @@ proc chunkCanPoolCallScope(chunk: Chunk, closures = false): bool =
 proc chunkNeedsCallScopeSlotNames(chunk: Chunk): bool =
   for inst in chunk.instructions:
     case inst.op
-    of opDeclareType:
+    of opDeclareType, opSyntaxCall, opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
+      # A fexpr receives a borrowed CallerEnv, whose eval/snapshot operations
+      # expose this frame's locals by name even when the caller only uses
+      # indexed loads itself. Pooling may omit the name map otherwise.
       return true
     else:
       discard
@@ -1350,6 +1482,7 @@ proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
       chunk.matches.len > 0 or chunk.tries.len > 0:
     return true
   for inst in chunk.instructions:
+    if inst.op in {opInvokeRuntimeMacro, opRuntimePipelineStage}: return true
     if inst.op == opSetLocal and inst.intArg == slot:
       return true
   false
@@ -1638,6 +1771,38 @@ proc isParamTerminator(s: string): bool =
 proc isRestParam(s: string): bool =
   s.len > 3 and s.endsWith("...")
 
+proc signatureBindingPatterns(paramList: Value): seq[Value] =
+  ## Only classify binder positions. The ordinary fn/fexpr parsers own validity,
+  ## types and defaults; names inside those expressions are not parameters.
+  if paramList.kind != vkList: return
+  let items = paramList.listItems
+  var i = 0
+  while i < items.len:
+    let item = items[i]
+    inc i
+    let spelling = item.symbolText
+    if spelling == ",": continue
+    if spelling in [":", "="]:
+      inc i
+      continue
+    var pattern = item
+    if spelling in ["^", "^^"]:
+      if i >= items.len: break
+      pattern = items[i]
+      inc i
+      if i < items.len and items[i].symbolText notin ["^", "^^", ",", ":", "="]:
+        pattern = items[i]
+        inc i
+    if pattern.kind == vkSymbol and pattern.symVal.isRestParam:
+      pattern = newSym(pattern.symVal[0 .. ^4])
+    result.add pattern
+
+proc signatureCompiler(c: Compiler, paramList: Value): Compiler =
+  result = c.childCompiler()
+  for pattern in signatureBindingPatterns(paramList):
+    for name in patternBindingNames(pattern):
+      discard result.reserveLocal(name)
+
 proc typeExprAdmitsNil*(expr: Value): bool =
   ## True when a type expression *explicitly* admits nil — `T?`, `(? ...)`,
   ## `Nil`, or a union with a nil-admitting alternative. Such a type marks an
@@ -1739,6 +1904,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
   ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
   if paramList.kind != vkList: return
+  let defaultContext = c.signatureCompiler(paramList)
   let items = paramList.listItems
   var i = 0
   var sawRest = false
@@ -1771,7 +1937,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
           if local.len == 0:
             raise newException(GeneError, "named parameter local requires a name")
           inc i
-      var adornment = c.parseParamAdornment(items, i)
+      var adornment = defaultContext.parseParamAdornment(items, i)
       if not adornment.defaultValue.optional and
           c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
         # ^name : T? — optional named parameter; omitted binds nil (the
@@ -1796,7 +1962,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         # A rest parameter may carry a type (`xs... : T`): every gathered
         # argument is boundary-checked against T. It still cannot have a
         # default — a rest binder is always the (possibly empty) tail.
-        let restAdornment = c.parseParamAdornment(items, i)
+        let restAdornment = defaultContext.parseParamAdornment(items, i)
         if restAdornment.defaultValue.optional:
           raise newException(GeneError, "rest parameter cannot have a default")
         result.restType = restAdornment.typeExpr
@@ -1808,7 +1974,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
-        var adornment = c.parseParamAdornment(items, i)
+        var adornment = defaultContext.parseParamAdornment(items, i)
         if c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
           adornment.defaultValue.optional = true
         if adornment.defaultValue.optional:
@@ -1967,207 +2133,100 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
                                      defaultValue: defaultValue)
   result
 
-proc macroTemplateValue(expr: Value, env: Table[string, Value],
-                        c: var Compiler): Value
-
-proc appendMacroSplice(target: var seq[Value], value: Value) =
+proc containsRuntimeSyntaxValue(value: Value, seen: var HashSet[uint64]): bool =
+  if value.kind > vkPipeline: return true
+  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap, vkPipeline}: return false
+  if seen.containsOrIncl(value.bits): return false
   case value.kind
-  of vkList:
-    for item in value.listItems:
-      target.add item
   of vkNode:
+    if containsRuntimeSyntaxValue(value.head, seen): return true
     for item in value.body:
-      target.add item
-  else:
-    raise newException(GeneError, "macro splice expects a list or node")
-
-proc macroSpliceExpr(value: Value, env: Table[string, Value],
-                     c: var Compiler,
-                     depth: int): tuple[splice: bool, value: Value] =
-  if depth != 1 or value.kind != vkNode or not value.head.isSymbol("unquote"):
-    return
-  if value.body.len != 1:
-    raise newException(GeneError, "unquote requires one expression")
-  let inner = value.body[0]
-  if inner.kind == vkNode and inner.head.isSymbol("..."):
-    if inner.body.len != 1:
-      raise newException(GeneError, "splice requires one expression")
-    return (true, macroTemplateValue(inner.body[0], env, c))
-
-proc macroFresh(c: var Compiler, name: string): string =
-  "__gene_macro_" & $c.nextGensym() & "_" & name
-
-proc hygienicSymbol(value: Value, hygiene: Table[string, string]): Value =
-  if value.kind == vkSymbol and hygiene.hasKey(value.symVal):
-    newSym(hygiene[value.symVal])
-  else:
-    value
-
-proc introducedBinderName(node: Value): string =
-  if node.kind != vkNode or node.head.kind != vkSymbol or node.body.len == 0:
-    return ""
-  case node.head.symVal
-  of "var", "let", "const", "type", "protocol", "ns", "macro":
-    if node.body[0].kind == vkSymbol:
-      return node.body[0].symVal
-  of "fn":
-    if node.body.len >= 2 and node.body[1].kind == vkList:
-      if node.body[0].kind == vkSymbol:
-        return node.body[0].symVal
-      if node.body[0].kind == vkNode and node.body[0].head.kind == vkSymbol:
-        return node.body[0].head.symVal
-  else:
-    discard
-  ""
-
-proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
-                      c: var Compiler,
-                      hygiene: var Table[string, string]): Value
-
-proc expandMacroQuasiMap(source: PropTable, env: Table[string, Value],
-                         depth: int, c: var Compiler,
-                         hygiene: var Table[string, string]): PropTable =
-  result = initPropTable()
-  for key, item in source:
-    result[key] = expandMacroQuasi(item, env, depth, c, hygiene)
-
-proc expandMacroDoNode(node: Value, env: Table[string, Value], depth: int,
-                       c: var Compiler,
-                       hygiene: var Table[string, string]): Value =
-  var localHygiene = hygiene
-  var localIntroduced = initTable[string, string]()
-  for item in node.body:
-    let name = introducedBinderName(item)
-    if name.len > 0 and not localIntroduced.hasKey(name):
-      localIntroduced[name] = c.macroFresh(name)
-      localHygiene[name] = localIntroduced[name]
-  var meta = expandMacroQuasiMap(node.meta, env, depth, c, localHygiene)
-  var props = expandMacroQuasiMap(node.props, env, depth, c, localHygiene)
-  var body: seq[Value]
-  for item in node.body:
-    body.add expandMacroQuasi(item, env, depth, c, localHygiene)
-  newNode(hygienicSymbol(node.head, localHygiene), props = props, body = body,
-          meta = meta, immutable = node.nodeImmutable)
-
-proc expandMacroQuasiNodeParts(node: Value, env: Table[string, Value],
-                               depth: int, c: var Compiler,
-                               hygiene: var Table[string, string]): Value =
-  var meta = initPropTable()
-  for key, item in node.meta:
-    meta[key] = expandMacroQuasi(item, env, depth, c, hygiene)
-  var props = initPropTable()
-  for key, item in node.props:
-    props[key] = expandMacroQuasi(item, env, depth, c, hygiene)
-  let head =
-    if node.head.kind == vkSymbol:
-      hygienicSymbol(node.head, hygiene)
-    else:
-      expandMacroQuasi(node.head, env, depth, c, hygiene)
-  var body: seq[Value]
-  for item in node.body:
-    let splice = macroSpliceExpr(item, env, c, depth)
-    if splice.splice:
-      body.appendMacroSplice(splice.value)
-    else:
-      body.add expandMacroQuasi(item, env, depth, c, hygiene)
-  newNode(head, props = props, body = body, meta = meta,
-          immutable = node.nodeImmutable)
-
-proc expandMacroQuasiNode(node: Value, env: Table[string, Value],
-                          depth: int, c: var Compiler,
-                          hygiene: var Table[string, string]): Value =
-  if node.head.isSymbol("unquote"):
-    if node.body.len != 1:
-      raise newException(GeneError, "unquote requires one expression")
-    if depth == 1:
-      return macroTemplateValue(node.body[0], env, c)
-    expandMacroQuasiNodeParts(node, env, depth - 1, c, hygiene)
-  elif node.head.isSymbol("quasiquote"):
-    if node.body.len != 1:
-      raise newException(GeneError, "quasiquote expects one template")
-    expandMacroQuasiNodeParts(node, env, depth + 1, c, hygiene)
-  elif depth == 1 and node.head.isSymbol("do"):
-    expandMacroDoNode(node, env, depth, c, hygiene)
-  else:
-    let name = introducedBinderName(node)
-    if depth == 1 and name.len > 0 and not hygiene.hasKey(name):
-      var localHygiene = hygiene
-      localHygiene[name] = c.macroFresh(name)
-      expandMacroQuasiNodeParts(node, env, depth, c, localHygiene)
-    else:
-      expandMacroQuasiNodeParts(node, env, depth, c, hygiene)
-
-proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
-                      c: var Compiler,
-                      hygiene: var Table[string, string]): Value =
-  consumeCompileStep(c.budget)
-  case value.kind
-  of vkPipeline:
-    var stages: seq[PipelineStage]
-    for stage in value.pipelineStages:
-      let head = expandMacroQuasi(stage.head, env, depth, c, hygiene)
-      let props = expandMacroQuasiMap(stage.props, env, depth, c, hygiene)
-      var body: seq[Value]
-      for item in stage.body:
-        body.add expandMacroQuasi(item, env, depth, c, hygiene)
-      let meta = expandMacroQuasiMap(stage.meta, env, depth, c, hygiene)
-      let detected = detectPipelineSlot(head, props, body)
-      if detected.count > 1:
-        raise newException(GeneError,
-          "macro expansion produced more than one direct '_' pipeline slot")
-      stages.add PipelineStage(
-        kind: stage.kind,
-        head: head, props: props, body: body, meta: meta,
-        sourceLoc: stage.sourceLoc,
-        slot: detected.slot)
-    newPipeline(expandMacroQuasi(value.pipelineInitial, env, depth, c, hygiene),
-                stages, value.pipelineImmutable)
-  of vkNode:
-    expandMacroQuasiNode(value, env, depth, c, hygiene)
+      if containsRuntimeSyntaxValue(item, seen): return true
+    for _, item in value.props:
+      if containsRuntimeSyntaxValue(item, seen): return true
+    for _, item in value.meta:
+      if containsRuntimeSyntaxValue(item, seen): return true
   of vkList:
-    var items: seq[Value]
     for item in value.listItems:
-      let splice = macroSpliceExpr(item, env, c, depth)
-      if splice.splice:
-        items.appendMacroSplice(splice.value)
-      else:
-        items.add expandMacroQuasi(item, env, depth, c, hygiene)
-    newList(items, value.listImmutable)
+      if containsRuntimeSyntaxValue(item, seen): return true
   of vkMap:
-    var entries = initPropTable()
-    for key, item in value.mapEntries:
-      entries[key] = expandMacroQuasi(item, env, depth, c, hygiene)
-    newMap(entries, value.mapImmutable)
+    for _, item in value.mapEntries:
+      if containsRuntimeSyntaxValue(item, seen): return true
   of vkSet:
-    var items: seq[Value]
     for item in value.setItems:
-      items.add expandMacroQuasi(item, env, depth, c, hygiene)
-    newSet(items)
+      if containsRuntimeSyntaxValue(item, seen): return true
   of vkHashMap:
-    var entries: seq[HashMapEntry]
-    for entry in value.hashMapEntries:
-      entries.add HashMapEntry(
-        key: expandMacroQuasi(entry.key, env, depth, c, hygiene),
-        val: expandMacroQuasi(entry.val, env, depth, c, hygiene))
-    newHashMap(entries)
-  of vkSymbol:
-    hygienicSymbol(value, hygiene)
-  else:
-    value
+    for item in value.hashMapEntries:
+      if containsRuntimeSyntaxValue(item.key, seen) or containsRuntimeSyntaxValue(item.val, seen): return true
+  of vkPipeline:
+    if containsRuntimeSyntaxValue(value.pipelineInitial, seen): return true
+    for stage in value.pipelineStages:
+      if containsRuntimeSyntaxValue(stage.head, seen): return true
+      for item in stage.body:
+        if containsRuntimeSyntaxValue(item, seen): return true
+      for _, item in stage.props:
+        if containsRuntimeSyntaxValue(item, seen): return true
+      for _, item in stage.meta:
+        if containsRuntimeSyntaxValue(item, seen): return true
+  else: discard
+  false
 
-proc macroTemplateValue(expr: Value, env: Table[string, Value],
-                        c: var Compiler): Value =
+proc evaluateMacroValue(c: var Compiler, def: MacroDef,
+                        env: Table[string, Value], callName = ""): Value =
+  if macroEvaluator == nil:
+    raise newException(GeneError, "macro execution requires a Gene VM evaluator")
+  if c.macroSession == nil:
+    c.prepareMacroContext(@[])
+  if c.macroSession.expansionDepth >= MaxMacroExpansionDepth:
+    raise newException(GeneError, "macro expansion depth exceeded")
+  let previousSession = activeMacroSession
+  activeMacroSession = c.macroSession
+  inc c.macroSession.expansionDepth
+  try:
+    result = macroEvaluator(def, env, c.macroSession, c.budget)
+    if not c.macroPhaseCompilation:
+      var seen: HashSet[uint64]
+      if containsRuntimeSyntaxValue(result, seen):
+        c.chunk.macroRuntimeLease = c.macroSession.runtimeState
+  except GeneError as error:
+    let name = if def.name.len > 0: def.name
+               elif callName.len > 0: callName else: "<anonymous>"
+    var context = "macro '" & name & "'"
+    if c.currentLoc.hasSourceLoc:
+      context.add " expanded at " & c.currentLoc.sourceName & ":" & $c.currentLoc.line
+    if def.sourceLoc.hasSourceLoc:
+      context.add " (defined at " & def.sourceLoc.sourceName & ":" & $def.sourceLoc.line & ")"
+    # A phase-local error value belongs to the phase Application's Error
+    # protocol. Carry the diagnostic, not a foreign runtime value, back into
+    # the host compiler (including sandbox/eval compilation).
+    let detail =
+      if c.budget != nil and error.msg in ["eval max steps exceeded",
+          "eval timeout exceeded", "eval memory limit exceeded"]:
+        "compile" & error.msg[4 .. ^1]
+      else: error.msg
+    let failure = newException(GeneError, context & ": " & detail)
+    failure.loc = if error.loc.hasSourceLoc: error.loc else: c.currentLoc
+    failure.errorKind = error.errorKind
+    failure.errorDetail = error.errorDetail
+    raise failure
+  finally:
+    dec c.macroSession.expansionDepth
+    activeMacroSession = previousSession
+
+proc macroDefaultSyntax(c: var Compiler, definition: MacroDef, expr: Value,
+                        env: Table[string, Value]): Value =
+  # Macro arguments/defaults are syntax. Preserve the existing default syntax
+  # contract, including references to an earlier parameter and explicit quote
+  # or quasiquote construction, without the old template renaming pass.
   if expr.kind == vkSymbol and env.hasKey(expr.symVal):
     return env[expr.symVal]
-  if expr.kind == vkNode and expr.head.isSymbol("quote"):
-    if expr.body.len != 1:
-      raise newException(GeneError, "quote expects one expression")
-    return expr.body[0]
-  if expr.kind == vkNode and expr.head.isSymbol("quasiquote"):
-    if expr.body.len != 1:
-      raise newException(GeneError, "quasiquote expects one template")
-    var hygiene = initTable[string, string]()
-    return expandMacroQuasi(expr.body[0], env, 1, c, hygiene)
+  if expr.kind == vkNode and
+      (expr.head.isSymbol("quote") or expr.head.isSymbol("quasiquote")):
+    var expression: MacroDef
+    new(expression)
+    expression[] = definition[]
+    expression.body = @[expr]
+    return c.evaluateMacroValue(expression, env)
   expr
 
 proc macroMetaAsMap(target: Value): Value =
@@ -2479,17 +2538,17 @@ proc bindMacroImplicitVoid(pattern: Value, env: var Table[string, Value]) =
   for name in patternBindingNames(pattern):
     env[name] = VOID
 
-proc bindMacroDefault(c: var Compiler, pattern: Value,
+proc bindMacroDefault(c: var Compiler, definition: MacroDef, pattern: Value,
                       defaultValue: MacroDefault,
                       env: var Table[string, Value],
                       what: string) =
   if defaultValue.hasExpr:
-    bindMacroPattern(pattern, macroTemplateValue(defaultValue.defaultExpr, env, c),
+    bindMacroPattern(pattern, c.macroDefaultSyntax(definition, defaultValue.defaultExpr, env),
                      env, what)
   else:
     bindMacroImplicitVoid(pattern, env)
 
-proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
+proc matchMacroArguments(c: var Compiler, def: MacroDef, node: Value): Table[string, Value] =
   let args = node.body
   let requiredParams = requiredMacroParamCount(def.params)
   if args.len < requiredParams:
@@ -2503,12 +2562,12 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
     if i < args.len:
       bindMacroPattern(param.pattern, args[i], env, "argument")
     elif param.defaultValue.optional:
-      c.bindMacroDefault(param.pattern, param.defaultValue, env, "argument")
+      c.bindMacroDefault(def, param.pattern, param.defaultValue, env, "argument")
   for p in def.named:
     if node.props.hasKey(p.arg):
       bindMacroPattern(p.pattern, node.props[p.arg], env, "named argument")
     elif p.defaultValue.optional:
-      c.bindMacroDefault(p.pattern, p.defaultValue, env, "named argument")
+      c.bindMacroDefault(def, p.pattern, p.defaultValue, env, "named argument")
     else:
       raise newException(GeneError,
         "macro missing named argument: " & p.arg)
@@ -2526,18 +2585,70 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
     for i in def.params.len ..< args.len:
       rest.add args[i]
     env[def.rest] = newList(rest)
-  if def.body.len != 1:
-    raise newException(GeneError,
-      "template macros require exactly one body expression")
-  macroTemplateValue(def.body[0], env, c)
+  env
+
+proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
+  c.evaluateMacroValue(def, c.matchMacroArguments(def, node), node.head.print())
+
+proc runtimeExpansionContext(c: Compiler): RuntimeExpansionContext =
+  result = RuntimeExpansionContext(macros: c.visibleMacroBindings(),
+    sourceContext: c.macroContext, sourceLoc: c.currentLoc,
+    namespacePath: c.namespacePath, inFunction: c.inFunction,
+    inGenerator: c.inGenerator, inStatementFn: c.inStatementFn,
+    selfAvailable: c.selfAvailable, loopDepth: c.loopDepth,
+    allowAmbientImports: c.allowAmbientImports)
+  for name in c.letNames: result.letNames.add name
+  result.letNames.sort()
+
+proc markMacroResult(value: Value): Value =
+  var props = if value.kind == vkNode and value.head.isSymbol("do"):
+                value.props else: initPropTable()
+  props["macro_result"] = TRUE
+  if value.kind == vkNode and value.head.isSymbol("do"):
+    newNode(value.head, props, value.body, value.meta,
+            immutable = value.nodeImmutable)
+  else:
+    newNode(newSym("do"), props, @[value])
+
+proc validateConditionalClauses(node: Value) =
+  if node.body.len < 2 or node.body[1].kind != vkNode or
+      not node.body[1].head.isSymbol("then"):
+    return
+  var sawElse = false
+  for i in 2 ..< node.body.len:
+    let clause = node.body[i]
+    if sawElse or clause.kind != vkNode or clause.head.kind != vkSymbol or
+        clause.head.symVal notin ["elif", "else"]:
+      raise newException(GeneError,
+        "if requires elif/else clauses; macro calls are only expanded in expression positions")
+    sawElse = clause.head.isSymbol("else")
 
 proc compileMacroCall(c: var Compiler, node: Value, def: MacroDef,
                       tail = false) =
+  if def.runtime:
+    let index = c.chunk.runtimeMacroCalls.len
+    c.chunk.runtimeMacroCalls.add RuntimeMacroCall(definition: def,
+      syntax: node, context: c.runtimeExpansionContext())
+    c.chunk.callSites[c.emit(opInvokeRuntimeMacro, index)] = node
+    discard c.emit(opExecuteRuntimeMacro, index, tail = tail)
+    # Runtime-generated code may assign any visible mutable caller binding.
+    c.ordinaryFnNames.clear()
+    c.generatorFnNames.clear()
+    return
   if c.macroExpansionDepth >= MaxMacroExpansionDepth:
     raise newException(GeneError, "macro expansion depth exceeded")
   inc c.macroExpansionDepth
   try:
-    compileExpr(c, c.expandMacro(def, node), tail = tail)
+    let expanded = c.expandMacro(def, node)
+    compileExpr(c, markMacroResult(expanded), tail = tail)
+    # Only cache expansions whose bindings remain those of this compiler.
+    # Shared syntax can be expanded more than once with different results;
+    # such occurrences conservatively stop contributing an AST proof.
+    if c.compiledMacroResults.hasKey(node.bits):
+      c.compiledMacroResults.del(node.bits)
+      c.repeatedMacroSites.incl node.bits
+    elif node.bits notin c.repeatedMacroSites and not ownsResultBindings(expanded):
+      c.compiledMacroResults[node.bits] = expanded
   finally:
     dec c.macroExpansionDepth
 
@@ -2548,15 +2659,25 @@ proc compileMacro(c: var Compiler, node: Value) =
   if body[0].kind != vkSymbol or body[0].symVal.len == 0:
     raise newException(GeneError, "macro name must be a symbol")
   validateBindingName(body[0].symVal)
+  if body[0].symVal in CoreSpecialFormNames:
+    raise newException(GeneError, "macro name is reserved syntax: " & body[0].symVal)
   if body[1].kind != vkList:
     raise newException(GeneError, "macro requires a parameter vector")
   let sig = c.macroParamDef(body[1])
-  if c.hasMacros and c.macros.hasKey(body[0].symVal):
+  var parameterNames = initHashSet[string]()
+  for parameter in sig.params:
+    for name in patternBindingNames(parameter.pattern):
+      if parameterNames.containsOrIncl(name):
+        raise newException(GeneError, "duplicate macro parameter: " & name)
+  for parameter in sig.named:
+    for name in patternBindingNames(parameter.pattern):
+      if parameterNames.containsOrIncl(name):
+        raise newException(GeneError, "duplicate macro parameter: " & name)
+  if sig.rest.len > 0 and parameterNames.containsOrIncl(sig.rest):
+    raise newException(GeneError, "duplicate macro parameter: " & sig.rest)
+  if body[0].symVal in c.ownMacroNames:
     raise newException(GeneError, "duplicate macro: " & body[0].symVal)
-  # One name, one meaning (design §11): a macro may not reuse the name of a
-  # visible binding — call sites would silently switch from the function to
-  # the macro while value positions kept the old binding.
-  if c.localSlot(body[0].symVal) >= 0 or c.parentSlot(body[0].symVal).slot >= 0:
+  if body[0].symVal in c.ownValueNames or c.localSlot(body[0].symVal) >= 0:
     raise newException(GeneError,
       "macro '" & body[0].symVal & "' conflicts with a binding of the same name")
   if not c.hasMacros:
@@ -2567,13 +2688,44 @@ proc compileMacro(c: var Compiler, node: Value) =
   c.macros[body[0].symVal] = MacroDef(params: sig.params,
                                       named: sig.named,
                                       rest: sig.rest,
-                                      body: macroBody)
+                                      body: macroBody,
+                                      name: body[0].symVal,
+                                      sourceLoc: c.currentLoc,
+                                      context: c.macroContext,
+                                      namespacePath: c.namespacePath,
+                                      lexicalMacros: c.macros)
+  let definition = c.macros[body[0].symVal]
+  definition.runtime = c.inFunction or node.bits notin c.staticTopLevelImpls
+  c.ownMacroNames.incl body[0].symVal
+  if not node.declarationIsPrivate:
+    c.publicMacroNames.incl body[0].symVal
   c.hasMacros = true
   if c.moduleMacroExports != nil and node.bits in c.staticTopLevelImpls and
       not node.declarationIsPrivate:
     let path = (c.namespacePath & @[body[0].symVal]).join("/")
     c.moduleMacroExports[][path] = c.macros[body[0].symVal]
-  c.emitConst NIL
+  if definition.runtime:
+    for name in parameterNames: definition.runtimeParamNames.add name
+    definition.runtimeParamNames.sort()
+    var parameters: seq[Value]
+    for name in definition.runtimeParamNames: parameters.add newSym(name)
+    var slot = -1
+    if c.useLocalSlots:
+      slot = c.localNames.len
+      c.localNames.add "\x00gene_macro:" & $c.nextGensym()
+      c.chunk.privateLocalSlots.add slot
+    compileExpr(c, newNode(newSym("fn"), body = @[newList(parameters)] & macroBody))
+    let proto = c.chunk.functions[^1]
+    proto.name = "macro " & definition.name
+    proto.isMacroBody = true
+    proto.needsCallScope = true
+    proto.poolCallScope = false
+    proto.callScopeNeedsSlotNames = true
+    let index = c.chunk.runtimeMacroDefinitions.len
+    c.chunk.runtimeMacroDefinitions.add RuntimeMacroDefinition(definition: definition, slot: slot)
+    discard c.emit(opDefineRuntimeMacro, index)
+  else:
+    c.emitConst NIL
 
 proc expansionLoc(unit: SourceUnit, value: Value,
                   fallback: SourceLoc): SourceLoc =
@@ -2587,7 +2739,7 @@ proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
                             locs: var Table[uint64, SourceLoc],
                             provenance: var Table[uint64,
                                                   ExpansionProvenance]) =
-  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap}:
+  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap, vkPipeline}:
     return
   if not locs.hasKey(value.bits):
     locs[value.bits] = loc
@@ -2630,14 +2782,103 @@ proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
     discard
 
 proc rejectPipelineSyntaxStage(c: Compiler, stage: PipelineStage)
+proc pathSymbolSegments(value: Value): seq[string]
+
+proc frontendImportMacros(c: var Compiler, node: Value) =
+  let spec = parseImportSpec(node)
+  let exported =
+    if spec.fromModule: c.importedMacroSets.getOrDefault(spec.importKey)
+    else: builtinNamespaceMacros(spec.nsSegments)
+  if spec.alias.len > 0:
+    discard c.reserveLocal(spec.alias)
+  for selection in spec.selections:
+    if exported.hasKey(selection.name):
+      c.importMacro(selection.local, exported[selection.name])
+      if spec.reexport: c.publicMacroNames.incl selection.local
+    else:
+      discard c.reserveLocal(selection.local, allowFexprName = true)
+  if spec.wildcard or spec.alias.len > 0:
+    let prefix = if spec.wildcardSegments.len > 0:
+                   spec.wildcardSegments.join("/") & "/" else: ""
+    for path, definition in exported:
+      if not path.startsWith(prefix): continue
+      let relative = path[prefix.len .. ^1]
+      let local = if spec.alias.len > 0: spec.alias & "/" & relative else: relative
+      c.importMacro(local, definition)
+      if spec.reexport: c.publicMacroNames.incl local
+
+proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
+                    fallback: SourceLoc, locs: var Table[uint64, SourceLoc],
+                    provenance: var Table[uint64, ExpansionProvenance],
+                    allowSlot = false): Value
+
+proc expandQuotedMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
+                          depth: int, fallback: SourceLoc,
+                          locs: var Table[uint64, SourceLoc],
+                          provenance: var Table[uint64, ExpansionProvenance]): Value =
+  let loc = unit.expansionLoc(value, fallback)
+  defer:
+    if result.kind in {vkNode, vkList, vkMap, vkPipeline}:
+      locs[result.bits] = loc
+      if provenance.hasKey(value.bits): provenance[result.bits] = provenance[value.bits]
+  case value.kind
+  of vkPipeline:
+    var stages: seq[PipelineStage]
+    for stage in value.pipelineStages:
+      var expanded = stage
+      expanded.head = c.expandQuotedMacroTree(unit, stage.head, depth, loc, locs, provenance)
+      expanded.body = @[]
+      for item in stage.body:
+        expanded.body.add c.expandQuotedMacroTree(unit, item, depth, loc, locs, provenance)
+      for key, item in stage.props:
+        expanded.props[key] = c.expandQuotedMacroTree(unit, item, depth, loc, locs, provenance)
+      for key, item in stage.meta:
+        expanded.meta[key] = c.expandQuotedMacroTree(unit, item, depth, loc, locs, provenance)
+      stages.add expanded
+    newPipeline(c.expandQuotedMacroTree(unit, value.pipelineInitial, depth, loc, locs, provenance),
+      stages, value.pipelineImmutable)
+  of vkNode:
+    if value.head.isSymbol("unquote") and depth == 1:
+      var body: seq[Value]
+      for item in value.body: body.add c.expandMacroTree(unit, item, loc, locs, provenance)
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    let next = if value.head.isSymbol("quasiquote"): depth + 1
+               elif value.head.isSymbol("unquote"): depth - 1 else: depth
+    var props, meta = initPropTable()
+    var body: seq[Value]
+    for key, item in value.props:
+      props[key] = c.expandQuotedMacroTree(unit, item, next, loc, locs, provenance)
+    for key, item in value.meta:
+      meta[key] = c.expandQuotedMacroTree(unit, item, next, loc, locs, provenance)
+    for item in value.body:
+      body.add c.expandQuotedMacroTree(unit, item, next, loc, locs, provenance)
+    newNode(c.expandQuotedMacroTree(unit, value.head, next, loc, locs, provenance),
+      props, body, meta, value.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for item in value.listItems:
+      items.add c.expandQuotedMacroTree(unit, item, depth, loc, locs, provenance)
+    newList(items, value.listImmutable)
+  of vkMap:
+    var entries = initPropTable()
+    for key, item in value.mapEntries:
+      entries[key] = c.expandQuotedMacroTree(unit, item, depth, loc, locs, provenance)
+    newMap(entries, value.mapImmutable)
+  else: value
 
 proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
                      fallback: SourceLoc,
                      locs: var Table[uint64, SourceLoc],
                      provenance: var Table[uint64,
-                                           ExpansionProvenance]): Value =
+                                           ExpansionProvenance],
+                     allowSlot: bool): Value =
   consumeCompileStep(c.budget)
   let loc = unit.expansionLoc(value, fallback)
+  defer:
+    if result.kind in {vkNode, vkList, vkMap, vkSet, vkHashMap, vkPipeline}:
+      locs[result.bits] = loc
+      if provenance.hasKey(value.bits):
+        provenance[result.bits] = provenance[value.bits]
   case value.kind
   of vkPipeline:
     var stages: seq[PipelineStage]
@@ -2646,17 +2887,14 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       var props = initPropTable()
       for key, item in stage.props:
         props[key] = c.expandMacroTree(unit, item, stage.sourceLoc,
-                                       locs, provenance)
+                                       locs, provenance, allowSlot = true)
       var body: seq[Value]
       for item in stage.body:
         body.add c.expandMacroTree(unit, item, stage.sourceLoc,
-                                   locs, provenance)
-      var meta = initPropTable()
-      for key, item in stage.meta:
-        meta[key] = c.expandMacroTree(unit, item, stage.sourceLoc,
-                                      locs, provenance)
+                                   locs, provenance, allowSlot = true)
+      let meta = stage.meta
       let head = c.expandMacroTree(unit, stage.head, stage.sourceLoc,
-                                  locs, provenance)
+                                  locs, provenance, allowSlot = true)
       let detected = detectPipelineSlot(head, props, body)
       if detected.count > 1:
         raise newException(GeneError,
@@ -2670,25 +2908,257 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       c.expandMacroTree(unit, value.pipelineInitial, loc, locs, provenance),
       stages, value.pipelineImmutable)
   of vkNode:
-    if value.head.kind == vkSymbol and c.hasMacros and
-        c.macros.hasKey(value.head.symVal):
+    let macroName = if value.head.kind == vkSymbol: value.head.symVal
+                    else: value.head.pathSymbolSegments.join("/")
+    if c.hasMacros and c.macros.hasKey(macroName):
+      if c.macros[macroName].runtime: return value
       if c.macroExpansionDepth >= MaxMacroExpansionDepth:
         raise newException(GeneError, "macro expansion depth exceeded")
-      let macroName = value.head.symVal
       inc c.macroExpansionDepth
       try:
         let expanded = c.expandMacro(c.macros[macroName], value)
+        if allowSlot and expanded.isSymbol("_"): return expanded
+        let marked = markMacroResult(expanded)
         markExpandedContainers(expanded, loc, macroName, locs, provenance)
-        return c.expandMacroTree(unit, expanded, loc, locs, provenance)
+        markExpandedContainers(marked, loc, macroName, locs, provenance)
+        return c.expandMacroTree(unit, marked, loc, locs, provenance)
       finally:
         dec c.macroExpansionDepth
     # Quoted syntax is data; expanding inside it would change the macro
     # language rather than the program that consumes the artifact.
     if value.head.isSymbol("quote"):
       return value
-    var meta = initPropTable()
-    for key, item in value.meta:
-      meta[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+    if value.head.isSymbol("quasiquote"):
+      return c.expandQuotedMacroTree(unit, value, 0, loc, locs, provenance)
+    if value.head.isSymbol("macro"):
+      c.currentLoc = loc
+      c.compileMacro(value)
+      return if c.macros[value.body[0].symVal].runtime: value else: NIL
+    if value.head.isSymbol("import"):
+      c.frontendImportMacros(value)
+      return value
+    let declarationPath = value.head.pathSymbolSegments
+    if declarationPath.len == 2 and declarationPath[0] == "ffi" and
+        declarationPath[1] in ["library", "fn", "struct", "union", "callback", "signature"]:
+      if value.body.len > 0 and value.body[0].kind == vkSymbol:
+        discard c.reserveLocal(value.body[0].symVal)
+      return value
+    if value.head.isSymbol("mod") or value.head.isSymbol("import_impl") or
+        value.head.isSymbol("web_module"):
+      return value
+    if value.head.isSymbol("alias") and value.body.len > 0:
+      if value.body[0].kind == vkSymbol: discard c.reserveLocal(value.body[0].symVal)
+      return value # aliases retain an unevaluated type expression
+    if value.head.kind == vkSymbol and value.head.symVal in ["type", "enum", "protocol"]:
+      if value.body.len == 0 or value.body[0].kind != vkSymbol: return value
+      let kind = value.head.symVal
+      discard c.reserveLocal(value.body[0].symVal)
+      var body = value.body
+      var first = 1
+      if kind == "type" and body.len > 2 and body[1].isSymbol(":"):
+        body[2] = c.expandMacroTree(unit, body[2], loc, locs, provenance)
+        first = 3
+      elif kind == "enum" and body.len > 1 and body[1].kind == vkList:
+        first = 2
+      for i in first ..< body.len:
+        let member = body[i]
+        let allowed = member.kind == vkNode and member.head.kind == vkSymbol and
+          (member.head.symVal == "message" or
+           (kind in ["type", "enum"] and member.head.symVal == "impl") or
+           (kind == "type" and member.head.symVal == "ctor") or
+           (kind == "protocol" and member.head.symVal == "derive"))
+        if allowed:
+          body[i] = c.expandMacroTree(unit, member, loc, locs, provenance)
+        elif kind != "enum":
+          raise newException(GeneError, kind & " body requires member declarations; " &
+            "macro calls are only expanded in expression positions")
+        # Enum variants and their payload types are declaration data, even
+        # when a variant spelling also names an ordinary macro.
+      var props = value.props
+      let evaluatedList = if kind == "type": "impl" elif kind == "protocol": "inherit" else: ""
+      if evaluatedList.len > 0 and props.hasKey(evaluatedList):
+        props[evaluatedList] = c.expandMacroTree(unit, props[evaluatedList], loc, locs, provenance)
+      if kind == "type" and props.hasKey("derive") and props["derive"].kind == vkList:
+        var requests: seq[Value]
+        for request in props["derive"].listItems:
+          if request.kind == vkNode:
+            requests.add newNode(c.expandMacroTree(unit, request.head, loc, locs, provenance),
+              request.props, request.body, request.meta, request.nodeImmutable)
+          else:
+            requests.add c.expandMacroTree(unit, request, loc, locs, provenance)
+        props["derive"] = newList(requests, props["derive"].listImmutable)
+      return newNode(value.head, props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("impl") and value.body.len > 0:
+      var body = value.body
+      body[0] = c.expandMacroTree(unit, body[0], loc, locs, provenance)
+      let first = if body.len >= 3 and body[1].isSymbol("for"): 3 else: 1
+      if first == 3:
+        body[2] = c.expandMacroTree(unit, body[2], loc, locs, provenance)
+      for i in first ..< body.len:
+        if body[i].kind != vkNode or not body[i].head.isSymbol("message"):
+          raise newException(GeneError, "impl body requires message declarations; " &
+            "macro calls are only expanded in expression positions")
+        body[i] = c.expandMacroTree(unit, body[i], loc, locs, provenance)
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("ns") and value.body.len > 0 and value.body[0].kind == vkSymbol:
+      let name = value.body[0].symVal
+      var inner = c.childCompiler()
+      inner.namespacePath = c.namespacePath & @[name]
+      inner.markStaticImplForms(value.body, 1)
+      var body = @[value.body[0]]
+      for i in 1 ..< value.body.len:
+        body.add inner.expandMacroTree(unit, value.body[i], loc, locs, provenance)
+      discard c.reserveLocal(name)
+      for local in inner.ownMacroNames:
+        let qualified = name & "/" & local
+        c.macros[qualified] = inner.macros[local]
+        c.hasMacros = true
+        c.ownMacroNames.incl qualified
+        if local in inner.publicMacroNames and not value.declarationIsPrivate:
+          c.publicMacroNames.incl qualified
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("for") and value.body.len >= 3:
+      var body = value.body
+      body[2] = c.expandMacroTree(unit, body[2], loc, locs, provenance)
+      var inner = c.childCompiler()
+      for name in patternBindingNames(body[0]): discard inner.reserveLocal(name)
+      for i in 3 ..< body.len:
+        body[i] = inner.expandMacroTree(unit, body[i], loc, locs, provenance)
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("repeat") and value.body.len >= 3 and value.body[1].isSymbol("in"):
+      var body = value.body
+      body[2] = c.expandMacroTree(unit, body[2], loc, locs, provenance)
+      for name in patternBindingNames(body[0]): discard c.reserveLocal(name)
+      for i in 3 ..< body.len:
+        body[i] = c.expandMacroTree(unit, body[i], loc, locs, provenance)
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("scope") or value.head.isSymbol("spawn") or
+        value.head.isSymbol("supervisor"):
+      var inner = c.childCompiler()
+      var body: seq[Value]
+      for item in value.body:
+        body.add inner.expandMacroTree(unit, item, loc, locs, provenance)
+      var props = value.props
+      if value.head.isSymbol("supervisor"):
+        for key, item in value.props:
+          if key != "strategy":
+            props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+      return newNode(value.head, props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("try"):
+      var body: seq[Value]
+      var i = 0
+      # The try and ensure bodies share their enclosing lexical scope. Each
+      # catch owns its bindings. Error type syntax is not an invocation.
+      while i < value.body.len and not value.body[i].isSymbol("catch") and
+          not value.body[i].isSymbol("ensure"):
+        body.add c.expandMacroTree(unit, value.body[i], loc, locs, provenance)
+        inc i
+      while i < value.body.len and value.body[i].isSymbol("catch"):
+        body.add value.body[i]
+        inc i
+        if i >= value.body.len: break
+        body.add value.body[i]
+        inc i
+        var inner = c.childCompiler()
+        discard inner.reserveLocal(CatchErrorBindingName)
+        while i < value.body.len and not value.body[i].isSymbol("catch") and
+            not value.body[i].isSymbol("ensure"):
+          body.add inner.expandMacroTree(unit, value.body[i], loc, locs, provenance)
+          inc i
+      if i < value.body.len:
+        body.add value.body[i]
+        inc i
+      while i < value.body.len:
+        body.add c.expandMacroTree(unit, value.body[i], loc, locs, provenance)
+        inc i
+      return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+    if value.head.isSymbol("fn") or value.head.isSymbol("message") or
+        value.head.isSymbol("ctor") or value.head.isSymbol("derive"):
+      var parameterIndex = 0
+      if value.head.isSymbol("message") or
+          (value.body.len > 1 and value.body[0].kind in {vkSymbol, vkNode} and
+           value.body[1].kind == vkList):
+        parameterIndex = 1
+      if parameterIndex >= value.body.len or value.body[parameterIndex].kind != vkList:
+        return value # normal backend validation reports malformed signatures
+      if value.head.isSymbol("fn") and parameterIndex == 1:
+        let name = functionNameAndTypeParams(value.body[0]).name
+        if name.len > 0: discard c.reserveLocal(name, allowFexprName = true)
+      var inner = c.signatureCompiler(value.body[parameterIndex])
+      inner.inFunction = true
+      if value.head.isSymbol("message") or value.head.isSymbol("ctor"):
+        discard inner.reserveLocal("self")
+      if value.head.isSymbol("fn") and parameterIndex == 1:
+        for name in functionNameAndTypeParams(value.body[0]).typeParams:
+          discard inner.reserveLocal(name)
+      var body = value.body
+      var parameters = value.body[parameterIndex].listItems
+      for i in 1 ..< parameters.len:
+        if parameters[i - 1].isSymbol("="):
+          parameters[i] = inner.expandMacroTree(unit, parameters[i], loc, locs, provenance)
+      body[parameterIndex] = newList(parameters, value.body[parameterIndex].listImmutable)
+      var first = parameterIndex + 1
+      if first < body.len and body[first].isSymbol(":"): first += 2
+      for i in first ..< body.len:
+        body[i] = inner.expandMacroTree(unit, body[i], loc, locs, provenance)
+      result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+      locs[result.bits] = loc
+      return
+    if value.head.isSymbol("if"):
+      validateConditionalClauses(value)
+      if value.body.len > 1 and value.body[1].kind == vkNode and
+          value.body[1].head.isSymbol("then"):
+        var body = @[c.expandMacroTree(unit, value.body[0], loc, locs, provenance)]
+        for i in 1 ..< value.body.len:
+          let clause = value.body[i]
+          var forms: seq[Value]
+          for item in clause.body:
+            forms.add c.expandMacroTree(unit, item, loc, locs, provenance)
+          body.add newNode(clause.head, clause.props, forms, clause.meta, clause.nodeImmutable)
+        result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+        locs[result.bits] = loc
+        return
+    if value.head.isSymbol("match") and value.body.len > 0:
+      var body = @[c.expandMacroTree(unit, value.body[0], loc, locs, provenance)]
+      for i in 1 ..< value.body.len:
+        let clause = value.body[i]
+        if clause.kind != vkNode or clause.head.kind != vkSymbol or
+            clause.head.symVal notin ["when", "else"]:
+          raise newException(GeneError, "match requires when/else clauses; " &
+            "macro calls are only expanded in expression positions")
+        var inner = c.childCompiler()
+        var forms: seq[Value]
+        var first = 0
+        if clause.head.isSymbol("when") and clause.body.len > 0:
+          forms.add clause.body[0]
+          for name in patternBindingNames(clause.body[0]): discard inner.reserveLocal(name)
+          first = 1
+        for j in first ..< clause.body.len:
+          forms.add inner.expandMacroTree(unit, clause.body[j], loc, locs, provenance)
+        body.add newNode(clause.head, clause.props, forms, clause.meta, clause.nodeImmutable)
+      result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+      locs[result.bits] = loc
+      return
+    if value.head.isSymbol("do"):
+      let marked = value.props.getOrDefault("macro_result", FALSE) == TRUE
+      var inner = if marked: c.childCompiler() else: c
+      var body: seq[Value]
+      for item in value.body:
+        body.add inner.expandMacroTree(unit, item, loc, locs, provenance)
+      if not marked: c = inner
+      result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+      locs[result.bits] = loc
+      return
+    if value.head.kind == vkSymbol and value.head.symVal in ["let", "var", "const"] and value.body.len > 0:
+      var body = value.body
+      let valueIndex = if body.len > 1 and body[1].isSymbol(":"): 3 else: 1
+      if valueIndex < body.len:
+        body[valueIndex] = c.expandMacroTree(unit, body[valueIndex], loc, locs, provenance)
+      for name in patternBindingNames(body[0]): discard c.reserveLocal(name)
+      result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+      locs[result.bits] = loc
+      return
+    let meta = value.meta
     var props = initPropTable()
     for key, item in value.props:
       props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
@@ -2743,25 +3213,11 @@ proc expandSourceUnitMacros*(unit: SourceUnit,
                    formLocs: unit.formLocs, allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
                    importedMacroSets: importedMacros)
+  c.prepareMacroContext(unit.forms)
+  c.markStaticImplForms(unit.forms)
   for i, form in unit.forms:
     let loc = if i < unit.formLocs.len: unit.formLocs[i] else: SourceLoc()
     c.currentLoc = loc
-    if form.kind == vkNode and form.head.isSymbol("import"):
-      let spec = parseImportSpec(form)
-      var exported: Table[string, MacroDef]
-      if spec.fromModule and importedMacros.hasKey(spec.importKey):
-        exported = importedMacros[spec.importKey]
-      elif not spec.fromModule:
-        exported = builtinNamespaceMacros(spec.nsSegments)
-      for selection in spec.selections:
-        if exported.hasKey(selection.name):
-          c.importMacro(selection.local, exported[selection.name])
-          if spec.reexport:
-            result.macroExports[selection.local] = exported[selection.name]
-      # Runtime import filtering is backend-specific; retain the source form.
-      result.expanded.forms.add form
-      result.expanded.formLocs.add loc
-      continue
     if form.kind == vkNode and form.head.isSymbol("macro"):
       c.compileMacro(form)
       let name = form.body[0].symVal
@@ -2773,6 +3229,9 @@ proc expandSourceUnitMacros*(unit: SourceUnit,
                                      result.provenance)
     result.expanded.forms.add expanded
     result.expanded.formLocs.add loc
+  for name in c.publicMacroNames:
+    if c.macros.hasKey(name): result.macroExports[name] = c.macros[name]
+  result.macroRuntimeLease = c.chunk.macroRuntimeLease
 
 proc rejectReservedEffects(node: Value) =
   if node.props.hasKey("effects"):
@@ -3968,9 +4427,13 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
   let callScopeNeedsSlotReset =
     fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
-  let native = specs.detectNativeCompileOp(body, start, returnType,
+  var normalizedBody = @body
+  for i in start ..< normalizedBody.len:
+    normalizedBody[i] = fnCompiler.normalizedMacroTree(normalizedBody[i])
+  var native = specs.detectNativeCompileOp(normalizedBody, start, returnType,
                                            typeParams, checksErrors,
                                            fnCompiler.inGenerator)
+  if c.dynamicNameLookup: native = (ncoNone, 0)
   var aotParamReprs: seq[AotRepr]
   for i, paramType in specs.positionalTypes:
     if i == 0 and specs.positional[i] == "self" and
@@ -4006,9 +4469,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     ## more than one statement had to be wrapped in an explicit `(do ...)`,
     ## which nothing else in the language asks for.
     let rawLowerBody =
-      if body.len == start + 1: body[start]
+      if body.len == start + 1: normalizedBody[start]
       elif body.len > start + 1:
-        newNode(newSym("do"), body = body[start .. ^1])
+        newNode(newSym("do"), body = normalizedBody[start .. ^1])
       else: NIL
     let lowerBody = normalizeMessageCallTree(rawLowerBody)
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.inGenerator or
@@ -4052,8 +4515,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       not specs.hasOptionalPositional
     if scalarLowerable and start < body.len:
       let rawLowerBody =
-        if body.len == start + 1: body[start]
-        else: newNode(newSym("do"), body = body[start .. ^1])
+        if body.len == start + 1: normalizedBody[start]
+        else: newNode(newSym("do"), body = normalizedBody[start .. ^1])
       let lowerBody = normalizeMessageCallTree(rawLowerBody)
       var scalarLocals: seq[AotLocal]
       if c.isTypedNativeAotExpr(lowerBody, specs.positional, aotParamReprs,
@@ -4062,7 +4525,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                                            scalarLocals)
         aotLocals = scalarLocals
     if aotExpr.kind == vkNil:
-      aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
+      aotExpr = c.detectAotExpr(name, specs, normalizedBody, start, returnType,
                                 typeParams, checksErrors, fnCompiler.inGenerator)
   if aotExpr.kind != vkNil and not hasNativeRepr:
     # The original scalar AOT path is representation-homogeneous.
@@ -4160,6 +4623,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          errorTypeCount: errorTypeCount,
                          chunk: fnCompiler.chunk)
   result.chunk.owner = result
+  if c.dynamicNameLookup:
+    if requiresTypedNative:
+      raise newException(GeneError, "typed_native code cannot assume runtime macro caller bindings")
+    result.aotExpr = NIL
+    result.aotLocals = @[]
+    result.aotFrameKind = afkNone
   if poolableFrame and not poolCallScope and c.closurePoolCandidates != nil and
       fnCompiler.chunk.chunkCanPoolCallScope(closures = true):
     c.closurePoolCandidates[].add result
@@ -4354,6 +4823,7 @@ proc compileIfNot(c: var Compiler, node: Value, tail = false) =
   c.patchJump(endJump)
 
 proc compileIf(c: var Compiler, node: Value, tail = false) =
+  validateConditionalClauses(node)
   let body = node.body
   if body.len == 0:
     c.emitConst NIL
@@ -5649,7 +6119,8 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
         let candidates = c.wildcardCandidates[name]
         let importsFexpr = candidates.len == 1 and
           candidates[0].category == cbcSyntaxFn
-        discard c.reserveLocal(name, allowFexprName = importsFexpr)
+        discard c.reserveLocal(name, allowFexprName = importsFexpr,
+                               importing = c.aliasInterfaces.hasKey(name))
 
 proc importedCandidates(c: Compiler,
                         name: string): seq[StaticWildcardCandidate] =
@@ -5708,6 +6179,12 @@ proc importedHeadCandidates(c: Compiler,
 
 proc importedMacroForHead(c: Compiler, value: Value):
     tuple[found: bool, def: MacroDef] =
+  let localPath = value.pathSymbolSegments.join("/")
+  if localPath.len > 0 and c.macros.hasKey(localPath):
+    return (true, c.macros[localPath])
+  if value.kind == vkSymbol and
+      (c.localSlot(value.symVal) >= 0 or c.parentSlot(value.symVal).slot >= 0):
+    return
   let candidates = c.importedHeadCandidates(value)
   if candidates.len > 1:
     let name =
@@ -5726,6 +6203,37 @@ proc importedMacroForHead(c: Compiler, value: Value):
     raise newException(GeneError,
       "module compile interface marked a missing macro: " & path)
   (true, definitions[path])
+
+proc visibleMacroBindings(c: Compiler): MacroBindings =
+  result = MacroBindings(definitions: c.macros)
+  for name in c.wildcardCandidates.keys:
+    if c.localSlot(name) >= 0 or c.parentSlot(name).slot >= 0: continue
+    let candidates = c.importedCandidates(name)
+    if candidates.len != 1 or candidates[0].category != cbcMacro: continue
+    let found = c.importedMacroForHead(newSym(name))
+    if found.found: result.definitions[name] = found.def
+  for name, alias in c.aliasInterfaces:
+    if not c.importedMacroSets.hasKey(alias.importKey): continue
+    let prefix = if alias.exportPrefix.len > 0: alias.exportPrefix.join("/") & "/" else: ""
+    for path, definition in c.importedMacroSets[alias.importKey]:
+      if path.startsWith(prefix):
+        result.definitions[name & "/" & path[prefix.len .. ^1]] = definition
+  for name in c.localSlots.keys:
+    result.hiddenNames.add name
+  for frame in c.parentSlots:
+    for name in frame.keys:
+      if name notin result.hiddenNames: result.hiddenNames.add name
+  for name in c.publicMacroNames:
+    if result.definitions.hasKey(name): result.exportedNames.add name
+  for name in c.ownMacroNames:
+    if result.definitions.hasKey(name): result.ownedNames.add name
+  result.hiddenNames.sort()
+  result.exportedNames.sort()
+  result.ownedNames.sort()
+
+proc addMacroContext(c: var Compiler): int =
+  result = c.chunk.macroContexts.len
+  c.chunk.macroContexts.add c.visibleMacroBindings()
 
 proc reserveProtocolBindings(c: var Compiler, forms: openArray[Value])
 
@@ -5765,7 +6273,7 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
           c.importedSyntaxFnSets.hasKey(spec.importKey) and
           selection.name in c.importedSyntaxFnSets[spec.importKey]
         discard c.reserveLocal(selection.local,
-                               allowFexprName = importsFexpr)
+                               allowFexprName = importsFexpr, importing = true)
   of "do", "if", "if_yes", "if_not", "&&", "||", "??", "while", "loop",
      "repeat":
     c.reserveProtocolBindings(value.body)
@@ -6312,6 +6820,7 @@ proc builtinCssDeclMacro(): MacroDef =
   )
 
 proc builtinTestMacro(name: string): MacroDef =
+  new(result)
   ## Testing declarations are ordinary template macros. The runtime receives
   ## closures, never borrowed caller syntax/environments.
   result.rest = "body"
@@ -6355,15 +6864,16 @@ proc builtinNamespaceMacros(segments: openArray[string]):
 
 proc importMacro(c: var Compiler, local: string, def: MacroDef) =
   validateBindingName(local)
-  if c.hasMacros and c.macros.hasKey(local):
+  if local in c.ownMacroNames:
     raise newException(GeneError, "duplicate macro: " & local)
-  if c.localSlot(local) >= 0 or c.parentSlot(local).slot >= 0:
+  if local in c.ownValueNames or c.localSlot(local) >= 0:
     raise newException(GeneError,
       "macro '" & local & "' conflicts with a binding of the same name")
   if not c.hasMacros:
     c.macros = initTable[string, MacroDef]()
     c.hasMacros = true
   c.macros[local] = def
+  c.ownMacroNames.incl local
   c.importedMacroNames.incl local
 
 proc compileImport(c: var Compiler, node: Value) =
@@ -6407,6 +6917,7 @@ proc compileImport(c: var Compiler, node: Value) =
     for sel in spec.selections:
       if exported.hasKey(sel.name):
         c.importMacro(sel.local, exported[sel.name])
+        if spec.reexport: c.publicMacroNames.incl sel.local
       else:
         runtimeSelections.add sel
     spec.selections = runtimeSelections
@@ -6417,6 +6928,7 @@ proc compileImport(c: var Compiler, node: Value) =
       for sel in spec.selections:
         if exported.hasKey(sel.name):
           c.importMacro(sel.local, exported[sel.name])
+          if spec.reexport: c.publicMacroNames.incl sel.local
         else:
           runtimeSelections.add sel
       spec.selections = runtimeSelections
@@ -6432,12 +6944,20 @@ proc compileImport(c: var Compiler, node: Value) =
         "namespace with `n/*` (optionally `: alias`) and use qualified access")
   if c.useLocalSlots:
     if spec.alias.len > 0:
-      discard c.reserveLocal(spec.alias)
+      discard c.reserveLocal(spec.alias, importing = true)
     for sel in spec.selections:
       let importsFexpr = spec.fromModule and
         c.importedSyntaxFnSets.hasKey(spec.importKey) and
         sel.name in c.importedSyntaxFnSets[spec.importKey]
-      discard c.reserveLocal(sel.local, allowFexprName = importsFexpr)
+      discard c.reserveLocal(sel.local, allowFexprName = importsFexpr, importing = true)
+  if spec.reexport and spec.fromModule and
+      c.importedMacroSets.hasKey(spec.importKey) and (spec.wildcard or spec.alias.len > 0):
+    let prefix = if spec.wildcardSegments.len > 0:
+                   spec.wildcardSegments.join("/") & "/" else: ""
+    for path in c.importedMacroSets[spec.importKey].keys:
+      if path.startsWith(prefix):
+        let relative = path[prefix.len .. ^1]
+        c.publicMacroNames.incl(if spec.alias.len > 0: spec.alias & "/" & relative else: relative)
   if not spec.reexport:
     if spec.alias.len > 0:
       c.chunk.exportExcludedNames.add spec.alias
@@ -6480,7 +7000,7 @@ proc markStaticImplForm(c: var Compiler, form: Value) =
       for child in form.body:
         c.markStaticImplForm(child)
 
-proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first = 0) =
+proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first: int) =
   if first <= forms.high:
     for i in first .. forms.high:
       c.markStaticImplForm(forms[i])
@@ -6572,7 +7092,15 @@ proc compileNs(c: var Compiler, node: Value) =
   discard nsCompiler.emit(opReturn)
   nsCompiler.chunk.localNames = nsCompiler.localNames
   nsCompiler.chunk.mirrorSlots = true
+  nsCompiler.chunk.finalMacroContext = nsCompiler.visibleMacroBindings()
   discard c.reserveLocal(name)
+  for macroName in nsCompiler.ownMacroNames:
+    let qualified = name & "/" & macroName
+    c.macros[qualified] = nsCompiler.macros[macroName]
+    c.hasMacros = true
+    c.ownMacroNames.incl qualified
+    if macroName in nsCompiler.publicMacroNames and not node.declarationIsPrivate:
+      c.publicMacroNames.incl qualified
   # A named declaration is let-class (design §12.1): `(set N ...)` is an error.
   c.letNames.incl name
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
@@ -6605,7 +7133,7 @@ proc compileEnv(c: var Compiler, node: Value) =
     compileExpr(c, node.props["policy"])
   else:
     c.emitConst NIL
-  discard c.emit(opMakeEnv)
+  discard c.emit(opMakeEnv, c.addMacroContext())
 
 proc compileEval(c: var Compiler, node: Value) =
   if node.body.len != 1:
@@ -7389,7 +7917,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     # no argument evaluation happens.
     compileExpr(c, node.head)
     c.emitConst node
-    c.chunk.callSites[c.emit(opSyntaxCall)] = node
+    c.chunk.callSites[c.emit(opSyntaxCall, c.addMacroContext())] = node
     return
   let knownOrdinary = c.calleeKnownOrdinary(node.head)
   if knownOrdinary and node.props.len == 0 and
@@ -7609,15 +8137,17 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
       mp.elseBody = c.compileSubBody(clause.body, scoped = true, tail = tail)
       break
     else:
-      raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
+      raise newException(GeneError, "match requires when/else clauses; " &
+        "macro calls are only expanded in expression positions (got " & clause.head.symVal & ")")
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "while requires a condition")
+  let enter = c.emit(opLoopEnter)
   let start = c.chunk.instructions.len
-  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+  c.chunk.instructions[enter].depth = start
   inc c.loopDepth
   compileExpr(c, body[0])
   let exitJump = c.emitJump(opJumpIfFalse)
@@ -7625,9 +8155,8 @@ proc compileWhile(c: var Compiler, node: Value) =
   discard c.emit(opPop)                     # discard each iteration's body value
   discard c.emit(opJump, start)             # loop back to the condition
   c.patchJump(exitJump)
-  let loop = c.loopStack.pop()
-  for jump in loop.breakJumps:
-    c.patchJump(jump)
+  c.chunk.instructions[enter].intArg = c.chunk.instructions.len
+  discard c.emit(opLoopLeave)
   dec c.loopDepth
   c.emitConst NIL                           # while evaluates to nil
 
@@ -7637,15 +8166,15 @@ proc compileLoop(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "loop requires a body")
+  let enter = c.emit(opLoopEnter)
   let start = c.chunk.instructions.len
-  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+  c.chunk.instructions[enter].depth = start
   inc c.loopDepth
   compileBodyFrom(c, body, 0)
   discard c.emit(opPop)                     # discard each iteration's body value
   discard c.emit(opJump, start)
-  let loop = c.loopStack.pop()
-  for jump in loop.breakJumps:
-    c.patchJump(jump)
+  c.chunk.instructions[enter].intArg = c.chunk.instructions.len
+  discard c.emit(opLoopLeave)
   dec c.loopDepth
   c.emitConst NIL
 
@@ -7668,19 +8197,17 @@ proc compileRepeat(c: var Compiler, node: Value) =
     c.emitConst newInt(0)
     c.emitDefineBinding(indexName)
 
+    let enter = c.emit(opLoopEnter)
     let start = c.chunk.instructions.len
     c.emitLoadBinding(indexName)
     c.emitLoadBinding(limitName)
     discard c.emit(opNativeFast2, ord(nfkLt), name = "<")
     let exitJump = c.emitJump(opJumpIfFalse)
 
-    c.loopStack.add LoopCompileContext(isInline: true, continueTarget: -1)
     inc c.loopDepth
     compileBodyFrom(c, body, 3)
     discard c.emit(opPop)                   # discard each iteration's body value
-    c.loopStack[^1].continueTarget = c.chunk.instructions.len
-    for jump in c.loopStack[^1].continueJumps:
-      c.patchJump(jump)
+    c.chunk.instructions[enter].depth = c.chunk.instructions.len
     c.emitLoadBinding(indexName)
     c.emitConst newInt(1)
     discard c.emit(opNativeFast2, ord(nfkAdd), name = "+")
@@ -7688,9 +8215,8 @@ proc compileRepeat(c: var Compiler, node: Value) =
     discard c.emit(opPop)                   # discard set result
     discard c.emit(opJump, start)
     c.patchJump(exitJump)
-    let loop = c.loopStack.pop()
-    for jump in loop.breakJumps:
-      c.patchJump(jump)
+    c.chunk.instructions[enter].intArg = c.chunk.instructions.len
+    discard c.emit(opLoopLeave)
     dec c.loopDepth
     c.emitConst NIL
     return
@@ -7699,19 +8225,17 @@ proc compileRepeat(c: var Compiler, node: Value) =
   compileExpr(c, body[0])
   c.emitDefineBinding(remainingName)
 
+  let enter = c.emit(opLoopEnter)
   let start = c.chunk.instructions.len
   c.emitLoadBinding(remainingName)
   c.emitConst newInt(0)
   discard c.emit(opNativeFast2, ord(nfkGt), name = ">")
   let exitJump = c.emitJump(opJumpIfFalse)
 
-  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: -1)
   inc c.loopDepth
   compileBodyFrom(c, body, 1)
   discard c.emit(opPop)                     # discard each iteration's body value
-  c.loopStack[^1].continueTarget = c.chunk.instructions.len
-  for jump in c.loopStack[^1].continueJumps:
-    c.patchJump(jump)
+  c.chunk.instructions[enter].depth = c.chunk.instructions.len
   c.emitLoadBinding(remainingName)
   c.emitConst newInt(1)
   discard c.emit(opNativeFast2, ord(nfkSub), name = "-")
@@ -7719,9 +8243,8 @@ proc compileRepeat(c: var Compiler, node: Value) =
   discard c.emit(opPop)                     # discard set result
   discard c.emit(opJump, start)
   c.patchJump(exitJump)
-  let loop = c.loopStack.pop()
-  for jump in loop.breakJumps:
-    c.patchJump(jump)
+  c.chunk.instructions[enter].intArg = c.chunk.instructions.len
+  discard c.emit(opLoopLeave)
   dec c.loopDepth
   c.emitConst NIL
 
@@ -7737,8 +8260,9 @@ proc compileFor(c: var Compiler, node: Value) =
     discard c.emit(opMakeIterator)
     c.emitDefineBinding(iterName)
 
+    let enter = c.emit(opLoopEnter)
     let start = c.chunk.instructions.len
-    c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+    c.chunk.instructions[enter].depth = start
     inc c.loopDepth
     c.emitLoadBinding(iterName)
     discard c.emit(opIteratorHasNext)
@@ -7752,9 +8276,8 @@ proc compileFor(c: var Compiler, node: Value) =
     discard c.emit(opPop)                     # discard each iteration's body value
     discard c.emit(opJump, start)
     c.patchJump(exitJump)
-    let loop = c.loopStack.pop()
-    for jump in loop.breakJumps:
-      c.patchJump(jump)
+    c.chunk.instructions[enter].intArg = c.chunk.instructions.len
+    discard c.emit(opLoopLeave)
     dec c.loopDepth
     c.emitLoadBinding(iterName)
     discard c.emit(opIteratorClose)
@@ -8768,6 +9291,183 @@ proc compileModuleRefGet(c: var Compiler, node: Value, structural: bool) =
                    opRefGetStructural else: opRefGet,
                  name = name)
 
+proc isMacroResult(node: Value): bool =
+  node.kind == vkNode and node.head.isSymbol("do") and
+    node.props.hasKey("macro_result") and
+    node.props["macro_result"].kind == vkBool and
+    node.props["macro_result"].boolVal
+
+proc quasiOwnsResultBindings(value: Value, depth: int): bool =
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("unquote"):
+      if depth == 1:
+        for expression in value.body:
+          if ownsResultBindings(expression): return true
+        return false
+      for expression in value.body:
+        if quasiOwnsResultBindings(expression, depth - 1): return true
+      return false
+    let nextDepth = if value.head.isSymbol("quasiquote"): depth + 1 else: depth
+    if quasiOwnsResultBindings(value.head, nextDepth): return true
+    for _, item in value.props:
+      if quasiOwnsResultBindings(item, nextDepth): return true
+    for _, item in value.meta:
+      if quasiOwnsResultBindings(item, nextDepth): return true
+    for item in value.body:
+      if quasiOwnsResultBindings(item, nextDepth): return true
+  of vkList:
+    for item in value.listItems:
+      if quasiOwnsResultBindings(item, depth): return true
+  of vkMap:
+    for _, item in value.mapEntries:
+      if quasiOwnsResultBindings(item, depth): return true
+  else:
+    discard
+
+proc ownsResultBindings(value: Value): bool =
+  case value.kind
+  of vkNode:
+    if value.isMacroResult: return false # nested marked block owns its names
+    if value.head.kind == vkSymbol:
+      case value.head.symVal
+      of "quote": return false
+      of "quasiquote":
+        for item in value.body:
+          if quasiOwnsResultBindings(item, 1): return true
+        return false
+      of "let", "var", "const", "type", "protocol", "enum", "alias",
+         "ns", "macro", "import", "impl", "import_impl":
+        return true
+      of "fn":
+        return value.body.len > 1 and
+          value.body[0].kind in {vkSymbol, vkNode} and
+          value.body[1].kind == vkList
+      of "for":
+        return value.body.len > 2 and ownsResultBindings(value.body[2])
+      of "match":
+        return value.body.len > 0 and ownsResultBindings(value.body[0])
+      of "scope", "supervisor", "spawn":
+        for _, item in value.props:
+          if ownsResultBindings(item): return true
+        return false
+      of "try":
+        var recovery = false
+        for item in value.body:
+          if item.isSymbol("catch"): recovery = true
+          elif item.isSymbol("ensure"): recovery = false
+          elif not recovery and ownsResultBindings(item): return true
+        return false
+      of "repeat":
+        return true # both spellings create a loop index/count binding
+      else: discard
+    if ownsResultBindings(value.head): return true
+    for _, item in value.props:
+      if ownsResultBindings(item): return true
+    for item in value.body:
+      if ownsResultBindings(item): return true
+  of vkList:
+    for item in value.listItems:
+      if ownsResultBindings(item): return true
+  of vkMap:
+    for _, item in value.mapEntries:
+      if ownsResultBindings(item): return true
+  of vkHashMap:
+    for item in value.hashMapEntries:
+      if ownsResultBindings(item.key) or ownsResultBindings(item.val): return true
+  of vkSet:
+    for item in value.setItems:
+      if ownsResultBindings(item): return true
+  of vkPipeline:
+    return true # pipeline lowering creates private storage for the stage input
+  else: discard
+
+proc macroResultNeedsScope*(node: Value): bool =
+  if not node.isMacroResult: return false
+  for form in node.body:
+    if ownsResultBindings(form): return true
+
+proc resultCanUseFrameSlots(c: Compiler, value: Value): bool =
+  case value.kind
+  of vkNode:
+    if value.isMacroResult: return false
+    if value.head.kind == vkSymbol:
+      let head = value.head.symVal
+      if head == "quote": return true
+      if head in ["fn", "macro", "type", "protocol", "enum", "alias", "ns",
+          "impl", "import", "import_impl", "env", "eval", "try", "match",
+          "for", "scope", "supervisor", "spawn", "await", "yield"] or
+          head.endsWith("!") or (c.hasMacros and c.macros.hasKey(head)):
+        return false
+      if head in ["let", "var", "const"] and
+          (value.body.len != 2 or value.body[0].kind != vkSymbol):
+        # Annotation checks can resolve local type values by name. Keep their
+        # lexical environment real until those references have indexed plans.
+        return false
+    if c.importedMacroForHead(value.head).found: return false
+    let path = value.head.pathSymbolSegments
+    if path.len > 1 and builtinNamespaceMacros(path.toOpenArray(0, path.high - 1)).hasKey(path[^1]):
+      return false
+    if not c.resultCanUseFrameSlots(value.head): return false
+    for _, item in value.props:
+      if not c.resultCanUseFrameSlots(item): return false
+    for item in value.body:
+      if not c.resultCanUseFrameSlots(item): return false
+  of vkList:
+    for item in value.listItems:
+      if not c.resultCanUseFrameSlots(item): return false
+  of vkMap:
+    for _, item in value.mapEntries:
+      if not c.resultCanUseFrameSlots(item): return false
+  of vkHashMap, vkSet, vkPipeline:
+    return false
+  else: discard
+  true
+
+proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
+  var needsScope = false
+  var inlineSlots = c.useLocalSlots
+  for form in node.body:
+    needsScope = needsScope or ownsResultBindings(form)
+    inlineSlots = inlineSlots and c.resultCanUseFrameSlots(form)
+  if not needsScope:
+    compileBody(c, node.body, tail = tail)
+  elif inlineSlots:
+    # Lexical visibility changes, but ordinary local access stays in this
+    # function's frame. Physical slot labels keep mirrored module scopes and
+    # name-based reflection from publishing these block-local declarations.
+    let previousLocalCount = c.localNames.len
+    var inner = c
+    inner.inlineBlockPrefix = BlockBindingPrefix & $c.nextGensym() & ":"
+    inner.inlineBlockBindings = initHashSet[string]()
+    inner.ownMacroNames = initHashSet[string]()
+    inner.ownValueNames = initHashSet[string]()
+    inner.staticTopLevelImpls = initHashSet[uint64]()
+    let start = c.chunk.instructions.len
+    compileBody(inner, node.body, tail = tail)
+    c.localNames = inner.localNames
+    c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+    for i in start ..< c.chunk.instructions.len:
+      let instruction = c.chunk.instructions[i]
+      if instruction.op == opSetLocal and instruction.intArg < previousLocalCount:
+        c.ordinaryFnNames.del(instruction.name)
+        c.generatorFnNames.del(instruction.name)
+        c.mutableBindingNames.incl instruction.name
+  else:
+    var inner = c.childCompiler()
+    inner.loopDepth = c.loopDepth
+    inner.enableLocalSlots()
+    inner.parentSlots = c.parentFrames()
+    inner.parentFunctionSigs = c.parentFunctionSigFrames()
+    inner.staticTopLevelImpls = initHashSet[uint64]()
+    inner.prepareStaticImports(node.body)
+    inner.reserveProtocolBindingsFor(node.body)
+    compileBody(inner, node.body, tail = tail)
+    discard inner.emit(opReturn)
+    inner.chunk.localNames = inner.localNames
+    c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+    discard c.emit(opBlockScope, c.chunk.addSubchunk(inner.chunk), tail = tail)
+
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
                  tail = false) =
   let h = node.head
@@ -8830,7 +9530,10 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       compileModuleRefGet(c, node, structural = true)
       return
     of "do":
-      compileBody(c, node.body, tail = tail)
+      if node.isMacroResult:
+        compileMacroResult(c, node, tail)
+      else:
+        compileBody(c, node.body, tail = tail)
       return
     of "if":
       compileIf(c, node, tail = tail)
@@ -9041,11 +9744,14 @@ proc expandDirectPipelineMacro(c: var Compiler, value: Value): Value =
   let macroDef = c.pipelineMacroForHead(value.head)
   if not macroDef.found:
     return value
+  if macroDef.def.runtime:
+    return value
   if c.macroExpansionDepth >= MaxMacroExpansionDepth:
     raise newException(GeneError, "macro expansion depth exceeded")
   inc c.macroExpansionDepth
   try:
-    result = c.expandDirectPipelineMacro(c.expandMacro(macroDef.def, value))
+    let expanded = c.expandDirectPipelineMacro(c.expandMacro(macroDef.def, value))
+    result = if expanded.isSymbol("_"): expanded else: markMacroResult(expanded)
   finally:
     dec c.macroExpansionDepth
 
@@ -9244,6 +9950,70 @@ proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
   c.chunk.pipelineCalls.add plan
   discard c.emit(opPreparePipelineCall, planIndex)
 
+proc hasRuntimePipelineMacro(c: Compiler, stage: PipelineStage): bool =
+  proc dynamic(value: Value): bool =
+    if value.kind != vkNode: return false
+    let found = c.pipelineMacroForHead(value.head)
+    found.found and found.def.runtime
+  if dynamic(stage.head): return true
+  for _, value in stage.props:
+    if dynamic(value): return true
+  for value in stage.body:
+    if dynamic(value): return true
+
+proc compileRuntimePipelineStage(c: var Compiler, stage: PipelineStage,
+                                 immutable, tail: bool) =
+  ## An ordinary helper frame builds syntax only. The following execute opcode
+  ## compiles that syntax back in the original caller's control-flow context.
+  var helper = c.childCompiler()
+  helper.inFunction = true
+  helper.enableLocalSlots()
+  let inputName = "\x00gene_macro_pipeline_input"
+  let inputSlot = helper.reserveLocal(inputName)
+  helper.emitConst newSym("quote")
+  discard helper.emit(opLoadLocal, inputSlot, name = inputName)
+  discard helper.emit(opMakeNode, helper.chunk.addNodeBuild(NodeBuildProto(bodyCount: 1)))
+  let context = c.runtimeExpansionContext()
+  template component(value: Value) =
+    block:
+      let found = if value.kind == vkNode: c.pipelineMacroForHead(value.head)
+                  else: (false, MacroDef(nil))
+      if found[0] and found[1].runtime:
+        let index = helper.chunk.runtimeMacroCalls.len
+        helper.chunk.runtimeMacroCalls.add RuntimeMacroCall(definition: found[1],
+          syntax: value, context: context)
+        discard helper.emit(opInvokeRuntimeMacro, index)
+        discard helper.emit(opExecuteRuntimeMacro, index, flag = true)
+      else:
+        helper.emitConst value
+  component(stage.head)
+  var metaNames, propNames: seq[string]
+  for name, value in stage.meta:
+    metaNames.add name
+    helper.emitConst value
+  for name, value in stage.props:
+    propNames.add name
+    component(value)
+  for value in stage.body: component(value)
+  helper.chunk.pipelineBuilds.add PipelineBuildProto(immutable: immutable,
+    stages: @[PipelineStageBuildProto(kind: stage.kind, metaNames: metaNames,
+      propNames: propNames, bodyCount: stage.body.len, sourceLoc: stage.sourceLoc)])
+  discard helper.emit(opMakePipeline, 0)
+  discard helper.emit(opReturn)
+  helper.chunk.localNames = helper.localNames
+  let proto = FunctionProto(name: "macro pipeline", params: @[inputName],
+    localNames: helper.localNames, positionalSlots: @[inputSlot],
+    positionalSlotMaySet: @[false], requiredPositional: 1, simpleCall: true,
+    needsCallScope: true, isMacroBody: true, callScopeNeedsSlotNames: true,
+    paramTypes: @[NIL], restSlot: -1, chunk: helper.chunk)
+  proto.chunk.owner = proto
+  discard c.emit(opRuntimePipelineStage, c.chunk.addFunction(proto))
+  let index = c.chunk.runtimeMacroCalls.len
+  c.chunk.runtimeMacroCalls.add RuntimeMacroCall(context: context, pipeline: true)
+  discard c.emit(opExecuteRuntimeMacro, index, tail = tail)
+  c.ordinaryFnNames.clear()
+  c.generatorFnNames.clear()
+
 proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
   if pipeline.pipelineStages.len == 0:
     compileExpr(c, pipeline.pipelineInitial, tail = tail)
@@ -9278,6 +10048,15 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
     var stage = c.expandDirectPipelineStage(sourceStage)
     c.rejectPipelineSyntaxStage(stage)
     stage.rejectLeadingPipelineSend()
+    if c.hasRuntimePipelineMacro(stage):
+      compileExpr(c, tempExpr)
+      c.compileRuntimePipelineStage(stage, pipeline.pipelineImmutable,
+        tail and i == pipeline.pipelineStages.high)
+      c.currentLoc = savedLoc
+      if i < pipeline.pipelineStages.high:
+        c.setTemp()
+        discard c.emit(opPop)
+      continue
     var expr, publicSite: Value
     case stage.kind
     of pstCall:
@@ -9480,7 +10259,8 @@ type
     setNames: HashSet[string]
 
 const
-  captureUnsafeOps = {opMakeEnv, opEval, opImport, opImportImpl, opMakeType,
+  captureUnsafeOps = {opDefineRuntimeMacro, opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage,
+                     opMakeEnv, opEval, opImport, opImportImpl, opMakeType,
                       opMakeEnum, opMakeProtocol, opMakeImpl, opDeclareType,
                       opTaskScope, opSupervisor}
   captureDepthOps = {opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
@@ -9596,6 +10376,10 @@ proc collectRebindNames(chunk: Chunk, names: var HashSet[string]) =
   if chunk == nil:
     return
   for inst in chunk.instructions:
+    if inst.op == opInvokeRuntimeMacro:
+      let context = chunk.runtimeMacroCalls[inst.intArg].context.macros
+      if context != nil:
+        for name in context.hiddenNames: names.incl name
     if inst.name.len > 0 and ($inst.op).startsWith("opSet"):
       names.incl inst.name
   for (body, scoped) in nestedChunks(chunk):
@@ -9618,7 +10402,7 @@ proc captureLevelFor(chunk: Chunk, activation, forceUnsafe: bool,
 
 proc planCapture(proto: FunctionProto, levels: seq[CaptureLevel],
                  rebound: HashSet[string]): CapturePlan =
-  if proto.isSyntaxFn:
+  if proto.isSyntaxFn or proto.isMacroBody:
     return nil
   var a = 0
   while a < levels.len and levels[a].activation:
@@ -9760,6 +10544,7 @@ proc planClosureCaptures(root: Chunk, rebound: HashSet[string],
 
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
+  c.prepareMacroContext(forms)
   if c.closurePoolCandidates == nil:
     new(c.closurePoolCandidates)
   # A top-level-form label only adds information for a multi-form source unit.
@@ -9806,6 +10591,9 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.chunk.localNames = c.localNames
     c.chunk.mirrorSlots = true
+  c.chunk.finalMacroContext = c.visibleMacroBindings()
+  if not useLocalSlots and c.sourceName == "<repl>":
+    c.chunk.finalMacroContext.history = c.macroContext.forms
   for name in c.letNames: c.chunk.immutableBindings.add name
   c.chunk.immutableBindings.sort()
   c.chunk.rewriteSelfRecursiveCalls()
@@ -9833,7 +10621,11 @@ proc compileForms*(forms: openArray[Value],
 
 proc compileSourceUnit*(unit: SourceUnit,
                         allowAmbientImports = true,
-                        useLocalSlots = true, errorsMode = ""): Chunk =
+                        useLocalSlots = true, errorsMode = "",
+                        macros: MacroBindings = nil,
+                        history: seq[Value] = @[],
+                        existingValues: seq[string] = @[],
+                        persistentMacros = false): Chunk =
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
                    sourceLocs: sharedSourceLocs(unit.locs),
@@ -9842,6 +10634,15 @@ proc compileSourceUnit*(unit: SourceUnit,
                    errorModeOverride: errorsMode,
                    allowAmbientImports: allowAmbientImports,
                    ffiLibraryNames: initTable[string, bool]())
+  if macros != nil:
+    c.macros = macros.definitions
+    c.hasMacros = c.macros.len > 0
+    if persistentMacros:
+      for name in macros.ownedNames: c.ownMacroNames.incl name
+  for name in existingValues: c.ownValueNames.incl name
+  c.prepareMacroContext(unit.forms)
+  if history.len > 0:
+    c.macroContext.forms = history & unit.forms
   compileFormsInto(c, unit.forms, useLocalSlots)
 
 proc compileFormsWithMacros*(forms: openArray[Value],
@@ -9883,7 +10684,8 @@ proc compileFormsWithMacros*(unit: SourceUnit,
     importedMacros: Table[string, Table[string, MacroDef]],
     importedSyntaxFns = initTable[string, seq[string]](),
     importedInterfaces = initTable[string, CompileNamespaceInterface](),
-    budget: CompileBudget = nil, deferErrorChecks = false, errorsMode = ""):
+    budget: CompileBudget = nil, deferErrorChecks = false, errorsMode = "",
+    moduleIdentity = "", moduleSourcePath = ""):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   var moduleMacroExports: ref Table[string, MacroDef]
@@ -9906,6 +10708,9 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    moduleSyntaxFnExports: moduleSyntaxFnExports,
                    budget: budget, deferErrorChecks: deferErrorChecks,
                    errorModeOverride: errorsMode)
+  c.prepareMacroContext(unit.forms)
+  c.macroContext.moduleIdentity = moduleIdentity
+  c.macroContext.moduleSourcePath = moduleSourcePath
   result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
   result.macroExports = moduleMacroExports[]
   for name in moduleSyntaxFnExports[]:
@@ -9916,18 +10721,177 @@ proc compileForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms)
 
-proc compileEvalForm*(form: Value): Chunk =
+proc macroExecutionCompiler(context: MacroDefinitionContext,
+                            definitions: Table[string, MacroDef],
+                            session: MacroExecutionSession,
+                            budget: CompileBudget): Compiler =
+  result = Compiler(chunk: newChunk(), allowAmbientImports: true,
+    ffiLibraryNames: initTable[string, bool](),
+    sourceLocs: sharedSourceLocs(initTable[uint64, SourceLoc]()),
+    macros: definitions, hasMacros: definitions.len > 0,
+    macroContext: context, macroSession: session, macroPhaseCompilation: true,
+    budget: budget)
+  if context != nil:
+    result.sourceName = context.sourceName
+    result.chunk.sourceName = context.sourceName
+    result.sourceLocs = sharedSourceLocs(context.locs)
+    result.importedMacroSets = context.importedMacros
+    result.importedSyntaxFnSets = context.importedSyntaxFns
+    result.importedInterfaces = context.importedInterfaces
+    result.ownCompileInterface = buildCompileInterface(context.forms, context.sourceName)
+    result.prepareStaticImports(context.forms)
+
+proc macroNamespaceBody(forms: openArray[Value], name: string): seq[Value] =
+  for form in forms:
+    if form.kind != vkNode: continue
+    if form.head.isSymbol("ns") and form.body.len > 0 and
+        form.body[0].isSymbol(name):
+      return form.body[1 .. ^1]
+    if form.head.isSymbol("do") or form.head.isSymbol("mod"):
+      result = macroNamespaceBody(form.body, name)
+      if result.len > 0: return
+
+proc compileMacroBody*(definition: MacroDef, names: seq[string],
+                       definitions: Table[string, MacroDef],
+                       session: MacroExecutionSession,
+                       budget: CompileBudget = nil): Chunk =
+  ## Compile an ordinary function over already matched syntax arguments.
+  var c = macroExecutionCompiler(definition.context, definitions, session, budget)
+  c.dynamicNameLookup = session.runtimeDefinitionScope != nil
+  c.currentLoc = definition.sourceLoc
+  c.namespacePath = definition.namespacePath
+  if definition.context != nil:
+    var forms = definition.context.forms
+    for namespace in definition.namespacePath:
+      forms = macroNamespaceBody(forms, namespace)
+      c.prepareStaticImports(forms)
+  if definition.name.len > 0:
+    c.macros[definition.name] = definition
+    c.hasMacros = true
+  var parameters: seq[Value]
+  for name in names:
+    parameters.add newSym(name)
+  let function = newNode(newSym("fn"),
+    body = @[newList(parameters)] & definition.body)
+  compileFormsInto(c, @[function], useLocalSlots = false)
+
+proc compileMacroPhaseForm*(context: MacroDefinitionContext, form: Value,
+                           definitions: Table[string, MacroDef],
+                           session: MacroExecutionSession,
+                           budget: CompileBudget = nil,
+                           namespacePath: seq[string] = @[],
+                           ownedNames: seq[string] = @[]):
+    tuple[chunk: Chunk, macros: Table[string, MacroDef]] =
+  ## An on-demand module instance initializes source forms in execution order.
+  ## Name-based top-level bindings let successive chunks share that instance.
+  var c = macroExecutionCompiler(context, definitions, session, budget)
+  c.namespacePath = namespacePath
+  for name in ownedNames:
+    c.ownMacroNames.incl name
+  c.currentLoc = c.sourceLocFor(form)
+  result.chunk = compileFormsInto(c, @[form], useLocalSlots = false)
+  result.macros = result.chunk.finalMacroContext.definitions
+
+proc compileEvalForm*(form: Value, macros: MacroBindings = nil,
+                      budget: CompileBudget = nil): Chunk =
   ## Eval code receives only explicit Env bindings/imports/module context. It
   ## must not use source-level imports to acquire ambient module-loader authority.
-  let forms = @[form]
-  compileForms(forms, allowAmbientImports = false)
+  var c = Compiler(chunk: newChunk("<eval>"), sourceName: "<eval>",
+    allowAmbientImports: false, budget: budget,
+    sourceLocs: sharedSourceLocs(initTable[uint64, SourceLoc]()),
+    ffiLibraryNames: initTable[string, bool]())
+  if macros != nil:
+    c.macros = macros.definitions
+    c.hasMacros = c.macros.len > 0
+  compileFormsInto(c, @[form], useLocalSlots = true)
+
+proc runtimeExpansionCompiler(context: RuntimeExpansionContext,
+                              budget: CompileBudget): Compiler =
+  result = Compiler(chunk: newChunk(context.sourceLoc.sourceName),
+    sourceName: context.sourceLoc.sourceName, currentLoc: context.sourceLoc,
+    sourceLocs: sharedSourceLocs(initTable[uint64, SourceLoc]()),
+    ffiLibraryNames: initTable[string, bool](), dynamicNameLookup: true,
+    inFunction: context.inFunction, inGenerator: context.inGenerator,
+    inStatementFn: context.inStatementFn, selfAvailable: context.selfAvailable,
+    loopDepth: context.loopDepth, allowYield: context.inGenerator,
+    allowAmbientImports: context.allowAmbientImports,
+    macroContext: context.sourceContext, namespacePath: context.namespacePath,
+    budget: budget)
+  if context.macros != nil:
+    result.macros = context.macros.definitions
+    result.hasMacros = result.macros.len > 0
+  for name in context.letNames: result.letNames.incl name
+  if context.sourceContext != nil:
+    result.importedMacroSets = context.sourceContext.importedMacros
+    result.importedSyntaxFnSets = context.sourceContext.importedSyntaxFns
+    result.importedInterfaces = context.sourceContext.importedInterfaces
+    result.ownCompileInterface = buildCompileInterface(context.sourceContext.forms,
+      context.sourceContext.sourceName)
+    result.prepareStaticImports(context.sourceContext.forms)
+
+proc runtimeMacroDiagnostic(call: RuntimeMacroCall): string =
+  let definition = call.definition
+  result = if definition == nil: "runtime macro pipeline"
+           else: "macro '" & definition.name & "'"
+  let loc = call.context.sourceLoc
+  if loc.hasSourceLoc:
+    result.add " expanded at " & loc.sourceName & ":" & $loc.line
+  if definition != nil and definition.sourceLoc.hasSourceLoc:
+    let source = definition.sourceLoc
+    result.add " (defined at " & source.sourceName & ":" & $source.line & ")"
+
+proc bindRuntimeMacroArguments*(call: RuntimeMacroCall, definitionScope: Scope,
+                                budget: CompileBudget = nil): seq[Value] =
+  var c = runtimeExpansionCompiler(call.context, budget)
+  c.macroSession = MacroExecutionSession(runtimeDefinitionScope: definitionScope,
+    hostContext: definitionScope.application)
+  try:
+    let bindings = c.matchMacroArguments(call.definition, call.syntax)
+    for name in call.definition.runtimeParamNames:
+      result.add bindings.getOrDefault(name, VOID)
+  except GeneError as error:
+    error.msg = call.runtimeMacroDiagnostic() & ": " & error.msg
+    raise
+
+proc runtimePipelineMacroResult*(value: Value, context: RuntimeExpansionContext): Value =
+  if value.isSymbol("_"): return value
+  # A direct macro can return another direct macro call. Leave that call for
+  # the next expansion before slot classification, just like the static path.
+  let c = runtimeExpansionCompiler(context, nil)
+  if value.kind == vkNode and c.pipelineMacroForHead(value.head).found:
+    return value
+  markMacroResult(value)
+
+proc compileRuntimeMacroResult*(value: Value, call: RuntimeMacroCall,
+                               tail = false, budget: CompileBudget = nil,
+                               hostContext: RootRef = nil): Chunk =
+  ## No eval overlay: name-based accesses use the actual caller activation.
+  ## Marked declarations allocate their own lexical scope through the usual rule.
+  try:
+    var c = runtimeExpansionCompiler(call.context, budget)
+    c.macroSession = MacroExecutionSession(hostContext: hostContext)
+    c.prepareMacroContext(@[value])
+    c.chunk.runtimeMacroExpansion = true
+    compileExpr(c, markMacroResult(value), tail = tail)
+    discard c.emit(opReturn)
+    planClosureCaptures(c.chunk, c.mutableBindingNames, @[])
+    result = c.chunk
+  except GeneError as error:
+    error.msg = call.runtimeMacroDiagnostic() & ": " & error.msg
+    raise
 
 proc compileEvalSource*(src: string, useLocalSlots = true,
-                        sourceName = "<eval>", errorsMode = ""): Chunk =
+                        sourceName = "<eval>", errorsMode = "",
+                        macros: MacroBindings = nil,
+                        history: seq[Value] = @[],
+                        existingValues: seq[string] = @[],
+                        persistentMacros = false): Chunk =
   ## CLI/REPL eval receives source text but still uses eval authority rules.
   compileSourceUnit(readAllWithLocs(src, sourceName),
                     allowAmbientImports = false,
-                    useLocalSlots = useLocalSlots, errorsMode = errorsMode)
+                    useLocalSlots = useLocalSlots, errorsMode = errorsMode,
+                    macros = macros, history = history, existingValues = existingValues,
+                    persistentMacros = persistentMacros)
 
 proc compileSource*(src: string, sourceName = "",
                     useLocalSlots = true, errorsMode = ""): Chunk =

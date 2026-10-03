@@ -1,5 +1,5 @@
-import gene/[compiler, printer, types, vm]
-import std/[locks, net, os, sets, strutils, unittest]
+import gene/[compiler, gir, printer, reader, types, vm]
+import std/[locks, net, os, sets, strutils, tables, unittest]
 
 var probeLock: Lock
 var probeLockReady = false
@@ -132,6 +132,89 @@ proc newTempScope(): Scope =
   newGlobalScope(app)
 
 suite "threaded scheduler workers":
+  test "private compiler retirement refuses published and foreign-lane roots":
+    let context = RuntimeContext(privateCompilerContext: true,
+      compilerOwnerLane: currentEventLane() + 1)
+    let root = newScope(application = context)
+    root.vars["value"] = newInt(7)
+    var roots: RuntimeContextRoots
+    roots.addOwnedScope(root)
+    check not retireRuntimeContextScopes(context, roots)
+    check root.lookup("value").intVal == 7
+    context.compilerOwnerLane = currentEventLane()
+    pinPublishedScope(root)
+    check root.scopePublishedForRetirement
+    check not retireRuntimeContextScopes(context, roots)
+    check root.lookup("value").intVal == 7
+
+  test "published objects pin their private compiler definition scopes":
+    let context = RuntimeContext(privateCompilerContext: true,
+      compilerOwnerLane: currentEventLane())
+    let root = newScope(application = context)
+    let nested = newScope(root)
+    root.vars["value"] = newInt(7)
+    let namespace = newNamespace("published", nested)
+    markSharedValue(namespace)
+    check nested.scopePublishedForRetirement
+    check root.scopePublishedForRetirement
+    var roots: RuntimeContextRoots
+    roots.addOwnedScope(root)
+    check not retireRuntimeContextScopes(context, roots)
+    check namespace.nsScope.lookup("value").intVal == 7
+
+  test "repeated macro compilations release their private phase applications":
+    withGeneWorkerSetting "0":
+      for source in ["(macro identity [x] `%x) (identity 21)",
+          "(fn helper [x] (+ x 1)) (macro computed [x] (helper x)) (computed 20)"]:
+        proc execute() =
+          let scope = newGlobalScope()
+          let app = Application(scope.application)
+          let path = app.applicationPackage.root / "macro_atomic_lifetime.gene"
+          let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
+            initTable[string, Table[string, MacroDef]](),
+            moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_atomic_lifetime.gene")
+          discard run(compiled.chunk, scope)
+        for i in 0 ..< 10: execute()
+        let before = getOccupiedMem()
+        for i in 0 ..< 100: execute()
+        let growth = getOccupiedMem() - before
+        checkpoint source
+        checkpoint "live heap growth after 100 compilations: " & $growth
+        check growth < 64 * 1024
+
+  test "worker eval retains and publishes its lexical macro context":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkerSetting "4":
+      check run(compileSource("(macro twice [x] `(+ %x %x)) " &
+         "(scope (var tasks []) " &
+         "(repeat i in 32 (tasks .push (spawn (do (record-thread 1) " &
+         "(eval (quote (twice 21)) ^in (env)))))) " &
+         "(var total 0) (for task in tasks (set total (+ total (await task)))) total)"),
+         scope).print() == "1344"
+    check seenThreadCount() >= 2
+
+  test "runtime local macros keep dynamic caller access on the owner lane":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkerSetting "4":
+      check run(compileSource("(record-thread 1) (fn work [n] (macro m [] (+ n 1)) " &
+         "(spawn (do (record-thread 1) (m)))) " &
+         "(scope (var tasks []) (repeat i in 32 (tasks .push (work i))) " &
+         "(var total 0) (for task in tasks (set total (+ total (await task)))) total)"),
+         scope).print() == "528"
+    check seenThreadCount() == 1
+    resetThreadProbe()
+    let nestedScope = newGlobalScope()
+    nestedScope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkerSetting "4":
+      check run(compileSource("(record-thread 1) (let n 41) " &
+        "(await (spawn (do (record-thread 1) " &
+        "(fn nested [] (macro m [] `(+ n 1)) (m)) (nested))))"), nestedScope).print() == "42"
+    check seenThreadCount() == 1
+
   test "threaded build starts default worker pool":
     withGeneWorkerSetting "":
       let task = run(compileSource(

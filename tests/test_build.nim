@@ -92,7 +92,8 @@ suite "build engine — pure Gene targets":
     writeBuildFile(root / "packages/math/src/index.gene", """
 (import [base] ^from "." ^pkg "core")
 (var answer base)
-(macro twice [x] `(+ %x %x))
+(fn expand_twice ^private true [x] `(+ %x %x))
+(macro twice [x] (expand_twice x))
 """)
     writeBuildFile(root / "packages/core/package.gene", """
 {^format 1
@@ -171,10 +172,8 @@ suite "build engine — pure Gene targets":
     # macro data from GIR; dependency source is not a hidden build input.
     let compilerApp = newApplication(second.executionGraph,
       second.executionGraph.packagesById[graph.activePackageId].root)
-    let directDependencyId = second.executionGraph.packagesById[
-      graph.activePackageId].dependencyEdges["math"]
     for artifact in second.artifacts:
-      if artifact.packageId == directDependencyId:
+      if artifact.packageId != graph.activePackageId:
         compilerApp.installCompiledModules(artifact.compiledModules)
     let rebuiltEntry = compilerApp.compileFileModuleBundle(
       second.executionGraph.packagesById[graph.activePackageId].root /

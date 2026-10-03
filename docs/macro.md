@@ -1,10 +1,25 @@
 # Macros: design and implementation guide
 
-**Status:** design direction and repair plan, updated 2026-10-02. Gene already has
-template macros; the guarantees below describe the intended behavior, not a
-claim that every guarantee is implemented. The numbered choices are decided
-or explicitly deferred. Implementation follow-ups are called out below. No new
-reader syntax is introduced by these decisions.
+**Status:** implemented design and regression guide, updated 2026-10-03.
+The numbered choices are decided or explicitly deferred. Backend and lifetime
+limits are called out below. No new reader syntax is introduced by these
+decisions. Historical findings describe the reviewed baseline, not the repaired
+implementation.
+
+**Implementation checkpoint, 2026-10-03:** the working implementation executes
+macro bodies through the VM, normalizes result scopes on both backends, carries
+macro contexts through Env/CallerEnv and REPL inputs, and preserves shared
+definition contexts in GIR artifacts. Focused checks cover caller loop exits
+through runtime scopes and cleanup, generator suspension, expression fast
+paths, scope confinement, and macro execution budgets. Escaped helpers and Env
+values retain their definition context; private compiler applications are
+reclaimed on the owner lane once no external references remain. Published
+contexts remain conservatively pinned. Local macros now expand against their
+live definition environment when execution reaches the call. REPL compiler
+state commits after successful compilation, including when execution fails.
+Runtime macro invocations inherit ordinary execution budgets. The regression
+matrix below records the contract; the web-profile and general mixed-scope
+lifetime limitations remain explicit.
 
 The starting evidence is the [macro feature review](../tmp/macro-comments.md),
 which tested a build from `47a8942` and assigned the B1–B7 and L1–L5 issue IDs
@@ -53,8 +68,8 @@ make fexprs substitute for macros.
 **D2a, decided 2026-10-02:** macro authors may use ordinary Gene code in the
 macro body. Do not impose a template-only grammar, a whitelist of body shapes,
 or a parameter-only rule for unquote. The compiler and VM should reject invalid
-code or operations through their normal rules. Macro-body execution is broader
-than the current template evaluator and requires implementation work.
+code or operations through their normal rules. Macro bodies now use ordinary
+compiled functions, replacing the former template-only evaluator.
 
 **D2b, decided 2026-10-02:** execute the macro body in its definition-side
 lexical environment, like an ordinary function. This decision adds no new reader syntax,
@@ -131,9 +146,9 @@ clauses can still contain macro calls. Reject a call in an unsupported
 structural position consistently on the VM and web backend; silently ignoring
 it on one backend is not an acceptable alternative.
 
-The current paths disagree: the VM gives nil for a macro-generated else clause
-and rejects a macro-generated match clause, while the web frontend expands
-both. This was independently reproduced as `nil`/error versus `2`/`"other"`.
+The review's baseline paths disagreed: the VM gave nil for a macro-generated
+else clause and rejected a macro-generated match clause, while the web frontend
+expanded both. This was reproduced as `nil`/error versus `2`/`"other"`.
 Use the compiler's expression/structural position distinctions for traversal,
 including executable defaults within signatures. A recursive walk over every
 node is not the contract. Align both backends with D8 when changing result wrapping.
@@ -211,7 +226,6 @@ For example:
 The marker uses existing boolean-property syntax: `^^macro_result` means
 `^macro_result true`. It lives in the node's props, not its metadata; a boolean
 metadata field would use `@@macro_result`. Keep the selected `^^` spelling.
-Its compiler behavior is a design target, not a claim about the current runtime.
 Plain unmarked `do` retains its existing behavior. The earlier `^^create_scope`
 idea is not required by this macro contract.
 
@@ -284,23 +298,25 @@ binding available to that execution; it is not limited to signature names.
 Compound unquote expressions are valid when the ordinary evaluator accepts them.
 The available lexical/module environment is the macro definition's context (D2b).
 
-List elements, node bodies, and nested containers must recognize active
-unquotes consistently. In particular, these are target regression cases,
-currently broken by B2:
+List elements, node bodies, and nested containers recognize active unquotes
+consistently. These repaired B2 examples are executable:
 
-```gene
+```gene runnable
 (macro pair [a b] `[%a %b])
-(pair 1 2) # Target: [1 2]
+(pair 1 2) # [1 2]
 
 (macro lam [parameter body] `(fn [%parameter] %body))
-((lam n (* n 2)) 4) # Target: 8
+((lam n (* n 2)) 4) # 8
 ```
 
-Splicing applies only in supported sequence positions. Preserve the current
-macro body-splice behavior: a List contributes its elements; a node contributes
-its body and drops its head. Do not assume this also merges node properties;
-ordinary call spreads have a separate contract. A spread written in a macro
-call's arguments is syntax, not an eagerly evaluated argument spread.
+Splicing follows ordinary quasiquote, including its supported sequence positions.
+In a node body, a List contributes its elements, a prop map contributes its
+properties, and a node contributes its properties and body while dropping its
+head. For body-only insertion, bind `($body part)` to a macro-body local and
+splice that list. This supersedes
+the old template evaluator's body-only node splice behavior; D2a does not retain
+a second macro-specific quasiquote evaluator. A spread written in a macro call's
+arguments remains syntax, not an eagerly evaluated argument spread.
 
 Keep nested quotation depth, immutability markers, and source positions intact.
 Unsupported splice positions should produce a diagnostic rather than silently
@@ -354,6 +370,14 @@ for the built-in implementation, not a proven solution or a public D6 API.
 constructed through `to_sym`, and artifacts, printers, eval, and both backends
 must preserve any reserved-name or internal-identity invariant.
 
+**Library migration:** the current logger templates retain their explicit task
+scope, receiver evaluation count, and message/payload laziness. Removing automatic
+renaming exposes ordinary capture: `generated_logger` in supplied message or
+payload syntax denotes the logger local. A same-named receiver expression still
+uses its outer binding because it is evaluated before the local declaration.
+This behavior is covered in `test_logging.nim` and documented in the logging
+guide; D6 remains deferred. No collision-free temporary guarantee is claimed.
+
 This deliberately replaces the earlier automatic-capture-protection proposal.
 The implementation should remove the partial rename machinery behind B1, B3,
 and B4, rather than extend it to every syntax form. Reuse ordinary compiler
@@ -384,8 +408,8 @@ argument. A caller-supplied binding name makes the connection explicit:
 answer # Target: undefined outside the expansion.
 ```
 
-The final line illustrates the intended rejection; the current implementation
-still leaks this caller-supplied declaration. Inside the expansion, `%name` and
+The final line illustrates the required rejection; the review's baseline leaked
+this caller-supplied declaration. Inside the expansion, `%name` and
 the caller's references in `%body...` deliberately share the local binding.
 Callers write ordinary code and need no `%answer` marker at the call site.
 Outside the expansion, a same-named outer binding retains its original meaning.
@@ -440,8 +464,9 @@ call site:
 
 The macro does not retain a connection to the first `helper`. The second
 expansion resolves `helper` to `run_scaled`'s parameter through ordinary
-lexical lookup. This is compile-time insertion into lexical code, not a new
-dynamic-scoping mechanism or runtime `eval`.
+lexical lookup. Expansion inserts code into that lexical context, whether the
+macro expands during compilation or at runtime. The timing does not turn free
+references into dynamic lookup through a call stack or an `eval` overlay.
 
 The same rule applies across modules and to free helper-macro calls. Importing
 a macro does not automatically import its author's helper functions or helper
@@ -504,9 +529,12 @@ is not accepted by this guide.
 For B5, a REPL session needs persistent compile-time state alongside its runtime
 scope. A successful definition in one input must be available in the next.
 Do not leak local macro definitions out of a function, expansion, or inner scope.
-Decide and test when an input commits compiler state: failed compilation must not
-leave partial definitions, and behavior after runtime failure must agree with
-the REPL's declaration-persistence policy. Retain duplicate/conflict checks.
+**REPL commit policy, decided 2026-10-03:** compiler state commits when an input
+compiles successfully. Failed compilation leaves the previous context intact;
+a later runtime failure retains the compiled macro definitions, alongside
+runtime effects already performed. Retain duplicate/conflict checks. Keeping a
+definition does not suppress normal errors when its body or definition-side
+initialization later executes.
 
 **D3, decided 2026-10-02:** `eval` compiles against the macro context available
 through its selected Env or borrowed CallerEnv, just as ordinary name lookup
@@ -545,8 +573,9 @@ new context references; persistent REPL state must not retain dead activations.
 review's `(fn f [x] (show! (+ x 1)))` fails to find `x`. Adding an otherwise
 unused `(env)` in `f` makes the same call return `6` for `x = 5`. This is not
 evidence of an intentional top-level-only CallerEnv contract. It suggests an
-optimization-dependent loss of local-name visibility; the precise cause still
-needs diagnosis.
+optimization-dependent loss of local-name visibility. The repair makes syntax
+calls retain their caller's slot-name metadata; the paired regressions in
+`test_vm.nim` cover parameters and locals with and without `(env)`.
 
 Inspect `chunkNeedsCallScopeSlotNames` and scope pooling in the compiler/VM
 alongside `materializeCallerEvalParent`, which copies named slots into the
@@ -572,13 +601,17 @@ using ordinary Gene evaluation, mark its result, and compile that result under
 the block rule. Preserve source locations and expansion provenance without
 adding origin-based lookup or a separate hygiene pass.
 
-The current `macroTemplateValue` shortcut is not a general body evaluator.
-Replace its fallback that returns an arbitrary body unchanged with actual
-execution. Prefer reusing the ordinary compiler/VM to growing a second evaluator
+The former `macroTemplateValue` shortcut was not a general body evaluator.
+Its fallback returned an arbitrary body unchanged instead of executing it.
+Reuse the ordinary compiler/VM rather than growing a second evaluator
 that recognizes a whitelist of expression shapes. Implement definition-side
 macro invocation environments, compilation-budget accounting, and result/artifact
-lifetime consistently with D2b. The runtime program should contain the generated
-code, not a deferred call to the macro expander.
+lifetime consistently with D2b. Module-level macros expand during compilation.
+Local definitions capture their live lexical environment, and their calls
+invoke the body, compile the returned syntax, and execute it when reached at
+runtime. Untaken branches must not execute local macro bodies. Each invocation
+gets its own captured environment; portable artifacts store code and definition
+identities, never a live invocation's captured values.
 
 Share declaration and pattern analysis with ordinary compilation.
 `patternBindingNames` and related functions are useful starting points for
@@ -595,8 +628,9 @@ classification as an explicit existing context and test both backends.
 ### Optimization and variable slots
 
 Macro expansion must remain compatible with ordinary local-slot allocation,
-type analysis, capture planning, and tail-call handling. A macro call itself
-is a compile-time operation; it must not become a runtime interpreter call.
+type analysis, capture planning, and tail-call handling. Module-level macro
+calls disappear during compilation. Local macro calls pay for body execution
+and compilation at runtime, as required by the approved expansion timing.
 
 The current compiler assigns locals numeric slots through `reserveLocal` and
 emits indexed loads through `emitLoadBinding`. Outer references can encode a
@@ -604,7 +638,12 @@ scope depth and slot. Parameters are reserved before function-body locals.
 `compileMacroCall` expands syntax and calls `compileExpr` in the same compiler
 context, carrying tail position through. Expanded declarations can therefore
 receive ordinary slots; a macro does not inherently require name-based lookup
-or invalidate previously assigned variable positions.
+or invalidate previously assigned variable positions. Runtime local expansions
+also leave the enclosing frame's layout intact: generated references use its
+existing lexical bindings, and generated declarations live in the result's
+own scope. Calls that can generate mutations prevent stale type, capture, and
+native-operation assumptions. The static-macro measurements below do not
+measure runtime local expansion cost.
 
 **O1: observed optimization gap, 2026-10-02.** Some optimizations inspect the
 original function-body syntax rather than the expanded code. This probe with
@@ -618,12 +657,15 @@ original function-body syntax rather than the expanded code. This probe with
 [(direct 7) (expanded 7) (grouped 7)] # [7 7 7]
 ```
 
-All three functions emit `opLoadLocalFast` for slot 0. Only `direct` receives
+In the review's baseline, all three functions emitted `opLoadLocalFast` for
+slot 0. Only `direct` received
 `opReturnBareInt` and the `int_identity` native specialization; `expanded` and
-`grouped` use `opReturn` without that specialization. This is evidence of missed
+`grouped` used `opReturn` without that specialization. This was evidence of missed
 optimization, not a measured runtime slowdown. Inspect `formsKnownBareInt`,
 `exprKnownBareInt`, `detectNativeCompileOp`, and their `buildFunctionProto` call
 sites. The same review should cover other analyses that examine source forms.
+The repaired compiler's regression checks all three functions for the same
+typed return proof, native identity specialization, and scopeless eligibility.
 
 Make optimization analyses consume the resolved expansion or suitable lowered
 code. Preserve macro provenance separately for diagnostics. Normalize ordinary
@@ -643,6 +685,12 @@ enclosing runtime frame may suffice. Do not require a new heap scope, closure,
 or function call merely because a block has a lexical boundary. Preserve
 capture identity, binding lifetime, repeated execution, and Env/reflection
 behavior wherever those make the scope observable.
+
+Inline block slots carry explicit private-slot metadata through the VM and GIR.
+Their internal display names do not participate in ordinary name lookup, so a
+symbol constructed with `to_sym` cannot capture one or collide with a caller's
+binding. Typed declarations currently use a runtime lexical scope because type
+annotations can resolve local type values by name.
 
 The compiler may first model a block boundary and eliminate it when safe, or
 determine the required boundary during lowering. This implementation choice
@@ -682,12 +730,28 @@ an equivalent handwritten local can. Optimize redundant temporaries when safe,
 and test both slot access and fast-path eligibility. Do not promise that every
 macro or scoped expansion has zero runtime cost.
 
+**Measurement, 2026-10-03:** [the macro benchmark](../benchmarks/bench_macros.nim)
+compares each macro with its equivalent handwritten marked result. It compiles
+before timing, alternates execution order, discards a warmup, and reports the
+median of six samples. A macOS arm64 release build with Nim 2.2.4/ORC and
+`GENE_WORKERS=0` produced:
+
+| Workload | Iterations | Macro, ms | Equivalent expansion, ms | Ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Arithmetic expression | 500,000 | 59.770 | 60.328 | 0.991 |
+| Local binding in the caller's frame | 500,000 | 78.396 | 78.563 | 0.998 |
+| Closure requiring a runtime lexical scope | 50,000 | 37.480 | 37.346 | 1.004 |
+
+All checksums matched. Runtime was within 1% of the equivalent expansion in
+this run on a shared development machine. This measures those three workloads;
+it does not establish zero overhead or remove the cost of a required scope.
+
 ### Reader and vector normalization
 
-The reader currently preserves `%` and following forms as flat tokens inside
-vectors. Macro expansion, ordinary quasiquote, and match-pattern pins expect
-unquote nodes. The third consumer matters: `(when %a ...)` can match an earlier
-binding, while `[%a b]` currently fails to do so inside a vector (C6).
+The baseline reader preserved `%` and following forms as flat tokens inside
+vectors. Macro expansion, ordinary quasiquote, and match-pattern pins need
+unquote nodes. The third consumer matters: `(when %a ...)` matched an earlier
+binding, while `[%a b]` failed to do so inside a vector (C6).
 
 Prefer normalizing `%form` into an unquote node in the reader for vectors too,
 with correct operand parsing and source locations. A fix limited to template
@@ -745,12 +809,10 @@ responsible for distinguishing computation from construction of syntax.
 | Quasiquote | Constructs syntax by evaluating active unquotes |
 | `(+ x 1)` or another ordinary expression | Executes normally during expansion; normal resolution/type/operation errors apply |
 
-This is a semantic decision, not implemented support. Reuse ordinary evaluation
-rules instead of adding macro-specific bans on expression shapes, local names,
-or computed unquotes. D2b determines lexical lookup. Helper availability during
-expansion, defaults, initialization scheduling, and the handling of values across
-compilation/artifact boundaries require integration work. No decision here
-grants automatic access to caller runtime locals.
+The implementation reuses ordinary evaluation rules without macro-specific bans
+on expression shapes, local names, or computed unquotes. D2b determines lexical
+lookup and expansion timing. A macro body reads its definition environment;
+access to caller bindings comes through the syntax it emits.
 
 ### D2b: definition-side lexical evaluation — decided
 
@@ -775,18 +837,60 @@ Imports and re-exports retain the original definition context.
 when the generated code executes. Quasiquote's active unquote expressions run
 in the macro-body environment; the syntax they produce is compiled under D1.
 
-This decision concerns lexical lookup. Implementing it still requires making
-definition-side bindings available at expansion time and preserving their
-lifetime through artifact loading. It does not settle module initialization
-scheduling by silently running module code during discovery, nor permit a
-fallback to the caller's runtime environment when a helper is unavailable.
+**Local lexical lookup, clarified 2026-10-02:** if a macro is defined inside
+`f`, a free `n` evaluated by its body refers to the enclosing `f`'s `n`.
+A bare `n` in returned syntax instead resolves where that syntax is compiled.
+For example, `(macro m [] n)` reads the definition-side binding, whereas
+``(macro m [] `n)`` emits a caller-side reference. Neither lookup may fall back
+to an unrelated same-named module binding when a nearer binding exists.
+
+**Local expansion timing, decided 2026-10-03:** a macro defined inside `f`
+expands when `f` runs, not while the surrounding source is statically compiled.
+Its body reads the lexical environment of that invocation. Each executed macro
+call produces syntax that is compiled and executed in the caller's environment;
+an earlier invocation's expansion must not be reused with a different `n`.
+
+```gene
+(fn f [n]
+  (macro m [] (+ n 1))
+  (m))
+[(f 2) (f 9)] # Target: [3 10]
+```
+
+This is a runtime expansion of a local macro, with the same result-scope and
+caller-control-flow contract as other macros. It is not `eval`'s binding-copy
+boundary. A template that emits a bare `n` still reads the caller's binding.
+Module-level macros retain their separate compile-time definition instances.
+The VM implements this through ordinary captured macro-body functions and
+runtime compilation of the result. Generated code enters the actual caller
+scope without an eval overlay or an additional function boundary.
+
+Because returned syntax may access or mutate any caller binding, a task that
+invokes a runtime local macro stays on its owner lane. Its complete capture set
+is not known when a worker snapshot would be created. This preserves ordinary
+task execution and suspension without claiming that such a call is Send-safe.
+
+**Phase initialization, approved 2026-10-02:** when expansion needs definition-
+side bindings, initialize the defining module on demand in a separate compile-
+time instance. Ordinary helpers and computed top-level bindings are available
+there. Top-level effects may consequently occur during compilation as well as
+in the independent runtime module instance. Discovery alone executes no module
+initializers. Reuse the compile-time instance within its compilation context,
+preserve definition identity across imports, and diagnose initialization cycles.
+
+Artifact loading preserves portable definition identities and context, while
+live invocations retain their environments through ordinary closure ownership.
+Do not fall back to the caller's runtime environment when a definition-side
+helper is unavailable. Existing mixed parent-scope/closure cycle limits also
+apply to saved local macro environments; see the
+[development guide](development.md#status).
 
 ### Unquote shared with pins and computed paths
 
-The R1 errors remain real: an unknown active unquote currently falls through to
-a plain symbol, changing a match pin into a binder or a computed path into a
-static key. The probes return `true` instead of `false` and `99` instead of `1`.
-Replace that fallback with ordinary evaluation and normal unresolved-name errors.
+The R1 baseline let an unknown active unquote fall through to a plain symbol,
+changing a match pin into a binder or a computed path into a static key. The
+probes returned `true` instead of `false` and `99` instead of `1`.
+Ordinary evaluation and normal unresolved-name errors replace that fallback.
 
 Quotation depth and the consumer of a surviving unquote node still matter.
 Local code constructed inside a quasiquote is not executed merely by constructing
@@ -795,11 +899,27 @@ while building that syntax. Conversely, macro-body locals may be available to
 ordinary unquote evaluation under the macro execution environment.
 
 Preserve `%items...` splicing, inserted argument syntax, and ordinary quote/
-quasiquote nesting. Specify how to construct a literal unquote for a later pin
-or computed path without inventing scope lookup based on percent-counting.
-Current `%%a` works for some caller-bound pins and fails for renamed template
-locals; these probes must inform the remaining quotation decision. The earlier
-blanket rejection of every non-parameter or compound unquote is withdrawn.
+quasiquote nesting. Construct a literal unquote for a later pin or computed
+path with ordinary quote:
+
+```gene runnable
+(var data {^a 1 ^key 99})
+(macro pick [k]
+  `(do (let key %k) (path data %(quote (unquote key)))))
+(pick "a") # 1
+```
+
+The active unquote inserts the syntax `(unquote key)` without evaluating `key`.
+The generated path then reads its local `key` at the call site. The same
+construction works in match patterns, and argument syntax can already contain
+pins or computed paths without any additional escaping.
+
+At a single quasiquote depth, `%%a` evaluates `(unquote a)` as ordinary body
+code; there is no special residual-unquote escape. Without a callable binding
+for `unquote`, it fails normally. The legacy evaluator's partial support for
+this spelling is replaced by D2a. Nested quasiquotes still use their ordinary
+depth rules, including macro-generating templates. No percent-count-based
+scope selection or new syntax is introduced.
 
 Keep formatting round trips valid and make `gene doc` list macro declarations
 using compiler metadata. Macros should remain absent from runtime reflection
@@ -811,12 +931,14 @@ Use symbol names to locate code; line numbers will move during repair.
 
 | File | Relevant implementation |
 | --- | --- |
-| [compiler.nim](../src/gene/compiler.nim) | `macroParamDef`, `macroTemplateValue`, `expandMacroQuasi`, `expandMacroDoNode`, `introducedBinderName`, `expandMacro`, `compileMacro`, `expandMacroTree`, `expandSourceUnitMacros` |
+| [compiler.nim](../src/gene/compiler.nim) | `macroParamDef`, `evaluateMacroValue`, `expandMacro`, `markMacroResult`, `compileMacroResult`, `compileMacro`, `expandMacroTree`, `expandSourceUnitMacros` |
 | [compiler.nim](../src/gene/compiler.nim) | `patternBindingNames`, `collectPatternBindingNames`, ordinary declaration/body compilers, `compileNs`, `importMacro`, `builtinNamespaceMacros`, `compileQuasiTemplate`, `compileQuasiList` |
 | [reader.nim](../src/gene/reader.nim) | `parseForm` handling of `%` with `inList`, vector parsing, quotation and source locations |
 | [gir.nim](../src/gene/gir.nim) | `MacroDef`, macro parameters/defaults, portable module artifacts |
 | [vm.nim](../src/gene/vm.nim) | `runReplSession`, eval environment materialization, module compilation and macro artifact loading |
-| [web.nim](../src/gene/web.nim) | Consumption of expanded frontend artifacts and web-profile validation |
+| [macro_runtime.nim](../src/gene/macro_runtime.nim) | Separate compile-time Application, on-demand definition module initialization, and macro-body invocation |
+| [gir_codec.nim](../src/gene/gir_codec.nim) | Deterministic graph encoding of macro definitions and shared definition contexts; explicit private-slot metadata and structural encoding for constructed symbols without a faithful reader spelling |
+| [web.nim](../src/gene/web.nim), [web_backend.nim](../src/gene/web_backend.nim) | Public web compiler initialization, consumption of expanded frontend artifacts, and web-profile validation |
 
 ## 6. Repair sequence and acceptance criteria
 
@@ -848,13 +970,31 @@ and update the public guides/specs and change log in the same implementation
 change. Ordinary macro-body execution is now part of the work; no separate
 macro expression whitelist is required.
 
-The web profile already supports top-level templates, but the review found
-local macro definitions and macro-generating macros unsupported there (L5).
+The web profile supports module-level macro expansion. Local macro definitions,
+including definitions produced by an expansion, require the compiler at runtime
+and are outside the web profile (L5). Diagnose these explicitly; do not expand
+them statically even when their body appears independent of runtime values.
 Do not silently accept different binding semantics for forms admitted by both
 backends. For excluded forms, give a profile-specific error; expanding web
 coverage can be scheduled separately.
 
+The web emitter currently keeps declarations made inside conditional branches
+in JavaScript branch storage. Reading such a declaration later in the enclosing
+sequence is outside the web profile. Diagnose that read, including when a
+same-named caller binding exists; falling back to that caller binding would
+silently change the expanded program. Uses within the declaring branch and the
+macro result's confinement remain supported.
+
 ## 7. Regression coverage
+
+Verification checkpoint, 2026-10-03: the full regression suite passed 1,630
+tests, executable specifications passed 826, shared VM/web fixtures passed
+313 cases per backend, and ownership checks passed 86. Subsequent budget and
+REPL changes passed the full 386-test VM suite. Worker checks passed 47 tests
+across the full and corrected focused runs, including nested runtime-macro
+capture handling. The final WebAssembly build passed 46 ABI cases, and emitted
+web fixtures passed TypeScript 5.9.2 checking. These checks cover the contracts
+below; they do not remove the documented backend and general lifetime limits.
 
 Test observable results, shadowing, declaration confinement, and error locations.
 The original review assumed automatic hygiene; update those expectations to the
@@ -885,6 +1025,7 @@ relying only on literal arguments.
 | E1 caller locals | Fexpr eval can see caller parameters/locals consistently with and without an unused `(env)`; preserve the existing eval-copy and borrowed-lifetime boundaries |
 | D2a/L3 execution and diagnostics | Unquoted `(+ x 1)` succeeds for a numeric syntax argument and fails normally for a nonnumeric one; valid body calls, local bindings, sequencing, and computed unquotes execute; malformed code, invalid operations, unresolved names, signature errors, and recursion/budget failures retain expansion provenance |
 | D2b lexical lookup | Definition helper wins over a same-named caller helper when executing the macro body; emitted helper calls use call-site lookup; parameters/body locals follow ordinary shadowing; imports/re-exports and private definition helpers preserve body context |
+| D2b local timing | Repeated function invocations read their own captured values; skipped branches execute no macro body; body suspension works; generated mutation/return/loop exits affect the caller; saved Env contexts retain local definitions; pipeline operands are classified after expansion and each result confines its declarations; artifact cloning preserves definition identities |
 | R1 unquote overlap | Pin/path examples cannot silently yield `true`/`99`; unquote evaluation uses its defined environment and reports unresolved names normally; supplied syntax retains its unquote nodes; test literal-unquote construction and distinguish current caller-bound `%%a` from renamed locals |
 | Existing semantics | Named/rest/default/typed syntax parameters; argument duplication and skipping; reading and assigning existing caller variables; return/break/continue; tail recursion; quoted macro calls; generated macros consumed inside their expansion |
 | O1/R2 optimization | Direct and macro-expanded equivalent functions; transparent wrappers; repeated expansions reuse spellings without slot collisions; caller-local loads stay direct where valid; typed return/native specialization and scopeless eligibility; captures and both local/impl deep-tail cases remain correct |
@@ -910,11 +1051,12 @@ as currently passing. Promote them to executable documentation when repaired.
 ## 8. Decision record and implementation follow-ups
 
 D1, D2a, D2b's lexical lookup, D3, D4, D5, D7, and D8, together with ordinary
-binding of generated code, are decided. Integrate definition-side execution
-with compilation phases and the remaining quotation interaction exposed by R1.
+binding of generated code, are decided. Definition-side execution and ordinary
+quotation apply consistently across static and runtime expansion.
 D6 is explicitly deferred until a concrete need is demonstrated.
-The decision table has no remaining unchosen item. Expansion traversal,
-scope handling, and the marker policy still need implementation. E1 remains
+The numbered decisions are settled or explicitly deferred. Local macros expand
+when their enclosing function runs; REPL macro definitions commit after
+successful compilation, including when execution then fails. E1 remains
 independent of these decisions. Record each chosen rule here and in the relevant
 implemented spec when it lands.
 
@@ -922,7 +1064,7 @@ implemented spec when it lands.
 | --- | --- | --- |
 | D1: Free template references | Use ordinary lexical/module lookup in the expanded code | Decided 2026-10-02. No automatic hygiene or origin-based lookup; ordinary shadowing applies; document dependencies on caller-visible helpers |
 | D2a: Macro-body execution | Evaluate ordinary Gene code to produce the expansion; backtick is optional | Decided 2026-10-02. No body-shape whitelist or parameter-only unquote restriction. Invalid code/operations fail normally; the C10 grammar and mandatory-template proposal are withdrawn |
-| D2b: Macro execution environment | Use the macro definition's lexical/module environment, like an ordinary function | Lexical lookup decided 2026-10-02. Parameters/body locals resolve normally before outer definition bindings; retain context through imports/re-exports. Phase initialization and artifact lifetime need integration; D1 governs generated-code free names |
+| D2b: Macro execution environment | Use the macro definition's lexical/module environment, like an ordinary function | Decided 2026-10-02; local timing decided 2026-10-03. Module macros use a separate compile-time module instance initialized on demand; discovery remains non-executing. Local macros expand when their call executes, using that definition's live captured environment. Preserve identity/lifetime through imports and artifacts; D1 governs generated-code free names |
 | D3: Eval compile-time context | Use the macros available through the selected Env or CallerEnv | Decided 2026-10-02. Ordinary env includes its visible macro context; caller_env supplies caller macros; isolated environments expose only their configured context. Preserve existing eval control-flow, mutation, and lifetime boundaries; E1 is an independent bug |
 | D4: Macro/value shadowing | Ordinary lexical lookup: the nearest binding determines macro expansion versus ordinary use | Decided 2026-10-02. Inner bindings may hide macros; no fallback to a hidden macro when an inner value is not callable. Same-scope duplicates, imports, and REPL redefinition follow ordinary binding rules |
 | D5: Marked results and local declarations | Wrap a non-do executable result in `(do ^^macro_result <result>)`, or set the boolean property on an existing do; create a scope for bindings or impl registrations | Core and marker policy decided 2026-10-02. Classify position/slots before wrapping. Handwritten forms behave identically; only literal true enables the rule, and absent/false/non-boolean is unmarked. D7 specifies registration visibility |
@@ -984,10 +1126,11 @@ rows include pattern dispatch.
 
 ### Behavior changes to record in the change log
 
-These are target changes under the decisions above. They describe work still
-to implement, not behavior guaranteed by the current binary.
+These changes compare the review's baseline with the selected contract. The
+implementation checkpoint above records the supported behavior; an installed binary
+may predate these changes.
 
-| Case | Today | After the repair |
+| Case | Review baseline | Selected behavior |
 | --- | --- | --- |
 | Template local with the same name as an argument's variable, e.g. `(swap tmp y)` or `(add_one tmp)` | Protected for `do`-level binders: `[2 1]`, `101` | Ordinary shadowing: `swap` fails or leaves values unswapped, `add_one` gives `2` |
 | Macro expanding to `fn`, `type`, or `let` with a caller-supplied name | Name usable after the call | Name confined to the expansion (D5) |
@@ -997,4 +1140,6 @@ to implement, not behavior guaranteed by the current binary.
 | Quoted data `(quote [%x])` | `[% x]`, two flat tokens | A vector containing an unquote node (stage 1) |
 | Macro body without a backtick, such as `(+ x 1)` | Inserted as ordinary caller code | Evaluated during expansion; valid computation succeeds and invalid operations fail normally (D2a) |
 | Active unquote such as `%name` or `%(expr)` | Limited template substitution, with a silent fallback for other operands | Ordinary expression evaluation in the definition-side macro invocation environment (D2b); unresolved names and invalid operations fail there; quotation-depth behavior still applies |
-| Log macro argument that mentions `generated_logger` | Caller's binding | Collides unless the built-in template is changed |
+| Single-depth `%%name` used to emit a residual pin/path unquote | Partial implicit support in the template evaluator | Ordinary evaluation of `(unquote name)`; use `%(quote (unquote name))` to insert that syntax literally |
+| A node spliced into a template's node body | Contributes its body, dropping its head and properties | Ordinary quasiquote contributes its properties and body, dropping its head; explicitly splice `$body` for body-only insertion |
+| Log macro argument that mentions `generated_logger` | Caller's binding | Message/payload syntax captures the logger local; receiver syntax keeps its ordinary pre-declaration lookup |

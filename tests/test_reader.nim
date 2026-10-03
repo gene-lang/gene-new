@@ -265,6 +265,27 @@ suite "reader — dot message descriptors":
       check read(once).print() == once
 
 suite "reader — unquote":
+  test "macro and residual unquote formatting preserves syntax":
+    for source in [
+      "(macro pair [a b] `#[%a %b])",
+      "(macro nested [x] `(macro inner [y] `[%y %%x]))",
+      "(macro items [xs] `[0 %xs... 9])",
+      "(macro pick [k] `(do (let key %k) (path data %(quote (unquote key)))))",
+      "(do ^^macro_result (let x 1) x)"
+    ]:
+      checkpoint source
+      let formatted = formatSource(source)
+      check read(formatted).print() == read(source).print()
+      check formatSource(formatted) == formatted
+
+  test "vectors preserve unquote and splice syntax":
+    check_read("[%x %xs... 9]", "[(unquote x) (unquote (... xs)) 9]")
+    check_read("#[%x]", "#[(unquote x)]")
+    check_read("(quote [% x])", "(quote [(unquote x)])")
+    check_read("[%data/key]", "[(unquote (path data key))]")
+    check_read("[x : Int y = 1 ^ named rest...]",
+               "[x : Int y = 1 ^ named rest...]")
+
   test "unquote symbol":     check_read("%name",         "(unquote name)")
   test "unquote form":       check_read("%(label self)", "(unquote (label self))")
   test "unquote path":       check_read("%self/tag",     "(unquote (path self tag))")

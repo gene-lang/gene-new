@@ -635,8 +635,10 @@ proc admitErrorValue(value: Value, scope: Scope): Value =
     # pending/failed user impl assembly here could recursively fail admission.
     value.installErrorWitness(protocol, app.errorDefaultMessage, app.builtinsScope())
     return value
+  var intrinsicType: Value
   let builtin = value.kind == vkNode and value.head.kind == vkType and
-    value.head.typeScope == app.builtinsScope()
+    app.builtinsScope().lookupOptional(value.head.typeName, intrinsicType) and
+    intrinsicType.bits == value.head.bits
   if value.kind != vkNode or value.head.kind != vkType or
       (not builtin and not sourceScope.typeImplementsProtocol(value.head, protocol)):
     raiseTypeError("Error admission", "value implementing Error", value, scope)

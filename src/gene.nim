@@ -1193,8 +1193,20 @@ proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   result.sort()
 
 proc writeDocDeclarations(scope: Scope, includeThisModule = false) =
+  var declarations = initTable[string, string]()
   for name in docDeclarationNames(scope, includeThisModule):
-    echo "- " & name & " : " & declarationKind(scope.vars[name])
+    if not name.startsWith(BlockBindingPrefix):
+      declarations[name] = declarationKind(scope.vars[name])
+  if scope.compilerMacros != nil and scope.compilerMacros of MacroBindings:
+    let context = MacroBindings(scope.compilerMacros)
+    for name in context.ownedNames:
+      if '/' notin name and context.definitions.hasKey(name):
+        declarations[name] = "Macro"
+  var names: seq[string]
+  for name in declarations.keys: names.add name
+  names.sort()
+  for name in names:
+    echo "- " & name & " : " & declarations[name]
 
 proc collectDocNamespaces(ns: Value, prefix: string,
                           namespaces: var seq[tuple[path: string, ns: Value]]) =
@@ -1265,7 +1277,7 @@ proc cmdDoc(path: string) =
   try:
     let absPath = normalizedPath(absolutePath(path))
     let app = newApplicationForEntryFile(absPath)
-    let chunk = compileSource(readSourceFile(absPath), absPath)
+    let chunk = app.compileFileModule(absPath)
     let module = app.loadFileModule(absPath)
     echo "Module: " & module.moduleName
     echo "Path: " & module.modulePath

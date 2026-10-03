@@ -1,7 +1,7 @@
 // Verifies the web profile's host surface against the pinned lib.dom.d.ts.
 //
 // The relationship here is deliberately inverted from a code generator: the
-// compiler (src/gene/web.nim) is the single source of truth for what Gene can
+// compiler (src/gene/web_backend.nim) is the single source of truth for what Gene can
 // call, and TypeScript is the *oracle* that says whether those calls are real.
 // A generator would be a second author, and two authors of one contract is how
 // web/gene_dom_bindings.json came to advertise nine DOM methods of which three
@@ -27,7 +27,7 @@ if (!fs.existsSync(domPath)) {
   process.exit(1);
 }
 
-// The contract, transcribed from the emitter in src/gene/web.nim. Each entry
+// The contract, transcribed from the emitter in src/gene/web_backend.nim. Each entry
 // names the Gene operation, the DOM interface it lands on, the member, whether
 // it is called or assigned, and the argument count we emit.
 const contract = [

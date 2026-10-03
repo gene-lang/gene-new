@@ -32,7 +32,7 @@ when not defined(geneWasm):
   # linked the whole profile analyzer and emitter into the browser module for
   # +675 KB (4.5 → 5.2 MB) of payload nothing in that build can reach — and
   # payload is the wasm target's headline cost (§2 of the transpile proposal).
-  import ./web
+  import ./web_backend
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import ./ext/term/tui as tui_terminal
@@ -132,6 +132,14 @@ type
     targetDepth: int
     loopExit: bool
     loopContinue: bool
+    loopIp: int
+    loopStackBase: int
+
+  InlineLoopTarget = object
+    frameDepth: int
+    stackBase: int
+    breakIp: int
+    continueIp: int
 
   FrameKind = enum
     fkNormal
@@ -235,6 +243,7 @@ type
     tailTraceFrames: seq[TailTraceFrame]
     tailTraceSummaries: seq[TailTraceSummary]
     handlers: seq[TryHandler]
+    inlineLoops: seq[InlineLoopTarget]
     validateImpls: bool
     returnType: Value
     returnLabel: string
@@ -476,6 +485,7 @@ type
 
   Application* = ref object of RuntimeContext
     builtins: Scope
+    intrinsicImpls: seq[ProtocolImpl]
     boundCallTemplate: FunctionProto
     streamCallbackTemplate: FunctionProto
     collectionCallbackTemplate: FunctionProto
@@ -513,6 +523,7 @@ type
     moduleLoading: HashSet[string]
     moduleCompileHeaders: Table[string, ModuleCompileHeader]
     moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
+    compileArtifactTemplates: Table[string, ModuleCompileArtifact] # immutable phase input snapshot
     moduleCompileLoading: HashSet[string]
     portableCompileNames: bool
     implEpoch: uint64
@@ -939,6 +950,9 @@ var activeFiberRunning {.threadvar.}: bool
 var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
 var activeVmBudget {.threadvar.}: ptr EvalBudget
+var macroContextRetirementHook: proc() {.nimcall, gcsafe.}
+type RuntimeMacroSlots = ref object of RootObj
+  entries: seq[RuntimeMacroDefinition]
 var activeVmScope {.threadvar.}: ptr Scope
 var activeTask {.threadvar.}: Value
 var activeFiberTasks {.threadvar.}: seq[Value]
@@ -1654,6 +1668,7 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len > 64:
     scope.slotDefinedOverflow = newSeq[bool](names.len - 64)
   scope.slotNames = names
+  scope.privateSlots.setLen(0)
   scope.slotMirror = mirror
 
 proc moduleRefRootScope(scope: Scope): Scope =
@@ -1681,6 +1696,8 @@ proc prepareImplAssembly(scope: Scope, chunk: Chunk)
 proc finishImplAssembly(scope: Scope, chunk: Chunk)
 
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
+  if chunk.finalMacroContext != nil:
+    scope.compilerMacros = chunk.finalMacroContext
   if chunk.localNames.len > 0:
     if scope.slots.len == 0:
       scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
@@ -1699,6 +1716,7 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
         $chunk.localNames.len & " local(s) but the scope already holds a " &
         "different layout of " & $scope.slotNames.len & ". Compile the " &
         "chunks with useLocalSlots = false to share one scope.")
+    scope.privateSlots = chunk.privateLocalSlots
   for name in chunk.exportExcludedNames:
     scope.exportExcludedNames.incl name
   for name in chunk.moduleRefNames:
@@ -1720,7 +1738,7 @@ proc checkSlot(scope: Scope, index: int, name: string) =
 
 proc slotIndex(scope: Scope, name: string): int =
   for index, slotName in scope.slotNames:
-    if slotName == name:
+    if slotName == name and index notin scope.privateSlots:
       return index
   -1
 
@@ -1747,7 +1765,7 @@ proc materializeMirroredVars*(scope: Scope) =
     return
   scope.varsDirty = false
   for i, name in scope.slotNames:
-    if name.len > 0 and name[0] != '\0' and scope.slotDefined(i):
+    if name.len > 0 and name[0] != '\0' and i notin scope.privateSlots and scope.slotDefined(i):
       scope.vars[name] = scope.slots[i]
 
 proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
@@ -1867,7 +1885,7 @@ proc loadNamedSlot(scope: Scope, name: string, value: var Value): bool =
 
 proc syncSlot(scope: Scope, name: string, v: Value) =
   for index, slotName in scope.slotNames:
-    if slotName == name:
+    if slotName == name and index notin scope.privateSlots:
       scope.slots[index] = v
       scope.markSlotDefined(index)
       return
@@ -4373,6 +4391,10 @@ proc carriesCallerEnv(value: Value, seen: var HashSet[uint64]): bool =
   of vkModule:
     carriesCallerEnv(value.moduleRootNamespace, seen)
   of vkEnv:
+    for item in macroContextValues(value.envCompilerMacros):
+      if carriesCallerEnv(item, seen): return true
+    for item in value.envMacroFunctions:
+      if carriesCallerEnv(item, seen): return true
     if carriesCallerEnv(value.envParent, seen): return true
     for _, item in value.envBindings:
       if carriesCallerEnv(item, seen): return true
@@ -5732,6 +5754,42 @@ proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   requireEnv("Env/extend", args[0])
   result = newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0],
                   bindingScope = call.dispatchScope)
+  result.setEnvClosedScope(args[0].envClosedScope)
+
+proc asMacroBindings(context: RootRef): MacroBindings =
+  if context != nil and context of MacroBindings:
+    MacroBindings(context)
+  else:
+    nil
+
+proc captureEnvMacros(env: Value, context: MacroBindings, scope: Scope)
+proc installEnvMacros(target: Scope, env: Value)
+
+proc mergeMacroBindings(target: var Table[string, MacroDef], context: MacroBindings) =
+  if context == nil: return
+  for hidden in context.hiddenNames:
+    var remove: seq[string]
+    for name in target.keys:
+      if (name == hidden or name.startsWith(hidden & "/")) and
+          not context.definitions.hasKey(name):
+        remove.add name
+    for name in remove: target.del(name)
+  for name, definition in context.definitions:
+    target[name] = definition
+
+proc scopeMacroBindings(scope: Scope): MacroBindings =
+  var current = scope
+  while current != nil:
+    let context = asMacroBindings(current.compilerMacros)
+    if context != nil: return context
+    current = current.parent
+  nil
+
+proc chunkMacroContext(chunk: Chunk, index: int): MacroBindings =
+  if index >= 0 and index < chunk.macroContexts.len:
+    chunk.macroContexts[index]
+  else:
+    nil
 
 proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -5743,6 +5801,8 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Env/snapshot binding names must be a list")
   let source = args[0].callerEnvScope
+  let context = asMacroBindings(args[0].envCompilerMacros)
+  var capturedMacros = MacroBindings()
   var bindings = initTable[string, Value]()
   var seen = initHashSet[string]()
   for item in args[1].listItems:
@@ -5757,6 +5817,9 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
       raise newException(GeneError,
         "Env/snapshot duplicate binding name: " & name)
     seen.incl name
+    if context != nil and context.definitions.hasKey(name):
+      capturedMacros.definitions[name] = context.definitions[name]
+      continue
     var value: Value
     if not source.lookupOptional(name, value):
       raise newException(GeneError,
@@ -5764,6 +5827,8 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
     rejectCallerEnvEscape("Env/snapshot binding '" & name & "'", value)
     bindings[name] = escapeWeakFunctions(value)
   result = newEnv(bindings)
+  captureEnvMacros(result, capturedMacros, source)
+  rejectCallerEnvEscape("Env/snapshot", result)
   result.setEnvClosedScope(true)
 
 proc invokeStreamCallback(stream, item: Value): Value
@@ -8427,6 +8492,7 @@ when defined(geneRcStats):
     retirePendingGenerations(scope)
     if drainCycleRechecks() > 0 and scope != nil and scope.application != nil:
       inc Application(scope.application).retireEpoch
+    if macroContextRetirementHook != nil: macroContextRetirementHook()
     GC_fullCollect()
     NIL
 
@@ -10060,6 +10126,8 @@ proc closureCaptureScope(source: Scope, plan: CapturePlan): Scope =
       copy.slotDefinedOverflow = newSeq[bool](width - 64)
     if plan.slotNames[i].len > 0:
       copy.slotNames = plan.slotNames[i]
+    for slot in src.privateSlots:
+      if slot < width: copy.privateSlots.add slot
     for slot in slots:
       copy.slots[slot] = escapeWeakFunctions(src.slots[slot], boundary)
       copy.markSlotDefined(slot)
@@ -10082,6 +10150,7 @@ proc drainReleasedCycles(scope: Scope) {.noinline.} =
   ## the exit is the last point the VM sees before its host resumes.
   if drainCycleRechecks() > 0 and scope != nil and scope.application != nil:
     inc Application(scope.application).retireEpoch
+  if macroContextRetirementHook != nil: macroContextRetirementHook()
 
 proc finishUnpooledReturn(returning: Scope, returned = NIL) {.noinline.} =
   ## The return of a call scope kept out of the pool: drain released watches,
@@ -10242,6 +10311,7 @@ proc builtinsScope*(app: Application): Scope =
     withAppBuiltinsLock:
       if app.builtins == nil:
         app.builtins = buildBuiltins(app)
+        app.intrinsicImpls = app.builtins.impls
   app.builtins
 
 proc builtinsScope*(): Scope =
@@ -11438,6 +11508,7 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string],
   if scope.slots.len != names.len:
     scope.slots.setLen(names.len)
   scope.slotDefinedBits = 0
+  scope.privateSlots.setLen(0)
   if names.len > 64:
     scope.slotDefinedOverflow.setLen(names.len - 64)
   elif scope.slotDefinedOverflow.len != 0:
@@ -11461,12 +11532,17 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
     scope.strictErrorLease = activateStrictErrorLease(callee, scope)
   let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
   if code of FunctionProto:
+    if FunctionProto(code).chunk.privateLocalSlots.len > 0:
+      scope.privateSlots = FunctionProto(code).chunk.privateLocalSlots
     let selfBits = FunctionProto(code).annotationSelfBits
     if selfBits != 0:
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.strictErrorLease = nil
+  scope.compilerMacros = nil
+  scope.runtimeMacroSlots = nil
+  scope.privateSlots.setLen(0)
   scope.application =
     if parent != nil: parent.application
     else: nil
@@ -11486,6 +11562,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.implAssembly = nil
   scope.implValidationEpoch = 0
   scope.implOverlayRoot = false
+  scope.scopedImplImports = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
@@ -11539,6 +11616,8 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     if parent != nil: parent.moduleBase
     else: nil
   result.simpleCallScope = true
+  result.runtimeMacroSlots = nil
+  result.privateSlots.setLen(0)
   result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   result.evalBudget =
     if parent != nil: parent.evalBudget
@@ -11808,7 +11887,9 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope == nil or scope.closureHeld:
     return
   scope.strictErrorLease = nil
+  scope.compilerMacros = nil
   scope.annotationSelfType = NIL
+  scope.runtimeMacroSlots = nil
   scope.implAssembly = nil
   if scope.simpleCallScope:
     scope.clearDefinedCallSlots()
@@ -11856,6 +11937,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope.corePendingTypes.len != 0:
     scope.corePendingTypes.setLen(0)
   scope.implOverlayRoot = false
+  scope.scopedImplImports = false
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
@@ -13376,7 +13458,14 @@ proc makeImplsVisible(importingScope, sourceScope: Scope) =
 
 proc importScopedImpl(importingScope, sourceScope: Scope,
                       protocol, receiver: Value) =
-  let target = importingScope.moduleRootScope()
+  var target = importingScope.moduleRootScope()
+  var current = importingScope
+  while current != nil:
+    if current.scopedImplImports:
+      target = current
+      break
+    if current == target: break
+    current = current.parent
   if target == nil:
     raise newException(GeneError, "import_impl requires a module scope")
   var found = false
@@ -13397,7 +13486,12 @@ proc importScopedImpl(importingScope, sourceScope: Scope,
   var imported = selected.implForScopeStorage(target)
   imported.exported = false
   imported.imported = true
+  if target.scopedImplImports:
+    imported.visibility = ivOverlay
   if target.validateImplAgainstChain(imported, identicalIsDuplicate = true):
+    return
+  if target.scopedImplImports:
+    target.publishImpl(imported)
     return
   let app = target.application()
   var prospectiveScopes = app.currentImplScopeSets(target)
@@ -13836,6 +13930,7 @@ proc functionCapturesSendable(value: Value, visibleScope: Scope,
   if code == nil or not (code of FunctionProto):
     return false
   let proto = FunctionProto(code)
+  if hasRuntimeMacroCalls(proto.chunk): return false
   if not chunkCapturesSendable(proto.chunk, fnScope, visibleScope, 0, seen,
                                initHashSet[string](), mode):
     return false
@@ -13879,6 +13974,11 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
       if mode == csmWorker:
         return false
     of opSetName:
+      return false
+    of opInvokeRuntimeMacro, opExecuteRuntimeMacro, opRuntimePipelineStage:
+      # Returned syntax can access or mutate any caller binding. Its capture
+      # set is only known after expansion, so keep this task on the owner lane
+      # rather than publishing an incomplete snapshot to a worker.
       return false
     of opFail, opPanic:
       if mode == csmWorker:
@@ -14023,6 +14123,7 @@ proc isSendableValue(value: Value, scope: Scope): bool =
   isSendableValue(value, scope, seen)
 
 proc spawnCanMoveToWorker(scope: Scope, body: Chunk): bool =
+  if hasRuntimeMacroCalls(body): return false
   var seen = initHashSet[uint64]()
   chunkCapturesSendable(body, scope, scope, 0, seen, initHashSet[string](),
                         csmWorker)
@@ -14261,6 +14362,9 @@ proc snapshotScopeChain(source: Scope,
   result.moduleRoot = source.moduleRoot
   result.moduleStatic = source.moduleStatic
   result.forceOverlayImpls = source.forceOverlayImpls
+  result.scopedImplImports = source.scopedImplImports
+  result.compilerMacros = source.compilerMacros
+  result.runtimeMacroSlots = source.runtimeMacroSlots
   result.annotationSelfType = source.annotationSelfType
   scopeMap[key] = result
   if source.slots.len > 0:
@@ -14269,6 +14373,7 @@ proc snapshotScopeChain(source: Scope,
     if source.slots.len > 64:
       result.slotDefinedOverflow = newSeq[bool](source.slots.len - 64)
   result.slotNames = source.slotNames
+  result.privateSlots = source.privateSlots
   for binding in source.slotTypes:
     result.slotTypes.add snapshotTypeBinding(binding, scopeMap)
   result.slotMirror = source.slotMirror
@@ -14355,6 +14460,13 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
   if seenChunks.contains(key):
     return
   seenChunks.incl key
+  for context in chunk.macroContexts:
+    for value in macroContextValues(context, seenChunks):
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  for value in macroContextValues(chunk.finalMacroContext, seenChunks):
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  for value in runtimeMacroValues(chunk, seenChunks):
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
   if completePublication:
     publishSpawnValue(chunk.superType, seenScopes, seenValues, seenChunks)
     publishErrorEffect(chunk.initializationErrors, seenScopes, seenValues, seenChunks)
@@ -14573,6 +14685,10 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkEnv:
     publishSpawnValue(value.envParent, seenScopes, seenValues, seenChunks)
+    for item in macroContextValues(value.envCompilerMacros, seenChunks):
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for item in value.envMacroFunctions:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
     for _, item in value.envBindings:
       publishSpawnValue(item, seenScopes, seenValues, seenChunks)
     for item in value.envImports:
@@ -14734,6 +14850,8 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
         publishSpawnValue(value, seenScopes, seenValues, seenChunks)
       for task in current.ownedCleanupTasks:
         publishSpawnValue(task, seenScopes, seenValues, seenChunks)
+    for value in macroContextValues(current.compilerMacros, seenChunks):
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
     publishSpawnValue(current.annotationSelfType, seenScopes, seenValues, seenChunks)
     for i in 0 ..< current.slots.len:
       if current.slotDefined(i):
@@ -15203,6 +15321,41 @@ proc nearestEnvModule(chain: openArray[Value]): Value =
       return module
   NIL
 
+proc exportedEnvMacros(source: Value): MacroBindings =
+  result = MacroBindings()
+  let namespace = namespaceForEnvSource(source)
+  if namespace.kind != vkNamespace: return
+  let context = asMacroBindings(namespace.nsScope.compilerMacros)
+  if context == nil: return
+  for name in context.exportedNames:
+    if context.definitions.hasKey(name):
+      result.definitions[name] = context.definitions[name]
+
+proc evalMacroBindings(env: Value): MacroBindings =
+  result = MacroBindings()
+  if env.kind == vkCallerEnv:
+    discard env.callerEnvScope # enforce the borrowed lifetime before reading context
+    let context = asMacroBindings(env.envCompilerMacros)
+    result.definitions.mergeMacroBindings(context)
+    return
+  let chain = envChain(env)
+  let module = nearestEnvModule(chain)
+  if module.kind != vkNil:
+    result.definitions.mergeMacroBindings(exportedEnvMacros(module))
+  for item in chain:
+    for imported in item.envImports:
+      result.definitions.mergeMacroBindings(exportedEnvMacros(imported))
+    result.definitions.mergeMacroBindings(asMacroBindings(item.envCompilerMacros))
+    for name, value in item.envBindings:
+      var remove: seq[string]
+      for macroName in result.definitions.keys:
+        if macroName == name or macroName.startsWith(name & "/"):
+          remove.add macroName
+      for macroName in remove: result.definitions.del(macroName)
+      if value.kind in {vkModule, vkNamespace}:
+        for macroName, definition in exportedEnvMacros(value).definitions:
+          result.definitions[name & "/" & macroName] = definition
+
 proc importNamespaceBindings(target: Scope, source: Value) =
   let sourceNs = namespaceForEnvSource(source)
   if sourceNs.kind != vkNamespace:
@@ -15245,6 +15398,7 @@ proc materializeEvalParent(env: Value, app: Application = nil,
     let bindingScope = newScope(current)
     for k, v in itemEnv.envBindings:
       bindingScope.defineOverlay(k, v)
+    installEnvMacros(bindingScope, itemEnv)
     current = bindingScope
   current
 
@@ -15252,6 +15406,7 @@ proc incrementalReplScopeForEnv*(env: Value): Scope =
   if env.kind != vkEnv:
     raise newException(GeneError, "repl/open expects an Env")
   result = newScope(materializeEvalParent(env))
+  result.compilerMacros = evalMacroBindings(env)
   result.implOverlayRoot = true
   result.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
   if result.evalBudget == nil:
@@ -15281,10 +15436,14 @@ proc materializeCallerEvalParent(callerEnv: Value): Scope =
       if name.len == 0 or name[0] != '\0':
         result.defineOverlay(name, value)
     for index, name in item.slotNames:
-      if name.len > 0 and name[0] != '\0' and item.slotDefined(index):
+      if name.len > 0 and name[0] != '\0' and index notin item.privateSlots and item.slotDefined(index):
         result.defineOverlay(name, item.slots[index])
     for impl in item.impls:
       result.impls.add impl
+
+  let captured = newEnv(initTable[string, Value]())
+  captureEnvMacros(captured, asMacroBindings(callerEnv.envCompilerMacros), source)
+  installEnvMacros(result, captured)
 
 proc dedupeProtocolMatches(matches: var seq[Value]) =
   var unique: seq[Value]
@@ -15774,6 +15933,100 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
 
 proc defaultReplOptions*(interactive = false): ReplOptions =
   ReplOptions(interactive: interactive, prompt: "gene> ")
+
+proc findRuntimeMacroFunction(scope: Scope, definition: MacroDef, qualified = ""): Value =
+  if '/' in qualified:
+    let parts = qualified.split('/')
+    var namespace: Value
+    if scope.lookupOptional(parts[0], namespace):
+      for i in 1 ..< parts.high:
+        if namespace.kind == vkModule: namespace = namespace.moduleRootNamespace
+        if namespace.kind != vkNamespace: return VOID
+        namespace = namespace.nsScope.lookup(parts[i])
+      if namespace.kind == vkModule: namespace = namespace.moduleRootNamespace
+      if namespace.kind == vkNamespace:
+        return findRuntimeMacroFunction(namespace.nsScope, definition)
+  var current = scope
+  while current != nil:
+    if current.runtimeMacroSlots != nil:
+      let registry = RuntimeMacroSlots(current.runtimeMacroSlots)
+      for entry in registry.entries:
+        if entry.definition == definition:
+          return escapeWeakFunctions(current.loadSlot(entry.slot, definition.name))
+    current = current.parent
+  VOID
+
+proc runtimeMacroFunction(scope: Scope, definition: MacroDef, head: Value): Value =
+  var qualified = ""
+  if head.kind == vkSymbol:
+    qualified = head.symVal
+  elif head.kind == vkNode and head.head.isSymbol("path"):
+    var names: seq[string]
+    for item in head.body:
+      if item.kind == vkSymbol: names.add item.symVal
+    qualified = names.join("/")
+  result = findRuntimeMacroFunction(scope, definition, qualified)
+  if result.kind != vkVoid: return
+  raise newException(GeneError, "local macro '" & definition.name & "' is not initialized")
+
+proc defineRuntimeMacro(scope: Scope, specification: RuntimeMacroDefinition,
+                        function: Value) =
+  var entries: seq[RuntimeMacroDefinition]
+  if scope.runtimeMacroSlots != nil:
+    entries = RuntimeMacroSlots(scope.runtimeMacroSlots).entries
+  var slot = specification.slot
+  var found = false
+  for entry in entries:
+    if entry.definition == specification.definition:
+      slot = entry.slot
+      found = true
+      break
+  if slot < 0:
+    slot = scope.slots.len
+    scope.slots.add NIL
+    if scope.slotNames.len < scope.slots.len:
+      scope.slotNames.setLen(scope.slots.len)
+    scope.slotNames[slot] = "\x00gene_macro:" & $slot
+    if scope.slots.len > 64:
+      scope.slotDefinedOverflow.setLen(scope.slots.len - 64)
+    scope.privateSlots.add slot
+  scope.slots[slot] = functionForScopeStorage(function, scope, binding = true)
+  scope.markSlotDefined(slot)
+  if not found:
+    entries.add RuntimeMacroDefinition(definition: specification.definition, slot: slot)
+  scope.runtimeMacroSlots = RuntimeMacroSlots(entries: entries)
+
+proc captureEnvMacros(env: Value, context: MacroBindings, scope: Scope) =
+  if context == nil: return
+  let captured = MacroBindings(definitions: context.definitions,
+    hiddenNames: context.hiddenNames, exportedNames: context.exportedNames,
+    ownedNames: context.ownedNames, history: context.history)
+  var functions: seq[Value]
+  for name, definition in context.definitions:
+    if not definition.runtime or definition in captured.capturedDefinitions: continue
+    let function = findRuntimeMacroFunction(scope, definition, name)
+    if function.kind == vkVoid: continue
+    captured.capturedDefinitions.add definition
+    functions.add function
+  env.setEnvCompilerMacros(captured)
+  env.setEnvMacroFunctions(functions)
+
+proc installEnvMacros(target: Scope, env: Value) =
+  let context = asMacroBindings(env.envCompilerMacros)
+  if context == nil: return
+  let functions = env.envMacroFunctions
+  if functions.len != context.capturedDefinitions.len:
+    raise newException(GeneError, "invalid captured macro environment")
+  for i, definition in context.capturedDefinitions:
+    target.defineRuntimeMacro(RuntimeMacroDefinition(definition: definition, slot: -1), functions[i])
+
+proc runtimeMacroBudget(scope: Scope): CompileBudget =
+  if scope.evalBudget != nil:
+    let budget = scope.evalBudget
+    result = CompileBudget(remaining: budget.remaining, runtimeBudget: budget,
+      hasDeadline: budget.hasDeadline, deadline: budget.deadline,
+      hasMemoryLimit: budget.hasMemoryLimit, memoryBaseline: budget.memoryBaseline,
+      memoryLimitBytes: budget.memoryLimitBytes)
 
 proc runReplSession*(scope: Scope,
                      readLine: ReplReadLine,
@@ -16383,6 +16636,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   if fiber == nil or not fiber.started:
     curInitializationLease = strictInitializationLease(chunk, scope)
   var handlers: seq[TryHandler] # active `try` regions, innermost last
+  var inlineLoops: seq[InlineLoopTarget]
   var tailTraceFrames: seq[TailTraceFrame]
   var tailTraceSummaries: seq[TailTraceSummary]
   var reportedTailFallbacks: HashSet[(pointer, int)]
@@ -16403,6 +16657,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     tailTraceFrames = move fiber.tailTraceFrames
     tailTraceSummaries = move fiber.tailTraceSummaries
     handlers = move fiber.handlers
+    inlineLoops = move fiber.inlineLoops
     validateImplRequirements = fiber.validateImpls
     returnType = fiber.returnType
     returnLabel = fiber.returnLabel
@@ -16624,6 +16879,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.tailTraceFrames = move tailTraceFrames
     fiber.tailTraceSummaries = move tailTraceSummaries
     fiber.handlers = move handlers
+    fiber.inlineLoops = move inlineLoops
     setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
     fiber.stack = move stack
     fiber.stackBase = curStackBase
@@ -16633,10 +16889,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseCallScope(gVmPools, scope)
       recycleScope = false
 
+  template discardFrameLoops() =
+    while inlineLoops.len > 0 and inlineLoops[^1].frameDepth >= frames.len:
+      inlineLoops.setLen(inlineLoops.len - 1)
+
   template retireUnwoundScope(target = false) =
     # An error, panic, cancellation, or `return` unwinding past a function or
     # loop activation ends it without a return: check its scope as a return
     # would. A `return` target still gets its own return.
+    if not target: discardFrameLoops()
     if unlikely(not recycleScope) and frames.len > 0 and not target and
         curFrameKind in {fkNormal, fkForBody} and frames[^1].scope != scope and
         scope.scopeHasOtherOwners:
@@ -16849,6 +17110,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     spush NIL
 
   template finishFrameReturn(retValue: Value) =
+    discardFrameLoops()
     if fiber != nil and curFrameKind == fkTaskScopeBody and curOwnedScope != nil:
       var pending = NIL
       for task in curOwnedScope.ownedTasks:
@@ -16999,6 +17261,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       spush retValue
 
   template finishFastNormalReturn(retValue: Value) =
+    discardFrameLoops()
     trimTailTraceFrames(frames.len)
     if unlikely(not recycleScope) and frames.len > 0 and
         frames[^1].scope != scope:
@@ -17096,6 +17359,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       pushCallFrame()
     chunk = proto.chunk
     scope = callScope
+    if chunk.privateLocalSlots.len > 0:
+      scope.privateSlots = chunk.privateLocalSlots
     recycleScope = true
     curStackBase = sp
     ip = 0
@@ -17152,6 +17417,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     continue
 
   template restartRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
+    discardFrameLoops()
     let proto = chunk.owner
     if not argKnownBareInt and proto.hasParamTypes and proto.paramTypes.len > 0 and
         proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
@@ -17219,6 +17485,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## arm. Release the current owner before MOVING the saved owner back into
     ## registers; the popped local is never inspected after loadFrameRegs.
     while curFrameKind == fkTailMatchBody:
+      discardFrameLoops()
       doAssert not boundValuesMayCapture or
         not scopeValuesCaptureScope(calleeScope, scope)
       doAssert not recycleScope or not scopeChainContains(calleeScope, scope)
@@ -17242,6 +17509,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                               nextFnName: string,
                               operandBase: int,
                               keepOperands: bool) =
+    discardFrameLoops()
     if collectTailCallStats:
       inc currentTailCallStats.transfers
     if curFnName.len > 0:
@@ -17274,6 +17542,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = nextChunk
     scope = nextScope
     recycleScope = nextRecycleScope
+    if chunk.privateLocalSlots.len > 0:
+      scope.privateSlots = chunk.privateLocalSlots
     if keepOperands:
       curStackBase = operandBase
     else:
@@ -17389,6 +17659,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = nextChunk
     scope = nextScope
     recycleScope = nextRecycleScope
+    if chunk.privateLocalSlots.len > 0:
+      scope.privateSlots = chunk.privateLocalSlots
     curStackBase = if keepOperands: operandBase else: sp
     ip = 0
     validateImplRequirements = nextValidateImpls
@@ -17879,6 +18151,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let envValue = newEnv(bindingsFromMap("env ^bindings", bindingMap),
                                 parent, imports, module, policy,
                                 bindingScope = scope)
+          if parent.kind == vkEnv and parent.envClosedScope:
+            envValue.setEnvClosedScope(true)
+          else:
+            captureEnvMacros(envValue, chunkMacroContext(chunk, inst[].intArg), scope)
           spush envValue
         of opEval:
           let env = spop()
@@ -17900,15 +18176,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
           let evalChunk =
-            try:
-              compileEvalForm(node)
-            except GeneError as e:
+            block:
+              # Expansion executes Gene code, so it enters the selected Env's
+              # execution policy before the emitted program starts running.
+              let compilingBudget = activeVmBudget
+              activeVmBudget = addr evalScope.evalBudget
               try:
-                raiseCompileError(scope, e.msg)
-              except GeneError as diagnostic:
-                diagnostic.loc = e.loc
-                raise
-              newChunk()
+                compileEvalForm(node, macros = evalMacroBindings(env))
+              except GeneError as e:
+                try:
+                  raiseCompileError(scope, e.msg)
+                except GeneError as diagnostic:
+                  diagnostic.loc = e.loc
+                  raise
+                newChunk()
+              finally:
+                activeVmBudget = compilingBudget
           pushFrame()
           enterFrame(evalChunk, evalScope, true)
           continue
@@ -19774,6 +20057,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
             spush applyCall(callee, args, NamedArgs(), scope)
+        of opBlockScope:
+          let body = chunk.subchunks[inst[].intArg]
+          let blockScope = newScope(scope)
+          blockScope.scopedImplImports = true
+          blockScope.prepareChunkScope(body)
+          let kind = if inst[].tail: fkTailMatchBody else: fkNormal
+          pushFrame()
+          enterFrame(body, blockScope, validateImplRequirements, kind)
+          continue
         of opMatch:
           let target = spop()
           let mp = chunk.matches[inst[].intArg]
@@ -19880,18 +20172,47 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let stream = spop()
           requireStream("for iterator", stream)
           stream.closeStream()
-        of opLoopBreak:
-          if curFrameKind != fkForBody:
-            raise newException(GeneError, "break is only valid inside a loop")
-          strunc(curStackBase)
-          breakForLoop()
-          continue
-        of opLoopContinue:
-          if curFrameKind != fkForBody:
-            raise newException(GeneError, "continue is only valid inside a loop")
-          strunc(curStackBase)
-          advanceForLoop()
-          continue
+        of opLoopEnter:
+          inlineLoops.add InlineLoopTarget(frameDepth: frames.len, stackBase: sp,
+            breakIp: inst[].intArg, continueIp: inst[].depth)
+        of opLoopLeave:
+          if inlineLoops.len == 0 or inlineLoops[^1].frameDepth != frames.len:
+            raise newException(GeneError, "inline loop target is missing")
+          strunc(inlineLoops[^1].stackBase)
+          inlineLoops.setLen(inlineLoops.len - 1)
+        of opLoopBreak, opLoopContinue:
+          let continuing = inst[].op == opLoopContinue
+          if inlineLoops.len > 0 and inlineLoops[^1].frameDepth == frames.len:
+            let target = inlineLoops[^1]
+            strunc(target.stackBase)
+            ip = if continuing: target.continueIp else: target.breakIp
+            continue
+          if curFrameKind == fkForBody:
+            strunc(curStackBase)
+            if continuing: advanceForLoop()
+            else: breakForLoop()
+            continue
+          var signal: ref GeneReturn
+          for depth in countdown(frames.high, returnDepth):
+            if inlineLoops.len > 0 and inlineLoops[^1].frameDepth == depth:
+              let target = inlineLoops[^1]
+              signal = newException(GeneReturn, "")
+              signal.targetDepth = depth
+              signal.loopIp = if continuing: target.continueIp else: target.breakIp
+              signal.loopStackBase = target.stackBase
+              break
+            if frames[depth].kind == fkForBody:
+              signal = newException(GeneReturn, "")
+              signal.targetDepth = depth
+              signal.loopIp = -1
+              signal.loopStackBase = frames[depth].stackBase
+              break
+          if signal == nil:
+            raise newException(GeneError,
+              (if continuing: "continue" else: "break") & " is only valid inside a loop")
+          signal.loopExit = true
+          signal.loopContinue = continuing
+          raise signal
         of opTry:
           # Run the try body as a Frame on the heap stack (not a nested runLoop), so
           # deep recursion through try-wrapped code does not grow the Nim stack. The
@@ -20148,13 +20469,67 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack[top] = if stack[top].isTruthy: FALSE else: TRUE
         of opJump:
           ip = inst[].intArg
+        of opRuntimePipelineStage:
+          let input = spop()
+          let proto = chunk.functions[inst[].intArg]
+          let callee = newFunction(proto.name, proto.params, proto, scope)
+          var bound = bindCallScope(callee, proto, [input], NamedArgs())
+          applyCallBudget(proto, bound.scope, callee.fnScope, scope)
+          enterBytecodeCall(proto.chunk, bound.scope, false, false, NIL, "",
+            false, @[], proto.name, sp, false)
+          continue
+        of opDefineRuntimeMacro:
+          let function = spop()
+          scope.defineRuntimeMacro(chunk.runtimeMacroDefinitions[inst[].intArg], function)
+          spush NIL
+        of opInvokeRuntimeMacro:
+          var expansionDepth = 0
+          if chunk.runtimeMacroExpansion or (chunk.owner != nil and chunk.owner.isMacroBody):
+            inc expansionDepth
+          for index in countdown(frames.high, 0):
+            let enclosing = frames[index].chunk
+            if enclosing.owner != nil and not enclosing.owner.isMacroBody: break
+            if enclosing.runtimeMacroExpansion or (enclosing.owner != nil and enclosing.owner.isMacroBody):
+              inc expansionDepth
+          if expansionDepth >= MaxMacroExpansionDepth:
+            raise newException(GeneError, "runtime macro expansion depth exceeded")
+          let specification = chunk.runtimeMacroCalls[inst[].intArg]
+          let callee = runtimeMacroFunction(scope, specification.definition, specification.syntax.head)
+          let arguments = bindRuntimeMacroArguments(specification, callee.fnScope,
+            scope.runtimeMacroBudget())
+          let proto = FunctionProto(callee.fnCode)
+          var bound = bindCallScope(callee, proto, arguments, NamedArgs())
+          applyCallBudget(proto, bound.scope, callee.fnScope, scope)
+          enterBytecodeCall(proto.chunk, bound.scope, false,
+            proto.frameNeedsImplValidation, NIL, "", false, @[], callee.fnName,
+            sp, false)
+          continue
+        of opExecuteRuntimeMacro:
+          let specification = chunk.runtimeMacroCalls[inst[].intArg]
+          let expanded = spop()
+          if inst[].flag:
+            spush runtimePipelineMacroResult(expanded, specification.context)
+            continue
+          let generated = compileRuntimeMacroResult(expanded, specification,
+            tail = inst[].tail, budget = scope.runtimeMacroBudget(),
+            hostContext = scope.application)
+          let kind = if inst[].tail: fkTailMatchBody else: fkNormal
+          let callerScope = scope
+          pushFrame()
+          enterFrame(generated, callerScope, validateImplRequirements, kind)
+          continue
         of opSyntaxCall:
           # Stack: [.. callee, raw call node] (design §3 step 4).
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in syntax call")
           let callNode = spop()
           let callee = spop()
-          spush applySyntaxCall(callee, callNode, scope)
+          let previousContext = scope.compilerMacros
+          scope.compilerMacros = chunkMacroContext(chunk, inst[].intArg)
+          try:
+            spush applySyntaxCall(callee, callNode, scope)
+          finally:
+            scope.compilerMacros = previousContext
         of opRejectSyntaxSend:
           if sp == 0:
             raise newException(GeneError,
@@ -20489,23 +20864,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # Explicit return is a structured exit: skip catches, but unwind every
       # active ensure and close loop-owned streams before leaving the nearest
       # function frame.
-      if curFrameKind == fkForBody and
+      if not (r.loopExit and frames.len == r.targetDepth) and curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()
       retireUnwoundScope(frames.len == r.targetDepth)
-      releaseCurrentCallScope()
-      if curFrameKind == fkTaskScopeBody:
+      if not (r.loopExit and frames.len == r.targetDepth): releaseCurrentCallScope()
+      if curFrameKind == fkTaskScopeBody and not (r.loopExit and frames.len == r.targetDepth):
         let owned = curOwnedScope
         curFrameKind = fkNormal
         try:
           owned.waitOwnedTasks()
         finally:
           owned.closeOwnedActors()
-      elif curFrameKind == fkSupervisorBody:
+      elif curFrameKind == fkSupervisorBody and not (r.loopExit and frames.len == r.targetDepth):
         let owned = curOwnedScope
         curFrameKind = fkNormal
         owned.closeOwnedActors()
-      if curFrameKind == fkCatchBody and curEnsureBody != nil:
+      if curFrameKind == fkCatchBody and curEnsureBody != nil and
+          not (r.loopExit and frames.len == r.targetDepth):
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
         strunc(curStackBase)
@@ -20514,7 +20890,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       var cleanupStarted = false
       while true:
-        if handlers.len > 0 and handlers[^1].framesLen == frames.len:
+        if r.loopExit and frames.len == r.targetDepth:
+          strunc(r.loopStackBase)
+          if r.loopIp >= 0:
+            ip = r.loopIp
+          elif r.loopContinue:
+            advanceForLoop()
+          else:
+            breakForLoop()
+          cleanupStarted = true
+          break
+        elif handlers.len > 0 and handlers[^1].framesLen == frames.len:
           let h = handlers.pop()
           strunc(curStackBase)
           if h.tp.ensureBody != nil:
@@ -20524,11 +20910,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             break
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
-          settleUnwoundOwnership(owner, false)
+          if not (r.loopExit and frames.len == r.targetDepth):
+            settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
-          closeCurrentForStream()
+          if not (r.loopExit and frames.len == r.targetDepth): closeCurrentForStream()
           retireUnwoundScope(frames.len == r.targetDepth)
-          releaseCurrentCallScope()
+          if not (r.loopExit and frames.len == r.targetDepth): releaseCurrentCallScope()
         elif frames.len == r.targetDepth:
           frameReturn(r.value)
           cleanupStarted = true
@@ -20540,11 +20927,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           strunc(curStackBase)
           trimTailTraceFrames(frames.len)
           var owner = frames.pop()
-          settleUnwoundOwnership(owner, false)
+          if not (r.loopExit and frames.len == r.targetDepth):
+            settleUnwoundOwnership(owner, false)
           loadFrameRegs(owner)
-          closeCurrentForStream()
+          if not (r.loopExit and frames.len == r.targetDepth): closeCurrentForStream()
           retireUnwoundScope(frames.len == r.targetDepth)
-          releaseCurrentCallScope()
+          if not (r.loopExit and frames.len == r.targetDepth): releaseCurrentCallScope()
       if cleanupStarted:
         continue
     except SuspendError as se:
@@ -20567,6 +20955,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       return RunStop(kind: rskSuspend, value: NIL)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+  defer:
+    if macroContextRetirementHook != nil: macroContextRetirementHook()
   if chunk.errorsMode == ecmStrict and not chunk.errorChecksComplete:
     raise newException(GeneError, "strict executable has no completed error analysis")
   let app = scope.application()
@@ -20679,13 +21069,23 @@ proc runReplSession*(scope: Scope,
           # Drop any interrupt that landed after the previous eval finished so
           # it cannot spuriously abort this line.
           volatileStore(addr gVmInterrupt, false)
+        let context = scopeMacroBindings(scope)
+        var existingValues: seq[string]
+        for name in scope.vars.keys: existingValues.add name
+        for index, name in scope.slotNames:
+          if index notin scope.privateSlots and name notin existingValues:
+            existingValues.add name
         let chunk = compileEvalSource(source, useLocalSlots = false,
-                                       sourceName = "<repl>")
+          sourceName = "<repl>", macros = context,
+          history = if context != nil: context.history else: @[],
+          existingValues = existingValues, persistentMacros = true)
         for diagnostic in chunk.compilerDiagnostics:
           if diagnostic.message.startsWith("unused lazy pipeline:") or
               diagnostic.message.startsWith("error checking:"):
             writeErr(formatDiagnostic("Warning", diagnostic.message,
                                       diagnostic.loc) & "\n")
+        # Compiler declarations commit with successful compilation. Runtime
+        # errors do not roll them back, just as they do not undo value effects.
         writeOut(run(chunk, scope).print() & "\n")
         pendingSource = ""
         pendingError = ""
@@ -29650,6 +30050,7 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value 
   let proto = FunctionProto(code)
   var args = newSeqOfCap[Value](callNode.body.len + 2)
   let callerEnv = newCallerEnv(callerScope)
+  callerEnv.setEnvCompilerMacros(scopeMacroBindings(callerScope))
   args.add callerEnv
   args.add syntaxCallEnvelope(callerScope, callNode)
   for item in callNode.body:
@@ -30315,6 +30716,19 @@ proc moduleCompileHeader(app: Application,
   app.moduleCompileHeaders[identity] = result
   inc app.moduleEpoch
 
+proc inheritCompileArtifact(app: Application, identity: string) =
+  if app.moduleCompileArtifacts.hasKey(identity): return
+  let source = app.compileArtifactTemplates.getOrDefault(identity)
+  if source == nil: return
+  let copied = cloneModuleExecutionTemplate(CompiledModule(identity: identity,
+    chunk: source.chunk, macroExports: source.macroExports,
+    syntaxFnExports: source.syntaxFnExports, compileInterface: source.compileInterface))
+  app.moduleCompileArtifacts[identity] = ModuleCompileArtifact(
+    chunk: copied.chunk, macroExports: copied.macroExports,
+    syntaxFnExports: copied.syntaxFnExports, compileInterface: copied.compileInterface,
+    runtimeDependencies: source.runtimeDependencies,
+    compileDependencies: source.compileDependencies)
+
 proc compileModuleArtifactRaw(app: Application,
                            absPath: string): ModuleCompileArtifact =
   ## Build/cache a module's compile artifact without creating a runtime scope or
@@ -30322,6 +30736,7 @@ proc compileModuleArtifactRaw(app: Application,
   ## headers; macros and explicit re-exports may require a dependency artifact.
   ## Value-only cycles remain runtime cycles.
   let identity = app.moduleCompileCacheIdentity(absPath)
+  app.inheritCompileArtifact(identity)
   if app.moduleCompileArtifacts.hasKey(identity):
     return app.moduleCompileArtifacts[identity]
   if identity in app.moduleCompileLoading:
@@ -30354,6 +30769,7 @@ proc compileModuleArtifactRaw(app: Application,
       var dependency: ModuleCompileArtifact
       var compileDependency = importSpec.reexport
       let depIdentity = app.moduleCompileCacheIdentity(depPath)
+      app.inheritCompileArtifact(depIdentity)
       var depInterface: CompileNamespaceInterface
       if app.moduleCompileArtifacts.hasKey(depIdentity):
         # A verified dependency artifact is the authoritative compiler input.
@@ -30442,13 +30858,26 @@ proc compileModuleArtifactRaw(app: Application,
           if entry.category == cbcNamespace:
             entry.namespace = cloneCompileInterface(entry.namespace)
           ownInterface.entries[selection.local] = entry
-    let compiled = compileFormsWithMacros(header.unit, importedMacros,
-                                          importedSyntaxFns,
-                                          importedInterfaces,
-                                          budget = activeSandboxCompileBudget,
-                                          deferErrorChecks = true,
-                                          errorsMode = if app.currentPackage.id == app.appPackage.id:
-                                            app.errorModeOverride else: "")
+    let compiled = block:
+      let previousHost = activeMacroHostContext
+      let previousSession = activeMacroSession
+      activeMacroHostContext = app
+      # Compiling an imported file is a new compilation unit, even if its
+      # loader is itself running during macro execution. Its definition-side
+      # environment must not be the loader's not-yet-initialized module scope.
+      activeMacroSession = nil
+      try:
+        compileFormsWithMacros(header.unit, importedMacros,
+          importedSyntaxFns, importedInterfaces,
+          budget = activeSandboxCompileBudget, deferErrorChecks = true,
+          moduleIdentity = identity,
+          moduleSourcePath = if absPath.isUrlModulePath: ""
+                             else: relativePath(absPath, app.currentPackage.root).replace('\\', '/'),
+          errorsMode = if app.currentPackage.id == app.appPackage.id:
+            app.errorModeOverride else: "")
+      finally:
+        activeMacroHostContext = previousHost
+        activeMacroSession = previousSession
     attachCompiledNativeMetadata(ownInterface, compiled.chunk,
                                  header.unit.sourceName)
     var macroExports = compiled.macroExports
@@ -30666,6 +31095,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   if identity in app.moduleLoading:
     raise newException(GeneError,
       "runtime module initialization cycle at " & absPath)
+  app.inheritCompileArtifact(identity)
   if not absPath.isUrlModulePath and not fileExists(absPath) and
       not app.moduleCompileArtifacts.hasKey(identity):
     raisePackageError(pecModuleNotFound, "module not found: " & absPath)
@@ -32045,3 +32475,4 @@ proc installCompiledModules*(app: Application,
 
 include ./testing
 include ./error_runtime
+include ./macro_runtime

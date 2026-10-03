@@ -1,4 +1,4 @@
-import gene/[compiler, gir, types, vm, printer]
+import gene/[compiler, gir, gir_codec, types, vm, printer]
 import std/[os, osproc, strutils, unittest]
 
 let modDir = getTempDir() / "gene_module_tests"
@@ -358,6 +358,165 @@ suite "modules — file imports":
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
       "[42 40 30 (+ 1 2)]"
 
+  test "macro bodies resolve private definition helpers through imports":
+    writeModule("macro_helpers.gene",
+      "(fn helper ^private true [x] (* x 100)) " &
+      "(macro computed [x] (helper x)) " &
+      "(macro emitted [x] `(helper %x))")
+    writeModule("macro_helper_user.gene",
+      "(import [computed emitted] ^from \"./macro_helpers\") " &
+      "(fn helper [x] (+ x 1)) " &
+      "(var observed [(computed 2) (emitted 2)])")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "macro_helper_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[200 3]"
+
+  test "aliases and re-exports preserve body lookup and caller syntax lookup":
+    writeModule("macro_lookup_origin.gene",
+      "(fn helper ^private true [x] (* x 100)) " &
+      "(macro computed [x] (helper x)) " &
+      "(macro emitted [x] `(helper %x))")
+    writeModule("macro_lookup_reexport.gene",
+      "(import [computed : calculate emitted : invoke] " &
+      "^from \"./macro_lookup_origin\" ^export true)")
+    writeModule("macro_lookup_user.gene", "(import * : library ^from \"./macro_lookup_reexport\") " &
+      "(import [calculate : selected] ^from \"./macro_lookup_reexport\") " &
+      "(fn helper [x] (+ x 1)) " &
+      "(var observed [(library/calculate 2) (library/invoke 2) (selected 2)])")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "macro_lookup_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[200 3 200]"
+    writeModule("macro_lookup_missing.gene",
+      "(import [invoke] ^from \"./macro_lookup_reexport\") (invoke 2)")
+    var failure = ""
+    try: discard app.loadFileModule(modDir / "macro_lookup_missing.gene")
+    except GeneError as error: failure = error.msg
+    check "undefined symbol: helper" in failure
+
+  test "generated helper macro calls require caller visibility":
+    writeModule("macro_callsite_helpers.gene",
+      "(macro helper ^private true [x] `(* %x 100)) " &
+      "(macro emitted [x] `(helper %x))")
+    writeModule("macro_callsite_user.gene",
+      "(import [emitted] ^from \"./macro_callsite_helpers\") " &
+      "(macro helper [x] `(+ %x 1)) (var observed (emitted 2))")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "macro_callsite_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "3"
+    writeModule("macro_callsite_missing.gene",
+      "(import [emitted] ^from \"./macro_callsite_helpers\") (emitted 2)")
+    var failure = ""
+    try: discard app.loadFileModule(modDir / "macro_callsite_missing.gene")
+    except GeneError as error: failure = error.msg
+    check "undefined symbol: helper" in failure
+
+  test "macro definition modules retain identity without dependency source":
+    writeModule("macro_identity.gene",
+      "(mod original) (fn helper ^private true [x] (+ x 1)) " &
+      "(macro module_name [] this_mod/.name) " &
+      "(macro computed [x] (helper x))")
+    let compilerApp = newApplication(modDir)
+    let original = compilerApp.compileFileModuleBundle(modDir / "macro_identity.gene",
+      compilerApp.applicationPackage.id)
+    let decoded = decodeExecutableGir(encodeExecutableGir(original))
+    removeFile(modDir / "macro_identity.gene")
+    writeModule("macro_identity_user.gene",
+      "(mod caller) (import [module_name computed] ^from \"./macro_identity\") " &
+      "(var observed [(module_name) (computed 41)])")
+    let app = newApplication(modDir)
+    app.installCompiledModules(decoded.modules)
+    let loaded = app.loadFileModule(modDir / "macro_identity_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[\"original\" 42]"
+
+  test "macro body imports use verified artifacts after source removal":
+    writeModule("phase_dep.gene",
+      "(type PhaseBox ^props {^value Int} (message value [] : Int self/value)) " &
+      "(fn add [x : Int] : Int (+ x 1))")
+    writeModule("phase_macros.gene",
+      "(import [add] ^from \"./phase_dep\") (macro computed [x] (add x))")
+    writeModule("phase_user.gene",
+      "(import [computed] ^from \"./phase_macros\") (var observed (computed 41))")
+    let compilerApp = newApplication(modDir)
+    let bundle = decodeExecutableGir(encodeExecutableGir(
+      compilerApp.compileFileModuleBundle(modDir / "phase_user.gene",
+        compilerApp.applicationPackage.id)))
+    removeFile(modDir / "phase_dep.gene")
+    removeFile(modDir / "phase_macros.gene")
+    let app = newApplication(modDir)
+    app.installCompiledModules(bundle.modules)
+    # Initialize the dependency first as well: the phase must not execute
+    # against a runtime instance or mutate its compiler template.
+    let dependency = app.loadFileModule(modDir / "phase_dep.gene")
+    let runtimeScope = newGlobalScope(app)
+    runtimeScope.define("dep", dependency)
+    check run(compileSource("[(dep/add 3) ((dep/PhaseBox ^value 7) .value)]"),
+      runtimeScope).print() == "[4 7]"
+    writeModule("phase_second_user.gene",
+      "(import [computed] ^from \"./phase_macros\") (var observed (computed 42))")
+    let loaded = app.loadFileModule(modDir / "phase_second_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "43"
+
+  test "phase imports preserve runtime constants in source-compiled templates":
+    writeModule("phase_value_dep.gene",
+      "(fn helper [x] (+ x 1)) (macro apply_helper [x] `(%helper %x)) " &
+      "(var offset (apply_helper 2)) (fn add [x] (+ offset x))")
+    writeModule("phase_value_macros.gene",
+      "(import [add] ^from \"./phase_value_dep\") (macro computed [x] (add x))")
+    writeModule("phase_value_user.gene",
+      "(import [computed] ^from \"./phase_value_macros\") (var observed (computed 40))")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "phase_value_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "43"
+
+  test "macros and phase imports share one definition module instance":
+    writeModule("phase_counter.gene",
+      "(var count 0) (fn next [] (set count (+ count 1))) " &
+      "(macro next_value [] (next))")
+    writeModule("phase_counter_bridge.gene",
+      "(import [next] ^from \"./phase_counter\") (macro via_bridge [] (next))")
+    writeModule("phase_counter_user.gene",
+      "(import [via_bridge] ^from \"./phase_counter_bridge\") " &
+      "(import [next_value count] ^from \"./phase_counter\") " &
+      "(var observed [(via_bridge) (next_value) count])")
+    let loaded = newApplication(modDir).loadFileModule(modDir / "phase_counter_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[1 2 0]"
+
+  test "reentrant phase eval uses bindings already initialized by the module loader":
+    writeModule("phase_reentrant.gene",
+      "(var count 0) (fn next [] (set count (+ count 1))) " &
+      "(macro next_value [] (next)) " &
+      "(var baked (eval (quote (next_value)) ^in (env)))")
+    writeModule("phase_reentrant_bridge.gene",
+      "(import [next] ^from \"./phase_reentrant\") (macro via_bridge [] (next))")
+    writeModule("phase_reentrant_user.gene",
+      "(import [via_bridge] ^from \"./phase_reentrant_bridge\") " &
+      "(var observed (via_bridge))")
+    let loaded = newApplication(modDir).loadFileModule(modDir / "phase_reentrant_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "2"
+
+  test "qualified imported macros yield to a shadowing namespace value":
+    writeModule("macro_alias.gene", "(macro twice [x] `(+ %x %x))")
+    writeModule("macro_alias_user.gene",
+      "(import * : tools ^from \"./macro_alias\") " &
+      "(fn f [tools] (tools/twice 3)) " &
+      "(var observed [(f {^twice (fn [x] (* x 10))}) (tools/twice 3)])")
+    let loaded = newApplication(modDir).loadFileModule(modDir / "macro_alias_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[30 6]"
+
+  test "Env module imports expose public macros including re-exports":
+    writeModule("env_macros.gene",
+      "(macro twice [x] `(+ %x %x)) (macro secret ^private true [] 99)")
+    writeModule("env_macro_mid.gene",
+      "(import [twice] ^from \"./env_macros\" ^export true)")
+    check runProgram("(let e (env ^imports [\"./env_macro_mid\"])) " &
+      "(eval (quote (twice 3)) ^in e)").print() == "6"
+    check runProgram("(let e (env ^imports [\"./env_macros\"])) " &
+      "(try (eval (quote (secret)) ^in e) catch Any \"private\")").print() == "\"private\""
+    writeModule("env_macro_alias_mid.gene",
+      "(import * : tools ^from \"./env_macros\" ^export true)")
+    check runProgram("(let e (env ^imports [\"./env_macro_alias_mid\"])) " &
+      "(eval (quote (tools/twice 3)) ^in e)").print() == "6"
+
   test "private declarations stay out of selections and wildcard interfaces":
     writeModule("private_exports.gene",
       "(var public 1) (var hidden ^private true 2) " &
@@ -557,6 +716,21 @@ suite "modules — file imports":
       check runProgram("(import [ToJson] ^from \"./json\") " &
         "(import [User] ^from \"./model\") " & source & source &
         "((User ^name \"Ada\") .ToJson:to_json)").print() == "\"Ada\""
+
+  test "macro import_impl stays local and survives through a returned closure":
+    writeModule("macro_label.gene", "(protocol Label (message label [self] : Str))")
+    writeModule("macro_item.gene", "(type Item)")
+    writeModule("macro_extension.gene",
+      "(import [Label] ^from \"./macro_label\") " &
+      "(import [Item] ^from \"./macro_item\") " &
+      "(impl Label for Item ^export true (message label [self] : Str \"local\"))")
+    check runProgram("(import [Label] ^from \"./macro_label\") " &
+      "(import [Item] ^from \"./macro_item\") " &
+      "(macro with_label [body...] `(do " &
+      "(import_impl Label for Item ^from \"./macro_extension\") %body...)) " &
+      "(let item (Item)) (let get (with_label (fn [] item/.Label:label))) " &
+      "[(get) (try item/.Label:label catch Any \"hidden\")]").print() ==
+      "[\"local\" \"hidden\"]"
 
   test "import_impl rejects positional from and malformed source properties":
     for (source, expected) in [

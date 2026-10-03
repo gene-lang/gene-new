@@ -800,6 +800,140 @@
       }
     },
     {
+      "id": "macro.property_and_path_roles",
+      "source": "(macro properties [] `(do (let key \"k\") (let rec {^key 7}) (let a {^a 1 ^b 2}) [rec/key a/a a/b])) (properties)",
+      "web_source": "(mod macro_property_and_path_roles ^profile web) (macro properties [] `(do (let key \"k\") (let rec {^key 7}) (let a {^a 1 ^b 2}) [rec/key a/a a/b])) (fn run [] : (List Int) (properties))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "7"}, {"kind": "int", "value": "1"}, {"kind": "int", "value": "2"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.residual_pin",
+      "source": "(macro is_same [x y] `(do (let a %x) (match %y (when %(quote (unquote a)) true) (when _ false)))) [(is_same 1 1) (is_same 1 2)]",
+      "web_source": "(mod macro_residual_pin ^profile web) (macro is_same [x y] `(do (let a %x) (match %y (when %(quote (unquote a)) true) (when _ false)))) (fn run [] : (List Bool) [(is_same 1 1) (is_same 1 2)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": false}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.generated_macro",
+      "source": "(macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (make_adder 3)",
+      "web_source": "(mod macro_generated_macro ^profile web) (macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (fn run [] : Int (make_adder 3))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "5"},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "rejected", "reason": "generated local macros expand at runtime", "diagnostic": "local macros are outside the web profile"}
+    },
+    {
+      "id": "macro.function_local_definition",
+      "source": "(fn run [] (macro twice [x] `(+ %x %x)) (twice 7)) (run)",
+      "web_source": "(mod macro_function_local_definition ^profile web) (fn run [] : Int (macro twice [x] `(+ %x %x)) (twice 7))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "14"},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "rejected", "reason": "local macros expand at runtime", "diagnostic": "local macros are outside the web profile"}
+    },
+    {
+      "id": "macro.ordinary_body",
+      "source": "(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (computed 2)",
+      "web_source": "(mod macro_ordinary_body ^profile web) (macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (fn run [] : Int (computed 2))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "9"},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.scoped_bindings",
+      "source": "(macro add_one [value] `(do (let tmp 1) (+ tmp %value))) (let tmp 100) [(add_one tmp) (add_one 3) tmp]",
+      "web_source": "(mod macro_scoped_bindings ^profile web) (macro add_one [value] `(do (let tmp 1) (+ tmp %value))) (fn run [] : (List Int) (let tmp 100) [(add_one tmp) (add_one 3) tmp])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "4"}, {"kind": "int", "value": "100"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.scoped_destructuring",
+      "source": "(macro pick [body] `(do (let [a b] [2 3]) %body)) (let a 90) (let b 10) [(pick (+ a b)) a b]",
+      "web_source": "(mod macro_scoped_destructuring ^profile web) (macro pick [body] `(do (let [a b] [2 3]) %body)) (fn run [] : (List Int) (let a 90) (let b 10) [(pick (+ a b)) a b])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "5"}, {"kind": "int", "value": "90"}, {"kind": "int", "value": "10"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.vector_and_lambda",
+      "source": "(macro pair [a b] `[%a %b]) (macro lam [p body] `(fn [%p : Int] : Int %body)) (let double (lam n (* n 2))) (pair (double 4) 9)",
+      "web_source": "(mod macro_vector_and_lambda ^profile web) (macro pair [a b] `[%a %b]) (macro lam [p body] `(fn [%p : Int] : Int %body)) (fn run [] : (List Int) (let double (lam n (* n 2))) (pair (double 4) 9))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "8"}, {"kind": "int", "value": "9"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.loop_bindings",
+      "source": "(macro iter [body] `(do (var total 0) (for [a b] in [[1 2] [3 4]] (set total (+ total (+ a b)))) %body)) (let a 90) [(iter total) a]",
+      "web_source": "(mod macro_loop_bindings ^profile web) (macro iter [body] `(do (var total 0) (for [a b] in [[1 2] [3 4]] (set total (+ total (+ a b)))) %body)) (fn run [] : (List Int) (let a 90) [(iter total) a])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "10"}, {"kind": "int", "value": "90"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.callback_shadowing",
+      "source": "(macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int)] : Int (twice 3)) [(invoke (fn [x : Int] : Int (* x 10))) (twice 3)]",
+      "web_source": "(mod macro_callback_shadowing ^profile web) (macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int)] : Int (twice 3)) (fn run [] : (List Int) [(invoke (fn [x : Int] : Int (* x 10))) (twice 3)])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "30"}, {"kind": "int", "value": "6"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.node_shape_pattern",
+      "source": "(macro check [body] `(match (quote (quote 4)) (when (quote value) %body) (else 0))) (let value 90) [(check value) value]",
+      "web_source": "(mod macro_node_shape_pattern ^profile web) (macro check [body] `(match (quote (quote 4)) (when (quote value) %body) (else 0))) (fn run [] : (List Int) (let value 90) [(check value) value])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "4"}, {"kind": "int", "value": "90"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.parameter_default_shadowing",
+      "source": "(macro twice [x] `(+ %x %x)) (fn invoke [twice value = (twice 3)] value) (invoke (fn [x] (* x 10)))",
+      "web_source": "(mod macro_parameter_default_shadowing ^profile web) (macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int) value : Int = (twice 3)] : Int value) (fn run [] : Int (invoke (fn [x : Int] : Int (* x 10))))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "30"},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.branch_bindings_stay_inside_result",
+      "source": "(macro choose [] `(if true (do (let x 1) x) 0)) (let x 9) [(choose) x]",
+      "web_source": "(mod macro_branch_bindings_stay_inside_result ^profile web) (macro choose [] `(if true (do (let x 1) x) 0)) (fn run [] : (List Int) (let x 9) [(choose) x])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "9"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.branch_binding_read_profile_limit",
+      "source": "(macro choose [] `(do (if true (let x 1)) x)) (let x 9) [(choose) x]",
+      "web_source": "(mod macro_branch_binding_read_profile_limit ^profile web) (macro choose [] `(do (if true (let x 1)) x)) (fn run [] : (List Int) (let x 9) [(choose) x])",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "9"}]},
+      "expected_error": null, "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "web branch-local storage cannot serve a later enclosing-sequence read", "diagnostic": "only available inside its declaring branch"}
+    },
+    {
+      "id": "macro.pipeline_slot",
+      "source": "(fn pair [a b] [a b]) (macro slot [] `_) (1 -> pair 0 (slot))",
+      "web_source": "(mod macro_pipeline_slot ^profile web) (fn pair [a : Int b : Int] : (List Int) [a b]) (macro slot [] `_) (fn run [] : (List Int) (1 -> pair 0 (slot)))",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "0"}, {"kind": "int", "value": "1"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
+      "id": "macro.conditional_clause_rejected",
+      "source": "(macro fallback [v] `(else %v)) (if false (then 1) (fallback 2))",
+      "web_source": "(mod macro_conditional_clause_rejected ^profile web) (macro fallback [v] `(else %v)) (fn run [] : Int (if false (then 1) (fallback 2)))",
+      "expected_error": "expression positions", "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "macros expand in expression positions", "diagnostic": "expression positions"}
+    },
+    {
+      "id": "macro.match_clause_rejected",
+      "source": "(macro otherwise [v] `(when _ %v)) (match 1 (when 2 2) (otherwise 3))",
+      "web_source": "(mod macro_match_clause_rejected ^profile web) (macro otherwise [v] `(when _ %v)) (fn run [] : Int (match 1 (when 2 2) (otherwise 3)))",
+      "expected_error": "when/else", "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "macros cannot supply match clauses", "diagnostic": "when/else"}
+    },
+    {
       "id": "macro.local_expansion",
       "source": "(macro choose_unless [condition yes no] `(if (! %condition) %yes %no)) (choose_unless false \"expanded\" \"wrong\")",
       "web_source": "(mod macro_local_expansion ^profile web) (macro choose_unless [condition yes no] `(if (! %condition) %yes %no)) (fn run [] : Str (choose_unless false \"expanded\" \"wrong\"))",

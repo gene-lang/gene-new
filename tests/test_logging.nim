@@ -219,6 +219,29 @@ suite "structured logging":
     check result == FALSE
     check loggingCaptured.len == 0
 
+  test "lazy macros evaluate the receiver once and keep ordinary template capture":
+    installCaptureLogging(llInfo)
+    let result = runLoggingSource("""
+(import $log [new_logger log_info])
+(let receiver_calls ($cell 0))
+(let generated_logger (new_logger "app/collision"))
+(log_info (do (receiver_calls .set (+ receiver_calls/.get 1)) generated_logger)
+  "receiver")
+(let logger generated_logger)
+(scope
+  (let generated_logger "caller")
+  (log_info logger
+    (if (same? generated_logger logger) "captured" "caller")
+    ^payload {^captured (same? generated_logger logger)})
+  [receiver_calls/.get generated_logger])
+""")
+    check result.print == "[1 \"caller\"]"
+    check loggingCaptured.len == 2
+    check parseJson(loggingCaptured[0])["message"].getStr == "receiver"
+    let captured = parseJson(loggingCaptured[1])
+    check captured["message"].getStr == "captured"
+    check captured["payload"]["captured"].getBool
+
   test "off logger override silences only its subtree":
     loggingCaptured.setLen(0)
     var config = defaultLoggingConfig()

@@ -1862,6 +1862,18 @@ suite "cli — gene doc":
     ]
     check "this_mod" notin ran.output
 
+  test "lists macro declarations from compiler metadata":
+    let path = writeCliProgram("doc_macros.gene",
+      "(mod docs) (macro twice [x] `(+ %x %x)) " &
+      "(ns tools (macro identity [x] `%x)) " &
+      "(fn main [] (panic \"doc should not call main\"))")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 0
+    check "- twice : Macro" in ran.output
+    check "Namespace tools:" in ran.output
+    check "- identity : Macro" in ran.output
+    check "- tools/identity" notin ran.output
+
   test "prints namespace declarations recursively":
     let path = writeCliProgram("doc_namespaces.gene",
       "(mod docs) " &

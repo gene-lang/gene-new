@@ -2134,8 +2134,9 @@ proc parseForm(r: var Reader, inList = false): Value =
     let inner = r.parseForm(inList)
     finish newNode(newSym("quasiquote"), body = @[inner])
   of tkPercent:
-    # Inside a vector the flat token stream is preserved verbatim.
-    if inList: finish newSym("%")
+    # Unquote has the same syntax shape in templates and pinned patterns,
+    # including inside vectors. Parse its operand outside the flat parameter
+    # token stream so `%xs...` contains the ordinary spread node.
     let inner = r.parseForm(inList = false)
     finish newNode(newSym("unquote"), body = @[inner])
   of tkCaret: finish newSym("^")

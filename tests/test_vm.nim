@@ -1,4 +1,4 @@
-import gene/[compiler, gir, gir_codec, printer,
+import gene/[compiler, equality, gir, gir_codec, printer,
              reader, types, vm]
 import std/[json, os, strutils, tables, unittest]
 
@@ -540,6 +540,48 @@ suite "compiler — GIR emission":
         found = true
         check value.print() == "(1 -> + 2 => * 3)"
     check found
+
+  test "GIR preserves constructed symbols inside syntax containers":
+    let raw = newSym("a/b")
+    var props = initPropTable()
+    props["key"] = newSym("true")
+    var meta = initPropTable()
+    meta["note"] = newSym("$err")
+    let chunk = newChunk()
+    chunk.constants = @[
+      raw, newSym(""), newSym("a b"),
+      newList(@[raw], immutable = true), newMap(props, immutable = true),
+      newNode(raw, props, @[newSym("a:b")], meta, immutable = true),
+      newSet(@[raw]), newHashMap(@[HashMapEntry(key: raw, val: newSym("nil"))]),
+      newPipeline(raw, @[PipelineStage(head: raw, props: props, body: @[raw], meta: meta)],
+        immutable = true)]
+    let copied = cloneCompiledChunk(chunk)
+    check copied.constants.len == chunk.constants.len
+    for i, value in copied.constants:
+      check equal(value, chunk.constants[i])
+    check copied.constants[3].listImmutable
+    check copied.constants[4].mapImmutable
+    check copied.constants[5].nodeImmutable
+    check copied.constants[5].meta["note"].kind == vkSymbol
+    check copied.constants[5].meta["note"].symVal == "$err"
+    check copied.constants[8].pipelineImmutable
+    check copied.constants[8].pipelineStages[0].meta["note"].kind == vkSymbol
+
+  test "GIR rejects invalid private-slot metadata":
+    for slots in [@[-1], @[1], @[0, 0]]:
+      let chunk = newChunk()
+      chunk.localNames = @["x"]
+      chunk.privateLocalSlots = slots
+      expect ValueError:
+        discard cloneCompiledChunk(chunk)
+
+  test "GIR rejects invalid runtime macro instruction metadata":
+    for opcode in [opDefineRuntimeMacro, opInvokeRuntimeMacro,
+                   opExecuteRuntimeMacro, opRuntimePipelineStage]:
+      let chunk = newChunk()
+      chunk.instructions = @[Instruction(op: opcode, intArg: 0)]
+      expect ValueError:
+        discard cloneCompiledChunk(chunk)
 
   test "compiler-owned pipeline locals stay out of reflected bindings":
     let scope = newGlobalScope()
@@ -1349,6 +1391,14 @@ suite "vm — quasiquote templates":
   test "quasiquote splices list values into list literals":
     ck "(var xs [1 2]) `[(unquote (... xs)) 3]", "[1 2 3]"
 
+  test "vector unquote spellings evaluate and splice through nested containers":
+    ck "(let x 5) (let xs [6 7]) `[1 %x %xs... 9]", "[1 5 6 7 9]"
+    ck "(let x 5) `#{^items #[%x]}", "#{^items #[5]}"
+    ck "(let x 5) `[1 `[2 %x] %x]",
+       "[1 (quasiquote [2 (unquote x)]) 5]"
+    ck "(let a 1) (match [1 2] (when [%a b] b) (when _ \"no\"))", "2"
+    ck "(let a 3) (match [1 2] (when [%a b] b) (when _ \"no\"))", "\"no\""
+
   test "nested quasiquote preserves inner splice depth":
     ck "(var xs [1 2]) `(outer `(inner %xs...))",
        "(outer (quasiquote (inner (unquote (... xs)))))"
@@ -1364,6 +1414,408 @@ suite "vm — quasiquote templates":
     expect GeneError: discard compileSource("(quasiquote (unquote))")
 
 suite "vm — macros":
+  test "local macro bodies expand against each live function invocation":
+    ck "(let n 100) (fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", "[3 10]"
+    ck "(fn f [n] (macro m [] n) (set n (+ n 1)) (m)) (f 2)", "3"
+    ck "(fn f [n] (macro computed [] (+ n 1)) (macro emitted [] `(+ n 1)) " &
+       "(fn caller [n] [(computed) (emitted)]) (caller 100)) " &
+       "[(f 2) (f 9)]", "[[3 101] [10 101]]"
+
+  test "local macro expansion follows runtime branches and repeated calls":
+    ck "(fn f [] (var calls 0) (macro m [] (set calls (+ calls 1)) calls) " &
+       "(if false (m)) [(m) (m) calls]) (f)", "[1 2 2]"
+    ck "(fn f [n] (macro add [value] `(+ %value %n)) " &
+       "(let value 40) (add value)) (f 2)", "42"
+
+  test "runtime macro results retain caller mutation return and loop targets":
+    ck "(fn f [n] (macro update [] `(set n (+ n 1))) (update) n) (f 2)", "3"
+    ck "(fn f [n] (macro finish [] `(do (let local 7) (return (+ n local)))) " &
+       "(finish) 99) (f 2)", "9"
+    ck "(fn f [] (var n 0) (macro stop [] (if (== n 2) `(break) nil)) " &
+       "(repeat i in 5 (set n (+ n 1)) (stop)) n) (f)", "2"
+
+  test "runtime macro environments retain definition values after the function returns":
+    ck "(fn make [n] (macro body [] n) (macro emitted [] `n) (env)) " &
+       "(let saved (make 2)) (let n 100) " &
+       "(eval (quote [(body) (emitted)]) ^in saved)", "[2 100]"
+    ck "(fn capture! [] (caller_env .snapshot [\"body\"])) " &
+       "(fn make [n] (macro body [] n) (capture!)) " &
+       "(let saved (make 7)) (eval (quote (body)) ^in saved)", "7"
+
+  test "runtime macros keep syntax matching defaults and suspension":
+    ck "(fn f [n] (macro m [x = `%n] x) (m)) (f 7)", "7"
+    ck "(fn f [n] (macro m [[a b] ^extra c] `(+ %a %b %c n)) " &
+       "(m [1 2] ^extra 3)) (f 4)", "10"
+    ck "(fn f [n] (macro m [] (await (spawn (+ n 1)))) (m)) (f 2)", "3"
+    ck "(fn ^^generator f [n] (macro emit [] `(yield n)) (emit)) ($into (f 2) [])", "[2]"
+
+  test "runtime macro definitions retain identity through GIR cloning and namespaces":
+    let source = "(fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]"
+    check run(cloneCompiledChunk(compileSource(source)), newGlobalScope()).print() == "[3 10]"
+    ck "(fn f [n] (ns tools (macro m [] (+ n 1))) (tools/m)) " &
+       "[(f 2) (f 9)]", "[3 10]"
+    let pipeline = "(fn pair [a b] [a b]) (fn f [n] (macro slot [] `_) " &
+      "(n -> pair 0 (slot))) (f 7)"
+    check run(cloneCompiledChunk(compileSource(pipeline)), newGlobalScope()).print() == "[0 7]"
+
+  test "runtime pipeline macros classify slots after their bodies execute":
+    ck "(fn pair [a b] [a b]) (fn f [n] (macro slot [] `_) " &
+       "(n -> pair 0 (slot))) (f 7)", "[0 7]"
+    ck "(fn pair [a b] [a b]) (fn f [n] (macro slot [] (await (spawn `_))) " &
+       "(n -> pair 0 (slot))) (f 7)", "[0 7]"
+    ck "(fn pair [a b] [a b]) (fn f [n] (macro slot [] `_) " &
+       "(macro next [] `(slot)) (n -> pair 0 (next))) (f 7)", "[0 7]"
+    ck "(fn triple [a b c] [a b c]) (fn f [n] " &
+       "(macro local [] `(do (let n 1) n)) (0 -> triple (local) n)) (f 100)",
+       "[0 1 100]"
+    ck "(fn f [n] (macro stages [] `(1 -> + n)) " &
+       "(stages) (stages)) (f 2)", "3"
+
+  test "runtime macro recursion is bounded within an expansion":
+    ck "(fn f [] (macro again [] `(again)) " &
+       "(try (again) catch Any ($str/contains? $err/message \"expansion depth\"))) (f)", "true"
+
+  test "runtime macro mutation invalidates caller value and capture assumptions":
+    ck "(fn f [] (var n 1) (let read_n (fn [] n)) " &
+       "(macro change [] `(set n 7)) (change) [(read_n) n]) (f)", "[7 7]"
+    ck "(fn f [] (var g (fn [] 1)) (macro change [] `(set g (fn [] 7))) " &
+       "(change) (g)) (f)", "7"
+    ck "(fn f [+] (macro m [] `(+ 1 2)) (m)) (f (fn [a b] (* a b)))", "2"
+    ck "(fn f [+] (macro m [] `(fn [a : Int b : Int] : Int (+ a b))) " &
+       "((m) 2 3)) (f (fn [a b] (* a b)))", "6"
+
+  test "runtime macro syntax errors retain call and definition locations":
+    let source = "(fn f []\n  (macro broken [] `(let))\n  (broken))\n(f)"
+    var failed = false
+    try:
+      discard run(compileSource(source, sourceName = "runtime_macro.gene"), newGlobalScope())
+    except GeneError as error:
+      failed = true
+      check "macro 'broken' expanded at runtime_macro.gene:3" in error.msg
+      check "defined at runtime_macro.gene:2" in error.msg
+    check failed
+
+  test "runtime macros preserve loop and shared-scope binding lifetimes":
+    ck "(var saved []) (repeat n in 3 (macro m [] n) " &
+       "(saved .push (fn [] (m)))) [(saved/0) (saved/1) (saved/2)]",
+       "[3 3 3]"
+    ck "(var saved []) (repeat n in 3 (do ^^macro_result (let value n) " &
+       "(macro m [] value) (saved .push (fn [] (m))))) " &
+       "[(saved/0) (saved/1) (saved/2)]",
+       "[0 1 2]"
+    ck "(fn f [n] (try (macro m [] n) (m) ensure nil)) [(f 3) (f 8)]", "[3 8]"
+
+  test "namespace macros are callable in their defining unit":
+    ck "(ns tools (macro thrice [x] `(+ %x %x %x))) " &
+       "(tools/thrice 3)", "9"
+    ck "(ns tools (ns nested (macro twice [x] `(+ %x %x)))) " &
+       "(tools/nested/twice 3)", "6"
+    ck "(ns tools (macro twice [x] `(+ %x %x))) " &
+       "(fn f [tools] (tools/twice 3)) " &
+       "[(f {^twice (fn [x] (* x 10))}) (tools/twice 3)]", "[30 6]"
+
+  test "eval uses the selected environment's macro context":
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(eval (quote (twice 3)) ^in (env))", "6"
+    ck "(fn run! [form] (eval form ^in caller_env)) " &
+       "(fn f [] (macro twice [x] `(+ %x %x)) (run! (twice 3))) (f)", "6"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn f [twice] (eval (quote (twice 3)) ^in (env ^bindings {^twice twice}))) " &
+       "(f (fn [x] (* x 10)))", "30"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn capture! [] (caller_env .snapshot [\"twice\"])) " &
+       "(let saved (capture!)) (eval (quote (twice 3)) ^in saved)", "6"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn capture! [] (caller_env .snapshot [])) " &
+       "(let saved (capture!)) " &
+       "(try (eval (quote (twice 3)) ^in saved) catch Any \"isolated\")", "\"isolated\""
+    ck "(macro identity [x] `%x) " &
+       "(fn f [] (try (eval (quote (identity (return 7))) ^in (env)) " &
+       "catch CompileError \"no-target\")) (f)", "\"no-target\""
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn capture! [] (caller_env .snapshot [])) " &
+       "(let closed (capture!)) (let child (closed .extend {^x 1})) " &
+       "(try (eval (quote (twice 3)) ^in child) catch Any \"isolated\")", "\"isolated\""
+
+  test "Env macro metadata cannot hide borrowed caller authority":
+    let scope = newGlobalScope()
+    let borrowed = newCallerEnv(scope)
+    let context = MacroBindings()
+    context.definitions["hidden"] = MacroDef(body: @[borrowed])
+    let environment = newEnv(initTable[string, Value]())
+    environment.setEnvCompilerMacros(context)
+    scope.define("metadata_env", environment)
+    try:
+      expect GeneError:
+        discard run(compileSource("($cell metadata_env)"), scope)
+    finally:
+      environment.setEnvCompilerMacros(nil)
+
+  test "escaping closed snapshots retain helpers and their selected macros":
+    ck "(fn capture! [] (caller_env .snapshot [\"helper\" \"twice\"])) " &
+       "(fn make [] (let offset 40) (fn helper [x] (+ offset x)) " &
+       "(macro twice [x] `(+ %x %x)) (capture!)) " &
+       "(let saved (make)) (let hidden 99) " &
+       "(eval (quote [(helper 2) (twice 3) " &
+       "(try hidden catch Any \"isolated\")]) ^in saved)", "[42 6 \"isolated\"]"
+
+  test "compiled macro environments survive deterministic artifact cloning":
+    let source = "(macro twice [x] `(+ %x %x)) " &
+      "(eval (quote (twice 3)) ^in (env))"
+    let first = compileSource(source, "macro_artifact.gene")
+    let second = compileSource(source, "macro_artifact.gene")
+    let firstArtifact = ExecutableGir(entryIdentity: "app::entry",
+      modules: @[CompiledModule(identity: "app::entry", chunk: first,
+        compileInterface: buildCompileInterface(readAll(source)))])
+    let secondArtifact = ExecutableGir(entryIdentity: "app::entry",
+      modules: @[CompiledModule(identity: "app::entry", chunk: second,
+        compileInterface: buildCompileInterface(readAll(source)))])
+    check encodeExecutableGir(firstArtifact) == encodeExecutableGir(secondArtifact)
+    check run(cloneCompiledChunk(first), newGlobalScope()).print() == "6"
+
+  test "macro artifacts preserve shared definitions without recursive duplication":
+    var source = ""
+    for i in 0 ..< 30:
+      source.add "(macro m" & $i & " [] " & $i & ") "
+    source.add "(eval (quote [(m0) (m29)]) ^in (env))"
+    let compiled = compileSource(source, "macro_graph.gene")
+    let artifact = ExecutableGir(entryIdentity: "app::entry",
+      modules: @[CompiledModule(identity: "app::entry", chunk: compiled,
+        compileInterface: buildCompileInterface(readAll(source)))])
+    let encoded = encodeExecutableGir(artifact)
+    check encoded.len < 200_000
+    let decoded = decodeExecutableGir(encoded).modules[0].chunk
+    let definitions = decoded.finalMacroContext.definitions
+    check definitions["m29"].lexicalMacros["m0"] == definitions["m0"]
+    check definitions["m29"].context == definitions["m0"].context
+    check run(decoded, newGlobalScope()).print() == "[0 29]"
+    ck "(macro value [x = `(quote default)] `%x) " &
+       "[(value) (value 7)]", "[default 7]"
+
+  test "REPL macros commit after compilation and survive runtime failures":
+    var lines = @[
+      "(fn helper [x] (* x 10))",
+      "(macro scaled [x] (helper x))",
+      "(scaled 3)",
+      "(macro discarded [] 1) (let)",
+      "(try (discarded) catch Any \"missing\")",
+      "(macro retained [] 42) (var persisted 1) missing",
+      "[(retained) persisted (scaled 3)]",
+      "(fn call_it [scaled] (scaled 3))",
+      "(call_it (fn [x] (+ x 1)))",
+      ":quit"]
+    var index = 0
+    var output = ""
+    var errors = ""
+    let reader = proc(line: var string): bool =
+      if index >= lines.len: return false
+      line = lines[index]
+      inc index
+      true
+    let writeOut = proc(text: string) = output.add text
+    let writeErr = proc(text: string) = errors.add text
+    check runReplSession(newGlobalScope(), reader, writeOut, writeErr) == 0
+    check "30\n" in output
+    check "\"missing\"\n" in output
+    check "[42 1 30]\n" in output
+    check output.endsWith("4\n")
+    check "requires a name" in errors
+
+  test "marked results confine bindings and retain ordinary shadowing":
+    ck "(let tmp 100) (macro add_one [value] " &
+       "`(do (let tmp 1) (+ tmp %value))) " &
+       "[(add_one tmp) tmp]", "[2 100]"
+    ck "(macro with_value [name value body...] " &
+       "`(do (let %name %value) %body...)) " &
+       "[(with_value answer 42 (* answer 2)) " &
+       " (try answer catch Any \"hidden\")]", "[84 \"hidden\"]"
+    ck "[(do ^^macro_result (let x 1) x) " &
+       " (do ^^macro_result (let x 2) x) " &
+       " (try x catch Any \"hidden\")]", "[1 2 \"hidden\"]"
+    ck "(do ^macro_result false (let x 1)) " &
+       "(do ^macro_result 7 (let y 2)) (+ x y)", "3"
+    ck "(macro identity [x] `%x) " &
+       "[(identity [(let inside 1) inside]) " &
+       " (try inside catch Any \"hidden\")]", "[[1 1] \"hidden\"]"
+
+  test "binding-only macro scopes retain direct caller local slots":
+    let chunk = compileSource("(macro add [value] " &
+      "`(do (let one 1) (+ %value one))) " &
+      "(fn f [x : Int] (add x))")
+    let function = chunk.functions[0]
+    check function.chunk.subchunks.len == 0
+    var sawDirect = false
+    for instruction in function.chunk.instructions:
+      if instruction.op == opLoadLocalFast and instruction.intArg == 0:
+        sawDirect = true
+      check instruction.op != opLoadOuterLocal
+    check sawDirect
+
+  test "internal block slot labels cannot capture constructed caller names":
+    let source = "(macro make [] " &
+      "(let name ($to_sym \"\\u0000gene_block:1:tmp\")) " &
+      "`(fn [] (do ^^macro_result (let tmp 1) tmp) (let %name 100) " &
+      "[(eval (quote %name) ^in (env)) %name])) (let f (make)) (f)"
+    let compiled = compileSource(source)
+    check compiled.functions[0].chunk.privateLocalSlots.len == 1
+    check run(compiled, newGlobalScope()).print() == "[100 100]"
+    check run(cloneCompiledChunk(compiled), newGlobalScope()).print() == "[100 100]"
+    let hidden = "(fn f [] (do ^^macro_result (let tmp 1) tmp) " &
+      "(try (eval ($to_sym \"\\u0000gene_block:1:tmp\") ^in (env)) " &
+      "catch Any \"hidden\")) (f)"
+    ck hidden, "\"hidden\""
+
+  test "macro-local annotation values retain their lexical scope":
+    ck "(macro local [] `(do (let T Int) (let x : T 7) x)) (local)", "7"
+    ck "(let T Str) (macro local [] `(do (let T Int) (var x : T 7) " &
+       "(set x 8) x)) [(local) T]", "[8 (type Str)]"
+
+  test "repeated expansions retain distinct mutable captures":
+    ck "(macro counter [start] `(do (var current %start) " &
+       "(fn [] (set current (+ current 1)) current))) " &
+       "(fn make [] (let counters []) " &
+       "(repeat i in 3 (counters .push (counter i))) counters) " &
+       "(let counters (make)) " &
+       "[(counters/0) (counters/1) (counters/2) (counters/0)]", "[1 2 3 2]"
+
+  test "expression macros and grouping preserve typed identity fast paths":
+    let chunk = compileSource("(macro id [x] `%x) " &
+      "(fn direct [x : Int] : Int x) " &
+      "(fn expanded [x : Int] : Int (id x)) " &
+      "(fn grouped [x : Int] : Int (do x))")
+    for function in chunk.functions:
+      check function.returnKnownBareInt
+      check function.nativeOp == ncoIntIdentity
+      check function.scopelessChunk != nil
+    ck "(macro wrong [] `(do (let x \"wrong\") x)) " &
+       "(fn f [x : Int] : Int (wrong)) " &
+       "(try (f 1) catch TypeError \"checked\")", "\"checked\""
+
+  test "expansion scopes preserve function-body bindings and escaped closures":
+    ck "(macro make_square [] `(fn [x] (let y (* x x)) y)) " &
+       "(let sq (make_square)) (sq 4)", "16"
+    ck "(macro capture [name value body...] " &
+       "`(do (let %name %value) %body...)) " &
+       "(let get (capture answer 42 (fn [] answer))) (get)", "42"
+    ck "(macro finish [] `(do (let local 9) (return local))) " &
+       "(fn f [] (finish) 42) (f)", "9"
+
+  test "runtime macro blocks preserve caller loop exits and cleanup":
+    let scoped = "(macro scoped [body...] `(do " &
+      "(let temp 1) (let keep (fn [] temp)) %body...)) "
+    ck scoped & "(fn run [] (var total 0) (var cleaned 0) " &
+       "(repeat i in 6 (scoped (try " &
+       "(if (== i 1) (continue)) (if (== i 4) (break)) " &
+       "(set total (+ total i)) ensure (set cleaned (+ cleaned 1))))) " &
+       "[total cleaned]) (run)", "[5 5]"
+    ck scoped & "(fn run [] (var total 0) (var cleaned 0) " &
+       "(for i in [1 2 3 4 5] (scoped (try " &
+       "(if (== i 2) (continue)) (if (== i 4) (break)) " &
+       "(set total (+ total i)) ensure (set cleaned (+ cleaned 1))))) " &
+       "[total cleaned]) (run)", "[4 4]"
+    ck scoped & "(var n 0) [7 (do (loop (set n (+ n 1)) " &
+       "[8 (scoped (scoped (if (== n 2) (break))))]) n) 9]", "[7 2 9]"
+    ck scoped & "(fn ^^generator items [] (repeat i in 5 " &
+       "(scoped (yield i) (if (== i 2) (break))))) " &
+       "($into (items) [])", "[0 1 2]"
+    ck scoped & "(scope (var n 0) (loop (scoped (set n (+ n 1)) " &
+       "(if (== n 2) (break)))) n)", "2"
+
+  test "impl-only macro results have local implementation visibility":
+    ck "(protocol Label (message label [] : Str)) " &
+       "(macro with_label [body...] " &
+       "`(do (impl Label for Int (message label [] : Str \"int\")) %body...)) " &
+       "[(with_label (5 .Label:label)) " &
+       " (try (5 .Label:label) catch Any \"hidden\")]", "[\"int\" \"hidden\"]"
+    ck "(protocol Label (message label [] : Str)) " &
+       "(macro with_label [body...] " &
+       "`(do (impl Label for Int (message label [] : Str \"int\")) %body...)) " &
+       "(let get (with_label (fn [] (5 .Label:label)))) (get)", "\"int\""
+
+  test "marked locals preserve 300000-deep tail recursion":
+    beginTailCallStats()
+    ck "(macro step [next] `(do (let temp %next) (count_down temp))) " &
+       "(fn count_down [n : Int] (if (== n 0) 0 (step (- n 1)))) " &
+       "(count_down 300000)", "0"
+    let stats = finishTailCallStats()
+    check stats.maxPhysicalFrames < 10
+
+  test "marked impls preserve 300000-deep tail recursion":
+    beginTailCallStats()
+    ck "(protocol Label (message label [self] : Str)) (type Item) " &
+       "(macro step [next] `(do " &
+       "(impl Label for Item (message label [self] : Str \"local\")) " &
+       "(count_down %next))) " &
+       "(fn count_down [n : Int] (if (== n 0) 0 (step (- n 1)))) " &
+       "(count_down 300000)", "0"
+    let stats = finishTailCallStats()
+    check stats.maxPhysicalFrames < 10
+
+  test "macro bodies execute ordinary Gene code over syntax arguments":
+    ck "(macro add_one [x] (+ x 1)) (add_one 2)", "3"
+    ck "(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) " &
+       "(computed 2)", "9"
+    ck "(macro choose [x] (if x `(quote yes) `(quote no))) " &
+       "[(choose true) (choose false)]", "[yes no]"
+    ck "(macro stop [x] (return x) 99) (stop 7)", "7"
+    expect GeneError:
+      discard runStr("(macro add_one [x] (+ x 1)) (let n 2) (add_one n)")
+
+  test "eval policies bound executable macro bodies":
+    ck "(macro spin [] (while true nil)) " &
+       "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " &
+       "catch Any ($str/contains? $err/message \"max steps\"))", "true"
+    ck "(fn f [] (macro spin [] (while true nil)) " &
+       "(try (eval (quote (spin)) ^in (env ^policy {^max_steps 1000})) " &
+       "catch Any ($str/contains? $err/message \"max steps\"))) (f)", "true"
+    ck "(fn f [] (macro spin [] (while true nil)) " &
+       "(try (eval (quote (1 -> + (spin))) ^in (env ^policy {^max_steps 1000})) " &
+       "catch Any ($str/contains? $err/message \"max steps\"))) (f)", "true"
+
+  test "macro body helpers use the definition environment":
+    ck "(fn helper [x] (* x 100)) " &
+       "(macro computed [x] (helper x)) " &
+       "(macro emitted [x] `(helper %x)) " &
+       "(fn caller [helper] [(computed 2) (emitted 2)]) " &
+       "(caller (fn [x] (+ x 1)))", "[200 3]"
+    ck "(ns tools (fn helper [x] (* x 100)) " &
+       "(macro computed [x] (helper x)) " &
+       "(fn run [] (computed 2))) (tools/run)", "200"
+    ck "(fn + [a b] 99) (macro computed [] (+ 2 3)) (computed)", "99"
+    ck "(ns tools (fn + [a b] 99) " &
+       "(macro computed [] (+ 2 3))) (tools/computed)", "99"
+    ck "(fn to_str [x] \"custom\") " &
+       "(macro computed [] (to_str 2)) (computed)", "\"custom\""
+
+  test "macro templates construct vectors and residual pin syntax":
+    ck "(macro pair [a b] `[%a %b]) (pair 1 2)", "[1 2]"
+    ck "(macro lam [p body] `(fn [%p] %body)) ((lam n (* n 2)) 4)", "8"
+    ck "(macro is_same [x y] " &
+       "`(do (let a %x) (match %y " &
+       "(when %(quote (unquote a)) true) (when _ false)))) " &
+       "(is_same 1 2)", "false"
+    ck "(macro make_adder [n] " &
+       "`(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) " &
+       "[(make_adder 3) (try add_n catch Any \"hidden\")]", "[5 \"hidden\"]"
+
+  test "ordinary lexical bindings shadow outer macros in calls and values":
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn call_it [twice] (twice 3)) " &
+       "[(call_it (fn [x] (* x 10))) (twice 3)]", "[30 6]"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn get_value [twice] twice) (get_value 9)", "9"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn f [] (let twice (fn [x] (* x 10))) (twice 3)) " &
+       "[(f) (twice 3)]", "[30 6]"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(for twice in [7] twice)", "nil"
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn f [twice] (twice 3)) " &
+       "(try (f 9) catch Any \"not-callable\")", "\"not-callable\""
+    ck "(macro twice [x] `(+ %x %x)) " &
+       "(fn f [] (macro twice [x] `(* %x 10)) (twice 3)) " &
+       "[(f) (twice 3)]", "[30 6]"
+
   test "shared expansion artifact preserves source and macro provenance":
     let source = "(macro choose_unless [condition yes no] " &
       "`(if (! %condition) %yes %no))\n" &
@@ -1374,7 +1826,7 @@ suite "vm — macros":
     check artifact.expanded.forms.len == 1
     check artifact.macroExports.hasKey("choose_unless")
     check artifact.expanded.forms[0].print() ==
-      "(if (! false) \"expanded\" \"wrong\")"
+      "(do ^^macro_result (if (! false) \"expanded\" \"wrong\"))"
     var sawCallSite = false
     for _, provenance in artifact.provenance:
       if provenance.macroName == "choose_unless" and
@@ -1383,6 +1835,87 @@ suite "vm — macros":
         sawCallSite = true
     check sawCallSite
     check run(compileSource(source), newGlobalScope()).print() == "\"expanded\""
+
+  test "result marking preserves shared argument syntax and node annotations":
+    let unit = readAllWithLocs("(macro identity [x] x) " &
+      "(identity #(do ^macro_result false ^label 7 @note kept (quote (do 1))))")
+    let argument = unit.forms[1].body[0]
+    let before = argument.print()
+    let expanded = expandSourceUnitMacros(unit).expanded.forms[0]
+    check argument.print() == before
+    check not argument.props["macro_result"].boolVal
+    check expanded.nodeImmutable
+    check expanded.props["macro_result"].boolVal
+    check expanded.props["label"].intVal == 7
+    check expanded.meta["note"].print() == "kept"
+    check expanded.body[0].print() == "(quote (do 1))"
+
+  test "shared expansion respects function binders and quoted data":
+    let source = "(macro twice [x] `(+ %x %x)) " &
+      "(fn f [twice] (twice 3)) (quote (twice 3)) `(twice 3)"
+    let artifact = expandSourceUnitMacros(readAllWithLocs(source))
+    check artifact.expanded.forms[0].print() == "(fn f [twice] (twice 3))"
+    check artifact.expanded.forms[1].print() == "(quote (twice 3))"
+    check artifact.expanded.forms[2].print() == "(quasiquote (twice 3))"
+    let pipelineSource = "(macro one [] 1) `(0 -> + %(one))"
+    let pipeline = expandSourceUnitMacros(readAllWithLocs(pipelineSource))
+    check run(compileSource(pipelineSource), newGlobalScope()).print() ==
+      run(compileForms(pipeline.expanded.forms), newGlobalScope()).print()
+    for bad in [
+      "(macro fallback [v] `(else %v)) (if false (then 1) (fallback 2))",
+      "(macro otherwise [v] `(when _ %v)) (match 1 (when 2 2) (otherwise 3))"]:
+      expect GeneError: discard compileSource(bad)
+      expect GeneError: discard expandSourceUnitMacros(readAllWithLocs(bad))
+
+  test "parameters shadow macros in executable defaults on both frontends":
+    let source = "(macro twice [x] `(+ %x %x)) " &
+      "(fn invoke [twice value = (twice 3)] value) " &
+      "(invoke (fn [x] (* x 10)))"
+    check run(compileSource(source), newGlobalScope()).print() == "30"
+    let expanded = expandSourceUnitMacros(readAllWithLocs(source))
+    check run(compileForms(expanded.expanded.forms), newGlobalScope()).print() == "30"
+    let rest = expandSourceUnitMacros(readAllWithLocs(
+      "(macro twice [x] `(+ %x %x)) (fn f [twice... : Int] twice)"))
+    check rest.expanded.forms[0].print() == "(fn f [twice... : Int] twice)"
+
+  test "shared expansion distinguishes declaration data from executable bodies":
+    let source = "(macro field [x] `(List %x)) (macro some [x] 99) " &
+      "(macro one [] 1) " &
+      "(alias Fields (field Int)) " &
+      "(enum Choice none (some Int)) " &
+      "(type Box ^props {^value (field Int)} " &
+      "(message value [self] : Int (one))) " &
+      "(protocol Numbered (message number [self] : Int (one))) " &
+      "(impl Numbered for Box (message number [self] : Int (one)))"
+    let expanded = expandSourceUnitMacros(readAllWithLocs(source)).expanded.forms
+    check expanded[0].print() == "(alias Fields (field Int))"
+    check expanded[1].print() == "(enum Choice none (some Int))"
+    check expanded[2].props["props"].mapEntries["value"].print() == "(field Int)"
+    check expanded[2].body[1].body[^1].print() == "(do ^^macro_result 1)"
+    check expanded[3].body[1].body[^1].print() == "(do ^^macro_result 1)"
+    check expanded[4].body[3].body[^1].print() == "(do ^^macro_result 1)"
+    let marker = expandSourceUnitMacros(readAllWithLocs(
+      "(macro flag [] true) (do ^macro_result (flag) (let x 1)) x"))
+    check marker.expanded.forms[0].props["macro_result"].print() == "(flag)"
+    for form in ["(type Box (member))", "(protocol Box (member))", "(impl Box for Int (member))"]:
+      let bad = "(macro member [] `(message value [self] : Int 1)) " & form
+      expect GeneError: discard compileSource(bad)
+      expect GeneError: discard expandSourceUnitMacros(readAllWithLocs(bad))
+    ck "(let value 90) [(match (quote (quote 4)) " &
+       "(when (quote value) value)) value]", "[4 90]"
+    let metadata = "(macro explode [] (panic \"metadata was executed\")) " &
+      "(+ 1 2 @note (explode)) (1 -> + 2 @note (explode)) " &
+      "(ffi/library lib ^macos (explode))"
+    let preserved = expandSourceUnitMacros(readAllWithLocs(metadata))
+    check preserved.expanded.forms[0].meta["note"].print() == "(explode)"
+    check preserved.expanded.forms[1].pipelineStages[0].meta["note"].print() == "(explode)"
+    check preserved.expanded.forms[2].props["macos"].print() == "(explode)"
+
+  test "pipeline macro results preserve slots and confine declarations":
+    ck "(fn pair [a b] [a b]) (macro slot [] `_) " &
+       "(1 -> pair 0 (slot))", "[0 1]"
+    ck "(macro temporary [] `(do (let pipeline_local 3) pipeline_local)) " &
+       "[(0 -> + (temporary)) (try pipeline_local catch Any \"hidden\")]", "[3 \"hidden\"]"
 
   test "macro calls bind named syntax props":
     ck "(macro scaled [value ^by n] `(+ %value %n)) " &
@@ -1402,6 +1935,9 @@ suite "vm — macros":
                      "(scaled ^other 3 7)")
 
   test "macro parameters destructure syntax patterns":
+    for signature in ["[x x]", "[x ^value x]", "[x x...]"]:
+      expect GeneError:
+        discard compileSource("(macro duplicate " & signature & " `%x)")
     ck "(macro second [[_ value]] `%value) " &
        "(second [ignored (+ 1 2)])",
        "3"
@@ -2156,6 +2692,16 @@ suite "vm — namespaces":
     expect GeneError: discard runStr("([1] .lookup \"a\")")
 
 suite "vm — env and eval":
+  test "fexpr caller environments expose pooled frame parameters and locals":
+    ck "(fn show! [e] (eval e ^in caller_env)) " &
+       "(fn f [x] (let y 2) (show! (+ x y))) (f 5)", "7"
+    ck "(fn show! [e] (eval e ^in caller_env)) " &
+       "(fn f [x : Int] (show! (+ x 1))) [(f 5) (f 9)]", "[6 10]"
+    ck "(fn show! [e] (eval e ^in caller_env)) " &
+       "(fn f [x] (fn inner [y] (show! (+ x y))) (inner 2)) (f 5)", "7"
+    ck "(fn capture! [] (caller_env .snapshot [\"x\"])) " &
+       "(fn f [x] (capture!)) (eval (quote x) ^in (f 5))", "5"
+
   test "env values are opaque display values":
     ck "(env)", "(env)"
 

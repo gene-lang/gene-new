@@ -128,12 +128,19 @@ type
     mayConsumed: HashSet[string]
     knownTasks: HashSet[string]
     initialized: HashSet[string]
+    outerWrites: Table[string, ErrorBinding]
 
   BodyErrors = object
     errors: ErrorEffectSummary
     value: AbstractValue
     finalState: ref AbstractState
     exceptionState: ref AbstractState
+    breakState: ref AbstractState
+    continueState: ref AbstractState
+    returnState: ref AbstractState
+    returnValue: AbstractValue
+    normalState: ref AbstractState
+    normalValue: AbstractValue
     normalExit: bool
     neverReturns: bool
     mayConsumeTasks: bool
@@ -595,6 +602,19 @@ proc mergeState(target: var AbstractState, source: AbstractState): bool =
         old.value = merged
         target.bindings[name] = old
         result = true
+  var writeNames = initHashSet[string]()
+  for name in target.outerWrites.keys: writeNames.incl name
+  for name in source.outerWrites.keys: writeNames.incl name
+  for name in writeNames:
+    let before = target.outerWrites.getOrDefault(name)
+    let after = source.outerWrites.getOrDefault(name)
+    var binding = if before.value != nil: before else: after
+    binding.value = mergeValue(
+      if before.value == nil: unknownValue() else: before.value,
+      if after.value == nil: unknownValue() else: after.value)
+    if not target.outerWrites.hasKey(name) or valueKey(binding.value) != valueKey(before.value):
+      target.outerWrites[name] = binding
+      result = true
   let mayConsumed = target.mayConsumed + source.mayConsumed
   if mayConsumed != target.mayConsumed:
     target.mayConsumed = mayConsumed
@@ -1364,6 +1384,14 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if spec.alias.len > 0: declarations.incl spec.alias
       for selection in spec.selections: declarations.incl selection.local
   var states = initTable[int, AbstractState]()
+  var inlineLoopOwners = newSeq[int](chunk.instructions.len)
+  var openInlineLoops: seq[int]
+  for index, instruction in chunk.instructions:
+    inlineLoopOwners[index] = if openInlineLoops.len > 0: openInlineLoops[^1] else: -1
+    if instruction.op == opLoopEnter:
+      openInlineLoops.add index
+    elif instruction.op == opLoopLeave and openInlineLoops.len > 0:
+      discard openInlineLoops.pop()
   var work = @[0]
   states[0] = AbstractState(bindings: environment.values)
   if initialState != nil:
@@ -1373,8 +1401,18 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
   var returns: AbstractValue
   var returnedState: AbstractState
   var hasReturn = false
+  var normalState, explicitState: ref AbstractState
+  var normalValue, explicitValue: AbstractValue
   var iterations = 0
   var exceptional: ref AbstractState
+  var escapedBreaks, escapedContinues: ref AbstractState
+  proc mergeExit(target: var ref AbstractState, source: ref AbstractState) =
+    if source == nil: return
+    if target == nil:
+      new(target)
+      target[] = source[]
+    else:
+      discard target[].mergeState(source[])
   proc observeException(state: AbstractState) =
     var snapshot = state
     snapshot.stack = @[]
@@ -1407,6 +1445,26 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     state.knownTasks = source.knownTasks
     for name, binding in state.bindings.mpairs:
       if source.bindings.hasKey(name): binding = source.bindings[name]
+    for name, binding in source.outerWrites:
+      if name notin declarations and name notin chunk.localNames:
+        state.outerWrites[name] = binding
+  proc adoptScopedFlow(state: var AbstractState, source: AbstractState, body: Chunk) =
+    var visible = source
+    var locals = body.localNames.toHashSet()
+    for instruction in body.instructions:
+      if instruction.op in {opDefineName, opDefineLocal, opRedefineName, opRedefineLocal, opMakeNamespace}:
+        locals.incl instruction.name
+    for name in locals:
+      if state.bindings.hasKey(name): visible.bindings[name] = state.bindings[name]
+      else: visible.bindings.del(name)
+    for name, binding in source.outerWrites:
+      visible.bindings[name] = binding
+    state.adoptFlow(visible)
+  proc scopedExit(source: ref AbstractState, body: Chunk, caller: AbstractState): ref AbstractState =
+    if source == nil: return nil
+    new(result)
+    result[] = caller
+    result[].adoptScopedFlow(source[], body)
   proc requiresFutureDeclaration(callee: AnalyzedFunction, initialized: HashSet[string]): bool =
     var seen = initHashSet[string]()
     proc visit(target: AnalyzedFunction): bool =
@@ -1435,7 +1493,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       work.add ip
     elif states[ip].mergeState(state):
       work.add ip
-  proc finish(value: AbstractValue, state: AbstractState) =
+  proc finish(value: AbstractValue, state: AbstractState, explicit = false) =
     var returned = value
     if value != nil and value.kind == avTask:
       returned = copyValue(value)
@@ -1447,6 +1505,31 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     else:
       returns = mergeValue(returns, returned)
       discard returnedState.mergeState(state)
+    var saved: ref AbstractState
+    new(saved)
+    saved[] = state
+    if explicit:
+      explicitValue = if explicitValue == nil: returned else: mergeValue(explicitValue, returned)
+      mergeExit(explicitState, saved)
+    else:
+      normalValue = if normalValue == nil: returned else: mergeValue(normalValue, returned)
+      mergeExit(normalState, saved)
+  proc forwardLoopExit(source: ref AbstractState, continuing: bool,
+                       at: int, caller: AbstractState) =
+    if source == nil: return
+    var transferred = caller
+    transferred.adoptFlow(source[])
+    let owner = inlineLoopOwners[at]
+    if owner >= 0:
+      if states.hasKey(owner): transferred.stack.setLen(states[owner].stack.len)
+      let loop = chunk.instructions[owner]
+      enqueue(if continuing: loop.depth else: loop.intArg, transferred)
+    else:
+      var saved: ref AbstractState
+      new(saved)
+      saved[] = transferred
+      if continuing: mergeExit(escapedContinues, saved)
+      else: mergeExit(escapedBreaks, saved)
   while work.len > 0:
     let ip = work.pop()
     inc iterations
@@ -1482,7 +1565,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
           state.allocateTask(body.value)
       if body.exceptionState != nil: observeException(body.exceptionState[])
     case inst.op
-    of opNoop, opSetModuleName, opDeclareType:
+    of opNoop, opSetModuleName, opDeclareType, opLoopEnter, opLoopLeave:
       if inst.op == opSetModuleName: push scalarValue("Nil")
       elif inst.op == opDeclareType and state.bindings.hasKey(inst.name):
         var binding = state.bindings[inst.name]
@@ -1514,7 +1597,36 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if binding.declaredType.kind != vkNil:
         binding.value = analysis.valueFromType(binding.declaredType, environment)
       state.bindings[inst.name] = binding
+      if inst.op == opSetOuterLocal or
+          (inst.op == opSetName and inst.name notin declarations):
+        state.outerWrites[inst.name] = binding
     of opPop: discard state.pop()
+    of opDefineRuntimeMacro:
+      discard state.pop()
+      push scalarValue("Nil")
+    of opRuntimePipelineStage:
+      discard state.pop()
+      errors.open = true
+      result.taskCode = true
+      for task in state.knownTasks: state.mayConsumed.incl task
+      observeException(state)
+      push unknownValue()
+    of opInvokeRuntimeMacro, opExecuteRuntimeMacro:
+      if inst.op == opExecuteRuntimeMacro: discard state.pop()
+      errors.open = true
+      result.taskCode = true
+      for task in state.knownTasks: state.mayConsumed.incl task
+      let context = chunk.runtimeMacroCalls[inst.intArg].context.macros
+      if context != nil:
+        for name in context.hiddenNames:
+          var binding = state.at(environment, name)
+          if binding.immutable: continue
+          binding.value = if binding.declaredType.kind == vkNil: unknownValue()
+                          else: analysis.valueFromType(binding.declaredType, environment)
+          state.bindings[name] = binding
+          if name notin declarations: state.outerWrites[name] = binding
+      observeException(state)
+      push unknownValue()
     of opMakeList:
       var elementType = NIL
       for i in 0..<inst.intArg:
@@ -1767,7 +1879,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       result.taskCode = result.taskCode or body.taskCode
       var escaping = body.errors
       var recoveries: ErrorEffectSummary
-      var value = body.value
+      var value = body.normalValue
       var exitState: ref AbstractState
       proc addExit(source: ref AbstractState) =
         if source == nil: return
@@ -1776,7 +1888,13 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
           exitState[] = source[]
         else:
           discard exitState[].mergeState(source[])
-      if body.normalExit: addExit(body.finalState)
+      if body.normalExit: addExit(body.normalState)
+      var breakState, continueState: ref AbstractState
+      var returnState: ref AbstractState
+      var returnValue = body.returnValue
+      mergeExit(breakState, body.breakState)
+      mergeExit(continueState, body.continueState)
+      mergeExit(returnState, body.returnState)
       var catchesAll = false
       for clause in trial.catches:
         let covered = if clause.errorType.kind == vkSymbol and clause.errorType.symVal == "Any":
@@ -1799,9 +1917,15 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
                                             initialState = addr recoveryState)
         result.taskCode = result.taskCode or recovery.taskCode
         recoveries.mergeErrors(recovery.errors)
-        if recovery.normalExit: addExit(recovery.finalState)
+        if recovery.normalExit: addExit(recovery.normalState)
+        mergeExit(breakState, recovery.breakState)
+        mergeExit(continueState, recovery.continueState)
+        if recovery.returnState != nil:
+          mergeExit(returnState, recovery.returnState)
+          returnValue = if returnValue == nil: recovery.returnValue
+                        else: mergeValue(returnValue, recovery.returnValue)
         if recovery.exceptionState != nil: observeException(recovery.exceptionState[])
-        value = mergeValue(value, recovery.value)
+        value = mergeValue(value, recovery.normalValue)
       errors.mergeErrors(escaping)
       errors.mergeErrors(recoveries)
       if body.exceptionState != nil and (not catchesAll or escaping.open or escaping.named.len > 0):
@@ -1810,30 +1934,59 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       elif body.finalState != nil: state.adoptFlow(body.finalState[])
       if trial.ensureBody != nil:
         var cleanupState = state
+        if breakState != nil: discard cleanupState.mergeState(breakState[])
+        if continueState != nil: discard cleanupState.mergeState(continueState[])
+        if returnState != nil: discard cleanupState.mergeState(returnState[])
         if body.exceptionState != nil and not catchesAll:
           discard cleanupState.mergeState(body.exceptionState[])
         let cleanupEnv = newErrorEnvironment(environment, environment.source, environment.prefix)
         cleanupEnv.values = cleanupState.bindings
         let cleanup = analysis.analyzeBody(trial.ensureBody, cleanupEnv, function, depth + 1, permitted,
                                            initialState = addr cleanupState)
-        absorb(cleanup)
+        var normalCleanup = cleanup
+        normalCleanup.finalState = cleanup.normalState
+        absorb(normalCleanup)
+        forwardLoopExit(cleanup.breakState, false, ip, state)
+        forwardLoopExit(cleanup.continueState, true, ip, state)
+        if cleanup.returnState != nil:
+          finish(cleanup.returnValue, cleanup.returnState[], explicit = true)
+        if not cleanup.normalExit:
+          breakState = nil
+          continueState = nil
+          returnState = nil
+          next = false
+        elif cleanup.normalState != nil:
+          if breakState != nil: breakState[].adoptFlow(cleanup.normalState[])
+          if continueState != nil: continueState[].adoptFlow(cleanup.normalState[])
+          if returnState != nil: returnState[].adoptFlow(cleanup.normalState[])
+      forwardLoopExit(breakState, false, ip, state)
+      forwardLoopExit(continueState, true, ip, state)
+      if returnState != nil: finish(returnValue, returnState[], explicit = true)
+      if exitState == nil: next = false
       push value
-    of opTaskScope, opSupervisor:
+    of opTaskScope, opSupervisor, opBlockScope:
       let bodyEnvironment = newErrorEnvironment(environment, environment.source, environment.prefix)
       bodyEnvironment.values = state.bindings
       var nestedState = state
-      let body = analysis.analyzeBody(chunk.subchunks[inst.intArg], bodyEnvironment, function, depth + 1, permitted,
+      let bodyChunk = chunk.subchunks[inst.intArg]
+      let body = analysis.analyzeBody(bodyChunk, bodyEnvironment, function, depth + 1, permitted,
                                       initialState = addr nestedState)
       errors.mergeErrors(body.errors)
       # Scope exit waits without consuming child outcomes. Scheduler state
       # failures (for example, deadlock) belong to the wait operation; a
       # child's deferred row belongs to await, not to this implicit wait.
-      errors.mergeErrors(oneError("RuntimeError"))
+      if inst.op != opBlockScope:
+        errors.mergeErrors(oneError("RuntimeError"))
       result.taskCode = result.taskCode or body.taskCode
-      if body.finalState != nil:
-        state.adoptFlow(body.finalState[])
+      if body.normalState != nil:
+        state.adoptScopedFlow(body.normalState[], bodyChunk)
       if body.exceptionState != nil: observeException(body.exceptionState[])
-      push body.value
+      forwardLoopExit(scopedExit(body.breakState, bodyChunk, nestedState), false, ip, nestedState)
+      forwardLoopExit(scopedExit(body.continueState, bodyChunk, nestedState), true, ip, nestedState)
+      if body.returnState != nil:
+        finish(body.returnValue, scopedExit(body.returnState, bodyChunk, nestedState)[], explicit = true)
+      if not body.normalExit: next = false
+      push body.normalValue
     of opSpawn:
       let bodyEnvironment = newErrorEnvironment(environment, environment.source, environment.prefix)
       bodyEnvironment.values = state.bindings
@@ -1908,12 +2061,35 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         errors.mergeErrors(body.errors)
         result.taskCode = result.taskCode or body.taskCode
         if body.exceptionState != nil: observeException(body.exceptionState[])
-        if body.finalState == nil or not loopState.mergeState(body.finalState[]): break
+        if body.returnState != nil:
+          finish(body.returnValue, scopedExit(body.returnState,
+            chunk.forLoops[inst.intArg].body, loopState)[], explicit = true)
+        var changed = false
+        if body.normalExit and body.normalState != nil:
+          changed = loopState.mergeState(scopedExit(body.normalState,
+            chunk.forLoops[inst.intArg].body, loopState)[]) or changed
+        if body.breakState != nil:
+          changed = loopState.mergeState(scopedExit(body.breakState,
+            chunk.forLoops[inst.intArg].body, loopState)[]) or changed
+        if body.continueState != nil:
+          changed = loopState.mergeState(scopedExit(body.continueState,
+            chunk.forLoops[inst.intArg].body, loopState)[]) or changed
+        if not changed: break
         if iteration == 31: errors.open = true
       state.adoptFlow(loopState)
       push scalarValue("Nil")
     of opLoopBreak, opLoopContinue:
-      finish(scalarValue("Nil"), state)
+      let owner = inlineLoopOwners[ip]
+      if owner >= 0:
+        if states.hasKey(owner): state.stack.setLen(states[owner].stack.len)
+        let loop = chunk.instructions[owner]
+        enqueue(if inst.op == opLoopBreak: loop.intArg else: loop.depth, state)
+      else:
+        var transfer: ref AbstractState
+        new(transfer)
+        transfer[] = state
+        if inst.op == opLoopBreak: mergeExit(escapedBreaks, transfer)
+        else: mergeExit(escapedContinues, transfer)
       next = false
     of opMatch:
       discard state.pop()
@@ -1928,14 +2104,18 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let body = analysis.analyzeBody(branch, branchEnv, function, depth + 1, permitted,
                                         initialState = addr state)
         errors.mergeErrors(body.errors)
-        result = body.value
+        result = body.normalValue
         if body.exceptionState != nil: observeException(body.exceptionState[])
+        forwardLoopExit(scopedExit(body.breakState, branch, state), false, ip, state)
+        forwardLoopExit(scopedExit(body.continueState, branch, state), true, ip, state)
+        if body.returnState != nil:
+          finish(body.returnValue, scopedExit(body.returnState, branch, state)[], explicit = true)
         if body.normalExit:
           if exitState == nil:
             new(exitState)
-            exitState[] = body.finalState[]
+            exitState[] = scopedExit(body.normalState, branch, state)[]
           else:
-            discard exitState[].mergeState(body.finalState[])
+            discard exitState[].mergeState(scopedExit(body.normalState, branch, state)[])
         branchTaskCode = branchTaskCode or body.taskCode
       for clause in matched.clauses:
         if clause.pattern.kind == vkSymbol: exhaustive = true
@@ -1949,6 +2129,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         observeException(state)
       result.taskCode = result.taskCode or branchTaskCode
       if exitState != nil: state.adoptFlow(exitState[])
+      else: next = false
       push (if value == nil: unknownValue() else: value)
     of opJump: enqueue(inst.intArg, state); next = false
     of opJumpIfFalse:
@@ -1958,8 +2139,11 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     of opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop, opJumpIfAbsent:
       enqueue(inst.intArg, state)
       if inst.op != opJumpIfAbsent: discard state.pop()
-    of opReturn, opReturnBareInt, opExplicitReturn:
+    of opReturn, opReturnBareInt:
       finish(state.pop(), state)
+      next = false
+    of opExplicitReturn:
+      finish(state.pop(), state, explicit = true)
       next = false
     of opReturnLocalIfIntLtConst, opReturnLocalIfIntLtImm:
       finish(scalarValue("Int"), state)
@@ -1997,8 +2181,14 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       state.stack = @[unknownValue()]
     if next: enqueue(ip + 1, state)
   result.errors = errors
-  result.normalExit = hasReturn
+  result.normalExit = normalState != nil
+  result.normalState = normalState
+  result.normalValue = if normalValue == nil: unknownValue() else: normalValue
+  result.returnState = explicitState
+  result.returnValue = explicitValue
   result.exceptionState = exceptional
+  result.breakState = escapedBreaks
+  result.continueState = escapedContinues
   new(result.finalState)
   if hasReturn:
     result.value = returns

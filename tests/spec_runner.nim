@@ -692,6 +692,11 @@ suite "spec — templates from design":
                "(div (p \"a\") (p \"b\"))")
 
 suite "spec — macros from design":
+  test "local macros expand in the live definition environment":
+    check_eval("(fn f [n] (macro computed [] (+ n 1)) " &
+      "(macro emitted [] `(+ n 1)) (fn caller [n] [(computed) (emitted)]) " &
+      "(caller 100)) [(f 2) (f 9)]", "[[3 101] [10 101]]")
+
   test "template macros expand before calls":
     check_eval("(macro when [cond, body...] " &
                "  `(if %cond (then %body...) (else nil))) " &
@@ -708,11 +713,9 @@ suite "spec — macros from design":
                "[(ignore_syntax (set hit 1)) hit]",
                "[7 0]")
 
-  test "MVP macros are template macros: exactly one body expression":
-    expect GeneError:
-      discard run(compileSource("(macro two [x] (var t 1) `(+ %x %t)) " &
-                                "(two 1)"),
-                  newGlobalScope())
+  test "macro bodies evaluate ordinary code before compiling the result":
+    check_eval("(macro two [x] (var t 1) `(+ %x %t)) (two 1)", "2")
+    check_eval("(macro add_one [x] (+ x 1)) (add_one 2)", "3")
 
   test "macro call props bind named syntax parameters":
     check_eval("(macro scaled [value ^by n] `(+ %value %n)) " &
@@ -791,12 +794,12 @@ suite "spec — macros from design":
   test "template macros expand in default arguments":
     check_eval("(macro seven [] 7) (fn f [x = (seven)] x) (f)", "7")
 
-  test "template macros avoid introduced local capture":
+  test "macro result locals stay confined to their expansion":
     check_eval("(macro local [x] `(do (var tmp 1) (+ tmp %x))) " &
                "(var tmp 100) [(local 2) tmp]",
                "[3 100]")
 
-  test "template macros avoid introduced helper capture":
+  test "macro result helpers stay confined to their expansion":
     check_eval("(macro helper_syntax [x] " &
                "  `(do (fn helper [y] (+ y 1)) (helper %x))) " &
                "(fn helper [y] 100) [(helper_syntax 2) (helper 2)]",
@@ -808,13 +811,80 @@ suite "spec — macros from design":
                "(fn helper [n] 99) [(recursive 3) (helper 3)]",
                "[0 99]")
 
-  test "template macros avoid introduced pattern-binder capture":
-    # docs/language.md: binders introduced by a template's
-    # match pattern are hygienically fresh, like var/fn binders.
+  test "macro match binders retain their ordinary arm scope":
     check_eval("(macro first_of [x] " &
                "  `(match %x (when [tmp] tmp))) " &
                "(var tmp 100) [(first_of [1]) tmp]",
                "[1 100]")
+
+  test "template names retain property message quote and path roles":
+    check_eval("(macro properties [] `(do (let key \"k\") " &
+      "(let rec {^key 7}) (let a {^a 1 ^b 2}) [rec/key a/a a/b])) " &
+      "(properties)", "[7 1 2]")
+    check_eval("(macro messages [xs] `(do (let size 0) (%xs .size))) " &
+      "(messages [1 2 3])", "3")
+    check_eval("(macro symbol [] `(do (let x 1) (quote x))) (symbol)", "x")
+
+  test "plain substitution deliberately captures caller collision operands":
+    check_eval("(macro mk [body] `(fn [x] %body)) " &
+      "(var x 10) [((mk (+ x 1)) 5) x]", "[6 10]")
+    check_eval("(macro each3 [body] `(for i in [1 2 3] %body)) " &
+      "(var i 99) (var total 0) (each3 (set total (+ total i))) [total i]", "[6 99]")
+    check_eval("(macro first_or [x d] `(match %x (when [tmp] %d))) " &
+      "(var tmp 100) [(first_or [1] tmp) tmp]", "[1 100]")
+    check_eval("(macro swap [a b] `(do (var tmp %a) (set %a %b) (set %b tmp))) " &
+      "(fn f [] (var tmp 1) (var y 2) (swap tmp y) [tmp y]) (f)", "[1 2]")
+    expect GeneError:
+      discard compileSource("(macro swap [a b] " &
+        "`(do (let tmp %a) (set %a %b) (set %b tmp))) " &
+        "(fn f [] (var tmp 1) (var y 2) (swap tmp y))")
+
+  test "template body siblings use ordinary binding visibility":
+    for templateBody in [
+      "((fn [] (let x 7) x))", "(if true (do (let x 7) x) 0)",
+      "(do (var total 0) (loop (let x 7) (set total x) (break)) total)",
+      "(do (var total 0) (for i in [1] (let x 7) (set total x)) total)",
+      "(scope (let x 7) x)", "(match 0 (when _ (let x 7) x))",
+      "(try (let x 7) x catch Any 99)"
+    ]:
+      checkpoint templateBody
+      check_eval("(macro example [] `" & templateBody & ") " &
+        "(let x 90) [(example) x]", "[7 90]")
+    check_compile_error("(macro broken [] `(let)) (try (broken) catch Any 99)",
+      "let requires")
+
+  test "compound macro results confine declarations without changing caller bindings":
+    check_eval("(macro identity [x] x) (let x 90) " &
+      "[(identity {^created (let x 1)}) x]", "[{^created 1} 90]")
+    check_eval("(fn pair [a b] [a b]) (macro nested [] `(quote _)) " &
+      "(3 -> pair (nested) _)", "[_ 3]")
+
+  test "ordinary quote constructs residual path and pin unquotes":
+    check_eval("(var data {^a 1 ^key 99}) " &
+      "(macro pick [k] `(do (let key %k) (path data %(quote (unquote key))))) " &
+      "(pick \"a\")", "1")
+    check_eval("(macro is_same [x y] `(do (let a %x) " &
+      "(match %y (when %(quote (unquote a)) true) (when _ false)))) " &
+      "[(is_same 1 1) (is_same 1 2)]", "[true false]")
+    check_eval("(macro identity [x] x) (let key \"a\") (let data {^a 1}) " &
+      "(identity data/%key)", "1")
+    check_compile_error("(var data {^a 1 ^key 99}) " &
+      "(macro pick [k] `(do (let key %k) data/%key)) (pick \"a\")",
+      "undefined symbol: key")
+    check_compile_error("(macro is_same [x y] " &
+      "`(do (let a %x) (match %y (when %a true) (when _ false)))) (is_same 1 2)",
+      "undefined symbol: a")
+    check_compile_error("(let a 1) (macro is_same [x] " &
+      "`(match %x (when %%a true) (when _ false))) (is_same 2)",
+      "undefined symbol: unquote")
+
+  test "macro splices use ordinary quasiquote node anatomy":
+    check_eval("(macro splice [x] `(quote (h %x...))) " &
+      "(splice (ignored ^key 7 1 2))", "(h ^key 7 1 2)")
+    check_eval("(macro splice [x] `(quote (h %x...))) " &
+      "(splice {^key 7})", "(h ^key 7)")
+    check_eval("(macro body_only [x] (let items ($body x)) `(quote (h %items...))) " &
+      "(body_only (ignored ^key 7 1 2))", "(h 1 2)")
 
 suite "spec — explicit fexprs from design (§3/§11.1)":
   test "a bang-named fn receives raw syntax":
@@ -8633,16 +8703,15 @@ suite "spec — macros across modules (design §11/§15)":
       discard app.loadFileModule(dir / "muse.gene")
 
   test "one name means one thing in head and value positions":
-    # fn then macro, macro then fn, macro-as-value, param over macro: all
-    # rejected so a name can never dispatch differently by position.
+    # Same-scope duplicate declarations and macro-as-value are rejected.
+    # An inner ordinary binding shadows the macro in every position (D4).
     expect GeneError:
       discard compileSource("(fn f [x] x) (macro f [x] `%x)")
     expect GeneError:
       discard compileSource("(macro f [x] `%x) (fn f [x] x)")
     expect GeneError:
       discard compileSource("(macro f [x] `%x) (var g f)")
-    expect GeneError:
-      discard compileSource("(macro f [x] `%x) (fn g [f] f)")
+    check_eval("(macro f [x] `%x) (fn g [f] f) (g 42)", "42")
 
   test "importing a macro over a value binding is rejected both ways":
     let dir = macroModuleDir()

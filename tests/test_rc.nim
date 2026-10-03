@@ -9,8 +9,8 @@
 ## Build with: nim c -r -d:geneRcStats --path:src tests/test_rc.nim
 
 when defined(geneRcStats):
-  import gene/[compiler, native_api, pending_exception, printer, types, vm]
-  import std/[os, unittest]
+  import gene/[compiler, gir, native_api, pending_exception, printer, reader, types, vm]
+  import std/[os, tables, unittest]
 
   # A container's generated destructor can release its elements with the
   # pending-exception flag still set; each element's destructor must finish.
@@ -47,14 +47,25 @@ when defined(geneRcStats):
     discard address
     inc ffiAutoPointerReleases
 
-  proc leakedManaged(src: string, useLocalSlots = true): int =
+  proc leakedManaged(src: string, useLocalSlots = true, macroModule = false): int =
     ## Managed heap objects surviving one run of `src` after the program scope is
     ## dropped. The shared built-ins root is primed once below, so it cancels out.
+    # Earlier tests may have just released a phase helper after its last VM
+    # run. Service those deferred contexts before taking this test's baseline.
+    discard run(compileSource("nil"), newGlobalScope())
     GC_fullCollect()
     let before = liveManaged
     block:
       var scope = newGlobalScope()
-      discard run(compileSource(src, useLocalSlots = useLocalSlots), scope)
+      if macroModule:
+        let app = Application(scope.application)
+        let path = app.applicationPackage.root / "macro_lifetime.gene"
+        let compiled = compileFormsWithMacros(readAllWithLocs(src, path),
+          initTable[string, Table[string, MacroDef]](),
+          moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_lifetime.gene")
+        discard run(compiled.chunk, scope)
+      else:
+        discard run(compileSource(src, useLocalSlots = useLocalSlots), scope)
       scope = nil
     GC_fullCollect()
     result = liveManaged - before
@@ -62,6 +73,117 @@ when defined(geneRcStats):
   initModuleContext(getCurrentDir())
   discard newGlobalScope()   # build the built-ins root into the baseline
   GC_fullCollect()
+
+  suite "rc — macro compilation":
+    test "runtime macro closures and saved environments release their invocations":
+      for source in [
+          "(fn f [n] (macro m [] n) (m)) (repeat i in 20 (f i))",
+          "(fn make [n] (macro m [] n) (env)) " &
+            "(eval (quote (m)) ^in (make 7))",
+          "(fn f [n] (macro m [] `(do (let value n) (fn [] value))) ((m))) (f 7)"]:
+        discard leakedManaged(source)
+        checkpoint source
+        check leakedManaged(source) == 0
+
+    test "an Env outliving its caller code retains macros and releases its phase":
+      proc exercise() =
+        var environment: Value
+        block:
+          let scope = newGlobalScope()
+          let app = Application(scope.application)
+          let path = app.applicationPackage.root / "macro_detached_env.gene"
+          let source = "(mod compile_only) (var offset 40) " &
+            "(fn helper [x] (+ offset x)) " &
+            "(macro computed [x] (helper x)) " &
+            "(macro expose [] (env ^bindings {^helper helper})) (expose)"
+          let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
+            initTable[string, Table[string, MacroDef]](),
+            moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_detached_env.gene")
+          environment = run(compiled.chunk, scope)
+          check environment.envCompilerMacros != nil
+          if environment.envCompilerMacros != nil:
+            check MacroBindings(environment.envCompilerMacros).definitions.hasKey("computed")
+        GC_fullCollect()
+        check environment.envCompilerMacros != nil
+        if environment.envCompilerMacros != nil:
+          check MacroBindings(environment.envCompilerMacros).definitions.hasKey("computed")
+        block:
+          let consumer = newGlobalScope()
+          consumer.define("held", environment)
+          check run(compileSource("(eval (quote [(helper 2) (computed 2)]) ^in held)"),
+            consumer).print() == "[42 42]"
+        environment = NIL
+        discard run(compileSource("nil"), newGlobalScope())
+        GC_fullCollect()
+      exercise()
+      let before = liveManaged
+      exercise()
+      check liveManaged == before
+
+    test "a helper outliving its caller code releases its phase after the final use":
+      proc exercise() =
+        var helper: Value
+        block:
+          let scope = newGlobalScope()
+          let app = Application(scope.application)
+          let path = app.applicationPackage.root / "macro_detached_helper.gene"
+          let source = "(mod compile_only) (var offset 40) " &
+            "(fn helper [x] (+ offset x)) (macro expose [] helper) (expose)"
+          let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
+            initTable[string, Table[string, MacroDef]](),
+            moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_detached_helper.gene")
+          helper = run(compiled.chunk, scope)
+        GC_fullCollect()
+        block:
+          let consumer = newGlobalScope()
+          consumer.define("held", helper)
+          check run(compileSource("(held 2)"), consumer).print() == "42"
+        helper = NIL
+        # The normal VM safepoint also services deferred retirement watches.
+        discard run(compileSource("nil"), newGlobalScope())
+        GC_fullCollect()
+      exercise()
+      let before = liveManaged
+      exercise()
+      check liveManaged == before
+
+    test "discarded expansions release their compile-time applications":
+      for source in [
+        "(macro identity [x] `%x) (identity 3)",
+        "(fn helper [x] (+ x 1)) (macro computed [x] (helper x)) (computed 3)",
+        "(macro closure [value] `(do (let local %value) (fn [] local))) ((closure 3))"
+      ]:
+        # Prime process-wide builtin identities and allocator pools first.
+        discard leakedManaged(source)
+        checkpoint source
+        check leakedManaged(source) == 0
+
+    test "definition module cycles retire after expansion":
+      let source = "(mod compile_only) (fn helper [x] (+ x 1)) " &
+        "(macro computed [x] (helper x)) (computed 3)"
+      discard leakedManaged(source, macroModule = true)
+      check leakedManaged(source, macroModule = true) == 0
+
+    test "embedded helper values release after their compiled code is discarded":
+      let source = "(mod compile_only) (fn helper [x] (+ x 1)) " &
+        "(macro computed [x] `(%helper %x)) (computed 3)"
+      discard leakedManaged(source, macroModule = true)
+      check leakedManaged(source, macroModule = true) == 0
+
+    test "emitted helper values retain their definition environment":
+      let scope = newGlobalScope()
+      let app = Application(scope.application)
+      let path = app.applicationPackage.root / "macro_retained_helper.gene"
+      let source = "(mod compile_only) (var offset 40) " &
+        "(fn helper [x] (+ offset x)) (macro expose [] helper) (expose)"
+      let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
+        initTable[string, Table[string, MacroDef]](),
+        moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_retained_helper.gene")
+      let helper = run(compiled.chunk, scope)
+      discard run(compileSource("(set offset 100)", useLocalSlots = false), scope)
+      scope.define("retained_helper", helper)
+      GC_fullCollect()
+      check run(compileSource("(retained_helper 2)", useLocalSlots = false), scope).print() == "42"
 
   suite "rc — closures and scopes (geneRcStats)":
     test "a directly stored Path releases its held-message scope":

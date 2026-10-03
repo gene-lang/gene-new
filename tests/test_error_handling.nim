@@ -359,6 +359,40 @@ proc strictErrorCompile(source: string): Chunk =
                  sourceName = "strict_error_spec.gene")
 
 suite "errors — static catch or declare":
+  test "runtime local macro calls require an open or caught error row":
+    expect GeneError:
+      discard strictErrorCompile("(fn f [n] ^errors [] (macro m [] n) (m))")
+    discard strictErrorCompile("(fn f [n] ^errors [Error] (macro m [] n) (m))")
+    discard strictErrorCompile("(fn f [n] ^errors [] (macro m [] n) " &
+      "(try (m) catch Error nil))")
+
+  test "macro block loop exits keep following errors reachable":
+    let setup = "(type AfterLoop ^props {^message Str}) (impl Error for AfterLoop) " &
+      "(macro scoped [body...] `(do (let keep (fn [] 1)) %body...)) "
+    for loopBody in ["(scoped (break))", "(try (scoped (break)) ensure nil)"]:
+      expect GeneError:
+        discard strictErrorCompile(setup & "(fn bad [] ^errors [] " &
+          "(while true " & loopBody & ") (fail (AfterLoop ^message \"after\")))")
+      discard strictErrorCompile(setup & "(fn allowed [] ^errors [AfterLoop] " &
+        "(while true " & loopBody & ") (fail (AfterLoop ^message \"after\")))")
+
+  test "macro-local callable bindings do not replace caller error contracts":
+    let setup = "(type HiddenError ^props {^message Str}) (impl Error for HiddenError) " &
+      "(fn risky ^private true [] ^errors [HiddenError] (fail (HiddenError ^message \"bad\"))) " &
+      "(macro locally [] `(do (let risky (fn [] nil)) nil)) "
+    expect GeneError:
+      discard strictErrorCompile(setup & "(fn bad [] ^errors [] (locally) (risky))")
+    discard strictErrorCompile(setup & "(fn allowed [] ^errors [HiddenError] (locally) (risky))")
+
+  test "macro returns and ensure returns end the caller's error path":
+    let setup = "(type UnreachableError ^props {^message Str}) (impl Error for UnreachableError) " &
+      "(macro scoped [body...] `(do (let keep (fn [] 1)) %body...)) "
+    discard strictErrorCompile(setup & "(fn finish [] ^errors [] " &
+      "(scoped (return 7)) (fail (UnreachableError ^message \"unreachable\")))")
+    discard strictErrorCompile(setup & "(fn finish [] ^errors [] " &
+      "(while true (try (scoped (break)) ensure (return 7))) " &
+      "(fail (UnreachableError ^message \"unreachable\")))")
+
   test "strict public functions require explicit rows while private helpers infer":
     expect GeneError: discard strictErrorCompile("(fn public [] 1)")
     discard strictErrorCompile("(fn helper ^private true [] 1) " &

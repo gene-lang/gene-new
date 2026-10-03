@@ -1411,14 +1411,24 @@ proc build*(engine: BuildEngine, request: BuildRequest,
     plannedLibraries.add packageId
 
   proc dependencyArtifacts(packageId: string): seq[BuildArtifact] =
-    let pkg = buildGraph.packagesById[packageId]
-    for alias in buildGraph.dependencyAliases(packageId):
-      let dependencyId = pkg.dependencyEdges[alias]
-      if not builtLibraries.hasKey(dependencyId):
-        raiseBuild(becDependencyCycle,
-          "library dependency was not scheduled before its importer",
-          [packageId, dependencyId])
-      result.add builtLibraries[dependencyId]
+    # An executable macro body can initialize its defining library, whose
+    # ordinary imports may reach transitive dependencies. Supply their verified
+    # artifacts too; package import permissions still come from dependencyEdges.
+    var seen: HashSet[string]
+    var ordered: seq[string]
+    proc collect(id: string) =
+      let pkg = buildGraph.packagesById[id]
+      for alias in buildGraph.dependencyAliases(id):
+        let dependencyId = pkg.dependencyEdges[alias]
+        if seen.containsOrIncl(dependencyId): continue
+        if not builtLibraries.hasKey(dependencyId):
+          raiseBuild(becDependencyCycle,
+            "library dependency was not scheduled before its importer",
+            [id, dependencyId])
+        collect(dependencyId)
+        ordered.add dependencyId
+    collect(packageId)
+    for id in ordered: result.add builtLibraries[id]
 
   proc buildLibraryNow(packageId: string,
                        workerRequest = effectiveRequest): BuildArtifact =

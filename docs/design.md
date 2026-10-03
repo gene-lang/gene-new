@@ -128,7 +128,10 @@ thread. Channels and actors add explicit communication and state ownership.
 
 ## Syntax extension has two tools
 
-A template macro expands into ordinary lexical code:
+A macro executes ordinary Gene code, then compiles its result as ordinary
+lexical code at the call site. Module-level macros expand during compilation;
+local macros expand when their call executes, using their captured definition
+environment. A template is a convenient way to produce that result:
 
 ```gene runnable
 (macro unless [condition body...]
@@ -138,6 +141,12 @@ A template macro expands into ordinary lexical code:
 (unless false (set count 1))
 count # 1
 ```
+
+Expansion-local declarations and impls stay within a marked result block.
+Substitution follows ordinary shadowing, including captures within inserted
+arguments. The block preserves caller control-flow targets; it adds neither a
+function boundary nor task ownership. See the [macro design](macro.md) for the
+full contract and backend limits.
 
 A named fexpr receives syntax at runtime:
 

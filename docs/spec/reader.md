@@ -15,6 +15,10 @@
   reader syntax.
 - Reader prefixes, slash paths, interpolation, props/meta flags, immutable
   literals, and malformed-input behavior follow the reader suites.
+- `%expr` reads as `(unquote expr)` in vectors as well as other expression
+  positions; `%items...` reads as `(unquote (... items))`. Quote preserves this
+  normalized syntax as data, so `(quote [%x])` contains one unquote node.
+  Formatting and reparsing preserve the same structure and quotation depth.
 - Interpolation reads as an ordinary `gene/to_str` call: `$"a${b}c"` is
   `($to_str "a" b "c")`. `$to_str` abbreviates `gene/to_str`, whose variadic
   arguments are evaluated eagerly in order and displayed without separators.

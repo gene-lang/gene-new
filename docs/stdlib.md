@@ -650,6 +650,13 @@ payload evaluation until the level is enabled. An application configures
 routes and levels; a library should use or accept a named logger. Diagnostic
 logging is separate from a durable application event log.
 
+The logger expression runs once; message and payload expressions run only when
+enabled. The current templates use an explicit task scope and bind a local
+`generated_logger`. Under ordinary macro substitution, references to that name
+in message or payload code see the local logger. Avoid that spelling in those
+expressions. The caller's surrounding binding is unchanged; no automatic
+renaming or public fresh-name facility is supplied.
+
 ## Application events
 
 An event's nominal type identifies its family. A bus is an explicit value:

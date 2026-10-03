@@ -58,6 +58,44 @@ The fexpr's own body and functions or loops inside evaluated syntax follow
 ordinary local control-flow rules. See [the fexpr and macro guide](../language.md#macros-fexprs-and-eval)
 and the runnable [fexpr demo](../../examples/fexpr_demo.gene).
 
+## Macro expansion
+
+A macro receives raw argument syntax and evaluates ordinary Gene body code.
+Module-level macros expand during compilation using a separate definition-side
+module instance. A local macro expands each time execution reaches its call,
+using the live lexical environment captured by that definition. Its result is
+compiled and executed at the invocation site. Free names executed by the body
+use the definition environment; free names remaining in the result use the
+caller's lexical bindings. See
+[the macro design](../macro.md#d2b-definition-side-lexical-evaluation--decided).
+
+An executable result receives an outer `do` with `macro_result` set to true,
+or that property is set on its existing outer `do`. The source syntax is not
+mutated. A result owning declarations or impl registrations/imports gets a
+lexical scope; those names and registrations cannot escape into the caller's
+surrounding scope. Returned closures retain their ordinary captured state.
+The scope adds no function, loop, task, or eval boundary: inserted return and
+loop exits target the surrounding code, with ordinary cleanup and tail calls.
+
+Substitution uses ordinary shadowing without automatic renaming. An introduced
+local may capture a caller argument's same-named reference. A parameter or
+value binding also hides an outer macro in call and value positions. Quoted
+data remains data. Expression positions and direct pipeline slots support
+expansion; structural clause/member positions reject it.
+
+Quote, quasiquote, unquote, and splicing have their ordinary runtime meanings
+when the macro body executes. To emit a pin or computed-path unquote literally,
+insert `%(quote (unquote name))`. A single-depth `%%name` is not a special
+escape. Node-body splices include properties and body while dropping the head.
+Repeated argument insertion can evaluate that argument more than once.
+
+`eval` uses the visible macros from its selected Env or CallerEnv; closed
+snapshots carry only their selected macro names. This changes compiler lookup,
+without bypassing the fexpr/eval control-flow and binding-copy boundaries above.
+In the REPL, macro definitions commit when their input compiles successfully.
+Runtime failure retains that compiler state; compilation failure leaves the
+previous macro context intact.
+
 ## Direct message calls and checked callable signatures
 
 `(P:msg receiver args...)` normalizes to `(receiver .P:msg args...)`.
