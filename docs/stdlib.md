@@ -76,6 +76,15 @@ a lowercase hexadecimal digest. Use Bytes for binary files and payloads:
 # "79301df919df82d717f591339d85235fb8bb8683b2c74680306959327d4a4464"
 ```
 
+`($base64/encode data)` encodes a Str or Bytes as standard RFC 4648 base64
+with padding and no line breaks; `($base64/decode text)` returns Bytes and
+accepts only the canonical form that `encode` produces. Use it for binary
+payloads inside JSON or HTTP bodies, such as an image sent to a model:
+
+```gene
+($base64/encode ($fs/read_bytes "observation.png"))
+```
+
 ## Files
 
 `($os/set_cwd directory)` changes the process working directory. Relative
@@ -147,6 +156,13 @@ forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
 nodes. Lines and columns start at 1. `eval` honors this metadata when reporting
 errors. Without `^locs`, the forms retain the ordinary reader representation.
 
+For text from an untrusted peer, such as a model response read as domain
+data, `($parse/read_all text ^reject_duplicate_props true ^max_depth 32)`
+refuses a repeated property, map key, or metadata key (which the reader
+otherwise resolves by keeping the last value) and bounds nesting. Failures are
+`ParseError`. These options cannot be combined with `^locs`. Reading never
+evaluates anything; check the resulting forms before acting on them.
+
 `($parse/incomplete? text)` is an inert reader query. It returns true for
 unfinished forms, strings or comments; complete input and malformed input
 return false. A CLI can collect more input without evaluating partial code.
@@ -205,7 +221,9 @@ gene eval '($fs/write_text "greeting.txt" "Hello from Gene")'
 
 `write_text_atomic` stages and synchronizes a regular file, then publishes it in
 the same directory. `^owner_only true` restricts the file to its owner before
-any content is written, for a secret such as a connection credential. For byte-oriented I/O use `read_bytes` / `write_bytes`.
+any content is written, for a secret such as a connection credential. For byte-oriented I/O use `read_bytes` / `write_bytes`;
+`write_bytes_atomic` is the staged, synchronized, renamed form for Bytes, for
+example when publishing immutable blobs.
 Filesystem watching, locking, and asynchronous filesystem adapters are also
 available.
 

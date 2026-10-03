@@ -15,6 +15,7 @@ include test_io_file
 include test_io_tcp
 include test_csv_stream
 include test_buffers
+include test_stdlib_data
 include test_bound_call
 include test_callable_reflection
 include test_pipeline

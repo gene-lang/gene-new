@@ -358,6 +358,35 @@ proc biBytesToStr(args: openArray[Value]): Value {.nimcall.} =
   requireBytes("binary/to_str", args[0])
   newStr(args[0].bytesVal)
 
+# --- base64 ------------------------------------------------------------------
+#
+# The text encoding a JSON or HTTP payload needs for binary data, such as an
+# image sent to a multimodal model. RFC 4648 standard alphabet with padding
+# and no line breaks; decoding accepts exactly what encoding produces.
+
+proc biBase64Encode(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("base64/encode", args)
+  case args[0].kind
+  of vkBytes: newStr(base64.encode(args[0].bytesVal))
+  of vkString: newStr(base64.encode(args[0].strVal))
+  else:
+    raise newException(GeneError, "base64/encode expects Bytes or a Str")
+
+proc biBase64Decode(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("base64/decode", args)
+  requireStr("base64/decode", args[0])
+  let encoded = args[0].strVal
+  var decoded = ""
+  try:
+    decoded = base64.decode(encoded)
+  except ValueError:
+    raise newException(GeneError, "base64/decode expects canonical base64 text")
+  # std/base64 skips characters it does not know. Requiring the round trip
+  # rejects that input, missing padding, and a non-zero trailing bit pattern.
+  if base64.encode(decoded) != encoded:
+    raise newException(GeneError, "base64/decode expects canonical base64 text")
+  newBytes(decoded)
+
 # --- binary number codecs ----------------------------------------------------
 #
 # `binary` could slice and concatenate but could not read a `u16` or write an
@@ -5533,6 +5562,33 @@ proc biFsWriteTextAtomicSync(args: openArray[Value],
     raiseFilesystemOperationError("fs/write_text_atomic", e, scope)
   NIL
 
+proc biFsWriteBytesAtomicSync(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  ## The binary sibling of fs/write_text_atomic: stage beside the destination,
+  ## synchronize, then rename, so a reader sees the old file or the complete
+  ## new one. An immutable artifact store publishes its blobs this way.
+  if args.len != 2:
+    raise newException(GeneError,
+      "fs/write_bytes_atomic expects (path, bytes)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireStr("fs/write_bytes_atomic path", args[0])
+  if args[1].kind != vkBytes:
+    raise newException(GeneError,
+      "fs/write_bytes_atomic expects Bytes, got " & $args[1].kind)
+  when compileOption("threads"):
+    if activeVmFiber != nil:
+      if activeVmFiber.nativeTask.kind != vkTask:
+        let task = startNativeFileTask("fs/write_bytes_atomic", args[0].strVal,
+                                      args[1].bytesVal, nfoAtomicWrite, scope, false)
+        activeVmFiber.nativeTask = task
+        scope.registerOwnedTask(task)
+      return finishNativeTask()
+  try:
+    fsWriteAtomic(args[0].strVal, args[1].bytesVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/write_bytes_atomic", e, scope)
+  NIL
+
 when defined(posix) and not defined(geneWasm) and not defined(emscripten):
   proc renamePath(source, destination: cstring): cint
     {.importc: "rename", header: "<stdio.h>".}
@@ -5861,6 +5917,57 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
   else:
     raiseJsonError(p, "unexpected character '" & c & "'")
     NIL
+
+proc biParseReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (parse/read_all text ^source "" ^locs false ^max_depth 0
+  ##                 ^reject_duplicate_props false)
+  ## The reader as a data boundary. Without the last two options this is the
+  ## root `read_all`. `^reject_duplicate_props true` refuses a repeated
+  ## property, map key, or metadata key, which the reader otherwise resolves
+  ## by keeping the last value; `^max_depth` bounds nesting. Both are for text
+  ## from an untrusted peer, such as a model response read as domain data.
+  requireOne("parse/read_all", args)
+  var options = ReadOptions()
+  var source = ""
+  var located = false
+  if call != nil:
+    for i, name in call.namedNames:
+      let value = call.namedValues[i]
+      case name
+      of "source":
+        requireStr("parse/read_all ^source", value)
+        source = value.strVal
+      of "locs":
+        if value.kind != vkBool:
+          raise newException(GeneError, "parse/read_all ^locs expects Bool")
+        located = value.boolVal
+      of "max_depth":
+        let depth = requireInt64("parse/read_all ^max_depth", value)
+        if depth < 0 or depth > 100000:
+          raise newException(GeneError,
+            "parse/read_all ^max_depth must be between 0 and 100000")
+        options.maxDepth = int(depth)
+      of "reject_duplicate_props":
+        if value.kind != vkBool:
+          raise newException(GeneError,
+            "parse/read_all ^reject_duplicate_props expects Bool")
+        options.rejectDuplicateProps = value.boolVal
+      else:
+        raise newException(GeneError,
+          "parse/read_all got unexpected named argument: " & name)
+  if options.maxDepth == 0 and not options.rejectDuplicateProps:
+    return biReadAll(args, call)
+  if located:
+    raise newException(GeneError,
+      "parse/read_all ^locs is not available with ^max_depth or " &
+      "^reject_duplicate_props")
+  requireStr("parse/read_all", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  try:
+    return newStream(readAll(args[0].strVal, source, options))
+  except ReadError as e:
+    raiseReaderError("parse/read_all", e.msg, "ParseError", scope,
+                     e.sourceName, e.line, e.col, e.contextFrames)
 
 proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (json/parse text ^strict false ^max_depth 200). `^strict true` rejects
@@ -9873,7 +9980,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let stdParseScope = newScope(root)
   stdParseScope.define("parse_int", builtinNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
-  stdParseScope.define("read_all", root.vars["read_all"])
+  stdParseScope.define("read_all",
+                       builtinNativeCallFn("parse/read_all", biParseReadAll))
   stdParseScope.define("incomplete?", builtinNativeFn("parse/incomplete?", biReadIncomplete))
   # `format` was removed from the runtime: canonical formatting is a tool
   # surface, not a language one, and it was the only thing linking fmt.nim
@@ -9924,6 +10032,10 @@ proc registerStdlibNamespaces(root: Scope) =
   bytesScope.define("put_f32", builtinNativeFn("binary/put_f32", biBytesPutF32))
   bytesScope.define("put_f64", builtinNativeFn("binary/put_f64", biBytesPutF64))
   root.define("binary", newNamespace("binary", bytesScope))
+  let base64Scope = newScope(root)
+  base64Scope.define("encode", builtinNativeFn("base64/encode", biBase64Encode))
+  base64Scope.define("decode", builtinNativeFn("base64/decode", biBase64Decode))
+  root.define("base64", newNamespace("base64", base64Scope))
   # `gene/math`, reachable as `$math/floor` like every other root namespace.
   let mathScope = newScope(root)
   mathScope.define("floor", builtinNativeFn("math/floor", biMathFloor))
@@ -11027,6 +11139,9 @@ proc registerStdlibNamespaces(root: Scope) =
       builtinNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync))
     fsNs.nsScope.define("write_bytes",
       builtinNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
+    fsNs.nsScope.define("write_bytes_atomic",
+      builtinNativeCallFn("fs/write_bytes_atomic", biFsWriteBytesAtomicSync,
+                          acceptsNamed = false))
     fsNs.nsScope.define("read_bytes",
       builtinNativeCallFn("fs/read_bytes", biFsReadBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("exists?",
