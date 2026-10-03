@@ -1,4 +1,4 @@
-# project_audit, revision 2: the workspace plugin gpt-6-astra authored in the
+# project_audit, revision 2: the workspace plugin gpt-6-sol authored in the
 # recorded Gene Harness session. Only whitespace, line breaks, and the reader's
 # shorthand spellings differ from the stored module; check.gene verifies that
 # this file canonicalizes to the recorded module digest.

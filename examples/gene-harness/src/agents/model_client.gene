@@ -34,12 +34,12 @@
     (??
       model
       (if (== provider "codex")
-        "gpt-6-astra"
+        "gpt-6-sol"
         (if (== provider "claude")
           "sonnet"
           (if (== provider "anthropic")
             "claude-sonnet-5"
-            "openai/gpt-6-astra")))))
+            "openai/gpt-6-sol")))))
   (var effort (?? (nonempty environment/GENE_HARNESS_THINKING_EFFORT) "medium"))
   (var valid_effort false)
   (for supported in ["none" "minimal" "low" "medium" "high" "xhigh" "max"]

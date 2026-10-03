@@ -224,7 +224,7 @@
          (p ^class "view_text" "What the user asked for in a browser conversation, verbatim:")
          (blockquote ^class "request_quote" (p %request))
          (ul ^class "meta_list"
-           (li (strong "Model") " gpt-6-astra")
+           (li (strong "Model") " gpt-6-sol")
            (li (strong "Scope") " workspace")
            (li (strong "Composes") " fs.read, fs.write"))
          (p ^class "view_text"
