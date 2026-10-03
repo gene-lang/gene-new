@@ -1,0 +1,26 @@
+# librsvg `rsvg-convert`: SVG to PDF, and SVG straight to PNG for diagnostic
+# comparison (design sections 7.6 and 7.7).
+(mod imagination_rsvg)
+
+(import [run_checked run_tool] ^from "./process")
+
+# Font isolation. On macOS rsvg-convert selects fonts through CoreText and
+# ignores FONTCONFIG_FILE unless Pango is told to use fontconfig.
+(fn font_environment [fonts_conf : Str] : Any
+  ["PANGOCAIRO_BACKEND=fc" $"FONTCONFIG_FILE=${fonts_conf}"])
+
+(fn svg_to_pdf [tool : Str, fonts_conf : Str, svg_path : Str, pdf_path : Str,
+                ^timeout_ms timeout_ms : Int = 10000] : Any
+  (run_checked "svg_to_pdf" tool ["-f" "pdf" "-o" pdf_path svg_path]
+    ^timeout_ms timeout_ms ^environment (font_environment fonts_conf)))
+
+(fn svg_to_png [tool : Str, fonts_conf : Str, svg_path : Str, png_path : Str,
+                width : Int, height : Int, ^timeout_ms timeout_ms : Int = 10000] : Any
+  (run_checked "svg_to_png" tool
+    ["-f" "png" "-w" ($to_str width) "-h" ($to_str height) "-o" png_path svg_path]
+    ^timeout_ms timeout_ms ^environment (font_environment fonts_conf)))
+
+(fn rsvg_version [tool : Str] : Str
+  (let result (run_tool "tool_version" tool ["--version"] ^timeout_ms 5000))
+  (let words ($str/split ($str/trim result/stdout) " "))
+  (words .last))

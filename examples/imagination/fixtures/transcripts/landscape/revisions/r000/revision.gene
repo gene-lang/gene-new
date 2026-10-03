@@ -1,0 +1,1 @@
+(revision ^id "r000" ^image "sha256:fe2be994cbbeb65ad460f1ea72672fb976b812939e6172208615af68e05e8cca" ^parents [] ^quality "accepted" ^render "sha256:f555a2e502316a1157b1f659698d45aa9b18ffc482f10267ce041ae0e1809ce8" ^scene "sha256:b628db97ead1796146f07c328933e3039bcf8cf30563425ddb6c775dec98bb0a" ^schema 1 (intent "Blank canvas."))

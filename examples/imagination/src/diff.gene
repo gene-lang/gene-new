@@ -1,0 +1,147 @@
+# ID-based comparison of two scene snapshots (design section 11.2).
+#
+# A diff groups changes by stable ID and field: additions, removals, field
+# changes, reparenting, and paint-order changes. Changes to meaning (label,
+# role, provenance) are marked apart from changes that can affect pixels.
+(mod imagination_diff)
+
+(import [kind_of sorted_keys] ^from "./types")
+(import [field_spec] ^from "./scene_schema")
+(import [index_scene top_level defs_node canonical] ^from "./scene")
+
+(fn aspect_of [kind : Str, name : Str] : Str
+  (if (|| (== name "commands") (== name "points")) (return "geometry"))
+  (if (== name "content") (return "text"))
+  (let field (field_spec kind name))
+  (if ($absent? field) "unknown" field/aspect))
+
+# The comparable content of a leaf's body: path commands or text content.
+(fn body_field [entry] : Any
+  (if (== entry/kind "path") (return ["commands" ($body entry/node)]))
+  (if (== entry/kind "text") (return ["content" (($body entry/node) .first)]))
+  nil)
+
+(fn ordered_ids [scene, entries, parent : Str] : Any
+  (var ids [])
+  (let children
+    (if (== parent "scene") (top_level scene)
+      (if (== parent "defs") ($body (defs_node scene))
+        ($body (/node (entries .get parent))))))
+  (for child in children (ids .push child/id))
+  ids)
+
+(fn container_parents [entries] : Any
+  (var parents ["scene" "defs"])
+  (for [id entry] in entries
+    (if (["g" "linear_gradient" "radial_gradient" "clip_path"] .contains? entry/kind)
+      (parents .push entry/id)))
+  parents)
+
+# Compare two validated scenes. Returns a (diff ...) node whose children are
+# (canvas_changed), (added), (removed), (changed), (reparented), (reordered).
+(fn diff_scenes [left, right, ^left_name left_name : Str = "", ^right_name right_name : Str = ""] : Any
+  (var changes [])
+  (let left_props ($props left))
+  (let right_props ($props right))
+  (for name in ["width" "height" "view_box" "background"]
+    (let before (left_props .get name))
+    (let after (right_props .get name))
+    (if_yes (!= before after)
+      (let pixel true)
+      (changes .push `(canvas_changed ^field %name ^before %before ^after %after ^pixel %pixel))))
+  (let before_index (index_scene left))
+  (let after_index (index_scene right))
+  (for [key entry] in before_index
+    (let id entry/id)
+    (let kind entry/kind)
+    (let parent entry/parent)
+    (let other (after_index .get id))
+    (if (|| ($absent? other) (!= other/kind kind))
+      (changes .push `(removed ^id %id ^kind %kind ^parent %parent))))
+  (for [key entry] in after_index
+    (let id entry/id)
+    (let kind entry/kind)
+    (let parent entry/parent)
+    (let other (before_index .get id))
+    (if (|| ($absent? other) (!= other/kind kind))
+      (changes .push `(added ^id %id ^kind %kind ^parent %parent))))
+  (for [key entry] in after_index
+    (let id entry/id)
+    (let kind entry/kind)
+    (let other (before_index .get id))
+    (if_yes (&& (! ($absent? other)) (== other/kind kind))
+      (let before_props ($props other/node))
+      (let after_props ($props entry/node))
+      (var names (sorted_keys before_props))
+      (for name in (sorted_keys after_props)
+        (if_not (names .contains? name) (names .push name)))
+      (for name in ($order/sort names)
+        (let before (before_props .get name))
+        (let after (after_props .get name))
+        (if_yes (!= before after)
+          (let aspect (aspect_of kind name))
+          (let pixel (!= aspect "semantic"))
+          (let field [name])
+          (let was (if ($void? before) nil before))
+          (let now (if ($void? after) nil after))
+          (changes .push
+            `(changed ^id %id ^kind %kind ^field %field ^aspect %aspect ^pixel %pixel
+               ^before %was ^after %now))))
+      (let before_body (body_field other))
+      (let after_body (body_field entry))
+      (if_yes (&& (! ($absent? after_body)) (!= before_body/1 after_body/1))
+        (let name after_body/0)
+        (let aspect (aspect_of kind name))
+        (let field [name])
+        (let was before_body/1)
+        (let now after_body/1)
+        (changes .push
+          `(changed ^id %id ^kind %kind ^field %field ^aspect %aspect ^pixel true
+             ^before %was ^after %now)))
+      (if_yes (!= other/parent entry/parent)
+        (let was other/parent)
+        (let now entry/parent)
+        (changes .push `(reparented ^id %id ^before %was ^after %now ^pixel true)))))
+  # Paint order: for each container present on both sides, compare the order
+  # of the children the two sides share.
+  (for parent in (container_parents after_index)
+    (if_yes (|| (== parent "scene") (== parent "defs") (! ($absent? (before_index .get parent))))
+      (let before_all (ordered_ids left before_index parent))
+      (let after_all (ordered_ids right after_index parent))
+      (let before ($filter before_all (fn [id] (after_all .contains? id))))
+      (let after ($filter after_all (fn [id] (before_all .contains? id))))
+      (if (!= before after)
+        (changes .push `(reordered ^parent %parent ^before %before ^after %after ^pixel true)))))
+  (var pixel_changes 0)
+  (var semantic_changes 0)
+  (for change in changes
+    (if change/pixel
+      (set pixel_changes (+ pixel_changes 1))
+      (set semantic_changes (+ semantic_changes 1))))
+  ($freeze
+    `(diff ^schema 1 ^left %left_name ^right %right_name
+       ^pixel_changes %pixel_changes ^semantic_changes %semantic_changes
+       %changes...)))
+
+(fn number_text [value] : Str ($to_str value))
+
+# One plain sentence per change, with the interpreter's exact numbers.
+(fn describe_change [change] : Str
+  (match (kind_of change)
+    (when "added" $"added ${change/kind} ${change/id} in ${change/parent}")
+    (when "removed" $"removed ${change/kind} ${change/id} from ${change/parent}")
+    (when "reparented" $"moved ${change/id} from ${change/before} into ${change/after}")
+    (when "reordered"
+      $"changed paint order in ${change/parent}: ${(canonical change/before)} became ${(canonical change/after)}")
+    (when "canvas_changed"
+      $"canvas ${change/field} changed from ${(canonical change/before)} to ${(canonical change/after)}")
+    (else
+      (let name (change/field .first))
+      (if (|| (== name "commands") (== name "points"))
+        $"${change/id} geometry (${name}) was replaced"
+        $"${change/id} ${name} changed from ${(canonical change/before)} to ${(canonical change/after)}"))))
+
+(fn describe_diff [diff] : Any
+  (var lines [])
+  (for change in ($body diff) (lines .push (describe_change change)))
+  lines)

@@ -1,0 +1,675 @@
+# The drawing loop (design sections 9 and 10).
+#
+# One decision per iteration: the model reviews the newest render and chooses
+# the next action. The application parses the response as data, verifies what
+# was observed, applies its acceptance policy, validates and renders the patch,
+# and holds the candidate until the next decision reviews it. Every stop has a
+# truthful status; reaching a limit is never reported as success.
+(mod imagination_agent)
+
+(import [reject DomainError RenderError ModelError StoreError default_budgets limits
+         node? kind_of str? list? children_named child_named text_of sorted_keys
+         field_label] ^from "./types")
+(import [read_domain canonical digest_of index_scene world_bounds top_level defs_node]
+  ^from "./scene")
+(import [finite?] ^from "./scene_schema")
+(import [apply_patch] ^from "./patch")
+(import [validate_goal validate_policy read_review build_evaluation accept_candidate
+         completion better? check_line requirements_of requirement_ids result_of
+         major_issues] ^from "./evaluation")
+(import [system_prompt planner_prompt reviewer_prompt prompt_version] ^from "./prompts/agent")
+(import [VisionAgent] ^from "./adapters/model")
+
+# What the loop needs from wherever revisions are kept. The CLI spike keeps
+# them as files in a run directory; the application keeps them in an Evolution.
+#
+# A revision view is
+#   {^id ^parent ^scene ^image ^png_path ^pdf_path ^evaluation ^quality}
+# where `image` is the digest of the clean observation PNG at `png_path`.
+(protocol DrawingSession
+  # The accepted working revision of the line being drawn.
+  (message head [] : Any)
+  # Reserve {^prefix ^patch_id} for the next proposal, before the model call.
+  (message allocate [] : Any)
+  # Whether an object ID was ever used in this project.
+  (message taken [id : Str] : Bool)
+  # Render a validated patch result into a held candidate view.
+  (message stage [parent, result, plan : Str] : Any)
+  # Publish a reviewed candidate. Returns {^revision ^line_advanced ^stale_head}.
+  (message publish [candidate, evaluation, accepted : Bool, reason : Str] : Any)
+  # Publish a candidate whose review never arrived, as an unreviewed trial.
+  (message publish_unreviewed [candidate] : Any)
+  # Store a review of an already published revision as a separate event.
+  (message record_review [revision, evaluation] : Nil)
+  # Record a run event: a model call, an invalid patch, a failed render.
+  (message event [kind : Str, data] : Nil)
+  # Render a detail crop of a revision: {^bytes ^digest ^rectangle ^width ^height}.
+  (message crop [revision, rectangle] : Any)
+  (message cancelled [] : Bool)
+  # A goal change waiting for a safe boundary: nil or {^goal ^policy ^instruction}.
+  (message steer [] : Any)
+  (message profile [] : Str))
+
+(const scene_text_limit 60000)
+(const history_lines 12)
+
+# ── reading a response ─────────────────────────────────────────────────────
+
+# Remove one enclosing Markdown code fence, which is transport noise.
+(fn unfenced [text : Str] : Str
+  (let trimmed ($str/trim text))
+  (if_not ($str/starts_with? trimmed "```") (return trimmed))
+  (var lines ($str/split trimmed "\n"))
+  (if (< lines/.size 2) (return trimmed))
+  (let last (- lines/.size 1))
+  (if (!= ($str/trim lines/%last) "```") (return trimmed))
+  (var inner [])
+  (var i 1)
+  (while (< i last)
+    (inner .push lines/%i)
+    (set i (+ i 1)))
+  ($str/trim ($str/join inner "\n")))
+
+(let actions ["edit" "inspect" "done" "blocked"])
+(let action_children #{
+  ^edit #["review" "plan" "patch"]
+  ^inspect #["review" "inspect"]
+  ^done #["review" "summary" "plan"]
+  ^blocked #["review" "blocked"]})
+
+(fn one_string [node, what : Str, bytes : Int] : Str
+  (let items ($body node))
+  (if_not (&& (== items/.size 1) (str? items/0) (== ($size ($props node)) 0)
+              (<= ($str/byte_size items/0) bytes))
+    (reject "invalid_response" $"(${what} ...) holds one string of at most ${bytes} bytes"
+      ^field [what]))
+  items/0)
+
+(fn read_inspect [node] : Any
+  (var objects [])
+  (var crops [])
+  (for item in ($body node)
+    (if_not (node? item) (reject "invalid_response" "inspect holds (object ...) and (crop ...) nodes"))
+    (match (kind_of item)
+      (when "object" (objects .push (one_string item "object" 128)))
+      (when "crop"
+        (let rect item/rect)
+        (if_not (&& (list? rect) (== rect/.size 4) (finite? rect/0) (finite? rect/1)
+                    (finite? rect/2) (finite? rect/3) (> rect/2 0) (> rect/3 0))
+          (reject "invalid_response" "(crop ^rect [x y width height]) needs a positive size"
+            ^field ["rect"]))
+        (crops .push rect))
+      (else (reject "invalid_response" $"inspect has no ${(kind_of item)} child"))))
+  (if (|| (== (+ objects/.size crops/.size) 0) (> (+ objects/.size crops/.size) 8))
+    (reject "invalid_response" "inspect asks for one to eight objects or crops"))
+  {^objects objects ^crops crops})
+
+(fn read_blocked [node] : Any
+  (var issue "")
+  (var remaining [])
+  (for item in ($body node)
+    (if_not (node? item) (reject "invalid_response" "blocked holds (issue ...) and (remaining ...)"))
+    (match (kind_of item)
+      (when "issue" (set issue (one_string item "issue" 1000)))
+      (when "remaining"
+        (for id in ($body item)
+          (if_not (str? id) (reject "invalid_response" "(remaining ...) lists requirement IDs"))
+          (remaining .push id)))
+      (else (reject "invalid_response" $"blocked has no ${(kind_of item)} child"))))
+  (if (== issue "") (reject "invalid_response" "blocked needs (issue \"...\")"))
+  {^issue issue ^remaining remaining})
+
+# Parse and validate one model response as domain data. Nothing is evaluated.
+# Returns {^action ^observed_revision ^observed_image ^review ^plan ^patch
+#          ^inspect ^summary ^blocked}; absent parts are nil.
+(fn read_response [text : Str] : Any
+  (let node (read_domain (unfenced text) ^head "agent_response"))
+  (for name in (sorted_keys ($props node))
+    (if_not (["schema" "observed_revision" "observed_image" "action"] .contains? name)
+      (reject "invalid_response" $"agent_response has no property ^${name}" ^field [name])))
+  (if (!= node/schema 1)
+    (reject "invalid_response" "agent_response ^schema must be 1" ^field ["schema"]))
+  (if_not (&& (str? node/observed_revision) (str? node/observed_image))
+    (reject "invalid_response" "agent_response needs ^observed_revision and ^observed_image"
+      ^field ["observed_revision"]))
+  (if_not (actions .contains? node/action)
+    (reject "invalid_response" "^action is edit, inspect, done, or blocked" ^field ["action"]))
+  (let allowed (action_children .get node/action))
+  (var parts {})
+  (for item in ($body node)
+    (if_not (node? item)
+      (reject "invalid_response" $"agent_response holds nodes only; found ${item}"))
+    (let name (kind_of item))
+    (if_not (allowed .contains? name)
+      (reject "surplus_content"
+        $"a response with ^action \"${node/action}\" holds only ${($str/join allowed \", \")}; found (${name} ...)"
+        ^field [name]))
+    (if ($has_key? parts name)
+      (reject "invalid_response" $"(${name} ...) appears twice" ^field [name]))
+    (parts .put name item))
+  (var response
+    {^action node/action ^observed_revision node/observed_revision
+     ^observed_image node/observed_image
+     ^review (?? (parts .get "review") nil) ^plan "" ^patch nil ^inspect nil ^summary ""
+     ^blocked nil})
+  (if ($has_key? parts "plan") (response .put "plan" (one_string parts/plan "plan" 1000)))
+  (match node/action
+    (when "edit"
+      (if_not ($has_key? parts "patch")
+        (reject "invalid_response" "an edit response needs a (patch ...)" ^field ["patch"]))
+      (response .put "patch" parts/patch))
+    (when "inspect"
+      (if_not ($has_key? parts "inspect")
+        (reject "invalid_response" "an inspect response needs an (inspect ...)" ^field ["inspect"]))
+      (response .put "inspect" (read_inspect parts/inspect)))
+    (when "done"
+      (if_not ($has_key? parts "summary")
+        (reject "invalid_response" "a done response needs a (summary \"...\")" ^field ["summary"]))
+      (response .put "summary" (one_string parts/summary "summary" 2000)))
+    (else
+      (if_not ($has_key? parts "blocked")
+        (reject "invalid_response" "a blocked response needs a (blocked ...)" ^field ["blocked"]))
+      (response .put "blocked" (read_blocked parts/blocked))))
+  response)
+
+# ── building the input ─────────────────────────────────────────────────────
+
+# The saved PNG bytes of a revision as an image part. The bytes are checked
+# against the recorded digest, so the model is shown exactly the stored
+# observation or nothing.
+(fn image_part [label : Str, view] : Any
+  (let bytes ($fs/read_bytes view/png_path))
+  (if (!= (digest_of bytes) view/image)
+    (fail (StoreError ^code "corrupt_artifact"
+      ^message $"the observation of ${view/id} does not match its recorded digest"
+      ^detail view/png_path)))
+  {^type "image" ^label label ^digest view/image ^media "image/png" ^bytes bytes})
+
+(fn text_part [text : Str] : Any
+  {^type "text" ^text text})
+
+(fn bounds_lines [scene] : Any
+  (var lines [])
+  (let entries (index_scene scene))
+  (for child in (top_level scene)
+    (let box (world_bounds entries child/id))
+    (let label (($props child) .get "label"))
+    (let what (if ($absent? label) (kind_of child) $"${(kind_of child)}, ${label}"))
+    (let where (if ($absent? box) "empty" ($to_str box)))
+    (lines .push $"  ${child/id} (${what}): ${where}"))
+  lines)
+
+(fn outline [node, depth : Int, lines] : Nil
+  (var pad "")
+  (repeat i in depth (set pad $"${pad}  "))
+  (let label (?? (($props node) .get "label") ""))
+  (lines .push $"${pad}${node/id} ${(kind_of node)} ${label}")
+  (if (["g" "linear_gradient" "radial_gradient" "clip_path"] .contains? (kind_of node))
+    (for child in ($body node) (outline child (+ depth 1) lines)))
+  nil)
+
+# The full canonical scene while it fits; a bounded outline beyond that, with
+# subtrees available through an inspect request.
+(fn scene_text [scene] : Str
+  (let text (canonical scene))
+  (if (<= ($str/byte_size text) scene_text_limit) (return text))
+  (var lines ["(The scene is too large to list in full. This is its outline; request subtrees with an inspect action.)"])
+  (for definition in ($body (defs_node scene)) (outline definition 0 lines))
+  (for child in (top_level scene) (outline child 0 lines))
+  ($str/join lines "\n"))
+
+(fn build_request [state] : Any
+  (let goal state/goal)
+  (let head state/head)
+  (let pending state/pending)
+  (let newest (if ($absent? pending) head pending))
+  (let budgets state/budgets)
+  (var parts [])
+  (var opening [
+    "REQUEST"
+    goal/request
+    ""
+    "GOAL"
+    (canonical goal)
+    ""
+    $"Visual requirements to check: ${($str/join (requirement_ids goal \"visual\") \", \")}"])
+  (if_not ($absent? state/policy)
+    (opening .push "")
+    (opening .push "LOCKS AND LIMITS (enforced by the application)")
+    (opening .push (canonical state/policy)))
+  (opening .push "")
+  (opening .push
+    $"BUDGET: edit ${(+ state/iterations 1)} of ${budgets/max_iterations}; consecutive rejected or no-op edits ${state/rejected} of ${budgets/max_rejected}.")
+  (if (>= state/iterations budgets/max_iterations)
+    (opening .push "The edit budget is used up: review the newest image, then answer done or blocked. An edit will not be rendered."))
+  (parts .push (text_part ($str/join opening "\n")))
+
+  (parts .push
+    (text_part
+      $"WORKING REVISION ${head/id}: clean render, image ${head/image}. Stored checks: ${(check_line goal head/evaluation)}"))
+  (parts .push (image_part $"working revision ${head/id}" head))
+  (if_not ($absent? pending)
+    (parts .push
+      (text_part
+        $"CANDIDATE UNDER REVIEW ${pending/id}: your last edit applied to ${head/id}, clean render, image ${pending/image}. It has no review yet."))
+    (parts .push (image_part $"candidate ${pending/id}" pending)))
+
+  (var closing [])
+  (closing .push
+    $"NEWEST IMAGE: revision ${newest/id}, image ${newest/image}. Use these as ^observed_revision and ^observed_image.")
+  (if (&& ($absent? pending) (!= head/evaluation/reviewer "none") (== head/evaluation/goal goal/id))
+    (closing .push "The newest image already has a stored review, so the (review ...) may be omitted.")
+    (closing .push "The newest image has no stored review: include a (review ...) with one check per visual requirement."))
+  (closing .push "")
+  (closing .push $"PATCH ID: ${state/allocation/patch_id}")
+  (closing .push $"NEW-ID PREFIX: ${state/allocation/prefix} (every new object ID starts with it)")
+  (if ($absent? pending)
+    (closing .push $"PATCH BASE: ${head/id}")
+    (closing .push
+      $"PATCH BASE: ${pending/id} if your review accepts the candidate, otherwise ${head/id}."))
+  (closing .push "")
+  (closing .push $"SCENE OF ${newest/id}")
+  (closing .push (scene_text newest/scene))
+  (closing .push "Object bounds in canvas units [min_x min_y max_x max_y] (geometry only; they do not prove visibility):")
+  (for line in (bounds_lines newest/scene) (closing .push line))
+  (if_not ($absent? pending)
+    (closing .push "")
+    (closing .push $"SCENE OF ${head/id} (the base if the candidate is discarded)")
+    (closing .push (scene_text head/scene)))
+  (if_not ($absent? state/last_patch)
+    (closing .push "")
+    (closing .push "PREVIOUS PATCH")
+    (closing .push (canonical state/last_patch)))
+  (if_yes (> state/history/.size 0)
+    (closing .push "")
+    (closing .push "HISTORY")
+    (let skip ($math/max 0 (- state/history/.size history_lines)))
+    (for line in ($drop state/history skip) (closing .push $"- ${line}")))
+  (if_yes (> state/inspection/.size 0)
+    (closing .push "")
+    (closing .push "INSPECTION RESULTS")
+    (for line in state/inspection (closing .push line)))
+  (if_yes (> state/feedback/.size 0)
+    (closing .push "")
+    (closing .push "APPLICATION FEEDBACK ON YOUR LAST RESPONSE")
+    (for line in state/feedback (closing .push $"- ${line}")))
+  (parts .push (text_part ($str/join closing "\n")))
+  (for crop in state/crops
+    (parts .push
+      (text_part
+        $"DETAIL CROP of ${crop/revision}, canvas rectangle ${crop/rectangle}, ${crop/width} x ${crop/height} pixels, cut from image ${crop/source}:"))
+    (parts .push
+      {^type "image" ^label $"detail crop of ${crop/revision}" ^digest crop/digest
+       ^media "image/png" ^bytes crop/bytes}))
+  # `context` restates the identifiers in the text for the application's own
+  # use (logging, fixtures); a provider adapter does not send it.
+  {^system (system_prompt) ^parts parts ^max_tokens 16000
+   ^context {^head head/id ^pending (if ($absent? pending) nil pending/id)
+             ^newest newest/id ^image newest/image ^goal goal/id
+             ^patch_id state/allocation/patch_id ^prefix state/allocation/prefix}})
+
+(fn describe_error [error] : Str
+  (var parts [$"${error/code}: ${error/message}"])
+  (if_not ($absent? error/operation_index)
+    (parts .push $"operation index ${error/operation_index}"))
+  (if_not ($absent? error/target) (parts .push $"target ${error/target}"))
+  (if_not ($absent? error/field) (parts .push $"field ${(field_label error/field)}"))
+  (if_not ($absent? error/expected) (parts .push $"expected ${error/expected}"))
+  ($str/join parts "; "))
+
+# ── planning and standalone review ─────────────────────────────────────────
+
+# Convert a request into a validated goal record with one model call.
+(fn plan_goal [agent, request : Str, goal_id : Str, ^attempts attempts : Int = 3] : Any
+  (var feedback "")
+  (repeat attempt in attempts
+    (let reply
+      (agent .VisionAgent:plan
+        {^system (planner_prompt) ^max_tokens 4000
+         ^parts [(text_part $"Goal id: ${goal_id}\nRequest: ${request}${feedback}")]}))
+    (try
+      (let goal (validate_goal (read_domain (unfenced reply/text) ^head "goal")))
+      (if (!= goal/id goal_id) (reject "invalid_goal" $"the goal ^id must be ${goal_id}"))
+      (if (!= goal/request request)
+        # The original text is kept exactly, whatever the planner wrote.
+        (return (validate_goal ($node/rebuild goal ^props {^id goal_id ^request request}))))
+      (return goal)
+    catch DomainError
+      (set feedback $"\n\nYour last answer was rejected: ${(describe_error $err)}. Answer again with one valid (goal ...) node.")))
+  (fail (ModelError ^code "invalid_response"
+    ^message $"the model did not produce a valid goal record after ${attempts} attempts.${feedback}"
+    ^detail feedback)))
+
+# A separate visual review of one saved revision (VisionAgent.evaluate). Used
+# for a final review, for re-evaluating a saved artifact, and for an optional
+# second evaluator. Returns the evaluation record.
+(fn evaluate_revision [agent, goal, view, profile : Str, ^attempts attempts : Int = 3] : Any
+  (var feedback "")
+  (repeat attempt in attempts
+    (let reply
+      (agent .VisionAgent:evaluate
+        {^system (reviewer_prompt) ^max_tokens 4000
+         ^parts [(text_part
+                   $"GOAL\n${(canonical goal)}\n\nVisual requirements to check: ${($str/join (requirement_ids goal \"visual\") \", \")}\n\nIMAGE of revision ${view/id}, digest ${view/image}:")
+                 (image_part $"revision ${view/id}" view)
+                 (text_part $"Review this image.${feedback}")]}))
+    (try
+      (let review (read_review (read_domain (unfenced reply/text) ^head "review") goal))
+      (return (build_evaluation goal view/id view/image profile view/scene review
+                ^reviewer "evaluate"))
+    catch DomainError
+      (set feedback $"\n\nYour last answer was rejected: ${(describe_error $err)}. Answer again with one valid (review ...) node.")))
+  (fail (ModelError ^code "invalid_response"
+    ^message $"the model did not produce a valid review after ${attempts} attempts.${feedback}"
+    ^detail feedback)))
+
+# ── the loop ───────────────────────────────────────────────────────────────
+
+(fn budgets_from [policy, overrides] : Any
+  (var budgets {})
+  (for [name value] in default_budgets (budgets .put ($to_str name) value))
+  (if_not ($absent? policy)
+    (for limit in (children_named policy "limit")
+      (if ($has_key? budgets limit/name) (budgets .put limit/name limit/value))))
+  (if_not ($absent? overrides)
+    (for [name value] in overrides (budgets .put ($to_str name) value)))
+  budgets)
+
+(fn unknown_visual? [goal, evaluation] : Bool
+  (if (|| (== evaluation/reviewer "none") (!= evaluation/goal goal/id)) (return true))
+  (for id in (requirement_ids goal "visual")
+    (if (== (result_of evaluation id) "unknown") (return true)))
+  false)
+
+# Draw toward `goal` on the session's working line.
+#
+# Returns {^status ^revision ^reason ^remaining ^iterations ^calls ^usage}:
+# status is complete, partial, no_progress, cancelled, or failed; `revision`
+# is the best saved revision; `remaining` lists what is still open.
+(fn run_drawing [session, agent, goal, ^policy policy = nil, ^budgets overrides = nil] : Any
+  (var state
+    {^goal (validate_goal goal)
+     ^policy (validate_policy policy)
+     ^head (session .DrawingSession:head)
+     ^pending nil
+     ^iterations 0 ^rejected 0 ^repairs 0 ^inspections 0 ^refused_done 0
+     ^calls 0 ^input_tokens 0 ^output_tokens 0
+     ^feedback [] ^history [] ^inspection [] ^crops []
+     ^last_patch nil ^allocation nil
+     ^seen {}
+     ^started ($os/monotonic_ms)})
+  (state .put "budgets" (budgets_from state/policy overrides))
+  (state .put "best" state/head)
+  (let budgets state/budgets)
+  (let profile (session .DrawingSession:profile))
+  (state/seen .put (digest_of (canonical state/head/scene)) true)
+  (session .DrawingSession:event "run_started"
+    {^goal state/goal/id ^head state/head/id ^budgets budgets ^prompt prompt_version})
+
+  (fn remaining_of [view] : Any
+    (let report (completion state/goal view/evaluation view/id view/image profile))
+    (var open [])
+    (for reason in report/reasons (open .push reason))
+    (for item in report/shortfall (open .push item))
+    open)
+
+  (fn finish [status : Str, view, reason : Str] : Any
+    (if_not ($absent? state/pending)
+      (session .DrawingSession:publish_unreviewed state/pending)
+      (state .put "pending" nil))
+    (let outcome
+      {^status status ^revision view/id ^reason reason
+       ^remaining (if (== status "complete")
+                    (/shortfall (completion state/goal view/evaluation view/id view/image profile))
+                    (remaining_of view))
+       ^iterations state/iterations ^calls state/calls
+       ^usage {^input state/input_tokens ^output state/output_tokens}})
+    (session .DrawingSession:event "run_finished" outcome)
+    outcome)
+
+  (fn repair [code : Str, line : Str, data] : Bool
+    # Returns true while the repair budget lasts.
+    (session .DrawingSession:event code data)
+    (state/feedback .push line)
+    (state .put "repairs" (+ state/repairs 1))
+    (<= state/repairs budgets/max_repairs))
+
+  # One decision. Returns the run's outcome when it ends, or nil to go on.
+  # (`continue` is not available inside `match` or `catch`, so each early exit
+  # of an iteration is a `return nil` from this function.)
+  (fn step [] : Any
+    (if (session .DrawingSession:cancelled)
+      (return (finish "cancelled" state/best "The run was cancelled.")))
+    (if (>= state/calls budgets/max_model_calls)
+      (return (finish "partial" state/best "The model-call budget is used up.")))
+    (if (> (- ($os/monotonic_ms) state/started) budgets/max_wall_ms)
+      (return (finish "partial" state/best "The time budget is used up.")))
+    (if (&& (>= state/iterations budgets/max_iterations) ($absent? state/pending)
+            (== state/feedback/.size 0))
+      (return (finish "partial" state/best "The edit budget is used up.")))
+
+    # A goal change takes effect here, at a safe iteration boundary.
+    (let steering (session .DrawingSession:steer))
+    (if_not ($absent? steering)
+      (state .put "goal" (validate_goal steering/goal))
+      (state .put "policy" (validate_policy steering/policy))
+      (state/history .push $"The goal changed to ${state/goal/id}: ${steering/instruction}")
+      (session .DrawingSession:event "goal_changed" {^goal state/goal/id}))
+
+    (state .put "allocation" (session .DrawingSession:allocate))
+    (session .DrawingSession:event "phase_changed"
+      {^phase "deciding" ^iteration state/iterations ^head state/head/id
+       ^pending (if ($absent? state/pending) nil state/pending/id)})
+    (let request (build_request state))
+    (var reply nil)
+    (try
+      (set reply (agent .VisionAgent:decide request))
+    catch ModelError
+      (session .DrawingSession:event "model_failed" {^code $err/code ^message $err/message})
+      (return (finish "failed" state/best $"The model call failed: ${$err/message}")))
+    (state .put "calls" (+ state/calls 1))
+    (state .put "input_tokens" (+ state/input_tokens reply/usage/input))
+    (state .put "output_tokens" (+ state/output_tokens reply/usage/output))
+    (session .DrawingSession:event "model_call"
+      {^purpose "decide" ^model reply/model ^usage reply/usage ^prompt prompt_version
+       ^submitted reply/submitted ^response reply/text})
+    # What was asked for is consumed by this response, whatever it says.
+    (state .put "feedback" [])
+    (state .put "inspection" [])
+    (state .put "crops" [])
+
+    (let head state/head)
+    (let pending state/pending)
+    (let newest (if ($absent? pending) head pending))
+    (var decision nil)
+    (var problem nil)
+    (try
+      (set decision (read_response reply/text))
+    catch DomainError
+      (set problem $err))
+    (var review nil)
+    (if_yes ($absent? problem)
+      (if (|| (!= decision/observed_revision newest/id) (!= decision/observed_image newest/image))
+        (then
+          (set problem
+            (DomainError ^code "wrong_observation"
+              ^message $"the response observed ${decision/observed_revision} ${decision/observed_image}, but the newest image is ${newest/id} ${newest/image}"
+              ^operation_index nil ^target nil ^field ["observed_image"] ^expected newest/image)))
+        (else
+          (try
+            (if_not ($absent? decision/review)
+              (set review (read_review decision/review state/goal)))
+            (if (&& ($absent? review)
+                    (|| (! ($absent? pending)) (unknown_visual? state/goal head/evaluation)))
+              (reject "missing_review"
+                "the newest image has no stored review: include a (review ...) with one check per visual requirement"
+                ^field ["review"]))
+          catch DomainError
+            (set problem $err)))))
+    (if_not ($absent? problem)
+      (if (repair "invalid_response" (describe_error problem)
+            {^code problem/code ^message problem/message ^response reply/text})
+        (return nil)
+        (return (finish "failed" state/best
+          $"The model did not produce a valid response after ${budgets/max_repairs} repairs: ${problem/message}"))))
+
+    # The review of a held candidate publishes it.
+    (if (! ($absent? pending))
+      (then
+        (let evaluation
+          (build_evaluation state/goal pending/id pending/image profile pending/scene review))
+        (let verdict (accept_candidate state/goal head/evaluation evaluation))
+        (let publication
+          (session .DrawingSession:publish pending evaluation verdict/accepted verdict/reason))
+        (state .put "pending" nil)
+        (if publication/stale_head
+          (return (finish "partial" state/best "The working line changed during the run.")))
+        (if publication/line_advanced
+          (then
+            (state .put "head" publication/revision)
+            (state .put "rejected" 0)
+            # An accepted revision is never worse than its predecessor, so the
+            # newest one is the best unless an earlier one is strictly better.
+            (if_not (better? state/goal state/best/evaluation publication/revision/evaluation)
+              (state .put "best" publication/revision))
+            (state/history .push
+              $"${pending/id} accepted (${(check_line state/goal evaluation)}): ${pending/intent}"))
+          (else
+            (state .put "rejected" (+ state/rejected 1))
+            (state/feedback .push $"${pending/id} was not accepted. ${verdict/reason}")
+            (state/history .push
+              $"${pending/id} rejected (${(check_line state/goal evaluation)}): ${pending/intent}"))))
+      (elif (! ($absent? review))
+        (let evaluation
+          (build_evaluation state/goal head/id head/image profile head/scene review))
+        (session .DrawingSession:record_review head evaluation)
+        (var reviewed {})
+        (for [name value] in head (reviewed .put ($to_str name) value))
+        (reviewed .put "evaluation" evaluation)
+        (if (== state/best/id head/id) (state .put "best" reviewed))
+        (state .put "head" reviewed)))
+    (let working state/head)
+
+    (if (>= state/rejected budgets/max_rejected)
+      (return (finish "no_progress" state/best
+        $"${state/rejected} consecutive edits were rejected or changed nothing.")))
+
+    (match decision/action
+      (when "inspect"
+        (state .put "inspections" (+ state/inspections 1))
+        (if (> state/inspections budgets/max_inspections)
+          (then
+            (if (repair "inspection_limit"
+                  $"${budgets/max_inspections} consecutive inspections are the limit: answer with edit, done, or blocked"
+                  {^inspections state/inspections})
+              (return nil)
+              (return (finish "partial" state/best "The inspection budget is used up.")))))
+        (let entries (index_scene working/scene))
+        (for id in decision/inspect/objects
+          (let entry (entries .get id))
+          (if ($absent? entry)
+            (state/inspection .push $"${id}: no such object in ${working/id}")
+            (state/inspection .push
+              $"${id} in ${working/id}: ${(canonical entry/node)} bounds ${(world_bounds entries id)}")))
+        (for rectangle in decision/inspect/crops
+          (try
+            (let crop (session .DrawingSession:crop working rectangle))
+            (state/crops .push
+              {^revision working/id ^rectangle rectangle ^width crop/width ^height crop/height
+               ^digest crop/digest ^bytes crop/bytes ^source working/image})
+          catch RenderError
+            (state/inspection .push $"crop ${rectangle}: ${$err/message}")))
+        (session .DrawingSession:event "inspected"
+          {^objects decision/inspect/objects ^crops decision/inspect/crops})
+        (return nil))
+
+      (when "blocked"
+        (return (finish "partial" state/best $"The agent is blocked: ${decision/blocked/issue}")))
+
+      (when "done"
+        (var final working)
+        (if_yes (unknown_visual? state/goal working/evaluation)
+          # The done response did not review this exact image: ask once.
+          (try
+            (let evaluation (evaluate_revision agent state/goal working profile))
+            (state .put "calls" (+ state/calls 1))
+            (session .DrawingSession:record_review working evaluation)
+            (var reviewed {})
+            (for [name value] in working (reviewed .put ($to_str name) value))
+            (reviewed .put "evaluation" evaluation)
+            (set final reviewed)
+            (state .put "head" reviewed)
+          catch ModelError
+            (return (finish "partial" state/best
+              "The final review was unavailable, so completion could not be confirmed."))))
+        (let report
+          (completion state/goal final/evaluation final/id final/image profile))
+        (if report/complete
+          (return (finish "complete" final decision/summary)))
+        (state .put "refused_done" (+ state/refused_done 1))
+        (if (>= state/refused_done 2)
+          (return (finish "partial" state/best
+            $"The agent reported done twice while requirements were open: ${($str/join report/reasons \"; \")}")))
+        (state/feedback .push
+          $"done was refused because ${($str/join report/reasons \"; \")}. Keep editing, or answer blocked if this cannot be fixed.")
+        (return nil))
+
+      (else
+        (if (>= state/iterations budgets/max_iterations)
+          (return (finish "partial" state/best "The edit budget is used up.")))
+        (let patch decision/patch)
+        (var result nil)
+        (try
+          (set result
+            (apply_patch working/scene patch ^expected_base working/id
+              ^expected_goal state/goal/id ^prefix state/allocation/prefix
+              ^taken (fn [id] (session .DrawingSession:taken id))
+              ^policy state/policy))
+        catch DomainError
+          (let line
+            (if (== $err/code "stale_base")
+              $"patch_base_is_not_the_working_head: the working revision is ${working/id}; your patch named another base and was discarded"
+              (describe_error $err)))
+          (if (repair "invalid_patch" line
+                {^code $err/code ^message $err/message ^operation_index $err/operation_index
+                 ^target $err/target ^patch (try (canonical patch) catch Any "")})
+            (return nil)
+            (return (finish "failed" state/best
+              $"The model did not produce a valid patch after ${budgets/max_repairs} repairs: ${$err/message}"))))
+        (state .put "repairs" 0)
+        (state .put "inspections" 0)
+        (state .put "last_patch" patch)
+        (let digest result/digest)
+        (if (|| result/noop ($has_key? state/seen digest))
+          (then
+            (state .put "iterations" (+ state/iterations 1))
+            (state .put "rejected" (+ state/rejected 1))
+            (session .DrawingSession:event "no_op" {^patch (canonical patch) ^scene digest})
+            (state/feedback .push
+              (if result/noop
+                "Your patch changed nothing. Make a visible change, or answer done or blocked."
+                "Your patch returns the scene to a state already seen in this run. Try a different direction."))
+            (if (>= state/rejected budgets/max_rejected)
+              (return (finish "no_progress" state/best
+                $"${state/rejected} consecutive edits were rejected or changed nothing.")))
+            (return nil)))
+        (state/seen .put digest true)
+        (session .DrawingSession:event "phase_changed"
+          {^phase "rendering" ^iteration state/iterations ^head working/id ^pending nil})
+        (try
+          (let candidate (session .DrawingSession:stage working result decision/plan))
+          (state .put "pending" candidate)
+          (state .put "iterations" (+ state/iterations 1))
+        catch RenderError
+          (state .put "iterations" (+ state/iterations 1))
+          (state .put "rejected" (+ state/rejected 1))
+          (session .DrawingSession:event "render_failed"
+            {^stage $err/stage ^code $err/code ^message $err/message ^patch (canonical patch)})
+          (state/feedback .push
+            $"The render failed at stage ${$err/stage} (${$err/code}): ${$err/message}. The working revision is unchanged."))))
+    nil)
+
+  (var outcome nil)
+  (while ($absent? outcome)
+    (set outcome (step)))
+  outcome)

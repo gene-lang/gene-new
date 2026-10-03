@@ -1,0 +1,519 @@
+# Evolution: an artwork together with its alternatives and provenance
+# (design sections 3.2, 5, 11 and 12.2).
+#
+# An Evolution is a typed handle to one owned history. Revisions are
+# immutable; named lines and the selection are the only mutable references.
+# A candidate is rendered and its blobs written first; the revision becomes
+# visible only when its index transaction commits, and a working line advances
+# only by compare-and-swap on the head the candidate was built from.
+(mod imagination_evolution)
+
+(import $db/sqlite [Db])
+(import [StoreError DomainError reject kind_of node? children_named child_named text_of
+         str?] ^from "./types")
+(import [valid_id?] ^from "./scene_schema")
+(import [canonical digest_of scene_digest blank_scene normalize_scene] ^from "./scene")
+(import [scene_svg] ^from "./svg")
+(import [apply_patch replay_normalized] ^from "./patch")
+(import [diff_scenes describe_diff] ^from "./diff")
+(import [render_scene render_crop profile_manifest] ^from "./render")
+(import [validate_goal validate_policy build_evaluation] ^from "./evaluation")
+(import [Project create_project open_project close_project in_transaction put_node
+         put_object get_node get_object publish_bundle verify_bundle new_staging remove_tree
+         artifact_path next_number meta_get meta_put append_event store_failure]
+  ^from "./store")
+
+(type Evolution ^props {^project Any ^profile Any})
+
+# The result of publishing a candidate: the saved revision view, whether the
+# chosen working line advanced, and whether it had moved since the candidate
+# was built.
+(type Publication ^props {^revision Any ^line_advanced Bool ^stale_head Bool})
+
+# An isolated candidate state based on one immutable revision. Applying a
+# patch to a draft never touches the stored scene.
+(type Draft ^props {^base Str ^scene Any ^goal Str})
+
+(fn revision_name [number : Int] : Str
+  (if (< number 10) $"r00${number}" (if (< number 100) $"r0${number}" $"r${number}")))
+
+(fn timestamp [] : Str
+  $"${($str/slice_bytes ($temporal/format_rfc3339 ($temporal/to_utc ($now))) 0 19)}Z")
+
+(fn db_of [evolution] : Any evolution/project/db)
+
+# ── reading ────────────────────────────────────────────────────────────────
+
+(fn revision_row [evolution, id : Str] : Any
+  (let row ((db_of evolution) .Db:query_one "SELECT * FROM revisions WHERE id = ?" id))
+  (if ($absent? row)
+    (store_failure "unknown_revision" $"there is no revision ${id}" ^detail id))
+  row)
+
+(fn parents_of [evolution, id : Str] : Any
+  ($map ((db_of evolution) .Db:query
+          "SELECT parent FROM parents WHERE revision = ? ORDER BY position" id)
+        /parent))
+
+# The immutable scene of a revision. The stored snapshot is verified against
+# its digest every time it is read.
+(fn value [evolution, id : Str] : Any
+  (get_node evolution/project (/scene (revision_row evolution id))))
+
+(fn goal_of [evolution, goal_id : Str] : Any
+  (let row ((db_of evolution) .Db:query_one "SELECT object FROM goals WHERE id = ?" goal_id))
+  (if ($absent? row) (store_failure "unknown_goal" $"there is no goal ${goal_id}" ^detail goal_id))
+  (get_node evolution/project row/object))
+
+# The review that currently speaks for a revision under a goal: the newest
+# stored review event for that goal, or the evaluation it was published with.
+# The original evaluation is never rewritten.
+(fn effective_evaluation [evolution, row, goal_id : Str] : Any
+  (let review
+    ((db_of evolution) .Db:query_one
+      "SELECT evaluation FROM reviews WHERE revision = ? AND goal = ? ORDER BY id DESC LIMIT 1"
+      row/id goal_id))
+  (get_node evolution/project (if ($absent? review) row/evaluation review/evaluation)))
+
+# The loop's view of a published revision.
+(fn view [evolution, id : Str, ^goal goal_id = nil] : Any
+  (let row (revision_row evolution id))
+  (let parents (parents_of evolution id))
+  {^id id
+   ^parent (if (== parents/.size 0) nil parents/0)
+   ^scene (get_node evolution/project row/scene)
+   ^image row/image
+   ^png_path (artifact_path evolution/project row/render "observation.png")
+   ^pdf_path (artifact_path evolution/project row/render "scene.pdf")
+   ^evaluation (effective_evaluation evolution row (?? goal_id row/goal))
+   ^quality row/quality
+   ^intent row/intent
+   ^bundle row/render})
+
+(fn line_row [evolution, id : Str] : Any
+  (let row ((db_of evolution) .Db:query_one "SELECT * FROM lines WHERE id = ?" id))
+  (if ($absent? row) (store_failure "unknown_line" $"there is no line ${id}" ^detail id))
+  row)
+
+(fn lines [evolution] : Any
+  ((db_of evolution) .Db:query "SELECT * FROM lines ORDER BY created_ms, id"))
+
+(fn policy_of [evolution, line] : Any
+  (if ($absent? line/policy) nil (get_node evolution/project line/policy)))
+
+(fn selected [evolution] : Any
+  (meta_get evolution/project "selected"))
+
+(fn metadata_version [evolution] : Int
+  ($parse/parse_int (meta_get evolution/project "metadata_version")))
+
+# ── writing a revision ─────────────────────────────────────────────────────
+
+# Steps 1-3 of the publication transaction: render into staging, write every
+# blob with a temporary name, flush and rename, then verify the artifacts.
+# Returns a held candidate; nothing is visible in the index yet.
+(fn stage [evolution, parent, result, ^run run = nil, ^plan plan : Str = "",
+           ^goal goal_id : Str, ^actor actor : Str = "agent"] : Any
+  (let project evolution/project)
+  (let staging (new_staging project))
+  (var bundle nil)
+  (try
+    (set bundle (render_scene evolution/profile result/scene staging))
+    (publish_bundle project bundle)
+  ensure
+    (remove_tree staging))
+  (let number (in_transaction project (fn [] (next_number project "next_revision"))))
+  (let id (revision_name number))
+  (var intent "")
+  (if_not ($absent? result/patch)
+    (set intent (text_of (child_named result/patch "intent"))))
+  (var effects [])
+  (for effect in result/effects (effects .push effect))
+  {^id id ^number number
+   ^parent (if ($absent? parent) nil parent/id)
+   ^scene result/scene
+   ^scene_digest (put_node project result/scene)
+   ^patch (if ($absent? result/patch) nil (put_node project result/patch))
+   ^normalized (if ($absent? result/normalized) nil (put_node project result/normalized))
+   ^effects (put_node project `(effects %effects...))
+   ^diff (if ($absent? result/diff) nil (put_node project result/diff))
+   ^new_ids ($filter_map result/effects
+              (fn [effect] (if (== effect/kind "insert") effect/target void)))
+   ^image bundle/png_digest
+   ^bundle bundle/digest
+   ^png_path (artifact_path project bundle/digest "observation.png")
+   ^pdf_path (artifact_path project bundle/digest "scene.pdf")
+   ^evaluation nil ^quality "pending" ^intent intent ^plan plan
+   ^goal goal_id ^run run ^actor actor})
+
+(fn revision_record [candidate, kind : Str, quality : Str, evaluation : Str, summary : Str] : Any
+  (let id candidate/id)
+  (let parents (if ($absent? candidate/parent) [] [candidate/parent]))
+  (let goal candidate/goal)
+  (let scene candidate/scene_digest)
+  (let patch candidate/patch)
+  (let normalized candidate/normalized)
+  (let effects candidate/effects)
+  (let render candidate/bundle)
+  (let image candidate/image)
+  (let actor candidate/actor)
+  (let run candidate/run)
+  (let created (timestamp))
+  (let intent candidate/intent)
+  ($freeze
+    `(revision ^schema 1 ^id %id ^parents %parents ^kind %kind ^goal %goal ^scene %scene
+       ^patch %patch ^normalized %normalized ^effects %effects ^render %render ^image %image
+       ^evaluation %evaluation ^quality %quality ^actor %actor ^run %run ^created_at %created
+       (intent %intent) (summary %summary))))
+
+# Steps 4-6: one index transaction inserts the revision, moves the trial
+# reference, records run progress, and advances the working line only when
+# its head is still `expected_head`. A stale head leaves the line, selection,
+# and run pointer alone and commits the candidate to its trial reference.
+(fn publish [evolution, candidate, ^line line_id = nil, ^expected_head expected_head = nil,
+             ^evaluation evaluation, ^accepted accepted : Bool = false,
+             ^quality quality = nil, ^reason reason : Str = "", ^kind kind : Str = "edit"] : Any
+  (let project evolution/project)
+  (let db project/db)
+  (let grade (?? quality (if accepted "accepted" "rejected")))
+  (let evaluation_digest (put_node project evaluation))
+  (let record (revision_record candidate kind grade evaluation_digest reason))
+  (let record_digest (put_node project record))
+  # Every artifact the index is about to reference must exist and match.
+  (verify_bundle project candidate/bundle)
+  (for digest in [candidate/scene_digest evaluation_digest record_digest]
+    (get_object project digest))
+  (var advanced false)
+  (var stale false)
+  (in_transaction project
+    (fn []
+      (if_not ($absent? candidate/parent)
+        (if ($absent? (db .Db:query_one "SELECT id FROM revisions WHERE id = ?" candidate/parent))
+          (store_failure "unknown_revision" $"parent ${candidate/parent} is not published"
+            ^detail candidate/parent)))
+      (db .Db:execute
+        "INSERT INTO revisions(id, number, kind, quality, goal, scene, patch, normalized, effects, diff, render, image, evaluation, actor, run, intent, summary, record, created_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        candidate/id candidate/number kind grade candidate/goal candidate/scene_digest
+        candidate/patch candidate/normalized candidate/effects candidate/diff candidate/bundle
+        candidate/image
+        evaluation_digest candidate/actor candidate/run candidate/intent reason record_digest
+        ($os/wall_ms))
+      (if_not ($absent? candidate/parent)
+        (db .Db:execute "INSERT INTO parents(revision, position, parent) VALUES (?, 0, ?)"
+          candidate/id candidate/parent))
+      (for id in candidate/new_ids
+        (db .Db:execute "INSERT OR IGNORE INTO object_ids(id, revision) VALUES (?, ?)"
+          id candidate/id))
+      # The trial reference of this run always points at its newest candidate.
+      (if_not ($absent? candidate/run)
+        (db .Db:execute
+          "INSERT INTO lines(id, kind, head, goal, origin, policy, version, created_ms) VALUES (?, 'trial', ?, ?, ?, NULL, 0, ?) ON CONFLICT(id) DO UPDATE SET head = excluded.head, version = version + 1"
+          $"${candidate/run}-trials" candidate/id candidate/goal candidate/parent ($os/wall_ms)))
+      (if_yes (&& accepted (! ($absent? line_id)))
+        (let moved
+          (db .Db:execute
+            "UPDATE lines SET head = ?, version = version + 1 WHERE id = ? AND head = ? AND kind = 'working'"
+            candidate/id line_id expected_head))
+        (set advanced (== moved 1))
+        (set stale (! advanced)))
+      (if_yes (&& (! ($absent? candidate/run)) advanced)
+        (db .Db:execute "UPDATE runs SET accepted = ?, pending = NULL, updated_ms = ? WHERE id = ?"
+          candidate/id ($os/wall_ms) candidate/run))
+      (if_yes (&& (! ($absent? candidate/run)) (! advanced))
+        (db .Db:execute "UPDATE runs SET pending = NULL, updated_ms = ? WHERE id = ?"
+          ($os/wall_ms) candidate/run))
+      (let id candidate/id)
+      (let parent candidate/parent)
+      (let image candidate/image)
+      (append_event project "revision_published" candidate/run id
+        `(event ^revision %id ^parent %parent ^quality %grade ^image %image
+           ^line_advanced %advanced ^stale_head %stale ^reason %reason))
+      (if_yes advanced
+        (append_event project "line_head_changed" candidate/run id
+          `(event ^line %line_id ^head %id ^previous %expected_head)))))
+  (Publication ^revision (view evolution candidate/id ^goal candidate/goal)
+    ^line_advanced advanced ^stale_head stale))
+
+# ── creating and opening ───────────────────────────────────────────────────
+
+(fn store_goal [evolution, goal] : Nil
+  (let project evolution/project)
+  (let digest (put_node project goal))
+  (project/db .Db:execute
+    "INSERT INTO goals(id, object, predecessor, created_ms) VALUES (?, ?, ?, ?)"
+    goal/id digest (if ($void? goal/predecessor) nil goal/predecessor) ($os/wall_ms))
+  nil)
+
+# Create a new history: a project folder, the goal, a rendered blank root
+# revision, and the working line `main`. The root's visual checks are unknown,
+# so it can never complete a drawing request.
+(fn create_evolution [root : Str, name : Str, goal, profile,
+                      ^width width : Int = 1024, ^height height : Int = 1024,
+                      ^background background : Str = "#ffffff", ^policy policy = nil] : Any
+  (let checked (validate_goal goal))
+  (let rules (validate_policy policy))
+  (let project (create_project root name (profile_manifest profile)))
+  (let evolution (Evolution ^project project ^profile profile))
+  (let scene (blank_scene ^width width ^height height ^background background))
+  (let candidate
+    (stage evolution nil
+      {^scene scene ^patch nil ^normalized nil ^effects [] ^diff nil}
+      ^goal checked/id ^actor "application"))
+  (in_transaction project (fn [] (store_goal evolution checked)))
+  (let evaluation
+    (build_evaluation checked candidate/id candidate/image profile/id scene nil))
+  (candidate .put "intent" "Blank canvas.")
+  (publish evolution candidate ^evaluation evaluation ^quality "accepted" ^kind "root"
+    ^reason "The initial blank scene.")
+  (let policy_digest (if ($absent? rules) nil (put_node project rules)))
+  (in_transaction project
+    (fn []
+      (project/db .Db:execute
+        "INSERT INTO lines(id, kind, head, goal, origin, policy, version, created_ms) VALUES ('main', 'working', ?, ?, NULL, ?, 0, ?)"
+        candidate/id checked/id policy_digest ($os/wall_ms))
+      (meta_put project "root" candidate/id)
+      (meta_put project "selected" candidate/id)
+      (append_event project "line_created" nil candidate/id
+        `(event ^line "main" ^head "r000"))))
+  evolution)
+
+(fn open_evolution [root : Str, profile] : Any
+  (let project (open_project root))
+  (if (!= project/record/render_profile profile/id)
+    # Switching profiles is explicit: old evidence is never reinterpreted.
+    (store_failure "profile_mismatch"
+      $"the project was rendered with ${project/record/render_profile}, not ${profile/id}"
+      ^detail profile/id))
+  (Evolution ^project project ^profile profile))
+
+(fn close_evolution [evolution] : Nil
+  (close_project evolution/project)
+  nil)
+
+# ── drafts ─────────────────────────────────────────────────────────────────
+
+# An isolated draft of a stored revision.
+(fn begin [evolution, revision_id : Str] : Any
+  (let row (revision_row evolution revision_id))
+  (Draft ^base revision_id ^scene (get_node evolution/project row/scene) ^goal row/goal))
+
+(fn id_taken? [evolution, id : Str] : Bool
+  (! ($absent? ((db_of evolution) .Db:query_one "SELECT id FROM object_ids WHERE id = ?" id))))
+
+# Reserve a new-object ID prefix. No two reservations in a project share one,
+# so independent lines cannot create the same identity.
+(fn allocate_prefix [evolution, ^run run = nil] : Str
+  (let project evolution/project)
+  (in_transaction project
+    (fn []
+      (let prefix $"n${(+ (next_number project \"next_allocation\") 1)}-")
+      (project/db .Db:execute "INSERT INTO allocations(prefix, run, created_ms) VALUES (?, ?, ?)"
+        prefix run ($os/wall_ms))
+      prefix)))
+
+# Apply a patch to a draft with the project's allocation and lock checks.
+(fn apply_to_draft [evolution, draft, patch, ^prefix prefix : Str, ^policy policy = nil,
+                    ^expected_goal expected_goal = nil] : Any
+  (apply_patch draft/scene patch ^expected_base draft/base ^expected_goal expected_goal
+    ^prefix prefix ^taken (fn [id] (id_taken? evolution id)) ^policy policy))
+
+# Apply a handwritten or saved patch to the head of a working line and publish
+# the result on it. No model is involved: the revision carries structural
+# checks only, and its visual checks are unknown.
+(fn commit_patch [evolution, line_id : Str, patch, ^prefix prefix = nil,
+                  ^actor actor : Str = "user"] : Any
+  (let line (line_row evolution line_id))
+  (if (!= line/kind "working")
+    (store_failure "invalid_line" $"${line_id} is not a working line" ^detail line_id))
+  (let draft (begin evolution line/head))
+  (let allocated (?? prefix (allocate_prefix evolution)))
+  (let result
+    (apply_to_draft evolution draft patch ^prefix allocated ^policy (policy_of evolution line)
+      ^expected_goal line/goal))
+  (if result/noop
+    (reject "no_op" "the patch changes nothing" ^target line_id))
+  (let candidate
+    (stage evolution {^id line/head} result ^goal line/goal ^actor actor))
+  (let evaluation
+    (build_evaluation (goal_of evolution line/goal) candidate/id candidate/image
+      evolution/profile/id result/scene nil))
+  (publish evolution candidate ^line line_id ^expected_head line/head ^evaluation evaluation
+    ^accepted true ^reason "Applied by hand."))
+
+# ── lines, goals, selection ────────────────────────────────────────────────
+
+# Fork: a new working line whose head is an existing revision. The line it
+# came from is not touched. `goal` is nil to keep the revision's goal, or a
+# new goal record for another direction.
+(fn fork [evolution, revision_id : Str, name : Str, ^goal goal = nil, ^policy policy = nil] : Any
+  (let project evolution/project)
+  (let row (revision_row evolution revision_id))
+  (if_not (valid_id? name)
+    (store_failure "invalid_line" "a line name is a letter followed by letters, digits, _ or -"
+      ^detail name))
+  (let rules (validate_policy policy))
+  (let checked (if ($absent? goal) nil (validate_goal goal)))
+  (let policy_digest (if ($absent? rules) nil (put_node project rules)))
+  (in_transaction project
+    (fn []
+      (if_not ($absent? (project/db .Db:query_one "SELECT id FROM lines WHERE id = ?" name))
+        (store_failure "line_exists" $"a line named ${name} already exists" ^detail name))
+      (if_not ($absent? checked) (store_goal evolution checked))
+      (let goal_id (if ($absent? checked) row/goal checked/id))
+      (project/db .Db:execute
+        "INSERT INTO lines(id, kind, head, goal, origin, policy, version, created_ms) VALUES (?, 'working', ?, ?, ?, ?, 0, ?)"
+        name revision_id goal_id revision_id policy_digest ($os/wall_ms))
+      (append_event project "line_created" nil revision_id
+        `(event ^line %name ^head %revision_id ^goal %goal_id))))
+  (line_row evolution name))
+
+# A new goal id for a goal that succeeds `predecessor`.
+(fn next_goal_id [evolution] : Str
+  (let count (/n ((db_of evolution) .Db:query_one "SELECT COUNT(*) AS n FROM goals")))
+  (if (< count 9) $"goal-0${(+ count 1)}" $"goal-${(+ count 1)}"))
+
+# Replace a line's active goal with a new immutable goal record. The old goal
+# is kept; reviews made for it do not complete the new one.
+(fn change_goal [evolution, line_id : Str, goal] : Any
+  (let project evolution/project)
+  (let checked (validate_goal goal))
+  (line_row evolution line_id)
+  (in_transaction project
+    (fn []
+      (store_goal evolution checked)
+      (project/db .Db:execute "UPDATE lines SET goal = ?, version = version + 1 WHERE id = ?"
+        checked/id line_id)
+      (let goal_id checked/id)
+      (append_event project "goal_changed" nil nil `(event ^line %line_id ^goal %goal_id))))
+  checked)
+
+# Choose a saved result. Separate from viewing: it changes project metadata,
+# guarded by the metadata version the caller last saw.
+(fn select [evolution, revision_id : Str, ^expected_version expected_version = nil] : Int
+  (let project evolution/project)
+  (revision_row evolution revision_id)
+  (in_transaction project
+    (fn []
+      (let current (metadata_version evolution))
+      (if (&& (! ($absent? expected_version)) (!= expected_version current))
+        (store_failure "stale_version"
+          $"the selection changed (version ${current}); refresh and choose again" ^detail current))
+      (meta_put project "selected" revision_id)
+      (meta_put project "metadata_version" ($to_str (+ current 1)))
+      (append_event project "selection_changed" nil revision_id `(event ^revision %revision_id))
+      (+ current 1))))
+
+# Store a later review of a published revision as its own event.
+(fn record_review [evolution, revision_id : Str, evaluation] : Nil
+  (let project evolution/project)
+  (revision_row evolution revision_id)
+  (let digest (put_node project evaluation))
+  (in_transaction project
+    (fn []
+      (project/db .Db:execute
+        "INSERT INTO reviews(revision, image, goal, evaluation, reviewer, created_ms) VALUES (?, ?, ?, ?, ?, ?)"
+        revision_id evaluation/image evaluation/goal digest evaluation/reviewer ($os/wall_ms))
+      (append_event project "review_recorded" nil revision_id
+        `(event ^revision %revision_id ^evaluation %digest))))
+  nil)
+
+# ── history ────────────────────────────────────────────────────────────────
+
+# Every published revision, oldest first, with its parents.
+(fn revisions [evolution, ^after after : Int = -1, ^limit limit : Int = 200] : Any
+  (var result [])
+  (for row in ((db_of evolution) .Db:query
+                "SELECT id, number, kind, quality, goal, image, render, actor, run, intent, summary, created_ms FROM revisions WHERE number > ? ORDER BY number LIMIT ?"
+                after limit)
+    (row .put "parents" (parents_of evolution row/id))
+    (result .push row))
+  result)
+
+# The revisions from `from` down to `to`, following first parents. `from`
+# must be an ancestor of `to`.
+(fn path_between [evolution, from : Str, to : Str] : Any
+  (var trail [to])
+  (var current to)
+  (while (!= current from)
+    (let parents (parents_of evolution current))
+    (if (== parents/.size 0)
+      (store_failure "not_an_ancestor" $"${from} is not an ancestor of ${to}" ^detail from))
+    (set current parents/0)
+    (trail .push current))
+  ($reverse trail))
+
+# Structural diff of two revisions plus what is needed to compare their
+# images: both observation digests and whether one render profile made them.
+(fn compare [evolution, left : Str, right : Str] : Any
+  (let left_row (revision_row evolution left))
+  (let right_row (revision_row evolution right))
+  (let diff
+    (diff_scenes (get_node evolution/project left_row/scene)
+      (get_node evolution/project right_row/scene) ^left_name left ^right_name right))
+  (let left_profile (/profile (verify_bundle evolution/project left_row/render)))
+  (let right_profile (/profile (verify_bundle evolution/project right_row/render)))
+  {^diff diff
+   ^lines (describe_diff diff)
+   ^left {^revision left ^image left_row/image ^render left_row/render ^profile left_profile}
+   ^right {^revision right ^image right_row/image ^render right_row/render ^profile right_profile}
+   ^same_profile (== left_profile right_profile)})
+
+# Exact replay (section 11.3): reapply the stored normalized operations along
+# a path to their recorded bases and verify the scene and SVG digests at every
+# step. No model is called. Returns
+#   {^ok ^steps [{^revision ^scene_ok ^svg_ok}] ^first_mismatch}.
+(fn replay_exact [evolution, from : Str, to : Str] : Any
+  (let project evolution/project)
+  (let trail (path_between evolution from to))
+  (var scene (value evolution from))
+  (var steps [])
+  (var first_mismatch nil)
+  (for id in ($drop trail 1)
+    (let row (revision_row evolution id))
+    (if ($absent? row/normalized)
+      (store_failure "not_replayable" $"${id} has no stored operations" ^detail id))
+    (let line ((db_of evolution) .Db:query_one "SELECT policy FROM lines WHERE head = ?" id))
+    (var scene_ok false)
+    (var svg_ok false)
+    (var problem "")
+    (try
+      (let result (replay_normalized scene (get_node project row/normalized)))
+      (set scene result/scene)
+      (set scene_ok (== result/digest row/scene))
+      (let manifest (verify_bundle project row/render))
+      (for artifact in (children_named manifest "artifact")
+        (if (== artifact/kind "scene.svg")
+          (set svg_ok (== (digest_of (scene_svg result/scene)) artifact/digest))))
+    catch DomainError
+      (set problem $"${$err/code}: ${$err/message}"))
+    (steps .push {^revision id ^scene_ok scene_ok ^svg_ok svg_ok ^problem problem})
+    (if_yes (&& ($absent? first_mismatch) (! (&& scene_ok svg_ok)))
+      (set first_mismatch id)
+      # Later steps replay from the stored snapshot, so one mismatch does not
+      # hide the state of the rest of the path.
+      (set scene (get_node project row/scene))))
+  {^ok ($absent? first_mismatch) ^from from ^to to ^steps steps ^first_mismatch first_mismatch})
+
+# Copy a saved artifact of a revision to `destination`.
+(fn export_artifact [evolution, revision_id : Str, format : Str, destination : Str] : Str
+  (let row (revision_row evolution revision_id))
+  (let kind
+    (if (== format "svg") "scene.svg"
+      (if (== format "pdf") "scene.pdf"
+        (if (== format "png") "observation.png"
+          (store_failure "invalid_format" "export format is svg, pdf, or png" ^detail format)))))
+  (verify_bundle evolution/project row/render)
+  ($fs/write_bytes_atomic destination
+    ($fs/read_bytes (artifact_path evolution/project row/render kind)))
+  destination)
+
+# A detail crop of a published revision, rendered from its stored PDF.
+(fn crop_of [evolution, revision_view, rectangle] : Any
+  (let staging (new_staging evolution/project))
+  (try
+    (let prefix ($path/join staging "crop"))
+    (let crop (render_crop evolution/profile revision_view/scene revision_view/pdf_path prefix rectangle))
+    (crop .put "bytes" ($fs/read_bytes $"${prefix}.png"))
+    crop
+  ensure
+    (remove_tree staging)))

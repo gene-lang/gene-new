@@ -1,0 +1,124 @@
+# Section 17.1: bounded errors for malformed scenes, and canonical identity.
+(import $test [describe it assert_equal run])
+(import [scene_with scene_from fixture_scene error_code error_of] ^from "./support")
+(import [normalize_scene read_domain canonical scene_digest read_canonical index_scene
+         world_bounds blank_scene] ^from "../src/scene")
+(import [scene_svg] ^from "../src/svg")
+(import [limits] ^from "../src/types")
+
+(fn rejected [children : Str] : Str
+  (error_code (fn [] (scene_with children))))
+
+(describe "scene validation"
+  (it "rejects duplicate IDs" []
+    (assert_equal
+      (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1) (circle ^id \"a\" ^cx 0 ^cy 0 ^r 1)")
+      "duplicate_id"))
+
+  (it "rejects a dangling paint reference and a reference of the wrong kind" []
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 ^fill_ref \"missing\")")
+      "dangling_reference")
+    (assert_equal
+      (rejected "(defs (blur ^id \"soft\" ^std_dev 2 ^x 0 ^y 0 ^width 10 ^height 10)) (circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 ^fill_ref \"soft\")")
+      "dangling_reference"))
+
+  (it "rejects malformed paths" []
+    (assert_equal (rejected "(path ^id \"p\" (L 1 2))") "malformed_path")
+    (assert_equal (rejected "(path ^id \"p\" (M 1))") "malformed_path")
+    (assert_equal (rejected "(path ^id \"p\" (M 1 2) (A 1 2 3 4 5 6 7))") "malformed_path")
+    (assert_equal (rejected "(path ^id \"p\")") "malformed_path"))
+
+  (it "rejects nonfinite and oversized numbers" []
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 1e400 ^cy 0 ^r 1)") "invalid_field")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 10000000)") "invalid_field")
+    (assert_equal (rejected "(g ^id \"a\" ^scale [0 1])") "invalid_field"))
+
+  (it "rejects unknown elements, unknown fields, and children of a leaf" []
+    (assert_equal (rejected "(script ^id \"a\")") "unknown_element")
+    (assert_equal (rejected "(foreignObject ^id \"a\")") "unknown_element")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 ^onclick \"x\")") "unknown_field")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 ^href \"http://x\")") "unknown_field")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 (circle ^id \"b\" ^cx 0 ^cy 0 ^r 1))")
+      "unexpected_children"))
+
+  (it "rejects a color and its reference set together" []
+    (assert_equal
+      (rejected "(defs (linear_gradient ^id \"g1\" ^x1 0 ^y1 0 ^x2 1 ^y2 1 (stop ^id \"s1\" ^offset 0 ^color \"#000000\"))) (circle ^id \"a\" ^cx 0 ^cy 0 ^r 1 ^fill \"#ffffff\" ^fill_ref \"g1\")")
+      "conflicting_paint"))
+
+  (it "rejects an unbundled font instead of substituting one" []
+    (assert_equal (rejected "(text ^id \"t\" ^x 0 ^y 0 ^font \"Helvetica\" ^size 12 \"hi\")")
+      "invalid_field")
+    (assert_equal (rejected "(text ^id \"t\" ^x 0 ^y 0 ^font \"sans\" ^size 12 ^weight 300 \"hi\")")
+      "invalid_field"))
+
+  (it "rejects duplicate properties, executable reader forms, and oversized text" []
+    (assert_equal
+      (error_code (fn [] (read_domain "(scene ^schema 1 ^schema 1)" ^head "scene")))
+      "unreadable")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx $x ^cy 0 ^r 1)") "invalid_node")
+    (assert_equal (rejected "(circle ^id \"a\" ^cx (+ 1 2) ^cy 0 ^r 1)") "invalid_field")
+    (assert_equal (rejected "(circle ^id \"a\" @note 1 ^cx 0 ^cy 0 ^r 1)") "invalid_node")
+    (var big [])
+    (repeat i in 30000 (big .push "0123456789"))
+    (assert_equal
+      (error_code (fn [] (read_domain $"(scene \"${($str/join big \"\")}\")" ^head "scene")))
+      "too_large"))
+
+  (it "bounds nesting depth and node count" []
+    (var nested "(circle ^id \"leaf\" ^cx 0 ^cy 0 ^r 1)")
+    (repeat i in 33 (set nested $"(g ^id \"g${i}\" ${nested})"))
+    (assert_equal (rejected nested) "too_deep")
+    (var many [])
+    (repeat k in (+ limits/scene_nodes 1)
+      (many .push $"(circle ^id \"c${k}\" ^cx 0 ^cy 0 ^r 1)"))
+    (assert_equal (rejected ($str/join many " ")) "too_complex"))
+
+  (it "reports the target and field of a failure" []
+    (let error (error_of (fn [] (scene_with "(rect ^id \"box\" ^x 0 ^y 0 ^width -4 ^height 2)"))))
+    (assert_equal error/target "box")
+    (assert_equal error/field ["width"])
+    (assert_equal error/expected "a number greater than 0")))
+
+(describe "canonical form"
+  (it "is independent of property order and number spelling" []
+    (let left (scene_with "(rect ^id \"a\" ^x 1.0 ^y -0.0 ^width 10 ^height 2.50 ^fill \"#ABCDEF\")"))
+    (let right (scene_with "(rect ^fill \"#abcdef\" ^height 2.5 ^width 10.0 ^y 0 ^x 1 ^id \"a\")"))
+    (assert_equal (canonical left) (canonical right))
+    (assert_equal (scene_digest left) (scene_digest right)))
+
+  (it "keeps child order and semantic fields in the digest" []
+    (let first (scene_with "(circle ^id \"a\" ^cx 0 ^cy 0 ^r 1) (circle ^id \"b\" ^cx 0 ^cy 0 ^r 1)"))
+    (let swapped (scene_with "(circle ^id \"b\" ^cx 0 ^cy 0 ^r 1) (circle ^id \"a\" ^cx 0 ^cy 0 ^r 1)"))
+    (let labelled (scene_with "(circle ^id \"a\" ^label \"sun\" ^cx 0 ^cy 0 ^r 1) (circle ^id \"b\" ^cx 0 ^cy 0 ^r 1)"))
+    ($assert (!= (scene_digest first) (scene_digest swapped)) "paint order must change the digest")
+    ($assert (!= (scene_digest first) (scene_digest labelled)) "a label must change the digest"))
+
+  (it "reads back to the same canonical text and SVG" []
+    (let scene (fixture_scene "effects"))
+    (let again (normalize_scene (read_canonical (canonical scene))))
+    (assert_equal (canonical again) (canonical scene))
+    (assert_equal (scene_svg again) (scene_svg scene)))
+
+  (it "escapes text content without changing it" []
+    (let scene (scene_with "(text ^id \"t\" ^x 0 ^y 20 ^font \"sans\" ^size 12 \"say \\\"hi\\\" \\\\ <b> & é\")"))
+    (let again (normalize_scene (read_canonical (canonical scene))))
+    (assert_equal (canonical again) (canonical scene))
+    ($assert ($str/contains? (scene_svg scene) "say &quot;hi&quot; \\ &lt;b&gt; &amp; é")
+      "SVG text must be XML-escaped")))
+
+(describe "derived geometry"
+  (it "computes world bounds through ancestor transforms" []
+    (let scene (scene_with "(g ^id \"outer\" ^translate [100 50] ^scale [2 2] (rect ^id \"box\" ^x 10 ^y 10 ^width 20 ^height 5))"))
+    (assert_equal (world_bounds (index_scene scene) "box") [120 70 160 80])
+    (assert_equal (world_bounds (index_scene scene) "outer") [120 70 160 80]))
+
+  (it "rotates about the pivot with the y-down convention" []
+    (let scene (scene_with "(rect ^id \"box\" ^x 0 ^y 0 ^width 10 ^height 10 ^rotate 90 ^pivot [5 5])"))
+    (assert_equal (world_bounds (index_scene scene) "box") [0 0 10 10])
+    (let quarter (scene_with "(rect ^id \"box\" ^x 0 ^y 0 ^width 20 ^height 10 ^rotate 90)"))
+    (assert_equal (world_bounds (index_scene quarter) "box") [-10 0 0 20])))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

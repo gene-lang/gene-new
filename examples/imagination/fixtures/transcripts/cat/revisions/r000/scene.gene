@@ -1,0 +1,1 @@
+(scene ^background "#ffffff" ^height 1024 ^schema 1 ^view_box [0 0 1024 1024] ^width 1024 (defs))

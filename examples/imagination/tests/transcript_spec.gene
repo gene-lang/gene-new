@@ -1,0 +1,63 @@
+# Milestone 4: the saved live transcripts drive the application loop.
+#
+# The responses recorded in fixtures/transcripts/* were produced by a live
+# model during the milestone 2 spike. Replaying them through an Evolution
+# must reach the same terminal status and the same final scene. Their
+# observed image digests are only reproducible under the same pinned render
+# profile, so a different toolchain skips the comparison rather than failing.
+(import $test [describe it assert_equal run])
+(import [scratch test_profile fixture_text] ^from "./support")
+(import [read_canonical canonical scene_digest] ^from "../src/scene")
+(import [fixture_agent] ^from "../src/adapters/model")
+(import [validate_goal] ^from "../src/evaluation")
+(import [create_evolution close_evolution line_row value revision_row] ^from "../src/evolution")
+(import [start_run execute_run] ^from "../src/jobs")
+(import [children_named] ^from "../src/types")
+
+(fn saved_responses [name : Str] : Any
+  (var responses [])
+  (for line in ($str/split (fixture_text $"transcripts/${name}/events.gene") "\n")
+    (if_yes (!= line "")
+      (let event (read_canonical line))
+      (if (== event/kind "model_call")
+        (responses .push (/response (($body event) .first))))))
+  responses)
+
+(fn same_tools? [name : Str] : Bool
+  (let manifest (read_canonical (fixture_text $"transcripts/${name}/render-profile.gene")))
+  (let profile (test_profile))
+  (var same true)
+  (for tool in (children_named manifest "tool")
+    (if (&& (== tool/name "rsvg-convert") (!= tool/version profile/rsvg_version)) (set same false))
+    (if (&& (== tool/name "pdftocairo") (!= tool/version profile/poppler_version)) (set same false)))
+  same)
+
+(fn replay [name : Str] : Nil
+  (if_not (same_tools? name)
+    ($println $"skipping the ${name} transcript: it was recorded with other tool versions")
+    (return nil))
+  (let goal (validate_goal (read_canonical (fixture_text $"transcripts/${name}/goal.gene"))))
+  (let recorded (($parse/read_all (fixture_text $"transcripts/${name}/outcome.gene")) .next))
+  (let evolution
+    (create_evolution ($path/join (scratch name) "project") name goal (test_profile)))
+  (try
+    (let started (start_run evolution "main"))
+    (let outcome (execute_run evolution (fixture_agent (saved_responses name)) started/id))
+    (assert_equal outcome/status recorded/status)
+    (assert_equal outcome/revision recorded/revision)
+    (assert_equal outcome/iterations recorded/iterations)
+    (let final (read_canonical (fixture_text $"transcripts/${name}/revisions/${recorded/revision}/scene.gene")))
+    (assert_equal (/scene (revision_row evolution recorded/revision)) (scene_digest final))
+    (assert_equal (/head (line_row evolution "main")) recorded/revision)
+  ensure
+    (close_evolution evolution))
+  nil)
+
+(describe "saved live transcripts"
+  (it "replays the landscape run to the same picture" [] (replay "landscape"))
+  (it "replays the poster run to the same picture" [] (replay "poster"))
+  (it "replays the cat run, including its repaired response, to the same picture" [] (replay "cat")))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

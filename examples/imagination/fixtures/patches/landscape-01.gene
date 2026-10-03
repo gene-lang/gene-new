@@ -1,0 +1,21 @@
+(patch ^schema 1 ^id "landscape-01" ^base "r000" ^goal "goal-01"
+  (intent "Establish the composition: evening sky, a low sun, and rolling ground.")
+  (set_canvas ^field "background" ^value "#fde2b3")
+  (add ^parent "defs" ^placement (last)
+    (linear_gradient ^id "p1-sky" ^x1 0 ^y1 0 ^x2 0 ^y2 640
+      (stop ^id "p1-sky-top" ^offset 0 ^color "#3b2d6b")
+      (stop ^id "p1-sky-mid" ^offset 0.55 ^color "#e5734f")
+      (stop ^id "p1-sky-low" ^offset 1 ^color "#fbd38d")))
+  (add ^parent "scene" ^placement (last)
+    (rect ^id "p1-sky-fill" ^label "Evening sky" ^role "background"
+      ^x 0 ^y 0 ^width 1024 ^height 640 ^fill_ref "p1-sky"))
+  (add ^parent "scene" ^placement (last)
+    (g ^id "p1-sun" ^label "Setting sun" ^role "subject" ^translate [700 560]
+      (circle ^id "p1-sun-glow" ^cx 0 ^cy 0 ^r 150 ^fill "#ffe9a8" ^opacity 0.35)
+      (circle ^id "p1-sun-disc" ^cx 0 ^cy 0 ^r 96 ^fill "#fff3c4")))
+  (add ^parent "scene" ^placement (last)
+    (g ^id "p1-ground" ^label "Hills" ^role "background"
+      (path ^id "p1-far-hill" ^fill "#5b7a4a"
+        (M 0 640) (Q 260 520 520 620) (Q 780 700 1024 590) (L 1024 1024) (L 0 1024) (Z))
+      (path ^id "p1-near-hill" ^fill "#3f5f38"
+        (M 0 760) (Q 300 660 600 780) (Q 820 860 1024 760) (L 1024 1024) (L 0 1024) (Z)))))

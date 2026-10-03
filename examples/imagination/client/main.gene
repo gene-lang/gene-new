@@ -1,0 +1,640 @@
+# The Imagination workbench (design section 14), compiled by the web profile.
+#
+# The server owns every record. This client keeps only view state: which
+# project, line, and revision are shown, follow-live, and compare choices.
+# Clicking a thumbnail only navigates; choosing a result, starting a run, and
+# forking are explicit server operations.
+(mod imagination_client ^profile web)
+
+(import ^from "./api.gene" [api hash_value message_of text_or])
+
+(type Bench ^props {^token Str ^project Str ^line Str ^viewing Str ^follow Bool
+                    ^show_trials Bool ^vector Bool ^last_seq Int ^socket Any ^socket_epoch Int
+                    ^job Str ^data Any ^history Any ^revision Any ^refresh_queued Bool
+                    ^canvas EventTarget ^notice EventTarget})
+
+(fn notice [bench : Bench, text : Str] : Void
+  ($dom/set_text bench/notice text))
+
+(fn show_error [bench : Bench, result : Any] : Void
+  (notice bench (message_of result "The request could not be completed.")))
+
+(fn set_hidden [id : Str, hidden : Bool] : Void
+  (var element ($dom/element id))
+  (set element/hidden hidden))
+
+(fn project_path [bench : Bench, rest : Str] : Str
+  $"/projects/${($url/encode_component bench/project)}${rest}")
+
+(fn digest_hex [digest : Str] : Str
+  (var parts : (List Str) (str/split digest ":"))
+  (if (== ($size parts) 2) parts/1 digest))
+
+(fn artifact [bench : Bench, render : Str, kind : Str] : Str
+  $"/api/v1/projects/${bench/project}/artifacts/${(digest_hex render)}/${kind}")
+
+(fn update_hash [bench : Bench] : Void
+  ($browser/replace_url $"/#project=${bench/project}&line=${bench/line}&rev=${bench/viewing}"))
+
+# ── projects and lines ─────────────────────────────────────────────────────
+
+(fn fill_select [select : EventTarget, values : (List Str), chosen : Str] : Void
+  ($dom/clear select)
+  (for value in values
+    (var option ($dom/render `(option ^value %value %value)))
+    ($dom/append select option))
+  ($dom/set_input_value select chosen))
+
+(fn load_projects [bench : Bench] : Void
+  (api bench/token "GET" "/projects" nil
+    (fn [status : Int, data : Any] : Void
+      (if_yes (!= status 200) (show_error bench data) (return))
+      (var names : (List Str) data/projects)
+      (var wanted (hash_value ($browser/hash) "project"))
+      (var chosen "")
+      (for name in names
+        (if_yes (|| (== name wanted) (== chosen "")) (set chosen name)))
+      (fill_select ($dom/element "project_select") names chosen)
+      (if (== chosen "")
+        (then
+          (set_hidden "new_project" false)
+          (notice bench "Create a project to start drawing."))
+        (else
+          (open_project bench chosen (hash_value ($browser/hash) "line")
+            (hash_value ($browser/hash) "rev")))))))
+
+(fn open_project [bench : Bench, name : Str, line : Str, revision : Str] : Void
+  (set bench/project name)
+  (set bench/line (if (== line "") "main" line))
+  (set bench/viewing revision)
+  # The socket opens after the first snapshot, from its event sequence.
+  (set bench/last_seq -1)
+  (set bench/job "")
+  (refresh bench (== revision "")))
+
+# Whether a project snapshot is loaded. A failed load leaves the previous
+# view in place instead of reading fields of an error response.
+(fn loaded [bench : Bench] : Bool
+  (if_yes ($absent? bench/data) (return false))
+  (! ($absent? bench/data/lines)))
+
+(fn line_record [bench : Bench] : Any
+  (if_not (loaded bench) (return nil))
+  (var lines : (List Any) bench/data/lines)
+  (for line in lines
+    (var id : Str line/id)
+    (if_yes (== id bench/line) (return line)))
+  (if (> ($size lines) 0) lines/0 nil))
+
+(fn line_head [bench : Bench] : Str
+  (var line (line_record bench))
+  (if_yes ($absent? line) (return ""))
+  (var head : Str line/head)
+  head)
+
+(fn run_by_id [bench : Bench, id : Str] : Any
+  (if_not (loaded bench) (return nil))
+  (var runs : (List Any) bench/data/runs)
+  (for run in runs
+    (var run_id : Str run/id)
+    (if_yes (== run_id id) (return run)))
+  nil)
+
+(fn render_project [bench : Bench] : Void
+  (var lines : (List Any) bench/data/lines)
+  (var names : (List Str) [])
+  (for line in lines
+    (var id : Str line/id)
+    (names .push id))
+  (var line (line_record bench))
+  (if_yes ($absent? line) (return))
+  (var line_id : Str line/id)
+  (set bench/line line_id)
+  (fill_select ($dom/element "line_select") names line_id)
+  (var goal_id : Str line/goal)
+  (var goals : Any bench/data/goals)
+  (var goal : Any goals/%goal_id)
+  (var request : Str (text_or goal/request ""))
+  ($dom/set_text ($dom/element "goal_text") $"${goal_id}: ${request}")
+  (var active : Str (text_or line/active_run ""))
+  (set bench/job (if (== active "") "" $"${bench/project}.${active}"))
+  (set_hidden "cancel_button" (== active ""))
+  (set_hidden "steer_form" (== active ""))
+  (var run_button ($dom/element "run_button"))
+  (set run_button/disabled (!= active ""))
+  (render_status bench "")
+  (render_model_view bench))
+
+(fn render_status [bench : Bench, phase : Str] : Void
+  (if_not (loaded bench) (return))
+  (var runs : (List Any) bench/data/runs)
+  (var target ($dom/element "run_status"))
+  (if_yes (== ($size runs) 0)
+    ($dom/set_text target "No runs yet")
+    (return))
+  (var run : Any runs/0)
+  (var line : Any (line_record bench))
+  (var active : Str (text_or line/active_run ""))
+  (if_yes (!= active "") (set run (run_by_id bench active)))
+  (if_yes ($absent? run) (return))
+  (var id : Str run/id)
+  (var status : Str run/status)
+  (var shown_phase : Str (if (== phase "") (text_or run/phase "") phase))
+  (var iteration : Int run/iteration)
+  (var accepted : Str (text_or run/accepted ""))
+  (var reason : Str (text_or run/reason ""))
+  (var usage : Any run/usage)
+  (var calls : Int usage/calls)
+  (var budgets : Any run/budgets)
+  (var limit : Int budgets/max_iterations)
+  (if (== status "running")
+    ($dom/set_text target
+      $"${id} running · ${shown_phase} · edit ${iteration} of ${limit} · last accepted ${accepted} · ${calls} model calls")
+    ($dom/set_text target $"${id} ${status} · ${reason}")))
+
+# ── refresh ────────────────────────────────────────────────────────────────
+
+(fn refresh [bench : Bench, view_head : Bool] : Void
+  (api bench/token "GET" (project_path bench "") nil
+    (fn [status : Int, data : Any] : Void
+      (if_yes (|| (!= status 200) ($absent? data/lines)) (show_error bench data) (return))
+      (set bench/data data)
+      (if_yes (< bench/last_seq 0)
+        (var latest : Int data/last_event)
+        (set bench/last_seq latest)
+        (connect bench))
+      (render_project bench)
+      (load_history bench view_head))))
+
+(fn schedule_refresh [bench : Bench] : Void
+  (if_yes bench/refresh_queued (return))
+  (set bench/refresh_queued true)
+  ($time/after 300.0
+    (fn [] : Void
+      (set bench/refresh_queued false)
+      (refresh bench bench/follow))))
+
+(fn load_history [bench : Bench, view_head : Bool] : Void
+  (api bench/token "GET" (project_path bench "/history") nil
+    (fn [status : Int, data : Any] : Void
+      (if_yes (!= status 200) (show_error bench data) (return))
+      (set bench/history data)
+      (if (|| view_head (== bench/viewing ""))
+        (then
+          (var head (line_head bench))
+          (if_yes (!= head "") (view_revision bench head)))
+        (else (render_history bench))))))
+
+# ── history graph ──────────────────────────────────────────────────────────
+
+# Position and size through CSSOM properties: the page's content security
+# policy refuses inline style attributes. A negative value leaves it unset.
+(fn place [element : EventTarget, x : Int, y : Int, width : Int, height : Int] : Void
+  (var style : Any element/style)
+  (if_yes (>= x 0) (set style/left $"${x}px"))
+  (if_yes (>= y 0) (set style/top $"${y}px"))
+  (if_yes (>= width 0) (set style/width $"${width}px"))
+  (if_yes (>= height 0) (set style/height $"${height}px")))
+
+(fn render_history [bench : Bench] : Void
+  (var target ($dom/element "history"))
+  ($dom/clear target)
+  (if_yes ($absent? bench/history) (return))
+  (var history : Any bench/history)
+  (var width : Int history/width)
+  (var height : Int history/height)
+  (var edges : Str history/edges_url)
+  (var surface ($dom/render `(div ^class_name "graph")))
+  (place surface -1 -1 width height)
+  (var lines_image ($dom/render `(img ^class_name "edges" ^alt "")))
+  ($dom/set_attribute lines_image "src" edges)
+  (place lines_image -1 -1 width height)
+  ($dom/append surface lines_image)
+  (var nodes : (List Any) history/nodes)
+  (var selected_result : Str (text_or history/selected ""))
+  (for node in nodes
+    (var id : Str node/id)
+    (var quality : Str node/quality)
+    (var x : Int node/x)
+    (var y : Int node/y)
+    (var thumbnail : Str node/thumbnail)
+    (var intent : Str (text_or node/intent ""))
+    (var heads : (List Str) node/heads)
+    (var trial (!= quality "accepted"))
+    (if_yes (&& trial (! bench/show_trials)) (continue))
+    (var cls $"node ${quality}")
+    (if_yes (== id bench/viewing) (set cls $"${cls} viewing"))
+    (if_yes (== id selected_result) (set cls $"${cls} chosen"))
+    (var head_names : Str (str/join heads ", "))
+    (var label (if (> ($size heads) 0) $"${id} · ${head_names}" id))
+    (var mark (if (== quality "accepted") "" $" · ${quality}"))
+    (var button
+      ($dom/render
+        `(button ^type "button" ^class_name %cls ^title %intent
+           ^aria-label %$"Revision ${id}, ${quality}"
+           ^on_click %(fn [event : Any] : Void
+             (set bench/follow false)
+             (var follow_box ($dom/element "follow_live"))
+             (set follow_box/checked false)
+             (view_revision bench id))
+           (span ^class_name "caption" %$"${label}${mark}"))))
+    (var picture ($dom/render `(img ^alt "")))
+    ($dom/set_attribute picture "src" thumbnail)
+    ($dom/append button picture)
+    (place button x y -1 -1)
+    ($dom/append surface button))
+  ($dom/append target surface))
+
+# ── the selected revision ──────────────────────────────────────────────────
+
+(fn section [title : Str] : EventTarget
+  ($dom/render `(section ^class_name "block" (h3 %title))))
+
+(fn line_item [text : Str] : EventTarget
+  ($dom/render `(li %text)))
+
+(fn render_inspector [bench : Bench, data : Any] : Void
+  (var target ($dom/element "inspector"))
+  ($dom/clear target)
+  (var id : Str data/id)
+  (var quality : Str data/quality)
+  (var actor : Str data/actor)
+  (var parents : (List Str) data/parents)
+  (var run : Str (text_or data/run "no run"))
+  ($dom/set_text ($dom/element "inspector_title") $"${id} · ${quality}")
+  (var facts (section "Revision"))
+  (var parent_text (if (== ($size parents) 0) "none (root)" (str/join parents ", ")))
+  ($dom/append facts ($dom/render `(p %$"Parent ${parent_text} · ${actor} · ${run}")))
+  (var intent : Str (text_or data/intent ""))
+  (if_yes (!= intent "") ($dom/append facts ($dom/render `(p ^class_name "intent" %intent))))
+  (var summary : Str (text_or data/summary ""))
+  (if_yes (!= summary "") ($dom/append facts ($dom/render `(p ^class_name "muted" %summary))))
+  ($dom/append target facts)
+
+  (var evaluation : Any data/evaluation)
+  (var review (section "Evaluation"))
+  (var reviewer : Str evaluation/reviewer)
+  (var image : Str evaluation/image)
+  ($dom/append review
+    ($dom/render `(p ^class_name "muted" %$"Reviewer: ${reviewer} · image ${image}")))
+  (var checks : (List Any) evaluation/checks)
+  (var list ($dom/render `(ul ^class_name "checks")))
+  (for check in checks
+    (var requirement : Str check/requirement)
+    (var result : Str check/result)
+    (var evidence : Str check/evidence)
+    (var item ($dom/render
+      `(li ^class_name %$"check ${result}"
+         (strong %$"${requirement}: ${result}") %$" — ${evidence}")))
+    ($dom/append list item))
+  ($dom/append review list)
+  (var issues : (List Any) evaluation/issues)
+  (if_yes (> ($size issues) 0)
+    (var issue_list ($dom/render `(ul ^class_name "issues")))
+    (for issue in issues
+      (var severity : Str issue/severity)
+      (var text : Str issue/text)
+      ($dom/append issue_list (line_item $"${severity}: ${text}")))
+    ($dom/append review issue_list))
+  ($dom/append target review)
+
+  (var changes : (List Str) data/changes)
+  (if_yes (> ($size changes) 0)
+    (var diff (section "Changes from parent"))
+    (var change_list ($dom/render `(ul)))
+    (for change in changes ($dom/append change_list (line_item change)))
+    ($dom/append diff change_list)
+    ($dom/append target diff))
+
+  (var goal : Any data/goal_record)
+  (var goal_block (section "Goal"))
+  (var goal_id : Str goal/id)
+  (var request : Str goal/request)
+  ($dom/append goal_block ($dom/render `(p %$"${goal_id}: ${request}")))
+  (var requirements : (List Any) goal/requirements)
+  (var requirement_list ($dom/render `(ul)))
+  (for requirement in requirements
+    (var rid : Str requirement/id)
+    (var strength : Str requirement/strength)
+    (var description : Str requirement/description)
+    ($dom/append requirement_list (line_item $"${rid} (${strength}): ${description}")))
+  ($dom/append goal_block requirement_list)
+  ($dom/append target goal_block)
+
+  (var render_block (section "Render"))
+  (var profile : Str (text_or data/render_profile ""))
+  (var output : (List Int) data/output)
+  ($dom/append render_block
+    ($dom/render `(p %$"${profile} · ${output/0} × ${output/1} px · observation ${image}")))
+  ($dom/append target render_block)
+
+  (var patch : Str (text_or data/patch ""))
+  (if_yes (!= patch "")
+    (var details ($dom/render `(details (summary "Patch") (pre %patch))))
+    ($dom/append target details)))
+
+(fn render_canvas [bench : Bench] : Void
+  (if_yes ($absent? bench/revision) (return))
+  (var data : Any bench/revision)
+  (var artifacts : Any data/artifacts)
+  (var png_kind "observation.png")
+  (var svg_kind "scene.svg")
+  (var observation : Str artifacts/%png_kind)
+  (var vector : Str artifacts/%svg_kind)
+  (var image ($dom/element "canvas_image"))
+  ($dom/set_attribute image "src" (if bench/vector vector observation))
+  (var id : Str data/id)
+  (var quality : Str data/quality)
+  (var suffix (if bench/vector " · vector preview, browser renderer" " · clean observation PNG"))
+  ($dom/set_text ($dom/element "canvas_label") $"${id} · ${quality}${suffix}"))
+
+(fn view_revision [bench : Bench, id : Str] : Void
+  (api bench/token "GET" (project_path bench $"/revisions/${id}") nil
+    (fn [status : Int, data : Any] : Void
+      (if_yes (!= status 200) (show_error bench data) (return))
+      (set bench/viewing id)
+      (set bench/revision data)
+      (render_canvas bench)
+      (render_inspector bench data)
+      (var exports : Str (project_path bench "/exports"))
+      (var base : Str $"/api/v1${exports}?revision=${id}")
+      ($dom/set_attribute ($dom/element "export_svg") "href" $"${base}&format=svg")
+      ($dom/set_attribute ($dom/element "export_pdf") "href" $"${base}&format=pdf")
+      ($dom/set_attribute ($dom/element "export_png") "href" $"${base}&format=png")
+      (var parents : (List Str) data/parents)
+      (if_yes (> ($size parents) 0)
+        ($dom/set_input_value ($dom/element "compare_left") parents/0))
+      ($dom/set_input_value ($dom/element "compare_right") id)
+      (update_hash bench)
+      (render_history bench))))
+
+# A held candidate, shown while its review is pending.
+(fn show_candidate [bench : Bench, id : Str, render : Str] : Void
+  (var image ($dom/element "canvas_image"))
+  ($dom/set_attribute image "src" (artifact bench render "observation.png"))
+  ($dom/set_text ($dom/element "canvas_label") $"${id} · under review · clean observation PNG"))
+
+# ── model view ─────────────────────────────────────────────────────────────
+
+(fn render_model_view [bench : Bench] : Void
+  (var target ($dom/element "model_view_body"))
+  (if_not (loaded bench) (return))
+  (if_yes (== bench/job "")
+    (var runs : (List Any) bench/data/runs)
+    (if_yes (== ($size runs) 0)
+      ($dom/clear target)
+      ($dom/append target ($dom/render `(p ^class_name "muted" "No model call yet.")))
+      (return))
+    (var latest : Any runs/0)
+    (var latest_id : Str latest/id)
+    (load_model_view bench $"${bench/project}.${latest_id}")
+    (return))
+  (load_model_view bench bench/job))
+
+(fn load_model_view [bench : Bench, job : Str] : Void
+  (api bench/token "GET" $"/jobs/${job}" nil
+    (fn [status : Int, data : Any] : Void
+      (var target ($dom/element "model_view_body"))
+      ($dom/clear target)
+      (if_yes (!= status 200) (return))
+      (if_yes ($absent? data/model_view)
+        ($dom/append target ($dom/render `(p ^class_name "muted" "No model call yet.")))
+        (return))
+      (var shown : Any data/model_view)
+      (var model : Str (text_or shown/model ""))
+      (var usage : Any shown/usage)
+      (var input : Int usage/input)
+      (var output : Int usage/output)
+      ($dom/append target
+        ($dom/render `(p %$"${job} · ${model} · ${input} input and ${output} output tokens on the newest call")))
+      (var submitted : (List Any) shown/submitted)
+      (var table ($dom/render `(ul ^class_name "submitted")))
+      (for item in submitted
+        (var label : Str item/label)
+        (var digest : Str item/digest)
+        (var size : Int item/bytes)
+        (var transport : Str item/transport)
+        (var preprocessing : Str item/preprocessing)
+        ($dom/append table
+          (line_item $"${label}: ${digest}, ${size} bytes, ${transport}, preprocessing ${preprocessing}")))
+      ($dom/append target table))))
+
+# ── events ─────────────────────────────────────────────────────────────────
+
+(fn connect [bench : Bench] : Void
+  (set bench/socket_epoch (+ bench/socket_epoch 1))
+  (var epoch bench/socket_epoch)
+  (if_not ($absent? bench/socket)
+    (var old : EventTarget bench/socket)
+    ($ws/close old))
+  (var origin ($browser/origin))
+  (var parts : (List Str) (str/split origin "://"))
+  (var scheme (if (== parts/0 "https") "wss" "ws"))
+  (var socket
+    ($ws/connect $"${scheme}://${parts/1}/api/v1/projects/${bench/project}/events?last=${bench/last_seq}"))
+  (set bench/socket socket)
+  ($ws/on_text socket
+    (fn [text : Str] : Void
+      (if_yes (== epoch bench/socket_epoch) (on_event bench text))))
+  ($ws/on_close socket
+    (fn [] : Void
+      (if_yes (!= epoch bench/socket_epoch) (return))
+      (notice bench "Reconnecting to the application…")
+      ($time/after 1500.0
+        (fn [] : Void
+          (if_yes (== epoch bench/socket_epoch) (connect bench)))))))
+
+(fn on_event [bench : Bench, text : Str] : Void
+  (var message : Any ($json/parse text))
+  (var kind : Str message/kind)
+  (if_yes (== kind "resync")
+    (set bench/last_seq -1)
+    (refresh bench bench/follow)
+    (return))
+  (var seq_text : Str message/seq)
+  (var seq : Int ($json/parse seq_text))
+  # Events are replayed after a reconnect; a duplicate is ignored.
+  (if_yes (<= seq bench/last_seq) (return))
+  (set bench/last_seq seq)
+  (var data : Any message/data)
+  (if_yes (== kind "phase_changed")
+    (var phase : Str (text_or data/phase ""))
+    (render_status bench phase)
+    (return))
+  (if_yes (&& (== kind "candidate_rendered") bench/follow)
+    (var id : Str data/revision)
+    (var render : Str data/render)
+    (show_candidate bench id render))
+  (if_yes (== kind "run_finished")
+    (var status : Str (text_or data/status ""))
+    (var reason : Str (text_or data/reason ""))
+    (notice bench $"The run finished: ${status}. ${reason}"))
+  (schedule_refresh bench))
+
+# ── actions ────────────────────────────────────────────────────────────────
+
+(fn start_run [bench : Bench] : Void
+  (var head (line_head bench))
+  (var budget : Any ($json/parse ($dom/input_value ($dom/element "max_edits"))))
+  (api bench/token "POST" (project_path bench "/runs")
+    {^line bench/line ^expected_head head ^max_iterations budget
+     ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (if (== status 202)
+        (then
+          (var job : Str data/job)
+          (set bench/job job)
+          (set bench/follow true)
+          (var follow_box ($dom/element "follow_live"))
+          (set follow_box/checked true)
+          (notice bench $"Started ${job}. New renders appear here as they are reviewed.")
+          (refresh bench true))
+        (elif (== status 409)
+          (var problem : Str (message_of data "The line changed."))
+          (notice bench $"${problem} Refresh, or continue from your revision on a new line.")
+          (refresh bench false))
+        (else (show_error bench data))))))
+
+(fn job_action [bench : Bench, action : Str, payload : Any] : Void
+  (if_yes (== bench/job "") (return))
+  (api bench/token "POST" $"/jobs/${bench/job}/${action}" payload
+    (fn [status : Int, data : Any] : Void
+      (if (|| (== status 200) (== status 202))
+        (notice bench (if (== action "cancel") "Cancelling before the next step…" "The instruction applies at the next step."))
+        (show_error bench data)))))
+
+(fn choose_result [bench : Bench] : Void
+  (if_yes (|| (== bench/viewing "") (! (loaded bench))) (return))
+  (var version : Int bench/data/metadata_version)
+  (api bench/token "POST" (project_path bench "/selection")
+    {^revision bench/viewing ^expected_version version ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (if (== status 200)
+        (notice bench $"${bench/viewing} is the chosen result.")
+        (show_error bench data))
+      (refresh bench false))))
+
+(fn fork_line [bench : Bench] : Void
+  (var name : Str ($dom/input_value ($dom/element "fork_name")))
+  (var prompt : Str ($dom/input_value ($dom/element "fork_prompt")))
+  (if_yes (|| (== bench/viewing "") (== name "")) (notice bench "Choose a revision and name the new line.") (return))
+  (notice bench (if (== prompt "") "Creating the line…" "Planning the new direction…"))
+  (api bench/token "POST" (project_path bench "/lines")
+    {^from bench/viewing ^name name ^prompt prompt ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (if (== status 201)
+        (then
+          (set bench/line name)
+          ($dom/set_input_value ($dom/element "fork_name") "")
+          ($dom/set_input_value ($dom/element "fork_prompt") "")
+          (notice bench $"Line ${name} continues from ${bench/viewing}. Start a run to draw on it.")
+          (refresh bench false))
+        (else (show_error bench data))))))
+
+(fn create_project [bench : Bench] : Void
+  (var name : Str ($dom/input_value ($dom/element "new_name")))
+  (var prompt : Str ($dom/input_value ($dom/element "new_prompt")))
+  (var width : Any ($json/parse ($dom/input_value ($dom/element "new_width"))))
+  (var height : Any ($json/parse ($dom/input_value ($dom/element "new_height"))))
+  (notice bench "Planning the goal from your request…")
+  (api bench/token "POST" "/projects"
+    {^name name ^prompt prompt ^width width ^height height ^idempotency_key ($browser/request_id)}
+    (fn [status : Int, data : Any] : Void
+      (if (== status 201)
+        (then
+          (set_hidden "new_project" true)
+          (notice bench $"Created ${name}. Start a run to draw.")
+          ($browser/replace_url $"/#project=${name}")
+          (load_projects bench))
+        (else (show_error bench data))))))
+
+(fn compare [bench : Bench] : Void
+  (var left : Str ($dom/input_value ($dom/element "compare_left")))
+  (var right : Str ($dom/input_value ($dom/element "compare_right")))
+  (api bench/token "GET"
+    (project_path bench $"/diff?left=${($url/encode_component left)}&right=${($url/encode_component right)}") nil
+    (fn [status : Int, data : Any] : Void
+      (var target ($dom/element "compare_body"))
+      ($dom/clear target)
+      (if_yes (!= status 200) (show_error bench data) (return))
+      (var left_side : Any data/left)
+      (var right_side : Any data/right)
+      (var left_url : Str left_side/observation)
+      (var right_url : Str right_side/observation)
+      (var pair ($dom/render `(div ^class_name "pair")))
+      (var left_image ($dom/render `(img ^alt %$"Revision ${left}")))
+      ($dom/set_attribute left_image "src" left_url)
+      (var right_image ($dom/render `(img ^alt %$"Revision ${right}")))
+      ($dom/set_attribute right_image "src" right_url)
+      ($dom/append pair left_image)
+      ($dom/append pair right_image)
+      ($dom/append target pair)
+      (var same : Bool data/same_profile)
+      (if_not same
+        ($dom/append target
+          ($dom/render `(p ^class_name "muted" "These images come from different render profiles; their pixels are not comparable."))))
+      (var lines : (List Str) data/lines)
+      (var list ($dom/render `(ul)))
+      (for line in lines ($dom/append list (line_item line)))
+      (if_yes (== ($size lines) 0) ($dom/append list (line_item "No structural change.")))
+      ($dom/append target list))))
+
+(fn checkbox [id : Str] : Bool
+  (var box ($dom/element id))
+  (var checked : Bool box/checked)
+  checked)
+
+(fn main [root : EventTarget] : Void
+  (var bench
+    (Bench ^token ($dom/text ($dom/element "imagination_token")) ^project "" ^line "main"
+      ^viewing "" ^follow true ^show_trials true ^vector false ^last_seq 0 ^socket nil
+      ^socket_epoch 0 ^job "" ^data nil ^history nil ^revision nil ^refresh_queued false
+      ^canvas ($dom/element "canvas_image") ^notice ($dom/element "notice")))
+  ($dom/add_event_listener ($dom/element "project_select") "change"
+    (fn [event : Any] : Void
+      (open_project bench ($dom/input_value ($dom/element "project_select")) "" "")))
+  ($dom/add_event_listener ($dom/element "line_select") "change"
+    (fn [event : Any] : Void
+      (set bench/line ($dom/input_value ($dom/element "line_select")))
+      (refresh bench true)))
+  ($dom/add_event_listener ($dom/element "follow_live") "change"
+    (fn [event : Any] : Void
+      (set bench/follow (checkbox "follow_live"))
+      (if_yes bench/follow (refresh bench true))))
+  ($dom/add_event_listener ($dom/element "vector_preview") "change"
+    (fn [event : Any] : Void
+      (set bench/vector (checkbox "vector_preview"))
+      (render_canvas bench)))
+  ($dom/add_event_listener ($dom/element "show_trials") "change"
+    (fn [event : Any] : Void
+      (set bench/show_trials (checkbox "show_trials"))
+      (render_history bench)))
+  ($dom/add_event_listener ($dom/element "run_button") "click"
+    (fn [event : Any] : Void (start_run bench)))
+  ($dom/add_event_listener ($dom/element "cancel_button") "click"
+    (fn [event : Any] : Void (job_action bench "cancel" {^idempotency_key ($browser/request_id)})))
+  ($dom/add_event_listener ($dom/element "steer_form") "submit"
+    (fn [event : Any] : Void
+      ($dom/prevent_default event)
+      (var instruction : Str ($dom/input_value ($dom/element "steer_text")))
+      ($dom/set_input_value ($dom/element "steer_text") "")
+      (job_action bench "steer" {^instruction instruction ^idempotency_key ($browser/request_id)})))
+  ($dom/add_event_listener ($dom/element "select_button") "click"
+    (fn [event : Any] : Void (choose_result bench)))
+  ($dom/add_event_listener ($dom/element "fork_form") "submit"
+    (fn [event : Any] : Void
+      ($dom/prevent_default event)
+      (fork_line bench)))
+  ($dom/add_event_listener ($dom/element "compare_button") "click"
+    (fn [event : Any] : Void (compare bench)))
+  ($dom/add_event_listener ($dom/element "model_view") "toggle"
+    (fn [event : Any] : Void (render_model_view bench)))
+  ($dom/add_event_listener ($dom/element "new_project_button") "click"
+    (fn [event : Any] : Void (set_hidden "new_project" false)))
+  ($dom/add_event_listener ($dom/element "new_project_cancel") "click"
+    (fn [event : Any] : Void (set_hidden "new_project" true)))
+  ($dom/add_event_listener ($dom/element "new_project_form") "submit"
+    (fn [event : Any] : Void
+      ($dom/prevent_default event)
+      (create_project bench)))
+  (load_projects bench))

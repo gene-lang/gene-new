@@ -1,0 +1,574 @@
+# Immutable SVG scene values (design section 7).
+#
+# The Gene scene tree is the source of truth. This module validates and
+# canonicalizes it, indexes it by ID, edits it by rebuilding the touched path,
+# and derives transforms and bounds. Nothing here mutates a stored scene.
+(mod imagination_scene)
+
+(import [reject limits node? kind_of str? list? int? number? sorted_keys] ^from "./types")
+(import [
+  media_id scene_schema_version elements clip_shape_kinds path_commands
+  canvas_fields element_spec field_spec canvas_field_spec check_value
+  valid_id? finite? normal_number printable? fonts] ^from "./scene_schema")
+
+(const canonical_version 1)
+
+# ── canonical text ─────────────────────────────────────────────────────────
+
+(fn escape_text [text : Str] : Str
+  (if_not (|| ($str/contains? text "\"") ($str/contains? text "\\")
+              ($str/contains? text "\n") ($str/contains? text "\r")
+              ($str/contains? text "\t"))
+    (return text))
+  (var bytes [])
+  (for byte in ($bytes text)
+    (if (== byte 34) (then (bytes .push 92) (bytes .push 34))
+      (elif (== byte 92) (bytes .push 92) (bytes .push 92))
+      (elif (== byte 10) (bytes .push 92) (bytes .push 110))
+      (elif (== byte 13) (bytes .push 92) (bytes .push 114))
+      (elif (== byte 9) (bytes .push 92) (bytes .push 116))
+      (else (bytes .push byte))))
+  ($binary/to_str ($binary/from_list bytes)))
+
+(fn write_canonical [value, out] : Nil
+  (if (node? value)
+    (then
+      (out .push "(")
+      (out .push (kind_of value))
+      (let props ($props value))
+      (for name in (sorted_keys props)
+        (out .push " ^")
+        (out .push name)
+        (out .push " ")
+        (write_canonical (props .get name) out))
+      (for child in ($body value)
+        (out .push " ")
+        (write_canonical child out))
+      (out .push ")"))
+    (elif (str? value)
+      (out .push "\"")
+      (out .push (escape_text value))
+      (out .push "\""))
+    (elif (list? value)
+      (out .push "[")
+      (var first true)
+      (for item in value
+        (if_not first (out .push " "))
+        (set first false)
+        (write_canonical item out))
+      (out .push "]"))
+    (elif (number? value)
+      (out .push ($to_str (normal_number value))))
+    (elif (== value true) (out .push "true"))
+    (elif (== value false) (out .push "false"))
+    (elif ($absent? value) (out .push "nil"))
+    (else
+      (reject "not_canonical" $"a ${($head value)} value has no canonical form")))
+  nil)
+
+# Versioned canonical Gene text: child order kept, property names sorted,
+# numbers normalized, one string escaping scheme. Equal values give equal text.
+(fn canonical [value] : Str
+  (var out [])
+  (write_canonical value out)
+  ($str/join out ""))
+
+(fn digest_of [text] : Str
+  $"sha256:${($crypto/sha256 text)}")
+
+(fn scene_digest [scene] : Str
+  (digest_of (canonical scene)))
+
+# Read stored canonical text back as data. Stored text is trusted to be data
+# the application wrote; model text goes through `read_domain` instead.
+(fn read_canonical [text : Str] : Any
+  ($freeze (($parse/read_all text) .next)))
+
+# ── strict reading of untrusted text ───────────────────────────────────────
+
+(fn check_data [value, depth : Int] : Nil
+  (if (> depth limits/reader_depth)
+    (reject "too_deep" $"the response nests deeper than ${limits/reader_depth} levels"))
+  (if (node? value)
+    (then
+      (if (> ($size ($meta value)) 0)
+        (reject "invalid_node" $"metadata is not allowed on ${(kind_of value)}"))
+      (for [name item] in ($props value) (check_data item (+ depth 1)))
+      (for item in ($body value) (check_data item (+ depth 1))))
+    (elif (str? value) nil)
+    (elif (list? value)
+      (for item in value (check_data item (+ depth 1))))
+    (elif (number? value) nil)
+    (elif (|| (== value true) (== value false) ($nil? value)) nil)
+    (else
+      # A bare symbol, map, path, pipeline, quote, or interpolation: reader
+      # forms with no place in domain data.
+      (reject "invalid_node" $"only nodes, strings, numbers, lists, true, false and nil are allowed; found ${value}")))
+  nil)
+
+# Parse exactly one domain node from untrusted text (section 8.4, step 1).
+# The reader runs with duplicate properties rejected and nesting bounded; the
+# result is then checked to contain only inert data kinds, so an executable
+# reader form can never reach the interpreter. Nothing here is evaluated.
+(fn read_domain [text : Str, ^head head : Str] : Any
+  (if (> ($str/byte_size text) limits/response_bytes)
+    (reject "too_large" $"the response exceeds ${limits/response_bytes} bytes"))
+  (var forms
+    (try
+      ($into ($parse/read_all text ^reject_duplicate_props true ^max_depth limits/reader_depth) [])
+    catch Any
+      (reject "unreadable" $"the response is not readable Gene data: ${$err/message}")))
+  (if (!= forms/.size 1)
+    (reject "invalid_node" $"expected exactly one (${head} ...) node, found ${forms/.size} forms"))
+  (let form forms/0)
+  (if_not (&& (node? form) (== (kind_of form) head))
+    (reject "invalid_node" $"expected one (${head} ...) node"))
+  (check_data form 0)
+  ($freeze form))
+
+# ── validation ─────────────────────────────────────────────────────────────
+
+(fn allowed_in? [spec, where : Str] : Bool
+  (if (== where "clip_shape") (return (clip_shape_kinds .contains? spec/kind)))
+  (== spec/where where))
+
+(fn normal_path [node, id, state, index] : Any
+  (var commands [])
+  (for command in ($body node)
+    (if_not (node? command)
+      (reject "malformed_path" "a path holds only command nodes" ^target id ^index index))
+    (let name (kind_of command))
+    (let arity (path_commands .get name))
+    (if ($absent? arity)
+      (reject "malformed_path" $"unknown path command ${name}; use M, L, C, Q, or Z"
+        ^target id ^index index ^expected "M, L, C, Q, or Z"))
+    (let values ($body command))
+    (if (|| (!= values/.size arity) (> ($size ($props command)) 0))
+      (reject "malformed_path" $"path command ${name} takes ${arity} numbers"
+        ^target id ^index index ^expected $"${arity} numbers"))
+    (var numbers [])
+    (for value in values
+      (if_not (finite? value)
+        (reject "malformed_path" $"path command ${name} needs finite numbers within ${limits/magnitude}"
+          ^target id ^index index))
+      (numbers .push (normal_number value)))
+    (commands .push ($node/rebuild command ^props {} ^body numbers)))
+  (if (== commands/.size 0)
+    (reject "malformed_path" "a path needs at least one command" ^target id ^index index))
+  (if (!= (kind_of commands/0) "M")
+    (reject "malformed_path" "a path starts with an M command" ^target id ^index index
+      ^expected "M first"))
+  (state .put "commands" (+ state/commands commands/.size))
+  (if (> state/commands limits/path_commands)
+    (reject "too_complex" $"the scene has more than ${limits/path_commands} path commands"
+      ^target id ^index index))
+  commands)
+
+(fn default_transform? [name : Str, value] : Bool
+  (if (|| (== name "translate") (== name "pivot")) (return (== value [0 0])))
+  (if (== name "scale") (return (== value [1 1])))
+  (if (== name "rotate") (return (== value 0)))
+  false)
+
+(fn normal_node [node, where : Str, depth : Int, state, index] : Any
+  (if_not (node? node)
+    (reject "invalid_node" $"expected an element node, found ${node}" ^index index))
+  (let kind (kind_of node))
+  (let spec (element_spec kind))
+  (if ($absent? spec)
+    (reject "unknown_element" $"unknown element ${kind}" ^index index ^field kind))
+  (if_not (allowed_in? spec where)
+    (reject "misplaced_element" $"a ${kind} cannot appear in ${where} position"
+      ^index index ^field kind))
+  (if (> depth limits/depth)
+    (reject "too_deep" $"elements nest deeper than ${limits/depth}" ^index index))
+  (let props ($props node))
+  (let id (props .get "id"))
+  (if_not (valid_id? id)
+    (reject "invalid_id" $"a ${kind} needs a valid ^id (a letter, then letters, digits, _ or -)"
+      ^index index ^field ["id"]))
+  (if ($has_key? state/ids id)
+    (reject "duplicate_id" $"the ID ${id} is used more than once" ^target id ^index index))
+  (state/ids .put id kind)
+  (state .put "nodes" (+ state/nodes 1))
+  (if (> state/nodes limits/scene_nodes)
+    (reject "too_complex" $"the scene has more than ${limits/scene_nodes} nodes" ^index index))
+  (var clean {^id id})
+  (for name in (sorted_keys props)
+    (if_yes (!= name "id")
+      (let field (field_spec kind name))
+      (if (|| ($absent? field)
+              (&& (== where "clip_shape")
+                  (! (|| (== field/aspect "geometry") (== field/aspect "transform")))))
+        (reject "unknown_field" $"${kind} has no field ${name} here" ^target id
+          ^field [name] ^index index))
+      (let value (check_value field/type (props .get name) ^target id ^field [name] ^index index))
+      # A transform field at its default is the same scene as one without it,
+      # so the canonical form omits it. An edit that only restates a default
+      # is then an exact no-op.
+      (if_not (default_transform? name value) (clean .put name value))
+      (if_yes ($str/starts_with? field/type "ref:")
+        (if (!= where "render")
+          (reject "unknown_field" "a definition cannot reference another definition"
+            ^target id ^field [name] ^index index))
+        (state/refs .push {^from id ^field name ^to (clean .get name) ^type field/type}))))
+  (for field in spec/fields
+    (if_yes (&& field/required (! ($has_key? clean field/name)))
+      (reject "missing_field" $"${kind} ${id} needs ^${field/name}" ^target id
+        ^field [field/name] ^index index)))
+  (for pair in [["fill" "fill_ref"] ["stroke" "stroke_ref"]]
+    (if_yes (&& ($has_key? clean pair/0) ($has_key? clean pair/1))
+      (reject "conflicting_paint" $"${id} sets both ^${pair/0} and ^${pair/1}"
+        ^target id ^field [pair/1] ^index index)))
+  (if_yes (== kind "text")
+    (let font (fonts .get clean/font))
+    (if_not (font/weights .contains? (?? (clean .get "weight") 400))
+      (reject "invalid_field" $"font ${clean/font} has no weight ${clean/weight}"
+        ^target id ^field ["weight"] ^index index)))
+  (var body [])
+  (let items ($body node))
+  (match spec/body
+    (when "none"
+      (if (> items/.size 0)
+        (reject "unexpected_children" $"a ${kind} has no children" ^target id ^index index)))
+    (when "path" (set body (normal_path node id state index)))
+    (when "text"
+      (if_not (&& (== items/.size 1) (str? items/0))
+        (reject "invalid_text" "a text node holds exactly one string" ^target id
+          ^field ["content"] ^index index))
+      (if_not (&& (<= ($str/byte_size items/0) limits/text_bytes) (printable? items/0))
+        (reject "invalid_text" $"text is one line of at most ${limits/text_bytes} bytes"
+          ^target id ^field ["content"] ^index index))
+      (body .push items/0))
+    (else
+      (let child_where
+        (if (== spec/body "children") where
+          (if (== spec/body "stops") "stop" "clip_shape")))
+      (if (&& (== spec/body "stops") (> items/.size limits/stops))
+        (reject "too_complex" $"a gradient has at most ${limits/stops} stops" ^target id
+          ^index index))
+      (for item in items
+        (body .push (normal_node item child_where (+ depth 1) state index)))))
+  ($node/rebuild node ^props clean ^body body))
+
+(fn check_references [state, index] : Nil
+  (for ref in state/refs
+    (let found (state/ids .get ref/to))
+    (let wanted
+      (if (== ref/type "ref:gradient") ["linear_gradient" "radial_gradient"]
+        (if (== ref/type "ref:clip_path") ["clip_path"] ["blur"])))
+    (if (|| ($absent? found) (! (wanted .contains? found)))
+      (reject "dangling_reference"
+        $"${ref/from} ^${ref/field} names ${ref/to}, which is not a ${($str/join wanted \" or \")} definition"
+        ^target ref/from ^field [ref/field] ^index index)))
+  nil)
+
+# Validate a whole scene and return its canonical immutable form. `index` is
+# the operation index to attach to a failure when a patch is being applied.
+(fn normalize_scene [raw, ^index index = nil] : Any
+  (if_not (&& (node? raw) (== (kind_of raw) "scene"))
+    (reject "invalid_scene" "expected a (scene ...) node" ^index index))
+  (let props ($props raw))
+  (var clean {})
+  (for name in (sorted_keys props)
+    (if (== name "schema")
+      (then
+        (if (!= (props .get name) scene_schema_version)
+          (reject "unsupported_schema" $"scene ^schema must be ${scene_schema_version}"
+            ^field ["schema"] ^index index))
+        (clean .put "schema" scene_schema_version))
+      (else
+        (let field (canvas_field_spec name))
+        (if ($absent? field)
+          (reject "unknown_field" $"scene has no field ${name}" ^field [name] ^index index))
+        (clean .put name
+          (check_value field/type (props .get name) ^target "scene" ^field [name] ^index index)))))
+  (if_not ($has_key? clean "schema")
+    (reject "missing_field" "scene needs ^schema" ^field ["schema"] ^index index))
+  (for field in canvas_fields
+    (if_not ($has_key? clean field/name)
+      (reject "missing_field" $"scene needs ^${field/name}" ^target "scene"
+        ^field [field/name] ^index index)))
+  (var state {^ids {} ^nodes 0 ^commands 0 ^refs []})
+  (var definitions [])
+  (var drawn [])
+  (var seen_defs false)
+  (for item in ($body raw)
+    (if (&& (node? item) (== (kind_of item) "defs"))
+      (then
+        (if seen_defs (reject "invalid_scene" "a scene has one defs node" ^index index))
+        (set seen_defs true)
+        (if (> ($size ($props item)) 0)
+          (reject "unknown_field" "defs takes no fields" ^target "defs" ^index index))
+        (for definition in ($body item)
+          (definitions .push (normal_node definition "def" 1 state index))))
+      (else (drawn .push (normal_node item "render" 1 state index)))))
+  (check_references state index)
+  (var body [`(defs %definitions...)])
+  (for item in drawn (body .push item))
+  (let scene ($freeze ($node/rebuild raw ^props clean ^body body)))
+  (if (> ($str/byte_size (canonical scene)) limits/scene_bytes)
+    (reject "too_complex" $"the scene snapshot exceeds ${limits/scene_bytes} bytes" ^index index))
+  scene)
+
+(fn blank_scene [^width width : Int = 1024, ^height height : Int = 1024,
+                 ^background background : Str = "#ffffff"] : Any
+  (normalize_scene
+    `(scene ^schema 1 ^width %width ^height %height
+       ^view_box [0 0 %width %height] ^background %background (defs))))
+
+# ── structure ──────────────────────────────────────────────────────────────
+
+(fn defs_node [scene] : Any
+  (($body scene) .first))
+
+# The drawable top-level children, without the defs node.
+(fn top_level [scene] : Any
+  ($drop ($body scene) 1))
+
+(fn children_of [scene, entries, parent : Str] : Any
+  (if (== parent "scene") (return (top_level scene)))
+  (if (== parent "defs") (return ($body (defs_node scene))))
+  (let entry (entries .get parent))
+  (if ($absent? entry) (return nil))
+  ($body entry/node))
+
+(fn index_node [node, parent : Str, position : Int, where : Str, depth : Int, entries] : Nil
+  (entries .put node/id
+    {^id node/id ^node node ^kind (kind_of node) ^parent parent ^position position
+     ^where where ^depth depth})
+  (let spec (element_spec (kind_of node)))
+  (if_yes (|| (== spec/body "children") (== spec/body "stops") (== spec/body "clip_shapes"))
+    (let child_where
+      (if (== spec/body "children") where
+        (if (== spec/body "stops") "stop" "clip_shape")))
+    (var i 0)
+    (for child in ($body node)
+      (index_node child node/id i child_where (+ depth 1) entries)
+      (set i (+ i 1))))
+  nil)
+
+# ID -> {^id ^node ^kind ^parent ^position ^where ^depth}. `parent` is another
+# ID, "scene" for a top-level drawable, or "defs" for a definition.
+(fn index_scene [scene] : Any
+  (var entries {})
+  (var i 0)
+  (for definition in ($body (defs_node scene))
+    (index_node definition "defs" i "def" 1 entries)
+    (set i (+ i 1)))
+  (set i 0)
+  (for child in (top_level scene)
+    (index_node child "scene" i "render" 1 entries)
+    (set i (+ i 1)))
+  entries)
+
+# IDs from the object up to its top-level ancestor, nearest first.
+(fn ancestors_of [entries, id : Str] : Any
+  (var result [])
+  (var current (entries .get id))
+  (while (&& (! ($absent? current)) (!= current/parent "scene") (!= current/parent "defs"))
+    (result .push current/parent)
+    (set current (entries .get current/parent)))
+  result)
+
+(fn collect_ids [node, out] : Nil
+  (out .push node/id)
+  (let spec (element_spec (kind_of node)))
+  (if_yes (|| (== spec/body "children") (== spec/body "stops") (== spec/body "clip_shapes"))
+    (for child in ($body node) (collect_ids child out)))
+  nil)
+
+# The IDs of a node and everything inside it.
+(fn subtree_ids [node] : Any
+  (var out [])
+  (collect_ids node out)
+  out)
+
+(fn rebuild_children [node, children] : Any
+  ($node/rebuild node ^body children))
+
+# Return the scene with the children of `parent` replaced.
+(fn with_children [scene, parent : Str, children] : Any
+  (if (== parent "scene")
+    (then
+      (var body [(defs_node scene)])
+      (for child in children (body .push child))
+      (return (rebuild_children scene body))))
+  (if (== parent "defs")
+    (then
+      (var body [(rebuild_children (defs_node scene) children)])
+      (for child in (top_level scene) (body .push child))
+      (return (rebuild_children scene body))))
+  (replace_node scene parent (fn [node] (rebuild_children node children))))
+
+(fn replace_in [node, id : Str, change] : Any
+  (if (== node/id id) (return (change node)))
+  (let spec (element_spec (kind_of node)))
+  (if_not (|| (== spec/body "children") (== spec/body "stops") (== spec/body "clip_shapes"))
+    (return node))
+  (var changed false)
+  (var body [])
+  (for child in ($body node)
+    (let next (replace_in child id change))
+    (if_not (same? next child) (set changed true))
+    (body .push next))
+  (if changed (rebuild_children node body) node))
+
+# Return the scene with the node `id` replaced by `(change node)`. Only the
+# path from the root to that node is rebuilt.
+(fn replace_node [scene, id : Str, change] : Any
+  (var body [])
+  (var definitions [])
+  (for definition in ($body (defs_node scene))
+    (definitions .push (replace_in definition id change)))
+  (body .push (rebuild_children (defs_node scene) definitions))
+  (for child in (top_level scene)
+    (body .push (replace_in child id change)))
+  (rebuild_children scene body))
+
+# ── transforms ─────────────────────────────────────────────────────────────
+#
+# A matrix is [a b c d e f]: x' = a x + c y + e, y' = b x + d y + f.
+
+(let identity #[1 0 0 1 0 0])
+
+(fn multiply [m, n] : Any
+  [(+ (* m/0 n/0) (* m/2 n/1))
+   (+ (* m/1 n/0) (* m/3 n/1))
+   (+ (* m/0 n/2) (* m/2 n/3))
+   (+ (* m/1 n/2) (* m/3 n/3))
+   (+ (* m/0 n/4) (* m/2 n/5) m/4)
+   (+ (* m/1 n/4) (* m/3 n/5) m/5)])
+
+(fn invert [m] : Any
+  (let det (- (* m/0 m/3) (* m/1 m/2)))
+  (if (== (* det 1.0) 0.0) (return nil))
+  (let a (/ (* m/3 1.0) det))
+  (let b (/ (* m/1 -1.0) det))
+  (let c (/ (* m/2 -1.0) det))
+  (let d (/ (* m/0 1.0) det))
+  [a b c d
+   (- 0 (+ (* a m/4) (* c m/5)))
+   (- 0 (+ (* b m/4) (* d m/5)))])
+
+(fn apply_matrix [m, x, y] : Any
+  [(+ (* m/0 x) (* m/2 y) m/4) (+ (* m/1 x) (* m/3 y) m/5)])
+
+# Computed values are tidied to nine decimals so a sum such as 0.1 + 0.2 does
+# not leave float noise in a stored scene. Authored values are never rounded.
+(fn tidy [value] : Any
+  (normal_number (/ ($math/round (* value 1000000000.0)) 1000000000.0)))
+
+# T(translate) · T(pivot) · R(rotate) · S(scale) · T(-pivot), section 7.2.
+(fn local_matrix [node] : Any
+  (let props ($props node))
+  (let translate (?? (props .get "translate") [0 0]))
+  (let pivot (?? (props .get "pivot") [0 0]))
+  (let scale (?? (props .get "scale") [1 1]))
+  (let radians (/ (* (?? (props .get "rotate") 0) $math/pi) 180.0))
+  (let cos ($math/cos radians))
+  (let sin ($math/sin radians))
+  (let a (* scale/0 cos))
+  (let b (* scale/0 sin))
+  (let c (* (- 0 scale/1) sin))
+  (let d (* scale/1 cos))
+  [a b c d
+   (+ translate/0 pivot/0 (- 0 (+ (* a pivot/0) (* c pivot/1))))
+   (+ translate/1 pivot/1 (- 0 (+ (* b pivot/0) (* d pivot/1))))])
+
+# The matrix taking the coordinate space that `id`'s children live in to
+# canvas units: its ancestors' local matrices and its own, outermost first.
+(fn world_matrix [entries, id : Str] : Any
+  (if (|| (== id "scene") (== id "defs")) (return identity))
+  (var chain [id])
+  (for ancestor in (ancestors_of entries id) (chain .push ancestor))
+  (var matrix identity)
+  (for name in ($reverse chain)
+    (set matrix (multiply matrix (local_matrix (/node (entries .get name))))))
+  matrix)
+
+# Express a matrix in the decomposed transform fields around `pivot`, or nil
+# when it has shear or a mirror, which this schema cannot represent.
+(fn decompose [m, pivot] : Any
+  (let sx ($math/hypot m/0 m/1))
+  (let sy ($math/hypot m/2 m/3))
+  (if (|| (< sx 0.000000001) (< sy 0.000000001)) (return nil))
+  (let det (- (* m/0 m/3) (* m/1 m/2)))
+  (if (<= det 0) (return nil))
+  (let shear (/ (+ (* m/0 m/2) (* m/1 m/3)) (* sx sy)))
+  (if (> ($math/abs shear) 0.000000001) (return nil))
+  (let degrees (/ (* ($math/atan2 m/1 m/0) 180.0) $math/pi))
+  {^translate [(tidy (+ m/4 (- (+ (* m/0 pivot/0) (* m/2 pivot/1)) pivot/0)))
+               (tidy (+ m/5 (- (+ (* m/1 pivot/0) (* m/3 pivot/1)) pivot/1)))]
+   ^rotate (tidy degrees)
+   ^scale [(tidy sx) (tidy sy)]})
+
+# ── bounds ─────────────────────────────────────────────────────────────────
+
+(fn local_points [node] : Any
+  (let props ($props node))
+  (match (kind_of node)
+    (when "rect"
+      [[props/x props/y] [(+ props/x props/width) props/y]
+       [props/x (+ props/y props/height)] [(+ props/x props/width) (+ props/y props/height)]])
+    (when "circle"
+      [[(- props/cx props/r) (- props/cy props/r)] [(+ props/cx props/r) (- props/cy props/r)]
+       [(- props/cx props/r) (+ props/cy props/r)] [(+ props/cx props/r) (+ props/cy props/r)]])
+    (when "ellipse"
+      [[(- props/cx props/rx) (- props/cy props/ry)] [(+ props/cx props/rx) (- props/cy props/ry)]
+       [(- props/cx props/rx) (+ props/cy props/ry)] [(+ props/cx props/rx) (+ props/cy props/ry)]])
+    (when "line" [[props/x1 props/y1] [props/x2 props/y2]])
+    (when "polyline" props/points)
+    (when "polygon" props/points)
+    (when "path"
+      (var points [])
+      (for command in ($body node)
+        (let values ($body command))
+        (var i 0)
+        (while (< (+ i 1) values/.size)
+          (let next (+ i 1))
+          (points .push [values/%i values/%next])
+          (set i (+ i 2))))
+      points)
+    (when "text"
+      # Approximate: glyph metrics are the renderer's. Width assumes an
+      # average advance of 0.6 em.
+      (let content (($body node) .first))
+      (let width (* 0.6 props/size ($size ($chars content))))
+      (let anchor (?? (props .get "anchor") "start"))
+      (let left
+        (if (== anchor "middle") (- props/x (/ width 2.0))
+          (if (== anchor "end") (- props/x width) props/x)))
+      [[left (- props/y props/size)] [(+ left width) (- props/y props/size)]
+       [left (+ props/y (* 0.25 props/size))] [(+ left width) (+ props/y (* 0.25 props/size))]])
+    (else [])))
+
+(fn grow [box, point] : Any
+  (if ($absent? box) (return [point/0 point/1 point/0 point/1]))
+  [($math/min box/0 point/0) ($math/min box/1 point/1)
+   ($math/max box/2 point/0) ($math/max box/3 point/1)])
+
+(fn node_bounds [node, parent_matrix, box] : Any
+  (let matrix (multiply parent_matrix (local_matrix node)))
+  (var result box)
+  (if (== (kind_of node) "g")
+    (then
+      (for child in ($body node)
+        (set result (node_bounds child matrix result))))
+    (else
+      (for point in (local_points node)
+        (set result (grow result (apply_matrix matrix point/0 point/1))))))
+  result)
+
+# Geometric bounds of an object in canvas units as [min_x min_y max_x max_y],
+# or nil for an empty group. These are derived facts: they ignore stroke
+# width, clipping and occlusion, so they do not prove anything is visible.
+(fn world_bounds [entries, id : Str] : Any
+  (let entry (entries .get id))
+  (if (|| ($absent? entry) (!= entry/where "render")) (return nil))
+  (let box (node_bounds entry/node (world_matrix entries entry/parent) nil))
+  (if ($absent? box) (return nil))
+  [(tidy box/0) (tidy box/1) (tidy box/2) (tidy box/3)])
+
+(fn count_nodes [scene] : Int
+  ($size (index_scene scene)))

@@ -1,0 +1,81 @@
+# Poppler: page facts, embedded fonts, and PDF to PNG (design sections 7.6-7.8).
+(mod imagination_poppler)
+
+(import [RenderError] ^from "../types")
+(import [run_checked run_tool] ^from "./process")
+
+# The antialias mode of the render profile. `best` is not used: with Poppler
+# 25.05.0 and cairo 1.18.4 it corrupts TrueType glyphs, while `good` matches
+# the default output byte for byte.
+(const antialias "good")
+
+(fn words_of [line : Str] : Any
+  (var words [])
+  (for word in ($str/split line " ")
+    (if (!= word "") (words .push word)))
+  words)
+
+(fn number_of [text : Str] : Any
+  (try (($parse/read_all text) .next) catch Any nil))
+
+# {^pages Int ^width pts ^height pts} from `pdfinfo`.
+(fn pdf_info [tool : Str, pdf_path : Str, ^timeout_ms timeout_ms : Int = 10000] : Any
+  (let result (run_checked "pdf_info" tool [pdf_path] ^timeout_ms timeout_ms))
+  (var info {^pages 0 ^width 0 ^height 0})
+  (for line in ($str/split result/stdout "\n")
+    (if_yes ($str/starts_with? line "Pages:")
+      (info .put "pages" (number_of ((words_of line) .last))))
+    (if_yes ($str/starts_with? line "Page size:")
+      (let words (words_of line))
+      (info .put "width" (number_of words/2))
+      (info .put "height" (number_of words/4))))
+  (if (|| ($absent? info/pages) ($absent? info/width) ($absent? info/height))
+    (fail (RenderError ^code "invalid_pdf" ^stage "pdf_info"
+      ^message "pdf_info: pdfinfo output was not understood" ^detail result/stdout)))
+  info)
+
+# The fonts a PDF uses, as [{^name ^embedded}], subset prefixes removed.
+(fn pdf_fonts [tool : Str, pdf_path : Str, ^timeout_ms timeout_ms : Int = 10000] : Any
+  (let result (run_checked "pdf_fonts" tool [pdf_path] ^timeout_ms timeout_ms))
+  (var fonts [])
+  (var row 0)
+  (for line in ($str/split result/stdout "\n")
+    (if_yes (&& (>= row 2) (!= ($str/trim line) ""))
+      (let words (words_of line))
+      (var name words/0)
+      (let plus ($str/split name "+"))
+      (if (== plus/.size 2) (set name plus/1))
+      # Columns from the right: object ID (2), uni, sub, emb.
+      (let embedded_at (- words/.size 5))
+      (fonts .push {^name name ^embedded (== words/%embedded_at "yes")}))
+    (set row (+ row 1)))
+  fonts)
+
+# Rasterize page 1 to `<prefix>.png` at exactly width x height pixels.
+(fn pdf_to_png [tool : Str, pdf_path : Str, prefix : Str, width : Int, height : Int,
+                ^transparent transparent : Bool = false,
+                ^timeout_ms timeout_ms : Int = 10000] : Any
+  (var args ["-png" "-singlefile" "-f" "1" "-l" "1"
+             "-scale-to-x" ($to_str width) "-scale-to-y" ($to_str height)
+             "-antialias" antialias])
+  (if transparent (args .push "-transp"))
+  (args .push pdf_path)
+  (args .push prefix)
+  (run_checked "pdf_to_png" tool args ^timeout_ms timeout_ms))
+
+# Rasterize a region. The page is scaled to page_width x page_height pixels
+# and the region x, y, width, height is cut from that raster.
+(fn pdf_crop [tool : Str, pdf_path : Str, prefix : Str, page_width : Int, page_height : Int,
+              x : Int, y : Int, width : Int, height : Int,
+              ^timeout_ms timeout_ms : Int = 10000] : Any
+  (run_checked "pdf_crop" tool
+    ["-png" "-singlefile" "-f" "1" "-l" "1"
+     "-scale-to-x" ($to_str page_width) "-scale-to-y" ($to_str page_height)
+     "-x" ($to_str x) "-y" ($to_str y) "-W" ($to_str width) "-H" ($to_str height)
+     "-antialias" antialias pdf_path prefix]
+    ^timeout_ms timeout_ms))
+
+(fn poppler_version [tool : Str] : Str
+  (let result (run_tool "tool_version" tool ["-v"] ^timeout_ms 5000))
+  (let line (($str/split ($str/trim $"${result/stderr}${result/stdout}") "\n") .first))
+  ((words_of line) .last))

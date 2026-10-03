@@ -1,0 +1,475 @@
+# The `imagination` command line (design section 14.1).
+#
+# Only commands whose milestone is complete are routed. An unknown command
+# prints the usage and fails; nothing is simulated.
+(mod imagination_main)
+
+(import [DomainError RenderError StoreError ModelError field_label] ^from "./types")
+(import [normalize_scene blank_scene read_domain canonical scene_digest digest_of] ^from "./scene")
+(import [apply_patch] ^from "./patch")
+(import [open_profile render_scene] ^from "./render")
+(import [run_doctor print_doctor transport_image transport_word] ^from "./doctor")
+(import [model_config open_model check_image_transport public_config] ^from "./adapters/model")
+(import [validate_goal validate_policy check_line] ^from "./evaluation")
+(import [run_drawing plan_goal] ^from "./agent")
+(import [create_run] ^from "./rundir")
+(import [create_evolution open_evolution close_evolution view line_row lines revisions
+         revision_row parents_of commit_patch fork compare replay_exact export_artifact
+         selected goal_of next_goal_id] ^from "./evolution")
+(import [start_run execute_run run_row] ^from "./jobs")
+(import [serve_workbench] ^from "./server")
+
+(const usage "Usage: imagination <command> [options]
+
+Deterministic drawing
+  doctor [--no-model] [--save FILE]      check tools, fonts, conversion, and
+                                         image transport to the model
+  render <scene.gene> <out-dir>          export SVG, PDF, and PNG for a scene
+  draw <out-dir> <patch.gene>...         apply handwritten patches to a blank
+       [--width N] [--height N]          scene, exporting every step
+       [--background #rrggbb] [--prefix P]
+
+Projects (IMAGINATION_HOME, default examples/imagination/projects)
+  create <project> --prompt TEXT         plan a goal and create a blank history
+       [--goal goal.gene] [--policy policy.gene] [--width N] [--height N]
+  run <project> [--line NAME] [--max-iterations N]   draw on a line
+  history <project>                      list lines and revisions
+  show <project> --revision R            one revision's record
+  continue <project> --from R --line NAME [--prompt TEXT]   fork a line
+  apply <project> <patch.gene> [--line NAME] [--prefix P]   publish a patch
+  compare <project> --left R --right R   structural diff of two revisions
+  replay <project> --path FROM:TO        exact replay, no model
+  export <project> --revision R --format svg|pdf|png [--out FILE]
+  serve [project] [--port N]             the web workbench on 127.0.0.1
+
+Drawing-loop spike (files only, live model)
+  spike <run-dir> --prompt TEXT          draw from a blank canvas, keeping each
+       [--goal goal.gene]                step in the run directory
+       [--policy policy.gene] [--max-iterations N]
+       [--width N] [--height N] [--background #rrggbb]
+")
+
+# ── arguments ──────────────────────────────────────────────────────────────
+
+# Split argv into positional words and --name value options. `flags` lists
+# the options that take no value.
+(fn parse_args [argv, flags] : Any
+  (var words [])
+  (var options {})
+  (var i 0)
+  (var items [])
+  (for arg in argv (items .push ($to_str arg)))
+  (while (< i items/.size)
+    (let arg items/%i)
+    (if ($str/starts_with? arg "--")
+      (then
+        (let name ($str/slice_bytes arg 2 (- ($str/byte_size arg) 2)))
+        (if (flags .contains? name)
+          (then (options .put name true))
+          (else
+            (set i (+ i 1))
+            (if (>= i items/.size) (usage_error $"--${name} needs a value"))
+            (options .put name items/%i))))
+      (else (words .push arg)))
+    (set i (+ i 1)))
+  {^words words ^options options})
+
+(type UsageError ^props {^message Str})
+(impl Error for UsageError)
+
+(fn usage_error [message : Str]
+  (fail (UsageError ^message message)))
+
+(fn int_option [options, name : Str, fallback : Int] : Int
+  (let value (options .get name))
+  (if ($absent? value) (return fallback))
+  (try ($parse/parse_int value)
+    catch Any (usage_error $"--${name} needs a whole number")))
+
+(fn absolute [path : Str] : Str
+  (if ($str/starts_with? path "/") path ($path/join ($os/launch_dir) path)))
+
+(fn ensure_dir [path : Str] : Str
+  ($fs/make_dir path)
+  ($fs/real_path path))
+
+# ── deterministic drawing ──────────────────────────────────────────────────
+
+(fn command_doctor [args] : Int
+  (let work (ensure_dir (absolute (?? (args/options .get "work") ".imagination-work"))))
+  # The model check sends one small image; --no-model skips it.
+  (var transport nil)
+  (if_yes (&& (! (== (args/options .get "no-model") true)) (! ($absent? (model_config))))
+    (set transport
+      (fn []
+        (let image (transport_image work))
+        (check_image_transport (open_model) image/bytes image/digest transport_word))))
+  (let report (run_doctor work ^transport transport))
+  (print_doctor report)
+  (if_yes (&& report/ok (! ($absent? (args/options .get "save"))))
+    ($fs/write_text_atomic (absolute (args/options .get "save")) (canonical report/manifest))
+    ($println $"saved the render-profile manifest to ${(absolute (args/options .get \"save\"))}"))
+  (if report/ok 0 1))
+
+(fn command_render [args] : Int
+  (if (!= args/words/.size 2) (usage_error "render needs <scene.gene> <out-dir>"))
+  (let scene (normalize_scene (read_domain ($fs/read_text (absolute args/words/0)) ^head "scene")))
+  (let out (ensure_dir (absolute args/words/1)))
+  (let profile (open_profile ($path/join out ".work")))
+  (let bundle (render_scene profile scene out))
+  ($fs/write_text ($path/join out "scene.gene") (canonical scene))
+  ($println $"scene ${bundle/scene_digest}")
+  ($println $"svg   ${bundle/svg_digest}")
+  ($println $"pdf   ${bundle/pdf_digest}")
+  ($println $"png   ${bundle/png_digest} ${bundle/width} x ${bundle/height}")
+  ($println $"wrote ${out}")
+  0)
+
+(fn step_name [index : Int] : Str
+  (if (< index 10) $"r00${index}" (if (< index 100) $"r0${index}" $"r${index}")))
+
+# Apply handwritten patches in order to a blank scene. Step N is written to
+# <out>/rNNN with its scene, artifacts, original patch, normalized patch, and
+# effects; <out>/record.gene lists every step's digests for exact replay.
+(fn command_draw [args] : Int
+  (if (< args/words/.size 2) (usage_error "draw needs <out-dir> and at least one patch file"))
+  (let out (ensure_dir (absolute args/words/0)))
+  (let profile (open_profile ($path/join out ".work")))
+  (let prefix (?? (args/options .get "prefix") ""))
+  (var scene
+    (blank_scene ^width (int_option args/options "width" 1024)
+                 ^height (int_option args/options "height" 1024)
+                 ^background (?? (args/options .get "background") "#ffffff")))
+  (var steps [])
+  (var used {})
+  (fn publish [index : Int, result] : Nil
+    (let name (step_name index))
+    (let directory (ensure_dir ($path/join out name)))
+    (let bundle (render_scene profile scene directory))
+    ($fs/write_text ($path/join directory "scene.gene") (canonical scene))
+    (let scene_id bundle/scene_digest)
+    (let svg_id bundle/svg_digest)
+    (let png_id bundle/png_digest)
+    (if ($absent? result)
+      (then (steps .push `(step ^id %name ^scene %scene_id ^svg %svg_id ^png %png_id)))
+      (else
+        ($fs/write_text ($path/join directory "patch.gene") (canonical result/patch))
+        ($fs/write_text ($path/join directory "normalized.gene") (canonical result/normalized))
+        ($fs/write_text ($path/join directory "effects.gene")
+          ($str/join ($map result/effects (fn [effect] (canonical effect))) "\n"))
+        (let normalized result/normalized)
+        (steps .push `(step ^id %name ^scene %scene_id ^svg %svg_id ^png %png_id %normalized))))
+    ($println $"${name} scene ${scene_id} png ${png_id}")
+    nil)
+  (publish 0 nil)
+  (var index 0)
+  (for file in ($drop args/words 1)
+    (let patch (read_domain ($fs/read_text (absolute file)) ^head "patch"))
+    (let result
+      (apply_patch scene patch ^expected_base (step_name index) ^prefix prefix
+        ^taken (fn [id] ($has_key? used id))))
+    (for effect in result/effects
+      (if (== effect/kind "insert") (used .put effect/target true)))
+    (set scene result/scene)
+    (set index (+ index 1))
+    (publish index result))
+  (let base (canonical (blank_scene ^width (int_option args/options "width" 1024)
+                                    ^height (int_option args/options "height" 1024)
+                                    ^background (?? (args/options .get "background") "#ffffff"))))
+  (let rsvg profile/rsvg_version)
+  (let poppler profile/poppler_version)
+  ($fs/write_text ($path/join out "record.gene")
+    (canonical
+      `(replay_record ^schema 1 ^base %base ^rsvg_convert %rsvg ^poppler %poppler
+         %steps...)))
+  ($println $"wrote ${out}")
+  0)
+
+# ── the drawing-loop spike ─────────────────────────────────────────────────
+
+(fn print_outcome [outcome] : Nil
+  ($println $"status   ${outcome/status}")
+  ($println $"revision ${outcome/revision}")
+  ($println $"reason   ${outcome/reason}")
+  (for item in outcome/remaining ($println $"open     ${item}"))
+  ($println $"edits    ${outcome/iterations}; model calls ${outcome/calls}; tokens in ${outcome/usage/input} out ${outcome/usage/output}")
+  nil)
+
+# Draw from a blank canvas with a live model, keeping every step as files in a
+# run directory. No history engine or index is involved.
+(fn command_spike [args] : Int
+  (if (!= args/words/.size 1) (usage_error "spike needs <run-dir>"))
+  (let prompt (args/options .get "prompt"))
+  (let goal_file (args/options .get "goal"))
+  (if (&& ($absent? prompt) ($absent? goal_file))
+    (usage_error "spike needs --prompt \"...\" or --goal <goal.gene>"))
+  (let root (ensure_dir (absolute args/words/0)))
+  (let agent (open_model))
+  (let profile (open_profile ($path/join root ".work")))
+  (let goal
+    (if ($absent? goal_file)
+      (plan_goal agent prompt "goal-01")
+      (validate_goal (read_domain ($fs/read_text (absolute goal_file)) ^head "goal"))))
+  (let policy_file (args/options .get "policy"))
+  (let policy
+    (if ($absent? policy_file) nil
+      (validate_policy (read_domain ($fs/read_text (absolute policy_file)) ^head "policy"))))
+  ($println (canonical goal))
+  (let run
+    (create_run root profile goal
+      ^width (int_option args/options "width" 1024)
+      ^height (int_option args/options "height" 1024)
+      ^background (?? (args/options .get "background") "#ffffff")))
+  (var overrides {})
+  (if_not ($absent? (args/options .get "max-iterations"))
+    (overrides .put "max_iterations" (int_option args/options "max-iterations" 12)))
+  (let outcome (run_drawing run agent goal ^policy policy ^budgets overrides))
+  (print_outcome outcome)
+  (var record {})
+  (for [name value] in outcome (record .put ($to_str name) value))
+  (record .put "model" (public_config agent/config))
+  ($fs/write_text ($path/join root "outcome.gene") ($to_str record))
+  (if (== outcome/status "complete") 0 3))
+
+# ── projects (milestones 3 and 4) ──────────────────────────────────────────
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+
+(fn projects_home [] : Str
+  (let configured ($os/env? "IMAGINATION_HOME"))
+  (absolute (if (|| ($absent? configured) (== configured "")) ($path/join package_root "projects") configured)))
+
+(fn project_root [name : Str] : Str
+  ($path/join (projects_home) name))
+
+(fn work_profile [] : Any
+  (open_profile ($path/join (projects_home) ".work")))
+
+(fn with_project [name : Str, body] : Any
+  (let evolution (open_evolution (project_root name) (work_profile)))
+  (try (body evolution) ensure (close_evolution evolution)))
+
+(fn command_create [args] : Int
+  (if (!= args/words/.size 1) (usage_error "create needs <project>"))
+  (let name args/words/0)
+  (let prompt (args/options .get "prompt"))
+  (let goal_file (args/options .get "goal"))
+  (if (&& ($absent? prompt) ($absent? goal_file))
+    (usage_error "create needs --prompt TEXT or --goal <goal.gene>"))
+  ($fs/make_dir (projects_home))
+  (let goal
+    (if ($absent? goal_file)
+      (plan_goal (open_model) prompt "goal-01")
+      (validate_goal (read_domain ($fs/read_text (absolute goal_file)) ^head "goal"))))
+  (let policy_file (args/options .get "policy"))
+  (let evolution
+    (create_evolution (project_root name) name goal (work_profile)
+      ^width (int_option args/options "width" 1024)
+      ^height (int_option args/options "height" 1024)
+      ^background (?? (args/options .get "background") "#ffffff")
+      ^policy (if ($absent? policy_file) nil
+                (read_domain ($fs/read_text (absolute policy_file)) ^head "policy"))))
+  (close_evolution evolution)
+  ($println (canonical goal))
+  ($println $"created ${(project_root name)} with line main at r000")
+  0)
+
+(fn command_run [args] : Int
+  (if (!= args/words/.size 1) (usage_error "run needs <project>"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let agent (open_model))
+      (var budgets {})
+      (if_not ($absent? (args/options .get "max-iterations"))
+        (budgets .put "max_iterations" (int_option args/options "max-iterations" 12)))
+      (let row (start_run evolution (?? (args/options .get "line") "main") ^budgets budgets))
+      ($println $"started ${row/id} on line ${row/line} at ${row/source}")
+      (let outcome (execute_run evolution agent row/id))
+      (print_outcome outcome)
+      (if (== outcome/status "complete") 0 3))))
+
+(fn command_history [args] : Int
+  (if (!= args/words/.size 1) (usage_error "history needs <project>"))
+  (with_project args/words/0
+    (fn [evolution]
+      (for line in (lines evolution)
+        ($println $"line ${line/id} (${line/kind}) head ${line/head} goal ${line/goal}"))
+      ($println $"selected ${(selected evolution)}")
+      (for row in (revisions evolution ^limit 100000)
+        (let parents ($str/join row/parents ","))
+        (let run (?? row/run ""))
+        ($println $"${row/id} ${row/quality} parents [${parents}] ${row/actor} ${run}: ${row/intent}"))
+      0)))
+
+(fn command_show [args] : Int
+  (if (!= args/words/.size 1) (usage_error "show needs <project> --revision R"))
+  (let revision (args/options .get "revision"))
+  (if ($absent? revision) (usage_error "show needs --revision R"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let row (revision_row evolution revision))
+      (let shown (view evolution revision))
+      ($println $"${revision} ${row/quality} ${row/kind} goal ${row/goal} parents ${(parents_of evolution revision)}")
+      ($println $"intent   ${row/intent}")
+      ($println $"summary  ${row/summary}")
+      ($println $"image    ${row/image}")
+      ($println $"png      ${shown/png_path}")
+      ($println $"checks   ${(check_line (goal_of evolution row/goal) shown/evaluation)}")
+      0)))
+
+(fn command_continue [args] : Int
+  (if (!= args/words/.size 1) (usage_error "continue needs <project> --from R --line NAME"))
+  (let from (args/options .get "from"))
+  (let name (args/options .get "line"))
+  (if (|| ($absent? from) ($absent? name)) (usage_error "continue needs --from R and --line NAME"))
+  (with_project args/words/0
+    (fn [evolution]
+      (var goal nil)
+      (let direction (args/options .get "prompt"))
+      (if_not ($absent? direction)
+        (let current (goal_of evolution (/goal (revision_row evolution from))))
+        (let goal_id (next_goal_id evolution))
+        (let planned (plan_goal (open_model) $"${current/request}
+New direction: ${direction}" goal_id))
+        (let request planned/request)
+        (let predecessor current/id)
+        (set goal ($node/rebuild planned
+          ^props {^id goal_id ^request request ^predecessor predecessor ^instruction direction})))
+      (let line (fork evolution from name ^goal goal))
+      ($println $"line ${line/id} continues from ${line/head} with goal ${line/goal}")
+      0)))
+
+(fn command_apply [args] : Int
+  (if (!= args/words/.size 2) (usage_error "apply needs <project> <patch.gene>"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let patch (read_domain ($fs/read_text (absolute args/words/1)) ^head "patch"))
+      (let publication
+        (commit_patch evolution (?? (args/options .get "line") "main") patch
+          ^prefix (args/options .get "prefix")))
+      (let line (?? (args/options .get "line") "main"))
+      ($println $"published ${publication/revision/id} on ${line}")
+      0)))
+
+(fn command_compare [args] : Int
+  (if (!= args/words/.size 1) (usage_error "compare needs <project> --left R --right R"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let report (compare evolution (args/options .get "left") (args/options .get "right")))
+      (if_not report/same_profile
+        ($println "note: the two images come from different render profiles"))
+      ($println $"left  ${report/left/revision} image ${report/left/image}")
+      ($println $"right ${report/right/revision} image ${report/right/image}")
+      (for line in report/lines ($println $"- ${line}"))
+      0)))
+
+(fn command_replay [args] : Int
+  (if (!= args/words/.size 1) (usage_error "replay needs <project> --path FROM:TO"))
+  (let range ($str/split (?? (args/options .get "path") "") ":"))
+  (if (!= range/.size 2) (usage_error "--path is FROM:TO, such as r000:r004"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let report (replay_exact evolution range/0 range/1))
+      (for step in report/steps
+        (let scene_mark (if step/scene_ok "ok" "MISMATCH"))
+        (let svg_mark (if step/svg_ok "ok" "MISMATCH"))
+        ($println $"${step/revision} scene ${scene_mark} svg ${svg_mark} ${step/problem}"))
+      ($println (if report/ok "exact replay reproduced every digest"
+                  $"first mismatch at ${report/first_mismatch}"))
+      (if report/ok 0 1))))
+
+(fn command_export [args] : Int
+  (if (!= args/words/.size 1) (usage_error "export needs <project> --revision R --format svg|pdf|png"))
+  (let revision (args/options .get "revision"))
+  (let format (?? (args/options .get "format") "png"))
+  (with_project args/words/0
+    (fn [evolution]
+      (let destination
+        (absolute (?? (args/options .get "out") $"${args/words/0}-${revision}.${format}")))
+      (export_artifact evolution revision format destination)
+      ($println $"wrote ${destination}")
+      0)))
+
+(fn command_serve [args] : Int
+  (let home (projects_home))
+  (let agent (if ($absent? (model_config)) nil (open_model)))
+  (if ($absent? agent)
+    ($println "No model is configured: browsing works, drawing runs are disabled."))
+  (if_yes (== args/words/.size 1)
+    (if_not ($fs/exists? ($path/join (project_root args/words/0) "project.gene"))
+      (usage_error $"there is no project ${args/words/0} in ${home}")))
+  (serve_workbench home (work_profile) agent ^port (int_option args/options "port" 0)))
+
+# ── routing ────────────────────────────────────────────────────────────────
+
+(fn route [argv] : Int
+  (var items [])
+  (for arg in argv (items .push ($to_str arg)))
+  (if (== items/.size 0)
+    (then ($print usage) (return 2)))
+  (let command items/0)
+  (let args (parse_args ($drop items 1) ["no-model"]))
+  (match command
+    (when "doctor" (command_doctor args))
+    (when "render" (command_render args))
+    (when "draw" (command_draw args))
+    (when "spike" (command_spike args))
+    (when "create" (command_create args))
+    (when "run" (command_run args))
+    (when "history" (command_history args))
+    (when "show" (command_show args))
+    (when "continue" (command_continue args))
+    (when "apply" (command_apply args))
+    (when "compare" (command_compare args))
+    (when "replay" (command_replay args))
+    (when "export" (command_export args))
+    (when "serve" (command_serve args))
+    (when "help" ($print usage) 0)
+    (else (usage_error $"unknown command ${command}"))))
+
+(fn describe_domain [error] : Str
+  (var parts [$"${error/code}: ${error/message}"])
+  (if_not ($absent? error/operation_index)
+    (parts .push $"operation ${error/operation_index}"))
+  (if_not ($absent? error/target) (parts .push $"target ${error/target}"))
+  (if_not ($absent? error/field) (parts .push $"field ${(field_label error/field)}"))
+  (if_not ($absent? error/expected) (parts .push $"expected ${error/expected}"))
+  ($str/join parts "; "))
+
+# The runtime facilities this example needs beyond older Gene builds. A
+# binary without them would fail later, and obscurely, on the first model reply.
+(fn runtime_problem [] : Any
+  (try
+    ($base64/encode "check")
+    (($parse/read_all "(a)" ^reject_duplicate_props true ^max_depth 4) .next)
+    ($fs/write_bytes_atomic ($path/join ($path/parent this_mod/.path) ".runtime-check")
+      ($binary/from_list [1]))
+    ($fs/remove ($path/join ($path/parent this_mod/.path) ".runtime-check"))
+    nil
+  catch Any
+    $"this gene binary (${($os/executable_path)}) is older than the standard library this example needs ($base64, strict $parse/read_all, $fs/write_bytes_atomic). Rebuild it with nimble build, or point GENE_BINARY at a current build.")
+  )
+
+(fn main [argv] : Int
+  (let problem (runtime_problem))
+  (if_not ($absent? problem)
+    ($println $"runtime_too_old: ${problem}")
+    (return 1))
+  (try
+    (route argv)
+  catch UsageError
+    ($println $err/message)
+    ($print usage)
+    2
+  catch DomainError
+    ($println (describe_domain $err))
+    1
+  catch RenderError
+    ($println $"${$err/code}: ${$err/message}")
+    1
+  catch StoreError
+    ($println $"${$err/code}: ${$err/message}")
+    1
+  catch ModelError
+    ($println $"${$err/code}: ${$err/message}")
+    1))

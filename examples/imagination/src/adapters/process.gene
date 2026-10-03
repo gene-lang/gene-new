@@ -1,0 +1,65 @@
+# Bounded subprocess execution for the native conversion tools.
+#
+# Every tool runs from a fixed executable path with an argv list: no shell,
+# no interpolation, a wall-clock limit, and a cap on captured output.
+(mod imagination_process)
+
+(import [RenderError] ^from "../types")
+
+(const env_program "/usr/bin/env")
+(const output_cap 262144)
+
+# Run `cmd` with `args`. `environment` is a list of "NAME=value" strings; when
+# it is not empty the tool is started through /usr/bin/env, because `$os/exec`
+# has no environment option yet.
+(fn run_tool [stage : Str, cmd : Str, args, ^timeout_ms timeout_ms : Int = 10000,
+              ^dir dir : Str = "", ^environment environment = []] : Any
+  (if_not ($fs/exists? cmd)
+    (fail (RenderError ^code "missing_dependency" ^stage stage
+      ^message $"${stage}: ${cmd} does not exist" ^detail cmd)))
+  (var program cmd)
+  (var argv [])
+  (if_yes (> environment/.size 0)
+    (set program env_program)
+    (for entry in environment (argv .push entry))
+    (argv .push cmd))
+  (for arg in args (argv .push arg))
+  (let result
+    (try
+      (if (== dir "")
+        ($os/exec ^cmd program ^args argv ^timeout_ms timeout_ms ^max_bytes output_cap)
+        ($os/exec ^cmd program ^args argv ^timeout_ms timeout_ms ^max_bytes output_cap ^dir dir))
+    catch Any
+      (fail (RenderError ^code "missing_dependency" ^stage stage
+        ^message $"${stage}: could not start ${cmd}: ${$err/message}" ^detail cmd))))
+  (if result/timed_out
+    (fail (RenderError ^code "stage_timeout" ^stage stage
+      ^message $"${stage}: ${cmd} exceeded ${timeout_ms} ms" ^detail cmd)))
+  result)
+
+# Run a tool and require exit status 0.
+(fn run_checked [stage : Str, cmd : Str, args, ^timeout_ms timeout_ms : Int = 10000,
+                 ^dir dir : Str = "", ^environment environment = []] : Any
+  (let result (run_tool stage cmd args ^timeout_ms timeout_ms ^dir dir ^environment environment))
+  (if (!= result/status 0)
+    (fail (RenderError ^code "stage_failed" ^stage stage
+      ^message $"${stage}: ${cmd} exited with status ${result/status}: ${($str/trim result/stderr)}"
+      ^detail {^status result/status ^stderr result/stderr})))
+  result)
+
+# The first existing path among the candidates, or nil.
+(fn first_existing [candidates] : Any
+  (for candidate in candidates
+    (if ($fs/exists? candidate) (return candidate)))
+  nil)
+
+(const tool_directories ["/opt/homebrew/bin" "/usr/local/bin" "/usr/bin"])
+
+# Resolve a tool to a fixed absolute path: an explicit override first, then
+# the usual installation directories. PATH is never searched at run time.
+(fn resolve_tool [name : Str, override] : Any
+  (if_not ($absent? override)
+    (return (if ($fs/exists? override) override nil)))
+  (var candidates [])
+  (for directory in tool_directories (candidates .push $"${directory}/${name}"))
+  (first_existing candidates))

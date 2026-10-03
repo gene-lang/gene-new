@@ -1,0 +1,9 @@
+(scene ^schema 1 ^width 800 ^height 600 ^view_box [0 0 800 600] ^background "#0f172a"
+  (defs)
+  (text ^id "headline" ^x 400 ^y 220 ^font "sans" ^size 72 ^weight 700 ^anchor "middle"
+    ^fill "#f8fafc" "RAIN CITY")
+  (text ^id "byline" ^x 400 ^y 300 ^font "serif" ^size 32 ^anchor "middle"
+    ^fill "#cbd5e1" "A poster rendered through PDF")
+  (text ^id "small" ^x 60 ^y 540 ^font "sans" ^size 14 ^fill "#94a3b8"
+    "Thin text: The quick brown fox — 0123456789")
+  (line ^id "rule" ^x1 60 ^y1 350 ^x2 740 ^y2 350 ^stroke "#38bdf8" ^stroke_width 1))

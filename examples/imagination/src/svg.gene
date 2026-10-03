@@ -1,0 +1,280 @@
+# Canonical SVG serialization (design section 7.4).
+#
+# SVG is derived from a validated scene: fixed namespace and root attributes,
+# one attribute order, no timestamps. Every value is written by this module
+# from a typed field; no model-authored markup is ever concatenated in.
+(mod imagination_svg)
+
+(import [kind_of str?] ^from "./types")
+(import [fonts normal_number] ^from "./scene_schema")
+(import [defs_node top_level tidy] ^from "./scene")
+
+(const svg_serializer_version 1)
+
+# The XML ID of the reserved background rectangle. A user ID starts with a
+# letter, so this name is outside the user-ID namespace.
+(const background_id "__background")
+
+(fn number_text [value] : Str
+  ($to_str (normal_number value)))
+
+(fn attribute [out, name : Str, value : Str] : Nil
+  (out .push " ")
+  (out .push name)
+  (out .push "=\"")
+  (out .push ($html/attr_escape value))
+  (out .push "\"")
+  nil)
+
+(fn number_attribute [out, name : Str, props, field : Str] : Nil
+  (let value (props .get field))
+  (if_not ($absent? value) (attribute out name (number_text value)))
+  nil)
+
+(fn nonzero? [pair] : Bool
+  (|| (!= pair/0 0) (!= pair/1 0)))
+
+# translate(t) translate(p) rotate(r) scale(s) translate(-p), omitting
+# identity parts. The matrix is the one section 7.2 defines.
+(fn transform_text [props] : Str
+  (var parts [])
+  (let translate (?? (props .get "translate") [0 0]))
+  (let pivot (?? (props .get "pivot") [0 0]))
+  (let scale (?? (props .get "scale") [1 1]))
+  (let rotate (?? (props .get "rotate") 0))
+  (if (nonzero? translate)
+    (parts .push $"translate(${(number_text translate/0)} ${(number_text translate/1)})"))
+  (let turning (|| (!= rotate 0) (!= scale/0 1) (!= scale/1 1)))
+  (if_yes turning
+    (if (nonzero? pivot)
+      (parts .push $"translate(${(number_text pivot/0)} ${(number_text pivot/1)})"))
+    (if (!= rotate 0) (parts .push $"rotate(${(number_text rotate)})"))
+    (if (|| (!= scale/0 1) (!= scale/1 1))
+      (parts .push $"scale(${(number_text scale/0)} ${(number_text scale/1)})"))
+    (if (nonzero? pivot)
+      (parts .push $"translate(${(number_text (- 0 pivot/0))} ${(number_text (- 0 pivot/1))})")))
+  ($str/join parts " "))
+
+(fn paint_attributes [out, props, name : Str] : Nil
+  (let color (props .get name))
+  (let ref (props .get $"${name}_ref"))
+  (if ($absent? ref)
+    (if_not ($absent? color) (attribute out name color))
+    (attribute out name $"url(#${ref})"))
+  nil)
+
+(fn common_attributes [out, props] : Nil
+  (let transform (transform_text props))
+  (if (!= transform "") (attribute out "transform" transform))
+  (number_attribute out "opacity" props "opacity")
+  (if_not ($absent? (props .get "clip_ref"))
+    (attribute out "clip-path" $"url(#${props/clip_ref})"))
+  (if_not ($absent? (props .get "filter_ref"))
+    (attribute out "filter" $"url(#${props/filter_ref})"))
+  nil)
+
+(fn shape_attributes [out, props] : Nil
+  (paint_attributes out props "fill")
+  (number_attribute out "fill-opacity" props "fill_opacity")
+  (if_not ($absent? (props .get "fill_rule")) (attribute out "fill-rule" props/fill_rule))
+  (paint_attributes out props "stroke")
+  (number_attribute out "stroke-opacity" props "stroke_opacity")
+  (number_attribute out "stroke-width" props "stroke_width")
+  (if_not ($absent? (props .get "stroke_linecap"))
+    (attribute out "stroke-linecap" props/stroke_linecap))
+  (if_not ($absent? (props .get "stroke_linejoin"))
+    (attribute out "stroke-linejoin" props/stroke_linejoin))
+  nil)
+
+(fn semantic_attributes [out, props] : Nil
+  (if_not ($absent? (props .get "label")) (attribute out "data-label" props/label))
+  (if_not ($absent? (props .get "role")) (attribute out "data-role" props/role))
+  nil)
+
+(fn points_text [points] : Str
+  (var parts [])
+  (for point in points
+    (parts .push $"${(number_text point/0)},${(number_text point/1)}"))
+  ($str/join parts " "))
+
+(fn path_text [node] : Str
+  (var parts [])
+  (for command in ($body node)
+    (parts .push (kind_of command))
+    (for value in ($body command) (parts .push (number_text value))))
+  ($str/join parts " "))
+
+(fn indent [out, depth : Int] : Nil
+  (repeat i in depth (out .push "  "))
+  nil)
+
+(fn write_element [out, node, depth : Int, drawable : Bool] : Nil
+  (let kind (kind_of node))
+  (let props ($props node))
+  (indent out depth)
+  (match kind
+    (when "g"
+      (out .push "<g")
+      (attribute out "id" props/id)
+      (common_attributes out props)
+      (semantic_attributes out props)
+      (if (== ($size ($body node)) 0)
+        (then (out .push "/>\n"))
+        (else
+          (out .push ">\n")
+          (for child in ($body node) (write_element out child (+ depth 1) drawable))
+          (indent out depth)
+          (out .push "</g>\n"))))
+    (when "text"
+      (let font (fonts .get props/font))
+      (out .push "<text")
+      (attribute out "id" props/id)
+      (number_attribute out "x" props "x")
+      (number_attribute out "y" props "y")
+      (attribute out "font-family" font/family)
+      (number_attribute out "font-size" props "size")
+      (attribute out "font-weight" (number_text (?? (props .get "weight") 400)))
+      (attribute out "text-anchor" (?? (props .get "anchor") "start"))
+      (common_attributes out props)
+      (shape_attributes out props)
+      (semantic_attributes out props)
+      (out .push ">")
+      (out .push ($html/escape (($body node) .first)))
+      (out .push "</text>\n"))
+    (else
+      (out .push "<")
+      (out .push kind)
+      (attribute out "id" props/id)
+      (match kind
+        (when "rect"
+          (for name in ["x" "y" "width" "height" "rx" "ry"]
+            (number_attribute out name props name)))
+        (when "circle"
+          (for name in ["cx" "cy" "r"] (number_attribute out name props name)))
+        (when "ellipse"
+          (for name in ["cx" "cy" "rx" "ry"] (number_attribute out name props name)))
+        (when "line"
+          (for name in ["x1" "y1" "x2" "y2"] (number_attribute out name props name)))
+        (when "path" (attribute out "d" (path_text node)))
+        (else (attribute out "points" (points_text props/points))))
+      (common_attributes out props)
+      (if_yes drawable
+        (shape_attributes out props)
+        (semantic_attributes out props))
+      (out .push "/>\n")))
+  nil)
+
+(fn write_stops [out, node, depth : Int] : Nil
+  (for stop in ($body node)
+    (let props ($props stop))
+    (indent out depth)
+    (out .push "<stop")
+    (attribute out "id" props/id)
+    (number_attribute out "offset" props "offset")
+    (attribute out "stop-color" props/color)
+    (number_attribute out "stop-opacity" props "opacity")
+    (out .push "/>\n"))
+  nil)
+
+(fn write_definition [out, node] : Nil
+  (let kind (kind_of node))
+  (let props ($props node))
+  (indent out 2)
+  (match kind
+    (when "linear_gradient"
+      (out .push "<linearGradient")
+      (attribute out "id" props/id)
+      (attribute out "gradientUnits" "userSpaceOnUse")
+      (for name in ["x1" "y1" "x2" "y2"] (number_attribute out name props name))
+      (out .push ">\n")
+      (write_stops out node 3)
+      (indent out 2)
+      (out .push "</linearGradient>\n"))
+    (when "radial_gradient"
+      (out .push "<radialGradient")
+      (attribute out "id" props/id)
+      (attribute out "gradientUnits" "userSpaceOnUse")
+      (for name in ["cx" "cy" "r" "fx" "fy"] (number_attribute out name props name))
+      (out .push ">\n")
+      (write_stops out node 3)
+      (indent out 2)
+      (out .push "</radialGradient>\n"))
+    (when "clip_path"
+      (out .push "<clipPath")
+      (attribute out "id" props/id)
+      (attribute out "clipPathUnits" "userSpaceOnUse")
+      (out .push ">\n")
+      (for shape in ($body node) (write_element out shape 3 false))
+      (indent out 2)
+      (out .push "</clipPath>\n"))
+    (else
+      (out .push "<filter")
+      (attribute out "id" props/id)
+      (attribute out "filterUnits" "userSpaceOnUse")
+      (for name in ["x" "y" "width" "height"] (number_attribute out name props name))
+      (out .push ">\n")
+      (indent out 3)
+      (out .push "<feGaussianBlur")
+      (number_attribute out "stdDeviation" props "std_dev")
+      (out .push "/>\n")
+      (indent out 2)
+      (out .push "</filter>\n")))
+  nil)
+
+# The canonical SVG document for a validated scene. Equal scenes give equal
+# bytes.
+(fn scene_svg [scene] : Str
+  (let props ($props scene))
+  (let box props/view_box)
+  (var out [])
+  (out .push "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\"")
+  (number_attribute out "width" props "width")
+  (number_attribute out "height" props "height")
+  (attribute out "viewBox"
+    $"${(number_text box/0)} ${(number_text box/1)} ${(number_text box/2)} ${(number_text box/3)}")
+  (out .push ">\n")
+  (let definitions ($body (defs_node scene)))
+  (if (== definitions/.size 0)
+    (then (out .push "  <defs/>\n"))
+    (else
+      (out .push "  <defs>\n")
+      (for definition in definitions (write_definition out definition))
+      (out .push "  </defs>\n")))
+  (if_yes (!= props/background "none")
+    # The background covers the whole canvas. When the view box and the canvas
+    # differ in aspect ratio, that is the view box plus its letterbox margins.
+    (let scale ($math/min (/ (* props/width 1.0) box/2) (/ (* props/height 1.0) box/3)))
+    (let wide (/ props/width scale))
+    (let tall (/ props/height scale))
+    (out .push "  <rect")
+    (attribute out "id" background_id)
+    (attribute out "x" (number_text (tidy (- box/0 (/ (- wide box/2) 2.0)))))
+    (attribute out "y" (number_text (tidy (- box/1 (/ (- tall box/3) 2.0)))))
+    (attribute out "width" (number_text (tidy wide)))
+    (attribute out "height" (number_text (tidy tall)))
+    (attribute out "fill" props/background)
+    (out .push "/>\n"))
+  (for child in (top_level scene) (write_element out child 1 true))
+  (out .push "</svg>\n")
+  ($str/join out ""))
+
+# An SVG image of straight connectors, used for the history graph's parent
+# edges (section 14.2). `edges` is a list of [x1 y1 x2 y2] in pixels.
+(fn edges_svg [width : Int, height : Int, edges, ^stroke stroke : Str = "#8a94a6"] : Str
+  (var out [])
+  (out .push "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\"")
+  (attribute out "width" (number_text width))
+  (attribute out "height" (number_text height))
+  (attribute out "viewBox" $"0 0 ${(number_text width)} ${(number_text height)}")
+  (out .push ">\n")
+  (for edge in edges
+    (let middle (number_text (/ (+ edge/1 edge/3) 2.0)))
+    (out .push "  <path")
+    (attribute out "d"
+      $"M ${(number_text edge/0)} ${(number_text edge/1)} C ${(number_text edge/0)} ${middle} ${(number_text edge/2)} ${middle} ${(number_text edge/2)} ${(number_text edge/3)}")
+    (attribute out "fill" "none")
+    (attribute out "stroke" stroke)
+    (attribute out "stroke-width" "2")
+    (out .push "/>\n"))
+  (out .push "</svg>\n")
+  ($str/join out ""))

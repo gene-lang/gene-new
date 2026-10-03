@@ -1,0 +1,8 @@
+{^format 1
+ ^name "gene/imagination"
+ ^description "Versioned visual creation: an AI draws SVG through validated Gene patches, with a branching Evolution history"
+ ^version "0.1.0"
+ ^applications [
+   (application "imagination" ^entry "src/main.gene")
+ ]
+ ^dependencies {}}

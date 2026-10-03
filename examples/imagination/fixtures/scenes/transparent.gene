@@ -1,0 +1,5 @@
+(scene ^schema 1 ^width 256 ^height 256 ^view_box [0 0 256 256] ^background "none"
+  (defs)
+  (circle ^id "badge" ^cx 128 ^cy 128 ^r 96 ^fill "#16a34a")
+  (text ^id "mark" ^x 128 ^y 150 ^font "sans" ^size 64 ^weight 700 ^anchor "middle"
+    ^fill "#ffffff" "OK"))

@@ -1,0 +1,29 @@
+(scene
+  ^schema 1
+  ^width 800
+  ^height 600
+  ^view_box [0 0 800 600]
+  ^background "#111827"
+  (defs
+    (linear_gradient ^id "sky" ^x1 0 ^y1 0 ^x2 0 ^y2 600
+      (stop ^id "sky-top" ^offset 0 ^color "#1e3a8a")
+      (stop ^id "sky-low" ^offset 1 ^color "#f59e0b"))
+    (radial_gradient ^id "glow" ^cx 400 ^cy 300 ^r 120
+      (stop ^id "glow-core" ^offset 0 ^color "#fff7d6")
+      (stop ^id "glow-edge" ^offset 1 ^color "#fde68a" ^opacity 0.2))
+    (clip_path ^id "porthole"
+      (circle ^id "porthole-shape" ^cx 400 ^cy 300 ^r 200))
+    (blur ^id "soft" ^std_dev 6 ^x 0 ^y 0 ^width 800 ^height 600))
+  (rect ^id "sky-fill" ^x 0 ^y 0 ^width 800 ^height 600 ^fill_ref "sky" ^clip_ref "porthole")
+  (circle ^id "sun" ^cx 400 ^cy 300 ^r 60 ^fill_ref "glow" ^filter_ref "soft")
+  (g ^id "kite" ^label "Kite outline" ^translate [100 100] ^rotate 15 ^scale [1.5 1.5]
+    (path ^id "kite-outline" ^fill "none" ^stroke "#ffffff" ^stroke_width 3
+      ^stroke_linejoin "round"
+      (M 0 0) (L 50 0) (Q 80 40 50 80) (C 30 100 10 100 0 80) (Z)))
+  (line ^id "hairline" ^x1 40 ^y1 560 ^x2 760 ^y2 560 ^stroke "#e5e7eb" ^stroke_width 0.5)
+  (polygon ^id "flag" ^points [[620 80] [720 110] [620 140]] ^fill "#ef4444" ^opacity 0.8)
+  (polyline ^id "zigzag" ^points [[40 40] [80 80] [120 40] [160 80]] ^fill "none"
+    ^stroke "#38bdf8" ^stroke_width 4 ^stroke_linecap "round")
+  (ellipse ^id "pond" ^cx 640 ^cy 480 ^rx 90 ^ry 30 ^fill "#0ea5e9" ^fill_opacity 0.6)
+  (text ^id "caption" ^x 400 ^y 548 ^font "sans" ^size 36 ^weight 700 ^anchor "middle"
+    ^fill "#ffffff" "Héllo & <World>"))

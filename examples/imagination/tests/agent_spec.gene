@@ -1,0 +1,275 @@
+# Section 17.2: the agent protocol, driven by saved responses.
+(import $test [describe it assert_equal run])
+(import [scratch test_profile error_code scene_with] ^from "./support")
+(import [read_domain read_canonical canonical digest_of] ^from "../src/scene")
+(import [fixture_agent VisionAgent] ^from "../src/adapters/model")
+(import [validate_goal build_evaluation completion read_review accept_candidate]
+  ^from "../src/evaluation")
+(import [run_drawing read_response DrawingSession] ^from "../src/agent")
+(import [create_run] ^from "../src/rundir")
+(import [children_named kind_of] ^from "../src/types")
+
+(fn goal [] : Any
+  (validate_goal
+    (read_domain "(goal ^id \"goal-01\" ^request \"A red circle on a white canvas.\"
+      (requirement ^id \"circle\" ^strength \"hard\" ^check \"visual\" \"One red circle is visible.\")
+      (requirement ^id \"balance\" ^strength \"soft\" ^check \"visual\" \"The circle is centered.\"))" ^head "goal")))
+
+(fn new_run [] : Any
+  (create_run (scratch "run") (test_profile) (goal) ^width 256 ^height 256 ^quiet true))
+
+(fn review [circle : Str, balance : Str] : Str
+  $"(review (check ^requirement \"circle\" ^result \"${circle}\" ^evidence \"seen\") (check ^requirement \"balance\" ^result \"${balance}\" ^evidence \"seen\"))")
+
+(fn envelope [context, action : Str, body : Str] : Str
+  $"(agent_response ^schema 1 ^observed_revision \"${context/newest}\" ^observed_image \"${context/image}\" ^action \"${action}\" ${body})")
+
+(fn patch [context, base : Str, operations : Str] : Str
+  $"(plan \"next step\") (patch ^schema 1 ^id \"${context/patch_id}\" ^base \"${base}\" ^goal \"${context/goal}\" (intent \"draw\") ${operations})")
+
+(fn add_circle [context] : Str
+  $"(add ^parent \"scene\" ^placement (last) (circle ^id \"${context/prefix}dot\" ^label \"cat\" ^cx 100 ^cy 128 ^r 40 ^fill \"#dc2626\"))")
+
+# An edit that reviews the newest image and adds the circle to the head.
+(fn first_edit [input] : Str
+  (let context input/context)
+  (envelope context "edit" $"${(review \"fail\" \"fail\")} ${(patch context context/head (add_circle context))}"))
+
+(fn done [circle : Str, balance : Str] : Any
+  (fn [input] (envelope input/context "done" $"${(review circle balance)} (summary \"A red circle.\")")))
+
+(fn events_of [run, kind : Str] : Any
+  (var found [])
+  (for line in ($str/split ($fs/read_text ($path/join run/root "events.gene")) "\n")
+    (if_yes (!= line "")
+      (let event (read_canonical line))
+      (if (== event/kind kind) (found .push event))))
+  found)
+
+(fn quality_of [run, id : Str] : Str
+  (/quality (read_canonical ($fs/read_text ($path/join run/root $"revisions/${id}/revision.gene")))))
+
+(fn images_in [request] : Any
+  ($filter request/input/parts (fn [part] (== part/type "image"))))
+
+(describe "the drawing loop"
+  (it "draws, reviews the render in the next decision, and completes" []
+    (let run (new_run))
+    (let agent (fixture_agent [first_edit (done "pass" "pass")]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "complete")
+    (assert_equal outcome/revision "r001")
+    (assert_equal outcome/calls 2)
+    (assert_equal outcome/iterations 1)
+    (assert_equal (quality_of run "r001") "accepted")
+    (assert_equal (/id (run .DrawingSession:head)) "r001"))
+
+  (it "gives the adapter the saved PNG bytes, not a path" []
+    (let run (new_run))
+    (let agent (fixture_agent [first_edit (done "pass" "pass")]))
+    (run_drawing run agent (goal))
+    (let first (images_in agent/received/0))
+    (assert_equal first/.size 1)
+    (let root_png ($fs/read_bytes ($path/join run/root "revisions/r000/observation.png")))
+    (assert_equal (/bytes first/0) root_png)
+    (assert_equal (/digest first/0) (digest_of root_png))
+    # The second decision sees the working head and the candidate under review.
+    (let second (images_in agent/received/1))
+    (assert_equal second/.size 2)
+    (assert_equal (/bytes second/1)
+      ($fs/read_bytes ($path/join run/root "revisions/r001/observation.png")))
+    # The recorded model call names the digests that were submitted.
+    (let calls (events_of run "model_call"))
+    (let submitted (/submitted (($body calls/1) .first)))
+    (assert_equal (/digest (submitted .last)) (/digest second/1))
+    (assert_equal (/preprocessing (submitted .last)) "none"))
+
+  (it "recovers from malformed output and a wrong image digest within the repair budget" []
+    (let run (new_run))
+    (let agent
+      (fixture_agent [
+        "this is not ( a response"
+        (fn [input]
+          $"(agent_response ^schema 1 ^observed_revision \"${input/context/newest}\" ^observed_image \"sha256:0000\" ^action \"done\" ${(review \"pass\" \"pass\")} (summary \"x\"))")
+        first_edit
+        (done "pass" "pass")]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "complete")
+    (let problems (events_of run "invalid_response"))
+    (assert_equal problems/.size 2)
+    (assert_equal (/code (($body problems/0) .first)) "unreadable")
+    (assert_equal (/code (($body problems/1) .first)) "wrong_observation")
+    # The feedback reached the model on the following call.
+    (let text (/text (agent/received/1/input/parts .last)))
+    ($assert ($str/contains? text "APPLICATION FEEDBACK") "the repair feedback must be in the next input"))
+
+  (it "fails truthfully when a review is missing past the repair budget" []
+    (let run (new_run))
+    (fn no_review [input] : Str
+      (envelope input/context "edit" (patch input/context input/context/head (add_circle input/context))))
+    (let outcome (run_drawing run (fixture_agent [no_review no_review no_review]) (goal)))
+    (assert_equal outcome/status "failed")
+    (assert_equal outcome/revision "r000")
+    (assert_equal (/code (($body ((events_of run "invalid_response") .first)) .first)) "missing_review"))
+
+  (it "keeps a rejected candidate as a trial and discards a patch based on it" []
+    (let run (new_run))
+    (let agent
+      (fixture_agent [
+        first_edit
+        # r001 is accepted; move the circle (r002).
+        (fn [input]
+          (envelope input/context "edit"
+            $"${(review \"pass\" \"partial\")} ${(patch input/context \"r001\" \"(move ^target \\\"n1-dot\\\" ^delta [300 0])\")}"))
+        # r002 regressed, but the patch is written against it anyway.
+        (fn [input]
+          (envelope input/context "edit"
+            $"${(review \"fail\" \"fail\")} ${(patch input/context \"r002\" \"(move ^target \\\"n1-dot\\\" ^delta [28 0])\")}"))
+        # Corrected: based on the working head r001.
+        (fn [input]
+          (envelope input/context "edit"
+            (patch input/context "r001" "(move ^target \"n1-dot\" ^delta [28 0])")))
+        (done "pass" "pass")]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "complete")
+    (assert_equal outcome/revision "r003")
+    (assert_equal (quality_of run "r002") "rejected")
+    (assert_equal (quality_of run "r003") "accepted")
+    (let stale (($body ((events_of run "invalid_patch") .first)) .first))
+    (assert_equal stale/code "stale_base")
+    # The rejected trial kept its own scene; the head was never moved onto it.
+    (let head (run .DrawingSession:head))
+    (assert_equal head/parent "r001"))
+
+  (it "stops with no_progress after repeated no-ops" []
+    (let run (new_run))
+    (fn noop [input] : Str
+      (envelope input/context "edit"
+        $"${(review \"partial\" \"partial\")} ${(patch input/context \"r001\" \"(move ^target \\\"n1-dot\\\" ^delta [0 0])\")}"))
+    (let outcome (run_drawing run (fixture_agent [first_edit noop noop noop]) (goal)))
+    (assert_equal outcome/status "no_progress")
+    (assert_equal outcome/revision "r001")
+    (assert_equal ($size (events_of run "no_op")) 3))
+
+  (it "answers an inspection with scene data and a crop, then honours blocked" []
+    (let run (new_run))
+    (let agent
+      (fixture_agent [
+        (fn [input]
+          (envelope input/context "inspect"
+            $"${(review \"fail\" \"fail\")} (inspect (object \"ghost\") (crop ^rect [0 0 64 64]))"))
+        (fn [input]
+          (envelope input/context "blocked"
+            "(blocked (issue \"The medium cannot draw this.\") (remaining \"circle\"))"))]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "partial")
+    ($assert ($str/contains? outcome/reason "The medium cannot draw this.") "the blocking issue is reported")
+    (let second agent/received/1/input)
+    (var texts [])
+    (for part in second/parts
+      (if (== part/type "text") (texts .push part/text)))
+    (let text ($str/join texts "\n"))
+    ($assert ($str/contains? text "DETAIL CROP") "the crop is labelled")
+    ($assert ($str/contains? text "ghost: no such object") "the inspection result is reported")
+    (let crops ($filter second/parts (fn [part] (&& (== part/type "image") ($str/starts_with? part/label "detail crop")))))
+    (assert_equal crops/.size 1)
+    # Inspection is read-only: no revision was created.
+    ($assert (! ($fs/exists? ($path/join run/root "revisions/r001"))) "inspection must not create a revision"))
+
+  (it "returns partial at the iteration limit, never complete" []
+    (let run (new_run))
+    (fn grow [input] : Str
+      (envelope input/context "edit"
+        $"${(review \"partial\" \"partial\")} ${(patch input/context input/context/newest \"(scale_by ^target \\\"n1-dot\\\" ^factor 1.1)\")}"))
+    (let outcome
+      (run_drawing run (fixture_agent [first_edit grow grow grow]) (goal) ^budgets {^max_iterations 2}))
+    (assert_equal outcome/status "partial")
+    (assert_equal outcome/iterations 2)
+    ($assert (> outcome/remaining/.size 0) "the open requirements are reported"))
+
+  (it "refuses done while a hard requirement is open" []
+    (let run (new_run))
+    (let outcome
+      (run_drawing run
+        (fixture_agent [first_edit (done "partial" "pass")
+                        (fn [input] (envelope input/context "done" "(summary \"done\")"))])
+        (goal)))
+    (assert_equal outcome/status "partial")
+    ($assert ($str/contains? outcome/reason "hard requirement circle is partial") outcome/reason))
+
+  (it "publishes a held candidate as an unreviewed trial when the run is cancelled" []
+    (let run (new_run))
+    (let agent
+      (fixture_agent [
+        (fn [input]
+          ($fs/write_text ($path/join run/root "cancel") "")
+          (first_edit input))]))
+    (let outcome (run_drawing run agent (goal)))
+    (assert_equal outcome/status "cancelled")
+    (assert_equal outcome/revision "r000")
+    (assert_equal (quality_of run "r001") "unreviewed")
+    (assert_equal outcome/calls 1))
+
+  (it "reports a failed model call as failed and keeps what was published" []
+    (let run (new_run))
+    (let outcome (run_drawing run (fixture_agent [first_edit "!transport"]) (goal)))
+    (assert_equal outcome/status "failed")
+    (assert_equal (quality_of run "r001") "unreviewed")
+    (assert_equal (quality_of run "r000") "accepted")))
+
+(describe "responses are data"
+  (it "rejects surplus content, a second action, and unknown properties" []
+    (fn code [text : Str] : Str (error_code (fn [] (read_response text))))
+    (assert_equal (code "(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"done\" (summary \"s\") (patch ^schema 1))") "surplus_content")
+    (assert_equal (code "(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"done\" (summary \"s\") (eval \"x\"))") "surplus_content")
+    (assert_equal (code "(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"run\")") "invalid_response")
+    (assert_equal (code "(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"done\" ^shell \"rm\" (summary \"s\"))") "invalid_response")
+    (assert_equal (code "(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"edit\")") "invalid_response")
+    (assert_equal (code "(agent_response ^schema 1) (agent_response ^schema 1)") "invalid_node")
+    (assert_equal (code "```gene\n(agent_response ^schema 1 ^observed_revision \"r0\" ^observed_image \"x\" ^action \"done\" (summary \"s\"))\n```") "accepted")))
+
+(describe "evidence rules"
+  (it "does not let a node labelled cat satisfy a visual check" []
+    (let scene (/scene (run_head_with_label)))
+    (let record (build_evaluation (goal) "r001" "sha256:aa" "rsvg-pdf-poppler/v1" scene nil))
+    (let report (completion (goal) record "r001" "sha256:aa" "rsvg-pdf-poppler/v1"))
+    (assert_equal report/complete false)
+    ($assert ($str/contains? ($str/join report/reasons "; ") "no visual review") "an unreviewed image cannot complete"))
+
+  (it "refuses a model check of a structural requirement" []
+    (assert_equal
+      (error_code (fn []
+        (read_review (read_domain "(review (check ^requirement \"medium\" ^result \"pass\" ^evidence \"x\"))" ^head "review") (goal))))
+      "invalid_review"))
+
+  (it "invalidates a completion review when the goal changes" []
+    (let scene (/scene (run_head_with_label)))
+    (let passed
+      (read_review (read_domain (review "pass" "pass") ^head "review") (goal)))
+    (let record (build_evaluation (goal) "r001" "sha256:aa" "rsvg-pdf-poppler/v1" scene passed))
+    (assert_equal (/complete (completion (goal) record "r001" "sha256:aa" "rsvg-pdf-poppler/v1")) true)
+    (let changed
+      (validate_goal
+        (read_domain "(goal ^id \"goal-02\" ^request \"A blue circle.\" ^predecessor \"goal-01\" ^instruction \"Make it blue.\"
+          (requirement ^id \"circle\" ^strength \"hard\" ^check \"visual\" \"One blue circle is visible.\"))" ^head "goal")))
+    (let report (completion changed record "r001" "sha256:aa" "rsvg-pdf-poppler/v1"))
+    (assert_equal report/complete false)
+    # A review bound to another image cannot complete either.
+    (assert_equal (/complete (completion (goal) record "r001" "sha256:bb" "rsvg-pdf-poppler/v1")) false))
+
+  (it "rejects a candidate that makes any requirement worse" []
+    (let scene (/scene (run_head_with_label)))
+    (fn record [circle : Str, balance : Str] : Any
+      (build_evaluation (goal) "r" "sha256:aa" "p" scene
+        (read_review (read_domain (review circle balance) ^head "review") (goal))))
+    (assert_equal (/accepted (accept_candidate (goal) (record "partial" "pass") (record "pass" "pass"))) true)
+    (assert_equal (/accepted (accept_candidate (goal) (record "partial" "pass") (record "partial" "pass"))) true)
+    (assert_equal (/accepted (accept_candidate (goal) (record "pass" "pass") (record "pass" "partial"))) false)
+    (assert_equal (/accepted (accept_candidate (goal) (record "unknown" "unknown") (record "fail" "fail"))) true)))
+
+(fn run_head_with_label [] : Any
+  {^scene (scene_with "(g ^id \"cat\" ^label \"cat\" ^role \"subject\" (circle ^id \"cat-body\" ^cx 10 ^cy 10 ^r 5 ^fill \"#000000\"))")})
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

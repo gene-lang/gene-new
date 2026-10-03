@@ -1,0 +1,6 @@
+(scene ^schema 1 ^width 1200 ^height 400 ^view_box [0 0 600 400] ^background "#f8fafc"
+  (defs)
+  (rect ^id "frame" ^x 0 ^y 0 ^width 600 ^height 400 ^fill "#dbeafe")
+  (circle ^id "marker" ^cx 300 ^cy 200 ^r 40 ^fill "#1d4ed8")
+  (text ^id "label" ^x 300 ^y 360 ^font "sans" ^size 28 ^anchor "middle" ^fill "#0f172a"
+    "Letterboxed view box"))

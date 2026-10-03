@@ -1,0 +1,55 @@
+# Shared helpers for the imagination specs.
+(import [normalize_scene read_domain blank_scene] ^from "../src/scene")
+(import [open_profile] ^from "../src/render")
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+
+(fn fixture_text [relative : Str] : Str
+  ($fs/read_text ($path/join package_root $"fixtures/${relative}")))
+
+(fn fixture_scene [name : Str] : Any
+  (normalize_scene (read_domain (fixture_text $"scenes/${name}.gene") ^head "scene")))
+
+(fn fixture_patch [name : Str] : Any
+  (read_domain (fixture_text $"patches/${name}.gene") ^head "patch"))
+
+(fn scene_from [text : Str] : Any
+  (normalize_scene (read_domain text ^head "scene")))
+
+(fn patch_from [text : Str] : Any
+  (read_domain text ^head "patch"))
+
+# A fresh scratch directory under the package's tmp/, never reused.
+(fn scratch [label : Str] : Str
+  (let root ($path/join package_root "tmp"))
+  ($fs/make_dir root)
+  (let path ($path/join root $"spec-${label}-${($crypto/random_hex 6)}"))
+  ($fs/make_dir path)
+  ($fs/real_path path))
+
+(let shared_profile ($cell nil))
+
+# One render profile for the whole test process: resolving tools and hashing
+# fonts once is enough.
+(fn test_profile [] : Any
+  (if_yes ($absent? shared_profile/.get)
+    (shared_profile .set (open_profile (scratch "profile"))))
+  shared_profile/.get)
+
+# The code of the DomainError `body` raises, or "accepted" when it returns.
+(fn error_code [body] : Str
+  (try
+    (body)
+    "accepted"
+  catch Any
+    (?? $err/code ($to_str ($head $err)))))
+
+(fn error_of [body] : Any
+  (try
+    (body)
+    nil
+  catch Any
+    $err))
+
+(fn scene_with [children : Str] : Any
+  (scene_from $"(scene ^schema 1 ^width 400 ^height 300 ^view_box [0 0 400 300] ^background \"#ffffff\" ${children})"))

@@ -1,0 +1,177 @@
+# A drawing session kept as files in a run directory (milestone 2 spike).
+#
+# This is the smallest thing the loop can draw on: each revision is a folder
+# with its scene, artifacts, patch, and evaluation, and every run event is one
+# line of `events.gene`. It has no history engine, index, or transactions; the
+# application's Evolution replaces it.
+(mod imagination_rundir)
+
+(import [StoreError kind_of node? str? list? map? number? sorted_keys] ^from "./types")
+(import [canonical digest_of read_canonical blank_scene] ^from "./scene")
+(import [render_scene render_crop profile_manifest] ^from "./render")
+(import [build_evaluation] ^from "./evaluation")
+(import [DrawingSession] ^from "./agent")
+
+(type RunDirectory ^props {^root Str ^profile Any ^state Any})
+
+(fn revision_name [number : Int] : Str
+  (if (< number 10) $"r00${number}" (if (< number 100) $"r0${number}" $"r${number}")))
+
+# Maps become (record ^key value) nodes so a run event has a canonical form.
+(fn as_data [value] : Any
+  (if (map? value)
+    (then
+      (var props {})
+      (for [name item] in value (props .put ($to_str name) (as_data item)))
+      ($node/rebuild `(record) ^props props))
+    (elif (list? value)
+      (var items [])
+      (for item in value (items .push (as_data item)))
+      items)
+    (elif (|| (node? value) (str? value) (number? value) (== value true) (== value false)) value)
+    (elif ($absent? value) nil)
+    (else ($to_str value))))
+
+(fn write_node [path : Str, node] : Nil
+  ($fs/write_text_atomic path (canonical node))
+  nil)
+
+(fn revision_dir [run, id : Str] : Str
+  ($path/join run/root $"revisions/${id}"))
+
+(fn view_of [run, id : Str, parent, scene, bundle, evaluation, quality : Str, intent : Str] : Any
+  (let directory (revision_dir run id))
+  {^id id ^parent parent ^scene scene ^image bundle/png_digest
+   ^png_path ($path/join directory "observation.png")
+   ^pdf_path ($path/join directory "scene.pdf")
+   ^evaluation evaluation ^quality quality ^intent intent ^bundle bundle/digest})
+
+(fn write_revision [run, view] : Nil
+  (let id view/id)
+  (let parents (if ($absent? view/parent) [] [view/parent]))
+  (let quality view/quality)
+  (let scene (digest_of (canonical view/scene)))
+  (let image view/image)
+  (let render view/bundle)
+  (let intent view/intent)
+  (write_node ($path/join (revision_dir run id) "revision.gene")
+    `(revision ^schema 1 ^id %id ^parents %parents ^quality %quality ^scene %scene
+       ^image %image ^render %render (intent %intent)))
+  nil)
+
+# Create a run directory with a rendered blank root revision r000.
+(fn create_run [root : Str, profile, goal, ^width width : Int = 1024, ^height height : Int = 1024,
+                ^background background : Str = "#ffffff", ^quiet quiet : Bool = false] : Any
+  (if ($fs/exists? ($path/join root "revisions"))
+    (fail (StoreError ^code "exists" ^message $"${root} already holds a run" ^detail root)))
+  ($fs/make_dir ($path/join root "revisions/r000"))
+  ($fs/make_dir ($path/join root "crops"))
+  (let run
+    (RunDirectory ^root root ^profile profile
+      ^state {^head nil ^next_revision 1 ^allocations 0 ^used {} ^sequence 0 ^reviews 0
+              ^quiet quiet}))
+  (write_node ($path/join root "goal.gene") goal)
+  (write_node ($path/join root "render-profile.gene") (profile_manifest profile))
+  (let scene (blank_scene ^width width ^height height ^background background))
+  (let directory (revision_dir run "r000"))
+  (let bundle (render_scene profile scene directory))
+  (write_node ($path/join directory "scene.gene") scene)
+  # The blank root has structural checks only: its visual checks are unknown,
+  # so it can never complete a drawing request.
+  (let evaluation (build_evaluation goal "r000" bundle/png_digest profile/id scene nil))
+  (write_node ($path/join directory "evaluation.gene") evaluation)
+  (let view (view_of run "r000" nil scene bundle evaluation "accepted" "Blank canvas."))
+  (write_revision run view)
+  (run/state .put "head" view)
+  run)
+
+(impl DrawingSession for RunDirectory
+  (message head [] : Any self/state/head)
+
+  (message allocate [] : Any
+    (self/state .put "allocations" (+ self/state/allocations 1))
+    {^prefix $"n${self/state/allocations}-" ^patch_id $"patch-${self/state/allocations}"})
+
+  (message taken [id : Str] : Bool
+    ($has_key? self/state/used id))
+
+  (message stage [parent, result, plan : Str] : Any
+    (let id (revision_name self/state/next_revision))
+    (self/state .put "next_revision" (+ self/state/next_revision 1))
+    (let directory (revision_dir self id))
+    ($fs/make_dir directory)
+    (let bundle (render_scene self/profile result/scene directory))
+    (write_node ($path/join directory "scene.gene") result/scene)
+    (write_node ($path/join directory "patch.gene") result/patch)
+    (write_node ($path/join directory "normalized.gene") result/normalized)
+    (write_node ($path/join directory "diff.gene") result/diff)
+    ($fs/write_text ($path/join directory "effects.gene")
+      ($str/join ($map result/effects (fn [effect] (canonical effect))) "\n"))
+    (for effect in result/effects
+      (if (== effect/kind "insert") (self/state/used .put effect/target true)))
+    (var intent "")
+    (for item in ($body result/patch)
+      (if (== (kind_of item) "intent") (set intent (($body item) .first))))
+    (let view (view_of self id parent/id result/scene bundle nil "pending" intent))
+    (self .DrawingSession:event "candidate_rendered"
+      {^revision id ^parent parent/id ^image bundle/png_digest ^plan plan})
+    view)
+
+  (message publish [candidate, evaluation, accepted : Bool, reason : Str] : Any
+    (var view {})
+    (for [name value] in candidate (view .put ($to_str name) value))
+    (view .put "evaluation" evaluation)
+    (view .put "quality" (if accepted "accepted" "rejected"))
+    (write_node ($path/join (revision_dir self view/id) "evaluation.gene") evaluation)
+    (write_revision self view)
+    (let advanced (&& accepted (== self/state/head/id candidate/parent)))
+    (if advanced (self/state .put "head" view))
+    (self .DrawingSession:event "revision_published"
+      {^revision view/id ^quality view/quality ^reason reason ^line_advanced advanced})
+    {^revision view ^line_advanced advanced ^stale_head (&& accepted (! advanced))})
+
+  (message publish_unreviewed [candidate] : Any
+    (var view {})
+    (for [name value] in candidate (view .put ($to_str name) value))
+    (view .put "quality" "unreviewed")
+    (write_revision self view)
+    (self .DrawingSession:event "revision_published"
+      {^revision view/id ^quality "unreviewed" ^reason "No review arrived." ^line_advanced false})
+    view)
+
+  (message record_review [revision, evaluation] : Nil
+    (self/state .put "reviews" (+ self/state/reviews 1))
+    (write_node
+      ($path/join (revision_dir self revision/id) $"review-${self/state/reviews}.gene")
+      evaluation)
+    (if (== self/state/head/id revision/id)
+      (self/state/head .put "evaluation" evaluation))
+    (self .DrawingSession:event "review_recorded" {^revision revision/id})
+    nil)
+
+  (message event [kind : Str, data] : Nil
+    (self/state .put "sequence" (+ self/state/sequence 1))
+    (let sequence self/state/sequence)
+    (let at ($os/wall_ms))
+    (let body (as_data data))
+    (let line (canonical `(event ^seq %sequence ^kind %kind ^at %at %body)))
+    (let path ($path/join self/root "events.gene"))
+    (let existing (if ($fs/exists? path) ($fs/read_text path) ""))
+    ($fs/write_text path $"${existing}${line}\n")
+    (if_yes (&& (!= kind "model_call") (! self/state/quiet))
+      ($println $"  [${kind}] ${(canonical body)}")
+      ($io/flush_stdout))
+    nil)
+
+  (message crop [revision, rectangle] : Any
+    (let prefix ($path/join self/root $"crops/${revision/id}-${($crypto/random_hex 4)}"))
+    (let crop (render_crop self/profile revision/scene revision/pdf_path prefix rectangle))
+    (crop .put "bytes" ($fs/read_bytes $"${prefix}.png"))
+    crop)
+
+  (message cancelled [] : Bool
+    ($fs/exists? ($path/join self/root "cancel")))
+
+  (message steer [] : Any nil)
+
+  (message profile [] : Str self/profile/id))

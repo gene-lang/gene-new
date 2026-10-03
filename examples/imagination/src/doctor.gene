@@ -1,0 +1,141 @@
+# `imagination doctor`: check the native rendering dependencies before a
+# drawing run starts (design section 7.6).
+(mod imagination_doctor)
+
+(import [RenderError kind_of] ^from "./types")
+(import [normalize_scene read_domain canonical] ^from "./scene")
+(import [open_profile render_scene profile_manifest png_size] ^from "./render")
+(import [run_tool] ^from "./adapters/process")
+(import [font_environment] ^from "./adapters/rsvg")
+(import [pdf_fonts pdf_info] ^from "./adapters/poppler")
+
+(const fixture_scene "(scene ^schema 1 ^width 400 ^height 300 ^view_box [0 0 400 300] ^background \"#ffffff\"
+  (defs)
+  (rect ^id \"card\" ^x 20 ^y 20 ^width 360 ^height 260 ^rx 16 ^fill \"#1f2937\")
+  (text ^id \"sans-regular\" ^x 200 ^y 90 ^font \"sans\" ^size 28 ^anchor \"middle\" ^fill \"#ffffff\" \"Sans regular\")
+  (text ^id \"sans-bold\" ^x 200 ^y 140 ^font \"sans\" ^size 28 ^weight 700 ^anchor \"middle\" ^fill \"#ffffff\" \"Sans bold\")
+  (text ^id \"serif-regular\" ^x 200 ^y 190 ^font \"serif\" ^size 28 ^anchor \"middle\" ^fill \"#ffffff\" \"Serif regular\")
+  (text ^id \"serif-bold\" ^x 200 ^y 240 ^font \"serif\" ^size 28 ^weight 700 ^anchor \"middle\" ^fill \"#ffffff\" \"Serif bold\"))")
+
+# A raw SVG naming a family that is not bundled. With isolation working, the
+# PDF still embeds only bundled fonts; a system font here means CoreText or
+# the system fontconfig was reached.
+(const unbundled_svg "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\"><text x=\"10\" y=\"50\" font-family=\"Helvetica\" font-size=\"24\">isolation</text></svg>\n")
+
+# The scene whose render is sent to the model by the image-transport check.
+(const transport_word "ORCHID")
+(const transport_scene "(scene ^schema 1 ^width 512 ^height 256 ^view_box [0 0 512 256] ^background \"#fef3c7\"
+  (defs)
+  (text ^id \"word\" ^x 256 ^y 150 ^font \"sans\" ^size 72 ^weight 700 ^anchor \"middle\" ^fill \"#1f2937\" \"ORCHID\"))")
+
+# Render the transport fixture and return {^bytes ^digest}.
+(fn transport_image [work_dir : Str] : Any
+  (let profile (open_profile work_dir))
+  (let out ($path/join work_dir $"transport-${($crypto/random_hex 6)}"))
+  ($fs/make_dir out)
+  (let bundle (render_scene profile (normalize_scene (read_domain transport_scene ^head "scene")) out))
+  {^bytes ($fs/read_bytes ($path/join out "observation.png")) ^digest bundle/png_digest})
+
+(fn flag_check [tool : Str, help_args, flags] : Any
+  (let result (run_tool "tool_flags" tool help_args ^timeout_ms 5000))
+  (let text $"${result/stdout}${result/stderr}")
+  (var missing [])
+  (for flag in flags
+    (if_not ($str/contains? text flag) (missing .push flag)))
+  missing)
+
+# Run every check. Returns {^ok Bool ^checks [{^name ^ok ^detail}] ^manifest}.
+# `transport` is nil or a zero-argument function that checks multimodal image
+# transport and returns a detail string, raising on failure.
+(fn run_doctor [work_dir : Str, ^transport transport = nil] : Any
+  (var checks [])
+  (var healthy true)
+  (fn record [name : Str, ok : Bool, detail : Str] : Nil
+    (checks .push {^name name ^ok ok ^detail detail})
+    (if_not ok (set healthy false))
+    nil)
+  (fn attempt [name : Str, body] : Any
+    (try
+      (let detail (body))
+      (record name true detail)
+      true
+    catch RenderError
+      (record name false $err/message)
+      false
+    catch Any
+      (record name false $err/message)
+      false))
+
+  (var profile nil)
+  (attempt "tools"
+    (fn []
+      (set profile (open_profile work_dir))
+      $"rsvg-convert ${profile/rsvg_version} at ${profile/rsvg}; Poppler ${profile/poppler_version} at ${profile/pdftocairo}"))
+  (if ($absent? profile)
+    (return {^ok false ^checks checks ^manifest nil}))
+
+  (attempt "flags"
+    (fn []
+      (var missing (flag_check profile/rsvg ["--help"] ["--format" "--output"]))
+      (for flag in (flag_check profile/pdftocairo ["-h"]
+                     ["-png" "-singlefile" "-scale-to-x" "-scale-to-y" "-antialias" "-transp" "-x" "-W"])
+        (missing .push flag))
+      (if (> missing/.size 0)
+        (fail (RenderError ^code "missing_dependency" ^stage "flags"
+          ^message $"required flags are not supported: ${($str/join missing \" \")}" ^detail missing)))
+      "rsvg-convert and pdftocairo accept the flags the profile uses"))
+
+  (attempt "fonts"
+    (fn []
+      $"${profile/fonts/.size} bundled font files hashed; fontconfig file ${profile/fonts_conf}"))
+
+  (let out ($path/join work_dir $"doctor-${($crypto/random_hex 6)}"))
+  ($fs/make_dir out)
+  (attempt "conversion"
+    (fn []
+      (let scene (normalize_scene (read_domain fixture_scene ^head "scene")))
+      (let bundle (render_scene profile scene out))
+      (if (!= bundle/manifest/embedded_fonts/.size 4)
+        (fail (RenderError ^code "unbundled_font" ^stage "pdf_fonts"
+          ^message $"expected the four bundled faces in the fixture PDF, found ${bundle/manifest/embedded_fonts}"
+          ^detail nil)))
+      $"one-page PDF and a ${bundle/width} x ${bundle/height} PNG with the four bundled faces embedded"))
+
+  (attempt "font_isolation"
+    (fn []
+      (let svg_path ($path/join out "isolation.svg"))
+      (let pdf_path ($path/join out "isolation.pdf"))
+      ($fs/write_text svg_path unbundled_svg)
+      (let result
+        (run_tool "svg_to_pdf" profile/rsvg ["-f" "pdf" "-o" pdf_path svg_path]
+          ^environment (font_environment profile/fonts_conf)))
+      (if (!= result/status 0)
+        (fail (RenderError ^code "stage_failed" ^stage "font_isolation"
+          ^message $"rsvg-convert failed: ${result/stderr}" ^detail nil)))
+      (for font in (pdf_fonts profile/pdffonts pdf_path)
+        (if_not (profile/bundled_names .contains? font/name)
+          (fail (RenderError ^code "unbundled_font" ^stage "font_isolation"
+            ^message $"a system font was reached: ${font/name}. Font isolation is not working."
+            ^detail font/name))))
+      "an unbundled family resolves inside the bundled directory; no system font is reached"))
+
+  (attempt "png_header"
+    (fn []
+      (let size (png_size ($fs/read_bytes ($path/join out "observation.png"))))
+      $"PNG header reports ${size/0} x ${size/1}"))
+
+  (if ($absent? transport)
+    (checks .push {^name "image_transport" ^ok true ^skipped true
+                   ^detail "skipped: no model is configured (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or run codex login)"})
+    (attempt "image_transport" transport))
+
+  {^ok healthy ^checks checks ^manifest (if healthy (profile_manifest profile) nil)})
+
+(fn print_doctor [report] : Nil
+  (for check in report/checks
+    (let mark (if check/ok (if (== check/skipped true) "skip" "ok  ") "FAIL"))
+    ($println $"[${mark}] ${check/name}: ${check/detail}"))
+  ($println (if report/ok
+    "All checks passed."
+    "Some checks failed. Fix them before starting a drawing run."))
+  nil)

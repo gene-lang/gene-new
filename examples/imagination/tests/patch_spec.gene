@@ -1,0 +1,210 @@
+# Section 17.1: atomic patches, typed errors, normalized effects, and locks.
+(import $test [describe it assert_equal run])
+(import [scene_with scene_from patch_from fixture_patch error_code error_of] ^from "./support")
+(import [canonical scene_digest index_scene world_bounds blank_scene read_domain] ^from "../src/scene")
+(import [apply_patch replay_normalized] ^from "../src/patch")
+
+(fn base_scene [] : Any
+  (scene_with "(defs (linear_gradient ^id \"warm\" ^x1 0 ^y1 0 ^x2 0 ^y2 300 (stop ^id \"warm-a\" ^offset 0 ^color \"#ffcc88\") (stop ^id \"warm-b\" ^offset 1 ^color \"#aa5522\")))
+    (g ^id \"city\" ^label \"Skyline\" (rect ^id \"tower\" ^x 20 ^y 40 ^width 60 ^height 200 ^fill \"#25324a\"))
+    (g ^id \"cat\" ^label \"Sitting cat\" ^role \"subject\" ^translate [200 200]
+      (ellipse ^id \"cat-body\" ^cx 0 ^cy 0 ^rx 30 ^ry 50 ^fill_ref \"warm\")
+      (path ^id \"cat-head\" ^fill \"#d99d5d\" (M -20 -40) (L 0 -80) (L 20 -40) (Z)))
+    (text ^id \"title\" ^x 200 ^y 280 ^font \"sans\" ^size 20 ^anchor \"middle\" ^fill \"#111111\" \"RAIN CITY\")"))
+
+(fn patch [operations : Str] : Any
+  (patch_from $"(patch ^schema 1 ^id \"p1\" ^base \"r001\" ^goal \"goal-01\" (intent \"test\") ${operations})"))
+
+(fn apply [operations : Str, ^policy policy : Str = ""] : Any
+  (apply_patch (base_scene) (patch operations) ^expected_base "r001" ^expected_goal "goal-01"
+    ^prefix "n1-"
+    ^policy (if (== policy "") nil (patch_from_policy policy))))
+
+(fn patch_from_policy [text : Str] : Any
+  (read_domain text ^head "policy"))
+
+(fn code [operations : Str, ^policy policy : Str = ""] : Str
+  (error_code (fn [] (apply operations ^policy policy))))
+
+(describe "atomic patches"
+  (it "leaves the base unchanged when a later operation fails" []
+    (let base (base_scene))
+    (let before (canonical base))
+    (let error
+      (error_of (fn []
+        (apply_patch base
+          (patch "(set ^target \"tower\" ^field [\"fill\"] ^value \"#ff0000\") (move ^target \"cat\" ^delta [5 5]) (set ^target \"ghost\" ^field [\"fill\"] ^value \"#00ff00\")")
+          ^expected_base "r001" ^prefix "n1-"))))
+    (assert_equal error/code "unknown_target")
+    (assert_equal error/operation_index 2)
+    (assert_equal error/target "ghost")
+    (assert_equal (canonical base) before))
+
+  (it "rejects a stale base or goal before touching anything" []
+    (assert_equal
+      (error_code (fn [] (apply_patch (base_scene) (patch "(remove ^target \"title\")") ^expected_base "r002")))
+      "stale_base")
+    (assert_equal
+      (error_code (fn [] (apply_patch (base_scene) (patch "(remove ^target \"title\")")
+                           ^expected_base "r001" ^expected_goal "goal-02")))
+      "stale_goal"))
+
+  (it "rejects unknown operations, properties, and an empty or oversized batch" []
+    (assert_equal (code "(explode ^target \"cat\")") "unknown_operation")
+    (assert_equal (code "(remove ^target \"cat\" ^force true)") "unknown_field")
+    (assert_equal (code "(set ^target \"cat\" ^field [\"id\"] ^value \"dog\")") "immutable_field")
+    (assert_equal (code "(set ^target \"cat\" ^field [\"children\"] ^value [])") "unknown_field")
+    (assert_equal (code "") "empty_patch")
+    (var many [])
+    (repeat i in 51 (many .push "(move ^target \"cat\" ^delta [1 0])"))
+    (assert_equal (code ($str/join many " ")) "too_many_operations"))
+
+  (it "requires new IDs to be new and to use the allocated prefix" []
+    (assert_equal (code "(add ^parent \"cat\" ^placement (last) (circle ^id \"tail\" ^cx 0 ^cy 0 ^r 4))")
+      "unallocated_id")
+    (assert_equal (code "(add ^parent \"cat\" ^placement (last) (circle ^id \"n1-a\" ^cx 0 ^cy 0 ^r 4)) (add ^parent \"cat\" ^placement (last) (circle ^id \"n1-a\" ^cx 0 ^cy 0 ^r 4))")
+      "duplicate_id")
+    (assert_equal
+      (error_code (fn []
+        (apply_patch (base_scene)
+          (patch "(add ^parent \"cat\" ^placement (last) (circle ^id \"n1-used\" ^cx 0 ^cy 0 ^r 4))")
+          ^prefix "n1-" ^taken (fn [id] (== id "n1-used")))))
+      "duplicate_id"))
+
+  (it "rejects hierarchy cycles and misplaced nodes" []
+    (assert_equal
+      (code "(add ^parent \"cat\" ^placement (last) (g ^id \"n1-inner\")) (reparent ^target \"cat\" ^parent \"n1-inner\" ^placement (last) ^mode \"preserve_local\")")
+      "hierarchy_cycle")
+    (assert_equal (code "(reparent ^target \"cat\" ^parent \"cat\" ^placement (last) ^mode \"preserve_local\")")
+      "hierarchy_cycle")
+    (assert_equal (code "(add ^parent \"tower\" ^placement (last) (circle ^id \"n1-a\" ^cx 0 ^cy 0 ^r 4))")
+      "not_a_container")
+    (assert_equal (code "(add ^parent \"scene\" ^placement (last) (stop ^id \"n1-s\" ^offset 0 ^color \"#000000\"))")
+      "misplaced_element")
+    (assert_equal (code "(add ^parent \"cat\" ^placement (before \"tower\") (circle ^id \"n1-a\" ^cx 0 ^cy 0 ^r 4))")
+      "invalid_placement"))
+
+  (it "fails a removal that leaves a reference dangling, blaming the removal" []
+    (let error (error_of (fn [] (apply "(move ^target \"cat\" ^delta [1 1]) (remove ^target \"warm\")"))))
+    (assert_equal error/code "dangling_reference")
+    (assert_equal error/operation_index 1)
+    (assert_equal error/target "cat-body"))
+
+  (it "allows a reference to be repaired later in the same batch" []
+    (let result (apply "(remove ^target \"warm\") (unset ^target \"cat-body\" ^field [\"fill_ref\"]) (set ^target \"cat-body\" ^field [\"fill\"] ^value \"#c8894b\")"))
+    (assert_equal (/fill (/node ((index_scene result/scene) .get "cat-body"))) "#c8894b"))
+
+  (it "lets a later operation use a node added earlier in the batch" []
+    (let result (apply "(add ^parent \"cat\" ^placement (first) (g ^id \"n1-tail\")) (add ^parent \"n1-tail\" ^placement (last) (circle ^id \"n1-tip\" ^cx 0 ^cy 0 ^r 4 ^fill \"#000000\")) (move ^target \"n1-tail\" ^delta [3 4])"))
+    (let entries (index_scene result/scene))
+    (assert_equal (/parent (entries .get "n1-tip")) "n1-tail")
+    (assert_equal (/translate (/node (entries .get "n1-tail"))) [3 4]))
+
+  (it "refuses to change a primitive's kind through replace_geometry" []
+    (assert_equal (code "(replace_geometry ^target \"cat-body\" (path (M 0 0) (L 1 1)))") "kind_mismatch")
+    (assert_equal (code "(replace_geometry ^target \"cat-body\" (ellipse ^cx 0 ^cy 0 ^rx 1 ^ry 1 ^fill \"#000000\"))")
+      "invalid_geometry")
+    (let result (apply "(replace_geometry ^target \"cat-head\" (path (M -22 -40) (L 0 -90) (L 22 -40) (Z)))"))
+    (let head (/node ((index_scene result/scene) .get "cat-head")))
+    (assert_equal head/fill "#d99d5d")
+    (assert_equal ($size ($body head)) 4)))
+
+(describe "normalized effects"
+  (it "records before and after for sugar operations" []
+    (let result (apply "(move ^target \"cat\" ^delta [-24 0]) (scale_by ^target \"cat\" ^factor [1.5 1.5]) (rotate_by ^target \"cat\" ^degrees 30)"))
+    (let moved result/effects/0)
+    (assert_equal moved/operation_index 0)
+    (assert_equal moved/target "cat")
+    (assert_equal moved/field ["translate"])
+    (assert_equal moved/before [200 200])
+    (assert_equal moved/after [176 200])
+    (assert_equal (/after result/effects/1) [1.5 1.5])
+    (assert_equal (/after result/effects/2) 30))
+
+  (it "converts a canvas-space move through the ancestor transform" []
+    (let scene (scene_with "(g ^id \"outer\" ^scale [2 2] ^rotate 90 (circle ^id \"dot\" ^cx 0 ^cy 0 ^r 1 ^fill \"#000000\"))"))
+    (let before (world_bounds (index_scene scene) "dot"))
+    (let result
+      (apply_patch scene (patch "(move ^target \"dot\" ^delta [10 0] ^space \"canvas\")")))
+    (let after (world_bounds (index_scene result/scene) "dot"))
+    (assert_equal (- after/0 before/0) 10)
+    (assert_equal (- after/1 before/1) 0))
+
+  (it "keeps an object in place when reparenting with preserve_world" []
+    (let before (world_bounds (index_scene (base_scene)) "tower"))
+    (let result (apply "(rotate_by ^target \"cat\" ^degrees 90) (scale_by ^target \"cat\" ^factor 2) (reparent ^target \"tower\" ^parent \"cat\" ^placement (last) ^mode \"preserve_world\")"))
+    (let after (world_bounds (index_scene result/scene) "tower"))
+    (repeat i in 4
+      ($assert (< ($math/abs (- before/%i after/%i)) 0.0001) "the tower moved on the canvas")))
+
+  (it "reports an unrepresentable preserve_world transform precisely" []
+    (let scene (scene_with "(g ^id \"squash\" ^scale [2 1] (g ^id \"turned\" ^rotate 30 (circle ^id \"dot\" ^cx 5 ^cy 0 ^r 1 ^fill \"#000000\")))"))
+    (assert_equal
+      (error_code (fn []
+        (apply_patch scene (patch "(reparent ^target \"dot\" ^parent \"scene\" ^placement (last) ^mode \"preserve_world\")"))))
+      "unrepresentable_transform"))
+
+  (it "detects an exact no-op" []
+    (let result (apply "(move ^target \"cat\" ^delta [0 0])"))
+    (assert_equal result/noop true)
+    (assert_equal result/digest (scene_digest (base_scene))))
+
+  (it "replays its normalized operations to the same digest" []
+    (let base (base_scene))
+    (let result (apply "(add ^parent \"scene\" ^placement (first) (rect ^id \"n1-sky\" ^x 0 ^y 0 ^width 400 ^height 300 ^fill_ref \"warm\")) (reparent ^target \"tower\" ^parent \"cat\" ^placement (first) ^mode \"preserve_world\") (order ^target \"title\" ^placement (first)) (set ^target \"title\" ^field [\"content\"] ^value \"NEW TITLE\") (set_canvas ^field \"background\" ^value \"#101010\")"))
+    (let again (replay_normalized base result/normalized))
+    (assert_equal again/digest result/digest)
+    (assert_equal (canonical again/scene) (canonical result/scene))))
+
+(describe "locks"
+  (it "blocks direct edits of each locked scope and allows the rest" []
+    (assert_equal (code "(remove ^target \"cat\")" ^policy "(policy (lock ^target \"cat\" ^scope \"identity\"))") "locked")
+    (assert_equal (code "(set ^target \"cat\" ^field [\"label\"] ^value \"Dog\")" ^policy "(policy (lock ^target \"cat\" ^scope \"identity\"))") "locked")
+    (assert_equal (code "(move ^target \"cat\" ^delta [5 0])" ^policy "(policy (lock ^target \"cat\" ^scope \"identity\"))") "accepted")
+    (assert_equal (code "(set ^target \"title\" ^field [\"content\"] ^value \"SUN CITY\")" ^policy "(policy (lock ^target \"title\" ^scope \"text\"))") "locked")
+    (assert_equal (code "(set ^target \"title\" ^field [\"fill\"] ^value \"#ff0000\")" ^policy "(policy (lock ^target \"title\" ^scope \"text\"))") "accepted")
+    (assert_equal (code "(move ^target \"cat\" ^delta [5 0])" ^policy "(policy (lock ^target \"cat\" ^scope \"geometry\"))") "locked")
+    (assert_equal (code "(set ^target \"cat-head\" ^field [\"fill\"] ^value \"#000000\")" ^policy "(policy (lock ^target \"cat\" ^scope \"appearance\"))") "locked")
+    (assert_equal (code "(set ^target \"cat-head\" ^field [\"label\"] ^value \"head\")" ^policy "(policy (lock ^target \"cat\" ^scope \"subtree\"))") "locked"))
+
+  (it "blocks an indirect change through an ancestor transform" []
+    (let scene (scene_with "(g ^id \"room\" (g ^id \"cat\" (circle ^id \"eye\" ^cx 0 ^cy 0 ^r 2 ^fill \"#000000\")))"))
+    (fn attempt [operations : Str] : Str
+      (error_code (fn []
+        (apply_patch scene (patch operations)
+          ^policy (patch_from_policy "(policy (lock ^target \"cat\" ^scope \"geometry\"))")))))
+    (assert_equal (attempt "(move ^target \"room\" ^delta [10 0])") "locked")
+    (assert_equal (attempt "(scale_by ^target \"room\" ^factor [2 2])") "locked")
+    (assert_equal (attempt "(remove ^target \"room\")") "locked")
+    (assert_equal (attempt "(set ^target \"room\" ^field [\"label\"] ^value \"Room\")") "accepted"))
+
+  (it "blocks an indirect change through reparenting" []
+    (let scene (scene_with "(g ^id \"far\" ^translate [100 0]) (g ^id \"cat\" (circle ^id \"eye\" ^cx 0 ^cy 0 ^r 2 ^fill \"#000000\"))"))
+    (assert_equal
+      (error_code (fn []
+        (apply_patch scene
+          (patch "(reparent ^target \"cat\" ^parent \"far\" ^placement (last) ^mode \"preserve_local\")")
+          ^policy (patch_from_policy "(policy (lock ^target \"eye\" ^scope \"geometry\"))"))))
+      "locked")
+    (assert_equal
+      (error_code (fn []
+        (apply_patch scene
+          (patch "(reparent ^target \"far\" ^parent \"cat\" ^placement (last) ^mode \"preserve_local\")")
+          ^policy (patch_from_policy "(policy (lock ^target \"cat\" ^scope \"subtree\"))"))))
+      "locked"))
+
+  (it "blocks an indirect change through a shared gradient" []
+    (assert_equal (code "(set ^target \"warm-a\" ^field [\"color\"] ^value \"#00ff00\")" ^policy "(policy (lock ^target \"cat\" ^scope \"appearance\"))") "locked")
+    (assert_equal (code "(set ^target \"warm\" ^field [\"y2\"] ^value 100)" ^policy "(policy (lock ^target \"cat-body\" ^scope \"appearance\"))") "locked")
+    (assert_equal (code "(add ^parent \"warm\" ^placement (last) (stop ^id \"n1-s\" ^offset 0.5 ^color \"#ffffff\"))" ^policy "(policy (lock ^target \"cat\" ^scope \"subtree\"))") "locked")
+    (assert_equal (code "(set ^target \"warm-a\" ^field [\"color\"] ^value \"#00ff00\")" ^policy "(policy (lock ^target \"city\" ^scope \"appearance\"))") "accepted"))
+
+  (it "names the lock, the target, and the expected condition" []
+    (let error (error_of (fn [] (apply "(move ^target \"cat\" ^delta [1 0]) (remove ^target \"cat-head\")" ^policy "(policy (lock ^target \"cat\" ^scope \"subtree\"))"))))
+    (assert_equal error/code "locked")
+    (assert_equal error/operation_index 0)
+    (assert_equal error/target "cat")))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

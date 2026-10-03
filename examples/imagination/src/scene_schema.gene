@@ -1,0 +1,392 @@
+# The svg-scene/v1 registry (design sections 7.3 and 8.2).
+#
+# One table says which elements, fields, and operations exist. Validation
+# reads it, the patch interpreter reads it, and the prompt's reference text is
+# generated from it, so the three cannot drift apart.
+(mod imagination_scene_schema)
+
+(import [reject limits str? list? int? number? node? kind_of field_label] ^from "./types")
+
+(const media_id "svg-scene/v1")
+(const scene_schema_version 1)
+
+# Bundled fonts. A text node names one of these IDs; the family is what the
+# serializer writes and what fontconfig resolves inside the bundled directory.
+(let fonts #{
+  ^sans #{^family "DejaVu Sans" ^weights #[400 700]
+          ^files #["DejaVuSans.ttf" "DejaVuSans-Bold.ttf"]
+          ^pdf_names #["DejaVuSans" "DejaVuSans-Bold"]}
+  ^serif #{^family "DejaVu Serif" ^weights #[400 700]
+           ^files #["DejaVuSerif.ttf" "DejaVuSerif-Bold.ttf"]
+           ^pdf_names #["DejaVuSerif" "DejaVuSerif-Bold"]}})
+
+(fn spec [name : Str, type : Str, aspect : Str, required : Bool] : Any
+  {^name name ^type type ^aspect aspect ^required required})
+
+(fn needs [name : Str, type : Str, aspect : Str] : Any (spec name type aspect true))
+(fn allows [name : Str, type : Str, aspect : Str] : Any (spec name type aspect false))
+
+(fn joined [groups...] : Any
+  (var result [])
+  (for group in groups
+    (for item in group (result .push item)))
+  result)
+
+(let semantic_fields [
+  (allows "label" "label" "semantic")
+  (allows "role" "label" "semantic")
+  (allows "derived_from" "id" "semantic")])
+
+(let transform_fields [
+  (allows "translate" "vec2" "transform")
+  (allows "rotate" "num" "transform")
+  (allows "scale" "scale2" "transform")
+  (allows "pivot" "vec2" "transform")])
+
+(let effect_fields [
+  (allows "opacity" "unit" "appearance")
+  (allows "clip_ref" "ref:clip_path" "appearance")
+  (allows "filter_ref" "ref:blur" "appearance")])
+
+(let fill_fields [
+  (allows "fill" "paint" "appearance")
+  (allows "fill_ref" "ref:gradient" "appearance")
+  (allows "fill_opacity" "unit" "appearance")
+  (allows "fill_rule" "enum:nonzero|evenodd" "appearance")])
+
+(let stroke_fields [
+  (allows "stroke" "paint" "appearance")
+  (allows "stroke_ref" "ref:gradient" "appearance")
+  (allows "stroke_opacity" "unit" "appearance")
+  (allows "stroke_width" "nonneg" "appearance")
+  (allows "stroke_linecap" "enum:butt|round|square" "appearance")
+  (allows "stroke_linejoin" "enum:miter|round|bevel" "appearance")])
+
+(let common_fields (joined semantic_fields transform_fields effect_fields))
+(let shape_fields (joined common_fields fill_fields stroke_fields))
+
+# `where` is the place an element may appear: "render" under the scene or a
+# group, "def" under defs, "stop" under a gradient. `body` names what its
+# children are.
+(fn element [kind : Str, where : Str, body : Str, doc : Str, fields] : Any
+  {^kind kind ^where where ^body body ^doc doc ^fields fields})
+
+(let elements [
+  (element "g" "render" "children"
+    "A group. Its children paint in order; a semantic object is usually a group."
+    common_fields)
+  (element "rect" "render" "none" "A rectangle with an optional corner radius."
+    (joined [(needs "x" "num" "geometry") (needs "y" "num" "geometry")
+             (needs "width" "pos" "geometry") (needs "height" "pos" "geometry")
+             (allows "rx" "nonneg" "geometry") (allows "ry" "nonneg" "geometry")]
+            shape_fields))
+  (element "circle" "render" "none" "A circle."
+    (joined [(needs "cx" "num" "geometry") (needs "cy" "num" "geometry")
+             (needs "r" "pos" "geometry")]
+            shape_fields))
+  (element "ellipse" "render" "none" "An ellipse."
+    (joined [(needs "cx" "num" "geometry") (needs "cy" "num" "geometry")
+             (needs "rx" "pos" "geometry") (needs "ry" "pos" "geometry")]
+            shape_fields))
+  (element "line" "render" "none" "A stroked line segment. It has no fill."
+    (joined [(needs "x1" "num" "geometry") (needs "y1" "num" "geometry")
+             (needs "x2" "num" "geometry") (needs "y2" "num" "geometry")]
+            common_fields stroke_fields))
+  (element "polyline" "render" "none" "An open run of straight segments."
+    (joined [(needs "points" "points" "geometry")] shape_fields))
+  (element "polygon" "render" "none" "A closed shape with straight edges."
+    (joined [(needs "points" "points" "geometry")] shape_fields))
+  (element "path" "render" "path"
+    "A path. Its children are the commands (M x y) (L x y) (C x1 y1 x2 y2 x y) (Q x1 y1 x y) (Z), all absolute, starting with M."
+    shape_fields)
+  (element "text" "render" "text"
+    "One line of text; its single child is the string. x and y give the anchor point on the baseline."
+    (joined [(needs "x" "num" "geometry") (needs "y" "num" "geometry")
+             (needs "font" "font" "text") (needs "size" "pos" "text")
+             (allows "weight" "weight" "text")
+             (allows "anchor" "enum:start|middle|end" "text")]
+            shape_fields))
+  (element "linear_gradient" "def" "stops"
+    "A linear gradient in canvas units. Its children are stops. Use it with fill_ref or stroke_ref."
+    [(needs "x1" "num" "appearance") (needs "y1" "num" "appearance")
+     (needs "x2" "num" "appearance") (needs "y2" "num" "appearance")
+     (allows "label" "label" "semantic")])
+  (element "radial_gradient" "def" "stops"
+    "A radial gradient in canvas units. Its children are stops."
+    [(needs "cx" "num" "appearance") (needs "cy" "num" "appearance")
+     (needs "r" "pos" "appearance")
+     (allows "fx" "num" "appearance") (allows "fy" "num" "appearance")
+     (allows "label" "label" "semantic")])
+  (element "stop" "stop" "none" "A gradient stop."
+    [(needs "offset" "unit" "appearance") (needs "color" "color" "appearance")
+     (allows "opacity" "unit" "appearance")])
+  (element "clip_path" "def" "clip_shapes"
+    "A clipping region. Its children are rect, circle, ellipse, polygon, or path shapes with geometry only. Use it with clip_ref."
+    [(allows "label" "label" "semantic")])
+  (element "blur" "def" "none"
+    "A Gaussian blur with an explicit filter region in canvas units. Use it with filter_ref."
+    [(needs "std_dev" "blur" "appearance")
+     (needs "x" "num" "appearance") (needs "y" "num" "appearance")
+     (needs "width" "pos" "appearance") (needs "height" "pos" "appearance")
+     (allows "label" "label" "semantic")])])
+
+(let clip_shape_kinds ["rect" "circle" "ellipse" "polygon" "path"])
+
+(let path_commands #{^M 2 ^L 2 ^C 6 ^Q 4 ^Z 0})
+
+(let canvas_fields [
+  (needs "width" "canvas" "geometry")
+  (needs "height" "canvas" "geometry")
+  (needs "view_box" "view_box" "geometry")
+  (needs "background" "paint" "appearance")])
+
+(let type_docs #{
+  ^num "a finite number"
+  ^pos "a number greater than 0"
+  ^nonneg "a number of at least 0"
+  ^unit "a number from 0 to 1"
+  ^color "a hex color such as \"#1f2937\""
+  ^paint "a hex color such as \"#1f2937\", or \"none\""
+  ^vec2 "[x y]"
+  ^scale2 "[sx sy], both greater than 0"
+  ^points "[[x y] [x y] ...]"
+  ^label "a short string"
+  ^id "an object ID string"
+  ^font "a bundled font ID: \"sans\" or \"serif\""
+  ^weight "400 or 700"
+  ^blur "a blur radius greater than 0"
+  ^canvas "a whole number of pixels"
+  ^view_box "[min_x min_y width height]"})
+
+(fn element_spec [kind : Str] : Any
+  (for item in elements
+    (if (== item/kind kind) (return item)))
+  nil)
+
+(fn field_spec [kind : Str, name : Str] : Any
+  (let item (element_spec kind))
+  (if ($absent? item) (return nil))
+  (for candidate in item/fields
+    (if (== candidate/name name) (return candidate)))
+  nil)
+
+(fn canvas_field_spec [name : Str] : Any
+  (for candidate in canvas_fields
+    (if (== candidate/name name) (return candidate)))
+  nil)
+
+(fn container? [kind : Str] : Bool
+  (let item (element_spec kind))
+  (if ($absent? item) (return false))
+  (|| (== item/body "children") (== item/body "stops") (== item/body "clip_shapes")))
+
+# ── scalar checks ──────────────────────────────────────────────────────────
+
+(let id_pattern (Regex "^[A-Za-z][A-Za-z0-9_-]{0,63}$"))
+(let color_pattern (Regex "^#[0-9a-fA-F]{6}$"))
+(let reserved_ids ["scene" "defs"])
+
+(fn valid_id? [value] : Bool
+  (if_not (str? value) (return false))
+  (if (reserved_ids .contains? value) (return false))
+  (! ($absent? ($regex/match id_pattern value))))
+
+(fn finite? [value] : Bool
+  (if_not (number? value) (return false))
+  (if_not (== value value) (return false))
+  (<= ($math/abs value) limits/magnitude))
+
+# Integral floats become Ints and -0 becomes 0, so one geometric value has one
+# canonical spelling. Nothing is rounded.
+(fn normal_number [value] : Any
+  (if (int? value) (return value))
+  (if (== ($math/trunc value) value) (return ($to_int value)))
+  value)
+
+(fn printable? [text : Str] : Bool
+  (for byte in ($bytes text)
+    (if (|| (< byte 32) (== byte 127)) (return false)))
+  true)
+
+(fn number_list? [value, count : Int] : Bool
+  (if_not (list? value) (return false))
+  (if (!= value/.size count) (return false))
+  (for item in value
+    (if_not (finite? item) (return false)))
+  true)
+
+(fn normal_numbers [values] : Any
+  (var result [])
+  (for item in values (result .push (normal_number item)))
+  result)
+
+# Check one value against a field type and return its canonical form. A
+# reference type only checks the ID's shape; whether the target exists is a
+# whole-scene rule.
+(fn check_value [type : Str, value, ^target target = nil, ^field field = nil,
+                 ^index index = nil] : Any
+  (fn bad [expected : Str]
+    (reject "invalid_field" $"${(field_label field)} must be ${expected}"
+      ^target target ^field field ^expected expected ^index index))
+  (if ($str/starts_with? type "enum:")
+    (then
+      (let options ($str/split ($str/slice_bytes type 5 (- ($str/byte_size type) 5)) "|"))
+      (if_not (&& (str? value) (options .contains? value))
+        (bad $"one of ${($str/join options \", \")}"))
+      (return value)))
+  (if ($str/starts_with? type "ref:")
+    (then
+      (if_not (valid_id? value) (bad "the ID of a definition"))
+      (return value)))
+  (match type
+    (when "num"
+      (if_not (finite? value) (bad type_docs/num))
+      (normal_number value))
+    (when "pos"
+      (if_not (&& (finite? value) (> value 0)) (bad type_docs/pos))
+      (normal_number value))
+    (when "nonneg"
+      (if_not (&& (finite? value) (>= value 0)) (bad type_docs/nonneg))
+      (normal_number value))
+    (when "unit"
+      (if_not (&& (finite? value) (>= value 0) (<= value 1)) (bad type_docs/unit))
+      (normal_number value))
+    (when "blur"
+      (if_not (&& (finite? value) (> value 0) (<= value limits/blur_std_dev))
+        (bad $"a number above 0 and at most ${limits/blur_std_dev}"))
+      (normal_number value))
+    (when "color"
+      (if_not (&& (str? value) (! ($absent? ($regex/match color_pattern value))))
+        (bad type_docs/color))
+      ($str/lower value))
+    (when "paint"
+      (if (== value "none") (return value))
+      (if_not (&& (str? value) (! ($absent? ($regex/match color_pattern value))))
+        (bad type_docs/paint))
+      ($str/lower value))
+    (when "vec2"
+      (if_not (number_list? value 2) (bad type_docs/vec2))
+      (normal_numbers value))
+    (when "scale2"
+      (if_not (&& (number_list? value 2) (> value/0 0) (> value/1 0)) (bad type_docs/scale2))
+      (normal_numbers value))
+    (when "view_box"
+      (if_not (&& (number_list? value 4) (> value/2 0) (> value/3 0)) (bad type_docs/view_box))
+      (normal_numbers value))
+    (when "points"
+      (if_not (&& (list? value) (>= value/.size 2) (<= value/.size limits/points))
+        (bad type_docs/points))
+      (var points [])
+      (for point in value
+        (if_not (number_list? point 2) (bad type_docs/points))
+        (points .push (normal_numbers point)))
+      points)
+    (when "label"
+      (if_not (&& (str? value) (<= ($str/byte_size value) limits/label_bytes) (printable? value))
+        (bad $"a string of at most ${limits/label_bytes} bytes with no control characters"))
+      value)
+    (when "id"
+      (if_not (valid_id? value) (bad type_docs/id))
+      value)
+    (when "font"
+      (if_not (&& (str? value) ($has_key? fonts value)) (bad type_docs/font))
+      value)
+    (when "weight"
+      (if_not (|| (== value 400) (== value 700)) (bad type_docs/weight))
+      value)
+    (when "canvas"
+      (if_not (&& (int? value) (>= value limits/canvas_min) (<= value limits/canvas_max))
+        (bad $"a whole number from ${limits/canvas_min} to ${limits/canvas_max}"))
+      value)
+    (else (reject "unknown_type" $"unknown field type ${type}" ^field field ^index index))))
+
+# ── operations ─────────────────────────────────────────────────────────────
+
+(fn operation [name : Str, inputs : Str, doc : Str, props] : Any
+  {^name name ^inputs inputs ^doc doc ^props props})
+
+# `props` lists the properties an operation takes; a trailing "?" marks an
+# optional one. The interpreter rejects anything else.
+(let operations [
+  (operation "add" "^parent ^placement, one complete node"
+    "Insert a new node. ^parent is a group ID, \"scene\" for the top level, or \"defs\" for a gradient, clip_path or blur. Every ID in the node must be new and use the allocated prefix."
+    ["parent" "placement"])
+  (operation "remove" "^target"
+    "Remove an object and everything inside it. A definition that is still referenced cannot be removed."
+    ["target"])
+  (operation "set" "^target ^field ^value"
+    "Replace one field with a typed value. ^field is a list: a field name, plus an index for one component, such as [\"translate\" 0]. Text content is the field [\"content\"]."
+    ["target" "field" "value"])
+  (operation "unset" "^target ^field"
+    "Remove an optional field."
+    ["target" "field"])
+  (operation "replace_geometry" "^target, one node of the same kind holding only geometry"
+    "Replace a primitive's geometry and keep its ID, kind, paint, and meaning. For a path the node holds the new commands."
+    ["target"])
+  (operation "move" "^target ^delta ^space?"
+    "Add [dx dy] to the object's translation. ^space is \"parent\" (default, the object's parent units) or \"canvas\"."
+    ["target" "delta" "space?"])
+  (operation "scale_by" "^target ^factor"
+    "Multiply the object's scale by [fx fy]. The pivot stays fixed."
+    ["target" "factor"])
+  (operation "rotate_by" "^target ^degrees"
+    "Add degrees to the object's rotation, clockwise on screen. The pivot stays fixed."
+    ["target" "degrees"])
+  (operation "reparent" "^target ^parent ^placement ^mode"
+    "Move an object into another group. ^mode is \"preserve_world\" (it stays where it appears) or \"preserve_local\" (its own fields are unchanged)."
+    ["target" "parent" "placement" "mode"])
+  (operation "order" "^target ^placement"
+    "Change paint order among siblings. Later children paint on top."
+    ["target" "placement"])
+  (operation "set_canvas" "^field ^value"
+    "Change one canvas field: \"width\", \"height\", \"view_box\", or \"background\"."
+    ["field" "value"])])
+
+(fn operation_spec [name : Str] : Any
+  (for item in operations
+    (if (== item/name name) (return item)))
+  nil)
+
+# ── generated reference text ───────────────────────────────────────────────
+
+(fn type_doc [type : Str] : Str
+  (if ($str/starts_with? type "enum:")
+    (return ($str/join ($map ($str/split ($str/slice_bytes type 5 (- ($str/byte_size type) 5)) "|")
+                             (fn [option] $"\"${option}\"")) " | ")))
+  (if ($str/starts_with? type "ref:")
+    (return $"the ID of a ${($str/slice_bytes type 4 (- ($str/byte_size type) 4))} definition"))
+  (?? (type_docs .get type) type))
+
+(fn field_group_text [title : Str, fields] : Str
+  (var parts [])
+  (for item in fields
+    (parts .push $"^${item/name} ${(type_doc item/type)}"))
+  $"${title}: ${($str/join parts \"; \")}")
+
+# The element and operation reference shown to the model. Generated here so the
+# prompt lists exactly what the interpreter accepts.
+(fn schema_reference [] : Str
+  (var lines [])
+  (lines .push "Elements. Every element has ^id. A field marked * is required.")
+  (for item in elements
+    (var own [])
+    (for candidate in item/fields
+      (if_yes (|| (== candidate/aspect "geometry") (== candidate/aspect "text")
+                  (&& (!= item/where "render") (!= candidate/aspect "semantic")))
+        (own .push $"^${candidate/name}${(if candidate/required \"*\" \"\")} ${(type_doc candidate/type)}")))
+    (lines .push $"- ${item/kind}: ${item/doc}${(if (== own/.size 0) \"\" \" Fields: \")}${($str/join own \"; \")}"))
+  (lines .push "")
+  (lines .push "Fields shared by every drawable element (g, shapes, path, text):")
+  (lines .push $"- ${(field_group_text \"Meaning\" semantic_fields)}")
+  (lines .push $"- ${(field_group_text \"Transform\" transform_fields)}")
+  (lines .push $"- ${(field_group_text \"Effects\" effect_fields)}")
+  (lines .push "Paint fields for shapes, path, and text (line takes only the stroke fields):")
+  (lines .push $"- ${(field_group_text \"Fill\" fill_fields)}")
+  (lines .push $"- ${(field_group_text \"Stroke\" stroke_fields)}")
+  (lines .push "A color field and its _ref field cannot both be set. An unset fill is black; an unset stroke is none.")
+  (lines .push "")
+  (lines .push "Operations, applied in order as one atomic patch:")
+  (for item in operations
+    (lines .push $"- (${item/name} ${item/inputs}) ${item/doc}"))
+  (lines .push "Placement is exactly one of (first), (last), (before \"sibling-id\"), (after \"sibling-id\").")
+  ($str/join lines "\n"))

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Bootstrap Gene; the application itself is written in Gene.
+imagination_package_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "${GENE_BINARY:-gene}" run --package-root "$imagination_package_dir" "$imagination_package_dir/src/main.gene" -- "$@"

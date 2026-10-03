@@ -1,0 +1,14 @@
+(patch ^schema 1 ^id "landscape-03" ^base "r002" ^goal "goal-01"
+  (intent "Add one tree on the left bank and a caption.")
+  (add ^parent "scene" ^placement (last)
+    (g ^id "p3-tree" ^label "Tree" ^role "subject" ^translate [250 760]
+      (rect ^id "p3-trunk" ^x -18 ^y -150 ^width 36 ^height 170 ^rx 8 ^fill "#5a3a22")
+      (circle ^id "p3-crown-left" ^cx -55 ^cy -190 ^r 70 ^fill "#2f6b3a")
+      (circle ^id "p3-crown-right" ^cx 55 ^cy -200 ^r 76 ^fill "#2f6b3a")
+      (circle ^id "p3-crown-top" ^cx 0 ^cy -270 ^r 84 ^fill "#3d8249")))
+  (scale_by ^target "p3-tree" ^factor [1.15 1.15])
+  (add ^parent "scene" ^placement (last)
+    (text ^id "p3-caption" ^x 512 ^y 980 ^font "serif" ^size 36 ^weight 700
+      ^anchor "middle" ^fill "#fff7e6" "Evening by the river"))
+  (order ^target "p2-river-glint" ^placement (after "p2-river"))
+  (set ^target "p1-sun-glow" ^field ["opacity"] ^value 0.45))

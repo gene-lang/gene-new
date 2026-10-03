@@ -1,0 +1,168 @@
+# Runs on an Evolution: persisted progress, events, cancellation, steering.
+(import $test [describe it assert_equal run])
+(import $db/sqlite [Db])
+(import [scratch test_profile error_code] ^from "./support")
+(import [read_domain read_canonical canonical digest_of] ^from "../src/scene")
+(import [fixture_agent] ^from "../src/adapters/model")
+(import [validate_goal] ^from "../src/evaluation")
+(import [create_evolution open_evolution close_evolution line_row revisions revision_row
+         parents_of fork goal_of view] ^from "../src/evolution")
+(import [start_run execute_run cancel_run steer_run resume_run run_row model_view run_events
+         active_run] ^from "../src/jobs")
+(import [events_after] ^from "../src/store")
+
+(fn goal [] : Any
+  (validate_goal
+    (read_domain "(goal ^id \"goal-01\" ^request \"A red circle on a white canvas.\"
+      (requirement ^id \"circle\" ^strength \"hard\" ^check \"visual\" \"One red circle is visible.\")
+      (requirement ^id \"balance\" ^strength \"soft\" ^check \"visual\" \"The circle is centered.\"))" ^head "goal")))
+
+(fn new_evolution [] : Any
+  (create_evolution ($path/join (scratch "job") "project") "circle" (goal) (test_profile)
+    ^width 256 ^height 256))
+
+(fn review [circle : Str, balance : Str] : Str
+  $"(review (check ^requirement \"circle\" ^result \"${circle}\" ^evidence \"seen\") (check ^requirement \"balance\" ^result \"${balance}\" ^evidence \"seen\"))")
+
+(fn envelope [context, action : Str, body : Str] : Str
+  $"(agent_response ^schema 1 ^observed_revision \"${context/newest}\" ^observed_image \"${context/image}\" ^action \"${action}\" ${body})")
+
+(fn edit [input, checks : Str, operations : Str] : Str
+  (let context input/context)
+  (let base (if ($absent? context/pending) context/head context/pending))
+  (envelope context "edit"
+    $"${checks} (plan \"step\") (patch ^schema 1 ^id \"${context/patch_id}\" ^base \"${base}\" ^goal \"${context/goal}\" (intent \"draw\") ${operations})"))
+
+(fn add_circle [input] : Str
+  (edit input (review "fail" "fail")
+    $"(add ^parent \"scene\" ^placement (last) (circle ^id \"${input/context/prefix}dot\" ^cx 100 ^cy 128 ^r 40 ^fill \"#dc2626\"))"))
+
+(fn done [input] : Str
+  (envelope input/context "done" $"${(review \"pass\" \"pass\")} (summary \"A red circle.\")"))
+
+(describe "a drawing run on an evolution"
+  (it "publishes its revisions on the line and records a truthful terminal state" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main" ^expected_head "r000"))
+    (assert_equal started/status "running")
+    (let outcome (execute_run evolution (fixture_agent [add_circle done]) started/id))
+    (assert_equal outcome/status "complete")
+    (let row (run_row evolution started/id))
+    (assert_equal row/status "complete")
+    (assert_equal row/accepted "r001")
+    (assert_equal row/iteration 1)
+    (assert_equal (/head (line_row evolution "main")) "r001")
+    (assert_equal (/calls (read_canonical row/usage)) 2)
+    # The run's trial reference points at its newest candidate.
+    (assert_equal (/head (line_row evolution $"${started/id}-trials")) "r001")
+    (assert_equal (/run (revision_row evolution "r001")) started/id)
+    (close_evolution evolution))
+
+  (it "emits events in commit order, each after its change is visible" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (execute_run evolution (fixture_agent [add_circle done]) started/id)
+    (let kinds
+      ($filter ($map (events_after evolution/project 2) /kind)
+        (fn [kind] (!= kind "phase_changed"))))
+    (assert_equal kinds
+      # The first decision reviews the blank root, then its edit is rendered;
+      # the second decision's review publishes that candidate.
+      ["run_started" "review_recorded" "candidate_rendered" "revision_published"
+       "line_head_changed" "run_finished"])
+    (close_evolution evolution))
+
+  (it "shows the model view of the newest call: the submitted PNG digests" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (execute_run evolution (fixture_agent [add_circle done]) started/id)
+    (let shown (model_view evolution started/id))
+    (let submitted shown/submitted)
+    (assert_equal submitted/.size 2)
+    (assert_equal (/digest submitted/1) (/image (revision_row evolution "r001")))
+    (assert_equal (/digest submitted/1)
+      (digest_of ($fs/read_bytes (/png_path (view evolution "r001")))))
+    (assert_equal (/preprocessing submitted/1) "none")
+    (close_evolution evolution))
+
+  (it "refuses a stale head and a second active run on one line" []
+    (let evolution (new_evolution))
+    (assert_equal (error_code (fn [] (start_run evolution "main" ^expected_head "r009"))) "stale_head")
+    (let started (start_run evolution "main"))
+    (assert_equal (error_code (fn [] (start_run evolution "main"))) "line_busy")
+    # Another line is independent.
+    (fork evolution "r000" "other")
+    (assert_equal (/status (start_run evolution "other")) "running")
+    (close_evolution evolution))
+
+  (it "cancels before the next step and keeps a held candidate as an unreviewed trial" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (let agent
+      (fixture_agent [
+        (fn [input]
+          (cancel_run evolution started/id)
+          (add_circle input))]))
+    (let outcome (execute_run evolution agent started/id))
+    (assert_equal outcome/status "cancelled")
+    (assert_equal (/status (run_row evolution started/id)) "cancelled")
+    (assert_equal (/quality (revision_row evolution "r001")) "unreviewed")
+    (assert_equal (/head (line_row evolution "main")) "r000")
+    (assert_equal (active_run evolution "main") nil)
+    (close_evolution evolution))
+
+  (it "turns a steering instruction into a new goal at a safe boundary" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (steer_run evolution started/id "Make the circle blue.")
+    (let agent
+      (fixture_agent [
+        # The planner call for the changed goal.
+        (fn [input]
+          "(goal ^id \"goal-02\" ^request \"x\" (requirement ^id \"circle\" ^strength \"hard\" ^check \"visual\" \"One blue circle is visible.\") (requirement ^id \"balance\" ^strength \"soft\" ^check \"visual\" \"The circle is centered.\"))")
+        (fn [input]
+          (edit input (review "fail" "fail")
+            $"(add ^parent \"scene\" ^placement (last) (circle ^id \"${input/context/prefix}dot\" ^cx 128 ^cy 128 ^r 40 ^fill \"#2563eb\"))"))
+        done]))
+    (let outcome (execute_run evolution agent started/id))
+    (assert_equal outcome/status "complete")
+    (assert_equal (/goal (line_row evolution "main")) "goal-02")
+    (let changed (goal_of evolution "goal-02"))
+    (assert_equal changed/predecessor "goal-01")
+    (assert_equal changed/instruction "Make the circle blue.")
+    ($assert ($str/contains? changed/request "A red circle on a white canvas.") "the original request is kept")
+    (assert_equal (/goal (revision_row evolution "r001")) "goal-02")
+    # The decision after the change was asked to review under the new goal.
+    (assert_equal (/goal (/context (/input agent/received/1))) "goal-02")
+    (close_evolution evolution))
+
+  (it "resumes a stopped run from the saved line head without repeating published work" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (let first (execute_run evolution (fixture_agent [add_circle "!transport"]) started/id))
+    (assert_equal first/status "failed")
+    # r001 was held when the model failed: it is an unreviewed trial.
+    (assert_equal (/quality (revision_row evolution "r001")) "unreviewed")
+    (resume_run evolution started/id)
+    (let second (execute_run evolution (fixture_agent [add_circle done]) started/id))
+    (assert_equal second/status "complete")
+    (assert_equal (/head (line_row evolution "main")) "r002")
+    (assert_equal (parents_of evolution "r002") ["r000"])
+    (assert_equal (/iteration (run_row evolution started/id)) 2)
+    (close_evolution evolution))
+
+  (it "marks a run that was active at a restart as stopped, not running" []
+    (let evolution (new_evolution))
+    (let started (start_run evolution "main"))
+    (let root evolution/project/root)
+    (close_evolution evolution)
+    (let reopened (open_evolution root (test_profile)))
+    (let row (run_row reopened started/id))
+    (assert_equal row/status "failed")
+    (assert_equal row/phase "stopped")
+    (assert_equal (active_run reopened "main") nil)
+    (close_evolution reopened)))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

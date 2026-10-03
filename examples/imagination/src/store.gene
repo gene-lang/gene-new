@@ -1,0 +1,348 @@
+# Project persistence (design section 12).
+#
+# A project is a self-contained folder: `project.gene`, an `index.sqlite` that
+# holds references, immutable Gene blobs under `objects/`, immutable render
+# bundles under `renders/`, and `staging/` for work that is not published yet.
+# Blobs are written and flushed before the index refers to them, so a crash
+# can leave an unreferenced blob but never a revision whose artifact is
+# missing. SQLite is the transaction mechanism, not a second history.
+(mod imagination_store)
+
+(import $db/sqlite [open_file Db])
+(import [StoreError kind_of node? children_named] ^from "./types")
+(import [canonical digest_of read_canonical canonical_version] ^from "./scene")
+(import [media_id] ^from "./scene_schema")
+
+(const store_format 1)
+(const artifact_kinds
+  ["scene.svg" "scene.pdf" "observation.png" "thumbnail.png" "transparent.png" "manifest.gene"])
+
+(type Project ^props {^root Str ^db Any ^lock Any ^record Any ^hooks Any})
+
+(fn store_failure [code : Str, message : Str, ^detail detail = nil]
+  (fail (StoreError ^code code ^message message ^detail detail)))
+
+(let schema_sql "
+  CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL);
+  CREATE TABLE goals (
+    id TEXT PRIMARY KEY,
+    object TEXT NOT NULL,
+    predecessor TEXT,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE revisions (
+    id TEXT PRIMARY KEY,
+    number INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    quality TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    scene TEXT NOT NULL,
+    patch TEXT,
+    normalized TEXT,
+    effects TEXT,
+    diff TEXT,
+    render TEXT NOT NULL,
+    image TEXT NOT NULL,
+    evaluation TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    run TEXT,
+    intent TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    record TEXT NOT NULL,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE parents (
+    revision TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    parent TEXT NOT NULL,
+    PRIMARY KEY (revision, position));
+  CREATE INDEX parents_by_parent ON parents (parent);
+  CREATE TABLE lines (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    head TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    origin TEXT,
+    policy TEXT,
+    version INTEGER NOT NULL,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    revision TEXT NOT NULL,
+    image TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    evaluation TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    line TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    accepted TEXT NOT NULL,
+    pending TEXT,
+    iteration INTEGER NOT NULL,
+    budgets TEXT NOT NULL,
+    usage TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    last_error TEXT NOT NULL,
+    steering TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_ms INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL);
+  CREATE TABLE events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    run TEXT,
+    revision TEXT,
+    body TEXT NOT NULL,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE allocations (
+    prefix TEXT PRIMARY KEY,
+    run TEXT,
+    created_ms INTEGER NOT NULL);
+  CREATE TABLE object_ids (
+    id TEXT PRIMARY KEY,
+    revision TEXT NOT NULL);
+  CREATE TABLE idempotency (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_ms INTEGER NOT NULL);")
+
+# ── paths ──────────────────────────────────────────────────────────────────
+
+(fn hex_of [digest : Str] : Str
+  (if_not (&& ($str/starts_with? digest "sha256:") (== ($str/byte_size digest) 71))
+    (store_failure "invalid_digest" $"${digest} is not a sha256 digest" ^detail digest))
+  (let hex ($str/slice_bytes digest 7 64))
+  (for byte in ($bytes hex)
+    (if_not (|| (&& (>= byte 48) (<= byte 57)) (&& (>= byte 97) (<= byte 102)))
+      (store_failure "invalid_digest" $"${digest} is not a sha256 digest" ^detail digest)))
+  hex)
+
+(fn object_path [project, digest : Str] : Str
+  ($path/join project/root $"objects/${(hex_of digest)}"))
+
+(fn render_dir [project, digest : Str] : Str
+  ($path/join project/root $"renders/${(hex_of digest)}"))
+
+# The path of one artifact of a render bundle. `kind` must be an allowlisted
+# artifact name, so a caller can never reach an arbitrary file.
+(fn artifact_path [project, bundle : Str, kind : Str] : Str
+  (if_not (artifact_kinds .contains? kind)
+    (store_failure "invalid_artifact" $"${kind} is not an artifact kind" ^detail kind))
+  ($path/join (render_dir project bundle) kind))
+
+# A fresh staging directory owned by one operation.
+(fn new_staging [project] : Str
+  (let path ($path/join project/root $"staging/${($crypto/random_hex 8)}"))
+  ($fs/make_dir path)
+  path)
+
+(fn remove_tree [path : Str] : Nil
+  (if_not ($fs/exists? path) (return nil))
+  (let info ($fs/info path ^follow false))
+  (if_yes (== info/kind "directory")
+    (for name in ($fs/list_dir path) (remove_tree ($path/join path name))))
+  ($fs/remove path)
+  nil)
+
+# ── blobs ──────────────────────────────────────────────────────────────────
+
+# Store canonical Gene text as an immutable object and return its digest.
+# The file is staged, flushed, and renamed into place; an existing object with
+# this digest already has these bytes.
+(fn put_object [project, text : Str] : Str
+  (let digest (digest_of text))
+  (let path (object_path project digest))
+  (if_not ($fs/exists? path)
+    ($fs/write_text_atomic path text))
+  digest)
+
+(fn put_node [project, node] : Str
+  (put_object project (canonical node)))
+
+# Read an object and verify its digest. A mismatch is corruption: it is
+# reported precisely and never repaired by recreating evidence.
+(fn get_object [project, digest : Str] : Str
+  (let path (object_path project digest))
+  (if_not ($fs/exists? path)
+    (store_failure "missing_object" $"object ${digest} is referenced but missing" ^detail digest))
+  (let text ($fs/read_text path))
+  (if (!= (digest_of text) digest)
+    (store_failure "corrupt_object" $"object ${digest} does not match its digest" ^detail digest))
+  text)
+
+(fn get_node [project, digest : Str] : Any
+  (read_canonical (get_object project digest)))
+
+# Publish a staged render bundle into `renders/<bundle digest>/`. Every file
+# is written with a temporary name, flushed, and renamed; then every artifact
+# the manifest names is read back and checked against its digest.
+(fn publish_bundle [project, bundle] : Nil
+  (let target (render_dir project bundle/digest))
+  (if_not ($fs/exists? target)
+    ($fs/make_dir target)
+    (for artifact in (children_named bundle/manifest "artifact")
+      ($fs/write_bytes_atomic ($path/join target artifact/kind)
+        ($fs/read_bytes ($path/join bundle/dir artifact/kind))))
+    ($fs/write_text_atomic ($path/join target "manifest.gene") (canonical bundle/manifest)))
+  (verify_bundle project bundle/digest)
+  nil)
+
+(fn verify_bundle [project, digest : Str] : Any
+  (let directory (render_dir project digest))
+  (let manifest_path ($path/join directory "manifest.gene"))
+  (if_not ($fs/exists? manifest_path)
+    (store_failure "missing_artifact" $"render ${digest} has no manifest" ^detail digest))
+  (let text ($fs/read_text manifest_path))
+  (if (!= (digest_of text) digest)
+    (store_failure "corrupt_artifact" $"render manifest ${digest} does not match its digest"
+      ^detail digest))
+  (let manifest (read_canonical text))
+  (for artifact in (children_named manifest "artifact")
+    (let path ($path/join directory artifact/kind))
+    (if_not ($fs/exists? path)
+      (store_failure "missing_artifact" $"render ${digest} is missing ${artifact/kind}"
+        ^detail artifact/kind))
+    (if (!= (digest_of ($fs/read_bytes path)) artifact/digest)
+      (store_failure "corrupt_artifact"
+        $"${artifact/kind} of render ${digest} does not match its digest" ^detail artifact/kind)))
+  manifest)
+
+# ── meta ───────────────────────────────────────────────────────────────────
+
+(fn meta_get [project, key : Str] : Any
+  (let row (project/db .Db:query_one "SELECT value FROM meta WHERE key = ?" key))
+  (if ($absent? row) nil row/value))
+
+(fn meta_put [project, key : Str, value : Str] : Nil
+  (project/db .Db:execute
+    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    key value)
+  nil)
+
+# Take the next value of a named counter. Call inside a transaction.
+(fn next_number [project, key : Str] : Int
+  (let current (meta_get project key))
+  (let value (if ($absent? current) 0 ($parse/parse_int current)))
+  (meta_put project key ($to_str (+ value 1)))
+  value)
+
+# Run `body` in one index transaction: it commits whole or not at all.
+(fn in_transaction [project, body] : Any
+  (project/db .Db:transaction (fn [tx] (body))))
+
+# ── events ─────────────────────────────────────────────────────────────────
+
+# Append a project event to the outbox. Called inside the transaction that
+# makes the change, so an event exists only for a committed change. Returns
+# the event's sequence number.
+(fn append_event [project, kind : Str, run, revision, body] : Int
+  (project/db .Db:execute
+    "INSERT INTO events(kind, run, revision, body, created_ms) VALUES (?, ?, ?, ?, ?)"
+    kind run revision (canonical body) ($os/wall_ms))
+  (/seq (project/db .Db:query_one "SELECT last_insert_rowid() AS seq")))
+
+(fn events_after [project, sequence : Int, ^limit limit : Int = 500] : Any
+  (project/db .Db:query
+    "SELECT seq, kind, run, revision, body, created_ms FROM events WHERE seq > ? ORDER BY seq LIMIT ?"
+    sequence limit))
+
+(fn last_event_seq [project] : Int
+  (let row (project/db .Db:query_one "SELECT MAX(seq) AS seq FROM events"))
+  (if ($absent? row/seq) 0 row/seq))
+
+# ── opening ────────────────────────────────────────────────────────────────
+
+(fn open_database [root : Str, create : Bool] : Any
+  (let path ($path/join root "index.sqlite"))
+  (if (&& (! create) (! ($fs/exists? path)))
+    (store_failure "not_a_project" $"${root} has no index.sqlite" ^detail root))
+  (let db (open_file path ^create create ^busy_timeout_ms 5000))
+  (db .Db:query_one "PRAGMA journal_mode=WAL")
+  (db .Db:exec "PRAGMA synchronous=FULL")
+  db)
+
+(fn claim [root : Str] : Any
+  (let lock ($fs/try_lock ($path/join root "project.lock")))
+  (if ($absent? lock)
+    (store_failure "project_busy" $"${root} is open in another process" ^detail root))
+  lock)
+
+# Create a new, empty project folder. Fails if one is already there.
+(fn create_project [root : Str, name : Str, profile_manifest] : Any
+  (if ($fs/exists? ($path/join root "project.gene"))
+    (store_failure "exists" $"a project already exists at ${root}" ^detail root))
+  (for directory in ["" "objects" "renders" "staging" "exports"]
+    ($fs/make_dir (if (== directory "") root ($path/join root directory))))
+  (let lock (claim root))
+  (let id $"project-${($crypto/random_hex 8)}")
+  (let created ($os/wall_ms))
+  (let profile_id profile_manifest/id)
+  (let record
+    ($freeze
+      `(project ^schema 1 ^id %id ^name %name ^media %media_id
+         ^render_profile %profile_id ^canonical %canonical_version ^created_ms %created)))
+  ($fs/write_text_atomic ($path/join root "project.gene") (canonical record))
+  ($fs/write_text_atomic ($path/join root "render-profile.gene") (canonical profile_manifest))
+  (let db (open_database root true))
+  (let project (Project ^root root ^db db ^lock lock ^record record ^hooks {}))
+  (in_transaction project
+    (fn []
+      (db .Db:exec schema_sql)
+      (meta_put project "format" ($to_str store_format))
+      (meta_put project "project" id)
+      (meta_put project "metadata_version" "0")))
+  project)
+
+# Open an existing project. Startup recovery removes abandoned staging and
+# checks that every referenced artifact is present.
+(fn open_project [root : Str] : Any
+  (let path ($path/join root "project.gene"))
+  (if_not ($fs/exists? path)
+    (store_failure "not_a_project" $"${root} is not an imagination project" ^detail root))
+  (let record (read_canonical ($fs/read_text path)))
+  (if (|| (!= (kind_of record) "project") (!= record/schema 1))
+    (store_failure "unsupported_project" "project.gene has an unsupported schema" ^detail root))
+  (let lock (claim root))
+  (let db (open_database root false))
+  (let project (Project ^root root ^db db ^lock lock ^record record ^hooks {}))
+  (if (!= (meta_get project "format") ($to_str store_format))
+    (store_failure "unsupported_project" "the index has an unsupported format" ^detail root))
+  (recover project)
+  project)
+
+(fn close_project [project] : Nil
+  (project/db .Db:close)
+  project/lock/.close
+  nil)
+
+# Clean abandoned staging and report referenced artifacts that are missing.
+# Returns the list of problems found; an empty list is a healthy project.
+(fn recover [project] : Any
+  (let staging ($path/join project/root "staging"))
+  (if_yes ($fs/exists? staging)
+    (for name in ($fs/list_dir staging) (remove_tree ($path/join staging name))))
+  ($fs/make_dir staging)
+  # A run that was active when the process stopped cannot still be running.
+  (project/db .Db:execute
+    "UPDATE runs SET status = 'failed', phase = 'stopped', reason = 'The application stopped while this run was active.', updated_ms = ? WHERE status = 'running'"
+    ($os/wall_ms))
+  (var problems [])
+  (for row in (project/db .Db:query "SELECT id, scene, render, evaluation, record FROM revisions")
+    (for digest in [row/scene row/evaluation row/record]
+      (if_not ($fs/exists? (object_path project digest))
+        (problems .push $"revision ${row/id}: object ${digest} is missing")))
+    (if_not ($fs/exists? ($path/join (render_dir project row/render) "manifest.gene"))
+      (problems .push $"revision ${row/id}: render ${row/render} is missing")))
+  problems)

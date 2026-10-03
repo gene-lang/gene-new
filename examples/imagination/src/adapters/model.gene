@@ -1,0 +1,310 @@
+# The image-capable model transport (design section 9.4).
+#
+# The adapter owns authentication, image transport, bounded retries, timeouts,
+# and usage accounting. It sends the saved PNG bytes themselves, base64 in the
+# provider's image block; a path or a URL is never offered as visual input.
+# Gene owns the creative loop, the state, and every validation.
+(mod imagination_model)
+
+(import [ModelError] ^from "../types")
+(import $net/http_client [request HttpClientError])
+(import [codex_auth_file codex_credentials codex_spec codex_reply codex_default_model]
+  ^from "./codex")
+
+# A request is {^system Str ^parts [...] ^max_tokens Int}. A part is
+#   {^type "text" ^text Str}
+#   {^type "image" ^label Str ^digest Str ^media "image/png" ^bytes Bytes}
+# A reply is {^text ^usage {^input ^output ^cached} ^model ^submitted [...]}.
+# `submitted` lists every image actually sent: its digest, byte count, and the
+# preprocessing applied, which is none beyond base64 encoding.
+(protocol VisionAgent
+  (message plan [request] : Any)
+  (message decide [request] : Any)
+  (message evaluate [request] : Any))
+
+(const anthropic_url "https://api.anthropic.com/v1/messages")
+(const openrouter_url "https://openrouter.ai/api/v1/chat/completions")
+(const response_cap 4000000)
+(const efforts ["low" "medium" "high" "xhigh" "max"])
+
+(fn model_failure [code : Str, message : Str, ^detail detail = nil]
+  (fail (ModelError ^code code ^message message ^detail detail)))
+
+(fn setting [name : Str] : Any
+  (let value ($os/env? name))
+  (if (|| ($absent? value) (== ($str/trim value) "")) nil ($str/trim value)))
+
+(fn codex_signed_in? [] : Bool
+  (let path (codex_auth_file))
+  (&& (! ($absent? path)) ($fs/exists? path)))
+
+# Resolve the provider from the environment. Credentials stay in the process
+# environment: they are never written to a scene, a prompt, a revision, or an
+# export. Returns nil when no provider is configured.
+#
+#   IMAGINATION_PROVIDER   anthropic | openrouter | codex (default: an Anthropic
+#                          or OpenRouter key if set, else a Codex login if found)
+#   IMAGINATION_MODEL      model id (default: Claude Opus 5.5 on Anthropic and
+#                          OpenRouter, gpt-6-astra on Codex)
+#   IMAGINATION_EFFORT     low | medium | high | xhigh | max (default: medium)
+#   ANTHROPIC_API_KEY, OPENROUTER_API_KEY
+#   CODEX_AUTH_FILE, CODEX_HOME   where the Codex CLI keeps auth.json
+(fn model_config [] : Any
+  (let anthropic_key (setting "ANTHROPIC_API_KEY"))
+  (let openrouter_key (?? (setting "OPENROUTER_API_KEY") (setting "OPENROUTER_KEY")))
+  (let provider
+    (?? (setting "IMAGINATION_PROVIDER")
+        (if (! ($absent? anthropic_key)) "anthropic"
+          (if (! ($absent? openrouter_key)) "openrouter"
+            (if (codex_signed_in?) "codex" nil)))))
+  (if ($absent? provider) (return nil))
+  (if_not (["anthropic" "openrouter" "codex"] .contains? provider)
+    (model_failure "invalid_config" "IMAGINATION_PROVIDER must be anthropic, openrouter, or codex"))
+  # Codex authenticates with the CLI's OAuth token, read from auth.json at
+  # each call because the CLI refreshes it.
+  (let key (if (== provider "anthropic") anthropic_key (if (== provider "openrouter") openrouter_key "")))
+  (if ($absent? key)
+    (model_failure "invalid_config"
+      (if (== provider "anthropic")
+        "no Anthropic API key: set ANTHROPIC_API_KEY"
+        "no OpenRouter API key: set OPENROUTER_API_KEY")))
+  (let effort (?? (setting "IMAGINATION_EFFORT") "medium"))
+  (if_not (efforts .contains? effort)
+    (model_failure "invalid_config" "IMAGINATION_EFFORT must be low, medium, high, xhigh, or max"))
+  (let timeout
+    (try ($parse/parse_int (?? (setting "IMAGINATION_MODEL_TIMEOUT_MS") "300000"))
+      catch Any (model_failure "invalid_config" "IMAGINATION_MODEL_TIMEOUT_MS must be a whole number")))
+  {^provider provider
+   ^model (?? (setting "IMAGINATION_MODEL")
+              (if (== provider "anthropic") "claude-opus-5-5"
+                (if (== provider "openrouter") "anthropic/claude-opus-5.5" codex_default_model)))
+   ^auth_file (if (== provider "codex") (codex_auth_file) nil)
+   ^effort effort
+   ^key key
+   ^timeout_ms timeout
+   ^retries 2
+   # Refusal fallbacks on the Anthropic API: a policy decline is re-run on a
+   # fallback model inside the same call. Set IMAGINATION_ANTHROPIC_FALLBACKS=off
+   # to send requests without them.
+   ^fallbacks (!= (?? (setting "IMAGINATION_ANTHROPIC_FALLBACKS") "default") "off")})
+
+# What may be stored and shown: never the key.
+(fn public_config [config] : Any
+  {^provider config/provider ^model config/model ^effort config/effort})
+
+(fn transport_of [provider : Str] : Str
+  (match provider
+    (when "anthropic" "base64 image block")
+    (when "openrouter" "image_url data URL")
+    (when "codex" "input_image data URL")
+    (else "fixture")))
+
+(fn submitted_of [parts, ^provider provider : Str = "fixture"] : Any
+  (var records [])
+  (for part in parts
+    (if_yes (== part/type "image")
+      (records .push
+        {^label part/label ^digest part/digest ^media part/media
+         ^bytes ($binary/size part/bytes)
+         ^transport (transport_of provider) ^preprocessing "none"})))
+  records)
+
+(fn anthropic_spec [config, input] : Any
+  (var content [])
+  (for part in input/parts
+    (if (== part/type "image")
+      (content .push
+        {^type "image"
+         ^source {^type "base64" ^media_type part/media ^data ($base64/encode part/bytes)}})
+      (content .push {^type "text" ^text part/text})))
+  # The system prompt is the stable prefix of every call in a run, so it is
+  # marked for caching; the per-call state follows it.
+  (var body
+    {^model config/model
+     ^max_tokens input/max_tokens
+     ^system [{^type "text" ^text input/system ^cache_control {^type "ephemeral"}}]
+     ^messages [{^role "user" ^content content}]
+     ^output_config {^effort config/effort}})
+  (var headers
+    {^content-type "application/json" ^x-api-key config/key ^anthropic-version "2023-06-01"})
+  (if_yes config/fallbacks
+    (body .put "fallbacks" "default")
+    (headers .put "anthropic-beta" "server-side-fallback-2026-07-01"))
+  {^url anthropic_url ^headers headers ^body body})
+
+(fn openrouter_spec [config, input] : Any
+  (var content [])
+  (for part in input/parts
+    (if (== part/type "image")
+      (content .push
+        {^type "image_url"
+         ^image_url {^url $"data:${part/media};base64,${($base64/encode part/bytes)}"}})
+      (content .push {^type "text" ^text part/text})))
+  {^url openrouter_url
+   ^headers {^content-type "application/json" ^authorization $"Bearer ${config/key}"
+             ^x-title "Gene Imagination"}
+   ^body {^model config/model
+          ^max_tokens input/max_tokens
+          ^messages [
+            {^role "system"
+             ^content [{^type "text" ^text input/system ^cache_control {^type "ephemeral"}}]}
+            {^role "user" ^content content}]
+          ^reasoning {^effort (if (== config/effort "max") "xhigh" config/effort)}}})
+
+(fn count_of [value] : Int
+  (if (== ($head value) Int) value 0))
+
+(fn anthropic_reply [parsed] : Any
+  (if (== parsed/stop_reason "refusal")
+    (model_failure "refusal" "the model declined the request" ^detail parsed/stop_details))
+  (if (== parsed/stop_reason "max_tokens")
+    (model_failure "truncated" "the model reached its output limit before finishing the response"))
+  (var texts [])
+  (for block in (?? parsed/content [])
+    (if (== block/type "text") (texts .push block/text)))
+  (let usage (?? parsed/usage {}))
+  {^text ($str/join texts "")
+   ^model (?? parsed/model "")
+   ^usage {^input (+ (count_of usage/input_tokens) (count_of usage/cache_read_input_tokens)
+                     (count_of usage/cache_creation_input_tokens))
+           ^output (count_of usage/output_tokens)
+           ^cached (count_of usage/cache_read_input_tokens)}})
+
+(fn openrouter_reply [parsed] : Any
+  (let choices (?? parsed/choices []))
+  (if (|| (!= ($head choices) List) (== choices/.size 0))
+    (model_failure "invalid_response" "the provider returned no choices"))
+  (let choice choices/0)
+  (if (== choice/finish_reason "length")
+    (model_failure "truncated" "the model reached its output limit before finishing the response"))
+  (if (== choice/finish_reason "content_filter")
+    (model_failure "refusal" "the model declined the request"))
+  (let text choice/message/content)
+  (let usage (?? parsed/usage {}))
+  {^text (if (== ($head text) Str) text "")
+   ^model (?? parsed/model "")
+   ^usage {^input (count_of usage/prompt_tokens)
+           ^output (count_of usage/completion_tokens)
+           ^cached (count_of (try usage/prompt_tokens_details/cached_tokens catch Any 0))}})
+
+(fn retryable? [status : Int] : Bool
+  (|| (== status 408) (== status 409) (== status 429) (>= status 500)))
+
+# Provider error bodies can echo the request, so only the provider's own short
+# error message is kept.
+(fn error_message [body : Str] : Str
+  (let parsed (try ($json/parse body) catch Any nil))
+  (if ($absent? parsed) (return ""))
+  (let message (try parsed/error/message catch Any nil))
+  (if (== ($head message) Str)
+    ($str/slice_bytes message 0 ($math/min 300 ($str/byte_size message)))
+    ""))
+
+# One provider call with bounded retries. Transport failures, timeouts, and
+# retryable statuses are retried `config/retries` times with a growing pause.
+(fn spec_for [config, input] : Any
+  (match config/provider
+    (when "anthropic" (anthropic_spec config input))
+    (when "openrouter" (openrouter_spec config input))
+    (else (codex_spec config input (codex_credentials config/auth_file)))))
+
+(fn reply_for [config, body : Str] : Any
+  (if (== config/provider "codex") (return (codex_reply body)))
+  (let parsed
+    (try ($json/parse body)
+      catch Any (model_failure "invalid_response" "the provider returned unreadable JSON")))
+  (if (== config/provider "anthropic") (anthropic_reply parsed) (openrouter_reply parsed)))
+
+(fn send [config, input] : Any
+  (let spec (spec_for config input))
+  (let payload ($json/stringify spec/body))
+  (var attempt 0)
+  (var last "")
+  (while (<= attempt config/retries)
+    (if (> attempt 0) ($sleep (* attempt 2000)))
+    (set attempt (+ attempt 1))
+    (var response nil)
+    (try
+      (let pending
+        (request ^method "POST" ^url spec/url ^headers spec/headers ^body payload
+          ^timeout_ms config/timeout_ms ^max_bytes response_cap))
+      (set response (try (await pending) ensure pending/.cancel))
+    catch HttpClientError
+      (set last $"transport failure: ${$err/message}"))
+    (if_not ($absent? response)
+      (if (== response/status 200)
+        (then
+          (var reply (reply_for config response/body))
+          (if (== ($str/trim reply/text) "")
+            (model_failure "invalid_response" "the provider returned no text"))
+          (reply .put "submitted" (submitted_of input/parts ^provider config/provider))
+          (reply .put "attempts" attempt)
+          (return reply))
+        (else
+          (set last $"${config/provider} ${response/status}: ${(error_message response/body)}")
+          (if (&& (== config/provider "codex") (== response/status 401))
+            (model_failure "provider_error"
+              "codex 401: the OAuth credentials expired or were rejected; run codex login to refresh auth.json"))
+          (if_not (retryable? response/status)
+            (model_failure "provider_error" last ^detail response/status))))))
+  (model_failure "transport_failed" $"the model call failed after ${attempt} attempts; ${last}"))
+
+# A VisionAgent backed by a configured provider.
+(type ModelAgent ^props {^config Any})
+
+(impl VisionAgent for ModelAgent
+  (message plan [input] : Any (send self/config input))
+  (message decide [input] : Any (send self/config input))
+  (message evaluate [input] : Any (send self/config input)))
+
+# The configured agent, or a typed failure naming what to set.
+(fn open_model [] : Any
+  (let config (model_config))
+  (if ($absent? config)
+    (model_failure "no_model"
+      "no model is configured: set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or sign in with codex login (optionally IMAGINATION_PROVIDER, IMAGINATION_MODEL, IMAGINATION_EFFORT)"))
+  (ModelAgent ^config config))
+
+# A VisionAgent that replays saved responses, for deterministic tests. It
+# records every request it receives, including the image bytes, so a test can
+# assert that the clean PNG itself reached the adapter.
+(type FixtureAgent ^props {^responses Any ^received Any ^cursor Any})
+
+(fn next_fixture [agent, input, kind : Str] : Any
+  (agent/received .push {^kind kind ^input input})
+  (let index agent/cursor/.get)
+  (if (>= index agent/responses/.size)
+    (model_failure "fixture_exhausted" "the fixture agent has no more saved responses"))
+  (agent/cursor .set (+ index 1))
+  (let saved agent/responses/%index)
+  # A saved response may be text, or a function of the request that returns
+  # text, so a fixture can echo the digests it was shown.
+  (let text (if (== ($head saved) Str) saved (saved input)))
+  (if (== text "!transport")
+    (model_failure "transport_failed" "the fixture simulates a failed model call"))
+  {^text text ^model "fixture" ^usage {^input 0 ^output 0 ^cached 0}
+   ^submitted (submitted_of input/parts) ^attempts 1})
+
+(impl VisionAgent for FixtureAgent
+  (message plan [input] : Any (next_fixture self input "plan"))
+  (message decide [input] : Any (next_fixture self input "decide"))
+  (message evaluate [input] : Any (next_fixture self input "evaluate")))
+
+(fn fixture_agent [responses] : Any
+  (FixtureAgent ^responses responses ^received [] ^cursor ($cell 0)))
+
+# Send a small image and require the model to name what it shows. Used by
+# `imagination doctor`; returns a detail line or raises ModelError.
+(fn check_image_transport [agent, png_bytes, digest : Str, expected : Str] : Str
+  (let reply
+    (agent .VisionAgent:evaluate
+      {^system "You check image transport. Answer with the single word that appears in the image, in capitals, and nothing else."
+       ^max_tokens 2000
+       ^parts [{^type "image" ^label "transport check" ^digest digest ^media "image/png"
+                ^bytes png_bytes}
+               {^type "text" ^text "Which word is written in this image?"}]}))
+  (if_not ($str/contains? ($str/upper reply/text) expected)
+    (model_failure "image_not_seen"
+      $"the model answered \"${($str/trim reply/text)}\" instead of reading ${expected} from the image"))
+  (let transport (/transport (reply/submitted .first)))
+  $"${reply/model} read ${expected} from a ${($binary/size png_bytes)}-byte PNG sent as a ${transport}")

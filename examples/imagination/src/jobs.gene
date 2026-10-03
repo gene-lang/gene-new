@@ -1,0 +1,302 @@
+# Drawing runs on an Evolution (design sections 10.4, 14.5).
+#
+# A run is a persisted job: its phase, accepted revision, budgets, last error,
+# and terminal status live in the index and survive a refresh or a restart.
+# History events are appended in the same transaction as the change they
+# describe, so a client never hears of a revision that was not published.
+(mod imagination_jobs)
+
+(import $db/sqlite [Db])
+(import [StoreError ModelError DomainError RenderError kind_of text_of children_named
+         default_budgets] ^from "./types")
+(import [canonical read_canonical] ^from "./scene")
+(import [validate_goal build_evaluation] ^from "./evaluation")
+(import [in_transaction append_event next_number store_failure put_node get_node]
+  ^from "./store")
+(import [Evolution view line_row policy_of goal_of stage publish record_review
+         allocate_prefix id_taken? crop_of change_goal next_goal_id] ^from "./evolution")
+(import [DrawingSession run_drawing plan_goal] ^from "./agent")
+
+# One run's session on one working line of an Evolution.
+(type EvolutionSession
+  ^props {^evolution Any ^agent Any ^run Str ^line Str ^state Any})
+
+# Maps become (record ...) nodes so a run event has a canonical form.
+(fn as_data [value] : Any
+  (if (== ($head value) Map)
+    (then
+      (var props {})
+      (for [name item] in value (props .put ($to_str name) (as_data item)))
+      ($node/rebuild `(record) ^props props))
+    (elif (== ($head value) List)
+      (var items [])
+      (for item in value (items .push (as_data item)))
+      items)
+    (elif ($absent? value) nil)
+    (else value)))
+
+(fn db_of [evolution] : Any evolution/project/db)
+
+(fn run_row [evolution, run_id : Str] : Any
+  (let row ((db_of evolution) .Db:query_one "SELECT * FROM runs WHERE id = ?" run_id))
+  (if ($absent? row) (store_failure "unknown_run" $"there is no run ${run_id}" ^detail run_id))
+  row)
+
+(fn runs [evolution] : Any
+  ((db_of evolution) .Db:query "SELECT * FROM runs ORDER BY created_ms DESC, id DESC"))
+
+(fn active_run [evolution, line_id : Str] : Any
+  ((db_of evolution) .Db:query_one
+    "SELECT * FROM runs WHERE line = ? AND status = 'running'" line_id))
+
+(fn run_events [evolution, run_id : Str, ^kind kind = nil] : Any
+  (if ($absent? kind)
+    ((db_of evolution) .Db:query
+      "SELECT id, kind, body, created_ms FROM run_events WHERE run = ? ORDER BY id" run_id)
+    ((db_of evolution) .Db:query
+      "SELECT id, kind, body, created_ms FROM run_events WHERE run = ? AND kind = ? ORDER BY id"
+      run_id kind)))
+
+# What the model was actually shown on the newest call of a run: the submitted
+# image digests, sizes, and preprocessing, plus the model and usage.
+(fn model_view [evolution, run_id : Str] : Any
+  (let row
+    ((db_of evolution) .Db:query_one
+      "SELECT body FROM run_events WHERE run = ? AND kind = 'model_call' ORDER BY id DESC LIMIT 1"
+      run_id))
+  (if ($absent? row) nil (read_canonical row/body)))
+
+(impl DrawingSession for EvolutionSession
+  (message head [] : Any
+    (let line (line_row self/evolution self/line))
+    (view self/evolution line/head ^goal self/state/goal))
+
+  (message allocate [] : Any
+    (let prefix (allocate_prefix self/evolution ^run self/run))
+    {^prefix prefix
+     ^patch_id $"patch-${($str/slice_bytes prefix 1 (- ($str/byte_size prefix) 2))}"})
+
+  (message taken [id : Str] : Bool
+    (id_taken? self/evolution id))
+
+  (message stage [parent, result, plan : Str] : Any
+    (let candidate
+      (stage self/evolution parent result ^run self/run ^plan plan ^goal self/state/goal))
+    (let project self/evolution/project)
+    (let id candidate/id)
+    (let parent_id parent/id)
+    (let image candidate/image)
+    (let bundle candidate/bundle)
+    (let run self/run)
+    (in_transaction project
+      (fn []
+        (project/db .Db:execute
+          "UPDATE runs SET pending = ?, iteration = iteration + 1, phase = 'reviewing', updated_ms = ? WHERE id = ?"
+          id ($os/wall_ms) run)
+        # The candidate is held, not published: clients may show it as under
+        # review from the artifacts named here.
+        (append_event project "candidate_rendered" run id
+          `(event ^revision %id ^parent %parent_id ^image %image ^render %bundle ^plan %plan))))
+    candidate)
+
+  (message publish [candidate, evaluation, accepted : Bool, reason : Str] : Any
+    (let publication
+      (publish self/evolution candidate ^line self/line ^expected_head candidate/parent
+        ^evaluation evaluation ^accepted accepted ^reason reason))
+    {^revision publication/revision ^line_advanced publication/line_advanced
+     ^stale_head publication/stale_head})
+
+  (message publish_unreviewed [candidate] : Any
+    (publish self/evolution candidate ^evaluation
+      (build_unreviewed self candidate)
+      ^quality "unreviewed" ^reason "No review arrived."))
+
+  (message record_review [revision, evaluation] : Nil
+    (record_review self/evolution revision/id evaluation)
+    nil)
+
+  (message event [kind : Str, data] : Nil
+    (let project self/evolution/project)
+    (let run self/run)
+    (let body (as_data data))
+    (in_transaction project
+      (fn []
+        (project/db .Db:execute
+          "INSERT INTO run_events(run, kind, body, created_ms) VALUES (?, ?, ?, ?)"
+          run kind (canonical body) ($os/wall_ms))
+        (if_yes (== kind "phase_changed")
+          (project/db .Db:execute "UPDATE runs SET phase = ?, updated_ms = ? WHERE id = ?"
+            data/phase ($os/wall_ms) run)
+          (append_event project "phase_changed" run nil body))
+        (if_yes (== kind "model_call")
+          (let usage data/usage)
+          (project/db .Db:execute
+            "UPDATE runs SET usage = ?, updated_ms = ? WHERE id = ?"
+            (canonical (add_usage (read_canonical (/usage (run_row self/evolution run))) usage))
+            ($os/wall_ms) run))
+        (if_yes (|| (== kind "invalid_response") (== kind "invalid_patch")
+                    (== kind "render_failed") (== kind "model_failed"))
+          (project/db .Db:execute "UPDATE runs SET last_error = ?, updated_ms = ? WHERE id = ?"
+            $"${kind}: ${(?? data/message \"\")}" ($os/wall_ms) run))))
+    nil)
+
+  (message crop [revision, rectangle] : Any
+    (crop_of self/evolution revision rectangle))
+
+  (message cancelled [] : Bool
+    (== (/cancel_requested (run_row self/evolution self/run)) 1))
+
+  # A steering instruction becomes a new goal record here, at a safe boundary.
+  (message steer [] : Any
+    (let row (run_row self/evolution self/run))
+    (if ($absent? row/steering) (return nil))
+    (let instruction row/steering)
+    (let current (goal_of self/evolution self/state/goal))
+    (let goal_id (next_goal_id self/evolution))
+    (let planned
+      (plan_goal self/agent $"${current/request}\nAdditional instruction: ${instruction}" goal_id))
+    (let request planned/request)
+    (let predecessor current/id)
+    (let goal
+      (validate_goal
+        ($node/rebuild planned
+          ^props {^id goal_id ^request request ^predecessor predecessor ^instruction instruction})))
+    (change_goal self/evolution self/line goal)
+    ((db_of self/evolution) .Db:execute
+      "UPDATE runs SET steering = NULL, goal = ?, updated_ms = ? WHERE id = ?"
+      goal_id ($os/wall_ms) self/run)
+    (self/state .put "goal" goal_id)
+    {^goal goal ^policy (policy_of self/evolution (line_row self/evolution self/line))
+     ^instruction instruction})
+
+  (message profile [] : Str self/evolution/profile/id))
+
+# The evaluation of a candidate nobody reviewed: structural checks only.
+(fn build_unreviewed [session, candidate] : Any
+  (build_evaluation (goal_of session/evolution candidate/goal) candidate/id candidate/image
+    session/evolution/profile/id candidate/scene nil))
+
+(fn add_usage [total, usage] : Any
+  (let input (+ total/input usage/input))
+  (let output (+ total/output usage/output))
+  (let calls (+ total/calls 1))
+  `(usage ^input %input ^output %output ^calls %calls))
+
+(fn budgets_node [budgets] : Any
+  (var props {})
+  (for [name value] in budgets (props .put ($to_str name) value))
+  ($node/rebuild `(budgets) ^props props))
+
+# Create a run on a working line. `expected_head` is the head the caller saw:
+# a line that has moved since is a stale write, not a silent rebase. One line
+# has at most one active run. Returns the run row.
+(fn start_run [evolution, line_id : Str, ^expected_head expected_head = nil,
+               ^budgets budgets = nil] : Any
+  (let project evolution/project)
+  (let line (line_row evolution line_id))
+  (if (!= line/kind "working")
+    (store_failure "invalid_line" $"${line_id} is not a working line" ^detail line_id))
+  (if (&& (! ($absent? expected_head)) (!= expected_head line/head))
+    (store_failure "stale_head"
+      $"line ${line_id} is at ${line/head}, not ${expected_head}" ^detail line/head))
+  (var limits {})
+  (for [name value] in default_budgets (limits .put ($to_str name) value))
+  (if_not ($absent? budgets)
+    (for [name value] in budgets (limits .put ($to_str name) value)))
+  (in_transaction project
+    (fn []
+      (if_not ($absent? (active_run evolution line_id))
+        (store_failure "line_busy" $"line ${line_id} already has an active run" ^detail line_id))
+      (let number (+ (next_number project "next_run") 1))
+      (let id (if (< number 10) $"run-0${number}" $"run-${number}"))
+      (let now ($os/wall_ms))
+      (project/db .Db:execute
+        "INSERT INTO runs(id, line, goal, source, status, phase, accepted, pending, iteration, budgets, usage, reason, last_error, steering, cancel_requested, created_ms, updated_ms) VALUES (?, ?, ?, ?, 'running', 'starting', ?, NULL, 0, ?, ?, '', '', NULL, 0, ?, ?)"
+        id line_id line/goal line/head line/head (canonical (budgets_node limits))
+        (canonical `(usage ^input 0 ^output 0 ^calls 0)) now now)
+      (let head line/head)
+      (let goal line/goal)
+      (append_event project "run_started" id head
+        `(event ^run %id ^line %line_id ^head %head ^goal %goal))
+      (run_row evolution id))))
+
+# Execute a started run to its end and persist the terminal state. Never
+# raises for a drawing failure: the run row carries the truthful status.
+(fn execute_run [evolution, agent, run_id : Str] : Any
+  (let project evolution/project)
+  (let row (run_row evolution run_id))
+  (let session
+    (EvolutionSession ^evolution evolution ^agent agent ^run run_id ^line row/line
+      ^state {^goal row/goal}))
+  (let limits (read_canonical row/budgets))
+  (var budgets {})
+  (for [name value] in ($props limits) (budgets .put ($to_str name) value))
+  # A resumed run keeps the edits it already spent.
+  (budgets .put "max_iterations" ($math/max 0 (- budgets/max_iterations row/iteration)))
+  (var outcome nil)
+  (try
+    (let line (line_row evolution row/line))
+    (set outcome
+      (run_drawing session agent (goal_of evolution row/goal)
+        ^policy (policy_of evolution line) ^budgets budgets))
+  catch Any
+    (set outcome
+      {^status "failed" ^revision (/head (line_row evolution row/line))
+       ^reason $"The run stopped on an unexpected error: ${$err/message}"
+       ^remaining [] ^iterations 0 ^calls 0 ^usage {^input 0 ^output 0}}))
+  (let status outcome/status)
+  (let reason outcome/reason)
+  (let revision outcome/revision)
+  (let remaining outcome/remaining)
+  (in_transaction project
+    (fn []
+      (project/db .Db:execute
+        "UPDATE runs SET status = ?, phase = 'finished', reason = ?, pending = NULL, updated_ms = ? WHERE id = ?"
+        status reason ($os/wall_ms) run_id)
+      (append_event project "run_finished" run_id revision
+        `(event ^run %run_id ^status %status ^revision %revision ^reason %reason
+           ^remaining %remaining))))
+  outcome)
+
+# Ask a running run to stop before its next model or edit step. Published
+# history is untouched.
+(fn cancel_run [evolution, run_id : Str] : Any
+  (let row (run_row evolution run_id))
+  (if_yes (== row/status "running")
+    ((db_of evolution) .Db:execute
+      "UPDATE runs SET cancel_requested = 1, updated_ms = ? WHERE id = ?" ($os/wall_ms) run_id))
+  (run_row evolution run_id))
+
+# Record a goal instruction for the run's next safe iteration boundary.
+(fn steer_run [evolution, run_id : Str, instruction : Str] : Any
+  (let row (run_row evolution run_id))
+  (if (!= row/status "running")
+    (store_failure "run_finished" $"run ${run_id} is ${row/status}" ^detail row/status))
+  (if (|| (== ($str/trim instruction) "") (> ($str/byte_size instruction) 2000))
+    (store_failure "invalid_instruction" "an instruction is 1 to 2000 bytes of text"))
+  ((db_of evolution) .Db:execute "UPDATE runs SET steering = ?, updated_ms = ? WHERE id = ?"
+    ($str/trim instruction) ($os/wall_ms) run_id)
+  (run_row evolution run_id))
+
+# Make a stopped run runnable again from the line's current head. Completed
+# model calls are not repeated: the published revisions are the saved state,
+# and a candidate that was never published is not pretended to exist.
+(fn resume_run [evolution, run_id : Str] : Any
+  (let project evolution/project)
+  (let row (run_row evolution run_id))
+  (if (== row/status "running")
+    (store_failure "line_busy" $"run ${run_id} is already running" ^detail run_id))
+  (if (== row/status "complete")
+    (store_failure "run_finished" $"run ${run_id} is complete" ^detail run_id))
+  (in_transaction project
+    (fn []
+      (if_not ($absent? (active_run evolution row/line))
+        (store_failure "line_busy" $"line ${row/line} already has an active run" ^detail row/line))
+      (project/db .Db:execute
+        "UPDATE runs SET status = 'running', phase = 'starting', reason = '', cancel_requested = 0, pending = NULL, updated_ms = ? WHERE id = ?"
+        ($os/wall_ms) run_id)
+      (let head (/head (line_row evolution row/line)))
+      (let line_id row/line)
+      (append_event project "run_started" run_id head
+        `(event ^run %run_id ^line %line_id ^head %head ^resumed true))))
+  (run_row evolution run_id))

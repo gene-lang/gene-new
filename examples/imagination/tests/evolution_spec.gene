@@ -1,0 +1,279 @@
+# Section 17.1: history invariants, publication, forks, and exact replay.
+(import $test [describe it assert_equal run])
+(import $db/sqlite [Db])
+(import [scratch test_profile error_code error_of fixture_patch patch_from] ^from "./support")
+(import [read_domain canonical scene_digest digest_of] ^from "../src/scene")
+(import [validate_goal build_evaluation] ^from "../src/evaluation")
+(import [create_evolution open_evolution close_evolution value view lines line_row revisions
+         commit_patch fork change_goal compare replay_exact select selected metadata_version
+         begin apply_to_draft stage publish allocate_prefix id_taken? export_artifact
+         revision_row parents_of record_review path_between goal_of] ^from "../src/evolution")
+(import [get_object object_path recover events_after artifact_path] ^from "../src/store")
+(import [png_size] ^from "../src/render")
+(import [children_named] ^from "../src/types")
+
+(fn goal [] : Any
+  (validate_goal
+    (read_domain "(goal ^id \"goal-01\" ^request \"A landscape with one tree, a river, and a setting sun.\"
+      (requirement ^id \"tree\" ^strength \"hard\" ^check \"visual\" \"Exactly one tree.\")
+      (requirement ^id \"river\" ^strength \"hard\" ^check \"visual\" \"A river.\"))" ^head "goal")))
+
+(fn new_evolution [] : Any
+  (create_evolution ($path/join (scratch "evo") "project") "landscape" (goal) (test_profile)))
+
+(fn landscape [evolution, count : Int] : Nil
+  (for name in ($take ["landscape-01" "landscape-02" "landscape-03"] count)
+    (commit_patch evolution "main" (fixture_patch name) ^prefix ""))
+  nil)
+
+(fn simple [id : Str, base : Str, operations : Str] : Any
+  (patch_from $"(patch ^schema 1 ^id \"${id}\" ^base \"${base}\" ^goal \"goal-01\" (intent \"test\") ${operations})"))
+
+(describe "an evolution"
+  (it "starts from a rendered blank root that cannot complete a request" []
+    (let evolution (new_evolution))
+    (let root (view evolution "r000"))
+    (assert_equal root/parent nil)
+    (assert_equal root/quality "accepted")
+    (assert_equal root/evaluation/reviewer "none")
+    (assert_equal (png_size ($fs/read_bytes root/png_path)) [1024 1024])
+    (assert_equal (/head (line_row evolution "main")) "r000")
+    (assert_equal (selected evolution) "r000")
+    (close_evolution evolution))
+
+  (it "publishes handwritten patches as immutable revisions on a line" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    (assert_equal (/head (line_row evolution "main")) "r003")
+    (assert_equal (parents_of evolution "r003") ["r002"])
+    (let before (canonical (value evolution "r001")))
+    (commit_patch evolution "main" (simple "p4" "r003" "(move ^target \"p1-sun\" ^delta [10 0])") ^prefix "x-")
+    (assert_equal (canonical (value evolution "r001")) before)
+    (assert_equal (scene_digest (value evolution "r001")) (/scene (revision_row evolution "r001")))
+    (close_evolution evolution))
+
+  (it "leaves the line, the head, and the revision count alone when a patch fails" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (let count ($size (revisions evolution)))
+    (assert_equal
+      (error_code (fn []
+        (commit_patch evolution "main"
+          (simple "bad" "r001" "(move ^target \"p1-sun\" ^delta [5 5]) (remove ^target \"ghost\")") ^prefix "x-")))
+      "unknown_target")
+    (assert_equal ($size (revisions evolution)) count)
+    (assert_equal (/head (line_row evolution "main")) "r001")
+    (assert_equal
+      (error_code (fn [] (commit_patch evolution "main" (simple "stale" "r000" "(remove ^target \"p1-sun\")") ^prefix "x-")))
+      "stale_base")
+    (close_evolution evolution))
+
+  (it "forks from an old revision without changing any existing revision or line" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    (let digests ($map (revisions evolution) (fn [row] (/scene (revision_row evolution row/id)))))
+    (let line (fork evolution "r001" "night"))
+    (assert_equal line/head "r001")
+    (assert_equal line/origin "r001")
+    (commit_patch evolution "night"
+      (simple "night-1" "r001" "(set_canvas ^field \"background\" ^value \"#0b1020\") (set ^target \"p1-sun-disc\" ^field [\"fill\"] ^value \"#e5e7eb\")")
+      ^prefix "x-")
+    (assert_equal (/head (line_row evolution "night")) "r004")
+    (assert_equal (/head (line_row evolution "main")) "r003")
+    (assert_equal (parents_of evolution "r004") ["r001"])
+    (assert_equal
+      ($map ($take (revisions evolution) 4) (fn [row] (/scene (revision_row evolution row/id))))
+      digests)
+    (assert_equal (error_code (fn [] (fork evolution "r001" "night"))) "line_exists")
+    (assert_equal (error_code (fn [] (fork evolution "r999" "other"))) "unknown_revision")
+    (close_evolution evolution))
+
+  (it "keeps object identities unique across independent forks" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (fork evolution "r001" "left")
+    (fork evolution "r001" "right")
+    (let first (allocate_prefix evolution))
+    (let second (allocate_prefix evolution))
+    ($assert (!= first second) "two reservations never share a prefix")
+    (commit_patch evolution "left"
+      (simple "l1" "r001" $"(add ^parent \"scene\" ^placement (last) (circle ^id \"${first}moon\" ^cx 100 ^cy 100 ^r 30 ^fill \"#ffffff\"))")
+      ^prefix first)
+    ($assert (id_taken? evolution $"${first}moon") "a published ID is registered")
+    # The other fork cannot create the same identity, even though its own
+    # scene does not contain it.
+    (assert_equal
+      (error_code (fn []
+        (commit_patch evolution "right"
+          (simple "r1" "r001" $"(add ^parent \"scene\" ^placement (last) (circle ^id \"${first}moon\" ^cx 100 ^cy 100 ^r 30 ^fill \"#ffffff\"))")
+          ^prefix first)))
+      "duplicate_id")
+    (close_evolution evolution))
+
+  (it "compares two revisions by stable ID" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    (let report (compare evolution "r001" "r003"))
+    (assert_equal report/same_profile true)
+    (assert_equal report/left/image (/image (revision_row evolution "r001")))
+    (let kinds ($map ($body report/diff) (fn [change] ($to_str ($head change)))))
+    ($assert (kinds .contains? "added") "the tree and river are additions")
+    ($assert (kinds .contains? "changed") "the sun moved")
+    ($assert ($str/contains? ($str/join report/lines "\n") "p1-sun translate changed from [700 560] to [660 530]")
+      "exact numbers come from the interpreter")
+    (close_evolution evolution))
+
+  (it "replays a saved path exactly, without a model" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    (let report (replay_exact evolution "r000" "r003"))
+    (assert_equal report/ok true)
+    (assert_equal report/steps/.size 3)
+    (for step in report/steps
+      ($assert (&& step/scene_ok step/svg_ok) $"${step/revision} must reproduce its digests"))
+    (assert_equal (path_between evolution "r001" "r003") ["r001" "r002" "r003"])
+    (assert_equal (error_code (fn [] (replay_exact evolution "r003" "r001"))) "not_an_ancestor")
+    (close_evolution evolution))
+
+  (it "reports the first digest mismatch when stored operations do not reproduce a scene" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    # Point r002 at r003's operations: a deliberately wrong record.
+    (evolution/project/db .Db:execute "UPDATE revisions SET normalized = (SELECT normalized FROM revisions WHERE id = 'r003') WHERE id = 'r002'")
+    (let report (replay_exact evolution "r000" "r003"))
+    (assert_equal report/ok false)
+    (assert_equal report/first_mismatch "r002")
+    (assert_equal (/scene_ok report/steps/2) true)
+    (close_evolution evolution))
+
+  (it "treats selection as metadata guarded by a version" []
+    (let evolution (new_evolution))
+    (landscape evolution 2)
+    (let version (metadata_version evolution))
+    (assert_equal (select evolution "r002" ^expected_version version) (+ version 1))
+    (assert_equal (selected evolution) "r002")
+    (assert_equal (error_code (fn [] (select evolution "r001" ^expected_version version))) "stale_version")
+    (assert_equal (selected evolution) "r002")
+    # Selecting does not move a line or alter a revision.
+    (assert_equal (/head (line_row evolution "main")) "r002")
+    (close_evolution evolution))
+
+  (it "keeps a goal change as a new immutable record" []
+    (let evolution (new_evolution))
+    (let changed
+      (validate_goal
+        (read_domain "(goal ^id \"goal-02\" ^request \"A night landscape.\" ^predecessor \"goal-01\" ^instruction \"Make it night.\"
+          (requirement ^id \"night\" ^strength \"hard\" ^check \"visual\" \"It is night.\"))" ^head "goal")))
+    (change_goal evolution "main" changed)
+    (assert_equal (/goal (line_row evolution "main")) "goal-02")
+    (assert_equal (/request (goal_of evolution "goal-01")) "A landscape with one tree, a river, and a setting sun.")
+    (assert_equal (/predecessor (goal_of evolution "goal-02")) "goal-01")
+    (close_evolution evolution))
+
+  (it "exports the stored artifacts of a revision" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (let out (scratch "export"))
+    (let row (revision_row evolution "r001"))
+    (export_artifact evolution "r001" "png" ($path/join out "a.png"))
+    (assert_equal (digest_of ($fs/read_bytes ($path/join out "a.png"))) row/image)
+    (export_artifact evolution "r001" "svg" ($path/join out "a.svg"))
+    ($assert ($str/starts_with? ($fs/read_text ($path/join out "a.svg")) "<svg") "the SVG is exported")
+    (export_artifact evolution "r001" "pdf" ($path/join out "a.pdf"))
+    (assert_equal ($fs/read_bytes ($path/join out "a.pdf"))
+      ($fs/read_bytes (artifact_path evolution/project row/render "scene.pdf")))
+    (assert_equal (error_code (fn [] (export_artifact evolution "r001" "exe" ($path/join out "a")))) "invalid_format")
+    (close_evolution evolution)))
+
+(describe "publication"
+  (it "lets exactly one of two line-head updates succeed" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (fn candidate [id : Str, operations : Str] : Any
+      (let draft (begin evolution "r001"))
+      (let result (apply_to_draft evolution draft (simple id "r001" operations) ^prefix "x-"))
+      (stage evolution {^id "r001"} result ^goal "goal-01" ^actor "user"))
+    (fn evaluation [held] : Any
+      (build_evaluation (goal) held/id held/image "rsvg-pdf-poppler/v1" held/scene nil))
+    (let first (candidate "a" "(move ^target \"p1-sun\" ^delta [10 0])"))
+    (let second (candidate "b" "(move ^target \"p1-sun\" ^delta [-10 0])"))
+    (let won (publish evolution first ^line "main" ^expected_head "r001" ^evaluation (evaluation first) ^accepted true))
+    (let lost (publish evolution second ^line "main" ^expected_head "r001" ^evaluation (evaluation second) ^accepted true))
+    (assert_equal won/line_advanced true)
+    (assert_equal lost/line_advanced false)
+    (assert_equal lost/stale_head true)
+    (assert_equal (/head (line_row evolution "main")) first/id)
+    # The losing candidate is preserved as a revision, off the line.
+    (assert_equal (/quality (revision_row evolution second/id)) "accepted")
+    (assert_equal (parents_of evolution second/id) ["r001"])
+    (close_evolution evolution))
+
+  (it "shows no revision when the process stops after blobs and before the index commit" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (let root evolution/project/root)
+    (let draft (begin evolution "r001"))
+    (let result (apply_to_draft evolution draft (simple "c" "r001" "(move ^target \"p1-sun\" ^delta [10 0])") ^prefix "x-"))
+    (let held (stage evolution {^id "r001"} result ^goal "goal-01" ^actor "user"))
+    # The blobs exist; the index was never told. Simulate the crash by
+    # reopening the project without publishing.
+    ($assert ($fs/exists? held/png_path) "the staged artifact was published as a blob")
+    (close_evolution evolution)
+    (let reopened (open_evolution root (test_profile)))
+    (assert_equal ($size (revisions reopened)) 2)
+    (assert_equal (/head (line_row reopened "main")) "r001")
+    (assert_equal (error_code (fn [] (revision_row reopened held/id))) "unknown_revision")
+    (assert_equal (recover reopened/project) [])
+    (close_evolution reopened))
+
+  (it "emits history events only for committed changes, in order" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (let events (events_after evolution/project 0))
+    (let kinds ($map events /kind))
+    (assert_equal kinds ["revision_published" "line_created" "revision_published" "line_head_changed"])
+    (var last 0)
+    (for event in events
+      ($assert (> event/seq last) "sequence numbers increase")
+      (set last event/seq))
+    (close_evolution evolution))
+
+  (it "survives a restart with the same history and artifacts" []
+    (let evolution (new_evolution))
+    (landscape evolution 3)
+    (fork evolution "r001" "alt")
+    (select evolution "r003")
+    (let root evolution/project/root)
+    (let before
+      ($map (revisions evolution) (fn [row] [row/id row/image row/parents row/quality])))
+    (close_evolution evolution)
+    (let reopened (open_evolution root (test_profile)))
+    (assert_equal
+      ($map (revisions reopened) (fn [row] [row/id row/image row/parents row/quality]))
+      before)
+    (assert_equal (selected reopened) "r003")
+    (assert_equal ($map (lines reopened) /id) ["main" "alt"])
+    (let view_after (view reopened "r003"))
+    (assert_equal (digest_of ($fs/read_bytes view_after/png_path)) view_after/image)
+    (close_evolution reopened))
+
+  (it "reports a corrupt object precisely instead of recreating it" []
+    (let evolution (new_evolution))
+    (landscape evolution 1)
+    (let digest (/scene (revision_row evolution "r001")))
+    ($fs/write_text (object_path evolution/project digest) "(scene)")
+    (let error (error_of (fn [] (value evolution "r001"))))
+    (assert_equal error/code "corrupt_object")
+    (assert_equal error/detail digest)
+    (close_evolution evolution))
+
+  (it "refuses a second process on the same project" []
+    (let evolution (new_evolution))
+    (assert_equal
+      (error_code (fn [] (open_evolution evolution/project/root (test_profile))))
+      "project_busy")
+    (close_evolution evolution)))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

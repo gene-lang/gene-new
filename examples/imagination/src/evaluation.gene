@@ -1,0 +1,300 @@
+# Goals, structural checks, and visual-review records (design sections 6, 10).
+#
+# A visual check is a judgment with cited evidence from a model that received
+# the image. A structural check is computed here from the scene. An evaluation
+# record binds both to one revision, one image digest, one goal, and one
+# render profile; it is never rewritten.
+(mod imagination_evaluation)
+
+(import [reject node? kind_of str? list? children_named child_named text_of
+         sorted_keys limits] ^from "./types")
+(import [valid_id? printable?] ^from "./scene_schema")
+(import [index_scene] ^from "./scene")
+
+(let results ["pass" "partial" "fail" "unknown"])
+(let severities ["major" "minor"])
+
+(fn short_text? [value, bytes : Int] : Bool
+  (&& (str? value) (> ($str/byte_size value) 0) (<= ($str/byte_size value) bytes)))
+
+(fn only_props [node, allowed, what : Str] : Nil
+  (for name in (sorted_keys ($props node))
+    (if_not (allowed .contains? name)
+      (reject "unknown_field" $"${what} has no property ^${name}" ^field [name])))
+  nil)
+
+(fn one_text [node, what : Str, bytes : Int] : Str
+  (let items ($body node))
+  (if_not (&& (== items/.size 1) (short_text? items/0 bytes))
+    (reject "invalid_field" $"${what} holds one string of at most ${bytes} bytes" ^field [what]))
+  items/0)
+
+# ── goals ──────────────────────────────────────────────────────────────────
+
+# The structural requirement every goal carries: the scene is valid in the
+# supported SVG subset. The application computes it; a model never judges it.
+(const medium_requirement
+  "(requirement ^id \"medium\" ^strength \"hard\" ^check \"structural\" \"All visible content uses the supported SVG subset.\")")
+
+# Validate a (goal ...) node and return it frozen, with the medium requirement
+# present. Requirements are (requirement ^id ^strength ^check [^text] "...").
+(fn validate_goal [goal] : Any
+  (if_not (&& (node? goal) (== (kind_of goal) "goal"))
+    (reject "invalid_goal" "expected a (goal ...) node"))
+  (only_props goal ["id" "request" "predecessor" "instruction"] "goal")
+  (if_not (short_text? goal/id 128)
+    (reject "invalid_goal" "goal needs a short ^id" ^field ["id"]))
+  (if_not (short_text? goal/request 4000)
+    (reject "invalid_goal" "goal needs the original ^request text" ^field ["request"]))
+  (var seen [])
+  (var visual 0)
+  (var has_medium false)
+  (var body [])
+  (for item in ($body goal)
+    (if_not (node? item) (reject "invalid_goal" "goal holds requirement and preference nodes"))
+    (match (kind_of item)
+      (when "requirement"
+        (only_props item ["id" "strength" "check" "text"] "requirement")
+        (if_not (valid_id? item/id)
+          (reject "invalid_goal" "a requirement needs a valid ^id" ^field ["id"]))
+        (if (seen .contains? item/id)
+          (reject "invalid_goal" $"requirement ${item/id} appears twice" ^target item/id))
+        (seen .push item/id)
+        (if_not (["hard" "soft"] .contains? item/strength)
+          (reject "invalid_goal" "^strength is \"hard\" or \"soft\"" ^target item/id
+            ^field ["strength"]))
+        (if_not (["visual" "structural"] .contains? item/check)
+          (reject "invalid_goal" "^check is \"visual\" or \"structural\"" ^target item/id
+            ^field ["check"]))
+        (one_text item "requirement" 600)
+        (if_yes (! ($void? item/text))
+          (if_not (&& (== item/check "structural") (short_text? item/text limits/text_bytes)
+                      (printable? item/text))
+            (reject "invalid_goal" "^text is an exact string on a structural requirement"
+              ^target item/id ^field ["text"])))
+        (if (== item/check "visual") (set visual (+ visual 1)))
+        (if (== item/id "medium") (set has_medium true))
+        (body .push item))
+      (when "preference"
+        (only_props item ["source"] "preference")
+        (one_text item "preference" 600)
+        (body .push item))
+      (else (reject "invalid_goal" $"goal has no ${(kind_of item)} child"))))
+  (if (== visual 0)
+    (reject "invalid_goal" "a goal needs at least one visual requirement"))
+  (if_not has_medium
+    (body .push (($parse/read_all medium_requirement) .next)))
+  ($freeze ($node/rebuild goal ^body body)))
+
+(fn requirements_of [goal] : Any
+  (children_named goal "requirement"))
+
+(fn requirement_ids [goal, check : Str] : Any
+  (var ids [])
+  (for item in (requirements_of goal)
+    (if (== item/check check) (ids .push item/id)))
+  ids)
+
+# ── locks and limits ───────────────────────────────────────────────────────
+
+# Validate a (policy (lock ...) (limit ...)) node; returns it frozen. A lock's
+# target need not exist yet: a lock on a missing object protects nothing.
+(fn validate_policy [policy] : Any
+  (if ($absent? policy) (return nil))
+  (if_not (&& (node? policy) (== (kind_of policy) "policy"))
+    (reject "invalid_policy" "expected a (policy ...) node"))
+  (for item in ($body policy)
+    (if_not (node? item) (reject "invalid_policy" "policy holds lock and limit nodes"))
+    (match (kind_of item)
+      (when "lock"
+        (only_props item ["target" "scope"] "lock")
+        (if_not (&& (valid_id? item/target)
+                    (["identity" "geometry" "appearance" "text" "subtree"] .contains? item/scope))
+          (reject "invalid_policy"
+            "a lock needs ^target and a ^scope of identity, geometry, appearance, text, or subtree")))
+      (when "limit"
+        (only_props item ["name" "value"] "limit")
+        (if_not (&& (str? item/name) (== ($head item/value) Int) (> item/value 0))
+          (reject "invalid_policy" "a limit needs ^name and a positive whole ^value")))
+      (else (reject "invalid_policy" $"policy has no ${(kind_of item)} child"))))
+  ($freeze policy))
+
+# ── structural checks ──────────────────────────────────────────────────────
+
+(fn text_contents [scene] : Any
+  (var found [])
+  (for [id entry] in (index_scene scene)
+    (if (== entry/kind "text") (found .push (($body entry/node) .first))))
+  found)
+
+(fn check_node [requirement : Str, result : Str, evidence : Str, kind : Str] : Any
+  `(check ^requirement %requirement ^result %result ^evidence %evidence ^kind %kind))
+
+# Checks the application computes itself. A structural pass says the scene
+# holds the data; it says nothing about whether it is visible or readable.
+(fn structural_checks [goal, scene] : Any
+  (var checks [])
+  (for item in (requirements_of goal)
+    (if_yes (== item/check "structural")
+      (if ($void? item/text)
+        (then
+          (checks .push
+            (check_node item/id "pass" "The scene passes svg-scene/v1 validation." "structural")))
+        (else
+          (let wanted item/text)
+          (if ((text_contents scene) .contains? wanted)
+            (checks .push
+              (check_node item/id "pass" $"A text node holds exactly \"${wanted}\"." "structural"))
+            (checks .push
+              (check_node item/id "fail" $"No text node holds exactly \"${wanted}\"." "structural")))))))
+  checks)
+
+# ── reviews ────────────────────────────────────────────────────────────────
+
+# Validate the (review ...) of a response against the goal. Returns
+# {^checks {id -> check node} ^issues [issue nodes]}. A check for an unknown
+# requirement, or for a structural one, is an error: structure is not the
+# model's to judge.
+(fn read_review [review, goal] : Any
+  (if_not (&& (node? review) (== (kind_of review) "review"))
+    (reject "invalid_review" "expected a (review ...) node"))
+  (if (> ($size ($props review)) 0)
+    (reject "invalid_review" "review takes no properties"))
+  (let visual (requirement_ids goal "visual"))
+  (var checks {})
+  (var issues [])
+  (for item in ($body review)
+    (if_not (node? item) (reject "invalid_review" "review holds check and issue nodes"))
+    (match (kind_of item)
+      (when "check"
+        (only_props item ["requirement" "result" "evidence"] "check")
+        (if (> ($size ($body item)) 0) (reject "invalid_review" "check takes properties only"))
+        (if_not (visual .contains? item/requirement)
+          (reject "invalid_review"
+            $"${item/requirement} is not a visual requirement of the goal; report one check for each of: ${($str/join visual \", \")}"
+            ^target item/requirement ^field ["requirement"]))
+        (if ($has_key? checks item/requirement)
+          (reject "invalid_review" $"requirement ${item/requirement} is checked twice"
+            ^target item/requirement))
+        (if_not (results .contains? item/result)
+          (reject "invalid_review" "^result is pass, partial, fail, or unknown"
+            ^target item/requirement ^field ["result"]))
+        (if_not (short_text? item/evidence 1000)
+          (reject "invalid_review" "a check cites visible ^evidence in one short string"
+            ^target item/requirement ^field ["evidence"]))
+        (checks .put item/requirement
+          (check_node item/requirement item/result item/evidence "visual")))
+      (when "issue"
+        (only_props item ["severity" "target"] "issue")
+        (if_not (severities .contains? item/severity)
+          (reject "invalid_review" "an issue ^severity is major or minor" ^field ["severity"]))
+        (one_text item "issue" 1000)
+        (issues .push item))
+      (else (reject "invalid_review" $"review has no ${(kind_of item)} child"))))
+  {^checks checks ^issues issues})
+
+# Build the evaluation record for one rendered revision. `review` is the
+# result of `read_review`, or nil when no reviewer saw the image: every visual
+# check is then unknown, and the record can never complete a run.
+(fn build_evaluation [goal, revision : Str, image : Str, profile : Str, scene, review,
+                      ^summary summary : Str = "", ^reviewer reviewer : Str = "decision"] : Any
+  (var children [])
+  (for item in (requirements_of goal)
+    (if_yes (== item/check "visual")
+      (let given (if ($absent? review) nil (review/checks .get item/id)))
+      (if ($absent? given)
+        (children .push (check_node item/id "unknown" "Not reviewed." "visual"))
+        (children .push given))))
+  (for check in (structural_checks goal scene) (children .push check))
+  (if_not ($absent? review)
+    (for issue in review/issues (children .push issue)))
+  (if (!= summary "") (children .push `(summary %summary)))
+  (let goal_id goal/id)
+  (let who (if ($absent? review) "none" reviewer))
+  ($freeze
+    `(evaluation ^schema 1 ^revision %revision ^image %image ^goal %goal_id
+       ^render_profile %profile ^structural_valid true ^reviewer %who
+       %children...)))
+
+(fn result_of [evaluation, requirement : Str] : Str
+  (for check in (children_named evaluation "check")
+    (if (== check/requirement requirement) (return check/result)))
+  "unknown")
+
+(fn rank [result : Str] : Int
+  (if (== result "pass") 2 (if (== result "partial") 1 0)))
+
+(fn major_issues [evaluation] : Any
+  (var found [])
+  (for issue in (children_named evaluation "issue")
+    (if (== issue/severity "major") (found .push (text_of issue))))
+  found)
+
+# "subject=partial window=pass ..." in goal order.
+(fn check_line [goal, evaluation] : Str
+  (var parts [])
+  (for item in (requirements_of goal)
+    (parts .push $"${item/id}=${(result_of evaluation item/id)}"))
+  ($str/join parts " "))
+
+# ── acceptance (section 10.2) ──────────────────────────────────────────────
+
+# The quality policy: a candidate is accepted unless a requirement is worse
+# on it than on the preceding accepted revision (pass > partial > fail, with
+# unknown counted as fail). Returns {^accepted ^reason}.
+(fn accept_candidate [goal, head_evaluation, candidate_evaluation] : Any
+  (var regressed [])
+  (for item in (requirements_of goal)
+    (let before (result_of head_evaluation item/id))
+    (let after (result_of candidate_evaluation item/id))
+    (if (< (rank after) (rank before))
+      (regressed .push $"${item/id} went from ${before} to ${after}")))
+  (if (> regressed/.size 0)
+    {^accepted false
+     ^reason $"Rejected: ${($str/join regressed \"; \")}. The working revision is unchanged."}
+    {^accepted true ^reason "Accepted: no requirement is worse than on the preceding accepted revision."}))
+
+# [hard requirements passed, total rank]: larger is better.
+(fn score [goal, evaluation] : Any
+  (var hard 0)
+  (var total 0)
+  (for item in (requirements_of goal)
+    (let result (result_of evaluation item/id))
+    (if (&& (== item/strength "hard") (== result "pass")) (set hard (+ hard 1)))
+    (set total (+ total (rank result))))
+  [hard total])
+
+(fn better? [goal, challenger, incumbent] : Bool
+  (let left (score goal challenger))
+  (let right (score goal incumbent))
+  (|| (> left/0 right/0) (&& (== left/0 right/0) (> left/1 right/1))))
+
+# ── completion (section 10.3) ──────────────────────────────────────────────
+
+# Returns {^complete ^reasons [why not] ^shortfall [soft requirements not met]}.
+# The evaluation must be bound to exactly this revision, image, goal, and
+# profile, and must come from a reviewer that saw the image.
+(fn completion [goal, evaluation, revision : Str, image : Str, profile : Str] : Any
+  (var reasons [])
+  (var shortfall [])
+  (if (|| (!= evaluation/revision revision) (!= evaluation/image image))
+    (reasons .push "the review is not bound to the current revision and image"))
+  (if (!= evaluation/goal goal/id)
+    (reasons .push "the review was made for another goal"))
+  (if (!= evaluation/render_profile profile)
+    (reasons .push "the review was made under another render profile"))
+  (if (== evaluation/reviewer "none")
+    (reasons .push "the current image has no visual review"))
+  (if (!= evaluation/structural_valid true)
+    (reasons .push "the scene did not pass structural validation"))
+  (for item in (requirements_of goal)
+    (let result (result_of evaluation item/id))
+    (if (== item/strength "hard")
+      (then
+        (if (!= result "pass")
+          (reasons .push $"hard requirement ${item/id} is ${result}, not pass")))
+      (else
+        (if (!= result "pass") (shortfall .push $"${item/id} is ${result}")))))
+  (for issue in (major_issues evaluation)
+    (reasons .push $"unresolved major issue: ${issue}"))
+  {^complete (== reasons/.size 0) ^reasons reasons ^shortfall shortfall})

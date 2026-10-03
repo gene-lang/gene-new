@@ -1,0 +1,338 @@
+# The rsvg-pdf-poppler/v1 render profile (design sections 7.4-7.9).
+#
+# Canonical SVG -> one-page PDF -> clean observation PNG and thumbnail, each
+# stage bounded and checked. A stage that fails raises a RenderError naming the
+# stage; nothing is silently dropped or substituted to make it pass.
+(mod imagination_render)
+
+(import [RenderError limits kind_of] ^from "./types")
+(import [fonts] ^from "./scene_schema")
+(import [canonical digest_of scene_digest defs_node] ^from "./scene")
+(import [scene_svg svg_serializer_version] ^from "./svg")
+(import [resolve_tool] ^from "./adapters/process")
+(import [svg_to_pdf svg_to_png rsvg_version] ^from "./adapters/rsvg")
+(import [pdf_info pdf_fonts pdf_to_png pdf_crop poppler_version antialias] ^from "./adapters/poppler")
+
+(const profile_id "rsvg-pdf-poppler/v1")
+(const default_edge 1024)
+(const thumbnail_edge 160)
+# Decoded pixels one blur region may cover at the output scale.
+(const effect_surface_pixels 16777216)
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+(let fonts_directory ($path/join package_root "fonts"))
+
+(fn stage_failure [stage : Str, code : Str, message : Str, ^detail detail = nil]
+  (fail (RenderError ^code code ^stage stage ^message $"${stage}: ${message}" ^detail detail)))
+
+# ── profile ────────────────────────────────────────────────────────────────
+
+(fn font_records [] : Any
+  (var records [])
+  (for [id font] in fonts
+    (for file in font/files
+      (let path ($path/join fonts_directory file))
+      (if_not ($fs/exists? path)
+        (stage_failure "fonts" "missing_dependency" $"bundled font ${file} is missing" ^detail path))
+      (records .push {^id ($to_str id) ^file file ^digest (digest_of ($fs/read_bytes path))})))
+  records)
+
+(fn bundled_pdf_names [] : Any
+  (var names [])
+  (for [id font] in fonts
+    (for name in font/pdf_names (names .push name)))
+  names)
+
+# Write the fontconfig file that lists only the bundled font directory.
+(fn write_fonts_conf [work_dir : Str] : Str
+  (let cache ($path/join work_dir "fontconfig-cache"))
+  ($fs/make_dir cache)
+  (let path ($path/join work_dir "fonts.conf"))
+  ($fs/write_text_atomic path
+    ($str/join [
+      "<?xml version=\"1.0\"?>"
+      "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">"
+      "<fontconfig>"
+      $"  <dir>${($html/escape fonts_directory)}</dir>"
+      $"  <cachedir>${($html/escape cache)}</cachedir>"
+      "</fontconfig>"
+      ""] "\n"))
+  path)
+
+(fn required_tool [name : Str, variable : Str] : Str
+  (let override ($os/env? variable))
+  (let path (resolve_tool name (if (|| ($absent? override) (== override "")) nil override)))
+  (if ($absent? path)
+    (fail (RenderError ^code "missing_dependency" ^stage "tools"
+      ^message $"tools: ${name} was not found. Install it (macOS: brew install librsvg poppler; Debian/Ubuntu: apt-get install librsvg2-bin poppler-utils) or set ${variable}."
+      ^detail name)))
+  path)
+
+# Resolve fixed tool paths, versions, and font hashes. `work_dir` holds the
+# fontconfig file and cache; it must be an absolute path.
+(fn open_profile [work_dir : Str, ^edge edge : Int = default_edge] : Any
+  (if (|| (< edge 16) (> edge limits/raster_edge))
+    (stage_failure "tools" "invalid_profile" $"the observation edge must be 16 to ${limits/raster_edge} pixels"))
+  ($fs/make_dir work_dir)
+  (let rsvg (required_tool "rsvg-convert" "IMAGINATION_RSVG_CONVERT"))
+  (let pdftocairo (required_tool "pdftocairo" "IMAGINATION_PDFTOCAIRO"))
+  (let pdfinfo (required_tool "pdfinfo" "IMAGINATION_PDFINFO"))
+  (let pdffonts (required_tool "pdffonts" "IMAGINATION_PDFFONTS"))
+  {^id profile_id ^edge edge ^work_dir work_dir
+   ^stage_ms limits/stage_ms ^pipeline_ms limits/pipeline_ms
+   ^rsvg rsvg ^pdftocairo pdftocairo ^pdfinfo pdfinfo ^pdffonts pdffonts
+   ^rsvg_version (rsvg_version rsvg)
+   ^poppler_version (poppler_version pdftocairo)
+   ^fonts_conf (write_fonts_conf work_dir)
+   ^fonts (font_records)
+   ^bundled_names (bundled_pdf_names)})
+
+# The profile as a manifest node, without machine-local working paths.
+(fn tool_node [name : Str, path : Str, version : Str] : Any
+  `(tool ^name %name ^path %path ^version %version))
+
+(fn font_node [font] : Any
+  (let id font/id)
+  (let file font/file)
+  (let digest font/digest)
+  `(font ^id %id ^file %file ^digest %digest))
+
+# The profile as a manifest node.
+(fn profile_manifest [profile] : Any
+  (var children [
+    (tool_node "rsvg-convert" profile/rsvg profile/rsvg_version)
+    (tool_node "pdftocairo" profile/pdftocairo profile/poppler_version)
+    (tool_node "pdfinfo" profile/pdfinfo profile/poppler_version)
+    (tool_node "pdffonts" profile/pdffonts profile/poppler_version)])
+  (for font in profile/fonts (children .push (font_node font)))
+  (let id profile/id)
+  (let edge profile/edge)
+  `(render_profile ^schema 1 ^id %id ^edge %edge ^antialias %antialias
+     ^svg_serializer %svg_serializer_version
+     ^flags ["-f pdf" "-png -singlefile -f 1 -l 1 -scale-to-x W -scale-to-y H"]
+     %children...))
+
+# ── geometry of the output ─────────────────────────────────────────────────
+
+(fn round_half_up [value] : Int
+  ($to_int ($math/floor (+ value 0.5))))
+
+# Output pixel size: the longest canvas edge becomes `edge`, the other is
+# scaled by the same factor and rounded half up, never below 1. The canvas is
+# never stretched into another aspect ratio.
+(fn output_size [width : Int, height : Int, edge : Int] : Any
+  (let longest ($math/max width height))
+  [($math/max 1 (round_half_up (/ (* width edge 1.0) longest)))
+   ($math/max 1 (round_half_up (/ (* height edge 1.0) longest)))])
+
+# The matrix taking view-box units to output PNG pixels, including the
+# letterboxing of SVG's default preserveAspectRatio (xMidYMid meet).
+(fn view_box_to_png [scene, size] : Any
+  (let props ($props scene))
+  (let box props/view_box)
+  (let canvas_scale ($math/min (/ (* props/width 1.0) box/2) (/ (* props/height 1.0) box/3)))
+  (let offset_x (/ (- props/width (* box/2 canvas_scale)) 2.0))
+  (let offset_y (/ (- props/height (* box/3 canvas_scale)) 2.0))
+  (let pixel_x (/ (* size/0 1.0) props/width))
+  (let pixel_y (/ (* size/1 1.0) props/height))
+  [(* canvas_scale pixel_x) 0 0 (* canvas_scale pixel_y)
+   (* (- offset_x (* box/0 canvas_scale)) pixel_x)
+   (* (- offset_y (* box/1 canvas_scale)) pixel_y)])
+
+# Width and height from a PNG file header.
+(fn png_size [bytes] : Any
+  (if (< ($binary/size bytes) 24)
+    (stage_failure "png_header" "invalid_png" "the PNG is shorter than its header"))
+  (let signature ($binary/to_list ($binary/slice bytes 0 8)))
+  (if (!= signature [137 80 78 71 13 10 26 10])
+    (stage_failure "png_header" "invalid_png" "the file does not start with the PNG signature"))
+  (fn big_endian [offset : Int] : Int
+    (+ (* ($binary/get bytes offset) 16777216)
+       (* ($binary/get bytes (+ offset 1)) 65536)
+       (* ($binary/get bytes (+ offset 2)) 256)
+       ($binary/get bytes (+ offset 3))))
+  [(big_endian 16) (big_endian 20)])
+
+(fn has_text? [node] : Bool
+  (if (== (kind_of node) "text") (return true))
+  (if (== (kind_of node) "g")
+    (for child in ($body node)
+      (if (has_text? child) (return true))))
+  false)
+
+(fn scene_has_text? [scene] : Bool
+  (for child in ($drop ($body scene) 1)
+    (if (has_text? child) (return true)))
+  false)
+
+(fn check_effect_surfaces [scene, size] : Nil
+  (let props ($props scene))
+  (let scale (/ (* size/0 1.0) props/width))
+  (for definition in ($body (defs_node scene))
+    (if_yes (== (kind_of definition) "blur")
+      (let pixels (* definition/width definition/height scale scale))
+      (if (> pixels effect_surface_pixels)
+        (stage_failure "limits" "effect_surface_limit"
+          $"blur ${definition/id} covers ${($to_int pixels)} output pixels; the limit is ${effect_surface_pixels}"
+          ^detail definition/id))))
+  nil)
+
+# ── the pipeline ───────────────────────────────────────────────────────────
+
+(fn artifact_node [kind : Str, path : Str, extra] : Any
+  (let bytes ($fs/read_bytes path))
+  (var props {^kind kind ^digest (digest_of bytes) ^bytes ($binary/size bytes)})
+  (for [name value] in extra (props .put ($to_str name) value))
+  ($node/rebuild `(artifact) ^props props))
+
+# Render a validated scene into `out_dir`, which must exist and be empty of
+# earlier outputs. Returns the bundle:
+#   {^digest ^dir ^manifest ^scene_digest ^svg ^svg_digest ^pdf_digest
+#    ^png_digest ^width ^height ^thumbnail_digest}
+# The manifest is also written to `out_dir/manifest.gene`.
+(fn render_scene [profile, scene, out_dir : Str] : Any
+  (let started ($os/monotonic_ms))
+  (var stages [])
+  (fn remaining [] : Int
+    (let left (- profile/pipeline_ms (- ($os/monotonic_ms) started)))
+    (if (<= left 0)
+      (stage_failure "pipeline" "stage_timeout"
+        $"the render pipeline exceeded ${profile/pipeline_ms} ms"))
+    ($math/min profile/stage_ms left))
+  (var stage_started ($os/monotonic_ms))
+  (fn finished [name : Str] : Nil
+    (let ms (- ($os/monotonic_ms) stage_started))
+    (stages .push `(stage ^name %name ^status "ok" ^ms %ms))
+    (set stage_started ($os/monotonic_ms))
+    nil)
+
+  (let props ($props scene))
+  (let size (output_size props/width props/height profile/edge))
+  (check_effect_surfaces scene size)
+
+  (let svg (scene_svg scene))
+  (let svg_path ($path/join out_dir "scene.svg"))
+  ($fs/write_text svg_path svg)
+  (finished "svg")
+
+  (let pdf_path ($path/join out_dir "scene.pdf"))
+  (svg_to_pdf profile/rsvg profile/fonts_conf svg_path pdf_path ^timeout_ms (remaining))
+  (if_not ($fs/exists? pdf_path)
+    (stage_failure "svg_to_pdf" "invalid_pdf" "rsvg-convert produced no PDF"))
+  (finished "svg_to_pdf")
+
+  (let info (pdf_info profile/pdfinfo pdf_path ^timeout_ms (remaining)))
+  (if (!= info/pages 1)
+    (stage_failure "pdf_info" "invalid_pdf" $"expected one PDF page, found ${info/pages}" ^detail info))
+  # CSS pixels become PDF points at 0.75; allow half a point for rounding.
+  (if (|| (> ($math/abs (- info/width (* props/width 0.75))) 0.5)
+          (> ($math/abs (- info/height (* props/height 0.75))) 0.5))
+    (stage_failure "pdf_info" "invalid_pdf"
+      $"the PDF page is ${info/width} x ${info/height} pt, which does not match a ${props/width} x ${props/height} px canvas"
+      ^detail info))
+  (finished "pdf_info")
+
+  (let embedded (pdf_fonts profile/pdffonts pdf_path ^timeout_ms (remaining)))
+  (var font_names [])
+  (for font in embedded
+    (if_not (&& font/embedded (profile/bundled_names .contains? font/name))
+      (stage_failure "pdf_fonts" "unbundled_font"
+        $"the PDF uses font ${font/name}, which is not an embedded bundled font" ^detail font/name))
+    (if_not (font_names .contains? font/name) (font_names .push font/name)))
+  (finished "pdf_fonts")
+
+  (pdf_to_png profile/pdftocairo pdf_path ($path/join out_dir "observation") size/0 size/1
+    ^timeout_ms (remaining))
+  (let png_path ($path/join out_dir "observation.png"))
+  (if_not ($fs/exists? png_path)
+    (stage_failure "pdf_to_png" "invalid_png" "pdftocairo produced no PNG"))
+  (let decoded (png_size ($fs/read_bytes png_path)))
+  (if (!= decoded size)
+    (stage_failure "pdf_to_png" "invalid_png"
+      $"the PNG is ${decoded/0} x ${decoded/1}, expected ${size/0} x ${size/1}" ^detail decoded))
+  (finished "pdf_to_png")
+
+  (let thumb_size (output_size props/width props/height thumbnail_edge))
+  (pdf_to_png profile/pdftocairo pdf_path ($path/join out_dir "thumbnail") thumb_size/0 thumb_size/1
+    ^timeout_ms (remaining))
+  (finished "thumbnail")
+
+  (var artifacts [
+    (artifact_node "scene.svg" svg_path {})
+    (artifact_node "scene.pdf" pdf_path {^page [info/width info/height]})
+    (artifact_node "observation.png" png_path {^width size/0 ^height size/1})
+    (artifact_node "thumbnail.png" ($path/join out_dir "thumbnail.png")
+      {^width thumb_size/0 ^height thumb_size/1 ^source "scene.pdf"})])
+
+  # Transparent artwork: the model's viewing PNG above is on Poppler's white
+  # page, the declared matte. The RGBA image is a separate artifact.
+  (var matte nil)
+  (if_yes (== props/background "none")
+    (set matte "#ffffff")
+    (pdf_to_png profile/pdftocairo pdf_path ($path/join out_dir "transparent") size/0 size/1
+      ^transparent true ^timeout_ms (remaining))
+    (artifacts .push (artifact_node "transparent.png" ($path/join out_dir "transparent.png")
+      {^width size/0 ^height size/1}))
+    (finished "transparent"))
+
+  (var children [])
+  (for font in profile/fonts (children .push (font_node font)))
+  (for stage in stages (children .push stage))
+  (for artifact in artifacts (children .push artifact))
+  (let profile_name profile/id)
+  (let digest (scene_digest scene))
+  (let canvas [props/width props/height])
+  (let box props/view_box)
+  (let mapping (view_box_to_png scene size))
+  (let rsvg profile/rsvg_version)
+  (let poppler profile/poppler_version)
+  (let manifest
+    ($freeze
+      `(render_manifest ^schema 1 ^profile %profile_name ^scene %digest
+         ^canvas %canvas ^view_box %box
+         ^output %size ^rounding "longest edge to the profile edge; other edge rounded half up"
+         ^view_box_to_png %mapping
+         ^antialias %antialias ^color "sRGB 8-bit RGB, opaque"
+         ^matte %matte ^embedded_fonts %font_names
+         ^rsvg_convert %rsvg ^poppler %poppler
+         %children...)))
+  (let text (canonical manifest))
+  ($fs/write_text ($path/join out_dir "manifest.gene") text)
+  {^digest (digest_of text) ^dir out_dir ^manifest manifest
+   ^scene_digest digest
+   ^svg svg ^svg_digest (/digest artifacts/0) ^pdf_digest (/digest artifacts/1)
+   ^png_digest (/digest artifacts/2) ^width size/0 ^height size/1
+   ^thumbnail_digest (/digest artifacts/3)})
+
+# Render SVG straight to PNG with rsvg-convert, for comparing the PDF route
+# against direct rasterization at the same size. Diagnostic only: it is a
+# different renderer and never stands in for the observation.
+(fn render_direct [profile, scene, png_path : Str, svg_path : Str] : Any
+  (let props ($props scene))
+  (let size (output_size props/width props/height profile/edge))
+  ($fs/write_text svg_path (scene_svg scene))
+  (svg_to_png profile/rsvg profile/fonts_conf svg_path png_path size/0 size/1)
+  (png_size ($fs/read_bytes png_path)))
+
+# Render a detail crop from a stored PDF. `rectangle` is [x y width height] in
+# view-box units; the crop is cut from a page raster `zoom` times the
+# observation size, so one view-box unit covers more pixels than in the full
+# image. Returns the crop's mapping so its pixels can be related to the canvas.
+(fn render_crop [profile, scene, pdf_path : Str, out_prefix : Str, rectangle,
+                 ^zoom zoom : Int = 2] : Any
+  (let props ($props scene))
+  (let base (output_size props/width props/height profile/edge))
+  (let page [(* base/0 zoom) (* base/1 zoom)])
+  (if (|| (> page/0 (* limits/raster_edge 2)) (> page/1 (* limits/raster_edge 2)) (< zoom 1))
+    (stage_failure "pdf_crop" "invalid_crop" "the crop zoom is out of range"))
+  (let matrix (view_box_to_png scene page))
+  (let x ($math/max 0 ($to_int ($math/floor (+ (* matrix/0 rectangle/0) matrix/4)))))
+  (let y ($math/max 0 ($to_int ($math/floor (+ (* matrix/3 rectangle/1) matrix/5)))))
+  (let width ($math/min (- page/0 x) ($math/max 1 ($to_int ($math/ceil (* matrix/0 rectangle/2))))))
+  (let height ($math/min (- page/1 y) ($math/max 1 ($to_int ($math/ceil (* matrix/3 rectangle/3))))))
+  (if (|| (< width 1) (< height 1))
+    (stage_failure "pdf_crop" "invalid_crop" "the crop rectangle is outside the canvas"))
+  (pdf_crop profile/pdftocairo pdf_path out_prefix page/0 page/1 x y width height)
+  (let bytes ($fs/read_bytes $"${out_prefix}.png"))
+  {^digest (digest_of bytes) ^width width ^height height ^rectangle rectangle
+   ^page page ^pixel_origin [x y] ^view_box_to_page matrix ^profile profile/id})

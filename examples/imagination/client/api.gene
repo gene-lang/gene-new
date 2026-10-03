@@ -1,0 +1,42 @@
+# Typed requests to the application API (design section 14.4).
+(mod imagination_client_api ^profile web)
+
+(const api_prefix "/api/v1")
+
+# Call the API with a JSON payload. `done` receives the status and the parsed
+# body; a transport failure arrives as status 0 with a code and message.
+(fn api [token : Str, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+  ($http/request
+    method
+    $"${api_prefix}${path}"
+    (if ($absent? payload) "" ($json/stringify payload))
+    {^content-type "application/json" ^x-imagination-token token}
+    (fn [status : Int, body : Str] : Void
+      (var result
+        :
+        Any
+        (if (== body "")
+          {^code "disconnected" ^message "The connection to the application was lost."}
+          (try
+            ($json/parse body)
+          catch Any
+            {^code "invalid_response" ^message "The application returned an unreadable response."})))
+      (done status result))))
+
+(fn hash_value [source : Str, name : Str] : Str
+  (var normalized : Str (str/join (str/split source "#") ""))
+  (for part in (str/split normalized "&")
+    (var pair : (List Str) (str/split part "="))
+    (if_yes (&& (== ($size pair) 2) (== pair/0 name)) (return ($url/decode_component pair/1))))
+  "")
+
+(fn message_of [result : Any, fallback : Str] : Str
+  (if_yes ($absent? result) (return fallback))
+  (if_yes ($absent? result/message) (return fallback))
+  (var text : Str result/message)
+  text)
+
+(fn text_or [value : Any, fallback : Str] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var text : Str value)
+  text)

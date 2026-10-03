@@ -1,0 +1,763 @@
+# The application API, event socket, and browser client (design section 14).
+#
+# One process owns the projects it opens. The API is a versioned JSON view of
+# the Gene records; the records stay authoritative. Long work returns 202 with
+# a job. Project events come from the transactional outbox, so the browser is
+# told only about committed changes.
+(mod imagination_server)
+
+(import $net/http [listen serve stop html json bytes text ws_accept ws_send ws_close])
+(import $db/sqlite [Db])
+(import $html [render])
+(import $web [script stylesheet])
+(import [StoreError DomainError RenderError ModelError kind_of node? children_named
+         child_named text_of field_label] ^from "./types")
+(import [valid_id?] ^from "./scene_schema")
+(import [canonical read_canonical read_domain digest_of index_scene world_bounds] ^from "./scene")
+(import [validate_goal requirements_of] ^from "./evaluation")
+(import [edges_svg] ^from "./svg")
+(import [describe_diff] ^from "./diff")
+(import [plan_goal] ^from "./agent")
+(import [create_evolution open_evolution close_evolution view line_row lines revisions
+         revision_row parents_of value fork select selected metadata_version compare
+         replay_exact goal_of effective_evaluation next_goal_id] ^from "./evolution")
+(import [start_run execute_run cancel_run steer_run resume_run run_row runs active_run
+         model_view] ^from "./jobs")
+(import [events_after last_event_seq get_node get_object artifact_path artifact_kinds hex_of verify_bundle]
+  ^from "./store")
+(import [styles] ^from "./style")
+
+(const api_prefix "/api/v1")
+(const page_size 200)
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+(var client_asset ($web/load ($path/join package_root "client/main.gene")))
+
+(type ApiError ^props {^message Str ^code Str ^status Int ^detail Any})
+(impl Error for ApiError)
+
+(fn api_failure [status : Int, code : Str, message : Str, ^detail detail = nil]
+  (fail (ApiError ^status status ^code code ^message message ^detail detail)))
+
+# ── workbench state ────────────────────────────────────────────────────────
+
+# home: the projects directory. agent: a VisionAgent, or nil without a model.
+(fn new_workbench [home : Str, profile, agent, port : Int] : Any
+  {^home home ^profile profile ^agent agent ^port port
+   ^token ($crypto/random_hex 24)
+   ^origins [$"http://127.0.0.1:${port}" $"http://localhost:${port}"]
+   ^hosts [$"127.0.0.1:${port}" $"localhost:${port}"]
+   ^projects {} ^peers ($cell []) ^idempotency {} ^tasks []})
+
+(fn project_dir [bench, name : Str] : Str
+  ($path/join bench/home name))
+
+(fn project_names [bench] : Any
+  (var names [])
+  (if_not ($fs/exists? bench/home) (return names))
+  (for name in ($fs/list_dir bench/home)
+    (if (&& (valid_id? name) ($fs/exists? ($path/join (project_dir bench name) "project.gene")))
+      (names .push name)))
+  names)
+
+# The open Evolution of a project, opening it on first use. The server keeps
+# it open: the project lock belongs to this process while it runs.
+(fn project_of [bench, name : Str] : Any
+  (if_not (valid_id? name) (api_failure 404 "not_found" $"there is no project ${name}"))
+  (let open (bench/projects .get name))
+  (if_not ($absent? open) (return open))
+  (if_not ($fs/exists? ($path/join (project_dir bench name) "project.gene"))
+    (api_failure 404 "not_found" $"there is no project ${name}"))
+  (let evolution (open_evolution (project_dir bench name) bench/profile))
+  (bench/projects .put name evolution)
+  evolution)
+
+(fn require_agent [bench] : Any
+  (if ($absent? bench/agent)
+    (api_failure 503 "missing_dependency"
+      "No model is configured. Restart with OPENROUTER_API_KEY or ANTHROPIC_API_KEY set."))
+  bench/agent)
+
+# ── JSON views of the records ──────────────────────────────────────────────
+
+(fn hex [digest] : Any
+  (if ($absent? digest) nil (hex_of digest)))
+
+(fn artifact_url [project : Str, bundle : Str, kind : Str] : Str
+  $"${api_prefix}/projects/${project}/artifacts/${(hex_of bundle)}/${kind}")
+
+(fn goal_json [goal] : Any
+  (var requirements [])
+  (for item in (requirements_of goal)
+    (requirements .push
+      {^id item/id ^strength item/strength ^check item/check
+       ^text (if ($void? item/text) nil item/text) ^description (text_of item)}))
+  (var preferences [])
+  (for item in (children_named goal "preference") (preferences .push (text_of item)))
+  {^id goal/id ^request goal/request
+   ^predecessor (if ($void? goal/predecessor) nil goal/predecessor)
+   ^instruction (if ($void? goal/instruction) nil goal/instruction)
+   ^requirements requirements ^preferences preferences})
+
+(fn evaluation_json [evaluation] : Any
+  (var checks [])
+  (for check in (children_named evaluation "check")
+    (checks .push {^requirement check/requirement ^result check/result
+                   ^evidence check/evidence ^kind check/kind}))
+  (var issues [])
+  (for issue in (children_named evaluation "issue")
+    (issues .push {^severity issue/severity ^target (if ($void? issue/target) nil issue/target)
+                   ^text (text_of issue)}))
+  {^revision evaluation/revision ^image evaluation/image ^goal evaluation/goal
+   ^render_profile evaluation/render_profile ^reviewer evaluation/reviewer
+   ^checks checks ^issues issues})
+
+(fn record_json [node] : Any
+  (var result {})
+  (for [name item] in ($props node)
+    (result .put ($to_str name)
+      (if (node? item) (record_json item)
+        (if (== ($head item) List) ($map item (fn [x] (if (node? x) (record_json x) x))) item))))
+  result)
+
+(fn run_json [project : Str, row] : Any
+  {^id row/id ^job $"${project}.${row/id}" ^line row/line ^goal row/goal ^status row/status
+   ^phase row/phase ^accepted row/accepted ^pending row/pending ^iteration row/iteration
+   ^budgets (record_json (read_canonical row/budgets))
+   ^usage (record_json (read_canonical row/usage))
+   ^reason row/reason ^last_error row/last_error ^steering row/steering
+   ^cancel_requested (== row/cancel_requested 1)
+   ^created_ms row/created_ms ^updated_ms row/updated_ms})
+
+(fn project_json [bench, name : Str] : Any
+  (let evolution (project_of bench name))
+  (var line_list [])
+  (for row in (lines evolution)
+    (if (== row/kind "working")
+      (line_list .push
+        {^id row/id ^head row/head ^goal row/goal ^origin row/origin ^version row/version
+         ^active_run (?? (/id (active_run evolution row/id)) nil)})))
+  (var goals {})
+  (for row in (lines evolution)
+    (if (&& (== row/kind "working") (! ($has_key? goals row/goal)))
+      (goals .put row/goal (goal_json (goal_of evolution row/goal)))))
+  (var recent [])
+  (for row in ($take (runs evolution) 10) (recent .push (run_json name row)))
+  {^name name ^id evolution/project/record/id
+   ^render_profile evolution/project/record/render_profile
+   ^selected (selected evolution) ^metadata_version (metadata_version evolution)
+   ^lines line_list ^goals goals ^runs recent
+   ^revisions ($size (revisions evolution ^limit 100000))
+   # A client opens its event socket from here, so events already reflected
+   # in this snapshot are not replayed as new.
+   ^last_event (last_event_seq evolution/project)
+   ^model (if ($absent? bench/agent) nil (/config bench/agent))})
+
+(fn revision_json [bench, name : Str, id : Str] : Any
+  (let evolution (project_of bench name))
+  (let row (revision_row evolution id))
+  (let parents (parents_of evolution id))
+  (let evaluation (effective_evaluation evolution row row/goal))
+  (let original (get_node evolution/project row/evaluation))
+  (var changes [])
+  (if_not ($absent? row/diff)
+    (set changes (describe_diff (get_node evolution/project row/diff))))
+  (var effects [])
+  (if_not ($absent? row/effects)
+    (for effect in ($body (get_node evolution/project row/effects))
+      (effects .push (canonical effect))))
+  (let manifest (verify_bundle evolution/project row/render))
+  (var artifacts {})
+  (for kind in ["observation.png" "thumbnail.png" "scene.svg" "scene.pdf" "manifest.gene"]
+    (artifacts .put kind (artifact_url name row/render kind)))
+  {^id id ^number row/number ^kind row/kind ^quality row/quality ^goal row/goal
+   ^parents parents ^actor row/actor ^run row/run ^intent row/intent ^summary row/summary
+   ^image row/image ^render row/render ^created_ms row/created_ms
+   ^patch (if ($absent? row/patch) nil (get_object evolution/project row/patch))
+   ^effects effects ^changes changes
+   ^evaluation (evaluation_json evaluation)
+   ^original_evaluation (evaluation_json original)
+   ^goal_record (goal_json (goal_of evolution row/goal))
+   ^render_profile manifest/profile ^output manifest/output
+   ^artifacts artifacts})
+
+# ── history layout (section 14.2) ──────────────────────────────────────────
+
+(const cell_width 132)
+(const cell_height 132)
+(const margin 16)
+(const thumb 104)
+
+# Rows by topological depth; a revision keeps its parent's column when it is
+# the parent's first accepted child, and otherwise takes the nearest free
+# column to the right. Deterministic for a given history.
+(fn layout [evolution] : Any
+  (let rows (revisions evolution ^limit 100000))
+  (var depth {})
+  (var column {})
+  (var taken {})
+  (var primary {})
+  (for row in rows
+    (if_yes (&& (== row/quality "accepted") (> row/parents/.size 0))
+      (let parent row/parents/0)
+      (if_not ($has_key? primary parent) (primary .put parent row/id))))
+  (var widest 0)
+  (var deepest 0)
+  (for row in rows
+    (if (== row/parents/.size 0)
+      (then
+        (depth .put row/id 0)
+        (column .put row/id 0))
+      (else
+        (let parent row/parents/0)
+        (let level (+ (depth .get parent) 1))
+        (depth .put row/id level)
+        (var col (column .get parent))
+        (if (|| (!= (primary .get parent) row/id) ($has_key? taken $"${level}:${col}"))
+          (then
+            (set col (+ col 1))
+            (while ($has_key? taken $"${level}:${col}") (set col (+ col 1)))))
+        (column .put row/id col)))
+    (taken .put $"${(depth .get row/id)}:${(column .get row/id)}" row/id)
+    (set widest ($math/max widest (column .get row/id)))
+    (set deepest ($math/max deepest (depth .get row/id))))
+  (var nodes [])
+  (var edges [])
+  (for row in rows
+    (let x (+ margin (* (column .get row/id) cell_width)))
+    (let y (+ margin (* (depth .get row/id) cell_height)))
+    (nodes .push {^id row/id ^x x ^y y ^row row})
+    (for parent in row/parents
+      (let px (+ margin (* (column .get parent) cell_width) (/ thumb 2)))
+      (let py (+ margin (* (depth .get parent) cell_height) thumb))
+      (edges .push [px py (+ x (/ thumb 2)) y])))
+  {^nodes nodes ^edges edges
+   ^width (+ (* 2 margin) (* (+ widest 1) cell_width))
+   ^height (+ (* 2 margin) (* (+ deepest 1) cell_height))})
+
+(fn history_json [bench, name : Str, cursor : Int] : Any
+  (let evolution (project_of bench name))
+  (let graph (layout evolution))
+  (var heads {})
+  (for row in (lines evolution)
+    (if (== row/kind "working")
+      (then
+        (var names (?? (heads .get row/head) []))
+        (names .push row/id)
+        (heads .put row/head names))))
+  (var nodes [])
+  (var last cursor)
+  (for item in graph/nodes
+    (let row item/row)
+    (if_yes (&& (> row/number cursor) (< nodes/.size page_size))
+      (set last row/number)
+      (nodes .push
+        {^id row/id ^number row/number ^x item/x ^y item/y ^quality row/quality
+         ^parents row/parents ^run row/run ^intent row/intent ^image row/image
+         ^thumbnail (artifact_url name row/render "thumbnail.png")
+         ^heads (?? (heads .get row/id) [])})))
+  (let count graph/nodes/.size)
+  {^nodes nodes ^width graph/width ^height graph/height ^thumb thumb
+   ^cursor last ^more (< last (if (== count 0) 0 (/number (/row (graph/nodes .last)))))
+   ^edges_url $"${api_prefix}/projects/${name}/history.svg?v=${count}"
+   ^selected (selected evolution)})
+
+# ── responses ──────────────────────────────────────────────────────────────
+
+(fn respond [status : Int, value]
+  (json status ($json/stringify value)))
+
+(fn secure [result]
+  (if_not ($absent? result/headers)
+    (result/headers .put "x-content-type-options" "nosniff")
+    (result/headers .put "referrer-policy" "no-referrer")
+    (if ($absent? (result/headers .get "cache-control"))
+      (result/headers .put "cache-control" "no-store"))
+    (result/headers .put "content-security-policy"
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"))
+  result)
+
+(fn content_type [kind : Str] : Str
+  (if (== kind "scene.svg") "image/svg+xml"
+    (if (== kind "scene.pdf") "application/pdf"
+      (if ($str/ends_with? kind ".png") "image/png" "text/plain; charset=utf-8"))))
+
+(fn serve_artifact [bench, name : Str, digest_hex : Str, kind : Str, request]
+  (let evolution (project_of bench name))
+  (let digest $"sha256:${digest_hex}")
+  (if_not (artifact_kinds .contains? kind)
+    (api_failure 404 "not_found" "unknown artifact kind"))
+  (let path
+    (try (artifact_path evolution/project digest kind)
+      catch StoreError (api_failure 404 "not_found" "unknown artifact")))
+  (if_not ($fs/exists? path) (api_failure 404 "not_found" "unknown artifact"))
+  (let tag $"\"${digest_hex}-${kind}\"")
+  (if (== (?? request/headers/if-none-match "") tag)
+    (then
+      (var unchanged (text 304 ""))
+      (unchanged/headers .put "etag" tag)
+      (return unchanged)))
+  (var result (bytes 200 ($fs/read_bytes path)))
+  (result/headers .put "content-type" (content_type kind))
+  (result/headers .put "etag" tag)
+  (result/headers .put "cache-control" "private, max-age=31536000, immutable")
+  (if (== kind "scene.pdf")
+    (result/headers .put "content-disposition" "inline"))
+  result)
+
+(fn export_response [bench, name : Str, request]
+  (let evolution (project_of bench name))
+  (let revision (field request/params "revision"))
+  (let format (field request/params "format"))
+  (let row (try (revision_row evolution revision)
+             catch StoreError (api_failure 404 "not_found" $"there is no revision ${revision}")))
+  (let kind
+    (if (== format "svg") "scene.svg"
+      (if (== format "pdf") "scene.pdf"
+        (if (== format "png") "observation.png"
+          (api_failure 400 "invalid_request" "format is svg, pdf, or png")))))
+  (verify_bundle evolution/project row/render)
+  (var result (bytes 200 ($fs/read_bytes (artifact_path evolution/project row/render kind))))
+  (result/headers .put "content-type" (content_type kind))
+  (let extension (if (== format "png") "png" format))
+  (result/headers .put "content-disposition"
+    $"attachment; filename=\"${name}-${revision}.${extension}\"")
+  result)
+
+# ── request data ───────────────────────────────────────────────────────────
+
+(fn request_data [request] : Any
+  (let data (try ($json/parse request/body ^strict true ^max_depth 16)
+              catch Any (api_failure 400 "invalid_request" "The request must contain a JSON object.")))
+  (if_not (== ($head data) Map) (api_failure 400 "invalid_request" "The request must contain a JSON object."))
+  data)
+
+(fn field [data, key : Str, ^default fallback = nil] : Any
+  (let value (try (data .get key) catch Any nil))
+  (if ($absent? value)
+    (if ($absent? fallback)
+      (api_failure 400 "invalid_request" $"Missing ${key}.")
+      (return fallback)))
+  value)
+
+(fn text_field [data, key : Str, ^default fallback = nil, ^limit limit : Int = 4000] : Str
+  (let value (field data key ^default fallback))
+  (if_not (== ($head value) Str) (api_failure 400 "invalid_request" $"${key} must be text."))
+  (if (> ($str/byte_size value) limit) (api_failure 413 "too_large" $"${key} is too long."))
+  value)
+
+(fn int_field [data, key : Str, ^default fallback = nil] : Any
+  (let value (field data key ^default (if ($absent? fallback) nil fallback)))
+  (if (== ($head value) Int) (return value))
+  (if (&& (== ($head value) Float) (== ($math/trunc value) value)) (return ($to_int value)))
+  (if (== ($head value) Str)
+    (return (try ($parse/parse_int value)
+              catch Any (api_failure 400 "invalid_request" $"${key} must be a whole number."))))
+  (api_failure 400 "invalid_request" $"${key} must be a whole number."))
+
+# A repeated mutation with the same key returns the first result instead of
+# acting again.
+(fn idempotent [bench, evolution, key : Str, kind : Str, body]
+  (if (|| (== key "") (> ($str/byte_size key) 128))
+    (api_failure 400 "invalid_request" "Every change needs an idempotency_key of at most 128 characters."))
+  (if ($absent? evolution)
+    (then
+      (let seen (bench/idempotency .get key))
+      (if_not ($absent? seen) (return seen))
+      (let result (body))
+      (bench/idempotency .put key result)
+      (return result)))
+  (let db evolution/project/db)
+  (let stored (db .Db:query_one "SELECT result FROM idempotency WHERE key = ?" key))
+  (if_not ($absent? stored) (return ($json/parse stored/result)))
+  (let result (body))
+  (db .Db:execute "INSERT OR IGNORE INTO idempotency(key, kind, result, created_ms) VALUES (?, ?, ?, ?)"
+    key kind ($json/stringify result) ($os/wall_ms))
+  result)
+
+# ── operations ─────────────────────────────────────────────────────────────
+
+(fn launch [bench, name : Str, run_id : Str] : Nil
+  (let evolution (project_of bench name))
+  (let agent (require_agent bench))
+  (let task
+    (spawn ^lane root
+      (try
+        (execute_run evolution agent run_id)
+      catch Any
+        ($println $"run ${name}.${run_id} stopped: ${$err/message}"))))
+  (bench/tasks .push task)
+  nil)
+
+(fn create_project_from [bench, data] : Any
+  (let name (text_field data "name" ^limit 64))
+  (if_not (valid_id? name)
+    (api_failure 400 "invalid_request" "A project name is a letter followed by letters, digits, _ or -."))
+  (if ($fs/exists? (project_dir bench name))
+    (api_failure 409 "exists" $"A project named ${name} already exists."))
+  (let prompt (text_field data "prompt"))
+  (if (== ($str/trim prompt) "") (api_failure 400 "invalid_request" "Describe what to draw."))
+  (let width (int_field data "width" ^default 1024))
+  (let height (int_field data "height" ^default 1024))
+  (let goal (plan_goal (require_agent bench) ($str/trim prompt) "goal-01"))
+  (let evolution
+    (create_evolution (project_dir bench name) name goal bench/profile
+      ^width width ^height height
+      ^background (text_field data "background" ^default "#ffffff" ^limit 16)))
+  (bench/projects .put name evolution)
+  (project_json bench name))
+
+(fn fork_line [bench, name : Str, data] : Any
+  (let evolution (project_of bench name))
+  (let from (text_field data "from" ^limit 32))
+  (let line_name (text_field data "name" ^limit 64))
+  (let direction ($str/trim (text_field data "prompt" ^default "")))
+  (let source (try (revision_row evolution from)
+                catch StoreError (api_failure 404 "not_found" $"there is no revision ${from}")))
+  (var goal nil)
+  (if_yes (!= direction "")
+    (let current (goal_of evolution source/goal))
+    (let goal_id (next_goal_id evolution))
+    (let planned
+      (plan_goal (require_agent bench) $"${current/request}\nNew direction: ${direction}" goal_id))
+    (let request planned/request)
+    (let predecessor current/id)
+    (set goal
+      ($node/rebuild planned
+        ^props {^id goal_id ^request request ^predecessor predecessor ^instruction direction})))
+  (fork evolution from line_name ^goal goal)
+  (project_json bench name))
+
+(fn start_job [bench, name : Str, data] : Any
+  (let evolution (project_of bench name))
+  (require_agent bench)
+  (let line_id (text_field data "line" ^limit 64))
+  (let expected (text_field data "expected_head" ^limit 32))
+  (var budgets {})
+  (let edits (field data "max_iterations" ^default 0))
+  (if (&& (== ($head edits) Int) (> edits 0) (<= edits 40)) (budgets .put "max_iterations" edits))
+  (let row (start_run evolution line_id ^expected_head expected ^budgets budgets))
+  (launch bench name row/id)
+  (run_json name row))
+
+# ── the page ───────────────────────────────────────────────────────────────
+
+(fn page [bench] : Str
+  (let token bench/token)
+  ($to_str
+    "<!doctype html>"
+    (render
+      `(html ^lang "en"
+         (head
+           (meta ^charset "utf-8")
+           (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+           (title "Imagination")
+           %(stylesheet "imagination" styles))
+         (body
+           (div ^id "imagination_root" ^class "app"
+             (div ^id "imagination_token" ^^hidden %token)
+             (header ^class "topbar"
+               (div ^class "brand" (span ^class "brand_name" "Imagination") (span ^class "brand_detail" "Gene"))
+               (label ^class "picker" "Project" (select ^id "project_select" ^aria-label "Project"))
+               (label ^class "picker" "Line" (select ^id "line_select" ^aria-label "Line"))
+               (div ^id "goal_text" ^class "goal_text")
+               (div ^id "run_status" ^class "run_status" ^role "status" ^aria-live "polite")
+               (button ^id "new_project_button" ^type "button" "New project"))
+             (section ^id "new_project" ^class "new_project" ^^hidden
+               (form ^id "new_project_form"
+                 (label "Name" (input ^id "new_name" ^^required ^maxlength "64" ^placeholder "cat-window"))
+                 (label "What should be drawn?"
+                   (textarea ^id "new_prompt" ^rows "3" ^^required ^placeholder "A cat at a window overlooking a rainy city at night."))
+                 (div ^class "row"
+                   (label "Width" (input ^id "new_width" ^type "number" ^min "16" ^max "4096" ^value "1024"))
+                   (label "Height" (input ^id "new_height" ^type "number" ^min "16" ^max "4096" ^value "1024")))
+                 (div ^class "row"
+                   (button ^type "submit" ^class "primary" "Create and plan the goal")
+                   (button ^id "new_project_cancel" ^type "button" "Cancel"))))
+             (main ^class "workspace"
+               (section ^class "stage"
+                 (div ^class "stage_header"
+                   (strong ^id "canvas_label" "No revision")
+                   (label ^class "toggle" (input ^id "follow_live" ^type "checkbox" ^^checked) "Follow live")
+                   (label ^class "toggle" (input ^id "vector_preview" ^type "checkbox") "Vector preview (browser renderer)"))
+                 (div ^class "canvas_frame"
+                   (img ^id "canvas_image" ^alt "Clean observation render of the selected revision"))
+                 (div ^class "controls"
+                   (button ^id "run_button" ^type "button" ^class "primary" "Draw on this line")
+                   (input ^id "max_edits" ^type "number" ^min "1" ^max "40" ^value "12" ^aria-label "Edit budget")
+                   (button ^id "cancel_button" ^type "button" ^^hidden "Cancel run")
+                   (button ^id "select_button" ^type "button" "Choose as result")
+                   (a ^id "export_svg" ^href "#" "SVG") (a ^id "export_pdf" ^href "#" "PDF") (a ^id "export_png" ^href "#" "PNG"))
+                 (form ^id "steer_form" ^class "steer" ^^hidden
+                   (input ^id "steer_text" ^maxlength "2000" ^placeholder "Steer the running drawing, e.g. make the rain heavier")
+                   (button ^type "submit" "Steer"))
+                 (form ^id "fork_form" ^class "fork"
+                   (strong "Continue from this revision")
+                   (input ^id "fork_name" ^maxlength "64" ^placeholder "new line name, e.g. watercolor")
+                   (input ^id "fork_prompt" ^maxlength "2000" ^placeholder "optional new direction")
+                   (button ^type "submit" "Create line")))
+               (section ^class "history_panel"
+                 (div ^class "panel_header" (strong "History")
+                   (label ^class "toggle" (input ^id "show_trials" ^type "checkbox" ^^checked) "Show trials"))
+                 (div ^id "history" ^class "history" ^aria-label "Revision history"))
+               (aside ^class "inspector"
+                 (div ^class "panel_header" (strong ^id "inspector_title" "Revision"))
+                 (div ^id "inspector" ^class "inspector_body")
+                 (details ^id "model_view" ^class "model_view"
+                   (summary "Model view")
+                   (div ^id "model_view_body"))
+                 (details ^id "compare_panel" ^class "compare_panel"
+                   (summary "Compare")
+                   (div ^class "row"
+                     (input ^id "compare_left" ^maxlength "16" ^placeholder "left, e.g. r002")
+                     (input ^id "compare_right" ^maxlength "16" ^placeholder "right, e.g. r004")
+                     (button ^id "compare_button" ^type "button" "Compare"))
+                   (div ^id "compare_body"))))
+             (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite"))
+           %(script ^mount "imagination_root" client_asset))))))
+
+# ── event socket ───────────────────────────────────────────────────────────
+
+(fn event_frame [name : Str, row] : Str
+  (let body (record_json (read_canonical row/body)))
+  ($json/stringify
+    {^seq ($to_str row/seq) ^kind row/kind ^project name ^run row/run
+     ^job (if ($absent? row/run) nil $"${name}.${row/run}")
+     ^revision row/revision ^data body ^at row/created_ms}))
+
+(fn send_events [bench, peer] : Nil
+  (if peer/closed (return nil))
+  (let evolution (project_of bench peer/project))
+  (let rows (events_after evolution/project peer/last ^limit 500))
+  (for row in rows
+    (if_yes (!= (ws_send peer/connection (event_frame peer/project row)) 0)
+      # A dropped frame invalidates the stream; the client resyncs.
+      (peer .put "closed" true)
+      (ws_close peer/connection)
+      (return nil))
+    (peer .put "last" row/seq))
+  (if_yes (== rows/.size 500)
+    (ws_send peer/connection ($json/stringify {^kind "resync" ^project peer/project}))
+    (peer .put "closed" true)
+    (ws_close peer/connection))
+  nil)
+
+(fn pump [bench] : Nil
+  (var kept [])
+  (for peer in bench/peers/.get
+    (if_not peer/closed
+      (try (send_events bench peer) catch Any (peer .put "closed" true))
+      (kept .push peer)))
+  (bench/peers .set ($filter kept (fn [peer] (! peer/closed))))
+  nil)
+
+# ── routing ────────────────────────────────────────────────────────────────
+
+(fn route [bench, request]
+  (let method request/method)
+  (let parts ($filter ($str/split request/path "/") (fn [part] (!= part ""))))
+  (if (&& (== method "GET") (== request/path "/")) (return (html (page bench))))
+  (if (|| (< parts/.size 2) (!= parts/0 "api") (!= parts/1 "v1"))
+    (api_failure 404 "not_found" "This route is not available."))
+  (let rest ($drop parts 2))
+  (let count rest/.size)
+  (if (&& (== count 1) (== rest/0 "projects"))
+    (then
+      (if (== method "GET")
+        (return (respond 200 {^projects (project_names bench)})))
+      (if (== method "POST")
+        (then
+          (let data (request_data request))
+          (return (respond 201
+            (idempotent bench nil (text_field data "idempotency_key" ^limit 128) "project"
+              (fn [] (create_project_from bench data)))))))))
+  (if_yes (&& (>= count 2) (== rest/0 "jobs"))
+    (let job rest/1)
+    (let pieces ($str/split job "."))
+    (if (!= pieces/.size 2) (api_failure 404 "not_found" $"there is no job ${job}"))
+    (let name pieces/0)
+    (let run_id pieces/1)
+    (let evolution (project_of bench name))
+    (let row (try (run_row evolution run_id)
+               catch StoreError (api_failure 404 "not_found" $"there is no job ${job}")))
+    (if (&& (== count 2) (== method "GET"))
+      (then
+        (var result (run_json name row))
+        (let shown (model_view evolution run_id))
+        (result .put "model_view" (if ($absent? shown) nil (record_json shown)))
+        (return (respond 200 result))))
+    (if (&& (== count 3) (== method "POST") (== rest/2 "cancel"))
+      (return (respond 200 (run_json name (cancel_run evolution run_id)))))
+    (if (&& (== count 3) (== method "POST") (== rest/2 "steer"))
+      (then
+        (let data (request_data request))
+        (return (respond 202 (run_json name
+          (steer_run evolution run_id (text_field data "instruction" ^limit 2000)))))))
+    (if (&& (== count 3) (== method "POST") (== rest/2 "resume"))
+      (then
+        (require_agent bench)
+        (let resumed (resume_run evolution run_id))
+        (launch bench name run_id)
+        (return (respond 202 (run_json name resumed))))))
+  (if (|| (< count 2) (!= rest/0 "projects"))
+    (api_failure 404 "not_found" "This route is not available."))
+  (let name rest/1)
+  (let evolution (project_of bench name))
+  (let section (if (> count 2) rest/2 ""))
+  (if (&& (== count 2) (== method "GET"))
+    (return (respond 200 (project_json bench name))))
+  (if (&& (== section "history") (== method "GET"))
+    (return (respond 200 (history_json bench name (int_field request/params "cursor" ^default -1)))))
+  (if (&& (== section "history.svg") (== method "GET"))
+    (then
+      (let graph (layout evolution))
+      (var result (text 200 (edges_svg graph/width graph/height graph/edges)))
+      (result/headers .put "content-type" "image/svg+xml")
+      (return result)))
+  (if (&& (== section "revisions") (== count 4) (== method "GET"))
+    (return (respond 200
+      (try (revision_json bench name rest/3)
+        catch StoreError (api_failure 404 "not_found" $"there is no revision ${rest/3}")))))
+  (if (&& (== section "revisions") (== count 5) (== rest/4 "scene") (== method "GET"))
+    (then
+      (let scene (try (value evolution rest/3)
+                   catch StoreError (api_failure 404 "not_found" $"there is no revision ${rest/3}")))
+      (let entries (index_scene scene))
+      (let wanted (text_field request/params "selection" ^default "" ^limit 2000))
+      (var objects [])
+      (for id in ($str/split wanted ",")
+        (let entry (entries .get ($str/trim id)))
+        (if_not ($absent? entry)
+          (objects .push {^id entry/id ^kind entry/kind ^parent entry/parent
+                          ^source (canonical entry/node)
+                          ^bounds (world_bounds entries entry/id)})))
+      (return (respond 200 {^revision rest/3 ^objects ($take objects 20)
+                            ^ids ($take ($map ($into ($to_pairs_stream entries) []) (fn [pair] ($to_str pair/0))) 2000)}))))
+  (if (&& (== section "lines") (== method "POST"))
+    (then
+      (let data (request_data request))
+      (return (respond 201
+        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "line"
+          (fn [] (fork_line bench name data)))))))
+  (if (&& (== section "runs") (== method "POST"))
+    (then
+      (let data (request_data request))
+      (return (respond 202
+        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "run"
+          (fn [] (start_job bench name data)))))))
+  (if (&& (== section "selection") (== method "POST"))
+    (then
+      (let data (request_data request))
+      (return (respond 200
+        (idempotent bench evolution (text_field data "idempotency_key" ^limit 128) "selection"
+          (fn []
+            (let version
+              (select evolution (text_field data "revision" ^limit 32)
+                ^expected_version (int_field data "expected_version")))
+            {^selected (selected evolution) ^metadata_version version}))))))
+  (if (&& (== section "diff") (== method "GET"))
+    (then
+      (let report
+        (try (compare evolution (text_field request/params "left" ^limit 32)
+               (text_field request/params "right" ^limit 32))
+          catch StoreError (api_failure 404 "not_found" $err/message)))
+      (return (respond 200
+        {^lines report/lines ^same_profile report/same_profile
+         ^pixel_changes report/diff/pixel_changes ^semantic_changes report/diff/semantic_changes
+         ^left (record_json_map name report/left) ^right (record_json_map name report/right)}))))
+  (if (&& (== section "replays") (== method "POST"))
+    (then
+      (let data (request_data request))
+      (let report
+        (try (replay_exact evolution (text_field data "from" ^limit 32) (text_field data "to" ^limit 32))
+          catch StoreError (api_failure 400 $err/code $err/message)))
+      (return (respond 200 report))))
+  (if (&& (== section "exports") (== method "GET"))
+    (return (export_response bench name request)))
+  (if (&& (== section "artifacts") (== count 5) (== method "GET"))
+    (return (serve_artifact bench name rest/3 rest/4 request)))
+  (if (&& (== section "events") (== method "GET"))
+    (then
+      (let last (int_field request/params "last" ^default 0))
+      (return
+        (ws_accept request
+          ^on_open (fn [connection]
+            (let peer {^connection connection ^project name ^last last ^closed false})
+            (bench/peers/.get .push peer)
+            (send_events bench peer))
+          ^on_close (fn [connection]
+            (for peer in bench/peers/.get
+              (if (same? peer/connection connection) (peer .put "closed" true))))))))
+  (api_failure 404 "not_found" "This route is not available."))
+
+(fn record_json_map [name : Str, side] : Any
+  {^revision side/revision ^image side/image ^profile side/profile
+   ^observation (artifact_url name side/render "observation.png")})
+
+(fn error_response [status : Int, code : Str, message : Str, ^extra extra = nil]
+  (var body {^code code ^message message})
+  (if_not ($absent? extra) (for [key value] in extra (body .put ($to_str key) value)))
+  (respond status body))
+
+(fn store_status [code : Str] : Int
+  (if (["stale_head" "stale_version" "line_busy" "line_exists" "exists" "project_busy"] .contains? code) 409
+    (if ($str/starts_with? code "unknown_") 404
+      (if (["missing_dependency"] .contains? code) 503
+        (if (["corrupt_object" "corrupt_artifact" "missing_object" "missing_artifact"] .contains? code) 500 400)))))
+
+# Host, origin, and token checks wrap every request (section 14.6).
+(fn guarded [bench, request]
+  (if_not (bench/hosts .contains? (?? request/headers/host ""))
+    (return (error_response 403 "forbidden" "Use the local address printed by the server.")))
+  (let origin (?? request/headers/origin ""))
+  (if (&& (!= origin "") (! (bench/origins .contains? origin)))
+    (return (error_response 403 "forbidden" "This origin is not allowed.")))
+  (if_yes (&& (!= request/method "GET") (!= request/method "HEAD"))
+    (if (! (bench/origins .contains? origin))
+      (return (error_response 403 "forbidden" "A same-origin request is required.")))
+    (if (!= (?? request/headers/x-imagination-token "") bench/token)
+      (return (error_response 403 "forbidden" "Reload the page before making a change."))))
+  (try
+    (route bench request)
+  catch ApiError
+    (error_response $err/status $err/code $err/message)
+  catch StoreError
+    (let status (store_status $err/code))
+    (if (== $err/code "stale_head")
+      (error_response status $err/code $err/message ^extra {^current_head $err/detail})
+      (error_response status $err/code $err/message))
+  catch DomainError
+    (error_response 400 $err/code $err/message)
+  catch RenderError
+    ($println $"${request/method} ${request/path} render failed at ${$err/stage}: ${$err/message}")
+    (error_response (if (== $err/code "missing_dependency") 503 500)
+      (if (== $err/code "missing_dependency") "missing_dependency" "renderer_failed") $err/message)
+  catch ModelError
+    # The browser shows the message; the terminal gets it too, with the code.
+    ($println $"${request/method} ${request/path} model call failed (${$err/code}): ${$err/message}")
+    ($io/flush_stdout)
+    (error_response 502 "model_failed" $err/message)
+  catch Any
+    ($println $"${request/method} ${request/path} failed: ${$err/message}")
+    (error_response 500 "internal_error" "The request failed; see the server output.")))
+
+# Serve the workbench on 127.0.0.1. `port` 0 picks a free port; the actual
+# URL is printed and returned through `on_ready`.
+(fn serve_workbench [home : Str, profile, agent, ^port port : Int = 0, ^on_ready on_ready = nil] : Int
+  ($fs/make_dir home)
+  (let server (listen ^host "127.0.0.1" ^port port))
+  (let actual server/port)
+  (let bench (new_workbench home profile agent actual))
+  ($println $"Imagination is serving ${home}")
+  ($println $"Open http://127.0.0.1:${actual}/")
+  ($io/flush_stdout)
+  (if_not ($absent? on_ready) (on_ready actual))
+  (try
+    (serve server ^handler (fn [request] (secure (guarded bench request)))
+      ^max_connections 64 ^max_in_flight 32 ^max_body_bytes 300000
+      ^request_timeout_ms 180000 ^tick_ms 250
+      ^on_tick (fn [] (pump bench)))
+  ensure
+    (for [name evolution] in bench/projects
+      (try (close_evolution evolution) catch Any nil)))
+  0)

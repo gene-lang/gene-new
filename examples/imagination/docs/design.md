@@ -381,9 +381,11 @@ pdffonts scene.pdf
 
 pdftocairo -png -singlefile -f 1 -l 1 \
   -scale-to-x 1024 -scale-to-y 1024 \
-  -antialias best \
+  -antialias good \
   scene.pdf observation
 ```
+
+The profile names `-antialias good`, which produced the same bytes as Poppler's default in the implementation check. `-antialias best` was rejected: with Poppler 25.05.0 and cairo 1.18.4 it corrupted TrueType glyphs in the observation PNG while shapes looked correct (see [implementation.md](implementation.md)).
 
 The PNG is `observation.png`; `-singlefile` avoids a page-number suffix. The examples are human-readable commands. The implementation uses fixed executable paths and argv arrays, a unique staging directory, a controlled font environment, no shell interpolation, bounded subprocesses, and checked exit codes. PDF conversion remains a server operation, not work performed by the frontend browser.
 

@@ -1,0 +1,7 @@
+# Scratch output, user projects, and tool caches.
+tmp/
+projects/
+.imagination-work/
+
+# The launcher is source, even where a global ignore excludes bin/.
+!bin/

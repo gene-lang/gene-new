@@ -1,0 +1,823 @@
+# The drawing-patch interpreter (design section 8).
+#
+# A patch is an atomic transaction against one exact scene. Each model
+# operation is resolved against the current draft into absolute primitives;
+# the primitives are checked against the active locks and applied one at a
+# time; the whole scene is validated at the end. Either everything succeeds
+# and a new immutable scene is returned, or a typed DomainError is raised and
+# the base is untouched. Exact replay runs the stored primitives through the
+# same checks without resolving anything again.
+(mod imagination_patch)
+
+(import [reject limits node? kind_of str? list? int? number? sorted_keys
+         child_named text_of DomainError field_label] ^from "./types")
+(import [element_spec field_spec canvas_field_spec check_value valid_id?
+         operation_spec clip_shape_kinds finite? normal_number] ^from "./scene_schema")
+(import [normalize_scene index_scene children_of with_children replace_node
+         ancestors_of subtree_ids world_matrix local_matrix multiply invert
+         decompose tidy canonical digest_of scene_digest] ^from "./scene")
+(import [diff_scenes] ^from "./diff")
+
+(const patch_schema_version 1)
+
+# ── envelope ───────────────────────────────────────────────────────────────
+
+(fn require_props [node, names, index] : Nil
+  (let props ($props node))
+  (var allowed [])
+  (for name in names
+    (if ($str/ends_with? name "?")
+      (then (allowed .push ($str/slice_bytes name 0 (- ($str/byte_size name) 1))))
+      (else
+        (allowed .push name)
+        (if_not ($has_key? props name)
+          (reject "missing_field" $"${(kind_of node)} needs ^${name}" ^index index
+            ^field [name])))))
+  (for name in (sorted_keys props)
+    (if_not (allowed .contains? name)
+      (reject "unknown_field" $"${(kind_of node)} has no property ^${name}" ^index index
+        ^field [name])))
+  nil)
+
+# Check the patch envelope and return {^id ^base ^goal ^intent ^operations}.
+(fn read_envelope [patch] : Any
+  (if_not (&& (node? patch) (== (kind_of patch) "patch"))
+    (reject "invalid_patch" "expected a (patch ...) node"))
+  (require_props patch ["schema" "id" "base" "goal"] nil)
+  (if (!= patch/schema patch_schema_version)
+    (reject "unsupported_schema" $"patch ^schema must be ${patch_schema_version}"
+      ^field ["schema"]))
+  (for name in ["id" "base" "goal"]
+    (let value (($props patch) .get name))
+    (if_not (&& (str? value) (> ($str/byte_size value) 0) (<= ($str/byte_size value) 128))
+      (reject "invalid_field" $"patch ^${name} must be a short string" ^field [name])))
+  (var intent nil)
+  (var operations [])
+  (for item in ($body patch)
+    (if_not (node? item)
+      (reject "invalid_patch" $"a patch holds an intent and operations; found ${item}"))
+    (if (== (kind_of item) "intent")
+      (then
+        (if_not ($absent? intent) (reject "invalid_patch" "a patch has one intent"))
+        (let words ($body item))
+        (if_not (&& (== words/.size 1) (str? words/0) (== ($size ($props item)) 0)
+                    (<= ($str/byte_size words/0) 1000))
+          (reject "invalid_patch" "intent holds one short string" ^field ["intent"]))
+        (set intent words/0))
+      (else (operations .push item))))
+  (if ($absent? intent)
+    (reject "missing_field" "a patch needs an (intent \"...\") saying what the edit is meant to improve"
+      ^field ["intent"]))
+  (if (== operations/.size 0)
+    (reject "empty_patch" "a patch needs at least one operation"))
+  (if (> operations/.size limits/operations)
+    (reject "too_many_operations" $"a patch has at most ${limits/operations} operations"))
+  {^id patch/id ^base patch/base ^goal patch/goal ^intent intent ^operations operations})
+
+# ── locks ──────────────────────────────────────────────────────────────────
+
+(let lock_scopes ["identity" "geometry" "appearance" "text" "subtree"])
+
+# Read (policy (lock ^target ^scope) ...) into a list of {^target ^scope}.
+(fn read_locks [policy] : Any
+  (var locks [])
+  (if ($absent? policy) (return locks))
+  (for item in ($body policy)
+    (if_yes (&& (node? item) (== (kind_of item) "lock"))
+      (if_not (&& (str? item/target) (lock_scopes .contains? item/scope))
+        (reject "invalid_policy" $"a lock needs ^target and a ^scope of ${($str/join lock_scopes \", \")}"))
+      (locks .push {^target item/target ^scope item/scope})))
+  locks)
+
+# The definitions an object's appearance depends on: references anywhere in
+# its subtree, plus clip and filter references on its ancestors.
+(fn resources_of [entries, id : Str] : Any
+  (var found [])
+  (fn note [node] : Nil
+    (for name in ["fill_ref" "stroke_ref" "clip_ref" "filter_ref"]
+      (let value (($props node) .get name))
+      (if (&& (! ($absent? value)) (! (found .contains? value))) (found .push value)))
+    nil)
+  (fn walk [node] : Nil
+    (note node)
+    (if (== (kind_of node) "g")
+      (for child in ($body node) (walk child)))
+    nil)
+  (let entry (entries .get id))
+  (if ($absent? entry) (return found))
+  (walk entry/node)
+  (for ancestor in (ancestors_of entries id)
+    (note (/node (entries .get ancestor))))
+  found)
+
+# How a touched object relates to a locked one.
+(fn relation [entries, touched : Str, locked : Str] : Str
+  (if (== touched "scene") (return "canvas"))
+  (if (== touched locked) (return "self"))
+  (if ((ancestors_of entries locked) .contains? touched) (return "ancestor"))
+  (if ((ancestors_of entries touched) .contains? locked) (return "descendant"))
+  (let entry (entries .get touched))
+  (if_yes (&& (! ($absent? entry)) (!= entry/where "render"))
+    # A definition, or something inside one: find the definition itself.
+    (var top touched)
+    (for ancestor in (ancestors_of entries touched) (set top ancestor))
+    (if ((resources_of entries locked) .contains? top) (return "resource")))
+  "none")
+
+(let lock_rules #{
+  ^identity #{^self #["remove" "semantic"] ^ancestor #["remove"]}
+  ^geometry #{^self #["geometry" "transform" "remove" "world_move"]
+              ^descendant #["geometry" "transform" "remove" "world_move"]
+              ^ancestor #["transform" "remove" "world_move"]
+              ^canvas #["canvas_geometry"]}
+  ^appearance #{^self #["appearance" "remove"]
+                ^descendant #["appearance" "remove"]
+                ^ancestor #["appearance" "remove"]
+                ^resource #["appearance" "remove" "children" "order" "semantic"]}
+  ^text #{^self #["text" "remove"] ^descendant #["text" "remove"] ^ancestor #["remove"]}
+  ^subtree #{^self #["geometry" "transform" "appearance" "text" "semantic" "remove"
+                     "children" "world_move"]
+             ^descendant #["geometry" "transform" "appearance" "text" "semantic" "remove"
+                           "children" "order" "world_move"]
+             ^ancestor #["transform" "appearance" "remove" "world_move"]
+             ^resource #["appearance" "remove" "children" "order" "semantic"]
+             ^canvas #["canvas_geometry"]}})
+
+# Refuse a change that a lock protects against, whether it is made directly or
+# through an ancestor, a shared definition, or a move to another parent.
+(fn check_locks [draft, touched : Str, aspect : Str, index, field] : Nil
+  (for lock in draft/locks
+    (if_yes ($has_key? draft/entries lock/target)
+      (let how (relation draft/entries touched lock/target))
+      (let rules ((lock_rules .get lock/scope) .get how))
+      (if_yes (&& (! ($absent? rules)) (rules .contains? aspect))
+        (reject "locked"
+          $"${lock/target} has a ${lock/scope} lock; this ${aspect} change to ${touched} (${how}) is not allowed"
+          ^index index ^target touched ^field field
+          ^expected $"no ${aspect} change affecting ${lock/target}"))))
+  nil)
+
+# ── draft ──────────────────────────────────────────────────────────────────
+
+(fn new_draft [scene, locks] : Any
+  {^scene scene ^entries (index_scene scene) ^locks locks ^effects [] ^removed_at {}})
+
+(fn commit [draft, scene] : Nil
+  (draft .put "scene" scene)
+  (draft .put "entries" (index_scene scene))
+  nil)
+
+(fn entry_of [draft, id, index, ^what what : Str = "target"] : Any
+  (if_not (str? id)
+    (reject "invalid_field" $"^${what} must be an object ID string" ^index index ^field [what]))
+  (let entry (draft/entries .get id))
+  (if ($absent? entry)
+    (reject "unknown_target" $"there is no object ${id} in the scene" ^index index ^target id
+      ^field [what] ^expected "an existing object ID"))
+  entry)
+
+(fn note_effect [draft, effect] : Nil
+  (draft/effects .push effect)
+  nil)
+
+# ── primitives ─────────────────────────────────────────────────────────────
+#
+# (insert ^parent ^index node)        (delete ^target)
+# (put ^target ^field [name] ^value)  (clear ^target ^field [name])
+# (put_geometry ^target node)         (relocate ^target ^parent ^index)
+# (put_canvas ^field ^value)
+
+(fn container_kind? [kind : Str] : Bool
+  (["g" "linear_gradient" "radial_gradient" "clip_path"] .contains? kind))
+
+(fn parent_children [draft, parent, index] : Any
+  (if (|| (== parent "scene") (== parent "defs"))
+    (return ($into (children_of draft/scene draft/entries parent) [])))
+  (let entry (entry_of draft parent index ^what "parent"))
+  (if_not (container_kind? entry/kind)
+    (reject "not_a_container" $"${parent} is a ${entry/kind}, which cannot hold children"
+      ^index index ^target parent ^field ["parent"]))
+  ($into ($body entry/node) []))
+
+(fn inserted [items, position : Int, item] : Any
+  (var result [])
+  (var i 0)
+  (for existing in items
+    (if (== i position) (result .push item))
+    (result .push existing)
+    (set i (+ i 1)))
+  (if (>= position items/.size) (result .push item))
+  result)
+
+(fn without [items, id : Str] : Any
+  ($filter items (fn [item] (!= item/id id))))
+
+(fn apply_insert [draft, primitive, index] : Nil
+  (let parent primitive/parent)
+  (let children (parent_children draft parent index))
+  (let position primitive/index)
+  (if_not (&& (int? position) (>= position 0) (<= position children/.size))
+    (reject "invalid_placement" "the insert index is outside the parent" ^index index
+      ^target parent ^field ["index"]))
+  (let nodes ($body primitive))
+  (if_not (&& (== nodes/.size 1) (node? nodes/0))
+    (reject "invalid_node" "insert holds exactly one node" ^index index))
+  (let node nodes/0)
+  (if_not (valid_id? node/id)
+    (reject "invalid_id" "the new node needs a valid ^id" ^index index ^field ["id"]))
+  (for id in (new_ids node index)
+    (if ($has_key? draft/entries id)
+      (reject "duplicate_id" $"the ID ${id} already exists; a new object needs a new ID"
+        ^index index ^target id ^field ["id"])))
+  (if (!= parent "scene") (check_locks draft parent "children" index ["children"]))
+  (commit draft (with_children draft/scene parent (inserted children position node)))
+  (let id node/id)
+  (note_effect draft
+    `(effect ^operation_index %index ^kind "insert" ^target %id ^parent %parent
+       ^field ["children"] ^index %position))
+  nil)
+
+# Every ID in a new subtree, found without assuming the subtree is valid yet.
+(fn new_ids [node, index] : Any
+  (var ids [])
+  (fn walk [item] : Nil
+    (if_yes (&& (node? item) (! ($absent? (element_spec (kind_of item)))))
+      (if_not (valid_id? item/id)
+        (reject "invalid_id" $"every ${(kind_of item)} needs a valid ^id" ^index index
+          ^field ["id"]))
+      (if (ids .contains? item/id)
+        (reject "duplicate_id" $"the ID ${item/id} is used twice in the new node" ^index index
+          ^target item/id ^field ["id"]))
+      (ids .push item/id)
+      (if (container_kind? (kind_of item))
+        (for child in ($body item) (walk child))))
+    nil)
+  (walk node)
+  ids)
+
+(fn apply_delete [draft, primitive, index] : Nil
+  (let entry (entry_of draft primitive/target index))
+  (let id entry/id)
+  (check_locks draft id "remove" index nil)
+  (let removed (subtree_ids entry/node))
+  (for gone in removed (draft/removed_at .put gone index))
+  (let parent entry/parent)
+  (let position entry/position)
+  (commit draft
+    (with_children draft/scene parent (without (parent_children draft parent index) id)))
+  (note_effect draft
+    `(effect ^operation_index %index ^kind "delete" ^target %id ^parent %parent
+       ^field ["children"] ^index %position ^removed %removed))
+  nil)
+
+(fn field_name [field, index] : Str
+  (if_not (&& (list? field) (>= field/.size 1) (str? field/0))
+    (reject "invalid_field" "^field is a list starting with a field name, such as [\"fill\"]"
+      ^index index ^field ["field"]))
+  field/0)
+
+# The schema entry for a settable field of this object, or a typed error.
+(fn settable_field [entry, name : Str, index] : Any
+  (if (== name "id")
+    (reject "immutable_field" "an object's ID cannot be changed" ^index index
+      ^target entry/id ^field ["id"]))
+  (if (== name "content")
+    (then
+      (if (!= entry/kind "text")
+        (reject "unknown_field" $"${entry/id} is a ${entry/kind}; only text has content"
+          ^index index ^target entry/id ^field ["content"]))
+      (return {^name "content" ^type "content" ^aspect "text" ^required true})))
+  (let field (field_spec entry/kind name))
+  (if (|| ($absent? field)
+          (&& (== entry/where "clip_shape")
+              (! (|| (== field/aspect "geometry") (== field/aspect "transform")))))
+    (reject "unknown_field" $"${entry/kind} ${entry/id} has no field ${name}" ^index index
+      ^target entry/id ^field [name]))
+  field)
+
+(fn apply_put [draft, primitive, index] : Nil
+  (let entry (entry_of draft primitive/target index))
+  (let id entry/id)
+  (let name (field_name primitive/field index))
+  (let field (settable_field entry name index))
+  (check_locks draft id field/aspect index [name])
+  (let path [name])
+  (if (== name "content")
+    (then
+      (let value primitive/value)
+      (if_not (str? value)
+        (reject "invalid_field" "text content must be a string" ^index index ^target id
+          ^field path))
+      (let before (($body entry/node) .first))
+      (commit draft (replace_node draft/scene id (fn [node] ($node/rebuild node ^body [value]))))
+      (note_effect draft
+        `(effect ^operation_index %index ^kind "put" ^target %id ^field %path
+           ^before %before ^after %value)))
+    (else
+      (let value (check_value field/type primitive/value ^target id ^field path ^index index))
+      (let previous (($props entry/node) .get name))
+      (let before (if ($void? previous) nil previous))
+      (commit draft
+        (replace_node draft/scene id
+          (fn [node]
+            (let props ($props node))
+            (props .put name value)
+            ($node/rebuild node ^props props))))
+      (note_effect draft
+        `(effect ^operation_index %index ^kind "put" ^target %id ^field %path
+           ^before %before ^after %value))))
+  nil)
+
+(fn apply_clear [draft, primitive, index] : Nil
+  (let entry (entry_of draft primitive/target index))
+  (let id entry/id)
+  (let name (field_name primitive/field index))
+  (let field (settable_field entry name index))
+  (if field/required
+    (reject "required_field" $"${name} is required on ${entry/kind} and cannot be removed"
+      ^index index ^target id ^field [name]))
+  (let previous (($props entry/node) .get name))
+  (if ($void? previous)
+    (reject "not_set" $"${id} has no ${name} to remove" ^index index ^target id ^field [name]))
+  (check_locks draft id field/aspect index [name])
+  (let path [name])
+  (commit draft
+    (replace_node draft/scene id
+      (fn [node]
+        (let props ($props node))
+        (props .delete name)
+        ($node/rebuild node ^props props))))
+  (note_effect draft
+    `(effect ^operation_index %index ^kind "clear" ^target %id ^field %path
+       ^before %previous ^after nil))
+  nil)
+
+# The geometry of a node as a node of the same kind: geometry fields, and the
+# commands of a path.
+(fn geometry_of [node] : Any
+  (let kind (kind_of node))
+  (var props {})
+  (let spec (element_spec kind))
+  (for field in spec/fields
+    (let value (($props node) .get field/name))
+    (if (&& (== field/aspect "geometry") (! ($void? value))) (props .put field/name value)))
+  ($node/rebuild node ^props props ^body (if (== kind "path") ($body node) [])))
+
+(fn apply_put_geometry [draft, primitive, index] : Nil
+  (let entry (entry_of draft primitive/target index))
+  (let id entry/id)
+  (let kind entry/kind)
+  (let shapes ($body primitive))
+  (if_not (&& (== shapes/.size 1) (node? shapes/0))
+    (reject "invalid_geometry" "replace_geometry holds exactly one geometry node" ^index index
+      ^target id))
+  (let shape shapes/0)
+  (if (!= (kind_of shape) kind)
+    (reject "kind_mismatch"
+      $"${id} is a ${kind}; replace_geometry cannot turn it into a ${(kind_of shape)}. Remove it and add a new object with a new ID instead."
+      ^index index ^target id ^expected kind))
+  (if (|| (== kind "g") (!= entry/where "render") (== kind "text"))
+    (if_not (clip_shape_kinds .contains? kind)
+      (reject "invalid_geometry" $"a ${kind} has no replaceable geometry; set its fields instead"
+        ^index index ^target id)))
+  (let spec (element_spec kind))
+  (var geometry {})
+  (for name in (sorted_keys ($props shape))
+    (let field (field_spec kind name))
+    (if (|| ($absent? field) (!= field/aspect "geometry"))
+      (reject "invalid_geometry" $"${name} is not a geometry field of ${kind}; the geometry node holds geometry only"
+        ^index index ^target id ^field [name]))
+    (geometry .put name
+      (check_value field/type (($props shape) .get name) ^target id ^field [name] ^index index)))
+  (for field in spec/fields
+    (if (&& (== field/aspect "geometry") field/required (! ($has_key? geometry field/name)))
+      (reject "missing_field" $"the new geometry of ${id} needs ^${field/name}" ^index index
+        ^target id ^field [field/name])))
+  (check_locks draft id "geometry" index ["geometry"])
+  (let before (geometry_of entry/node))
+  (commit draft
+    (replace_node draft/scene id
+      (fn [node]
+        (var props {})
+        (for name in (sorted_keys ($props node))
+          (let field (field_spec kind name))
+          (if (|| ($absent? field) (!= field/aspect "geometry"))
+            (props .put name (($props node) .get name))))
+        (for [name value] in geometry (props .put ($to_str name) value))
+        ($node/rebuild node ^props props ^body (if (== kind "path") ($body shape) ($body node))))))
+  (let after (geometry_of (/node (draft/entries .get id))))
+  (note_effect draft
+    `(effect ^operation_index %index ^kind "put_geometry" ^target %id ^field ["geometry"]
+       ^before %before ^after %after))
+  nil)
+
+(fn apply_relocate [draft, primitive, index] : Nil
+  (let entry (entry_of draft primitive/target index))
+  (let id entry/id)
+  (let parent primitive/parent)
+  (if_not (str? parent)
+    (reject "invalid_field" "^parent must be an object ID, \"scene\", or \"defs\"" ^index index
+      ^field ["parent"]))
+  (if (!= parent entry/parent)
+    (then
+      (if (|| (!= entry/where "render") (== parent "defs"))
+        (reject "invalid_parent" "only drawable objects move between groups" ^index index
+          ^target id ^field ["parent"]))
+      (if_yes (!= parent "scene")
+        (let target (entry_of draft parent index ^what "parent"))
+        (if (|| (!= target/kind "g") (!= target/where "render"))
+          (reject "not_a_container" $"${parent} is not a group" ^index index ^target parent
+            ^field ["parent"]))
+        (if (|| (== parent id) ((ancestors_of draft/entries parent) .contains? id))
+          (reject "hierarchy_cycle" $"${id} cannot move inside itself" ^index index ^target id
+            ^field ["parent"])))))
+  (let world_before (world_matrix draft/entries id))
+  (let old_parent entry/parent)
+  (let old_position entry/position)
+  (let node entry/node)
+  (let detached (with_children draft/scene old_parent
+                  (without (parent_children draft old_parent index) id)))
+  (var staged {^scene detached ^entries (index_scene detached) ^locks [] ^effects []
+               ^removed_at {}})
+  (let siblings (parent_children staged parent index))
+  (let position primitive/index)
+  (if_not (&& (int? position) (>= position 0) (<= position siblings/.size))
+    (reject "invalid_placement" "the index is outside the parent" ^index index ^target id
+      ^field ["index"]))
+  (let moved (with_children detached parent (inserted siblings position node)))
+  (let after_entries (index_scene moved))
+  (let world_after (world_matrix after_entries id))
+  (check_locks draft id
+    (if (same_matrix? world_before world_after) "order" "world_move") index ["parent"])
+  (if (&& (!= parent old_parent) (!= parent "scene"))
+    (check_locks draft parent "children" index ["children"]))
+  (commit draft moved)
+  (let before [old_parent old_position])
+  (let after [parent position])
+  (if (!= before after)
+    (note_effect draft
+      `(effect ^operation_index %index ^kind "relocate" ^target %id ^field ["parent"]
+         ^before %before ^after %after)))
+  nil)
+
+(fn same_matrix? [left, right] : Bool
+  (repeat i in 6
+    (if (> ($math/abs (- left/%i right/%i)) 0.000001) (return false)))
+  true)
+
+(fn apply_put_canvas [draft, primitive, index] : Nil
+  (let name primitive/field)
+  (let field (if (str? name) (canvas_field_spec name) nil))
+  (if ($absent? field)
+    (reject "unknown_field" "set_canvas takes \"width\", \"height\", \"view_box\", or \"background\""
+      ^index index ^target "scene" ^field ["field"]))
+  (let value (check_value field/type primitive/value ^target "scene" ^field [name] ^index index))
+  (check_locks draft "scene" (if (== name "background") "canvas_appearance" "canvas_geometry")
+    index [name])
+  (let before (($props draft/scene) .get name))
+  (let props ($props draft/scene))
+  (props .put name value)
+  (commit draft ($node/rebuild draft/scene ^props props))
+  (let path [name])
+  (note_effect draft
+    `(effect ^operation_index %index ^kind "put_canvas" ^target "scene" ^field %path
+       ^before %before ^after %value))
+  nil)
+
+(fn apply_primitive [draft, primitive, index] : Nil
+  (if_not (node? primitive) (reject "invalid_node" "expected an operation node" ^index index))
+  (match (kind_of primitive)
+    (when "insert" (apply_insert draft primitive index))
+    (when "delete" (apply_delete draft primitive index))
+    (when "put" (apply_put draft primitive index))
+    (when "clear" (apply_clear draft primitive index))
+    (when "put_geometry" (apply_put_geometry draft primitive index))
+    (when "relocate" (apply_relocate draft primitive index))
+    (when "put_canvas" (apply_put_canvas draft primitive index))
+    (else
+      (reject "unknown_operation" $"unknown normalized operation ${(kind_of primitive)}"
+        ^index index)))
+  nil)
+
+# ── resolving model operations ─────────────────────────────────────────────
+
+# Resolve a placement node against the children of a parent. `moving` is the
+# ID being moved, which is not counted among its future siblings.
+(fn resolve_placement [draft, parent, placement, index, ^moving moving = nil] : Int
+  (if_not (node? placement)
+    (reject "invalid_placement"
+      "^placement is exactly one of (first), (last), (before \"id\"), (after \"id\")"
+      ^index index ^field ["placement"]))
+  (var siblings [])
+  (for child in (parent_children draft parent index)
+    (if (!= child/id moving) (siblings .push child/id)))
+  (let name (kind_of placement))
+  (let arguments ($body placement))
+  (if (> ($size ($props placement)) 0)
+    (reject "invalid_placement" "a placement takes no properties" ^index index
+      ^field ["placement"]))
+  (if (|| (== name "first") (== name "last"))
+    (then
+      (if (> arguments/.size 0)
+        (reject "invalid_placement" $"(${name}) takes no argument" ^index index
+          ^field ["placement"]))
+      (return (if (== name "first") 0 siblings/.size))))
+  (if_not (|| (== name "before") (== name "after"))
+    (reject "invalid_placement"
+      "^placement is exactly one of (first), (last), (before \"id\"), (after \"id\")"
+      ^index index ^field ["placement"]))
+  (if_not (&& (== arguments/.size 1) (str? arguments/0))
+    (reject "invalid_placement" $"(${name} \"sibling-id\") names one sibling" ^index index
+      ^field ["placement"]))
+  (var position 0)
+  (for sibling in siblings
+    (if (== sibling arguments/0)
+      (return (if (== name "before") position (+ position 1))))
+    (set position (+ position 1)))
+  (reject "invalid_placement" $"${arguments/0} is not a child of ${parent}" ^index index
+    ^target arguments/0 ^field ["placement"] ^expected $"a child of ${parent}"))
+
+(fn transform_target [draft, operation, index] : Any
+  (let entry (entry_of draft operation/target index))
+  (if (|| (== entry/where "def") (== entry/where "stop"))
+    (reject "invalid_target" $"${entry/id} is a ${entry/kind}, which has no transform"
+      ^index index ^target entry/id))
+  entry)
+
+(fn number_pair [value, name : Str, index] : Any
+  (if_not (&& (list? value) (== value/.size 2) (finite? value/0) (finite? value/1))
+    (reject "invalid_field" $"^${name} must be [x y]" ^index index ^field [name]
+      ^expected "[x y]"))
+  value)
+
+(fn put_node [target : Str, name : Str, value] : Any
+  (let path [name])
+  `(put ^target %target ^field %path ^value %value))
+
+# Turn one model operation into primitives, resolved against the current draft.
+(fn resolve [draft, operation, index, context] : Any
+  (if_not (node? operation)
+    (reject "invalid_node" "expected an operation node" ^index index))
+  (let name (kind_of operation))
+  (let spec (operation_spec name))
+  (if ($absent? spec)
+    (reject "unknown_operation" $"unknown operation ${name}" ^index index
+      ^expected "add, remove, set, unset, replace_geometry, move, scale_by, rotate_by, reparent, order, or set_canvas"))
+  (require_props operation spec/props index)
+  (let body ($body operation))
+  (if (&& (> body/.size 0) (! (|| (== name "add") (== name "replace_geometry"))))
+    (reject "unexpected_children" $"${name} takes properties only" ^index index))
+  (match name
+    (when "add"
+      (if_not (&& (== body/.size 1) (node? body/0))
+        (reject "invalid_node" "add holds exactly one complete node" ^index index))
+      (let parent operation/parent)
+      (if_not (str? parent)
+        (reject "invalid_field" "^parent must be an object ID, \"scene\", or \"defs\""
+          ^index index ^field ["parent"]))
+      (let node body/0)
+      (for id in (new_ids node index)
+        (if_not ($str/starts_with? id context/prefix)
+          (reject "unallocated_id"
+            $"new object IDs must start with ${context/prefix}; ${id} does not"
+            ^index index ^target id ^field ["id"] ^expected $"an ID starting with ${context/prefix}"))
+        (if (context/taken id)
+          (reject "duplicate_id"
+            $"the ID ${id} was used earlier in this project; choose another"
+            ^index index ^target id ^field ["id"])))
+      (let position (resolve_placement draft parent operation/placement index))
+      [`(insert ^parent %parent ^index %position %node)])
+    (when "remove"
+      (let target operation/target)
+      (entry_of draft target index)
+      [`(delete ^target %target)])
+    (when "set"
+      (let entry (entry_of draft operation/target index))
+      (let path operation/field)
+      (let field_id (field_name path index))
+      (if (> path/.size 2)
+        (reject "invalid_field" "^field has a name and at most one index" ^index index
+          ^target entry/id ^field path))
+      (if (== path/.size 1)
+        (return [(put_node entry/id field_id operation/value)]))
+      # One component of a pair, such as ["translate" 0].
+      (let field (settable_field entry field_id index))
+      (if_not (|| (== field/type "vec2") (== field/type "scale2"))
+        (reject "invalid_field" $"${field_id} has no components; set the whole field"
+          ^index index ^target entry/id ^field path))
+      (let component path/1)
+      (if_not (&& (int? component) (>= component 0) (<= component 1))
+        (reject "invalid_field" "a component index is 0 or 1" ^index index ^target entry/id
+          ^field path))
+      (let current
+        (?? (($props entry/node) .get field_id) (if (== field_id "scale") [1 1] [0 0])))
+      (var next [current/0 current/1])
+      (next .set component operation/value)
+      [(put_node entry/id field_id next)])
+    (when "unset"
+      (let entry (entry_of draft operation/target index))
+      (let path operation/field)
+      (let field_id (field_name path index))
+      (let target entry/id)
+      (let one [field_id])
+      [`(clear ^target %target ^field %one)])
+    (when "replace_geometry"
+      (if_not (&& (== body/.size 1) (node? body/0))
+        (reject "invalid_geometry" "replace_geometry holds exactly one geometry node"
+          ^index index))
+      (let entry (entry_of draft operation/target index))
+      (let target entry/id)
+      (let shape body/0)
+      [`(put_geometry ^target %target %shape)])
+    (when "move"
+      (let entry (transform_target draft operation index))
+      (let delta (number_pair operation/delta "delta" index))
+      (let space (?? (($props operation) .get "space") "parent"))
+      (var local delta)
+      (if (== space "canvas")
+        (then
+          (let parent_world (world_matrix draft/entries entry/parent))
+          (let inverse (invert [parent_world/0 parent_world/1 parent_world/2 parent_world/3 0 0]))
+          (if ($absent? inverse)
+            (reject "singular_transform" "an ancestor transform cannot be inverted"
+              ^index index ^target entry/id))
+          (set local [(+ (* inverse/0 delta/0) (* inverse/2 delta/1))
+                      (+ (* inverse/1 delta/0) (* inverse/3 delta/1))]))
+        (elif (!= space "parent")
+          (reject "invalid_field" "^space is \"parent\" or \"canvas\"" ^index index
+            ^field ["space"] ^expected "\"parent\" or \"canvas\"")))
+      (let current (?? (($props entry/node) .get "translate") [0 0]))
+      [(put_node entry/id "translate"
+         [(tidy (+ current/0 local/0)) (tidy (+ current/1 local/1))])])
+    (when "scale_by"
+      (let entry (transform_target draft operation index))
+      (var factor operation/factor)
+      (if (number? factor) (set factor [factor factor]))
+      (number_pair factor "factor" index)
+      (if (|| (<= factor/0 0) (<= factor/1 0))
+        (reject "invalid_field" "^factor components must be greater than 0" ^index index
+          ^field ["factor"] ^expected "[fx fy], both greater than 0"))
+      (let current (?? (($props entry/node) .get "scale") [1 1]))
+      [(put_node entry/id "scale"
+         [(tidy (* current/0 factor/0)) (tidy (* current/1 factor/1))])])
+    (when "rotate_by"
+      (let entry (transform_target draft operation index))
+      (if_not (finite? operation/degrees)
+        (reject "invalid_field" "^degrees must be a finite number" ^index index
+          ^field ["degrees"]))
+      (let current (?? (($props entry/node) .get "rotate") 0))
+      [(put_node entry/id "rotate" (tidy (+ current operation/degrees)))])
+    (when "reparent"
+      (let entry (entry_of draft operation/target index))
+      (let target entry/id)
+      (let parent operation/parent)
+      (let mode operation/mode)
+      (if_not (|| (== mode "preserve_world") (== mode "preserve_local"))
+        (reject "invalid_field" "^mode is \"preserve_world\" or \"preserve_local\""
+          ^index index ^field ["mode"] ^expected "\"preserve_world\" or \"preserve_local\""))
+      (if_not (str? parent)
+        (reject "invalid_field" "^parent must be a group ID or \"scene\"" ^index index
+          ^field ["parent"]))
+      (if (!= parent "scene")
+        (then
+          (entry_of draft parent index ^what "parent")
+          (if (|| (== parent target) ((ancestors_of draft/entries parent) .contains? target))
+            (reject "hierarchy_cycle" $"${target} cannot move inside itself" ^index index
+              ^target target ^field ["parent"]))))
+      (let position
+        (resolve_placement draft parent operation/placement index ^moving target))
+      (var primitives [`(relocate ^target %target ^parent %parent ^index %position)])
+      (if_yes (== mode "preserve_world")
+        (let world (world_matrix draft/entries target))
+        (let inverse (invert (world_matrix draft/entries parent)))
+        (if ($absent? inverse)
+          (reject "singular_transform" "the new parent's transform cannot be inverted"
+            ^index index ^target target))
+        (let props ($props entry/node))
+        (let fields (decompose (multiply inverse world) (?? (props .get "pivot") [0 0])))
+        (if ($absent? fields)
+          (reject "unrepresentable_transform"
+            $"keeping ${target} in place under ${parent} needs a shear or mirror, which this schema cannot store"
+            ^index index ^target target ^expected "a transform without shear"))
+        (for [key value] in fields
+          (let field_id ($to_str key))
+          (let current (?? (props .get field_id)
+                           (if (== field_id "rotate") 0 (if (== field_id "scale") [1 1] [0 0]))))
+          (if (!= current value) (primitives .push (put_node target field_id value)))))
+      primitives)
+    (when "order"
+      (let entry (entry_of draft operation/target index))
+      (let target entry/id)
+      (let parent entry/parent)
+      (let position
+        (resolve_placement draft parent operation/placement index ^moving target))
+      [`(relocate ^target %target ^parent %parent ^index %position)])
+    (else
+      (var name_value operation/field)
+      (if (&& (list? name_value) (== name_value/.size 1)) (set name_value name_value/0))
+      (let value operation/value)
+      [`(put_canvas ^field %name_value ^value %value)])))
+
+# ── running a batch ────────────────────────────────────────────────────────
+
+# Validate the finished draft. A failure found only here (a dangling
+# reference, conflicting paint) is blamed on the last operation that touched
+# the object it names.
+(fn finish [draft] : Any
+  (try
+    (normalize_scene draft/scene)
+  catch DomainError
+    (var blamed $err/operation_index)
+    (let target $err/target)
+    (if_yes (&& ($absent? blamed) (== $err/code "dangling_reference"))
+      # The reference outlived its definition: blame the removal.
+      (let holder (draft/entries .get target))
+      (let name ($err/field .first))
+      (if_not ($absent? holder)
+        (set blamed (draft/removed_at .get (($props holder/node) .get name)))))
+    (if_yes ($absent? blamed)
+      (for effect in draft/effects
+        (if (== effect/target target) (set blamed effect/operation_index))))
+    (fail (DomainError ^code $err/code ^message $err/message
+            ^operation_index (if ($void? blamed) nil blamed)
+            ^target target ^field $err/field ^expected $err/expected))))
+
+# Every difference between base and result must be explained by a recorded
+# effect. A mismatch is an interpreter fault, never the patch author's.
+(fn check_effects [base, result, effects] : Any
+  (let diff (diff_scenes base result))
+  (var touched [])
+  (for effect in effects
+    (touched .push effect/target)
+    (if (== effect/kind "delete")
+      (for id in effect/removed (touched .push id)))
+    (if (== effect/kind "insert") (touched .push effect/parent)))
+  (for change in ($body diff)
+    (let name (kind_of change))
+    (let id
+      (if (== name "canvas_changed") "scene"
+        (if (== name "reordered") nil change/id)))
+    (if_yes (&& (! ($absent? id)) (! (touched .contains? id)) (!= name "added"))
+      (reject "internal_inconsistency"
+        $"the scene changed at ${id} without a recorded effect" ^target id)))
+  diff)
+
+(fn result_of [base, draft, normalized, ^patch patch = nil] : Any
+  (let scene (finish draft))
+  (let diff (check_effects base scene draft/effects))
+  (let digest (scene_digest scene))
+  {^scene scene ^digest digest ^effects ($freeze draft/effects) ^normalized normalized
+   ^diff diff ^noop (== digest (scene_digest base)) ^patch patch})
+
+# Apply a model patch to a base scene.
+#
+#   ^expected_base / ^expected_goal  the revision and goal the patch must name
+#   ^prefix   the allocated prefix every new object ID must start with
+#   ^taken    (fn [id] Bool): IDs already used anywhere in the project
+#   ^policy   a (policy (lock ...)) node, or nil
+#
+# Returns {^scene ^digest ^effects ^normalized ^diff ^noop ^patch}. The base is
+# never changed; on failure a DomainError carries the operation index, target,
+# field, and expected condition.
+(fn apply_patch [base, patch, ^expected_base expected_base = nil,
+                 ^expected_goal expected_goal = nil, ^prefix prefix : Str = "",
+                 ^taken taken = nil, ^policy policy = nil] : Any
+  (let envelope (read_envelope patch))
+  (if (&& (! ($absent? expected_base)) (!= envelope/base expected_base))
+    (reject "stale_base"
+      $"the patch is based on ${envelope/base}, but the working revision is ${expected_base}"
+      ^field ["base"] ^expected expected_base))
+  (if (&& (! ($absent? expected_goal)) (!= envelope/goal expected_goal))
+    (reject "stale_goal"
+      $"the patch names goal ${envelope/goal}, but the active goal is ${expected_goal}"
+      ^field ["goal"] ^expected expected_goal))
+  (let context {^prefix prefix ^taken (?? taken (fn [id] false))})
+  (var draft (new_draft base (read_locks policy)))
+  (var primitives [])
+  (var index 0)
+  (for operation in envelope/operations
+    (for primitive in (resolve draft operation index context)
+      (apply_primitive draft primitive index)
+      (primitives .push primitive))
+    (set index (+ index 1)))
+  (let patch_id envelope/id)
+  (let base_id envelope/base)
+  (let normalized
+    ($freeze
+      `(normalized_patch ^schema 1 ^patch %patch_id ^base %base_id ^prefix %prefix
+         %primitives...)))
+  (result_of base draft normalized ^patch patch))
+
+# Exact replay: reapply stored primitives to their recorded base. Nothing is
+# resolved or allocated again, and the same lock, reference, and whole-scene
+# checks run. This form is produced by the application and is never accepted
+# from a model response.
+(fn replay_normalized [base, normalized, ^policy policy = nil] : Any
+  (if_not (&& (node? normalized) (== (kind_of normalized) "normalized_patch"))
+    (reject "invalid_patch" "expected a (normalized_patch ...) node"))
+  (var draft (new_draft base (read_locks policy)))
+  (var index 0)
+  (for primitive in ($body normalized)
+    (apply_primitive draft primitive index)
+    (set index (+ index 1)))
+  (result_of base draft normalized))

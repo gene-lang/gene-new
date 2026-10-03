@@ -1,0 +1,137 @@
+# The ChatGPT Codex transport: a signed-in Codex CLI's OAuth token instead of
+# an API key, as in gene-harness. The Codex CLI owns auth.json and refreshes
+# it; this module only reads it, per call, and never writes, logs, or stores
+# the token.
+(mod imagination_codex)
+
+(import [ModelError] ^from "../types")
+
+(const codex_url "https://chatgpt.com/backend-api/codex/responses")
+(const codex_default_model "gpt-6-astra")
+
+(fn codex_failure [code : Str, message : Str]
+  (fail (ModelError ^code code ^message message ^detail nil)))
+
+(fn present [name : Str] : Any
+  (let value ($os/env? name))
+  (if (|| ($absent? value) (== ($str/trim value) "")) nil ($str/trim value)))
+
+# CODEX_AUTH_FILE, else $CODEX_HOME/auth.json, else $HOME/.codex/auth.json.
+(fn codex_auth_file [] : Any
+  (let explicit (present "CODEX_AUTH_FILE"))
+  (if_not ($absent? explicit) (return explicit))
+  (let codex_home (present "CODEX_HOME"))
+  (if_not ($absent? codex_home) (return $"${codex_home}/auth.json"))
+  (let home (present "HOME"))
+  (if ($absent? home) nil $"${home}/.codex/auth.json"))
+
+# {^access_token ^account_id} from auth.json. Parser diagnostics are never
+# included: a malformed file may hold a token in the offending excerpt.
+(fn codex_credentials [path] : Any
+  (if (|| ($absent? path) (! ($fs/exists? path)))
+    (codex_failure "invalid_config"
+      "cannot find Codex auth.json; run codex login, or set CODEX_AUTH_FILE or CODEX_HOME"))
+  (let auth
+    (try ($json/parse ($fs/read_text path))
+      catch Any
+      (codex_failure "invalid_config"
+        $"cannot read Codex auth.json at ${path}; run codex login with file credential storage")))
+  (if_not (== ($head auth) Map)
+    (codex_failure "invalid_config" "Codex auth.json must contain an object"))
+  (let tokens auth/tokens)
+  (if_not (== ($head tokens) Map)
+    (codex_failure "invalid_config"
+      "Codex auth.json has no OAuth tokens; sign in with ChatGPT using codex login"))
+  (let access tokens/access_token)
+  (let account tokens/account_id)
+  (if_not (&& (== ($head access) Str) (== ($head account) Str)
+              (!= ($str/trim access) "") (!= ($str/trim account) ""))
+    (codex_failure "invalid_config"
+      "Codex auth.json needs tokens.access_token and tokens.account_id; run codex login"))
+  {^access_token access ^account_id account})
+
+# The request. The endpoint requires streaming and store=false and takes no
+# output-token limit; images go as Responses-API input_image parts holding the
+# saved PNG bytes as a data URL.
+(fn codex_spec [config, input, credentials] : Any
+  (var content [])
+  (for part in input/parts
+    (if (== part/type "image")
+      (content .push
+        {^type "input_image"
+         ^image_url $"data:${part/media};base64,${($base64/encode part/bytes)}"})
+      (content .push {^type "input_text" ^text part/text})))
+  {^url codex_url
+   ^headers {^content-type "application/json" ^accept "text/event-stream"
+             ^authorization $"Bearer ${credentials/access_token}"
+             ^chatgpt-account-id credentials/account_id
+             ^OpenAI-Beta "responses=experimental"
+             ^originator "gene-imagination"}
+   ^body {^model config/model ^instructions input/system
+          ^input [{^role "user" ^content content}]
+          ^reasoning {^effort config/effort}
+          ^store false ^stream true}})
+
+(fn count_of [value] : Int
+  (if (== ($head value) Int) value 0))
+
+# The final answer of a completed response. When messages carry phases, only
+# the final_answer message counts: commentary is never taken as the answer.
+(fn codex_text [response] : Str
+  (if_not (== response/status "completed")
+    (codex_failure "invalid_response" "the Codex response did not complete"))
+  (var texts [])
+  (var phased false)
+  (for item in (?? response/output [])
+    (if (&& (== item/type "message") (! ($absent? item/phase))) (set phased true)))
+  (for item in (?? response/output [])
+    (if_yes (&& (== item/type "message") (== item/role "assistant")
+                (|| (! phased) (== item/phase "final_answer")))
+      (for part in (?? item/content [])
+        (if (== part/type "refusal") (codex_failure "refusal" "the model declined the request"))
+        (if (== part/type "output_text") (texts .push part/text)))))
+  ($str/join texts ""))
+
+(fn codex_event [data : Str, items, state] : Nil
+  (if (|| (== data "") (== data "[DONE]")) (return nil))
+  (let event
+    (try ($json/parse data)
+      catch Any (codex_failure "invalid_response" "the Codex stream held an unreadable event")))
+  (if (|| (== event/type "error") (== event/type "response.failed"))
+    (codex_failure "provider_error" $"the Codex stream failed (${event/type})"))
+  (if (== event/type "response.incomplete")
+    (codex_failure "truncated" "the model stopped before finishing the response"))
+  (if (== event/type "response.output_item.done") (items .push event/item))
+  (if_yes (|| (== event/type "response.completed") (== event/type "response.done"))
+    (let response event/response)
+    (let output (?? response/output []))
+    # Completed items may arrive separately, leaving the final output empty.
+    (state .put "text"
+      (codex_text {^status response/status
+                   ^output (if (== output/.size 0) items output)}))
+    (state .put "model" (?? response/model ""))
+    (state .put "usage" (?? response/usage {})))
+  nil)
+
+# Read a buffered server-sent-event body. Deltas are ignored: only a response
+# that completed is used, so a severed stream never yields partial output.
+(fn codex_reply [body : Str] : Any
+  (var data [])
+  (var items [])
+  (var state {^text nil ^model "" ^usage {}})
+  (for raw in ($str/split body "\n")
+    (let line ($str/trim raw))
+    (if (== line "")
+      (then
+        (codex_event ($str/join data "\n") items state)
+        (set data []))
+      (elif ($str/starts_with? line "data:")
+        (data .push ($str/trim ($str/slice_bytes line 5 (- ($str/byte_size line) 5)))))))
+  (codex_event ($str/join data "\n") items state)
+  (if ($absent? state/text)
+    (codex_failure "invalid_response" "the Codex stream ended before the response completed"))
+  (let usage state/usage)
+  (let details (?? usage/input_tokens_details {}))
+  {^text state/text ^model state/model
+   ^usage {^input (count_of usage/input_tokens) ^output (count_of usage/output_tokens)
+           ^cached (count_of details/cached_tokens)}})

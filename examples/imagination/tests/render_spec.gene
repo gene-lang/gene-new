@@ -1,0 +1,185 @@
+# Section 17.4: the SVG -> PDF -> PNG route, its checks, and its failures.
+(import $test [describe it assert_equal run])
+(import [fixture_scene fixture_text scene_with scratch test_profile error_of] ^from "./support")
+(import [canonical digest_of scene_digest read_canonical] ^from "../src/scene")
+(import [scene_svg] ^from "../src/svg")
+(import [render_scene render_crop render_direct png_size output_size view_box_to_png
+         profile_id] ^from "../src/render")
+(import [pdf_info pdf_fonts] ^from "../src/adapters/poppler")
+(import [replay_normalized] ^from "../src/patch")
+(import [kind_of children_named] ^from "../src/types")
+
+(let package_root ($path/parent ($path/parent this_mod/.path)))
+
+(fn artifact [manifest, kind : Str] : Any
+  (for item in (children_named manifest "artifact")
+    (if (== item/kind kind) (return item)))
+  nil)
+
+(fn render [name : Str] : Any
+  (render_scene (test_profile) (fixture_scene name) (scratch name)))
+
+# A copy of the shared profile with one tool replaced by a stub.
+(fn broken_profile [field : Str, stub : Str] : Any
+  (var profile {})
+  (for [key value] in (test_profile) (profile .put ($to_str key) value))
+  (profile .put field ($path/join package_root $"fixtures/tools/${stub}"))
+  profile)
+
+(fn failure [profile, name : Str] : Any
+  (error_of (fn [] (render_scene profile (fixture_scene name) (scratch "broken")))))
+
+(describe "the default render route"
+  (it "produces one PDF page, exact PNG dimensions, and recorded digests" []
+    (let bundle (render "effects"))
+    (let profile (test_profile))
+    (let info (pdf_info profile/pdfinfo ($path/join bundle/dir "scene.pdf")))
+    (assert_equal info/pages 1)
+    (assert_equal [info/width info/height] [600 450])
+    (assert_equal [bundle/width bundle/height] [1024 768])
+    (assert_equal (png_size ($fs/read_bytes ($path/join bundle/dir "observation.png"))) [1024 768])
+    (for kind in ["scene.svg" "scene.pdf" "observation.png" "thumbnail.png"]
+      (let record (artifact bundle/manifest kind))
+      (assert_equal record/digest (digest_of ($fs/read_bytes ($path/join bundle/dir kind)))
+        $"the manifest digest of ${kind} must match the file"))
+    (assert_equal bundle/manifest/profile profile_id)
+    (assert_equal bundle/manifest/scene (scene_digest (fixture_scene "effects")))
+    (assert_equal (png_size ($fs/read_bytes ($path/join bundle/dir "thumbnail.png"))) [160 120])
+    # The stored manifest reads back as the same data.
+    (assert_equal
+      (canonical (read_canonical ($fs/read_text ($path/join bundle/dir "manifest.gene"))))
+      (canonical bundle/manifest)))
+
+  (it "renders the same scene to the same SVG and PNG bytes" []
+    (let first (render "effects"))
+    (let second (render "effects"))
+    (assert_equal first/svg_digest second/svg_digest)
+    (assert_equal first/png_digest second/png_digest))
+
+  (it "embeds only bundled fonts and keeps text editable" []
+    (let bundle (render "text"))
+    (let profile (test_profile))
+    (let fonts (pdf_fonts profile/pdffonts ($path/join bundle/dir "scene.pdf")))
+    ($assert (>= fonts/.size 2) "the text fixture uses at least two faces")
+    (for font in fonts
+      ($assert font/embedded $"${font/name} must be embedded")
+      ($assert (profile/bundled_names .contains? font/name) $"${font/name} is not bundled"))
+    (assert_equal ($order/sort bundle/manifest/embedded_fonts) ["DejaVuSans" "DejaVuSans-Bold" "DejaVuSerif"])
+    ($assert ($str/contains? bundle/svg "<text id=\"headline\"") "SVG text must stay a text element")
+    ($assert ($str/contains? bundle/svg ">RAIN CITY</text>") "SVG text must keep its characters"))
+
+  (it "matches direct SVG rasterization in size" []
+    (let scene (fixture_scene "effects"))
+    (let out (scratch "direct"))
+    (assert_equal
+      (render_direct (test_profile) scene ($path/join out "direct.png") ($path/join out "direct.svg"))
+      [1024 768])))
+
+(describe "canvas geometry"
+  (it "never stretches a rectangular canvas" []
+    (assert_equal (output_size 1200 400 1024) [1024 341])
+    (assert_equal (output_size 400 1200 1024) [341 1024])
+    (assert_equal (output_size 1024 1024 1024) [1024 1024])
+    (assert_equal (output_size 3 4096 1024) [1 1024])
+    (let bundle (render "wide"))
+    (assert_equal [bundle/width bundle/height] [1024 341])
+    (assert_equal bundle/manifest/output [1024 341]))
+
+  (it "records the view-box-to-PNG transform, including letterboxing" []
+    # A 600x400 view box on a 1200x400 canvas is scaled by 1 and centred with
+    # 300 canvas units on each side; the PNG then scales by 1024/1200.
+    (let scene (fixture_scene "wide"))
+    (let matrix (view_box_to_png scene [1024 341]))
+    ($assert (< ($math/abs (- matrix/0 0.853333)) 0.0001) "x scale")
+    ($assert (< ($math/abs (- matrix/4 256)) 0.0001) "x letterbox offset")
+    ($assert (< ($math/abs matrix/5) 0.0001) "y offset"))
+
+  (it "maps a crop rectangle through the recorded transform" []
+    (let bundle (render "wide"))
+    (let scene (fixture_scene "wide"))
+    (let crop
+      (render_crop (test_profile) scene ($path/join bundle/dir "scene.pdf")
+        ($path/join bundle/dir "crop") [260 160 80 80]))
+    # zoom 2: the page is 2048 x 682; view-box x 260 lands at 512 + 260 * 1.7067.
+    (assert_equal crop/page [2048 682])
+    (assert_equal crop/pixel_origin/0 955)
+    (assert_equal (png_size ($fs/read_bytes ($path/join bundle/dir "crop.png")))
+      [crop/width crop/height])
+    (assert_equal crop/rectangle [260 160 80 80])))
+
+(describe "transparent artwork"
+  (it "gives the model an opaque viewing PNG on a declared matte" []
+    (let bundle (render "transparent"))
+    (assert_equal bundle/manifest/matte "#ffffff")
+    (let viewing ($fs/read_bytes ($path/join bundle/dir "observation.png")))
+    # Colour type 2 is RGB without alpha; 6 is RGBA.
+    (assert_equal ($binary/get viewing 25) 2)
+    (let rgba ($fs/read_bytes ($path/join bundle/dir "transparent.png")))
+    (assert_equal ($binary/get rgba 25) 6)
+    ($assert (! ($absent? (artifact bundle/manifest "transparent.png")))
+      "the RGBA image is a separate recorded artifact")
+    ($assert (! ($str/contains? bundle/svg "__background")) "no background rectangle is drawn")))
+
+(describe "conversion failures name their stage"
+  (it "reports a failed SVG to PDF stage" []
+    (let error (failure (broken_profile "rsvg" "fail_convert.sh") "effects"))
+    (assert_equal error/stage "svg_to_pdf")
+    (assert_equal error/code "stage_failed"))
+
+  (it "rejects a multi-page PDF" []
+    (let error (failure (broken_profile "rsvg" "two_page_pdf.sh") "effects"))
+    (assert_equal error/stage "pdf_info")
+    (assert_equal error/code "invalid_pdf"))
+
+  (it "rejects an invalid PDF" []
+    (let error (failure (broken_profile "rsvg" "not_a_pdf.sh") "effects"))
+    (assert_equal error/stage "pdf_info"))
+
+  (it "reports a failed PDF to PNG stage" []
+    (let error (failure (broken_profile "pdftocairo" "fail_convert.sh") "effects"))
+    (assert_equal error/stage "pdf_to_png")
+    (assert_equal error/code "stage_failed"))
+
+  (it "reports a stage that exceeds its time limit" []
+    (let profile (broken_profile "rsvg" "slow.sh"))
+    (profile .put "stage_ms" 300)
+    (let error (failure profile "effects"))
+    (assert_equal error/stage "svg_to_pdf")
+    (assert_equal error/code "stage_timeout"))
+
+  (it "reports a missing tool as a missing dependency" []
+    (let profile (broken_profile "rsvg" "does_not_exist"))
+    (let error (failure profile "effects"))
+    (assert_equal error/code "missing_dependency"))
+
+  (it "refuses an effect surface above the limit before converting" []
+    (let scene
+      (scene_with "(defs (blur ^id \"huge\" ^std_dev 4 ^x -100000 ^y -100000 ^width 200000 ^height 200000)) (circle ^id \"dot\" ^cx 10 ^cy 10 ^r 5 ^fill \"#000000\" ^filter_ref \"huge\")"))
+    (let error (error_of (fn [] (render_scene (test_profile) scene (scratch "surface")))))
+    (assert_equal error/stage "limits")
+    (assert_equal error/code "effect_surface_limit")))
+
+(describe "exact replay of a recorded drawing"
+  (it "reproduces every saved scene and SVG digest" []
+    (let record (read_canonical (fixture_text "replay/landscape.gene")))
+    (var scene (read_canonical record/base))
+    (let profile (test_profile))
+    (let same_tools (&& (== record/rsvg_convert profile/rsvg_version)
+                        (== record/poppler profile/poppler_version)))
+    (var replayed 0)
+    (for step in (children_named record "step")
+      (let normalized (($body step) .first))
+      (if_not ($absent? normalized)
+        (set scene (/scene (replay_normalized scene normalized))))
+      (assert_equal (scene_digest scene) step/scene $"scene digest of ${step/id}")
+      (assert_equal (digest_of (scene_svg scene)) step/svg $"SVG digest of ${step/id}")
+      # Pixel identity holds only inside the same pinned render profile.
+      (if_yes same_tools
+        (let bundle (render_scene profile scene (scratch "replay")))
+        (assert_equal bundle/png_digest step/png $"PNG digest of ${step/id}"))
+      (set replayed (+ replayed 1)))
+    (assert_equal replayed 4)))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)

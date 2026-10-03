@@ -1,0 +1,121 @@
+# Shared records, errors, and limits (design sections 5, 8.4 and 15).
+#
+# Scenes, patches, goals, reviews and revisions travel as Gene nodes, the same
+# notation they are stored in. The types here are the few values that are not
+# domain data: typed failures and the limits every boundary enforces.
+(mod imagination_types)
+
+# A rejected scene, patch, or response. `code` is the stable machine name;
+# `operation_index`, `target`, `field` and `expected` locate the failure so a
+# caller never has to infer it from the message.
+(type DomainError ^props {
+  ^message Str ^code Str ^operation_index Any ^target Any ^field Any ^expected Any})
+(impl Error for DomainError)
+
+# A failed conversion stage. `stage` names the stage that failed.
+(type RenderError ^props {^message Str ^code Str ^stage Str ^detail Any})
+(impl Error for RenderError)
+
+# A failed history or persistence operation.
+(type StoreError ^props {^message Str ^code Str ^detail Any})
+(impl Error for StoreError)
+
+# A failed model call or an unusable provider configuration.
+(type ModelError ^props {^message Str ^code Str ^detail Any})
+(impl Error for ModelError)
+
+(fn reject [code : Str, message : Str,
+            ^index index = nil, ^target target = nil, ^field field = nil,
+            ^expected expected = nil]
+  (fail (DomainError ^message message ^code code ^operation_index index
+          ^target target ^field field ^expected expected)))
+
+# Starting limits from section 15. They are checked before expensive work.
+(let limits #{
+  ^response_bytes 262144
+  ^operations 50
+  ^scene_nodes 2000
+  ^depth 32
+  ^path_commands 20000
+  ^scene_bytes 4194304
+  ^raster_edge 2048
+  ^stage_ms 10000
+  ^pipeline_ms 25000
+  ^repairs 2
+  ^text_bytes 400
+  ^label_bytes 200
+  ^points 5000
+  ^stops 32
+  ^magnitude 1000000
+  ^canvas_min 16
+  ^canvas_max 4096
+  ^blur_std_dev 100
+  ^reader_depth 40})
+
+# Default run budgets from section 10.4.
+(let default_budgets #{
+  ^max_iterations 12
+  ^max_rejected 3
+  ^max_repairs 2
+  ^max_inspections 4
+  ^max_model_calls 40
+  ^max_wall_ms 1800000})
+
+# A node whose head is a symbol. The head of a type is the type itself, so a
+# bare symbol must be excluded explicitly.
+(fn node? [value] : Bool
+  (let head ($head value))
+  (&& (!= head Sym) (== ($head head) Sym)))
+
+# A field path as a reader would write it: ^translate[0].
+(fn field_label [field] : Str
+  (if ($absent? field) (return "value"))
+  (if_not (== ($head field) List) (return ($to_str field)))
+  (var text "")
+  (for part in field
+    (if (== ($head part) Str)
+      (set text (if (== text "") $"^${part}" $"${text}.${part}"))
+      (set text $"${text}[${part}]")))
+  text)
+
+(fn kind_of [value] : Str
+  (if (node? value) ($to_str ($head value)) ""))
+
+(fn str? [value] : Bool (== ($head value) Str))
+(fn list? [value] : Bool (== ($head value) List))
+(fn map? [value] : Bool (== ($head value) Map))
+(fn int? [value] : Bool (== ($head value) Int))
+(fn number? [value] : Bool
+  (|| (== ($head value) Int) (== ($head value) Float)))
+
+# The node children of a node, skipping scalar body values.
+(fn child_nodes [node] : Any
+  (var result [])
+  (for child in ($body node)
+    (if (node? child) (result .push child)))
+  result)
+
+# Property names in sorted order: PropMap iteration follows insertion.
+(fn sorted_keys [props] : Any
+  (var names [])
+  (for [key value] in props (names .push ($to_str key)))
+  ($order/sort names))
+
+# The first child with this head, or nil.
+(fn child_named [node, name : Str] : Any
+  (for child in ($body node)
+    (if (&& (node? child) (== (kind_of child) name)) (return child)))
+  nil)
+
+# The single string in a node such as (intent "...") or (summary "..."), or "".
+(fn text_of [node] : Str
+  (if ($absent? node) (return ""))
+  (for item in ($body node)
+    (if (str? item) (return item)))
+  "")
+
+(fn children_named [node, name : Str] : Any
+  (var result [])
+  (for child in ($body node)
+    (if (&& (node? child) (== (kind_of child) name)) (result .push child)))
+  result)

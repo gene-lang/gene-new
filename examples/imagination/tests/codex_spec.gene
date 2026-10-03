@@ -1,0 +1,76 @@
+# The Codex transport: credentials, request shape, and stream parsing, with no
+# network. The token in these fixtures is fake.
+(import $test [describe it assert_equal run])
+(import [scratch error_code] ^from "./support")
+(import [codex_credentials codex_spec codex_reply] ^from "../src/adapters/codex")
+
+(fn auth_file [text : Str] : Str
+  (let path ($path/join (scratch "codex") "auth.json"))
+  ($fs/write_text path text)
+  path)
+
+(fn event [json : Str] : Str
+  $"event: x\ndata: ${json}\n\n")
+
+(describe "Codex credentials"
+  (it "reads the access token and account from auth.json" []
+    (let path (auth_file "{\"tokens\":{\"access_token\":\"fake-access\",\"account_id\":\"acct-1\",\"refresh_token\":\"r\"}}"))
+    (let credentials (codex_credentials path))
+    (assert_equal credentials/access_token "fake-access")
+    (assert_equal credentials/account_id "acct-1"))
+
+  (it "refuses missing, malformed, and API-key-only files without echoing them" []
+    (assert_equal (error_code (fn [] (codex_credentials "/nonexistent/auth.json"))) "invalid_config")
+    (let broken (auth_file "{\"tokens\": {\"access_token\": \"secret-in-a-broken-file\""))
+    (let error (try (codex_credentials broken) catch Any $err))
+    (assert_equal error/code "invalid_config")
+    ($assert (! ($str/contains? error/message "secret-in-a-broken-file")) "a token must never reach a message")
+    (assert_equal
+      (error_code (fn [] (codex_credentials (auth_file "{\"OPENAI_API_KEY\":\"k\",\"tokens\":null}"))))
+      "invalid_config")))
+
+(describe "Codex requests"
+  (it "streams without storage and sends the PNG bytes as an input_image" []
+    (let png ($binary/from_list [137 80 78 71 13 10 26 10]))
+    (let spec
+      (codex_spec {^model "gpt-test" ^effort "medium"}
+        {^system "be brief" ^max_tokens 100
+         ^parts [{^type "text" ^text "look"}
+                 {^type "image" ^label "r001" ^digest "sha256:x" ^media "image/png" ^bytes png}]}
+        {^access_token "fake-access" ^account_id "acct-1"}))
+    (assert_equal spec/url "https://chatgpt.com/backend-api/codex/responses")
+    (assert_equal spec/headers/authorization "Bearer fake-access")
+    (assert_equal (spec/headers .get "chatgpt-account-id") "acct-1")
+    (assert_equal spec/body/store false)
+    (assert_equal spec/body/stream true)
+    (assert_equal spec/body/instructions "be brief")
+    (let content spec/body/input/0/content)
+    (assert_equal content/0 {^type "input_text" ^text "look"})
+    (assert_equal content/1/type "input_image")
+    (assert_equal content/1/image_url $"data:image/png;base64,${($base64/encode png)}")
+    ($assert ($absent? spec/body/max_output_tokens) "the endpoint takes no output limit")))
+
+(describe "Codex streams"
+  (it "uses only the completed response, and only its final answer" []
+    (let body
+      ($str/join [
+        (event "{\"type\":\"response.output_text.delta\",\"delta\":\"(partial\"}")
+        (event "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"thinking aloud\"}]}}")
+        (event "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"(agent_response)\"}]}}")
+        (event "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-test\",\"output\":[],\"usage\":{\"input_tokens\":1200,\"output_tokens\":80,\"input_tokens_details\":{\"cached_tokens\":1000}}}}")
+        "data: [DONE]\n"] ""))
+    (let reply (codex_reply body))
+    (assert_equal reply/text "(agent_response)")
+    (assert_equal reply/model "gpt-test")
+    (assert_equal reply/usage {^input 1200 ^output 80 ^cached 1000}))
+
+  (it "fails a stream that never completed or that failed" []
+    (assert_equal
+      (error_code (fn [] (codex_reply (event "{\"type\":\"response.output_text.delta\",\"delta\":\"(half\"}"))))
+      "invalid_response")
+    (assert_equal (error_code (fn [] (codex_reply (event "{\"type\":\"response.failed\"}")))) "provider_error")
+    (assert_equal (error_code (fn [] (codex_reply (event "{\"type\":\"response.incomplete\"}")))) "truncated")))
+
+(fn main [args] : Int
+  (let result (run))
+  result/exit_code)
