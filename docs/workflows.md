@@ -263,6 +263,9 @@ nimble native_example
 
 The C backend is experimental. Use the [native example](../examples/native/README.md)
 for the actual compile/link/load workflow and platform prerequisites.
+The experimental generated C API uses checked status plus out-result calls
+and `GeneNativeError` diagnostics. AOT manifest version 2 requires rebuilding
+older libraries; native field-layout fingerprinting remains version 1.
 Admitting arbitrary native code does not create an in-process sandbox.
 
 ## Permissions and deployment

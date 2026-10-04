@@ -11,12 +11,12 @@ budgets and cancellation.
 | Work | Required evidence | Status |
 | --- | --- | --- |
 | Portable release default, explicit debug build, version metadata | Build the actual CLI in both modes, inspect `--version`, run CLI checks and the harness replay selection in both modes | Both modes built and report correct optimization/check settings; both replay selections pass 37/37 |
-| AOT minimum I64 literal | VM/generated-C parity for signed minimum and an in-range comparison, compiler warnings enabled | Fixed; fresh CLI emission returns 1 for the in-range comparison and compiles with the unsigned-literal warning as an error; full spec pending |
-| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | In progress; owner approved checked status + out-result C API |
-| AOT status documentation | Generated header and source comments agree with the runtime loader | Updated; final audit pending |
+| AOT minimum I64 literal | VM/generated-C parity for signed minimum and an in-range comparison, compiler warnings enabled | Fixed; compiler-warning regression and full spec pass |
+| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | Checked ABI v2 implemented; direct-C and loaded-boundary specs pass with ASan/UBSan; broader qualification in progress |
+| AOT status documentation | Generated header and source comments agree with the runtime loader | Updated for checked ABI v2; in-repository C callers migrated |
 | Reproducible controls and baselines | Empty/constant chunks, matched F64 bodies, machine/build provenance, raw samples, checksums, distributions, independent rebuilds | Complete local capture: two fresh-cache builds, 89 matching rows, excluded warmup plus three measured rounds each; saved under benchmarks/baselines |
 | Application profiles before P1 | Release harness replay and numeric application samples, ranked sample counts and limitations | Captured real service/patch workload and native Miclone generation; publication/escape dominate service; call/contract and lookup are numeric targets |
-| Profile-selected P1 improvements | Before/after application and control workloads; relevant VM/spec/lifetime/thread checks | Pending profiling gate |
+| Profile-selected P1 improvements | Before/after application and control workloads; relevant VM/spec/lifetime/thread checks | Profiling gate satisfied; shared-graph traversal selected for implementation |
 
 P2 representation/cache changes and P3 JIT remain subject to the assessment's
 evidence gates. A new borrow contract needs an explicit owner decision;
@@ -36,10 +36,20 @@ stay unboxed, while overflow promotes to owned arbitrary-precision temporaries.
 This preserves intermediate values instead of replaying a function after an
 effect. The portable C support also preserves standalone C consumers; it is
 checked differentially against Gene's existing integer implementation. It is
-not yet wired into emitted functions. Remaining work includes checked function
-signatures, sequenced expression/statement lowering, typed-boundary errors with
-their actual values, cleanup on every exit, dynamic-entry propagation, ABI
-admission/versioning, and migration of the C examples/tests/benchmarks.
+now wired into emitted functions. Checked signatures and sequenced lowering
+preserve integer intermediates, source evaluation order and typed boundaries.
+Error records retain actual values and native stack frames. The dynamic bridge
+reconstructs Gene errors, and the loader rejects old manifests. Examples,
+tests and benchmarks use ABI v2. See `examples/native/README.md` for the C
+contract, initialization and cleanup requirements.
+
+Generated-C sanitizer tests cover overflow followed by recovery, overflow-driven
+loop bounds, unchanged results on failure, NaN ordering, Bool/Char distinctions,
+argument and field-store effects, narrowed foreign out-parameters, native traces,
+and transfer cleanup after a callee frees its argument and then fails. Both
+builtin and portable overflow helpers pass differential sanitizer checks.
+The standalone SQLite example also builds with warnings as errors and returns
+the expected rows and totals.
 
 ## Verification notes
 
@@ -56,8 +66,8 @@ release build was launched without `-d:release` to verify the new default.
 The new Gene benchmark runner passed a synthetic reporting-protocol smoke
 check: one excluded warmup plus three measured samples, stable checksums,
 expected medians and stored metadata. It uses existing process, JSON,
-filesystem, sorting and timing APIs. Real baseline capture is still pending
-the instrumented benchmark build.
+filesystem, sorting and timing APIs. Real baseline capture completed as described
+below.
 
 That capture has now completed and is saved in
 `benchmarks/baselines/2026-10-03-controls/`. The new empty-chunk control measures
@@ -93,8 +103,8 @@ The exact C integer foundation passes the native tests and the same suite with
 AddressSanitizer plus UndefinedBehaviorSanitizer. It checks promotion back into
 I64, cancellation, aliasing, retained copies, 1000-bit growth, and 81 boundary
 operand pairs (including composite results) against Gene's integer operations.
-This qualifies the helper only; generated checked functions and their error/
-ownership paths still require integration and differential qualification.
+Generated checked functions and their error/ownership paths now also pass the
+full spec suite with emitted C compiled under ASan and UBSan.
 
 Tooling note: List has no destructive `pop` message. The sampling parser uses
 linked frame records instead; a general stack API can be considered separately

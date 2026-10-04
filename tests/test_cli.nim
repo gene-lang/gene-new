@@ -1428,7 +1428,7 @@ suite "cli — gene parse/fmt/compile":
     let ran = runGene(["compile", "--target", "c", path])
     check ran.exitCode == 0
     check "#include <stdint.h>" in ran.output
-    check "int64_t gene_native_add64(int64_t x, int64_t y)" in ran.output
+    check "GeneNativeStatus gene_native_add64(GeneNativeError *" in ran.output
     check "const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in ran.output
     # Manifest rows carry an entry_symbol between the C symbol and the repr;
     # it is empty for a function without ^native_entry.
@@ -1466,7 +1466,8 @@ suite "cli — gene parse/fmt/compile":
     check "double acc = 0.0;" in ran.output
     check "while ((i < n))" in ran.output
     # A nested call as a call argument.
-    check "gene_native_mix32(gene_native_wrap32(i))" in ran.output
+    check "= gene_native_wrap32(" in ran.output
+    check "= gene_native_mix32(" in ran.output
     # Gene rounds every float operation separately, so the compiled form must
     # not be allowed to contract a multiply-add into an FMA.
     check "#pragma STDC FP_CONTRACT OFF" in ran.output

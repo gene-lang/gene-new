@@ -106,7 +106,7 @@ the AOT boundary. `benchmarks/scripts/bench_fib_aot_c` already times compiled
 fib as a standalone binary — a ceiling with no runtime involved; this measures
 what a Gene program actually experiences.
 
-Representative run (Apple clang -O2, fib(28) × 20, stable to ~1% across runs):
+Historical run with the unchecked ABI v1 (Apple clang -O2, fib(28) × 20):
 
 ```
 vm   time: 1291 ms      vm   rate:    15,932,718 calls/second
@@ -118,19 +118,19 @@ Boundary cost over 200000 crossings:
   vm function call:  20 ms     (~100 ns/call)
 ```
 
-**Both numbers matter, and they point in opposite directions.** The recursion
-never crosses the boundary — `fib` calls itself directly in C — so one crossing
-covers a million calls and the compiled code runs ~117× the VM.
+These numbers predate the exact-integer checked ABI v2 and must not be used as
+its performance claim. Rerun the script with a fresh CLI to measure the current
+backend. The recursion never crosses the boundary — `fib` calls itself directly
+in C — so one crossing covers a million calls.
 
-But a crossing costs about 2.6× a plain VM call. Calling a *trivial* native
-function is slower than staying in the VM. AOT pays when the compiled function
+In that historical run, a crossing cost about 2.6× a plain VM call. AOT pays when the compiled function
 does enough work to amortize the crossing, and `identity` exists in `fib.gene`
 precisely to price that floor.
 
 Some of the per-crossing cost is the adapter's own doing: the dispatcher looks
-its entry up by name on every call, because `NativeCallProc` is `nimcall` and
-cannot capture the entry pointer. Carrying the pointer on the callable instead
-would remove that lookup.
+its entry up by name on every call. The existing `NativeContextCallProc`
+mechanism could carry the entry pointer on the callable and remove that lookup,
+while preserving the ABI-epoch validation.
 
 ## Foreign calls through compiled marshalling
 
@@ -151,31 +151,69 @@ range-checks instead of truncating — passing `200` where the C signature says
 Error: native entry argument 'b' is out of range: 200 does not fit -128..127
 ```
 
-Strings and buffers are *borrowed* for the call's extent (they point into the
-argument's own storage), so foreign code must not retain them. A returned
-`const char *` is copied, since its lifetime is unknown.
+Strings and `C/Slice` views are borrowed for the call's extent, so foreign code
+must not retain them. The current Buffer bridge copies byte-compatible elements
+into temporary storage and copies mutations back after the call; it does not
+yet borrow packed F32/F64 buffers. A returned `const char *` is copied.
+
+## Checked C calls
+
+Generated native functions use ABI version 2: a `GeneNativeError *`, the
+unboxed parameters, and an out-result pointer, returning `GeneNativeStatus`.
+Initialize the error record to zero and clear it after use. The out-result is
+unchanged on failure. Calls through `aot/load` translate failures into Gene
+errors, preserving TypeError's actual value and native stack frames.
+
+```c
+#include "gene/native_checked.h"
+GeneNativeStatus gene_native_add64(GeneNativeError *, int64_t, int64_t, int64_t *);
+
+GeneNativeError error = {0};
+int64_t value = 0;
+GeneNativeStatus status = gene_native_add64(&error, 20, 22, &value);
+if (status == GENE_NATIVE_OK) {
+  /* value is 42 */
+} else {
+  /* error.status, where, expected, actual_kind and frames describe failure */
+}
+gene_aot_error_clear(&error);
+```
+
+Pass valid result storage distinct from the error record and any storage
+mutated by the callee; do not shallow-copy an error record
+that owns an integer or trace allocation. A subsequent call clears an earlier
+failure in that record. Concurrent calls use separate records. No Gene host
+is needed for direct C calls: the generated translation unit includes the
+integer/error support. Include `src/gene/native_checked.h` in a separate C
+caller, with the repository's `src` directory on its include path.
+
+Integer parameters and results keep their declared machine representation.
+Intermediate integer arithmetic promotes when necessary and remains exact;
+an out-of-range typed binding or result is a checked TypeError. The compiler
+sequences operands and calls, so errors do not require replaying effects.
+Rebuild old AOT libraries: the loader rejects the previous manifest version.
 
 ## What the generated C looks like
 
 `(fn step_row [stmt : Stmt] : I64 (sqlite3_step stmt))` becomes:
 
 ```c
-int64_t gene_native_step_row(sqlite3_stmt * stmt) {
-  return sqlite3_step(stmt);
-}
+GeneNativeStatus gene_native_step_row(
+    GeneNativeError *error, sqlite3_stmt *stmt, int64_t *out);
 ```
 
 The pointer stays unboxed across Gene→Gene calls too — `read_first` lowers to a
 direct call, not a dispatch:
 
 ```c
-int64_t gene_native_read_first(sqlite3_stmt * stmt, int64_t first_column) {
-  int64_t value = gene_native_column_i64(stmt, first_column);
-  return value;
-}
+GeneNativeStatus gene_native_read_first(
+    GeneNativeError *error, sqlite3_stmt *stmt, int32_t first_column,
+    int64_t *out);
 ```
 
-There is no `GeneValue` anywhere in the typed function bodies.
+The implementation makes a checked direct C call to `gene_native_column_i64`.
+There is no `GeneValue` in typed function bodies. Integer temporaries can carry
+an exact wide result without crossing into the VM.
 
 ## What the subset covers
 

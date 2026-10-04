@@ -1,86 +1,70 @@
-/* Driver for the typed_native SQLite example.
- *
- * Everything here is ordinary C. The row loop calls into functions that were
- * written in Gene (sqlite_rows.gene) and compiled to C by
- * `gene compile --target c` — they take the sqlite3_stmt* unboxed, in a
- * register, and call SQLite directly.
- *
- * The loop lives in C rather than Gene because the typed_native subset has no
- * loop or arithmetic forms yet; see README.md.
+/* Direct C caller of Gene's checked native ABI. The same row loop is also
+ * compiled from Gene by scan_total; this driver demonstrates both paths.
  */
-
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../../src/gene/native_checked.h"
 
-/* Compiled from sqlite_rows.gene. The generated header-less C exposes these
- * with the gene_native_ prefix and unboxed machine types. */
-sqlite3 *gene_native_open_db(const char *path);
-int64_t gene_native_exec(sqlite3 *db, const char *sql);
-sqlite3_stmt *gene_native_prepare(sqlite3 *db, const char *sql);
-int64_t gene_native_close_db(sqlite3 *db);
-int64_t gene_native_step_row(sqlite3_stmt *stmt);
-int64_t gene_native_reset_stmt(sqlite3_stmt *stmt);
-int64_t gene_native_column_count(sqlite3_stmt *stmt);
-int64_t gene_native_column_i64(sqlite3_stmt *stmt, int32_t column);
-int64_t gene_native_read_first(sqlite3_stmt *stmt, int32_t first_column);
-int64_t gene_native_row_total(sqlite3_stmt *stmt, int32_t amount_column,
-                              int32_t quantity_column);
-int64_t gene_native_row_total_capped(sqlite3_stmt *stmt, int32_t amount_column,
-                                     int32_t quantity_column, int64_t cap);
-int64_t gene_native_scan_total(sqlite3_stmt *stmt, int32_t amount_column,
-                               int32_t quantity_column, int64_t row_marker);
+GeneNativeStatus gene_native_open_db(GeneNativeError *, const char *, sqlite3 **);
+GeneNativeStatus gene_native_exec(GeneNativeError *, sqlite3 *, const char *, int64_t *);
+GeneNativeStatus gene_native_prepare(GeneNativeError *, sqlite3 *, const char *, sqlite3_stmt **);
+GeneNativeStatus gene_native_close_db(GeneNativeError *, sqlite3 *, int64_t *);
+GeneNativeStatus gene_native_step_row(GeneNativeError *, sqlite3_stmt *, int64_t *);
+GeneNativeStatus gene_native_reset_stmt(GeneNativeError *, sqlite3_stmt *, int64_t *);
+GeneNativeStatus gene_native_column_count(GeneNativeError *, sqlite3_stmt *, int64_t *);
+GeneNativeStatus gene_native_row_total(GeneNativeError *, sqlite3_stmt *, int32_t, int32_t, int64_t *);
+GeneNativeStatus gene_native_row_total_capped(GeneNativeError *, sqlite3_stmt *, int32_t, int32_t, int64_t, int64_t *);
+GeneNativeStatus gene_native_scan_total(GeneNativeError *, sqlite3_stmt *, int32_t, int32_t, int64_t, int64_t *);
 
-#define ROW 100 /* SQLITE_ROW */
+static int checked(GeneNativeStatus status, GeneNativeError *error) {
+  if (status == GENE_NATIVE_OK) return 1;
+  fprintf(stderr, "native error %d: %s%s%s\n", (int)status,
+    error->where ? error->where : "unknown",
+    error->expected && *error->expected ? " expected " : "",
+    error->expected ? error->expected : "");
+  gene_aot_error_clear(error);
+  return 0;
+}
+
+#define CHECK(call) do { if (!checked((call), &error)) goto cleanup; } while (0)
 
 int main(void) {
-  sqlite3 *db = gene_native_open_db(":memory:");
-  if (db == NULL) {
-    fprintf(stderr, "could not open in-memory database\n");
-    return 1;
+  GeneNativeError error = {0};
+  sqlite3 *db = NULL;
+  sqlite3_stmt *stmt = NULL;
+  int exit_status = 1;
+  int64_t code = 0, columns = 0, rows = 0, total = 0, capped = 0;
+  CHECK(gene_native_open_db(&error, ":memory:", &db));
+  if (db == NULL) { fputs("could not open database\n", stderr); goto cleanup; }
+  CHECK(gene_native_exec(&error, db,
+    "create table orders (amount integer, quantity integer);"
+    "insert into orders values (10, 3), (20, 5), (30, 7);", &code));
+  if (code != SQLITE_OK) goto cleanup;
+  CHECK(gene_native_prepare(&error, db, "select amount, quantity from orders", &stmt));
+  if (stmt == NULL) goto cleanup;
+  CHECK(gene_native_column_count(&error, stmt, &columns));
+  printf("columns: %lld\n", (long long)columns);
+  for (;;) {
+    CHECK(gene_native_step_row(&error, stmt, &code));
+    if (code != SQLITE_ROW) break;
+    int64_t row = 0, limited = 0;
+    CHECK(gene_native_row_total(&error, stmt, 0, 1, &row));
+    CHECK(gene_native_row_total_capped(&error, stmt, 0, 1, 120, &limited));
+    total += row;
+    capped += limited;
+    ++rows;
   }
-
-  if (gene_native_exec(db,
-        "create table orders (amount integer, quantity integer);"
-        "insert into orders values (10, 3), (20, 5), (30, 7);") != SQLITE_OK) {
-    fprintf(stderr, "could not seed database\n");
-    gene_native_close_db(db);
-    return 1;
-  }
-
-  sqlite3_stmt *stmt =
-      gene_native_prepare(db, "select amount, quantity from orders");
-  if (stmt == NULL) {
-    fprintf(stderr, "could not prepare statement\n");
-    gene_native_close_db(db);
-    return 1;
-  }
-
-  printf("columns: %lld\n", (long long)gene_native_column_count(stmt));
-
-  int64_t rows = 0;
-  int64_t total = 0;
-  int64_t capped = 0;
-  /* The per-row work is compiled: row_total does both column reads and the
-   * multiply inside one Gene-compiled C function. Only the loop is here,
-   * because the subset still has no loop form. */
-  while (gene_native_step_row(stmt) == ROW) {
-    total += gene_native_row_total(stmt, 0, 1);
-    capped += gene_native_row_total_capped(stmt, 0, 1, 120);
-    rows += 1;
-  }
-
-  printf("rows: %lld\n", (long long)rows);
-  printf("total: %lld\n", (long long)total);
-  printf("capped: %lld\n", (long long)capped);
-
-  /* The same scan with the loop itself compiled: one call, no C loop. */
-  gene_native_reset_stmt(stmt);
-  printf("scanned: %lld\n",
-         (long long)gene_native_scan_total(stmt, 0, 1, ROW));
-
-  gene_native_reset_stmt(stmt);
-  sqlite3_finalize(stmt);
-  gene_native_close_db(db);
-  return 0;
+  printf("rows: %lld\ntotal: %lld\ncapped: %lld\n",
+    (long long)rows, (long long)total, (long long)capped);
+  CHECK(gene_native_reset_stmt(&error, stmt, &code));
+  CHECK(gene_native_scan_total(&error, stmt, 0, 1, SQLITE_ROW, &total));
+  printf("scanned: %lld\n", (long long)total);
+  exit_status = 0;
+cleanup:
+  if (stmt != NULL) sqlite3_finalize(stmt);
+  if (db != NULL && !checked(gene_native_close_db(&error, db, &code), &error))
+    exit_status = 1;
+  gene_aot_error_clear(&error);
+  return exit_status;
 }

@@ -15,7 +15,7 @@
 ##
 ## Status codes mirror the generated `#define`s: 0 ok, 1 error, 2 panic.
 
-import std/strutils
+import std/[strutils, unicode]
 
 import ./[types, vm]
 
@@ -35,6 +35,57 @@ proc fail(ctx: ptr AotContext, message: string): cint =
     ctx.failed = true
     ctx.message = message
   AotError
+
+proc fail(ctx: ptr AotContext, error: ref CatchableError): cint =
+  if ctx != nil:
+    if error of GeneError: ctx.error = cast[ref GeneError](error)
+    if error of GenePanic: ctx.panicked = true
+  discard ctx.fail(error.msg)
+  if error of GenePanic: cint(2) else: AotError
+
+proc geneFfiNativeError(ctx: ptr AotContext, status: cint, where, expected: cstring,
+                       actualKind: cint, integer: cstring, real: cdouble,
+                       boolean: bool, text: cstring,
+                       frames: ptr UncheckedArray[AotTraceFrameC],
+                       frameCount, omitted: csize_t): cint
+                       {.exportc: "gene_ffi_native_error", cdecl, dynlib.} =
+  if ctx == nil: return AotError
+  if status == 2:
+    ctx.panicked = true
+    discard ctx.fail("native allocation failed")
+    return cint(2)
+  try:
+    if status == 1:
+      var actual = NIL
+      case actualKind
+      of 0: actual = newIntFromDecimal($integer)
+      of 1: actual = newFloat(real)
+      of 2: actual = newBool(boolean)
+      of 3: actual = if text == nil: NIL else: newStr($text)
+      of 6: actual = newChar(Rune(newIntFromDecimal($integer).intVal))
+      else: discard
+      try:
+        raiseTypeError($where, $expected, actual, ctx.scope)
+      except GeneError as error:
+        ctx.error = error
+    elif status == 3:
+      ctx.error = nativeRuntimeError(ctx.scope, "RuntimeError",
+        "null " & $where & " has no field '" & $expected & "'")
+    else:
+      ctx.error = nativeRuntimeError(ctx.scope,
+        if status == 6: "OrderError" else: "RuntimeError", $where)
+    var trace: seq[Value]
+    if frames != nil:
+      for i in 0 ..< int(frameCount):
+        let frame = frames[i]
+        trace.add stackFrameValue($frame.functionName, "typed_native",
+          SourceLoc(sourceName: $frame.sourceName, line: int(frame.line), col: int(frame.column)))
+    if omitted > 0:
+      trace.add stackFrameValue("... (" & $omitted & " native frames omitted)", "native_elision")
+    appendTraceFrames(ctx.error, trace)
+    return ctx.fail(ctx.error)
+  except CatchableError as error:
+    return ctx.fail(error)
 
 proc argAt(call: ptr AotCall, index: csize_t): Value =
   call.args[int(index)]
@@ -104,7 +155,7 @@ template defArgVia(nimName: untyped, cName: static string, CT: typedesc,
     try:
       outValue[] = CT(convert)
     except CatchableError as e:
-      return ctx.fail(e.msg)
+      return ctx.fail(e)
     AotOk
 
 defArgVia(geneFfiArgInt8, "gene_ffi_arg_int8", int8,
@@ -169,7 +220,7 @@ proc geneFfiArgCStr(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
   try:
     outValue[] = ffiCStrArg(argWhere(name), value)
   except CatchableError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   AotOk
 
 proc argPointer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
@@ -190,7 +241,7 @@ proc argPointer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
   try:
     outValue[] = ffiAotPointerArg(argWhere(name), $typeName, value)
   except CatchableError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   AotOk
 
 proc geneFfiArgPtr(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
@@ -224,7 +275,7 @@ proc geneFfiArgSlice(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
     outValue.data = view.address
     outValue.len = view.length
   except CatchableError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   AotOk
 
 proc geneFfiArgBuffer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
@@ -254,7 +305,7 @@ proc geneFfiArgBuffer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
   try:
     ctx.buffers.add ffiAotBufferLease(argWhere(name), $typeName, value)
   except CatchableError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   let slot = ctx.buffers.high
   leaseOut[] = csize_t(slot)
   outValue.len = ctx.buffers[slot].length
@@ -295,7 +346,7 @@ template defResultVia(nimName: untyped, cName: static string, CT: typedesc,
     try:
       resultOut[] = convert
     except CatchableError as e:
-      return ctx.fail(e.msg)
+      return ctx.fail(e)
     AotOk
 
 defResultVia(geneFfiResultInt8, "gene_ffi_result_int8", int8,
@@ -375,7 +426,7 @@ proc geneFfiResultPtr(ctx: ptr AotContext, value: pointer,
   try:
     resultOut[] = ffiAotPointerResult($typeName, value, cast[pointer](release))
   except CatchableError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   AotOk
 
 # ---------------------------------------------------------------------------
@@ -541,7 +592,7 @@ proc wrapperResult(ctx: ptr AotContext, address: pointer,
   try:
     resultOut[] = newNativeWrapper(wrapperType, {($handleField): handle})
   except GeneError as e:
-    return ctx.fail(e.msg)
+    return ctx.fail(e)
   AotOk
 
 proc geneTypedNativeResultTransfer(ctx: ptr AotContext, address: pointer,

@@ -1774,6 +1774,12 @@ type AotCFunction = object
   cName: string
   paramCount: int
   cType: string
+  checked: bool
+  paramNames: seq[string]
+  paramReprs: seq[AotRepr]
+  returnRepr: AotRepr
+  geneName: string
+  sourceLoc: SourceLoc
   outParams: seq[bool]
     ## Per-position `^out` flags, so the call site can pass an address where
     ## the declaration takes one. Empty for ordinary functions.
@@ -1868,30 +1874,6 @@ type FfiMarshalKind = enum
 
 proc ffiTypeLabel(expr: Value): string
 
-proc typedNativeNullHelper(nativeType: NativeTypeProto,
-                           fieldName: string): string =
-  for field in nativeType.abi.fields:
-    if field.name != fieldName:
-      continue
-    let label = ffiTypeLabel(field.typeExpr)
-    if label in ["C/Float", "C/Double"]:
-      return "gene_typed_native_null_f64"
-    if label.startsWith("(C/Ptr ") or
-        label.startsWith("(C/NullablePtr "):
-      return "gene_typed_native_null_ptr"
-    break
-  "gene_typed_native_null_i64"
-
-proc aotCBindingRepr(name: string, params: openArray[string],
-                     paramReprs: openArray[AotRepr],
-                     locals: openArray[AotLocal]): AotRepr =
-  for i, param in params:
-    if param == name and i < paramReprs.len:
-      return paramReprs[i]
-  for local in locals:
-    if local.name == name:
-      return local.repr
-
 proc aotSendKey(receiverIdentity, protocolName, messageName: string): string =
   "@typed_send\x1f" & receiverIdentity & "\x1f" & protocolName & "\x1f" &
     messageName
@@ -1913,11 +1895,6 @@ proc aotLoweringGap(expr: Value, detail: string): string =
     "typed_native backend has no lowering for " & expr.print() & " (" &
     detail & "). Analysis accepted this expression but code generation " &
     "cannot emit it; the typed_native analysis and emission passes disagree.")
-
-proc emitAotCSend(expr: Value, params: openArray[string],
-                  paramReprs: openArray[AotRepr],
-                  available: Table[string, AotCFunction],
-                  locals: openArray[AotLocal]): tuple[found: bool, code: string]
 
 proc aotMathBuiltinCName*(head: Value): string =
   ## The `<math.h>` function a `$math/...` head lowers to, or "" for anything
@@ -1948,255 +1925,6 @@ proc aotMathBuiltinCName*(head: Value): string =
   of "abs": "fabs"
   else: ""
 
-proc emitAotCExpr(expr: Value, params: openArray[string],
-                  paramReprs: openArray[AotRepr],
-                  available: Table[string, AotCFunction],
-                  locals: openArray[AotLocal]): string =
-  case expr.kind
-  of vkSymbol:
-    if expr.symVal.aotCBindingRepr(params, paramReprs, locals).kind == arkNone:
-      aotLoweringGap(expr, "symbol is not a typed parameter or local")
-    else:
-      cIdent(expr.symVal, "arg")
-  of vkInt:
-    # C lexes the magnitude before applying unary minus. INT64_MIN written
-    # as a decimal token therefore becomes unsigned and can change even an
-    # in-range addition/comparison. Keep its construction entirely signed.
-    if expr.intVal == low(int64): "(-9223372036854775807LL - 1)"
-    else: $expr.intVal
-  of vkFloat:
-    expr.print()
-  of vkNil:
-    "NULL"
-  of vkString:
-    ## A C string literal has static lifetime, so it is always safe to pass.
-    cStringLiteral(expr.strVal)
-  of vkNode:
-    let mathFn = aotMathBuiltinCName(expr.head)
-    if mathFn.len > 0 and expr.body.len == 1:
-      return mathFn & "(" &
-        emitAotCExpr(expr.body[0], params, paramReprs, available, locals) & ")"
-    if expr.head.kind != vkSymbol:
-      return aotLoweringGap(expr, "call head is not a lowerable name")
-    let head = expr.head.symVal
-    let send = emitAotCSend(expr, params, paramReprs, available, locals)
-    if send.found:
-      return send.code
-    if head in ["+", "-", "*", "/"] and expr.body.len == 2:
-      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
-        " " & head & " " & emitAotCExpr(expr.body[1], params, paramReprs,
-                                           available, locals) & ")"
-    elif head in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
-      let cOp = if head == "=": "==" else: head
-      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
-        " " & cOp & " " & emitAotCExpr(expr.body[1], params, paramReprs,
-                                          available, locals) & ")"
-    elif head == "if" and expr.body.len == 3:
-      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
-        " ? " & emitAotCExpr(expr.body[1], params, paramReprs, available,
-                               locals) & " : " &
-        emitAotCExpr(expr.body[2], params, paramReprs, available, locals) & ")"
-    elif head == "set" and expr.body.len == 2 and
-        expr.body[0].kind != vkSymbol:
-      let target = expr.body[0]
-      var guarded = false
-      var rendered = ""
-      if target.kind == vkNode and target.head.kind == vkSymbol and
-          target.head.symVal == "path" and
-          target.body.len == 2 and target.body[0].kind == vkSymbol and
-          target.body[1].kind == vkSymbol:
-        let base = target.body[0].symVal
-        let nativeParam = base.aotCBindingRepr(params, paramReprs, locals)
-        if nativeParam.kind == arkNativePtr and nativeParam.nullable:
-          let baseName = cIdent(base, "arg")
-          let fieldName = target.body[1].symVal
-          let access = baseName & "->" & cIdent(fieldName, "field")
-          let helper = nativeParam.nativeType.typedNativeNullHelper(fieldName)
-          rendered = "(" & baseName & " != NULL ? (" & access & " = " &
-            emitAotCExpr(expr.body[1], params, paramReprs, available, locals) &
-            ") : " & helper & "(" & cStringLiteral(nativeParam.typeName) &
-            ", " & cStringLiteral(fieldName) & "))"
-          guarded = true
-      if not guarded:
-        rendered = "(" & emitAotCExpr(target, params, paramReprs, available,
-                                       locals) & " = " &
-          emitAotCExpr(expr.body[1], params, paramReprs, available, locals) & ")"
-      rendered
-    elif head == "set" and expr.body.len == 2 and
-        expr.body[0].kind == vkSymbol:
-      "(" & cIdent(expr.body[0].symVal, "local") & " = " &
-        emitAotCExpr(expr.body[1], params, paramReprs, available, locals) & ")"
-    elif head == "do" and expr.body.len > 0:
-      var items: seq[string]
-      for item in expr.body:
-        items.add emitAotCExpr(item, params, paramReprs, available, locals)
-      "(" & items.join(", ") & ")"
-    elif head == "path" and expr.body.len == 2 and
-        expr.body[0].kind == vkSymbol and expr.body[1].kind == vkSymbol:
-      let base = expr.body[0].symVal
-      let nativeParam = base.aotCBindingRepr(params, paramReprs, locals)
-      if nativeParam.kind == arkNativePtr:
-        let baseName = cIdent(base, "arg")
-        let fieldName = expr.body[1].symVal
-        let access = baseName & "->" & cIdent(fieldName, "field")
-        if nativeParam.nullable:
-          let helper = nativeParam.nativeType.typedNativeNullHelper(fieldName)
-          "(" & baseName & " != NULL ? " & access & " : " & helper & "(" &
-            cStringLiteral(nativeParam.typeName) & ", " &
-            cStringLiteral(fieldName) & "))"
-        else:
-          access
-      else:
-        aotLoweringGap(expr,
-          "field base " & base & " is not a typed-native pointer")
-    elif available.hasKey(head):
-      let callee = available[head]
-      var args: seq[string]
-      for i, arg in expr.body:
-        ## An out-parameter is passed by address. Analysis has already required
-        ## the argument to be a mutable local, so this is always a plain name.
-        if i < callee.outParams.len and callee.outParams[i]:
-          args.add "&" & emitAotCExpr(arg, params, paramReprs, available,
-                                      locals)
-        else:
-          args.add emitAotCExpr(arg, params, paramReprs, available, locals)
-      if args.len < callee.paramCount - callee.optionalNilTail:
-        return aotLoweringGap(expr, "missing required native argument")
-      while args.len < callee.paramCount: args.add "NULL"
-      callee.cName & "(" & args.join(", ") & ")"
-    else:
-      aotLoweringGap(expr,
-        "no emitted typed-native function named " & head &
-        " is available at this point in emission order")
-  else:
-    aotLoweringGap(expr, "unsupported literal or expression kind")
-
-proc emitAotCSend(expr: Value, params: openArray[string],
-                  paramReprs: openArray[AotRepr],
-                  available: Table[string, AotCFunction],
-                  locals: openArray[AotLocal]): tuple[found: bool, code: string] =
-  if expr.kind != vkNode or expr.head.kind != vkSymbol or expr.body.len < 2 or
-      expr.body[0].kind != vkSymbol or expr.body[0].symVal != "~":
-    return
-  ## Past this point the expression is a `~` send, so an unresolved target is
-  ## an analysis/emission disagreement rather than "not a send". Returning
-  ## found=false here used to fall through to the generic `"0"` fallback and
-  ## silently drop the call.
-  let receiverRepr = expr.head.symVal.aotCBindingRepr(
-    params, paramReprs, locals)
-  if receiverRepr.kind != arkNativePtr:
-    discard aotLoweringGap(expr,
-      "send receiver " & expr.head.symVal &
-      " is not a typed-native pointer")
-  var protocolName = ""
-  var messageName = ""
-  let message = expr.body[1]
-  if message.kind == vkSymbol:
-    messageName = message.symVal
-  elif message.kind == vkNode and message.head.kind == vkSymbol and
-      message.head.symVal == "msg" and
-      message.body.len == 2 and message.body[1].kind == vkSymbol:
-    protocolName = ffiTypeLabel(message.body[0])
-    messageName = message.body[1].symVal
-  else:
-    discard aotLoweringGap(expr, "unrecognized message form in send")
-  let key = aotSendKey(receiverRepr.nativeType.identity,
-                       protocolName, messageName)
-  if not available.hasKey(key):
-    discard aotLoweringGap(expr,
-      "no emitted impl for message " & messageName &
-      (if protocolName.len > 0: " of protocol " & protocolName
-       else: " (bare send)") &
-      " on receiver " & receiverRepr.typeName)
-  var args = @[cIdent(expr.head.symVal, "receiver")]
-  for i in 2 ..< expr.body.len:
-    args.add emitAotCExpr(expr.body[i], params, paramReprs, available, locals)
-  let callee = available[key]
-  if args.len < callee.paramCount - callee.optionalNilTail:
-    discard aotLoweringGap(expr, "missing required native message argument")
-  while args.len < callee.paramCount: args.add "NULL"
-  (true, callee.cName & "(" & args.join(", ") & ")")
-
-proc emitAotCStatement(lines: var seq[string], statement: Value,
-                       indent: string, fn: FunctionProto,
-                       available: Table[string, AotCFunction],
-                       structNames: FfiStructCNames) =
-  if statement.kind == vkNode and statement.head.kind == vkSymbol and
-      statement.head.symVal in ["let", "var"]:
-    let name = statement.body[0].symVal
-    var localRepr = AotRepr()
-    for local in fn.aotLocals:
-      if local.name == name:
-        localRepr = local.repr
-        break
-    let localType = localRepr.aotCType(structNames)
-    if localType.len == 0:
-      discard aotLoweringGap(statement,
-        "local " & name & " has no resolved machine representation")
-    ## `(var x : T init)` carries the annotation; `(var x init)` had its
-    ## representation inferred during analysis and recorded on `aotLocals`, so
-    ## only the initializer's position differs here.
-    let initExpr =
-      if statement.body.len == 4 and statement.body[1].kind == vkSymbol and
-          statement.body[1].symVal == ":":
-        statement.body[3]
-      else: statement.body[1]
-    lines.add indent & localType & " " & cIdent(name, "local") & " = " &
-      emitAotCExpr(initExpr, fn.params, fn.aotParamReprs,
-                   available, fn.aotLocals) & ";"
-  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
-      statement.head.symVal == "set" and
-      statement.body.len == 2 and statement.body[0].kind == vkSymbol:
-    lines.add indent & cIdent(statement.body[0].symVal, "local") & " = " &
-      emitAotCExpr(statement.body[1], fn.params, fn.aotParamReprs,
-                   available, fn.aotLocals) & ";"
-  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
-      statement.head.symVal == "do" and statement.body.len > 0:
-    lines.add indent & "{"
-    for item in statement.body:
-      emitAotCStatement(lines, item, indent & "  ", fn, available, structNames)
-    lines.add indent & "}"
-  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
-      statement.head.symVal == "while" and statement.body.len >= 2:
-    lines.add indent & "while (" &
-      emitAotCExpr(statement.body[0], fn.params, fn.aotParamReprs, available,
-                   fn.aotLocals) & ") {"
-    for i in 1 ..< statement.body.len:
-      emitAotCStatement(lines, statement.body[i], indent & "  ", fn,
-                        available, structNames)
-    lines.add indent & "}"
-  else:
-    lines.add indent & "(void)" &
-      emitAotCExpr(statement, fn.params, fn.aotParamReprs, available,
-                   fn.aotLocals) & ";"
-
-proc emitAotCStatements(lines: var seq[string], fn: FunctionProto,
-                        available: Table[string, AotCFunction],
-                        structNames: FfiStructCNames) =
-  let expr = fn.aotExpr
-  if expr.kind == vkNode and expr.head.kind == vkSymbol and
-      expr.head.symVal == "do" and expr.body.len > 0:
-    for i in 0 ..< expr.body.high:
-      emitAotCStatement(lines, expr.body[i], "  ", fn, available, structNames)
-    lines.add "  return " &
-      emitAotCExpr(expr.body[^1], fn.params, fn.aotParamReprs, available,
-                   fn.aotLocals) & ";"
-  else:
-    lines.add "  return " &
-      emitAotCExpr(expr, fn.params, fn.aotParamReprs, available,
-                   fn.aotLocals) & ";"
-
-proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
-                  available: Table[string, AotCFunction],
-                  structNames: FfiStructCNames) =
-  ## Name the offending function on a lowering gap; the raised message
-  ## otherwise identifies only the expression, which is rarely unique.
-  try:
-    emitAotCStatements(lines, fn, available, structNames)
-  except GeneError as e:
-    raise newException(GeneError,
-      "typed_native function " & fn.name & ": " & e.msg)
-
 proc ffiTypeLabel(expr: Value): string =
   case expr.kind
   of vkSymbol:
@@ -2219,6 +1947,8 @@ proc ffiTypeLabel(expr: Value): string =
     expr.print()
 
 const
+  AotManifestVersion* = 2
+    ## Version 2 requires checked native results and structured failure helpers.
   AbiFingerprintVersion* = 1
     ## Leads every serialization, so changing the hashing rule invalidates every
     ## previously built library by design.
@@ -2630,6 +2360,8 @@ proc aotOptionalNilTail(fn: FunctionProto): int =
       break
     inc result
 
+include ./aot_checked
+
 proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
                     nativeName, entryName: string,
                     structNames: FfiStructCNames) =
@@ -2650,7 +2382,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       continue
     let nativeType = repr.nativeType
     let structName = ffiStructCName(nativeType.abi, structNames)
-    let shimName = entryName & "_" & cIdent(fn.params[i], "arg" & $i) &
+    let shimName = entryName & "_arg_" & $i &
       "_copy"
     paramCopies[i] = shimName
     lines.add "extern " & structName & " * GENE_FFI_CDECL " &
@@ -2708,7 +2440,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
   # Declare every acquisition slot before the first fallible conversion so the
   # shared rollback label can safely inspect all of them after any failure.
   for i, param in fn.params:
-    let name = cIdent(param, "arg" & $i)
+    let name = "gene_arg_" & $i
     let repr = fn.aotParamReprs[i]
     case repr.kind
     of arkI64:
@@ -2729,7 +2461,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
     callArgs.add name
   for i, param in fn.params:
-    let name = cIdent(param, "arg" & $i)
+    let name = "gene_arg_" & $i
     let repr = fn.aotParamReprs[i]
     if i >= fn.params.len - optionalTail:
       lines.add "  if (provided > " & $i & ") {"
@@ -2794,18 +2526,25 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       discard
     if i >= fn.params.len - optionalTail:
       lines.add "  }"
-  let nativeCall = nativeName & "(" & callArgs.join(", ") & ")"
+  lines.add "  GeneNativeError native_error = {0};"
+  lines.add "  " & fn.aotReturnRepr.aotCType(structNames) & " native_result = 0;"
+  lines.add "  GeneNativeStatus native_status = " & nativeName & "(" &
+    (@["&native_error"] & callArgs & @["&native_result"]).join(", ") & ");"
+  # Acquisition rollback is no longer legal once the callee has executed:
+  # transferred/copied resources may already have been consumed by its effects.
+  lines.add "  if (native_status != GENE_NATIVE_OK) return gene_aot_report_error(ctx, &native_error);"
+  lines.add "  gene_aot_error_clear(&native_error);"
   case fn.aotReturnRepr.kind
   of arkI64:
-    lines.add "  int64_t native_result = " & nativeCall & ";"
     lines.add "  return gene_ffi_result_int64(ctx, native_result, result);"
+  of arkI32:
+    lines.add "  return gene_ffi_result_int32(ctx, native_result, result);"
   of arkF64:
-    lines.add "  double native_result = " & nativeCall & ";"
     lines.add "  return gene_ffi_result_double(ctx, native_result, result);"
+  of arkCStr:
+    lines.add "  return gene_ffi_result_cstr(ctx, native_result, result);"
   of arkNativePtr:
     let nativeType = fn.aotReturnRepr.nativeType
-    lines.add "  " & fn.aotReturnRepr.aotCType(structNames) &
-      " native_result = " & nativeCall & ";"
     case fn.nativeEntry.resultOwnership
     of noTransfer:
       lines.add "  return gene_typed_native_result_transfer(ctx, " &
@@ -2832,7 +2571,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
     if i >= fn.aotParamReprs.len or
         fn.aotParamReprs[i].kind != arkNativePtr:
       continue
-    let name = cIdent(fn.params[i], "arg" & $i)
+    let name = "gene_arg_" & $i
     let rawName = name & "_raw"
     case fn.nativeEntry.paramOwnership[i]
     of noTransfer:
@@ -2900,12 +2639,27 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
     addFfiWrapper(lines, fn, i, prefix, structNames)
     let symbol = if fn.symbol.len > 0: fn.symbol else: fn.name
     var outFlags: seq[bool]
+    var parameterNames: seq[string]
+    var parameterReprs: seq[AotRepr]
     for p in fn.params:
       outFlags.add p.isOut
+      parameterNames.add p.name
+      var repr = fn.paramReprs[parameterReprs.len]
+      if repr.kind == arkNone:
+        case ffiTypeLabel(p.typeExpr)
+        of "C/Int", "C/Int32": repr = AotRepr(kind: arkI32, typeName: "I32")
+        of "C/Int64": repr = AotRepr(kind: arkI64, typeName: "I64")
+        of "C/Double": repr = AotRepr(kind: arkF64, typeName: "F64")
+        of "C/CStr": repr = AotRepr(kind: arkCStr, typeName: "Str")
+        else: discard
+      parameterReprs.add repr
     available[fn.name] = AotCFunction(
       cName: cIdent(symbol, "ffi_symbol_" & $i),
       paramCount: fn.params.len,
       outParams: outFlags,
+      paramNames: parameterNames,
+      paramReprs: parameterReprs,
+      returnRepr: fn.returnRepr,
       cType: (if fn.returnRepr.kind == arkNativePtr:
                 fn.returnRepr.aotCType(structNames)
               else:
@@ -3173,12 +2927,12 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       if not representable:
         continue
       let paramList = if params.len == 0: "void" else: params.join(", ")
-      lines.add cType & " " & cName & "(" & paramList & ") {"
-      emitAotCBody(lines, fn, available, structNames)
-      lines.add "}"
-      lines.add ""
+      emitCheckedAotFunction(lines, fn, cName, available, structNames)
       let target = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
-                                cType: cType)
+                                cType: cType, checked: true,
+                                paramNames: fn.params, paramReprs: fn.aotParamReprs,
+                                returnRepr: fn.aotReturnRepr, geneName: fn.name,
+                                sourceLoc: fn.sourceLoc)
       let receiverIdentity = fn.aotParamReprs[0].nativeType.identity
       available[aotSendKey(receiverIdentity, protocolName, message.name)] = target
   var moduleFns: seq[AotModuleFunction]
@@ -3203,23 +2957,27 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       lines.add "static const GeneNativeFrameInfo " & frameName &
         " GENE_MAYBE_UNUSED = {" &
         cStringLiteral(fn.name) & ", " & frameFlags & "};"
-      lines.add cType & " " & cName & "(" & paramList & ") {"
-      lines.add "  (void)&" & frameName & ";"
       var fnAvailable = available
       fnAvailable[fn.name] = AotCFunction(cName: cName,
                                           paramCount: fn.params.len,
                                           optionalNilTail: fn.aotOptionalNilTail,
-                                          cType: cType)
-      emitAotCBody(lines, fn, fnAvailable, structNames)
-      lines.add "}"
-      lines.add ""
+                                          cType: cType, checked: true,
+                                          paramNames: fn.params,
+                                          paramReprs: fn.aotParamReprs,
+                                          returnRepr: fn.aotReturnRepr, geneName: fn.name,
+                                          sourceLoc: fn.sourceLoc)
+      emitCheckedAotFunction(lines, fn, cName, fnAvailable, structNames, frameName)
       let entryName =
         if fn.nativeEntry.enabled: nativeEntryName(fn.name, "fn_" & $i)
         else: ""
       if entryName.len > 0:
         addNativeEntry(lines, fn, cName, entryName, structNames)
       available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
-                                        cType: cType)
+                                        cType: cType, checked: true,
+                                        paramNames: fn.params,
+                                        paramReprs: fn.aotParamReprs,
+                                        returnRepr: fn.aotReturnRepr, geneName: fn.name,
+                                        sourceLoc: fn.sourceLoc)
       moduleFns.add AotModuleFunction(geneName: fn.name, cName: cName,
                                       entryName: entryName,
                                       typeName: typeName,
@@ -3321,7 +3079,7 @@ proc addNativeTypeManifests(lines: var seq[string], chunk: Chunk,
   ## and a stale library would otherwise look identical, and the loader has to
   ## reject the second while accepting the first.
   lines.add "const size_t gene_aot_manifest_version GENE_MAYBE_UNUSED = " &
-    $AbiFingerprintVersion & ";"
+    $AotManifestVersion & ";"
   lines.add ""
   if types.len > 0:
     lines.add "const GeneAotNativeType gene_aot_native_types[] GENE_MAYBE_UNUSED = {"
@@ -3366,6 +3124,9 @@ proc addNativeTypeManifests(lines: var seq[string], chunk: Chunk,
     lines.add "const size_t gene_aot_abi_layout_fields_count GENE_MAYBE_UNUSED = " &
       $fieldRows.len & ";"
     lines.add ""
+
+const NativeIntegerRuntime = staticRead("native_integer.h")
+const NativeCheckedRuntime = staticRead("native_checked.h").replace("#include \"native_integer.h\"", "")
 
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
@@ -3658,12 +3419,36 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "static const size_t gene_ffi_abi_types_count GENE_MAYBE_UNUSED = 22;",
     ""
   ]
+  lines.add NativeIntegerRuntime
+  lines.add NativeCheckedRuntime
+  lines.add """
+#ifdef GENE_AOT_DYNAMIC_ENTRIES
+extern GeneStatus gene_ffi_native_error(GeneContext *, int, const char *,
+  const char *, int, const char *, double, bool, const char *,
+  const GeneNativeTraceFrame *, size_t, size_t);
+GENE_AOT_INLINE GeneStatus gene_aot_report_error(GeneContext *ctx, GeneNativeError *error) {
+  char *integer = NULL;
+  if (error->actual_kind == GENE_NATIVE_INT || error->actual_kind == GENE_NATIVE_CHAR) {
+    integer = gene_aot_int_decimal(&error->actual_int);
+    if (integer == NULL) error->status = GENE_NATIVE_NO_MEMORY;
+  }
+  GeneStatus status = gene_ffi_native_error(ctx, (int)error->status,
+    error->where, error->expected, (int)error->actual_kind, integer,
+    error->actual_float, error->actual_bool, error->actual_string,
+    error->frames, error->frame_count, error->omitted_frames);
+  free(integer);
+  gene_aot_error_clear(error);
+  return status;
+}
+#endif
+"""
   let headerLen = lines.len
   let structNames = buildFfiStructCNames(chunk)
   addCBackend(lines, chunk, structNames)
   addNativeTypeManifests(lines, chunk, structNames)
   if lines.len == headerLen:
     lines.add "/* no fixed-representation native functions or FFI wrappers */"
+  lines.add "/* Gene generated module end. */"
   lines.join("\n")
 
 const scopelessOps = {

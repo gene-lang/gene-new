@@ -609,9 +609,18 @@ type
     ## ordinary Gene error at the boundary.
     message*: string
     failed*: bool
+    scope* {.cursor.}: Scope # borrowed from the live NativeCall
+    error*: ref GeneError
+    panicked*: bool
     buffers*: seq[FfiBufferLease]
       ## Leases live and die with the call. A failed conversion means the callee
       ## never ran, so nothing is owed a copy-back and the seq simply frees.
+
+  AotTraceFrameC* {.bycopy.} = object
+    functionName*: cstring
+    sourceName*: cstring
+    line*: cint
+    column*: cint
 
   AotEntryProc* = proc(ctx: ptr AotContext, call: ptr AotCall,
                        resultOut: ptr Value): cint {.cdecl.}

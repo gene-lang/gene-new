@@ -10,6 +10,8 @@ suite "checked native integer arithmetic":
   var flags = " -std=c11 -O2 -Wall -Wextra -Werror"
   if getEnv("GENE_NATIVE_INTEGER_SANITIZERS") == "1":
     flags.add " -fsanitize=address,undefined -fno-sanitize-recover=all"
+  if getEnv("GENE_NATIVE_INTEGER_PORTABLE") == "1":
+    flags.add " -DGENE_AOT_OVERFLOW_BUILTINS=0"
   let compiled = execCmdEx(quoteShell(cc) & flags &
     " -I src tests/fixtures/native_integer.c -o " & quoteShell(executable))
   doAssert compiled.exitCode == 0, compiled.output

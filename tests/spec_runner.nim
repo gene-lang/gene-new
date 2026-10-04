@@ -10,7 +10,7 @@ import gene/[compiler, gir, gir_codec, package, printer,
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
 # them, exactly as the gene executable does.
 import gene/aot_runtime
-import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables,
+import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables, tempfiles,
             times, unittest]
 when defined(posix):
   import std/posix
@@ -115,16 +115,72 @@ proc checkCCompiles(source, label: string) =
       " -std=c11 -DGENE_AOT_DYNAMIC_ENTRIES=1 -fsyntax-only " &
       quoteShell(path))
   checkpoint checked.output
-  check checked.exitCode == 0
+  doAssert checked.exitCode == 0, checked.output
+
+proc checkNativeSignature(source, name: string, params: seq[string], resultType: string) =
+  let prefix = "GeneNativeStatus gene_native_" & name & "("
+  var found = false
+  for line in source.splitLines():
+    if not line.startsWith(prefix): continue
+    found = true
+    let declarations = line[prefix.len ..< line.rfind(')')].split(", ")
+    check declarations.len == params.len + 2
+    check declarations[0].startsWith("GeneNativeError *")
+    check declarations[^1].startsWith(resultType & " *")
+    for i, typ in params: check declarations[i + 1].startsWith(typ & " ")
+  checkpoint name
+  check found
+
+proc nativeFunction(source, name: string): string =
+  let start = source.find("GeneNativeStatus gene_native_" & name & "(")
+  doAssert start >= 0, name
+  let stop = source.find("\n}\n", start)
+  doAssert stop >= 0, name
+  source[start .. stop + 2]
+
+proc checkedValueHarness(source: string): string =
+  ## Value-oriented fixtures exercise the new checked ABI through test-only
+  ## wrappers that assert success and clear diagnostics. Failure/status tests
+  ## call the checked functions directly. No compatibility shim is emitted by
+  ## the production compiler.
+  const marker = "/* Gene generated module end. */"
+  let at = source.find(marker)
+  if at < 0: return source
+  var wrappers = "\n#include <stdio.h>\n#include <stdlib.h>\n"
+  var aliases = ""
+  for line in source[0 ..< at].splitLines():
+    if not line.startsWith("GeneNativeStatus gene_native_"): continue
+    let opening = line.find('(')
+    let closing = line.rfind(')')
+    let name = line["GeneNativeStatus ".len ..< opening]
+    let params = line[opening + 1 ..< closing].split(", ")
+    let output = params[^1]
+    let valueType = output[0 ..< output.rfind(' ')]
+    var declarations, arguments: seq[string]
+    for i in 1 ..< params.high:
+      declarations.add params[i]
+      arguments.add params[i].splitWhitespace()[^1]
+    let wrapper = "gene_test_value_" & name
+    wrappers.add "static " & valueType & " " & wrapper & "(" &
+      (if declarations.len == 0: "void" else: declarations.join(", ")) & ") {\n" &
+      "  GeneNativeError error = {0};\n  " & valueType & " value = 0;\n" &
+      "  GeneNativeStatus status = " & name & "(" &
+      (@["&error"] & arguments & @["&value"]).join(", ") & ");\n" &
+      "  if (status != GENE_NATIVE_OK) { fprintf(stderr, \"native status %d: %s\\n\", " &
+      "(int)status, error.where ? error.where : \"\"); gene_aot_error_clear(&error); exit(97); }\n" &
+      "  gene_aot_error_clear(&error); return value;\n}\n"
+    aliases.add "#define " & name & " " & wrapper & "\n"
+  let split = at + marker.len
+  source[0 ..< split] & wrappers & aliases & source[split .. ^1]
 
 proc checkCRuns(source, label, expected: string,
-                dynamicEntries = false) =
+                dynamicEntries = false, checkedValues = true) =
   ## `dynamicEntries` compiles the guarded wrappers in. Only a caller that also
   ## supplies implementations of the gene_ffi_* / gene_typed_native_* helpers
   ## can link with it; everything else must leave them out.
   let sourcePath = getTempDir() / ("gene_" & label & "_generated.c")
   let exePath = getTempDir() / ("gene_" & label & ExeExt)
-  writeFile(sourcePath, source)
+  writeFile(sourcePath, if checkedValues: checkedValueHarness(source) else: source)
   defer:
     if fileExists(sourcePath):
       removeFile(sourcePath)
@@ -132,15 +188,17 @@ proc checkCRuns(source, label, expected: string,
       removeFile(exePath)
   let built = execCmdEx(
     quoteShell(getEnv("CC", "cc")) & " -std=c11 " &
+      (if getEnv("GENE_AOT_SANITIZERS") == "1":
+        "-O2 -fsanitize=address,undefined -fno-sanitize-recover=all " else: "") &
       (if dynamicEntries: "-DGENE_AOT_DYNAMIC_ENTRIES=1 " else: "") &
       quoteShell(sourcePath) & " -o " & quoteShell(exePath))
   checkpoint built.output
-  check built.exitCode == 0
+  doAssert built.exitCode == 0, built.output
   if built.exitCode == 0:
     let ran = execCmdEx(quoteShell(exePath))
     checkpoint ran.output
-    check ran.exitCode == 0
-    check ran.output.strip() == expected
+    doAssert ran.exitCode == 0, ran.output
+    doAssert ran.output.strip() == expected, ran.output & " != " & expected
 
 suite "spec — reader surface from design":
   test "Path literals and construction have the same callable value":
@@ -1093,8 +1151,8 @@ suite "spec — typed native compilation prototype from design":
     check "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] GENE_MAYBE_UNUSED = {" in c
     check "{\"C/Int64\", \"int64_t\", sizeof(int64_t), GENE_ALIGNOF(int64_t)}," in c
     check "static const size_t gene_ffi_abi_types_count GENE_MAYBE_UNUSED = 22;" in c
-    check "int64_t gene_native_add64(int64_t x, int64_t y)" in c
-    check "double gene_native_scale(double x, double y)" in c
+    checkNativeSignature(c, "add64", @["int64_t", "int64_t"], "int64_t")
+    checkNativeSignature(c, "scale", @["double", "double"], "double")
     check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)",
                "42")
 
@@ -1119,8 +1177,8 @@ suite "spec — typed native compilation prototype from design":
     check "{\"add64\", \"gene_native_add64\", \"\", \"I64\", 2, " &
       "&gene_frame_add64}," in c
     check "const size_t gene_aot_module_count GENE_MAYBE_UNUSED = 2;" in c
-    check "int64_t gene_native_add64_twice(int64_t x, int64_t y)" in c
-    check "return gene_native_add64(gene_native_add64(x, y), y);" in c
+    checkNativeSignature(c, "add64_twice", @["int64_t", "int64_t"], "int64_t")
+    check nativeFunction(c, "add64_twice").count("= gene_native_add64(") == 2
     check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
                "(fn add64_twice [x : I64 y : I64] : I64 " &
                "  (add64 (add64 x y) y)) " &
@@ -1142,6 +1200,105 @@ int main(void) {
 }
 """, "native_i64_minimum", "-9223372036854775808 1")
 
+  test "checked C integers preserve intermediate values and source evaluation order":
+    let c = compileSource("""
+      (fn back [x : I64] : I64 (- (+ x 1) 1))
+      (fn add [x : I64 y : I64] : I64 (+ x y))
+      (fn true_zero [x : I64] : I64 (if x 1 2))
+      (fn conditional_kind [x : I64] : I64 (if (< x 0) (= x -1) 1))
+      (fn crossed [n : I64] : I64
+        (var x n) (while (< x (+ n 2)) (set x (+ x 1))) (- x n))
+      (ffi/fn tick ^symbol "checked_tick" [n : C/Int64] : C/Int64)
+      (fn ordered [] : I64 (- (tick 1) (tick 2)))
+      (fn consume [x : I64 y : I64] : I64 x)
+      (fn arguments [x : I64] : I64 (consume (+ x 1) (tick 2)))
+      (ffi/struct CBox ^fields [[value C/Int64] [letter C/Char]])
+      (type Box ^native {^abi CBox ^lifecycle manual ^mutable true})
+      (fn before_store [box : Box?] : I64 (set box/value (tick 3)))
+      (fn char_as_int [box : Box] : I64 box/letter)
+      (fn float_cmp [x : F64 y : F64] : I64 (if (< x y) 1 2))
+      (ffi/fn write64 ^symbol "checked_write64" ^out value [value : C/Int64] : C/Int)
+      (fn wider_out [box : Box seed : I32] : I64
+        (var slot : I32 seed)
+        (let status : I64 (write64 slot))
+        slot)
+    """).emitExperimentalC()
+    checkCRuns(c & """
+#include <assert.h>
+#include <string.h>
+static int calls;
+int64_t checked_tick(int64_t n) { calls = calls * 10 + (int)n; return n; }
+int checked_write64(int64_t *value) { ++calls; *value = INT64_MAX; return 0; }
+int main(void) {
+  GeneNativeError error = {0}; int64_t out = -99;
+  assert(gene_native_back(&error, INT64_MAX, &out) == GENE_NATIVE_OK && out == INT64_MAX);
+  out = -99;
+  assert(gene_native_add(&error, INT64_MAX, 1, &out) == GENE_NATIVE_TYPE_ERROR && out == -99);
+  char *actual = gene_aot_int_decimal(&error.actual_int);
+  assert(actual && strcmp(actual, "9223372036854775808") == 0); free(actual);
+  assert(error.frame_count == 1);
+  assert(gene_native_true_zero(&error, 0, &out) == GENE_NATIVE_OK && out == 1);
+  assert(gene_native_conditional_kind(&error, -1, &out) == GENE_NATIVE_TYPE_ERROR && error.actual_bool);
+  assert(gene_native_conditional_kind(&error, 0, &out) == GENE_NATIVE_OK && out == 1);
+  assert(gene_native_crossed(&error, INT64_MAX, &out) == GENE_NATIVE_OK && out == 2);
+  calls = 0;
+  assert(gene_native_ordered(&error, &out) == GENE_NATIVE_OK && out == -1 && calls == 12);
+  calls = 0;
+  assert(gene_native_arguments(&error, INT64_MAX, &out) == GENE_NATIVE_TYPE_ERROR && calls == 2);
+  assert(error.frame_count == 2 && strcmp(error.frames[0].function, "consume") == 0);
+  calls = 0;
+  assert(gene_native_before_store(&error, NULL, &out) == GENE_NATIVE_NULL_FIELD && calls == 3);
+  assert(gene_native_float_cmp(&error, NAN, 1, &out) == GENE_NATIVE_ORDER_ERROR);
+  CBox box = {0}; calls = 0; out = -99;
+  box.letter = 'a';
+  assert(gene_native_char_as_int(&error, &box, &out) == GENE_NATIVE_TYPE_ERROR);
+  assert(error.actual_kind == GENE_NATIVE_CHAR && error.actual_int.small == 97);
+  assert(gene_native_wider_out(&error, &box, 0, &out) == GENE_NATIVE_TYPE_ERROR);
+  assert(calls == 1 && out == -99 && strcmp(error.expected, "I32") == 0);
+  gene_aot_error_clear(&error);
+  puts("checked native: exact, ordered, clean");
+}
+""", "checked_native_semantics", "checked native: exact, ordered, clean", checkedValues = false)
+
+  test "loaded checked native errors preserve TypeError values and native frames":
+    let source = """
+      (fn back ^native_entry {} [x : I64] : I64 (- (+ x 1) 1))
+      (fn add ^native_entry {} [x : I64 y : I64] : I64 (+ x y))
+      (fn bool_result ^native_entry {} [x : I64] : I64 (< x 0))
+      (fn int ^native_entry {} [ctx : I64 result : I64 status : I64] : I64
+        (+ ctx (+ result status)))
+    """
+    let directory = createTempDir("gene_checked_native_errors_", "")
+    let path = directory / "checked.c"
+    let library = directory / ("libchecked." & (when defined(macosx): "dylib" else: "so"))
+    writeFile(path, compileSource(source).emitExperimentalC())
+    let built = execCmdEx(quoteShell(getEnv("CC", "cc")) &
+      " -std=c11 -O2 -Wall -Wextra -Werror -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+      (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+      quoteShell(path) & " -o " & quoteShell(library))
+    doAssert built.exitCode == 0, built.output
+    check_eval("(let native ($aot/load " & geneString(library) & ")) " &
+      "[(native/back 9223372036854775807) (native/int 1 2 3) " &
+      " (try (native/add 9223372036854775807 1) catch TypeError " &
+      "   [$err/where $err/actual_value $err/trace/0/name]) " &
+      " (try (native/bool_result -1) catch TypeError [$err/actual $err/actual_value])]",
+      "[9223372036854775807 6 [\"return from 'add'\" 9223372036854775808 \"add\"] [\"Bool\" true]]")
+    let obsolete = directory / ("libobsolete." & (when defined(macosx): "dylib" else: "so"))
+    writeFile(path, compileSource(source).emitExperimentalC().replace(
+      "gene_aot_manifest_version GENE_MAYBE_UNUSED = " & $AotManifestVersion & ";",
+      "gene_aot_manifest_version GENE_MAYBE_UNUSED = 1;"))
+    let oldBuild = execCmdEx(quoteShell(getEnv("CC", "cc")) &
+      " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+      (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+      quoteShell(path) & " -o " & quoteShell(obsolete))
+    doAssert oldBuild.exitCode == 0, oldBuild.output
+    check_runtime_error("($aot/load " & geneString(obsolete) & ")",
+      "manifest version 1 does not match this runtime's " & $AotManifestVersion)
+    removeFile(obsolete)
+    removeFile(path)
+    removeFile(library)
+    removeDir(directory)
+
   test "typed-native pointer parameters lower foreign fields to direct C loads":
     let chunk = compileSource(
       "(ffi/struct CTimespec " &
@@ -1150,8 +1307,8 @@ int main(void) {
       "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
       "(fn seconds [t : Timespec] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_seconds(CTimespec * t)" in c
-    check "return t->tv_sec;" in c
+    checkNativeSignature(c, "seconds", @["CTimespec *"], "int64_t")
+    check "->tv_sec" in nativeFunction(c, "seconds")
     check "gene_native_seconds(GeneValue" notin c
 
   test "a generated typed-native getter executes against a real C struct":
@@ -1184,8 +1341,8 @@ int main(void) {
       "(type Timespec ^native {^abi CTimespec ^lifecycle manual}) " &
       "(ns util (fn seconds [t : Timespec] : I64 t/tv_sec))")
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_ns0_seconds(CTimespec * t)" in c
-    check "return t->tv_sec;" in c
+    checkNativeSignature(c, "ns0_seconds", @["CTimespec *"], "int64_t")
+    check "->tv_sec" in nativeFunction(c, "ns0_seconds")
     checkCCompiles(c, "typed_native_lexical_child")
 
   test "a namespace-local native Type is visible to forms that precede it":
@@ -1199,8 +1356,8 @@ int main(void) {
       "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
       "  (type Node ^native {^abi CNode ^lifecycle manual}))")
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_ns0_value_of(CNode * node)" in c
-    check "return node->value;" in c
+    checkNativeSignature(c, "ns0_value_of", @["CNode *"], "int64_t")
+    check "->value" in c
     checkCCompiles(c, "typed_native_ns_forward_ref")
 
   test "a nested namespace resolves its own native Type":
@@ -1210,7 +1367,7 @@ int main(void) {
       "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
       "  (type Node ^native {^abi CNode ^lifecycle manual})))")
     let c = chunk.emitExperimentalC()
-    check "return node->value;" in c
+    check "->value" in c
     checkCCompiles(c, "typed_native_nested_ns")
 
   test "a private namespace still resolves its own native Type":
@@ -1222,7 +1379,7 @@ int main(void) {
       "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
       "  (type Node ^native {^abi CNode ^lifecycle manual}))")
     let c = chunk.emitExperimentalC()
-    check "return node->value;" in c
+    check "->value" in c
     checkCCompiles(c, "typed_native_private_ns")
 
   test "typed-native mutable fields lower stores without dynamic helpers":
@@ -1234,9 +1391,9 @@ int main(void) {
       "(fn set_seconds [t : Timespec value : I64] : I64 " &
       "  (do (set t/tv_sec value) value))")
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_set_seconds(CTimespec * t, int64_t value)" in c
-    check "(void)(t->tv_sec = value);" in c
-    check "return value;" in c
+    checkNativeSignature(c, "set_seconds", @["CTimespec *", "int64_t"], "int64_t")
+    check "->tv_sec =" in nativeFunction(c, "set_seconds")
+    check "gene_aot_require_i64" in nativeFunction(c, "set_seconds")
 
   test "typed-native stores reject narrowing ABI conversions":
     check_compile_error(
@@ -1257,11 +1414,11 @@ int main(void) {
       "(fn wrapped [n : Node] : I64 (do (let v : I64 n/value) v)) " &
       "(fn bare [n : Node] : I64 (let v : I64 n/value) v)").emitExperimentalC()
     for fn in ["wrapped", "bare"]:
-      let start = c.find("gene_native_" & fn & "(")
-      check start >= 0
-      let body = c[start .. ^1]
-      check "int64_t v = n->value;" in body[0 ..< body.find("}")]
-      check "return v;" in body[0 ..< body.find("}")]
+      let body = nativeFunction(c, fn)
+      check "->value" in body
+      check "gene_aot_require_i64" in body
+    checkCRuns(c & "\nint main(void) { CNode n = {42}; printf(\"%lld %lld\", (long long)gene_native_wrapped(&n), (long long)gene_native_bare(&n)); }",
+      "native_body_sequence", "42 42")
 
   test "Str crosses typed-native edges as a borrowed const char *":
     ## A boundary representation like `I32`: it crosses edges and is passed on,
@@ -1275,9 +1432,10 @@ int main(void) {
       "(fn literal [b : Box] : I64 (puts_len \"hello\"))")
     let c = chunk.emitExperimentalC()
     check "extern int64_t GENE_FFI_CDECL puts_len(const char * s);" in c
-    check "int64_t gene_native_measure(CBox * b, const char * s)" in c
-    check "return puts_len(s);" in c
-    check "return puts_len(\"hello\");" in c
+    checkNativeSignature(c, "measure", @["CBox *", "const char *"], "int64_t")
+    check "puts_len(" in nativeFunction(c, "measure")
+    check "puts_len(" in nativeFunction(c, "literal")
+    check "\"hello\"" in nativeFunction(c, "literal")
     let harness = """
 #include <stdio.h>
 #include <string.h>
@@ -1307,8 +1465,8 @@ int main(void) {
       "    (if (= rc 0) slot nil)))")
     let c = chunk.emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_clone(CDb * src, CDb ** dst);" in c
-    check "int64_t rc = db_clone(src, &slot);" in c
-    check "return ((rc == 0) ? slot : NULL);" in c
+    check "= gene_aot_int((int64_t)(db_clone(" in nativeFunction(c, "clone_it")
+    check "NULL" in nativeFunction(c, "clone_it")
     let harness = """
 #include <stdio.h>
 static CDb pool;
@@ -1318,15 +1476,21 @@ int db_clone(CDb *src, CDb **dst) {
   *dst = &pool;
   return 0;
 }
+#undef gene_native_clone_it
 int main(void) {
   CDb src; src.tag = 7;
-  CDb *got = gene_native_clone_it(&src, NULL);
+  GeneNativeError error = {0};
+  CDb *got = NULL;
+  if (gene_native_clone_it(&error, &src, NULL, &got) != GENE_NATIVE_OK) return 2;
+  CDb *unchanged = got;
+  GeneNativeStatus status = gene_native_clone_it(&error, NULL, NULL, &unchanged);
   printf("%lld %s\n", got ? (long long)got->tag : -1,
-         gene_native_clone_it(NULL, NULL) ? "leaked" : "nil");
+         status == GENE_NATIVE_TYPE_ERROR && unchanged == got ? "checked" : "wrong");
+  gene_aot_error_clear(&error);
   return 0;
 }
 """
-    checkCRuns(c & harness, "typed_native_out_param", "107 nil")
+    checkCRuns(c & harness, "typed_native_out_param", "107 checked")
 
   test "several ^out parameters need no product result":
     ## Each out is written through its own slot, so nothing has to be returned
@@ -1344,7 +1508,7 @@ int main(void) {
       "    (let rc : I64 (db_split src first second)) " &
       "    (if (= rc 0) second nil)))").emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_split(CDb * src, CDb ** a, CDb ** b);" in c
-    check "int64_t rc = db_split(src, &first, &second);" in c
+    check "db_split(" in c
     checkCCompiles(c, "typed_native_multi_out")
 
   test "an ^out argument must be a mutable local":
@@ -1395,10 +1559,10 @@ int main(void) {
       "(fn widened [n : Node] : I64 n/small) " &
       "(fn pass_through [n : Node col : I32] : I64 (take_int n col))")
     let c = chunk.emitExperimentalC()
-    check "int32_t gene_native_read_small(CNode * n)" in c
-    check "int64_t gene_native_widened(CNode * n)" in c
-    check "int64_t gene_native_pass_through(CNode * n, int32_t col)" in c
-    check "return take_int(n, col);" in c
+    checkNativeSignature(c, "read_small", @["CNode *"], "int32_t")
+    checkNativeSignature(c, "widened", @["CNode *"], "int64_t")
+    checkNativeSignature(c, "pass_through", @["CNode *", "int32_t"], "int64_t")
+    check "take_int(" in nativeFunction(c, "pass_through")
     checkCCompiles(c, "typed_native_i32")
 
   test "arithmetic never produces an I32":
@@ -1412,7 +1576,7 @@ int main(void) {
       "(fn wraps [n : Node] : I32 (+ n/small 1))",
       "typed_native function wraps cannot lower its body statically")
     # The same arithmetic is fine once it produces the wider representation.
-    check "return (n->small + 1);" in compileSource(
+    check "gene_aot_int_add" in compileSource(
       "(ffi/struct CNode ^fields [[small C/Int32]]) " &
       "(type Node ^native {^abi CNode ^lifecycle manual}) " &
       "(fn computed [n : Node] : I64 (+ n/small 1))").emitExperimentalC()
@@ -1438,10 +1602,10 @@ int main(void) {
       "(fn larger [p : Point] : I64 (if (< p/x p/y) p/y p/x)) " &
       "(fn nested [p : Point] : I64 (+ (* p/x p/x) (* p/y p/y)))")
     let c = chunk.emitExperimentalC()
-    check "return (p->x * p->y);" in c
-    check "return (p->x + 1);" in c
-    check "return ((p->x < p->y) ? p->y : p->x);" in c
-    check "return ((p->x * p->x) + (p->y * p->y));" in c
+    check "gene_aot_int_mul" in nativeFunction(c, "area")
+    check "gene_aot_int_add" in nativeFunction(c, "shifted")
+    check "gene_aot_int_compare" in nativeFunction(c, "larger")
+    check nativeFunction(c, "nested").count("!gene_aot_int_mul(") == 2
     let harness = """
 #include <stdio.h>
 int main(void) {
@@ -1471,9 +1635,9 @@ int main(void) {
       "      (set i (+ i 1))) " &
       "    acc))")
     let c = chunk.emitExperimentalC()
-    check "while ((i < n)) {" in c
-    check "int64_t step = (p->x * p->y);" in c
-    check "acc = (acc + step);" in c
+    check "while (true) {" in nativeFunction(c, "scaled_sum")
+    check "gene_aot_int_mul" in nativeFunction(c, "scaled_sum")
+    check "gene_aot_int_add" in nativeFunction(c, "scaled_sum")
     let harness = """
 #include <stdio.h>
 int main(void) {
@@ -1530,9 +1694,9 @@ int main(void) {
     check chunk.directProtocolCalls[0].messageName == "read_value"
     check chunk.directProtocolCalls[0].protocolExpr.print() == "ReadValue"
     check chunk.directProtocolCalls[0].receiverExpr.print() == "Node"
-    check "int64_t gene_native_impl_0_read_value(CNode * self)" in c
-    check "return self->value;" in c
-    check "return gene_native_impl_0_read_value(node);" in c
+    checkNativeSignature(c, "impl_0_read_value", @["CNode *"], "int64_t")
+    check "->value" in nativeFunction(c, "impl_0_read_value")
+    check "= gene_native_impl_0_read_value(" in nativeFunction(c, "read")
     checkCCompiles(c, "typed_native_specialized_send")
 
   test "typed-native prefix sends use the same specialized implementation":
@@ -1544,7 +1708,7 @@ int main(void) {
       "(fn read [node : Node] : I64 (ReadValue:read_value node))")
     let c = chunk.emitExperimentalC()
     check chunk.directProtocolCalls.len == 1
-    check "return gene_native_impl_0_read_value(node);" in c
+    check "= gene_native_impl_0_read_value(" in nativeFunction(c, "read")
     checkCCompiles(c, "typed_native_prefix_send")
 
   test "two slot-compiled chunks cannot silently share one scope":
@@ -1988,9 +2152,9 @@ void point_free(CPoint *p) { free(p); }
       "(impl Nav for Node (message hop [] : Node? self/next)) " &
       "(fn step [node : Node] : Node? (node .Nav:hop))")
     let c = chunk.emitExperimentalC()
-    check "CNode * gene_native_impl_0_hop(CNode * self)" in c
-    check "return self->next;" in c
-    check "return gene_native_impl_0_hop(node);" in c
+    checkNativeSignature(c, "impl_0_hop", @["CNode *"], "CNode *")
+    check "->next" in nativeFunction(c, "impl_0_hop")
+    check "= gene_native_impl_0_hop(" in c
     checkCCompiles(c, "typed_native_protocol_pointer_result")
 
   test "a bare typed-native send never resolves to a protocol impl":
@@ -2043,7 +2207,7 @@ void point_free(CPoint *p) { free(p); }
 
     # Control: with no overlay the canonical impl is still called directly.
     let chunk = compileSource(base & send)
-    check "return gene_native_impl_0_read_value(node);" in
+    check "= gene_native_impl_0_read_value(" in
       chunk.emitExperimentalC()
 
   test "an unlowerable impl body fails emission instead of returning 0":
@@ -2093,7 +2257,7 @@ void point_free(CPoint *p) { free(p); }
       "(fn seconds_via_call [t : Timespec] : I64 (read_seconds t))")
     let c = chunk.emitExperimentalC()
     check "extern long GENE_FFI_CDECL read_seconds(CTimespec * t);" in c
-    check "return read_seconds(t);" in c
+    check "read_seconds(" in nativeFunction(c, "seconds_via_call")
     check "gene_ffi_arg_ptr" notin c[c.find("gene_native_seconds_via_call") .. ^1]
     checkCCompiles(c, "typed_native_direct_ffi")
 
@@ -2148,10 +2312,12 @@ int main(void) {
     let start = c.find("gene_native_seconds_via_local")
     check start >= 0
     let generated = c[start .. ^1]
-    check "CTimespec * selected = choose_timespec(t);" in generated
-    check "return selected->tv_sec;" in generated
+    check "= choose_timespec(" in generated
+    check "->tv_sec" in generated
     check "GeneValue" notin generated[0 ..< generated.find("}")]
     checkCCompiles(c, "typed_native_pointer_local")
+    checkCRuns(c & "\nCTimespec *choose_timespec(CTimespec *t) { return t; }\nint main(void) { CTimespec t = {42}; printf(\"%lld\", (long long)gene_native_seconds_via_local(&t)); }",
+      "native_pointer_local_value", "42")
 
   test "typed-native pointer vars rebind without boxing":
     let chunk = compileSource(
@@ -2166,11 +2332,12 @@ int main(void) {
     let start = c.find("gene_native_value_after_replace")
     check start >= 0
     let generated = c[start .. ^1]
-    check "CNode * selected = node;" in generated
-    check "selected = replacement;" in generated
-    check "return selected->value;" in generated
+    check "CNode *" in generated
+    check "->value" in generated
     check "GeneValue" notin generated[0 ..< generated.find("}")]
     checkCCompiles(c, "typed_native_pointer_var")
+    checkCRuns(c & "\nint main(void) { CNode a = {1}, b = {42}; printf(\"%lld\", (long long)gene_native_value_after_replace(&a, &b)); }",
+      "native_pointer_rebind_value", "42")
 
   test "typed-native functions call other typed-native functions directly":
     let chunk = compileSource(
@@ -2185,8 +2352,8 @@ int main(void) {
     let start = c.find("gene_native_value_via_identity")
     check start >= 0
     let generated = c[start .. ^1]
-    check "CNode * selected = gene_native_identity_node(node);" in generated
-    check "return selected->value;" in generated
+    check "= gene_native_identity_node(" in generated
+    check "->value" in generated
     check "GeneValue" notin generated[0 ..< generated.find("}")]
     checkCCompiles(c, "typed_native_direct_function")
 
@@ -2200,10 +2367,9 @@ int main(void) {
       "(fn set_next [node : Node child : Node] : Node " &
       "  (do (set node/next child) child))")
     let c = chunk.emitExperimentalC()
-    check "CNode * gene_native_next_node(CNode * node)" in c
-    check "return node->next;" in c
-    check "(void)(node->next = child);" in c
-    check "return child;" in c
+    checkNativeSignature(c, "next_node", @["CNode *"], "CNode *")
+    check "->next" in nativeFunction(c, "next_node")
+    check "->next =" in c
     checkCCompiles(c, "typed_native_pointer_field")
 
   test "an imported layout's pointer field keeps the declarer's pointee":
@@ -2232,8 +2398,8 @@ int main(void) {
     let ok = emitFor(dir, "ok.gene",
       "(import [Node] ^from \"./lib\")\n" &
       "(fn peek [n : Node] : Node? n/next)\n")
-    check "CNode * gene_native_peek(CNode * n)" in ok
-    check "return n->next;" in ok
+    checkNativeSignature(ok, "peek", @["CNode *"], "CNode *")
+    check "->next" in nativeFunction(ok, "peek")
     ## With the pointee identity known, the field is emitted as the real C type
     ## rather than `void *`, so C also refuses the substitution below.
     check "CNode * next;" in ok
@@ -2243,7 +2409,7 @@ int main(void) {
     let aliased = emitFor(dir, "aliased.gene",
       "(import [Node : ForeignNode] ^from \"./lib\")\n" &
       "(fn peek [n : ForeignNode] : ForeignNode? n/next)\n")
-    check "CNode * gene_native_peek(CNode * n)" in aliased
+    checkNativeSignature(aliased, "peek", @["CNode *"], "CNode *")
 
     # The finding: a consumer-local `Node` over an unrelated layout must not
     # answer for the imported field. Reproduced before the fix as a silent
@@ -2274,7 +2440,7 @@ int main(void) {
       "  [text (C/Ptr C/Char)] [handle (C/Ptr sqlite3)] [n C/Int64]]) " &
       "(type Bag ^native {^abi CBag ^lifecycle manual}) " &
       "(fn count [b : Bag] : I64 b/n)").emitExperimentalC()
-    check "int64_t gene_native_count(CBag * b)" in c
+    checkNativeSignature(c, "count", @["CBag *"], "int64_t")
     check "void * raw;" in c
     check "void * text;" in c
     check "void * handle;" in c
@@ -2450,10 +2616,10 @@ int main(void) {
     check "GeneStatus gene_entry_seconds(" in c
     check "gene_typed_native_arg_borrow(ctx, call, 0, \"t\", " &
       "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
-      "false, &t_raw)" in c
-    check "CTimespec * t = NULL;" in c
-    check "t = (CTimespec *)t_raw;" in c
-    check "int64_t native_result = gene_native_seconds(t);" in c
+      "false, &gene_arg_0_raw)" in c
+    check "CTimespec * gene_arg_0 = NULL;" in c
+    check "gene_arg_0 = (CTimespec *)gene_arg_0_raw;" in c
+    check "GeneNativeStatus native_status = gene_native_seconds(&native_error," in c
     check "return gene_ffi_result_int64(ctx, native_result, result);" in c
     check "{\"seconds\", \"gene_native_seconds\", \"gene_entry_seconds\", " &
       "\"I64\", 1, &gene_frame_seconds}," in c
@@ -2472,10 +2638,10 @@ int main(void) {
     let c = chunk.emitExperimentalC()
     check "gene_typed_native_arg_transfer(ctx, call, 0, \"t\", " &
       "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
-      "false, &t_raw)" in c
+      "false, &gene_arg_0_raw)" in c
     check "static void gene_entry_handoff_result_release(void *value)" in c
     check "timespec_free((CTimespec *)value);" in c
-    check "CTimespec * native_result = gene_native_handoff(t);" in c
+    check "GeneNativeStatus native_status = gene_native_handoff(&native_error," in c
     check "gene_typed_native_result_transfer(ctx, (void *)native_result, " &
       "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
       "false, gene_entry_handoff_result_release, result)" in c
@@ -2493,7 +2659,7 @@ int main(void) {
       "  [t : Timespec count : I64] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
     check "goto gene_entry_consume_arg_error;" in c
-    check "gene_typed_native_arg_restore(ctx, call, 0, \"handle\", t_raw);" in c
+    check "gene_typed_native_arg_restore(ctx, call, 0, \"handle\", gene_arg_0_raw);" in c
     check "gene_entry_consume_arg_error:" in c
     checkCCompiles(c, "typed_native_argument_rollback")
 
@@ -2754,11 +2920,17 @@ int64_t last_freed(void) { return gene_spec_last_free(); }
       "(fn make ^native_entry {^result transfer} [] : Point (make_point)) " &
       "(fn take2 ^native_entry {^a transfer} " &
       "  [a : Point b : I64] : I64 a/x) " &
-      "(fn get_x ^native_entry {^p borrow} [p : Point] : I64 p/x)"
+      "(fn get_x ^native_entry {^p borrow} [p : Point] : I64 p/x) " &
+      "(ffi/fn release_point ^symbol \"point_free\" [p : Point] : C/Void) " &
+      "(ffi/fn freed_count ^symbol \"freed_count\" [] : C/Int64) " &
+      "(fn consume_fail ^native_entry {^p transfer} [p : Point x : I64] : I64 " &
+      "  (release_point p) (+ x 1))"
     let impl = """
 #include <stdlib.h>
+static int64_t freed;
 CPoint *make_point(void) { CPoint *p = malloc(sizeof *p); p->x = 5; return p; }
-void point_free(CPoint *p) { free(p); }
+void point_free(CPoint *p) { ++freed; free(p); }
+int64_t freed_count(void) { return freed; }
 """
     const libExt = when defined(macosx): ".dylib"
                    elif defined(windows): ".dll"
@@ -2784,7 +2956,11 @@ void point_free(CPoint *p) { free(p); }
         "(var n (load " & geneString(libPath) & ")) " &
         "(var p (n/make)) " &
         "(var caught (try (n/take2 p \"not an int\") catch Any 1)) " &
-        "(+ caught (n/get_x p))"), newGlobalScope()).intVal == 6
+        "(let before (+ caught (n/get_x p))) " &
+        "(let actual (try (n/consume_fail p 9223372036854775807) " &
+        "  catch TypeError $err/actual_value)) " &
+        "[before actual (try (n/get_x p) catch Any ($str/contains? $err/message \"is closed\")) " &
+        " (n/freed_count)]"), newGlobalScope()).print() == "[6 9223372036854775808 true 1]"
 
   test "an explicit native entry copies a wrapper pointer before reboxing":
     let chunk = compileSource(
@@ -2797,11 +2973,11 @@ void point_free(CPoint *p) { free(p); }
       "(fn duplicate ^native_entry {^t copy ^result transfer} " &
       "  [t : Timespec] : Timespec t)")
     let c = chunk.emitExperimentalC()
-    check "static void *gene_entry_duplicate_t_copy(const void *value)" in c
+    check "static void *gene_entry_duplicate_arg_0_copy(const void *value)" in c
     check "timespec_copy((const CTimespec *)value)" in c
     check "gene_typed_native_arg_copy(ctx, call, 0, \"t\", " &
       "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
-      "false, gene_entry_duplicate_t_copy, &t_raw)" in c
+      "false, gene_entry_duplicate_arg_0_copy, &gene_arg_0_raw)" in c
     check "gene_typed_native_result_transfer(ctx, (void *)native_result" in c
     checkCCompiles(c, "typed_native_copy_entry")
 
@@ -2874,6 +3050,16 @@ struct GeneValue {
   GeneTypedNativeReleaseFn release;
 };
 struct GeneCall { size_t len; GeneValue *args; };
+
+GeneStatus gene_ffi_native_error(GeneContext *ctx, int status, const char *where,
+    const char *expected, int kind, const char *integer, double real,
+    bool boolean, const char *text, const GeneNativeTraceFrame *frames,
+    size_t count, size_t omitted) {
+  (void)ctx; (void)status; (void)where; (void)expected; (void)kind;
+  (void)integer; (void)real; (void)boolean; (void)text;
+  (void)frames; (void)count; (void)omitted;
+  return GENE_ERROR;
+}
 
 static int copy_calls;
 static int release_calls;
@@ -3001,9 +3187,9 @@ int main(void) {
       "  ^native {^abi CTimespec ^lifecycle manual ^mutable false}) " &
       "(fn maybe_seconds [t : Timespec?] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_maybe_seconds(CTimespec * t)" in c
-    check "return (t != NULL ? t->tv_sec : " &
-      "gene_typed_native_null_i64(\"Timespec\", \"tv_sec\"));" in c
+    checkNativeSignature(c, "maybe_seconds", @["CTimespec *"], "int64_t")
+    check "GENE_NATIVE_NULL_FIELD" in nativeFunction(c, "maybe_seconds")
+    check "->tv_sec" in nativeFunction(c, "maybe_seconds")
 
   test "nullable typed-native pointers cannot flow into non-null FFI parameters":
     check_compile_error(
@@ -3021,7 +3207,8 @@ int main(void) {
       "(fn identity [node : Node?] : Node? node) " &
       "(fn omitted [] : Node? (identity))")
     let c = chunk.emitExperimentalC()
-    check "gene_native_identity(NULL)" in c
+    check "= gene_native_identity(" in nativeFunction(c, "omitted")
+    check ", NULL, &" in nativeFunction(c, "omitted")
     checkCRuns(c & "\n#include <stdio.h>\nint main(void) { puts(gene_native_omitted() == NULL ? \"nil\" : \"wrong\"); return 0; }\n",
                "typed_native_optional_default", "nil")
 
@@ -3033,7 +3220,8 @@ int main(void) {
       "(fn maybe_set [value : I64 t : Timespec?] : I64 " &
       "  (set t/tv_sec value))")
     let c = chunk.emitExperimentalC()
-    check "t != NULL ? (t->tv_sec = value)" in c
+    check "GENE_NATIVE_NULL_FIELD" in nativeFunction(c, "maybe_set")
+    check "->tv_sec =" in nativeFunction(c, "maybe_set")
     checkCCompiles(c, "typed_native_nullable_store")
 
   test "nullable typed-native bases guard pointer-valued fields with a pointer trap":
@@ -3045,10 +3233,9 @@ int main(void) {
       "(fn maybe_set_next [child : Node node : Node?] : Node " &
       "  (set node/next child))")
     let c = chunk.emitExperimentalC()
-    check "node != NULL ? node->next : " &
-      "gene_typed_native_null_ptr(\"Node\", \"next\")" in c
-    check "node != NULL ? (node->next = child) : " &
-      "gene_typed_native_null_ptr(\"Node\", \"next\")" in c
+    check "GENE_NATIVE_NULL_FIELD" in nativeFunction(c, "maybe_next")
+    check "GENE_NATIVE_NULL_FIELD" in nativeFunction(c, "maybe_set_next")
+    check "->next =" in nativeFunction(c, "maybe_set_next")
     checkCCompiles(c, "typed_native_nullable_pointer_field")
 
   test "fixed scalar AOT covers branching and direct recursion":
@@ -3062,10 +3249,12 @@ int main(void) {
     check chunk.functions[0].aotFrameKind == afkTypedNative
     check chunk.functions[1].aotFrameKind == afkTypedNative
     let c = chunk.emitExperimentalC()
-    check "int64_t gene_native_clamp64(int64_t x, int64_t lo, int64_t hi)" in c
-    check "return ((x < lo) ? lo : ((x > hi) ? hi : x));" in c
-    check "int64_t gene_native_fib64(int64_t n)" in c
-    check "return ((n < 2) ? n : (gene_native_fib64((n - 1)) + gene_native_fib64((n - 2))));" in c
+    checkNativeSignature(c, "clamp64", @["int64_t", "int64_t", "int64_t"], "int64_t")
+    check "gene_aot_int_compare" in nativeFunction(c, "clamp64")
+    checkNativeSignature(c, "fib64", @["int64_t"], "int64_t")
+    check nativeFunction(c, "fib64").count("= gene_native_fib64(") == 2
+    checkCRuns(c & "\nint main(void) { printf(\"%lld %lld %lld\", (long long)gene_native_clamp64(-2, 0, 10), (long long)gene_native_clamp64(12, 0, 10), (long long)gene_native_fib64(10)); }",
+      "native_scalar_branch_recursion", "0 10 55")
     check_eval(
       "(fn clamp64 [x : I64 lo : I64 hi : I64] : I64 " &
       "  (if (< x lo) lo (if (> x hi) hi x))) " &
@@ -6253,7 +6442,9 @@ suite "spec — binding forms from design §12.1":
     let chunk = compileSource("(const SCALE 3) (const TABLE [1 2 3]) " &
                               "(fn k [x : I64] : I64 (* x SCALE))")
     check chunk.functions[0].aotExpr.kind != vkNil
-    check "return (x * 3);" in chunk.emitExperimentalC()
+    check "gene_aot_int_mul" in nativeFunction(chunk.emitExperimentalC(), "k")
+    checkCRuns(chunk.emitExperimentalC() & "\nint main(void) { printf(\"%lld\", (long long)gene_native_k(5)); }",
+      "native_aggregate_const", "15")
     check_eval("(const SCALE 3) (const TABLE [1 2 3]) " &
                "(fn k [x : I64] : I64 (* x SCALE)) (k 5)", "15")
 

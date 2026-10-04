@@ -9568,7 +9568,7 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
       "AOT library is no longer compatible with the loaded native types: " &
       stale)
   let entry = binding.entry
-  var ctx = AotContext()
+  var ctx = AotContext(scope: call.dispatchScope)
   var aotCall = AotCall(
     args: if args.len > 0: cast[ptr UncheckedArray[Value]](addr args[0])
           else: nil,
@@ -9576,6 +9576,10 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
   var value = NIL
   let status = entry(addr ctx, addr aotCall, addr value)
   if status != 0:
+    if ctx.panicked or status == 2:
+      raise newException(GenePanic, ctx.message)
+    if ctx.error != nil:
+      raise ctx.error
     raise newException(GeneError,
       if ctx.message.len > 0: ctx.message
       else: "AOT entry '" & name & "' failed with status " & $status)
@@ -9633,9 +9637,9 @@ proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   if versionAddr == nil:
     rejectLoad("AOT library predates ABI validation and must be rebuilt " &
       "with `gene compile --target c`")
-  if int(versionAddr[]) != AbiFingerprintVersion:
+  if int(versionAddr[]) != AotManifestVersion:
     rejectLoad("AOT library manifest version " & $int(versionAddr[]) &
-      " does not match this runtime's " & $AbiFingerprintVersion &
+      " does not match this runtime's " & $AotManifestVersion &
       "; rebuild it")
 
   ## Every native Type the compiled code depends on, transitively — so a type

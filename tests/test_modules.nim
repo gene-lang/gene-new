@@ -131,7 +131,7 @@ suite "modules — file imports":
       .compileFileModule(modDir / "native_layout_user.gene")
       .emitExperimentalC()
     check "typedef struct CTimespec" in c
-    check "int64_t gene_native_seconds(CTimespec * t)" in c
+    check "GeneNativeStatus gene_native_seconds(GeneNativeError *" in c
     check "return t->tv_sec;" in c
 
   test "typed-native wrapper adapters retain imported ownership metadata":

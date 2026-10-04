@@ -38,7 +38,7 @@ proc benchGeneratedCFieldLoad(iterations: int) =
     "(type Node ^native {^abi CNode ^lifecycle manual}) " &
     "(fn load_value [node : Node] : I64 node/value)")
   let generated = chunk.emitExperimentalC()
-  if "int64_t gene_native_load_value(CNode * node)" notin generated:
+  if "GeneNativeStatus gene_native_load_value(GeneNativeError *" notin generated:
     raise newException(ValueError, "typed_native getter was not emitted")
   let harness = """
 #include <stdio.h>
@@ -47,16 +47,23 @@ int main(void) {
   CNode record;
   record.value = 42;
   CNode *volatile slot = &record;
+  GeneNativeError error = {0};
   long long checksum = 0;
   struct timespec started, ended;
   clock_gettime(CLOCK_MONOTONIC, &started);
   for (long long i = 0; i < ITERATIONS; ++i) {
-    checksum += gene_native_load_value(slot) + (i & 1);
+    int64_t value = 0;
+    if (gene_native_load_value(&error, slot, &value) != GENE_NATIVE_OK) {
+      gene_aot_error_clear(&error);
+      return 1;
+    }
+    checksum += value + (i & 1);
   }
   clock_gettime(CLOCK_MONOTONIC, &ended);
   double nanos = (double)(ended.tv_sec - started.tv_sec) * 1000000000.0 +
                  (double)(ended.tv_nsec - started.tv_nsec);
   printf("%.0f %lld\n", nanos, checksum);
+  gene_aot_error_clear(&error);
   return 0;
 }
 """

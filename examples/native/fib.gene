@@ -5,9 +5,13 @@
 # the boundary: `fib` calls itself directly in C, so one crossing covers the
 # whole call tree.
 #
-#   int64_t gene_native_fib(int64_t n) {
-#     return ((n < 2) ? n : (gene_native_fib((n - 1)) + gene_native_fib((n - 2))));
-#   }
+#   GeneNativeError error = {0};
+#   int64_t value;
+#   GeneNativeStatus status = gene_native_fib(&error, n, &value);
+#   gene_aot_error_clear(&error);
+#
+# Integer intermediates stay exact, and the checked return boundary reports
+# a type error if the final result does not fit I64.
 #
 # Built and measured by bench_fib.sh.
 

@@ -3725,6 +3725,45 @@ proc acceptsAotArity(fn: FunctionProto, count: int): bool =
       return false
   true
 
+proc acceptsNativeFfiArguments(expr: Value, ffiFn: FfiFnProto,
+                               params: openArray[string], paramReprs: openArray[AotRepr],
+                               locals: seq[AotLocal]): bool =
+  if ffiFn.params.len != expr.body.len:
+    return false
+  for i, arg in expr.body:
+    var argRepr = arg.aotBindingRepr(params, paramReprs, locals)
+    if argRepr.kind == arkNone:
+      ## Literals carry their own representation. Without this an FFI
+      ## argument had to be a binding, so even `(f ":memory:")` or `(f x 1)`
+      ## was unlowerable.
+      argRepr = arg.aotLiteralRepr()
+    if argRepr.kind == arkNone and arg.kind == vkNil and
+        i < ffiFn.paramReprs.len and
+        ffiFn.paramReprs[i].kind == arkNativePtr and
+        ffiFn.paramReprs[i].nullable:
+      ## `nil` takes its representation from the parameter: it is the null
+      ## pointer, and only a nullable one admits it.
+      argRepr = ffiFn.paramReprs[i]
+    if argRepr.kind == arkNone or i >= ffiFn.paramReprs.len or
+        not ffiFn.params[i].typeExpr.ffiParamMatchesAotRepr(
+          ffiFn.paramReprs[i], argRepr):
+      return false
+    if ffiFn.params[i].isOut:
+      ## The callee writes through this argument, so it must be a mutable
+      ## local whose address the emitter can take. A temporary has no
+      ## address, and writing through a parameter would not be visible to the
+      ## Gene caller (proposal §6.3.1).
+      if arg.kind != vkSymbol:
+        return false
+      var isLocal = false
+      for local in locals:
+        if local.name == arg.symVal and not local.outOfScope:
+          isLocal = local.mutable
+          break
+      if not isLocal:
+        return false
+  true
+
 proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                           params: openArray[string],
                           paramReprs: openArray[AotRepr],
@@ -3848,8 +3887,10 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     let resolved = expr.body[0].typedNativeField(params, paramReprs, locals)
     if not resolved.found or not resolved.nativeType.mutable:
       return false
-    let valueRepr = expr.body[1].aotBindingRepr(params, paramReprs, locals)
-    if valueRepr.kind == arkNone:
+    var valueRepr = expr.body[1].aotBindingRepr(params, paramReprs, locals)
+    if valueRepr.kind == arkNone: valueRepr = resultRepr
+    if not c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, valueRepr,
+                                  ffiFns, locals):
       return false
     let fieldRepr = c.nativeFieldAotRepr(resolved.field)
     if fieldRepr.kind != arkNone:
@@ -3918,40 +3959,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
   for ffiFn in ffiFns:
     if ffiFn.name != expr.head.symVal:
       continue
-    if ffiFn.params.len != expr.body.len:
+    if not acceptsNativeFfiArguments(expr, ffiFn, params, paramReprs, locals):
       return false
-    for i, arg in expr.body:
-      var argRepr = arg.aotBindingRepr(params, paramReprs, locals)
-      if argRepr.kind == arkNone:
-        ## Literals carry their own representation. Without this an FFI
-        ## argument had to be a binding, so even `(f ":memory:")` or `(f x 1)`
-        ## was unlowerable.
-        argRepr = arg.aotLiteralRepr()
-      if argRepr.kind == arkNone and arg.kind == vkNil and
-          i < ffiFn.paramReprs.len and
-          ffiFn.paramReprs[i].kind == arkNativePtr and
-          ffiFn.paramReprs[i].nullable:
-        ## `nil` takes its representation from the parameter: it is the null
-        ## pointer, and only a nullable one admits it.
-        argRepr = ffiFn.paramReprs[i]
-      if argRepr.kind == arkNone or i >= ffiFn.paramReprs.len or
-          not ffiFn.params[i].typeExpr.ffiParamMatchesAotRepr(
-            ffiFn.paramReprs[i], argRepr):
-        return false
-      if ffiFn.params[i].isOut:
-        ## The callee writes through this argument, so it must be a mutable
-        ## local whose address the emitter can take. A temporary has no
-        ## address, and writing through a parameter would not be visible to the
-        ## Gene caller (proposal §6.3.1).
-        if arg.kind != vkSymbol:
-          return false
-        var isLocal = false
-        for local in locals:
-          if local.name == arg.symVal and not local.outOfScope:
-            isLocal = local.mutable
-            break
-        if not isLocal:
-          return false
     return ffiFn.returnType.ffiResultMatchesAotRepr(ffiFn.returnRepr,
                                                     resultRepr)
   false
@@ -4026,10 +4035,22 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
   if statement.head.symVal == "set" and statement.body.len == 2 and
       statement.body[0].kind != vkSymbol:
     let valueRepr = statement.body[1].aotBindingRepr(params, paramReprs, locals)
-    if valueRepr.kind == arkNone:
-      return false
-    return c.isTypedNativeAotExpr(statement, params, paramReprs, valueRepr,
-                                  ffiFns, locals)
+    if valueRepr.kind != arkNone:
+      return c.isTypedNativeAotExpr(statement, params, paramReprs, valueRepr,
+                                    ffiFns, locals)
+    let field = statement.body[0].typedNativeField(params, paramReprs, locals)
+    if not field.found: return false
+    let pointerRepr = c.nativeFieldAotRepr(field.field)
+    var candidates = @[pointerRepr, AotRepr(kind: arkI64, typeName: "I64"),
+      AotRepr(kind: arkI32, typeName: "I32"), AotRepr(kind: arkF64, typeName: "F64"),
+      AotRepr(kind: arkCStr, typeName: "Str")]
+    for candidate in candidates:
+      if candidate.kind == arkNone: continue
+      var trial = locals
+      if c.isTypedNativeAotExpr(statement, params, paramReprs, candidate, ffiFns, trial):
+        locals = move trial
+        return true
+    return false
   if statement.head.symVal == "do" and statement.body.len > 0:
     ## A `do` in statement position is a block: its value is discarded, so
     ## every item is a statement, and its declarations are block-scoped.
@@ -4057,6 +4078,11 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
     for i in outerLocals ..< locals.len:
       locals[i].outOfScope = true
     return true
+  if not statement.head.symVal.aotBindingNamed(params, locals):
+    for foreign in ffiFns:
+      if foreign.name == statement.head.symVal and
+          ffiTypeLabel(foreign.returnType) == "C/Void":
+        return acceptsNativeFfiArguments(statement, foreign, params, paramReprs, locals)
   false
 
 proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =

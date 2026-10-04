@@ -847,7 +847,7 @@ proc isBuiltinSurfaceType(v: Value): bool =
   ## only be a user declaration; now it usually is not.
   v.kind == vkType and gBuiltinSurfaceTypes.contains(v.bits)
 
-proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
+proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
                     hint = "")
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "")
@@ -16087,7 +16087,7 @@ proc attachSourceLoc(e: ref GeneError, loc: SourceLoc) =
   if e.hasErrVal:
     e.errVal = e.errVal.withSourceLocProps(loc)
 
-proc stackFrameValue(name, kind: string, loc = SourceLoc()): Value =
+proc stackFrameValue*(name, kind: string, loc = SourceLoc()): Value =
   var props = initPropTable()
   props["name"] = newStr(name)
   props["kind"] = newStr(kind)
@@ -16098,7 +16098,7 @@ proc stackFrameValue(name, kind: string, loc = SourceLoc()): Value =
     props["col"] = newInt(int64(loc.col))
   newNode(newSym("StackFrame"), props = props, immutable = true)
 
-proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
+proc appendTraceFrames*(e: ref GeneError, traceFrames: openArray[Value]) =
   if e == nil or traceFrames.len == 0 or not e.hasErrVal or
       e.errVal.kind != vkNode:
     return
@@ -23024,7 +23024,7 @@ proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
   else:
     substituteTypeParams(expr, bindings, typeParams)
 
-proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
+proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
                     hint = "") =
   let actualType = runtimeTypeExpr(value)
   let actual = if actualType.kind in {vkType, vkProtocol}: actualType.print()
@@ -23050,6 +23050,14 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
   e.errVal.setFailureClassification(fcGeneratedTypeFailure)
   e.hasErrVal = true
   raise e
+
+proc nativeRuntimeError*(scope: Scope, kind, message: string): ref GeneError =
+  ## Native checked code reports structured failures without unwinding C frames.
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  result = newException(GeneError, message)
+  result.errVal = newNode(builtInTypeHead(scope, kind), props = props, immutable = true)
+  result.hasErrVal = true
 
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "") =
