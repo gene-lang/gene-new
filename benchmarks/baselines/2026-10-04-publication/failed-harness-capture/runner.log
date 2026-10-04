@@ -1,0 +1,7 @@
+Error: undefined symbol: else
+  at /Users/gcao/gene-workspace/gene-new/benchmarks/run_harness.gene:50:9
+    50 |         (else
+       |         ^
+completed executable 0, round 0, wall 35509 ms
+completed executable 1, round 0, wall 21880 ms
+completed executable 2, round 0, wall 42459 ms

@@ -1,0 +1,13 @@
+completed executable 0, round 0, wall 37859 ms
+completed executable 1, round 0, wall 25307 ms
+completed executable 2, round 0, wall 25101 ms
+completed executable 1, round 1, wall 25226 ms
+completed executable 2, round 1, wall 24742 ms
+completed executable 0, round 1, wall 42470 ms
+completed executable 2, round 2, wall 25201 ms
+completed executable 0, round 2, wall 91863 ms
+completed executable 1, round 2, wall 32998 ms
+completed executable 0, round 3, wall 87139 ms
+completed executable 1, round 3, wall 21732 ms
+completed executable 2, round 3, wall 69293 ms
+saved tmp/optimization-implementation/harness-comparison-final/summary.json

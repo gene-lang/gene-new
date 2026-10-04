@@ -1,0 +1,9 @@
+completed executable 0, round 0, wall 87780 ms
+completed executable 1, round 0, wall 69082 ms
+completed executable 1, round 1, wall 34624 ms
+completed executable 0, round 1, wall 35276 ms
+completed executable 0, round 2, wall 35389 ms
+completed executable 1, round 2, wall 34844 ms
+completed executable 1, round 3, wall 59179 ms
+completed executable 0, round 3, wall 35113 ms
+saved tmp/optimization-implementation/core-comparison-final/summary.json

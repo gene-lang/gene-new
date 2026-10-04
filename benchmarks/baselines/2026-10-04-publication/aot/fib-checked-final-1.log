@@ -1,0 +1,25 @@
+=== Gene AOT Boundary Benchmark ===
+Date: 2026-10-04 00:55:40 Sunday
+Git commit: 60768a883692b856dbe2ea7a4f1020dd8c72d653
+C compiler: Apple clang version 21.0.0 (clang-2100.0.123.102)
+
+==> generating C from fib.gene
+==> building loadable AOT library
+==> running benchmark
+
+=== Gene AOT boundary Fibonacci ===
+Mode: vm vs aot-via-boundary, fib(28)
+
+Result: vm  fib(28) = 317811
+Result: aot fib(28) = 317811
+Fib calls: 20569140 (20 x fib(28))
+
+vm   time: 1207 ms
+aot  time: 99 ms
+Speedup:   12x
+vm   rate: 17041541 calls/second
+aot  rate: 207769090 calls/second
+
+Boundary cost over 200000 crossings:
+  aot boundary call: 72 ms
+  vm function call:  25 ms
