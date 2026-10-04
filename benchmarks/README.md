@@ -41,6 +41,22 @@ cleanup measurements. Application sampling profiles must rank P1 work before
 microbenchmark changes are selected; the harness replay selection and a
 Miclone meshing pass are the initial application targets.
 
+For the native service path, `bin/gene run examples/gene-harness/probes/performance.gene
+tmp/harness-profile 100` runs real service/turn/patch work against a deterministic
+provider and asserts that every patch was applied. Use a new workspace each run.
+The existing native numeric workload is
+`bin/gene run examples/miclone/probes/run_worldgen.gene --repeat-seconds 10`.
+It executes the server's real generation code. Miclone's client mesher runs in
+V8; profile `tools/mesh_bench.mjs` separately when considering web-backend work,
+and do not attribute its timings to the native VM.
+
+On macOS, `sample PID 10 1 -mayDie -file REPORT` captures native stacks.
+`bin/gene run benchmarks/summarize_sample.gene REPORT` accounts for main-thread
+samples without counting recursive frames repeatedly. The categorization uses
+recognized ancestors and leaves inlined/unknown work unattributed; inspect the
+raw stacks too. Run its accounting regression with
+`bin/gene test benchmarks/profile_spec.gene`.
+
 Run the recursive Fibonacci benchmark with:
 
 ```bash

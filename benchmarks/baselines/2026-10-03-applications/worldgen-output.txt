@@ -1,0 +1,5 @@
+
+design.md §D6.3 — worldgen throughput, one 16^3 block (4096 nodes)
+measured on the VM by generating whole blocks, not by extrapolating
+
+worldgen profile: 20 batches of 16 blocks

@@ -1,0 +1,10 @@
+Call graph:
+    10 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 10 main__test  (in gene)
+    +   7 publishSpawnValue__test  (in gene)
+    +   ! 7 publishSpawnValue__test  (in gene)
+    +   !   7 markSharedBits__test  (in gene)
+    +   3 unrelated__test  (in gene)
+    10 Thread_2
+      10 __psynch_cvwait  (in system)
+Total number in stack (recursive counted multiple, when >=5):

@@ -1,0 +1,18 @@
+(import $test [describe it assert_equal])
+
+(describe "Native sampling report accounting"
+  (it "counts recursive publication once and excludes the idle worker" []
+    (let directory ($path/parent this_mod/.path))
+    (let process (await ($os/exec_async ^cmd ($os/executable_path)
+      ^args ["run" ($path/join directory "summarize_sample.gene")
+        ($path/join directory "fixtures/sample-recursive.txt")]
+      ^timeout_ms 10000 ^max_bytes 65536)))
+    (assert_equal process/status 0 process/stderr)
+    (let result ($json/parse process/stdout))
+    (assert_equal result/thread_samples 10)
+    (assert_equal result/accounted_samples 10)
+    (assert_equal result/buckets/0/name "publication")
+    (assert_equal result/buckets/0/samples 7)
+    (assert_equal result/buckets/0/percent 70.0)
+    (assert_equal (result/self_samples .get "markSharedBits__test") 7)
+    (assert_equal (result/self_samples .get "unrelated__test") 3)))

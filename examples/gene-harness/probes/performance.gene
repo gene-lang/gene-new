@@ -1,0 +1,35 @@
+# Exercise the actual service, turn controller, transcript and patch path.
+# No external model or network service is used. Each run needs a new workspace.
+# Usage: gene run examples/gene-harness/probes/performance.gene WORKSPACE [TURNS]
+(import [open_session_service close_session_service create_session submit snapshot]
+  ^from "../src/web/session_service")
+
+(fn main [args] : Int
+  ($assert (>= ($size args/body) 1) "expected a new workspace path")
+  (let workspace args/body/0)
+  ($assert (! ($fs/exists? workspace)) "profile workspace must be new")
+  ($fs/make_dir workspace)
+  (let absolute ($fs/real_path workspace))
+  (let turns (if (> ($size args/body) 1) ($parse/parse_int args/body/1) 100))
+  ($assert (&& (> turns 0) (<= turns 10000)) "turn count must be in 1..10000")
+  (let service (open_session_service ^workspace absolute ^provider
+    (fn [request]
+      ($to_str "(Outcome ^done true ^reply \"Patched.\")\n"
+        "*** Begin Patch\n*** Add File: result-" request/turn ".txt\n"
+        "+profile result\n*** End Patch\n"))))
+  (try
+    (let session (create_session service))
+    (let started ($os/monotonic_ms))
+    (var checksum 0)
+    (repeat i in turns
+      (submit service session/id $"profile-${i}" (+ i 1) "write the next result")
+      (let watcher ((service/controller/watchers .get) .get session/id))
+      watcher/.join
+      (let state (snapshot service session/id))
+      (set checksum (+ checksum ($size state/records)))
+      ($assert ($fs/exists? $"${absolute}/result-${(+ i 1)}.txt")
+        "profile turn did not apply its patch"))
+    ($println ($json/stringify {^turns turns ^elapsed_ms (- ($os/monotonic_ms) started)
+      ^record_checksum checksum ^workspace absolute}))
+    0
+    ensure (close_session_service service)))

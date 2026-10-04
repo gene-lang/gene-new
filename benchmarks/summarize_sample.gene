@@ -1,0 +1,87 @@
+# Summarize macOS sample's main-thread call tree without double-counting recursion.
+# Usage: gene run benchmarks/summarize_sample.gene SAMPLE_FILE
+# Buckets inherit the highest-priority recognized ancestor. Inlined/outlined
+# work without a recognized ancestor remains unattributed, not assumed free.
+(let groups [
+  ["publication" ["publishSpawn" "markShared" "markObjectSharedGraph"]]
+  ["scope_escape" ["valueCapturesScope" "carriesCallerEnv" "mayNeedEscape" "tryCollectObjectCycle" "finishUnpooled"]]
+  ["call_contract" ["bindCallScope" "adaptBoundary" "matchesType" "bareScalarSatisfied" "closeTypeExpr" "declareType" "validateRequiredImpl"]]
+  ["dispatch" ["resolveQualified" "resolveUnqualified" "resolveMessage" "resolveSend"]]
+  ["logging" ["biLog" "emitLog" "routeFor"]]
+  ["events" ["biEvent" "publishEvent"]]
+  ["lookup" ["lookup__" "staticLookup" "exportedBinding"]]
+  ["reference_counting" ["rcRetain" "rcRelease" "rememberCycle" "collectCycles"]]
+  ["allocation_copy" ["rawAlloc" "rawDealloc" "newSeq" "enlarge" "nimAsgnStrV2" "_platform_memmove"]]] )
+
+(fn own_group [name]
+  (var index 0)
+  (for group in groups
+    (for prefix in group/1
+      (if ($str/starts_with? name prefix) (return index)))
+    (set index (+ index 1)))
+  ($size groups))
+
+(fn finish_frame [stack buckets leaves]
+  (let frame stack/.get)
+  (stack .set frame/parent)
+  ($assert (>= frame/remaining 0) "sample children exceed their parent; unsupported tree layout")
+  (let group_index frame/group)
+  (let bucket (if (< group_index ($size groups)) groups/%group_index/0 "unattributed"))
+  (buckets .put bucket (+ (?? (buckets .get bucket) 0) frame/remaining))
+  (leaves .put frame/name (+ (?? (leaves .get frame/name) 0) frame/remaining)))
+
+(fn main [args] : Int
+  ($assert (== ($size args/body) 1) "expected one sample report")
+  (let stack ($cell nil))
+  (let buckets {})
+  (let leaves {})
+  (var graph false)
+  (var main_thread false)
+  (var total 0)
+  (for line in ($str/split ($fs/read_text args/body/0) "\n")
+    (if (== line "Call graph:") (set graph true))
+    (if (! graph) (continue))
+    (if ($str/starts_with? line "Total number in stack") (break))
+    (let length ($str/byte_size line))
+    (var start 0)
+    (while (&& (< start length)
+               (! ($str/contains? "0123456789" ($str/slice_bytes line start 1))))
+      (set start (+ start 1)))
+    (if (>= start length) (continue))
+    (let parts ($str/split ($str/slice_bytes line start (- length start)) " "))
+    (if (< ($size parts) 2) (continue))
+    (let count ($parse/parse_int parts/0))
+    (let name parts/1)
+    (if ($str/starts_with? name "Thread_")
+      (then
+        (if main_thread (break))
+        (if (! ($str/contains? line "com.apple.main-thread")) (continue))
+        (set main_thread true)
+        (set total count)))
+    (if (! main_thread) (continue))
+    (while (! ($absent? stack/.get))
+      (let last stack/.get)
+      (if (< last/depth start) (break))
+      (finish_frame stack buckets leaves))
+    (var group (own_group name))
+    (if (! ($absent? stack/.get))
+      (then
+        (let parent stack/.get)
+        (parent .put "remaining" (- parent/remaining count))
+        (if (< parent/group group) (set group parent/group))))
+    (stack .set {^depth start ^count count ^remaining count ^name name ^group group ^parent stack/.get}))
+  (while (! ($absent? stack/.get)) (finish_frame stack buckets leaves))
+  ($assert (> total 0) "no main-thread samples found")
+  (var counted 0)
+  (let rows [])
+  (for item in groups
+    (let count (?? (buckets .get item/0) 0))
+    (set counted (+ counted count))
+    (rows .push {^name item/0 ^samples count ^percent (/ (* count 100.0) total)}))
+  (let other (?? (buckets .get "unattributed") 0))
+  (set counted (+ counted other))
+  (rows .push {^name "unattributed" ^samples other ^percent (/ (* other 100.0) total)})
+  ($assert (== counted total) "sample accounting does not match main thread total")
+  ($println ($json/stringify {^file args/body/0 ^thread_samples total
+    ^accounted_samples counted ^buckets rows ^self_samples leaves}))
+  0)
