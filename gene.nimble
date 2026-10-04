@@ -74,6 +74,7 @@ task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
 
 task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
+  exec "nim c -r --path:src --hints:off tests/test_native_integer.nim"
   exec "nim c -r --path:src --hints:off tests/test_native_managed_abi.nim"
   exec "nim c -r --path:src --hints:off tests/test_native_callback_abi.nim"
   exec "nim c -r --path:src --hints:off tests/test_release_crypto.nim"
