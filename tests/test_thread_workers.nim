@@ -162,6 +162,30 @@ suite "threaded scheduler workers":
     check not retireRuntimeContextScopes(context, roots)
     check namespace.nsScope.lookup("value").intVal == 7
 
+  test "publication retains scope edges beyond shared value graphs":
+    let outer = newScope()
+    let inner = newScope()
+    outer.define("nested", newNamespace("nested", inner))
+    let namespace = newNamespace("outer", outer)
+    let graph = newList(@[namespace, namespace])
+    let retained = publishManagedRootForRetirement(graph)
+    check outer in retained
+    check inner in retained
+    check retained.len == 2
+
+  test "a later publication visits new children of a previously shared graph":
+    let first = newScope()
+    let graph = newList(@[newNamespace("first", first)])
+    block:
+      let retained = publishManagedRootForRetirement(graph)
+      check first in retained
+    let second = newScope()
+    graph.pushListItem(newNamespace("second", second))
+    let retained = publishManagedRootForRetirement(graph)
+    check first in retained
+    check second in retained
+    check retained.len == 2
+
   test "repeated macro compilations release their private phase applications":
     withGeneWorkerSetting "0":
       for source in ["(macro identity [x] `%x) (identity 21)",

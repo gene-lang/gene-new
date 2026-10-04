@@ -2733,13 +2733,23 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
   else:
     discard
 
+type SharedValuePublication* = object
+  ## Scratch state for one synchronous publication of an unchanged graph.
+  ## Keep separate from VM Scope/code visitation: marking does not walk those
+  ## edges. Never reuse across publications or mutations, since a shared
+  ## container may acquire children that have not yet been published.
+  seen: HashSet[uint64]
+
+proc markSharedValue*(value: Value, publication: var SharedValuePublication) =
+  markSharedBits(value.bits, publication.seen)
+
 proc markSharedValue*(value: Value) =
   ## Mark a value graph as published across a Send boundary. Manual refcounted
   ## objects switch to atomic RC after this marker in threaded builds; generic
   ## ORC object refs still need the later atomicArc/worker-pool stage before true
   ## M:N execution.
-  var seen = initHashSet[uint64]()
-  markSharedBits(value.bits, seen)
+  var publication: SharedValuePublication
+  markSharedValue(value, publication)
 
 proc publicationValueChildren*(value: Value): seq[Value] =
     ## Known object Value edges for the VM's code-publication walk. Call before

@@ -8894,13 +8894,18 @@ include ./events
 
 proc registerTestingNamespace(root: Scope)
 
-proc markImplValuesShared(impl: ProtocolImpl) =
+proc markImplValuesShared(impl: ProtocolImpl,
+                         publication: var SharedValuePublication) =
   when compileOption("threads"):
-    markSharedValue(impl.protocol)
-    markSharedValue(impl.receiver)
+    markSharedValue(impl.protocol, publication)
+    markSharedValue(impl.receiver, publication)
     for entry in impl.messages:
-      markSharedValue(entry.message)
-      markSharedValue(entry.fn)
+      markSharedValue(entry.message, publication)
+      markSharedValue(entry.fn, publication)
+
+proc markImplValuesShared(impl: ProtocolImpl) =
+  var publication: SharedValuePublication
+  markImplValuesShared(impl, publication)
 
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
@@ -14414,16 +14419,20 @@ proc snapshotSpawnScope(source: Scope, body: Chunk): Scope =
 
 var managedPublishedScopes {.threadvar.}: seq[Scope]
 
+type SpawnPublicationValues = object
+  visited: HashSet[uint64]
+  shared: SharedValuePublication
+
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer])
 proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer])
 
 proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenScopes: var HashSet[pointer],
-                               seenValues: var HashSet[uint64],
+                               seenValues: var SpawnPublicationValues,
                                seenChunks: var HashSet[pointer])
 
 template completePublication: bool =
@@ -14432,27 +14441,27 @@ template completePublication: bool =
 
 proc publishErrorEffect(effect: ErrorEffectSummary,
                        seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
   for error in effect.named:
     publishSpawnValue(error.expr, seenScopes, seenValues, seenChunks)
 
 proc publishErrorDependency(dependency: ErrorProofDependency,
                            seenScopes: var HashSet[pointer],
-                           seenValues: var HashSet[uint64],
+                           seenValues: var SpawnPublicationValues,
                            seenChunks: var HashSet[pointer]) =
   publishSpawnValue(dependency.target, seenScopes, seenValues, seenChunks)
   publishErrorEffect(dependency.permitted, seenScopes, seenValues, seenChunks)
 
 proc publishNativeRepr(repr: AotRepr, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
   if repr.nativeType != nil and repr.nativeType.abi != nil:
     for field in repr.nativeType.abi.fields:
       publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
 
 proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
   if chunk == nil:
     return
@@ -14570,7 +14579,7 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
 
 proc publishSpawnFunctionProto(proto: FunctionProto,
                                seenScopes: var HashSet[pointer],
-                               seenValues: var HashSet[uint64],
+                               seenValues: var SpawnPublicationValues,
                                seenChunks: var HashSet[pointer]) =
   if proto == nil:
     return
@@ -14621,12 +14630,12 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
   publishSpawnChunk(proto.chunk, seenScopes, seenValues, seenChunks)
 
 proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
-  if seenValues.contains(value.bits):
+  if seenValues.visited.contains(value.bits):
     return
-  seenValues.incl value.bits
-  markSharedValue(value)
+  seenValues.visited.incl value.bits
+  markSharedValue(value, seenValues.shared)
   if completePublication:
     for child in value.publicationValueChildren:
       publishSpawnValue(child, seenScopes, seenValues, seenChunks)
@@ -14820,7 +14829,7 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     discard
 
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
-                       seenValues: var HashSet[uint64],
+                       seenValues: var SpawnPublicationValues,
                        seenChunks: var HashSet[pointer]) =
   var current = scope
   while current != nil:
@@ -14875,7 +14884,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
         if not atBuiltins:
           publishSpawnScope(impl.implAssemblyScope, seenScopes, seenValues, seenChunks)
       if atBuiltins:
-        markImplValuesShared(impl)
+        markImplValuesShared(impl, seenValues.shared)
       else:
         publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
         publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
@@ -14896,7 +14905,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
 
 proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
   var seenScopes = initHashSet[pointer]()
-  var seenValues = initHashSet[uint64]()
+  var seenValues: SpawnPublicationValues
   var seenChunks = initHashSet[pointer]()
   publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
   publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
@@ -14904,7 +14913,7 @@ proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
 when defined(geneAtomicGenerationRetirementProbe):
   proc publishNativeScopeForRetirement*(scope: Scope) =
     var seenScopes = initHashSet[pointer]()
-    var seenValues = initHashSet[uint64]()
+    var seenValues: SpawnPublicationValues
     var seenChunks = initHashSet[pointer]()
     publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
 
@@ -14913,7 +14922,7 @@ when defined(geneAtomicGenerationRetirementProbe):
     ## reported to the VM. The experiment therefore permanently pins their
     ## known Scope/code graph before handoff, even after rootRelease.
     var seenScopes = initHashSet[pointer]()
-    var seenValues = initHashSet[uint64]()
+    var seenValues: SpawnPublicationValues
     var seenChunks = initHashSet[pointer]()
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
 
@@ -14926,7 +14935,7 @@ proc publishManagedRootForRetirement*(value: Value): seq[Scope] =
   enterManagedValuePublication()
   try:
     var seenScopes = initHashSet[pointer]()
-    var seenValues = initHashSet[uint64]()
+    var seenValues: SpawnPublicationValues
     var seenChunks = initHashSet[pointer]()
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
   finally:

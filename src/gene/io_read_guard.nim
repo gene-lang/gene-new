@@ -39,7 +39,7 @@ proc publishIoReadPin(value: Value) =
       # A root-lane completion may release this scheduler-owned pin. Publish
       # its Value/scope edges just as a spawned capture is published.
       var scopes: HashSet[pointer]
-      var values: HashSet[uint64]
+      var values: SpawnPublicationValues
       var chunks: HashSet[pointer]
       publishSpawnValue(value, scopes, values, chunks)
 
