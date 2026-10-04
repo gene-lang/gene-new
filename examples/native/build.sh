@@ -36,12 +36,13 @@ done < <(cd "$root" && nim r --path:src --hints:off \
   tools/system_dependency_flags.nim "$here" sqlite)
 
 mkdir -p "$out"
+"$GENE" compile --c-header > "$out/gene_native.h"
 
 echo "==> generating C from sqlite_rows.gene"
 "$GENE" compile --target c "$here/sqlite_rows.gene" > "$out/sqlite_rows.c"
 
 echo "==> compiling"
-"$root/tools/with_c_sdk" "$CC" -std=c11 -O2 -Wall "${sqlite_cflags[@]}" \
+"$root/tools/with_c_sdk" "$CC" -std=c11 -O2 -Wall -I"$out" "${sqlite_cflags[@]}" \
   "$out/sqlite_rows.c" "$here/main.c" \
   -o "$out/sqlite_example" "${sqlite_libs[@]}"
 

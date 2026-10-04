@@ -42,7 +42,7 @@ class RegistryServiceTests(unittest.TestCase):
             ("gene", "src/gene.nim"),
         ):
             result = subprocess.run(
-                ["nim", "c", "--path:src", "--hints:off", *(
+                ["nim", "c", "-d:geneDebug", "--path:src", "--hints:off", *(
                     ["-d:geneRegistryFaultInjection"] if name == "server" else []), *(
                     ["-d:useMalloc", "--passC:-fsanitize=address", "--passL:-fsanitize=address"]
                     if name == "server" and os.environ.get("GENE_REGISTRY_ASAN") == "1" else []),

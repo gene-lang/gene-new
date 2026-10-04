@@ -9,6 +9,14 @@ This is a shared workstation; substantial background OS activity was observed.
 
 ## Real service workload
 
+**Use about 1.6× as the improvement estimate.** Claude's independent quiet
+rerun in the October 4 review reported 32.7/32.9 s before and 19.8/20.3 s after
+for 100 turns, with 19.8 s from the independent optimized rebuild. Checksums
+were 15100. The 40-turn comparison was 7.42/7.46 s versus 4.71/4.75 s with
+checksum 3280. Ratios of the two-run medians are 1.64× and 1.57× respectively.
+These are reviewer-reported observations; the raw files below are the earlier
+noisy capture and must not be presented as the quiet rerun's evidence.
+
 `harness/` contains one excluded warmup and three measured runs per binary,
 rotating their order each round. Each process creates a fresh workspace and
 performs 100 real service/turn/patch operations. Every run checked all 100 output
@@ -22,12 +30,10 @@ than in this baseline.
 | Publication CLI, fresh cache (`gene-publication`) | 24443, 30387, 21207 | 24443 | 21207–30387 | 25226 |
 | Publication CLI, independent CLI-test build (`gene-publication-rebuild`) | 23916, 24594, 68274 | 24594 | 23916–68274 | 25201 |
 
-The optimized build medians agree within 0.7%, and both are lower than the
-baseline median. However, the observed ranges are wide and overlap. Warmup
-service times were 37176/24765/24517 ms. **Do not promise a stable 3.5× application
-speedup from these three-sample medians.** Repeat on a quiet host before making
-a deployment estimate. These results support the profile-selected reduction in
-publication work; they do not establish a universal application gain.
+This table is retained for audit, not as the headline performance estimate.
+The ranges are wide and overlap; warmup times were 37176/24765/24517 ms.
+The apparent 3.5× ratio is noise-dominated and is superseded by the quiet result
+above. Neither capture establishes a universal application gain.
 
 The two optimized CLIs came from separate caches/compilations. The second is
 the actual release executable built by `tests/test_cli.nim`, copied after its
@@ -43,9 +49,9 @@ Reproduction, after building each CLI and with an isolated package store:
 GENE_BENCH_SAMPLES=3 path/to/after-gene run benchmarks/run_harness.gene tmp/new-harness-capture path/to/before-gene path/to/after-gene path/to/independently-rebuilt-after-gene
 ```
 
-`failed-harness-capture/` preserves an earlier aborted capture. A runner syntax
-error stopped its first measured round; it produced no summary and none of its
-timings are included above. The correction has regression tests for warmup,
+Empty stderr files and the earlier aborted capture were removed during review
+cleanup. Successful raw samples, metadata, summaries and compressed profiles/
+qualification logs remain. The runner has regression tests for warmup exclusion,
 measured-round recording and checksum rejection.
 
 ## Core controls and AOT cost

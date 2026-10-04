@@ -36,6 +36,11 @@ proc fresh(c: var CheckedEmitter): string =
 
 proc line(c: var CheckedEmitter, text: string) = c.body.add "  " & text
 
+proc aotSourceLabel(source: string): string =
+  # Keep virtual/relative labels, but do not ship a compiler host's absolute
+  # checkout path in every diagnostic frame.
+  if source.isAbsolute: source.extractFilename else: source
+
 proc scalar(c: var CheckedEmitter, kind: CheckedKind, cType: string): CheckedValue =
   result = CheckedValue(kind: kind, code: c.fresh(), cType: cType)
   c.declarations.add "  " & cType & " " & result.code & " = 0;"
@@ -66,7 +71,7 @@ proc drop(c: var CheckedEmitter, value: CheckedValue) =
 proc failJump(c: var CheckedEmitter) =
   if c.boundaryName.len > 0:
     c.line "gene_aot_error_frame(" & c.error & ", " & cStringLiteral(c.boundaryName) &
-      ", " & cStringLiteral(c.boundaryLoc.sourceName) & ", " &
+      ", " & cStringLiteral(aotSourceLabel(c.boundaryLoc.sourceName)) & ", " &
       $c.boundaryLoc.line & ", " & $c.boundaryLoc.col & ");"
   c.line "goto " & c.cleanup & ";"
 
@@ -266,9 +271,19 @@ proc call(c: var CheckedEmitter, target: AotCFunction,
     let value = c.nativeResult(slot.code, slot.repr.aotCType(c.structNames), slot.repr)
     c.assign(name, value, "set '" & name & "'")
     c.drop(value)
+  if not target.checked:
+    if result.kind == ckString:
+      c.line "if (" & result.code & " == NULL) {"
+      c.fail("GENE_NATIVE_RUNTIME_ERROR", "FFI result for '" & target.geneName & "' returned null C/CStr", "")
+      c.line "}"
+    elif result.kind == ckPointer and target.returnRepr.kind == arkNativePtr and
+        not target.returnRepr.nullable:
+      c.line "if (" & result.code & " == NULL) {"
+      c.fail("GENE_NATIVE_RUNTIME_ERROR", "FFI returned null for non-null pointer result", "")
+      c.line "}"
   for value in values: c.drop(value)
 
-proc field(c: var CheckedEmitter, expr: Value, checkNull = true): tuple[base: CheckedValue, access, cType, typeName, name: string] =
+proc field(c: var CheckedEmitter, expr: Value, checkNull = true): tuple[base: CheckedValue, access, cType, typeLabel, typeName, name: string] =
   if expr.body.len != 2 or expr.body[0].kind != vkSymbol or expr.body[1].kind != vkSymbol:
     discard aotLoweringGap(expr, "native fields require a binding and a field name")
   let binding = c.bindings[expr.body[0].symVal]
@@ -283,7 +298,8 @@ proc field(c: var CheckedEmitter, expr: Value, checkNull = true): tuple[base: Ch
   result.access = result.base.code & "->" & cIdent(name, "field")
   for item in binding.repr.nativeType.abi.fields:
     if item.name == name:
-      result.cType = ffiCType(ffiTypeLabel(item.typeExpr))
+      result.typeLabel = ffiTypeLabel(item.typeExpr)
+      result.cType = ffiCType(result.typeLabel)
       return
   discard aotLoweringGap(expr, "unknown native field")
 
@@ -292,12 +308,34 @@ proc expression(c: var CheckedEmitter, expr: Value): CheckedValue =
   of vkSymbol: result = c.read(expr.symVal)
   of vkInt:
     result = c.integer()
-    let literal = if expr.intVal == low(int64): "(-9223372036854775807LL - 1)" else: $expr.intVal
-    c.line "gene_aot_int_drop(&" & result.code & ");"
-    c.line result.code & " = gene_aot_int(" & literal & ");"
+    if expr.intFitsInt64:
+      let literal = if expr.intVal == low(int64): "(-9223372036854775807LL - 1)" else: $expr.intVal
+      c.line "gene_aot_int_drop(&" & result.code & ");"
+      c.line result.code & " = gene_aot_int(" & literal & ");"
+    else:
+      let decimal = expr.intToString
+      let negative = decimal[0] == '-'
+      let first = if negative: 1 else: 0
+      var stop = decimal.len
+      var digits: seq[string]
+      while stop > first:
+        let start = max(first, stop - 9)
+        digits.add "UINT32_C(" & $parseInt(decimal[start ..< stop]) & ")"
+        stop = start
+      let data = c.fresh()
+      c.declarations.add "  static const uint32_t " & data & "[] = {" & digits.join(", ") & "};"
+      c.line "if (!gene_aot_int_from_limbs(&" & result.code & ", " & data & ", " &
+        $digits.len & ", " & (if negative: "-1" else: "1") & ")) {"
+      c.fail("GENE_NATIVE_NO_MEMORY", "native integer allocation failed", "")
+      c.line "}"
   of vkFloat:
     result = c.scalar(ckFloat, "double")
-    c.line result.code & " = " & expr.print() & ";"
+    let literal = case classify(expr.floatVal)
+      of fcNan: "NAN"
+      of fcInf: "INFINITY"
+      of fcNegInf: "(-INFINITY)"
+      else: expr.print()
+    c.line result.code & " = " & literal & ";"
   of vkString:
     result = c.scalar(ckString, "const char *")
     c.line result.code & " = " & cStringLiteral(expr.strVal) & ";"
@@ -312,21 +350,21 @@ proc expression(c: var CheckedEmitter, expr: Value): CheckedValue =
       return
     if expr.head.kind != vkSymbol: discard aotLoweringGap(expr, "unsupported native call head")
     let head = expr.head.symVal
-    if head in ["+", "-", "*", "/", "<", ">", "<=", ">=", "="] and expr.body.len == 2:
+    if head in ["+", "-", "*", "/", "<", ">", "<=", ">=", "=="] and expr.body.len == 2:
       let left = c.expression(expr.body[0])
       let right = c.expression(expr.body[1])
-      let comparison = head in ["<", ">", "<=", ">=", "="]
-      let op = if head == "=": "==" else: head
+      let comparison = head in ["<", ">", "<=", ">=", "=="]
+      let op = head
       if left.kind == ckInteger and right.kind == ckInteger:
         if comparison:
-          if head != "=" and (left.tag != "GENE_NATIVE_INT" or right.tag != "GENE_NATIVE_INT"):
+          if head != "==" and (left.tag != "GENE_NATIVE_INT" or right.tag != "GENE_NATIVE_INT"):
             c.line "if (" & nonInteger(left) & " || " & nonInteger(right) & ") {"
             c.line c.status & " = gene_aot_operator_error(" & c.error & ", " & cStringLiteral(head) & ", " & left.tag & ", " & right.tag & ", true);"
             c.line "goto " & c.cleanup & ";"
             c.line "}"
           result = c.integer("GENE_NATIVE_BOOL")
           c.line "gene_aot_int_drop(&" & result.code & ");"
-          let sameKind = if head == "=" and left.tag != right.tag: "(" & left.tag & " == " & right.tag & ") && " else: ""
+          let sameKind = if head == "==" and left.tag != right.tag: "(" & left.tag & " == " & right.tag & ") && " else: ""
           c.line result.code & " = gene_aot_int(" & sameKind & "(gene_aot_int_compare(&" & left.code & ", &" & right.code & ") " & op & " 0));"
         else:
           if head == "/": discard aotLoweringGap(expr, "integer division is not lowered")
@@ -345,10 +383,6 @@ proc expression(c: var CheckedEmitter, expr: Value): CheckedValue =
           c.line "}"
       elif left.kind == ckFloat and right.kind == ckFloat:
         if comparison:
-          if head != "=":
-            c.line "if (isnan(" & left.code & ") || isnan(" & right.code & ")) {"
-            c.fail("GENE_NATIVE_ORDER_ERROR", "NaN has no default ordering", "")
-            c.line "}"
           result = c.integer("GENE_NATIVE_BOOL")
           c.line "gene_aot_int_drop(&" & result.code & ");"
           c.line result.code & " = gene_aot_int(" & left.code & " " & op & " " & right.code & ");"
@@ -403,7 +437,13 @@ proc expression(c: var CheckedEmitter, expr: Value): CheckedValue =
         if result.kind == ckInteger:
           let raw = c.machine(result, AotRepr(kind: arkI64, typeName: "I64"), "native field store")
           c.line access.access & " = " & raw & ";"
-        else: c.line access.access & " = " & result.code & ";"
+        else:
+          if result.kind == ckString:
+            discard c.machine(result, AotRepr(kind: arkCStr, typeName: "Str"), "native field store")
+          elif result.kind in {ckPointer, ckNil}:
+            discard c.machine(result, AotRepr(kind: arkNativePtr,
+              typeName: access.typeLabel, nullable: access.typeLabel.startsWith("(C/NullablePtr ")), "native field store")
+          c.line access.access & " = " & result.code & ";"
     elif expr.body.len >= 2 and expr.body[0].kind == vkSymbol and expr.body[0].symVal == "~":
       let receiver = c.bindings[head].repr
       let message = expr.body[1]
@@ -487,7 +527,13 @@ proc emitCheckedAotFunctionImpl(lines: var seq[string], fn: FunctionProto, cName
   lines.add "  if (" & c.output & " == NULL) return gene_aot_error_set(" & c.error &
     ", GENE_NATIVE_BAD_ARGUMENT, \"native result pointer is NULL\", \"\");"
   lines.add "  if (" & c.error & "->status != GENE_NATIVE_OK) gene_aot_error_clear(" & c.error & ");"
-  lines.add "  GeneNativeStatus " & c.status & " = GENE_NATIVE_OK;"
+  lines.add "  GeneNativeStatus " & c.status & " = gene_aot_enter(" & c.error & ");"
+  lines.add "  if (" & c.status & " != GENE_NATIVE_OK) {"
+  lines.add "    gene_aot_error_frame(" & c.error & ", " & cStringLiteral(fn.name) & ", " &
+    cStringLiteral(aotSourceLabel(fn.sourceLoc.sourceName)) & ", " &
+    $fn.sourceLoc.line & ", " & $fn.sourceLoc.col & ");"
+  lines.add "    return " & c.status & ";"
+  lines.add "  }"
   lines.add c.declarations
   lines.add c.body
   lines.add "  goto " & c.cleanup & ";"
@@ -495,8 +541,9 @@ proc emitCheckedAotFunctionImpl(lines: var seq[string], fn: FunctionProto, cName
   for name in c.integers: lines.add "  gene_aot_int_drop(&" & name & ");"
   for name in c.scalars: lines.add "  (void)" & name & ";"
   lines.add "  if (" & c.status & " != GENE_NATIVE_OK) gene_aot_error_frame(" & c.error & ", " &
-    cStringLiteral(fn.name) & ", " & cStringLiteral(fn.sourceLoc.sourceName) & ", " &
+    cStringLiteral(fn.name) & ", " & cStringLiteral(aotSourceLabel(fn.sourceLoc.sourceName)) & ", " &
     $fn.sourceLoc.line & ", " & $fn.sourceLoc.col & ");"
+  lines.add "  gene_aot_leave();"
   lines.add "  return " & c.status & ";"
   lines.add "}"
   lines.add ""

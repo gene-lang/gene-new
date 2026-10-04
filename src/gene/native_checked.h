@@ -83,6 +83,36 @@ GENE_AOT_INLINE GeneNativeStatus gene_aot_error_integer(GeneNativeError *error,
   return GENE_NATIVE_TYPE_ERROR;
 }
 
+/* Bound native stack use independently of the error record: setting/clearing
+ * diagnostics must not reset the active call depth. Each generated module has
+ * its own per-thread counter, including reentrant calls with a new error record.
+ */
+#ifndef GENE_AOT_MAX_CALL_DEPTH
+#define GENE_AOT_MAX_CALL_DEPTH 256
+#endif
+#if GENE_AOT_MAX_CALL_DEPTH < 1
+#error GENE_AOT_MAX_CALL_DEPTH must be positive
+#endif
+#if defined(__cplusplus)
+static thread_local size_t gene_aot_call_depth;
+#elif defined(_MSC_VER)
+static __declspec(thread) size_t gene_aot_call_depth;
+#else
+static _Thread_local size_t gene_aot_call_depth;
+#endif
+
+GENE_AOT_INLINE GeneNativeStatus gene_aot_enter(GeneNativeError *error) {
+  if (gene_aot_call_depth >= GENE_AOT_MAX_CALL_DEPTH)
+    return gene_aot_error_set(error, GENE_NATIVE_RUNTIME_ERROR,
+      "native call depth limit exceeded", "");
+  ++gene_aot_call_depth;
+  return GENE_NATIVE_OK;
+}
+
+GENE_AOT_INLINE void gene_aot_leave(void) {
+  --gene_aot_call_depth;
+}
+
 GENE_AOT_INLINE const char *gene_aot_kind_label(GeneNativeValueKind kind) {
   switch (kind) {
     case GENE_NATIVE_INT: return "vkInt";

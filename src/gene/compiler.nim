@@ -3579,7 +3579,7 @@ proc aotLiteralRepr(expr: Value): AotRepr =
   of vkString:
     AotRepr(kind: arkCStr, typeName: "Str")
   of vkInt:
-    if expr.intVal >= low(int32) and expr.intVal <= high(int32):
+    if expr.intFitsInt64 and expr.intVal >= low(int32) and expr.intVal <= high(int32):
       AotRepr(kind: arkI32, typeName: "I32")
     else:
       AotRepr(kind: arkI64, typeName: "I64")
@@ -3728,7 +3728,7 @@ proc acceptsAotArity(fn: FunctionProto, count: int): bool =
 proc acceptsNativeFfiArguments(expr: Value, ffiFn: FfiFnProto,
                                params: openArray[string], paramReprs: openArray[AotRepr],
                                locals: seq[AotLocal]): bool =
-  if ffiFn.params.len != expr.body.len:
+  if expr.props.len != 0 or expr.meta.len != 0 or ffiFn.params.len != expr.body.len:
     return false
   for i, arg in expr.body:
     var argRepr = arg.aotBindingRepr(params, paramReprs, locals)
@@ -3810,9 +3810,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                                   ffiFns, locals)
   if expr.head.kind != vkSymbol:
     return false
-  ## Arithmetic, comparison and `if` lower to plain C operators and a ternary.
-  ## The emitter has always handled them; analysis had no case, so a body that
-  ## computed anything at all was rejected as unlowerable.
+  ## Admit arithmetic, comparisons and branches with compatible representations.
+  ## The checked emitter sequences their evaluation and inserts boundary checks.
   if expr.head.symVal in ["+", "-", "*"] and expr.body.len == 2:
     if resultRepr.kind notin {arkI64, arkF64}:
       return false
@@ -3826,8 +3825,9 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     ## Gene's `/` raises `division by zero` for floats as well as integers
     ## (`biDiv`), where C yields an infinity and says nothing. Lowering a
     ## general division would therefore turn a catchable Gene error into a
-    ## silent `inf` propagating through the rest of the computation — and a
-    ## self-contained AOT function has no runtime ABI with which to raise.
+    ## silent `inf` propagating through the rest of the computation. General
+    ## division has not yet been given a checked lowering, so admission remains
+    ## conservative even though the backend now has an error channel.
     ##
     ## When the divisor is a non-zero literal the divergence cannot arise, so
     ## the lowering is exact. That is not as narrow as it sounds: scaling by a
@@ -3851,7 +3851,7 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
       return false
     return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, resultRepr,
                                   ffiFns, locals)
-  if expr.head.symVal in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
+  if expr.head.symVal in ["<", ">", "<=", ">=", "=="] and expr.body.len == 2:
     ## A C comparison yields int, so the result must be I64; the operands may
     ## be either scalar repr as long as they agree.
     if resultRepr.kind != arkI64:
@@ -3972,7 +3972,8 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
                                locals: var seq[AotLocal]): bool =
   ## Statement position: inside `do`, and inside a `while` body. A statement's
   ## value is discarded, so only its effect has to lower.
-  if statement.kind != vkNode or statement.head.kind != vkSymbol:
+  if statement.kind != vkNode or statement.head.kind != vkSymbol or
+      statement.props.len != 0 or statement.meta.len != 0:
     return false
   if statement.head.isSymbol("let") or statement.head.isSymbol("var"):
     ## Two shapes: `(var x : T init)` states the representation, and
@@ -4177,7 +4178,7 @@ proc isAotBoolExpr(expr: Value, params: openArray[string], typeName: string,
       expr.head.kind != vkSymbol:
     return false
   let head = expr.head.symVal
-  if head notin ["<", ">", "<=", ">=", "="]:
+  if head notin ["<", ">", "<=", ">=", "=="]:
     return false
   if expr.body.len != 2:
     return false

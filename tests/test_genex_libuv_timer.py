@@ -113,7 +113,7 @@ class GenexLibuvTimerTests(unittest.TestCase):
   0)
 '''.replace("__LIFETIMES__", str(lifetimes)))
             gene = base / "gene"
-            built = invoke(["nim", "c", "-d:geneRcStats", "--path:src", "--hints:off",
+            built = invoke(["nim", "c", "-d:geneDebug", "-d:geneRcStats", "--path:src", "--hints:off",
                             f"--nimcache:{base / 'nimcache'}", f"-o:{gene}",
                             "src/gene.nim"], env)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)

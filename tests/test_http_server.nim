@@ -19,7 +19,7 @@ proc buildHttpGene() =
   if httpGeneBuilt:
     return
   createDir(httpTestDir)
-  let build = execCmdEx("nim c --path:src --hints:off -o:" & httpGeneExe &
+  let build = execCmdEx("nim c -d:geneDebug --path:src --hints:off -o:" & httpGeneExe &
                         " src/gene.nim")
   if build.exitCode != 0:
     checkpoint build.output

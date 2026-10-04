@@ -4,7 +4,7 @@
 ## prototypes. It is the handoff boundary between syntax compilation and runtime
 ## execution.
 
-import std/[sets, strutils, tables]
+import std/[math, os, sets, strutils, tables]
 import ./[printer, types]
 
 const
@@ -1770,7 +1770,6 @@ proc aotCType(repr: AotRepr, names: FfiStructCNames): string =
   of arkNone: ""
 
 type AotCFunction = object
-  optionalNilTail: int
   cName: string
   paramCount: int
   cType: string
@@ -2566,7 +2565,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
   else:
     lines.add "  (void)result;"
     lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
-  lines.add entryName & "_arg_error:"
+  if fn.params.len > 0:
+    lines.add entryName & "_arg_error:"
   for i in countdown(fn.params.high, 0):
     if i >= fn.aotParamReprs.len or
         fn.aotParamReprs[i].kind != arkNativePtr:
@@ -2584,7 +2584,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       lines.add "    " & paramReleases[i] & "(" & rawName & ");"
     else:
       discard
-  lines.add "  return status;"
+  if fn.params.len > 0:
+    lines.add "  return status;"
   lines.add "}"
   lines.add "#endif"
   lines.add ""
@@ -2654,6 +2655,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         else: discard
       parameterReprs.add repr
     available[fn.name] = AotCFunction(
+      geneName: fn.name,
       cName: cIdent(symbol, "ffi_symbol_" & $i),
       paramCount: fn.params.len,
       outParams: outFlags,
@@ -2928,7 +2930,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         continue
       let paramList = if params.len == 0: "void" else: params.join(", ")
       emitCheckedAotFunction(lines, fn, cName, available, structNames)
-      let target = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
+      let target = AotCFunction(cName: cName, paramCount: fn.params.len,
                                 cType: cType, checked: true,
                                 paramNames: fn.params, paramReprs: fn.aotParamReprs,
                                 returnRepr: fn.aotReturnRepr, geneName: fn.name,
@@ -2960,7 +2962,6 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       var fnAvailable = available
       fnAvailable[fn.name] = AotCFunction(cName: cName,
                                           paramCount: fn.params.len,
-                                          optionalNilTail: fn.aotOptionalNilTail,
                                           cType: cType, checked: true,
                                           paramNames: fn.params,
                                           paramReprs: fn.aotParamReprs,
@@ -2972,7 +2973,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         else: ""
       if entryName.len > 0:
         addNativeEntry(lines, fn, cName, entryName, structNames)
-      available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len, optionalNilTail: fn.aotOptionalNilTail,
+      available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len,
                                         cType: cType, checked: true,
                                         paramNames: fn.params,
                                         paramReprs: fn.aotParamReprs,
@@ -3127,6 +3128,10 @@ proc addNativeTypeManifests(lines: var seq[string], chunk: Chunk,
 
 const NativeIntegerRuntime = staticRead("native_integer.h")
 const NativeCheckedRuntime = staticRead("native_checked.h").replace("#include \"native_integer.h\"", "")
+
+proc emitNativeCHeader*(): string =
+  ## Also available from an installed CLI; C callers need no source checkout.
+  NativeIntegerRuntime & "\n" & NativeCheckedRuntime & "\n"
 
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
@@ -3320,9 +3325,6 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "#define GENE_MAYBE_UNUSED",
     "#endif",
     "#endif",
-    "extern int64_t gene_typed_native_null_i64(const char *type_name, const char *field_name);",
-    "extern double gene_typed_native_null_f64(const char *type_name, const char *field_name);",
-    "extern void *gene_typed_native_null_ptr(const char *type_name, const char *field_name);",
     "extern GeneStatus gene_typed_native_arg_borrow(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
     "extern GeneStatus gene_typed_native_arg_transfer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
     "extern void gene_typed_native_arg_restore(GeneContext *ctx, const GeneCall *call, size_t index, const char *handle_field, void *value);",

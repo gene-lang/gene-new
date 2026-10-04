@@ -1205,7 +1205,7 @@ int main(void) {
       (fn back [x : I64] : I64 (- (+ x 1) 1))
       (fn add [x : I64 y : I64] : I64 (+ x y))
       (fn true_zero [x : I64] : I64 (if x 1 2))
-      (fn conditional_kind [x : I64] : I64 (if (< x 0) (= x -1) 1))
+      (fn conditional_kind [x : I64] : I64 (if (< x 0) (== x -1) 1))
       (fn crossed [n : I64] : I64
         (var x n) (while (< x (+ n 2)) (set x (+ x 1))) (- x n))
       (ffi/fn tick ^symbol "checked_tick" [n : C/Int64] : C/Int64)
@@ -1248,7 +1248,7 @@ int main(void) {
   assert(error.frame_count == 2 && strcmp(error.frames[0].function, "consume") == 0);
   calls = 0;
   assert(gene_native_before_store(&error, NULL, &out) == GENE_NATIVE_NULL_FIELD && calls == 3);
-  assert(gene_native_float_cmp(&error, NAN, 1, &out) == GENE_NATIVE_ORDER_ERROR);
+  assert(gene_native_float_cmp(&error, NAN, 1, &out) == GENE_NATIVE_OK && out == 2);
   CBox box = {0}; calls = 0; out = -99;
   box.letter = 'a';
   assert(gene_native_char_as_int(&error, &box, &out) == GENE_NATIVE_TYPE_ERROR);
@@ -1298,6 +1298,166 @@ int main(void) {
     removeFile(path)
     removeFile(library)
     removeDir(directory)
+
+  test "checked native comparisons and wide literals agree with the VM":
+    let source = """
+      (fn lt ^native_entry {} [x : F64 y : F64] : I64 (if (< x y) 1 0))
+      (fn le ^native_entry {} [x : F64 y : F64] : I64 (if (<= x y) 1 0))
+      (fn gt ^native_entry {} [x : F64 y : F64] : I64 (if (> x y) 1 0))
+      (fn ge ^native_entry {} [x : F64 y : F64] : I64 (if (>= x y) 1 0))
+      (fn eq ^native_entry {} [x : F64 y : F64] : I64 (if (== x y) 1 0))
+      (fn eq_int ^native_entry {} [x : I64 y : I64] : I64 (if (== x y) 1 0))
+      (fn wide ^native_entry {} [x : I64] : I64
+        (- (+ x 10000000000000000000000000000000000000000)
+           10000000000000000000000000000000000000000))
+      (fn wide_cmp ^native_entry {} [x : I64] : I64 (if (< x 9223372036854775808) 1 0))
+      (fn negative ^native_entry {} [] : I64
+        (- -10000000000000000000000000000000000000000
+           -9999999999999999999999999999999999999999))
+      (fn out_of_range ^native_entry {} [] : I64 9223372036854775808)
+      (fn pos_inf ^native_entry {} [x : F64] : F64 (+ x inf))
+      (fn neg_inf ^native_entry {} [x : F64] : F64 (+ x -inf))
+      (fn not_a_number ^native_entry {} [x : F64] : F64 (+ x nan))
+    """
+    var calls: seq[string]
+    for name in ["lt", "le", "gt", "ge", "eq"]:
+      for pair in ["nan 1.0", "1.0 nan", "nan nan", "1.0 1.0", "-inf inf"]:
+        calls.add "(" & name & " " & pair & ")"
+    calls.add "(eq_int 42 42)"
+    calls.add "(eq_int 42 43)"
+    calls.add "(wide 9223372036854775807)"
+    calls.add "(wide_cmp 9223372036854775807)"
+    calls.add "(negative)"
+    calls.add "(pos_inf 1.0)"
+    calls.add "(neg_inf 1.0)"
+    calls.add "(not_a_number 1.0)"
+    let expected = run(compileSource(source & " [" & calls.join(" ") & "]"), newGlobalScope()).print()
+    let generated = compileSource(source, "/checkout-a/kernels/numbers.gene").emitExperimentalC()
+    check generated == compileSource(source, "/checkout-b/kernels/numbers.gene").emitExperimentalC()
+    check "/checkout-a" notin generated
+    let directory = createTempDir("gene_native_numeric_review_", "")
+    let path = directory / "numbers.c"
+    let library = directory / ("libnumbers." & (when defined(macosx): "dylib" else: "so"))
+    writeFile(path, generated)
+    let built = execCmdEx(quoteShell(getEnv("CC", "cc")) &
+      " -std=c11 -O2 -Wall -Wextra -Werror -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+      (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+      quoteShell(path) & " -o " & quoteShell(library))
+    doAssert built.exitCode == 0, built.output
+    var nativeCalls: seq[string]
+    for call in calls: nativeCalls.add "(native/" & call[1 .. ^1]
+    check_eval("(let native ($aot/load " & geneString(library) & ")) [" & nativeCalls.join(" ") & "]", expected)
+    for body in [source & " (out_of_range)",
+        "(let native ($aot/load " & geneString(library) & ")) (native/out_of_range)"]:
+      check_eval("(try (do " & body & ") catch TypeError $err/actual_value)", "9223372036854775808")
+    checkCRuns(generated & """
+#include <assert.h>
+int main(void) {
+  GeneNativeError error = {0}; int64_t value = 0; double real = 0;
+  assert(gene_native_lt(&error, NAN, 1, &value) == GENE_NATIVE_OK && value == 0);
+  assert(gene_native_le(&error, 1, NAN, &value) == GENE_NATIVE_OK && value == 0);
+  assert(gene_native_gt(&error, NAN, NAN, &value) == GENE_NATIVE_OK && value == 0);
+  assert(gene_native_ge(&error, NAN, NAN, &value) == GENE_NATIVE_OK && value == 0);
+  assert(gene_native_eq(&error, NAN, NAN, &value) == GENE_NATIVE_OK && value == 0);
+  assert(gene_native_wide(&error, INT64_MAX, &value) == GENE_NATIVE_OK && value == INT64_MAX);
+  assert(gene_native_negative(&error, &value) == GENE_NATIVE_OK && value == -1);
+  assert(gene_native_pos_inf(&error, 1, &real) == GENE_NATIVE_OK && isinf(real) && real > 0);
+  assert(gene_native_neg_inf(&error, 1, &real) == GENE_NATIVE_OK && isinf(real) && real < 0);
+  assert(gene_native_not_a_number(&error, 1, &real) == GENE_NATIVE_OK && isnan(real));
+  assert(gene_native_out_of_range(&error, &value) == GENE_NATIVE_TYPE_ERROR);
+  gene_aot_error_clear(&error);
+  puts("numeric parity");
+}
+""", "native_numeric_review", "numeric parity", checkedValues = false)
+    removeFile(path)
+    removeFile(library)
+    removeDir(directory)
+
+  test "native equality uses the ordinary Gene operator and never drops FFI props":
+    check_runtime_error("(= 1 1)", "undefined symbol: =")
+    check_compile_error("(fn bad ^native_entry {} [x : I64] : I64 (if (= x 0) 1 0))",
+      "requires typed_native lowering")
+    check_compile_error("(ffi/fn note ^symbol \"checked_note\" [x : C/Int64] : C/Void) " &
+      "(fn bad ^native_entry {} [x : I64] : I64 (note ^level 1 x) x)",
+      "requires typed_native lowering")
+
+  test "native recursion reaches a checked limit and recovers without corrupting later calls":
+    let source = "(fn depth ^native_entry {} [n : I64] : I64 " &
+      "(if (< n 1) 0 (+ 1 (depth (- n 1)))))"
+    check_eval(source & " (depth 100000)", "100000")
+    let generated = compileSource(source).emitExperimentalC()
+    checkCRuns(generated & """
+#include <assert.h>
+#include <string.h>
+int main(void) {
+  GeneNativeError error = {0}; int64_t out = -99;
+  assert(gene_native_depth(&error, 100000, &out) == GENE_NATIVE_RUNTIME_ERROR);
+  assert(out == -99 && strstr(error.where, "depth limit") != NULL);
+  assert(error.frame_count == GENE_AOT_MAX_CALL_DEPTH + 1);
+  for (int i = 0; i < 1000; ++i)
+    assert(gene_native_depth(&error, 8, &out) == GENE_NATIVE_OK && out == 8);
+  gene_aot_error_clear(&error);
+  puts("bounded recursion");
+}
+""", "native_bounded_recursion", "bounded recursion", checkedValues = false)
+    let directory = createTempDir("gene_native_depth_", "")
+    let path = directory / "depth.c"
+    let library = directory / ("libdepth." & (when defined(macosx): "dylib" else: "so"))
+    writeFile(path, generated)
+    let built = execCmdEx(quoteShell(getEnv("CC", "cc")) &
+      " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+      (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+      quoteShell(path) & " -o " & quoteShell(library))
+    doAssert built.exitCode == 0, built.output
+    check_eval("(let native ($aot/load " & geneString(library) & ")) " &
+      "[(try (native/depth 100000) catch RuntimeError $err/message) (native/depth 8)]",
+      "[\"native call depth limit exceeded\" 8]")
+    removeFile(path)
+    removeFile(library)
+    removeDir(directory)
+
+  test "native stores reject null strings and non-null pointers before mutation":
+    let source = """
+      (ffi/struct CLeaf ^fields [[value C/Int64]])
+      (type Leaf ^native {^abi CLeaf ^lifecycle manual})
+      (ffi/struct CBox ^fields [[child (C/Ptr Leaf)] [text C/CStr]])
+      (type Box ^native {^abi CBox ^lifecycle manual ^mutable true})
+      (fn copy_child [dst : Box src : Box] : I64 (set dst/child src/child) 1)
+      (fn copy_text [dst : Box src : Box] : I64 (set dst/text src/text) 1)
+      (ffi/fn badstr ^symbol "checked_badstr" [] : C/CStr)
+      (ffi/fn badptr ^symbol "checked_badptr" [] : Leaf)
+      (fn store_badstr [dst : Box] : I64 (set dst/text (badstr)) 1)
+      (fn store_badptr [dst : Box] : I64 (set dst/child (badptr)) 1)
+    """
+    checkCRuns(compileSource(source).emitExperimentalC() & """
+#include <assert.h>
+#include <string.h>
+const char *checked_badstr(void) { return NULL; }
+CLeaf *checked_badptr(void) { return NULL; }
+int main(void) {
+  CLeaf leaf = {1}; CBox dst = {&leaf, "kept"}; CBox src = {NULL, NULL};
+  GeneNativeError error = {0}; int64_t out = -99;
+  assert(gene_native_copy_child(&error, &dst, &src, &out) == GENE_NATIVE_TYPE_ERROR);
+  assert(dst.child == &leaf && out == -99);
+  assert(gene_native_copy_text(&error, &dst, &src, &out) == GENE_NATIVE_TYPE_ERROR);
+  assert(strcmp(dst.text, "kept") == 0 && out == -99);
+  assert(gene_native_store_badstr(&error, &dst, &out) == GENE_NATIVE_RUNTIME_ERROR);
+  assert(strstr(error.where, "returned null C/CStr") && strcmp(dst.text, "kept") == 0);
+  assert(gene_native_store_badptr(&error, &dst, &out) == GENE_NATIVE_RUNTIME_ERROR);
+  assert(dst.child == &leaf);
+  gene_aot_error_clear(&error);
+  puts("checked null stores");
+}
+""", "native_null_stores", "checked null stores", checkedValues = false)
+
+  test "the exported C support header needs no source-tree includes":
+    checkCRuns(emitNativeCHeader() & """
+int main(void) {
+  GeneNativeError error = {0};
+  gene_aot_error_clear(&error);
+  puts("standalone header");
+}
+""", "native_exported_header", "standalone header", checkedValues = false)
 
   test "typed-native pointer parameters lower foreign fields to direct C loads":
     let chunk = compileSource(
@@ -1462,7 +1622,7 @@ int main(void) {
       "  (do " &
       "    (var slot : Db? seed) " &
       "    (let rc : I64 (db_clone src slot)) " &
-      "    (if (= rc 0) slot nil)))")
+      "    (if (== rc 0) slot nil)))")
     let c = chunk.emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_clone(CDb * src, CDb ** dst);" in c
     check "= gene_aot_int((int64_t)(db_clone(" in nativeFunction(c, "clone_it")
@@ -1506,7 +1666,7 @@ int main(void) {
       "    (var first : Db? nil) " &
       "    (var second : Db? nil) " &
       "    (let rc : I64 (db_split src first second)) " &
-      "    (if (= rc 0) second nil)))").emitExperimentalC()
+      "    (if (== rc 0) second nil)))").emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_split(CDb * src, CDb ** a, CDb ** b);" in c
     check "db_split(" in c
     checkCCompiles(c, "typed_native_multi_out")

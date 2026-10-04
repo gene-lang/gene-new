@@ -69,7 +69,7 @@ class GenexPackageTests(unittest.TestCase):
             shutil.copytree(WEBSOCKET, package,
                             ignore=shutil.ignore_patterns("build", "tests", "tools"))
             gene = base / "gene"
-            built = invoke(["nim", "c", "--path:src", "--hints:off",
+            built = invoke(["nim", "c", "-d:geneDebug", "--path:src", "--hints:off",
                             f"--nimcache:{base / 'nimcache'}", f"-o:{gene}",
                             "src/gene.nim"], timeout=180)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)

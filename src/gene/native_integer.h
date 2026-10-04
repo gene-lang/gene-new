@@ -179,6 +179,16 @@ GENE_AOT_INLINE void gene_aot_int_take(GeneNativeInt *out, GeneNativeBigInt *big
   *out = result;
 }
 
+/* Compiler-emitted literals use little-endian base-1e9 limbs. */
+GENE_AOT_INLINE bool gene_aot_int_from_limbs(GeneNativeInt *out,
+    const uint32_t *digits, size_t length, int sign) {
+  GeneNativeBigInt *value = gene_aot_big_alloc(length, sign);
+  if (value == NULL) return false;
+  for (size_t i = 0; i < length; ++i) value->digits[i] = digits[i];
+  gene_aot_int_take(out, value);
+  return true;
+}
+
 GENE_AOT_SLOW bool gene_aot_int_sum_wide(GeneNativeInt *out,
                                        const GeneNativeInt *a,
                                        const GeneNativeInt *b, bool subtract) {

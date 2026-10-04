@@ -74,6 +74,7 @@ proc usage() =
   echo "  gene fmt <file.gene>    human-friendly format: sugar restored, comments kept"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
+  echo "  gene compile --c-header           print the standalone checked C ABI header"
   echo "  gene build [target] [options] build a package product"
   echo "  gene build --all [options] build every workspace product"
   echo "  gene install [target] --prefix dir [--package-root dir] [--registry-config path]"
@@ -1764,7 +1765,12 @@ proc main() =
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"
       quit(1)
-    if paramStr(2) == "--target":
+    if paramStr(2) == "--c-header":
+      if paramCount() != 2:
+        stderr.writeLine "Error: 'compile --c-header' takes no file path"
+        quit(1)
+      stdout.write emitNativeCHeader()
+    elif paramStr(2) == "--target":
       if paramCount() < 4:
         stderr.writeLine "Error: 'compile --target' needs a target and file path"
         quit(1)

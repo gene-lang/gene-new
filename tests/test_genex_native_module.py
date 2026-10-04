@@ -212,7 +212,7 @@ class NativeModulePackageTests(unittest.TestCase):
   0)
 '''.replace("__LIFETIMES__", str(lifetimes)))
             gene = base / "gene"
-            build_args = ["nim", "c", "-d:geneRcStats", "--path:src", "--hints:off"]
+            build_args = ["nim", "c", "-d:geneDebug", "-d:geneRcStats", "--path:src", "--hints:off"]
             if atomic:
                 build_args += ["--mm:atomicArc", "--threads:on"]
             built = invoke(build_args + [

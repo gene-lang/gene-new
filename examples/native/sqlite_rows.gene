@@ -91,7 +91,7 @@
 (fn open_db [path : Str] : Db?
   (var db : Db? nil)
   (let rc : I64 (sqlite3_open path db))
-  (if (= rc 0) db nil))
+  (if (== rc 0) db nil))
 
 (fn exec [db : Db sql : Str] : I64
   (sqlite3_exec db sql nil nil nil))
@@ -99,7 +99,7 @@
 (fn prepare [db : Db sql : Str] : Stmt?
   (var stmt : Stmt? nil)
   (let rc : I64 (sqlite3_prepare_v2 db sql -1 stmt nil))
-  (if (= rc 0) stmt nil))
+  (if (== rc 0) stmt nil))
 
 (fn close_db [db : Db] : I64
   (sqlite3_close db))
@@ -129,6 +129,6 @@
 (fn scan_total [stmt : Stmt amount_column : I32 quantity_column : I32
                 row_marker : I64] : I64
   (var total : I64 0)
-  (while (= (step_row stmt) row_marker)
+  (while (== (step_row stmt) row_marker)
     (set total (+ total (row_total stmt amount_column quantity_column))))
   total)

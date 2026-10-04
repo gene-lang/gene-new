@@ -286,7 +286,7 @@ class GenexArchivePackageTests(unittest.TestCase):
   0)
 ''')
             gene = base / "gene"
-            built = invoke(["nim", "c", "--path:src", "--hints:off",
+            built = invoke(["nim", "c", "-d:geneDebug", "--path:src", "--hints:off",
                             f"--nimcache:{base / 'nimcache'}", f"-o:{gene}",
                             "src/gene.nim"], env)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)

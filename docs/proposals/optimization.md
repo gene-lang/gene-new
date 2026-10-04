@@ -1,7 +1,8 @@
 # Performance implementation ledger
 
-This branch implements the reviewed 2026-10-03 optimization assessment
-(`tmp/optimization.md`). The assessment's P1/P2 ideas are conditional on
+This branch implements portable release defaults, checked native lowering,
+reproducible performance measurement, and the profile-selected publication
+optimization. Further P1/P2 ideas are conditional on
 profiles and conformance, not promised speedups. Preserve Gene syntax,
 arbitrary-precision arithmetic, evaluation order, scoped dispatch, ownership,
 budgets and cancellation.
@@ -12,7 +13,7 @@ budgets and cancellation.
 | --- | --- | --- |
 | Portable release default, explicit debug build, version metadata | Build the actual CLI in both modes, inspect `--version`, run CLI checks and the harness replay selection in both modes | Both modes built and report correct optimization/check settings; both replay selections pass 37/37 |
 | AOT minimum I64 literal | VM/generated-C parity for signed minimum and an in-range comparison, compiler warnings enabled | Fixed; compiler-warning regression and full spec pass |
-| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | Checked ABI v2 implemented; all 829 specs pass, with emitted C under ASan/UBSan |
+| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | Checked ABI v2 implemented; all 834 specs pass after review fixes, with emitted C under ASan/UBSan |
 | AOT status documentation | Generated header and source comments agree with the runtime loader | Updated for checked ABI v2; in-repository C callers migrated |
 | Reproducible controls and baselines | Empty/constant chunks, matched F64 bodies, machine/build provenance, raw samples, checksums, distributions, independent rebuilds | Complete local capture: two fresh-cache builds, 89 matching rows, excluded warmup plus three measured rounds each; saved under benchmarks/baselines |
 | Application profiles before P1 | Release harness replay and numeric application samples, ranked sample counts and limitations | Captured real service/patch workload and native Miclone generation; publication/escape dominate service; call/contract and lookup are numeric targets |
@@ -31,12 +32,17 @@ follow-up profile. Publication's attributed main-thread sample share fell from
 47.83% to 16.89%. Scope escape/retention is now the largest identified service
 bucket (44.80%) and is the next investigation, with its lifetime proofs intact.
 
-For the uninstrumented 100-turn service workload, the pre-change median was
-86.292 s and the two independently built optimized medians were 24.443/24.594 s.
-Every run produced checksum 15100 and all patches. The ranges were wide:
-41.579–90.409 s before, 21.207–30.387 s after, and 23.916–68.274 s for the
-independent rebuild. Background activity was observed. These samples support
-an improvement, but **do not establish a stable 3.5× deployment speedup**.
+**The service improvement is about 1.6×**, based on Claude's independent quiet
+rerun reported in the October 4 review. The 100-turn workload took 32.7/32.9 s
+before and 19.8/20.3 s after (1.64× from the two-run medians); an independently
+rebuilt optimized binary took 19.8 s. A 40-turn check gave 7.42/7.46 s before
+and 4.71/4.75 s after (1.57×). Checksums were 15100 and 3280 respectively.
+These are reviewer-reported measurements, not a new capture by this assistant.
+
+The earlier noisy capture's 86.292 s versus 24.443/24.594 s medians remain in
+the raw evidence for audit, but are superseded as the performance estimate.
+Their apparent 3.5× ratio is dominated by noise. The quiet figure also agrees
+with the approximately 1.6× suggested by the publication sample-share change.
 
 All 89 core measurements retain their checksums and work counts. Empty/constant
 chunk controls remain around 109/135 ns. Small control changes, including the
@@ -44,10 +50,11 @@ chunk controls remain around 109/135 ns. Small control changes, including the
 being attributed to this change. The monomorphic-send and typed-F64 questions
 remain open; this branch does not claim to resolve them.
 
-Checked ABI v2 fib(28) × 20 measured median 103 ms versus 1219 ms in the VM
-(11.8×). The 200,000-iteration boundary loop measured 74 ms versus 23 ms for
-the VM-call loop. Exact arithmetic has a cost; the unchecked ABI's old 117×
-number is historical. The native example guide now reports the checked results.
+After the review fixes, checked ABI v2 fib(28) × 20 measured median 115 ms
+versus 1238 ms in the VM (10.8×). The 200,000-iteration boundary loop measured
+73 ms versus 22 ms for the VM-call loop. Exact arithmetic and bounded recursion
+have a cost; the earlier pre-guard 11.8× and unchecked 117× figures are historical.
+See the [review follow-up](optimization-review.md) for samples and qualification.
 
 This completes P0 and the first profile-selected P1 change. Further scope-escape,
 call/contract, dispatch, buffer-borrow and native-artifact work remain subsequent

@@ -20,7 +20,7 @@ proc buildGeneCli() =
   if dirExists(cliArtifactStore):
     makeMaterializedTreeWritable(cliArtifactStore)
     removeDir(cliArtifactStore)
-  let build = execCmdEx("nim c --path:src --hints:off -o:" & geneExe & " src/gene.nim")
+  let build = execCmdEx("nim c -d:geneDebug --path:src --hints:off -o:" & geneExe & " src/gene.nim")
   if build.exitCode != 0:
     checkpoint build.output
   check build.exitCode == 0
@@ -29,7 +29,7 @@ proc buildGeneCli() =
   # them means the delegation path itself is under test, not stubbed.
   for (module, exe) in [("gene_fmt", "gene-fmt"), ("gene_lsp", "gene-lsp"),
                         ("gene_viewer", "gene-viewer")]:
-    let toolBuild = execCmdEx("nim c --path:src --hints:off -o:" &
+    let toolBuild = execCmdEx("nim c -d:geneDebug --path:src --hints:off -o:" &
                               (cliDir / exe) & " src/" & module & ".nim")
     if toolBuild.exitCode != 0:
       checkpoint toolBuild.output
@@ -104,16 +104,30 @@ proc agentStateRecordPath(root, key: string): string =
   root / "generations" / readFile(current).strip() / (key & ".gene")
 
 suite "cli — gene run":
-  test "version reports the default release build and enabled checks":
+  test "version reports the explicit debug test build and enabled checks":
     let ran = runGene(["--version"])
     check ran.exitCode == 0
     check ran.output.startsWith("Gene ")
-    check "(release; " in ran.output
+    check "(debug; " in ran.output
     check "Nim " in ran.output
     check "; mm=orc; " in ran.output
-    check "; nim-opt=speed; " in ran.output
+    check "; nim-opt=none; " in ran.output
     check "; bounds=true; overflow=true)" in ran.output
     check runGene(["version"]).output == ran.output
+
+  test "CLI build policy defaults to portable release":
+    # Exercise config.nims with the CLI's project name and real build-info code,
+    # without optimizing/linking the entire VM just to read its build settings.
+    createDir(cliDir)
+    let probe = cliDir / "build-mode-probe"
+    let built = execCmdEx("nim c -r --path:src --hints:off --nimcache:" &
+      shellQuote(cliDir / "build-mode-cache") & " -o:" & shellQuote(probe) &
+      " tests/fixtures/build_mode/gene.nim")
+    checkpoint built.output
+    check built.exitCode == 0
+    check "(release; " in built.output
+    check "; nim-opt=speed; " in built.output
+    check "; bounds=true; overflow=true)" in built.output
 
   test "missing source paths report file not found":
     for path in ["nonexistent.gene", "missing/program.gene"]:
@@ -1419,6 +1433,14 @@ suite "cli — gene parse/fmt/compile":
     check ran.exitCode == 0
     check "twice" notin ran.output
     check "Panic:" notin ran.output
+
+  test "compile exports a self-contained checked C header without a source file":
+    let ran = runGene(["compile", "--c-header"])
+    check ran.exitCode == 0
+    check "typedef struct GeneNativeError" in ran.output
+    check "typedef struct GeneNativeInt" in ran.output
+    check "#include \"native_integer.h\"" notin ran.output
+    check runGene(["compile", "--c-header", "extra.gene"]).exitCode != 0
 
   test "compile target c prints experimental typed_native C":
     let path = writeCliProgram("compile_c_subject.gene",

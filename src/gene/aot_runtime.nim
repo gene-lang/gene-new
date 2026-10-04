@@ -625,25 +625,3 @@ proc geneTypedNativeResultCopy(ctx: ptr AotContext, address: pointer,
     return ctx.fail("native entry result copy failed")
   wrapperResult(ctx, copied, typeIdentity, abiIdentity, handleField, nullable,
                 release, resultOut)
-
-# ---------------------------------------------------------------------------
-# Null-field traps
-#
-# A nullable typed-native base that turns out to be NULL cannot produce a
-# value, so the generated guard calls these instead of dereferencing.
-# ---------------------------------------------------------------------------
-
-proc geneTypedNativeNullI64(typeName, fieldName: cstring): int64
-                           {.exportc: "gene_typed_native_null_i64", cdecl, dynlib.} =
-  raise newException(GeneError,
-    "null " & $typeName & " has no field '" & $fieldName & "'")
-
-proc geneTypedNativeNullF64(typeName, fieldName: cstring): float64
-                           {.exportc: "gene_typed_native_null_f64", cdecl, dynlib.} =
-  raise newException(GeneError,
-    "null " & $typeName & " has no field '" & $fieldName & "'")
-
-proc geneTypedNativeNullPtr(typeName, fieldName: cstring): pointer
-                           {.exportc: "gene_typed_native_null_ptr", cdecl, dynlib.} =
-  raise newException(GeneError,
-    "null " & $typeName & " has no field '" & $fieldName & "'")

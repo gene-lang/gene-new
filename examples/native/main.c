@@ -4,7 +4,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "../../src/gene/native_checked.h"
+#include "gene_native.h"
 
 GeneNativeStatus gene_native_open_db(GeneNativeError *, const char *, sqlite3 **);
 GeneNativeStatus gene_native_exec(GeneNativeError *, sqlite3 *, const char *, int64_t *);

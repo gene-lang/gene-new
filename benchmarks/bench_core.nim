@@ -74,10 +74,16 @@ int main(void) {
     removeFile(sourcePath)
     if fileExists(exePath):
       removeFile(exePath)
-  let built = execCmdEx(quoteShell(cc) & " -std=c11 -O2 -DITERATIONS=" &
+  let compilerCommand = when defined(macosx):
+    quoteShell(currentSourcePath.parentDir.parentDir / "tools" / "with_c_sdk") & " " & quoteShell(cc)
+  else:
+    quoteShell(cc)
+  let built = execCmdEx(compilerCommand & " -std=c11 -O2 -DITERATIONS=" &
     $iterations & " " & quoteShell(sourcePath) & " -o " & quoteShell(exePath))
   if built.exitCode != 0:
     raise newException(IOError, "failed to build generated field-load C: " & built.output)
+  if built.output.len > 0:
+    stderr.write(built.output) # Preserve SDK selection in the runner's raw log.
   let ran = execCmdEx(quoteShell(exePath))
   if ran.exitCode != 0:
     raise newException(IOError, "failed to run generated field-load C: " & ran.output)

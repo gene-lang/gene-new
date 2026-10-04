@@ -192,7 +192,7 @@ class OwnedHttpClientTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temp = tempfile.TemporaryDirectory(prefix="gene-owned-client-")
         cls.gene = pathlib.Path(cls.temp.name) / "gene"
-        command = ["nim", "c", "--path:src", "--hints:off",
+        command = ["nim", "c", "-d:geneDebug", "--path:src", "--hints:off",
                    f"--nimcache:{cls.temp.name}/nimcache",
                    f"-o:{cls.gene}", "src/gene.nim"]
         if ATOMIC_ARC:
