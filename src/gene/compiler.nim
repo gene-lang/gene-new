@@ -3502,9 +3502,9 @@ proc aotMutableBindingRepr(name: string, params: openArray[string],
 
 proc aotReprAccepts(destination, source: AotRepr): bool =
   ## An I32 widens into an I64 destination: the value is already known to fit,
-  ## and computing in 64 bits is what keeps compiled arithmetic agreeing with
-  ## the interpreter's range-checked `I32`. The reverse never holds — narrowing
-  ## would need a runtime check, and a typed-native body has no error path.
+  ## while intermediate integer arithmetic remains exact. This admission rule
+  ## still requires lossless representation edges; checked narrowing is only
+  ## emitted at the explicitly supported typed bindings and out-parameters.
   if destination.kind == arkI64 and source.kind == arkI32:
     return true
   if destination.kind != source.kind:

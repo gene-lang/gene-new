@@ -1,0 +1,8 @@
+{
+  "executable": "tmp/optimization-implementation/gene-publication",
+  "sha256": "772dbfb4171bfe106eed82bef3737862f4e3d3b7dc45890d9f8a05a99dc4244a",
+  "raw_sample_sha256": "66af6974529c9880821ad1570f8f0039bff53d84bba5ed6c65eb5ce1ad08ea43",
+  "command": "sample PID 10 1 -mayDie -file REPORT",
+  "start_delay_seconds": 1,
+  "workload": "gene run examples/gene-harness/probes/performance.gene NEW_WORKSPACE 100"
+}

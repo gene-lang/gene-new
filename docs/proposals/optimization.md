@@ -12,16 +12,48 @@ budgets and cancellation.
 | --- | --- | --- |
 | Portable release default, explicit debug build, version metadata | Build the actual CLI in both modes, inspect `--version`, run CLI checks and the harness replay selection in both modes | Both modes built and report correct optimization/check settings; both replay selections pass 37/37 |
 | AOT minimum I64 literal | VM/generated-C parity for signed minimum and an in-range comparison, compiler warnings enabled | Fixed; compiler-warning regression and full spec pass |
-| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | Checked ABI v2 implemented; direct-C and loaded-boundary specs pass with ASan/UBSan; broader qualification in progress |
+| AOT overflow and effect order | Intermediate overflow, safe failure before invalid control flow, exact effects once, direct-C and dynamic boundary tests, UBSan | Checked ABI v2 implemented; all 829 specs pass, with emitted C under ASan/UBSan |
 | AOT status documentation | Generated header and source comments agree with the runtime loader | Updated for checked ABI v2; in-repository C callers migrated |
 | Reproducible controls and baselines | Empty/constant chunks, matched F64 bodies, machine/build provenance, raw samples, checksums, distributions, independent rebuilds | Complete local capture: two fresh-cache builds, 89 matching rows, excluded warmup plus three measured rounds each; saved under benchmarks/baselines |
 | Application profiles before P1 | Release harness replay and numeric application samples, ranked sample counts and limitations | Captured real service/patch workload and native Miclone generation; publication/escape dominate service; call/contract and lookup are numeric targets |
-| Profile-selected P1 improvements | Before/after application and control workloads; relevant VM/spec/lifetime/thread checks | Profiling gate satisfied; shared-graph traversal selected for implementation |
+| Profile-selected P1 improvements | Before/after application and control workloads; relevant VM/spec/lifetime/thread checks | Complete: per-publication shared traversal, two optimized CLI builds, 100-turn application samples, 89 matching core controls, follow-up profile and lifetime/thread checks |
 
 P2 representation/cache changes and P3 JIT remain subject to the assessment's
 evidence gates. A new borrow contract needs an explicit owner decision;
 elapsed time is not approval. Record such decisions
 here and keep unrelated work moving while awaiting them.
+
+## Measured result and next gates
+
+The [October 4 evidence](../../benchmarks/baselines/2026-10-04-publication/README.md)
+contains raw timings, build identities, compressed qualification logs and the
+follow-up profile. Publication's attributed main-thread sample share fell from
+47.83% to 16.89%. Scope escape/retention is now the largest identified service
+bucket (44.80%) and is the next investigation, with its lifetime proofs intact.
+
+For the uninstrumented 100-turn service workload, the pre-change median was
+86.292 s and the two independently built optimized medians were 24.443/24.594 s.
+Every run produced checksum 15100 and all patches. The ranges were wide:
+41.579–90.409 s before, 21.207–30.387 s after, and 23.916–68.274 s for the
+independent rebuild. Background activity was observed. These samples support
+an improvement, but **do not establish a stable 3.5× deployment speedup**.
+
+All 89 core measurements retain their checksums and work counts. Empty/constant
+chunk controls remain around 109/135 ns. Small control changes, including the
+6.9% higher type-direct send median, need separate rebuild qualification before
+being attributed to this change. The monomorphic-send and typed-F64 questions
+remain open; this branch does not claim to resolve them.
+
+Checked ABI v2 fib(28) × 20 measured median 103 ms versus 1219 ms in the VM
+(11.8×). The 200,000-iteration boundary loop measured 74 ms versus 23 ms for
+the VM-call loop. Exact arithmetic has a cost; the unchecked ABI's old 117×
+number is historical. The native example guide now reports the checked results.
+
+This completes P0 and the first profile-selected P1 change. Further scope-escape,
+call/contract, dispatch, buffer-borrow and native-artifact work remain subsequent
+investigations. Buffer mutation/aliasing changes require their own contract
+decision. JIT, polymorphic caches and representation rewrites remain gated;
+none was added as part of this implementation.
 
 ## Owner decision: direct C errors
 
@@ -95,9 +127,21 @@ Application profile results and the attribution method are saved under
 `benchmarks/baselines/2026-10-03-applications/`. Native world generation is the
 appropriate VM numeric workload; the client mesher's V8 timings must be treated
 separately. Publication and escape walks account for approximately 48% and 29%
-of the service's main-thread samples. The next P1 investigation is repeated
-shared-value graph traversal within one publication, with separate scope/code
-visitation and fresh state between publications.
+of the service's main-thread samples. The selected P1 change shares a marking
+visit set within one publication, with separate scope/code visitation and fresh
+state between publications. It also shares this state across built-in impl
+roots and uses it at the worker I/O pin publication entry point. No persistent
+graph cache or new borrow contract was introduced.
+
+Final-source checks: 829 specs (emitted C under ASan/UBSan), 86 ORC
+reference-count/scope tests, 49 AtomicArc worker tests, 5 ORC managed-root tests,
+41 AtomicArc managed-root tests, and 2 normal-mode retirement-gate tests pass.
+The broad suite exercised 1,633 cases: 1,627 passed and six old C-text
+expectations failed (five module cases and one CLI kernel case). After migration,
+all 118 module/C-target CLI checks passed in the rebuilt broad-suite executable.
+No runtime failure remained. Final debug and release CLIs each passed the
+37-spec harness replay selection. The complete SQLite workflow passed from
+both standalone C and `aot/load`.
 
 The exact C integer foundation passes the native tests and the same suite with
 AddressSanitizer plus UndefinedBehaviorSanitizer. It checks promotion back into

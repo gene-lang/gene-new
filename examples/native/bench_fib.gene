@@ -62,6 +62,8 @@
   (set s (+ s 1)))
 (var native_ms (- (monotonic_ms) t1))
 
+($assert (== vm_result native_result) "VM and checked AOT Fibonacci results disagree")
+
 ($println ($to_str "Result: vm  fib(" n ") = " vm_result))
 ($println ($to_str "Result: aot fib(" n ") = " native_result))
 ($println ($to_str "Fib calls: " calls " (" reps " x fib(" n "))"))

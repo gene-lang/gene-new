@@ -106,24 +106,27 @@ the AOT boundary. `benchmarks/scripts/bench_fib_aot_c` already times compiled
 fib as a standalone binary — a ceiling with no runtime involved; this measures
 what a Gene program actually experiences.
 
-Historical run with the unchecked ABI v1 (Apple clang -O2, fib(28) × 20):
+Checked ABI v2 capture on 2026-10-04 (macOS arm64, release/ORC host,
+Apple clang -O2, three runs of fib(28) × 20):
 
 ```
-vm   time: 1291 ms      vm   rate:    15,932,718 calls/second
-aot  time:   11 ms      aot  rate: 1,869,921,818 calls/second
-Speedup:   117x
+vm   time: median 1219 ms   (1207–1227 ms)
+aot  time: median  103 ms   (99–105 ms)
+Ratio of medians: 11.8x
 
 Boundary cost over 200000 crossings:
-  aot boundary call: 52 ms     (~260 ns/call)
-  vm function call:  20 ms     (~100 ns/call)
+  aot boundary call: median 74 ms   (~370 ns/iteration)
+  vm function call:  median 23 ms   (~115 ns/iteration)
 ```
 
-These numbers predate the exact-integer checked ABI v2 and must not be used as
-its performance claim. Rerun the script with a fresh CLI to measure the current
-backend. The recursion never crosses the boundary — `fib` calls itself directly
-in C — so one crossing covers a million calls.
+The result was 317811 on both paths in every run. Raw logs are in
+[`benchmarks/baselines/2026-10-04-publication/aot/`](../../benchmarks/baselines/2026-10-04-publication/aot/).
+These are local measurements, including the Gene loop's overhead in the boundary
+rows. The earlier 117× figure used unchecked ABI v1 and is not representative of
+the exact-integer backend. The recursion never crosses the boundary — `fib`
+calls itself directly in C — so one crossing covers a million logical calls.
 
-In that historical run, a crossing cost about 2.6× a plain VM call. AOT pays when the compiled function
+In this run, the boundary loop cost about 3.2× the VM-call loop. AOT pays when the compiled function
 does enough work to amortize the crossing, and `identity` exists in `fib.gene`
 precisely to price that floor.
 
@@ -186,6 +189,9 @@ failure in that record. Concurrent calls use separate records. No Gene host
 is needed for direct C calls: the generated translation unit includes the
 integer/error support. Include `src/gene/native_checked.h` in a separate C
 caller, with the repository's `src` directory on its include path.
+Keep the generated library loaded until its error records have been cleared:
+trace labels and allocator callbacks refer to that library. Diagnostic string
+values borrow their original storage and must be inspected before it is released.
 
 Integer parameters and results keep their declared machine representation.
 Intermediate integer arithmetic promotes when necessary and remains exact;
