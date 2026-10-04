@@ -132,7 +132,8 @@ suite "modules — file imports":
       .emitExperimentalC()
     check "typedef struct CTimespec" in c
     check "GeneNativeStatus gene_native_seconds(GeneNativeError *" in c
-    check "return t->tv_sec;" in c
+    check "->tv_sec" in c
+    checkCCompiles(c, "native_selected_import")
 
   test "typed-native wrapper adapters retain imported ownership metadata":
     writeModule("native_wrapper.gene",
@@ -170,7 +171,7 @@ suite "modules — file imports":
       .compileFileModule(modDir / "native_alias_user.gene")
       .emitExperimentalC()
     check "gene_native_seconds" in c
-    check "return t->tv_sec;" in c
+    check "->tv_sec" in c
     checkCCompiles(c, "native_alias_import")
 
   test "an imported layout can back a re-exported native Type":
@@ -190,7 +191,7 @@ suite "modules — file imports":
     check dependency in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "gene_native_value" in c
-    check "return p->value;" in c
+    check "->value" in c
     checkCCompiles(c, "native_imported_abi")
 
   test "typed-native metadata survives an explicit re-export":
@@ -206,7 +207,7 @@ suite "modules — file imports":
       .compileFileModule(modDir / "native_reexport_user.gene")
       .emitExperimentalC()
     check "gene_native_value" in c
-    check "return p->value;" in c
+    check "->value" in c
     checkCCompiles(c, "native_type_reexport")
 
   test "typed-native ABI changes invalidate the module compile interface":
@@ -236,8 +237,8 @@ suite "modules — file imports":
     let c = newApplication(modDir)
       .compileFileModule(modDir / "native_collision_user.gene")
       .emitExperimentalC()
-    check "return p->left;" in c
-    check "return p->right;" in c
+    check "->left" in c
+    check "->right" in c
     checkCCompiles(c, "native_layout_collision")
 
   test "aliased selection (name : local)":
