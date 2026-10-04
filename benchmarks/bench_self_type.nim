@@ -1,7 +1,8 @@
 ## Protocol aggregate checks in the declaration's scope and across a module call.
 ## Run with -d:release -d:nimAllocStats to include allocator counts.
-import std/[monotimes, os, sequtils, strutils, tempfiles, times]
+import std/[monotimes, os, sequtils, tempfiles, times]
 import gene/[compiler, types, vm]
+import ./reporting
 
 proc benchSelfTypeContracts*() =
   let directory = createTempDir("gene_self_contract_bench_", "")
@@ -29,18 +30,17 @@ proc benchSelfTypeContracts*() =
       pair[1].redefine("items", items)
       discard run(call, pair[1]) # exclude initialization and cache warmup
       let allocations = getAllocStats()
+      let memoryBefore = getOccupiedMem()
       let started = getMonoTime()
       var checksum = 0'i64
       for i in 0 ..< 2_000:
         checksum += run(call, pair[1]).intVal
-      let elapsed = float(inNanoseconds(getMonoTime() - started)) / 1_000_000.0
+      let elapsed = inNanoseconds(getMonoTime() - started)
       let delta = getAllocStats() - allocations
-      echo "vm.protocol_list.", pair[0], ".", size, ": 2000 ops in ",
-        formatFloat(elapsed, ffDecimal, 2), " ms; checksum=", checksum
-      when defined(nimAllocStats):
-        echo "  allocations: ", delta
-      else:
-        discard delta
+      reportBenchmark("vm.protocol_list." & pair[0] & "." & $size,
+        2_000, elapsed, checksum, getOccupiedMem() - memoryBefore,
+        allocationCount(delta))
 
 when isMainModule:
+  beginBenchmarkReport()
   benchSelfTypeContracts()

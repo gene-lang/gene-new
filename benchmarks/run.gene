@@ -1,0 +1,144 @@
+# Gene orchestrates native benchmark binaries; compilation is a separate step.
+# Usage: gene run benchmarks/run.gene OUTPUT_DIR BENCHMARK_EXE [BENCHMARK_EXE...]
+# GENE_BENCH_SAMPLES defaults to 5. Round zero warms each binary and is excluded.
+
+(fn capture [executable arguments]
+  (await ($os/exec_async ^cmd executable ^args arguments ^timeout_ms 600000 ^max_bytes 4194304)))
+
+(fn distribution [values]
+  (let ordered ($order/sort values))
+  (let count ($size ordered))
+  ($assert (> count 0) "no benchmark samples")
+  (let middle (/ count 2))
+  (let previous (- middle 1))
+  (let last (- count 1))
+  (let p95 (- (/ (+ (* count 95) 99) 100) 1))
+  (let median
+    (if (== (// count 2) 0)
+      (/ (+ ordered/%previous ordered/%middle) 2.0)
+      ordered/%middle))
+  {^samples values ^median median ^min ordered/0 ^max ordered/%last ^p95 ordered/%p95})
+
+(fn main [args] : Int
+  (let arguments args/body)
+  ($assert
+    (>= ($size arguments) 2)
+    "usage: gene run benchmarks/run.gene OUTPUT_DIR BENCHMARK_EXE [BENCHMARK_EXE...]")
+  (let output arguments/0)
+  ($assert (! ($fs/exists? output)) "output directory must be new")
+  (let count_text (?? ($os/env? "GENE_BENCH_SAMPLES") ""))
+  (let count (if (== count_text "") 5 ($parse/parse_int count_text)))
+  ($assert (&& (>= count 3) (<= count 100)) "samples must be in 3..100")
+  (let variants [])
+  (var i 1)
+  (while (< i ($size arguments))
+    (let executable ($fs/real_path arguments/%i))
+    (variants .push
+      {
+        ^executable executable
+        ^sha256 ($crypto/sha256 ($fs/read_bytes executable))
+        ^header nil
+        ^rows {}
+        ^names []
+        ^wall_ms []})
+    (set i (+ i 1)))
+  ($fs/make_dir output)
+  (let metadata
+    {
+      ^format 1
+      ^samples count
+      ^warmup_rounds 1
+      ^ordering "rotating executable order per round"
+      ^git (capture "git" ["rev-parse" "HEAD"])
+      ^worktree (capture "git" ["status" "--porcelain"])
+      ^diff (capture "git" ["diff" "--no-ext-diff"])
+      ^system (capture "uname" ["-srm"])
+      ^machine_label (?? ($os/env? "GENE_BENCH_MACHINE") "")
+      ^cc (capture "cc" ["--version"])
+      ^sdkroot (?? ($os/env? "SDKROOT") "")})
+  ($fs/write_text $"${output}/metadata.json" ($json/stringify metadata))
+  (repeat round in (+ count 1)
+    (repeat slot in ($size variants)
+      (let index (// (+ slot round) ($size variants)))
+      (let variant variants/%index)
+      (let started ($os/monotonic_ms))
+      (let process (capture variant/executable ["--json"]))
+      (let wall (- ($os/monotonic_ms) started))
+      ($fs/write_text $"${output}/${index}-${round}.stdout.jsonl" process/stdout)
+      ($fs/write_text $"${output}/${index}-${round}.stderr.txt" process/stderr)
+      ($assert
+        (&& (== process/status 0) (! process/timed_out) (! process/truncated))
+        $"benchmark ${index} round ${round} failed; inspect raw logs")
+      (if (> round 0) (variant/wall_ms .push wall))
+      (let seen {})
+      (var has_header false)
+      (for line in ($str/split process/stdout "\n")
+        (if (!= ($str/trim line) "")
+          (then
+            (let row ($json/parse line))
+            (if (== row/kind "build")
+              (then
+                ($assert (! has_header) "duplicate benchmark build header")
+                ($assert (== row/format 1) "unsupported benchmark format")
+                (set has_header true)
+                (if (== round 0)
+                  (then
+                    (variant .put "header" row))
+                  (else
+                    ($assert (== variant/header row) "build header changed between runs"))))
+              (elif (== row/kind "measurement")
+                ($assert (> row/iterations 0) "benchmark iterations must be positive")
+                ($assert (>= row/nanoseconds 0) "negative benchmark duration")
+                ($assert (! ($has_key? seen row/name)) "duplicate benchmark name")
+                (seen .put row/name true)
+                (if (== round 0)
+                  (then
+                    (variant/names .push row/name)
+                    (variant/rows .put
+                      row/name
+                      {^checksum row/checksum ^iterations row/iterations ^samples [] ^raw []})))
+                ($assert ($has_key? variant/rows row/name) "benchmark set changed between runs")
+                (let group (variant/rows .get row/name))
+                ($assert
+                  (&& (== group/checksum row/checksum) (== group/iterations row/iterations))
+                  $"checksum or iteration count changed: ${row/name}")
+                (if (> round 0)
+                  (then
+                    (group/samples .push (/ (* row/nanoseconds 1.0) row/iterations))
+                    (group/raw .push row))))
+              (else
+                ($assert (== row/kind "skip") "unknown benchmark record"))))))
+      ($assert has_header "missing benchmark build header")
+      ($assert (> ($size variant/names) 0) "no benchmark measurements")
+      (for name in variant/names
+        ($assert ($has_key? seen name) $"missing benchmark: ${name}"))
+      ($println $"completed executable ${index}, round ${round}, wall ${wall} ms")))
+  (let summary [])
+  (for variant in variants
+    ($assert
+      (== ($order/sort variant/names) ($order/sort variants/0/names))
+      "executables reported different benchmark sets")
+    (let measurements [])
+    (for name in variant/names
+      (let group (variant/rows .get name))
+      (let reference (variants/0/rows .get name))
+      ($assert
+        (&& (== group/checksum reference/checksum) (== group/iterations reference/iterations))
+        $"executables disagree on result or work count: ${name}")
+      (measurements .push
+        {
+          ^name name
+          ^iterations group/iterations
+          ^checksum group/checksum
+          ^ns_per_iteration (distribution group/samples)
+          ^raw group/raw}))
+    (summary .push
+      {
+        ^executable variant/executable
+        ^sha256 variant/sha256
+        ^build variant/header
+        ^process_wall_ms (distribution variant/wall_ms)
+        ^measurements measurements}))
+  ($fs/write_text $"${output}/summary.json" ($json/stringify summary))
+  ($println $"saved ${output}/summary.json")
+  0)

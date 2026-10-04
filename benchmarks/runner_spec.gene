@@ -1,0 +1,18 @@
+(import $test [describe it assert_equal assert_raises])
+(import [distribution] ^from "./run")
+
+(describe "Benchmark distributions"
+  (it "keeps execution order while computing an odd median" []
+    (let samples [300.0 100.0 200.0])
+    (let result (distribution samples))
+    (assert_equal result/samples [300.0 100.0 200.0])
+    (assert_equal result/median 200.0)
+    (assert_equal result/min 100.0)
+    (assert_equal result/max 300.0)
+    (assert_equal result/p95 300.0))
+  (it "averages the middle pair and uses nearest-rank p95" []
+    (let result (distribution [20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1]))
+    (assert_equal result/median 10.5)
+    (assert_equal result/p95 19))
+  (it "refuses to summarize an empty capture" []
+    (assert_raises (fn [] (distribution [])) AssertionError)))

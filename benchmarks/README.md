@@ -1,5 +1,46 @@
 # Benchmarks
 
+Build the host in portable release mode with `nimble build`. Check
+`bin/gene --version`; `nimble debug` is for debugging, not performance baselines.
+
+## Repeatable core measurements
+
+```sh
+nim c -d:release --path:src --hints:off -o:tmp/bench_core benchmarks/bench_core.nim
+bin/gene run benchmarks/run.gene tmp/perf-run tmp/bench_core
+```
+
+The output directory must be new. The Gene runner records the executable
+digest, compiled-in Nim command/options, Git revision/worktree state, platform,
+C compiler, raw stdout/stderr and per-row samples. Round zero is excluded;
+five measured rounds follow (`GENE_BENCH_SAMPLES=3..100` overrides that count).
+`GENE_BENCH_MACHINE` can label the CPU/machine used. Medians, ranges and p95
+are in `summary.json`; process wall time is recorded separately from the
+benchmark loop time. Checksums, row sets and iteration counts must stay stable.
+Generated-C failures now fail the benchmark process instead of printing a
+warning and returning success. Missing external C compilers are explicit skips.
+Run the distribution regression specs with `bin/gene test benchmarks/runner_spec.gene`.
+
+Pass multiple independently built executables to alternate their execution
+order across rounds. Use separate fresh Nim cache directories for independent
+rebuilds; repeated runs of one executable do not measure build-to-build noise.
+Run benchmarks while no compiler or other assessment workload is active.
+Preserve commands and machine metadata when checking selected baselines into
+`benchmarks/baselines/`; do not infer an optimization from a single run.
+
+The core controls include an empty chunk, a constant chunk and matched
+untyped/F64 function bodies. Per-iteration costs include entering/exiting
+`run` and result handling. A four-argument builtin addition is not an empty
+chunk and cannot be subtracted as an exact entry-cost estimate.
+
+`retained_nim_bytes_delta` records the allocator's net occupied-memory change,
+not peak RSS or proof of a leak. Compile a separate run with `-d:nimAllocStats`
+for allocation counts; `allocations=-1` means unavailable. Compare timing with
+equally instrumented builds. The dedicated pipeline harness adds demand and
+cleanup measurements. Application sampling profiles must rank P1 work before
+microbenchmark changes are selected; the harness replay selection and a
+Miclone meshing pass are the initial application targets.
+
 Run the recursive Fibonacci benchmark with:
 
 ```bash

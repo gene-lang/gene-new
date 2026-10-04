@@ -8,6 +8,7 @@
 ##   nimble perf
 
 import ./bench_self_type
+import ./reporting
 import gene/ext/logging
 import gene/[compiler, equality, gir, printer, reader, types, vm]
 import std/[json, monotimes, os, osproc, strutils, tables, times]
@@ -30,7 +31,7 @@ proc benchGeneratedCFieldLoad(iterations: int) =
   ## compiler is available — `nimble perf` enforces no thresholds.
   let cc = getEnv("CC", "cc")
   if findExe(cc).len == 0:
-    echo "typed_native.generated_c_field_load: skipped (no C compiler on PATH)"
+    reportBenchmarkSkip("typed_native.generated_c_field_load", "no C compiler on PATH")
     return
   let chunk = compileSource(
     "(ffi/struct CNode ^fields [[value C/Int64]]) " &
@@ -38,8 +39,7 @@ proc benchGeneratedCFieldLoad(iterations: int) =
     "(fn load_value [node : Node] : I64 node/value)")
   let generated = chunk.emitExperimentalC()
   if "int64_t gene_native_load_value(CNode * node)" notin generated:
-    echo "typed_native.generated_c_field_load: FAILED (getter was not emitted)"
-    return
+    raise newException(ValueError, "typed_native getter was not emitted")
   let harness = """
 #include <stdio.h>
 #include <time.h>
@@ -70,23 +70,18 @@ int main(void) {
   let built = execCmdEx(quoteShell(cc) & " -std=c11 -O2 -DITERATIONS=" &
     $iterations & " " & quoteShell(sourcePath) & " -o " & quoteShell(exePath))
   if built.exitCode != 0:
-    echo "typed_native.generated_c_field_load: FAILED to build generated C"
-    echo built.output.strip()
-    return
+    raise newException(IOError, "failed to build generated field-load C: " & built.output)
   let ran = execCmdEx(quoteShell(exePath))
   if ran.exitCode != 0:
-    echo "typed_native.generated_c_field_load: FAILED to run generated C"
-    return
+    raise newException(IOError, "failed to run generated field-load C: " & ran.output)
   let fields = ran.output.strip().split(' ')
   if fields.len != 2:
-    echo "typed_native.generated_c_field_load: FAILED to parse harness output"
-    return
-  let nanos = max(1.0, parseFloat(fields[0]))
-  let opsPerSec = float(iterations) * 1_000_000_000.0 / nanos
-  echo "typed_native.generated_c_field_load: ", iterations, " ops in ",
-       formatFloat(nanos / 1_000_000.0, ffDecimal, 2), " ms (",
-       formatFloat(opsPerSec, ffDecimal, 0),
-       " ops/s, checksum=", fields[1], ")"
+    raise newException(ValueError, "invalid generated field-load output: " & ran.output)
+  let checksum = parseBiggestInt(fields[1])
+  if checksum != int64(iterations) * 42 + iterations div 2:
+    raise newException(ValueError, "generated field-load checksum mismatch")
+  reportBenchmark("typed_native.generated_c_field_load", iterations,
+    max(1'i64, parseBiggestInt(fields[0])), checksum)
 
 proc benchWrapperNativeGetter(args: openArray[Value]): Value {.nimcall.} =
   let record = cast[ptr BenchNativeRecord](
@@ -99,19 +94,19 @@ proc discardLogLine(line: string) {.gcsafe.} =
 template bench(name: string, iterations: int, loopVar: untyped, body: untyped) =
   block:
     var checksum {.inject.} = 0'i64
+    let memoryBefore = getOccupiedMem()
+    let allocationsBefore = getAllocStats()
     let started = getMonoTime()
     for loopVar in 0 ..< iterations:
       body
     let elapsed = getMonoTime() - started
     let nanos = max(1'i64, inNanoseconds(elapsed))
-    let millis = float(nanos) / 1_000_000.0
-    let opsPerSec = float(iterations) * 1_000_000_000.0 / float(nanos)
-    echo name, ": ", iterations, " ops in ",
-         formatFloat(millis, ffDecimal, 2), " ms (",
-         formatFloat(opsPerSec, ffDecimal, 0),
-         " ops/s, checksum=", checksum, ")"
+    reportBenchmark(name, iterations, nanos, checksum,
+      getOccupiedMem() - memoryBefore,
+      allocationCount(getAllocStats() - allocationsBefore))
 
 proc main() =
+  beginBenchmarkReport()
   bench("value.small_int.construct", 20_000_000, i):
     let v = newInt(int64(i and 0xffff))
     checksum = checksum + int64(v.bits and 0xffff'u64)
@@ -163,6 +158,19 @@ proc main() =
 
   let simpleChunk = compileSource(simpleProgram)
   let simpleScope = newGlobalScope()
+
+  let emptyChunk = newChunk("<benchmark-empty>")
+  let emptyScope = newGlobalScope()
+  bench("vm.control.empty_chunk", 500_000, i):
+    let v = run(emptyChunk, emptyScope)
+    checksum = checksum + int64(v.kind == vkNil)
+
+  let constantChunk = compileSource("42")
+  let constantScope = newGlobalScope()
+  bench("vm.control.constant_chunk", 500_000, i):
+    let v = run(constantChunk, constantScope)
+    checksum = checksum + v.intVal
+
   bench("vm.simple_call.compiled_chunk", 500_000, i):
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
@@ -407,6 +415,14 @@ proc main() =
   # throughout, and their annotations used to cost more than the calls they
   # annotated (183 ns/call untyped against 557 ns for `[x : F64] : F64`).
   let typedFloatScope = newGlobalScope()
+  let untypedFloatScope = newGlobalScope()
+  untypedFloatScope.define("scale_f64",
+    run(compileSource("(fn [x] (* x 1.5))"), untypedFloatScope))
+  let untypedFloatChunk = compileSource("(scale_f64 2.0)")
+  bench("vm.untyped_f64_call.compiled_chunk", 500_000, i):
+    let v = run(untypedFloatChunk, untypedFloatScope)
+    checksum = checksum + int(v.floatVal)
+
   typedFloatScope.define("scale_f64",
     run(compileSource("(fn [x : F64] : F64 (* x 1.5))"), typedFloatScope))
   let typedFloatChunk = compileSource("(scale_f64 2.0)")
@@ -576,10 +592,10 @@ proc main() =
   # path is the send form, resolved receiver-first (§9.1). Protocol messages are
   # always qualified (`box .Proto:msg`); only type-direct messages take the bare
   # name (`box .get`). The per-call-site inline cache collapses the resolution
-  # walk, so a trivial-body qualified send (`box .Triv:triv`) sits right on the
-  # 1-arg Gene call reference: the extra cost of the other sends is impl-body work
-  # (a `self/x` selector plus a `: Int` return-type check), not the dispatch
-  # walk. A qualified send pushes the protocol and resolves the name against the
+  # walk. Compare the trivial-body qualified send with the 1-arg Gene call
+  # reference to track the remaining dispatch and call-boundary cost. Other
+  # sends also do impl-body work (a `self/x` path plus a return-type check).
+  # A qualified send pushes the protocol and resolves the name against the
   # receiver; it never materializes a message value.
   let referenceCallChunk = compileSource("(identity box)")
   bench("vm.call.gene_one_arg.compiled_chunk", 500_000, i):
