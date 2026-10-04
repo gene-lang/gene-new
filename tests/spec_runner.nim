@@ -1127,6 +1127,21 @@ suite "spec — typed native compilation prototype from design":
                "(add64_twice 20 2)",
                "24")
 
+  test "C minimum I64 literals preserve signed comparisons":
+    let source = "(fn minimum [] : I64 -9223372036854775808) " &
+      "(fn negative [x : I64] : I64 " &
+      "  (if (< (+ x -9223372036854775808) 0) 1 0))"
+    let generated = compileSource(source).emitExperimentalC()
+    check_eval(source & " [(minimum) (negative 1)]", "[-9223372036854775808 1]")
+    checkCRuns(generated & """
+#include <stdio.h>
+int main(void) {
+  printf("%lld %lld", (long long)gene_native_minimum(),
+         (long long)gene_native_negative(1));
+  return 0;
+}
+""", "native_i64_minimum", "-9223372036854775808 1")
+
   test "typed-native pointer parameters lower foreign fields to direct C loads":
     let chunk = compileSource(
       "(ffi/struct CTimespec " &
@@ -2084,7 +2099,7 @@ void point_free(CPoint *p) { free(p); }
 
   test "an ffi/fn-bearing module links without the dynamic entry helpers":
     ## The dynamic entry wrapper is a non-static definition calling
-    ## gene_ffi_* helpers no runtime defines, so before it was guarded its
+    ## gene_ffi_* helpers supplied by a Gene host, so before it was guarded its
     ## undefined calls sank any translation unit containing an ffi/fn — even
     ## though the typed path calls the foreign symbol directly and needs none
     ## of them. examples/native depends on this linking.

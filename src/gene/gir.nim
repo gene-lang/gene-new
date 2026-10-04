@@ -1959,7 +1959,11 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     else:
       cIdent(expr.symVal, "arg")
   of vkInt:
-    $expr.intVal
+    # C lexes the magnitude before applying unary minus. INT64_MIN written
+    # as a decimal token therefore becomes unsigned and can change even an
+    # in-range addition/comparison. Keep its construction entirely signed.
+    if expr.intVal == low(int64): "(-9223372036854775807LL - 1)"
+    else: $expr.intVal
   of vkFloat:
     expr.print()
   of vkNil:
@@ -2477,12 +2481,9 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   lines.add "extern " & retType & " " & ffiCallingMacro(fn.calling) &
     " " & cSymbol & "(" & paramList & ");"
   ## The dynamic entry wrapper is what lets interpreted Gene reach this symbol,
-  ## so it calls the gene_ffi_* helpers — which no runtime defines yet. It is a
-  ## non-static definition, so a linker cannot drop it and its undefined calls
-  ## sink the whole translation unit, even when nothing references it. Guard it
-  ## until the ABI exists: the typed path calls the foreign symbol directly and
-  ## needs none of this, so guarding makes an ffi/fn-bearing module link
-  ## standalone. Define GENE_AOT_DYNAMIC_ENTRIES to compile the wrappers in.
+  ## so it calls the gene_ffi_* helpers exported by the Gene host. Guard the
+  ## wrapper so standalone typed C callers need not link those dynamic-boundary
+  ## helpers. Define GENE_AOT_DYNAMIC_ENTRIES for libraries loaded by aot/load.
   lines.add "#ifdef GENE_AOT_DYNAMIC_ENTRIES"
   ## An owned result's release function is passed as a *pointer*, not a name.
   ## Resolving it by name meant scanning every loaded AOT library and taking the
@@ -2637,8 +2638,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
   ## receives only the raw pointer after that check and never boxes implicitly.
   ##
   ## Guarded for the same reason as the ffi/fn wrappers: this adapter is the
-  ## boundary itself, so it calls gene_typed_native_* helpers that no runtime
-  ## defines yet. The copy/release shims exist only to serve it, so the whole
+  ## boundary itself, so it calls gene_typed_native_* helpers from the host.
+  ## The copy/release shims exist only to serve it, so the whole
   ## unit is guarded together.
   lines.add "#ifdef GENE_AOT_DYNAMIC_ENTRIES"
   var paramCopies = newSeq[string](fn.params.len)
@@ -3371,16 +3372,13 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "/* Gene experimental typed_native C backend.",
     " * Emits fixed-representation functions and generated FFI adapter wrappers.",
     " *",
-    " * PROTOTYPE OUTPUT — NOT LINKABLE ON ITS OWN.",
-    " * Every gene_ffi_* and gene_typed_native_* helper below is declared, not",
-    " * defined. No Gene runtime exports them yet: production AOT backends are",
-    " * deferred (docs/development.md), and the native C ABI they need",
-    " * -- opaque GeneValue, root handles, native registration, and the VM",
-    " * trampoline -- is design.md's step 12, which precedes native compilation.",
-    " * Self-contained functions (direct field loads, typed calls between",
-    " * emitted functions) reference none of these helpers and do compile and",
-    " * run standalone; anything crossing the dynamic boundary, including every",
-    " * ^native_entry adapter, will fail to link until that ABI exists.",
+    " * Self-contained functions can link without a Gene host. Dynamic entries",
+    " * and checked native boundaries use gene_ffi_* / gene_typed_native_*",
+    " * helpers exported by src/gene/aot_runtime.nim. Define",
+    " * GENE_AOT_DYNAMIC_ENTRIES when building a library for aot/load and",
+    " * export those helpers from its host executable (see nim.cfg).",
+    " * This backend accepts an experimental subset; consult docs/development.md",
+    " * for current semantic and platform limits.",
     " */",
     "#include <stdbool.h>",
     "#include <stddef.h>",
