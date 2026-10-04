@@ -136,7 +136,9 @@ invokes its `main`; use this mode for those package test targets.
 
 ## Editor and command-line tools
 
-`nimble build` builds the CLI and its companion tools. If you built only
+`nimble build` builds the CLI and its companion tools in portable release
+mode. Use `nimble debug` for an instrumented build, and `gene --version` to
+inspect the current binary. If you built only
 `src/gene.nim`, use `nimble tools` for the formatter, LSP, and viewer.
 
 | Command | Use |

@@ -37,6 +37,11 @@ nimble build
 # 3
 ```
 
+The CLI and companion tools build in portable release mode by default. Use
+`nimble debug` for an instrumented debug build; `bin/gene --version` reports
+the mode and runtime-check settings. Building a Gene application with
+`--profile release` does not change the build mode of its host executable.
+
 Save the program above as `todos.gene`, then run it:
 
 ```sh

@@ -104,6 +104,17 @@ proc agentStateRecordPath(root, key: string): string =
   root / "generations" / readFile(current).strip() / (key & ".gene")
 
 suite "cli — gene run":
+  test "version reports the default release build and enabled checks":
+    let ran = runGene(["--version"])
+    check ran.exitCode == 0
+    check ran.output.startsWith("Gene ")
+    check "(release; " in ran.output
+    check "Nim " in ran.output
+    check "; mm=orc; " in ran.output
+    check "; nim-opt=speed; " in ran.output
+    check "; bounds=true; overflow=true)" in ran.output
+    check runGene(["version"]).output == ran.output
+
   test "missing source paths report file not found":
     for path in ["nonexistent.gene", "missing/program.gene"]:
       let ran = runGene(["run", path])

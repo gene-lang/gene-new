@@ -22,6 +22,9 @@ namedBin["gene_registry"] = "gene-registry"
 
 requires "nim >= 2.0.0"
 
+task debug, "Build the instrumented CLI and companion tools":
+  exec "nimble build -d:geneDebug"
+
 task speedy, "Optimized build for maximum performance":
   exec "mkdir -p bin"
   exec "nim c -d:release --mm:orc --opt:speed --passC:\"-march=native -O3\" -o:bin/gene src/gene.nim"

@@ -97,6 +97,12 @@ nimble test
 nimble spec
 ```
 
+`nimble build` produces portable release executables. `nimble debug` builds
+the instrumented CLI and companion tools instead; a direct debug CLI build
+uses `nim c -d:geneDebug -o:bin/gene src/gene.nim`. `gene --version` reports
+the actual mode, target, Nim version, memory manager and runtime checks.
+Implementation test programs keep their explicitly requested build mode.
+
 Gene application tests use [`gene test`](testing.md). The Nim suites remain
 the compiler/runtime conformance and implementation tests.
 

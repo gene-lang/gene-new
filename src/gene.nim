@@ -12,7 +12,7 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, compiler, diagnostics, gir, install, native_managed, package,
+import gene/[build, build_info, compiler, diagnostics, gir, install, native_managed, package,
              printer, reader, registry_config, registry_publish, repl,
              system_dependency, types, vm, web]
 # native_managed installs the owned byte-ingress adapter for this executable.
@@ -60,6 +60,7 @@ proc usage() =
   echo "Gene — a homoiconic general purpose language"
   echo ""
   echo "Usage:"
+  echo "  gene --version         print version, build mode and runtime check settings"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene eval --errors-mode dynamic|warn|strict \"<source>\""
   echo "  gene repl              read/eval/print source lines from stdin"
@@ -1715,6 +1716,8 @@ proc main() =
     quit(0)
   let cmd = paramStr(1)
   case cmd
+  of "--version", "version":
+    echo geneBuildInfo()
   of "eval":
     let options = parseInteractiveCli("eval", true)
     cmdEval(options.path, options.errorsMode)

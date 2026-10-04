@@ -3,6 +3,17 @@ when withDir(thisDir(), system.fileExists("nimble.paths")):
   include "nimble.paths"
 # end Nimble config
 
+# Executables used by people should not accidentally run the instrumented
+# interpreter. Keep implementation tests at their requested build mode, and
+# retain an explicit debug build for the CLI and its companion tools.
+if projectName() in ["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry"]:
+  when defined(geneDebug):
+    when defined(release) or defined(danger):
+      quit("geneDebug cannot be combined with release or danger")
+  else:
+    switch("define", "release")
+    switch("opt", "speed")
+
 # Memory model: ORC unless the command line names another ARC-family manager.
 #
 # `Value` (src/gene/types.nim) does manual reference counting through
