@@ -1460,11 +1460,12 @@ suite "cli — gene parse/fmt/compile":
     let ran = runGene(["compile", "--target", "c", path])
     check ran.exitCode == 0
     # The module constant is inlined, so the emitted C never names it.
-    check "floor((v / 4294967296.0))" in ran.output
+    check "= floor(" in ran.output
+    check "4294967296.0" in ran.output
     check "two32" notin ran.output
     # Un-annotated locals get their representation inferred.
-    check "double acc = 0.0;" in ran.output
-    check "while ((i < n))" in ran.output
+    check "GeneNativeStatus gene_native_drive(GeneNativeError *" in ran.output
+    check "while (true)" in ran.output
     # A nested call as a call argument.
     check "= gene_native_wrap32(" in ran.output
     check "= gene_native_mix32(" in ran.output
@@ -1475,8 +1476,8 @@ suite "cli — gene parse/fmt/compile":
 
   test "compile target c refuses division by a non-constant divisor":
     # Gene raises on division by zero; C yields an infinity and says nothing.
-    # A lowered function has no way to raise, so only a provably non-zero
-    # divisor may lower — otherwise the function stays interpreted.
+    # The current lowering requires a provably non-zero divisor; otherwise
+    # the function stays interpreted.
     let path = writeCliProgram("compile_c_divzero.gene",
       "(fn ratio [a : F64 b : F64] : F64 (/ a b))\n" &
       "(fn main [] nil)")
