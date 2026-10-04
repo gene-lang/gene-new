@@ -31,7 +31,7 @@
           (for scenario in [
             "(entered) (while true (work_tick))"
             "(entered) ($map [1] (fn [n] (while true (work_tick))))"
-            "(entered) ($os/exec ^cmd \"sleep\" ^args [\"30\"]) (Outcome ^done true ^reply \"done\")"]
+            "(entered) ($os/exec \"sleep\" \"30\") (Outcome ^done true ^reply \"done\")"]
             (set sequence (+ sequence 1))
             (entered .set false)
             (code .set scenario)

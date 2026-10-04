@@ -9,7 +9,7 @@
   (let build ($fs/real_path args/0))
   (let browser ($fs/real_path args/1))
   (let report_path args/2)
-  (let version ($os/exec ^cmd browser ^args ["--version"] ^timeout_ms 5000))
+  (let version ($os/exec browser "--version" ^timeout_ms 5000))
   ($assert (== version/status 0) version/stderr)
   # Preserve the isolated profile alongside its report for failure diagnosis.
   # It never opens or modifies the user's ordinary browser profile.
@@ -31,11 +31,11 @@
   (var report nil)
   (var progress "starting")
   (let deadline (+ ($os/monotonic_ms) 180000))
-  (let task ($os/exec_async ^cmd browser ^args [
+  (let task ($os/exec_async browser
     "--headless=new" "--no-first-run" "--disable-gpu"
     "--no-default-browser-check" "--disable-background-networking"
     "--disable-component-update" "--disable-extensions"
-    $"--user-data-dir=${profile}" $"http://127.0.0.1:${server/port}/"]
+    $"--user-data-dir=${profile}" $"http://127.0.0.1:${server/port}/"
     ^timeout_ms 185000 ^max_bytes 1048576))
   (fn tick []
     (if (|| (>= ($os/monotonic_ms) deadline) task/.done?) (stop server)))

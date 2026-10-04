@@ -15,8 +15,8 @@
     (set total (+ total ($parse/parse_int row/count))))
   (let child_source (if ($os/env? "GENE_PROFILE_CHILD_FAIL")
                         "(fail \"child failed\")" "(+ 2 3)"))
-  (let child ($os/exec ^cmd ($os/executable_path)
-                         ^args ["eval" child_source] ^timeout_ms 5000))
+  (let child ($os/exec ($os/executable_path)
+                         "eval" child_source ^timeout_ms 5000))
   (if_not (== child/status 0)
     (fail (ScriptError ^message "subprocess failed")))
   (let response (await ($net/http_client/request

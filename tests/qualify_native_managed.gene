@@ -28,7 +28,7 @@
         (command .push "--passL:-fsanitize=thread")))
     (command .push (if (== mode "disabled")
       "tests/test_native_managed_disabled.nim" "tests/test_native_managed.nim"))
-    (let build (await ($os/exec_async ^cmd "nim" ^args command
+    (let build (await ($os/exec_async "nim" command...
       ^timeout_ms 600000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-build.log" ($to_str build/stdout build/stderr))
     ($assert (&& (== build/status 0) (! build/truncated))
@@ -47,7 +47,7 @@
        "managed Actor stays on root until worker allocations are qualified"
        "owner-dependent borrow callback never blocks its collecting lane"
        "last owner cleanup runs outside registry and admission locks"] []))
-    (let run (await ($os/exec_async ^cmd output ^args filters
+    (let run (await ($os/exec_async output filters...
       ^timeout_ms 180000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-run.log" ($to_str run/stdout run/stderr))
     (let sha ($crypto/sha256 ($fs/read_bytes output)))

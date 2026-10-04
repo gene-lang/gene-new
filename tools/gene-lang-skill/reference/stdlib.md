@@ -135,16 +135,23 @@ missing parent directories; the name is `make_dir`, not `mkdir`.
 ($fs/list_dir ".")
 ```
 
-`$os/exec` accepts named arguments only: `^cmd Str`, `^args (List Str)`,
-`^dir Str`, `^timeout_ms Int`, `^max_bytes Int`. It does not split command
-strings through a shell. The output cap defaults to 1 MiB; the argument is
+`$os/exec` and `$os/exec_async` take an executable followed by positional Str
+arguments. Spread a computed argv list with `args...`. Options remain named:
+`^dir Str`, `^timeout_ms Int`, `^max_bytes Int`. Arguments are passed literally;
+`^^full` explicitly selects one complete shell command string instead.
+The output cap defaults to 1 MiB; the argument is
 `max_bytes`, not `max_output_bytes`. The returned map includes `status`,
 `stdout`, `stderr`, `timed_out` and truncation flags.
 
 ```gene
-($os/exec ^cmd "gene" ^args ["test" "tests.gene"] ^dir workspace_root
+($os/exec "gene" "test" "tests.gene" ^dir workspace_root
   ^timeout_ms 60000 ^max_bytes 32768)
+(await ($os/exec_async "gene" args... ^dir workspace_root))
+($os/exec ^^full "printf hello | tr a-z A-Z")
 ```
+
+The async variants return Tasks; await them for the result. The same positional
+and full-command forms work with the streaming and inherited-stdio variants.
 
 Imports require a module file executed with `gene run`; `gene eval` accepts
 bindings from its `Env` and cannot load imports.

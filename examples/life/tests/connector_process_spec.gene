@@ -8,8 +8,8 @@
 (fn crash [fixture, phase]
   (let name (p/id "connector-crash"))
   (let home $"examples/life/tmp/${name}")
-  (let result ($os/exec ^cmd ($os/executable_path)
-    ^args ["run" "examples/life/tests/connector_crash_fixture.gene" home phase fixture/endpoint]
+  (let result ($os/exec ($os/executable_path)
+    "run" "examples/life/tests/connector_crash_fixture.gene" home phase fixture/endpoint
     ^dir ($fs/real_path ".") ^timeout_ms 20000 ^max_bytes 16384))
   (assert_equal result/timed_out false result/stderr)
   # os/exec reports the POSIX signal exit as 128 + SIGKILL, not a bare nonzero.

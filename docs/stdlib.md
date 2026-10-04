@@ -101,6 +101,7 @@ wildcards and shell metacharacters. Use the existing spread syntax for an argv l
 ($os/exec "git" "status" "--short")
 (let args ["log" "--oneline" "-5"])
 ($os/exec "git" args... ^dir "/path/to/project" ^timeout_ms 5000)
+(await ($os/exec_async "git" args... ^dir "/path/to/project" ^timeout_ms 5000))
 ```
 
 `($os/exec ^^full command_text)` instead accepts exactly one **Str** containing a

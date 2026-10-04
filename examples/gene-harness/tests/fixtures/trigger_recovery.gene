@@ -5,7 +5,7 @@
   [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences])
 (import ^from "../../src/runtime/sessions" [require_record])
 (fn crash []
-  ($os/exec ^cmd "/bin/kill" ^args ["-9" ($to_str ($os/process_id))])
+  ($os/exec "/bin/kill" "-9" ($to_str ($os/process_id)))
   ($sleep 60000))
 (fn child [root point]
   (let runtime (open_runtime root "default" (baseline_profile)))

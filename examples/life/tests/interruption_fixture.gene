@@ -4,7 +4,7 @@
 (import * : brain ^from "../src/brain")
 (import * : code ^from "../src/code/code")
 (import * : routines ^from "../src/body/routines")
-(fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
+(fn die [] ($os/exec "/bin/kill" "-KILL" ($to_str ($os/process_id))))
 (fn main [args]
   (let home args/0)
   (let kind args/1)

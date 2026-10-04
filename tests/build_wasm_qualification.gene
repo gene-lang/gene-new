@@ -51,7 +51,7 @@
     "--passL:-s MODULARIZE=1 -s EXPORT_NAME=GeneModule"
     $"-o:${output}/gene.js" "src/gene_wasm.nim"]
     (command .push option))
-  (let process (await ($os/exec_async ^cmd "nim" ^args command
+  (let process (await ($os/exec_async "nim" command...
     ^timeout_ms 600000 ^max_bytes 1048576)))
   ($fs/write_text $"${output}/build.log" ($to_str process/stdout process/stderr))
   ($assert (== process/status 0) $"wasm build failed; see ${output}/build.log")

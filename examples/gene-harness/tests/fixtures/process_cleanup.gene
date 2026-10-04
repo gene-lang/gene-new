@@ -1,6 +1,6 @@
 (fn hold [root, mode]
   (let channel ($channel ^capacity 1))
-  (let process ($os/exec_stream_async ^cmd "/bin/sh" ^args ["-c" "echo $$; exec sleep 30"] ^stdout_chan channel))
+  (let process ($os/exec_stream_async "/bin/sh" "-c" "echo $$; exec sleep 30" ^stdout_chan channel))
   (let pid channel/.recv)
   ($fs/write_text_atomic $"${root}/gene.pid" ($to_str ($os/process_id)))
   ($fs/write_text_atomic $"${root}/child.pid" pid)

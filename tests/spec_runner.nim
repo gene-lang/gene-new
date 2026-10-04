@@ -10640,8 +10640,8 @@ suite "spec — filesystem watching":
       "(import $os [exec]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
       "(var mover (spawn ^lane root (do ($sleep 30) " &
-      "  (exec ^cmd \"mv\" ^args [\"" & oldPath.replace("\\", "/") &
-      "\" \"" & newPath.replace("\\", "/") & "\"])))) " &
+      "  (exec \"mv\" \"" & oldPath.replace("\\", "/") &
+      "\" \"" & newPath.replace("\\", "/") & "\")))) " &
       "(var change (watcher .recv)) (await mover) " &
       "(watcher .close) [change/kind change/from change/path]",
       "[renamed \"old.txt\" \"new.txt\"]",
@@ -10799,6 +10799,7 @@ suite "spec — os and json from ai-agent plan":
       "(let r ($os/exec \"printf\" \"%s\\n\" args...)) [r/status r/stdout]", expected)
     check_eval("(let r ($os/exec \"true\")) [r/status r/stdout]", "[0 \"\"]")
     check_eval("(let r ($os/exec \"printf\" \"%s\" \"$HOME\" ^full false)) r/stdout", "\"$HOME\"")
+    # Keep one explicit compatibility check; regular callers use positional argv.
     check_eval("(let r ($os/exec ^cmd \"printf\" ^args [\"%s\" \"legacy\"])) r/stdout", "\"legacy\"")
 
   test "os/exec full commands use shell quoting, pipelines, redirection and exit status":
@@ -10858,7 +10859,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream]) " &
                "(import gene/stream [to_stream into]) " &
                "(var seen ($cell [])) " &
-               "(var r (exec_stream ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
+               "(var r (exec_stream \"printf\" \"a\\nb\\n\" " &
                "                    ^stdout_line (fn [line] " &
                "                      (seen .set ((to_stream [line]) .into seen/.get))))) " &
                "[r/status r/stdout seen/.get]",
@@ -10877,25 +10878,25 @@ suite "spec — os and json from ai-agent plan":
                "  (spawn (repeat 5 (do ($sleep 20) " &
                "    (ticks .set (+ (ticks .get) 1))))) " &
                "  (status .set " &
-               "    (await (exec_stdio_async ^cmd \"sh\" " &
-               "      ^args [\"-c\" \"sleep 0.2; exit 7\"])))) " &
+               "    (await (exec_stdio_async \"sh\" " &
+               "      \"-c\" \"sleep 0.2; exit 7\")))) " &
                "[(status .get) (ticks .get)]",
                "[7 5]")
 
   test "os/exec_async settles a task off-thread with the exec result map":
     check_eval("(import $os [exec_async]) " &
-               "(var r (await (exec_async ^cmd \"echo\" ^args [\"hi\"]))) " &
+               "(var r (await (exec_async \"echo\" \"hi\"))) " &
                "[r/status r/timed_out]",
                "[0 false]")
     check_eval("(import $os [exec_async]) " &
-               "(var r (await (exec_async ^cmd \"sleep\" ^args [\"5\"] " &
+               "(var r (await (exec_async \"sleep\" \"5\" " &
                "                          ^timeout_ms 150))) " &
                "r/timed_out",
                "true")
     check_eval("(import $os [exec_async]) " &
                "(var status 1) " &
                "(repeat 20 " &
-               "  (set status (/status (await (exec_async ^cmd \"true\"))))) " &
+               "  (set status (/status (await (exec_async \"true\"))))) " &
                "status",
                "0")
 
@@ -10905,8 +10906,8 @@ suite "spec — os and json from ai-agent plan":
                "(var status -1) " &
                "(scope " &
                "  (var distant (spawn ($sleep 1500))) " &
-               "  (var r (await (exec_async ^cmd \"sh\" " &
-               "    ^args [\"-c\" \"sleep 0.05\"]))) " &
+               "  (var r (await (exec_async \"sh\" " &
+               "    \"-c\" \"sleep 0.05\"))) " &
                "  (set status r/status) " &
                "  (distant .cancel)) " &
                "status",
@@ -10917,8 +10918,8 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream_async]) " &
                "(import gene/stream [to_stream into]) " &
                "(var ch ($channel ^capacity 8)) " &
-               "(var t (exec_stream_async ^cmd \"printf\" " &
-               "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &
+               "(var t (exec_stream_async \"printf\" " &
+               "         \"a\\nb\\n\" ^stdout_chan ch)) " &
                "(var seen ($cell [])) (var line nil) " &
                "(try (loop (set line (ch .recv)) " &
                "  (seen .set ((to_stream [line]) .into seen/.get))) " &
@@ -10947,7 +10948,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream_async]) " &
                "(scope " &
                "  (var ch ($channel ^capacity 1)) " &
-               "  (var t (exec_stream_async ^cmd \"sleep\" ^args [\"2\"] " &
+               "  (var t (exec_stream_async \"sleep\" \"2\" " &
                "           ^stdout_chan ch)) " &
                "  (spawn (do ($sleep 50) (t .cancel))) " &
                "  (try (loop (ch .recv)) " &
@@ -10956,14 +10957,14 @@ suite "spec — os and json from ai-agent plan":
     check getMonoTime() - started < initDuration(milliseconds = 1200)
 
   test "captured execution supplies EOF when input is omitted":
-    check_eval("(let r (await ($os/exec_async ^cmd \"cat\" ^timeout_ms 500))) " &
+    check_eval("(let r (await ($os/exec_async \"cat\" ^timeout_ms 500))) " &
       "[r/status r/stdout r/timed_out]", "[0 \"\" false]")
 
   test "Task/cancel terminates an inherited-stream async child":
     let started = getMonoTime()
     check_eval("(import $os [exec_stdio_async]) " &
                "(scope " &
-               "  (var t (exec_stdio_async ^cmd \"sleep\" ^args [\"2\"])) " &
+               "  (var t (exec_stdio_async \"sleep\" \"2\")) " &
                "  (spawn (do ($sleep 50) (t .cancel))) " &
                "  ($sleep 200) " &
                "  \"cancelled\")",
@@ -10996,8 +10997,8 @@ suite "spec — os and json from ai-agent plan":
       let started = getMonoTime()
       let observed = run(compileSource("""
         (let ch ($channel ^capacity 1))
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "trap '' TERM; printf '%s\\n' $$; while :; do :; done"]
+        (let task ($os/exec_stream_async "sh"
+          "-c" "trap '' TERM; printf '%s\\n' $$; while :; do :; done"
           ^stdout_chan ch ^timeout_ms 5000))
         (let pid ($parse/parse_int (ch .recv)))
         (task .cancel)
@@ -11025,7 +11026,7 @@ suite "spec — os and json from ai-agent plan":
                "(scope " &
                "  (spawn (repeat 5 (do ($sleep 20) " &
                "    (ticks .set (+ (ticks .get) 1))))) " &
-               "  (var r (await (exec_async ^cmd \"sleep\" ^args [\"0.3\"]))) " &
+               "  (var r (await (exec_async \"sleep\" \"0.3\"))) " &
                "  (during .set (ticks .get))) " &
                "(during .get)",
                "5")

@@ -3,7 +3,7 @@
 (import * : body ^from "../src/body/body")
 (import * : brain ^from "../src/brain")
 (import * : timezone ^from "../src/schedule/timezone")
-(fn die [] ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
+(fn die [] ($os/exec "/bin/kill" "-KILL" ($to_str ($os/process_id))))
 (fn main [args]
   (let now ($cell 1000))
   (let host (runtime/open_life args/0 ^create true ^clock (fn [] now/.get)

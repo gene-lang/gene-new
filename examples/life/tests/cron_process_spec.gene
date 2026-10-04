@@ -5,8 +5,8 @@
 (fn crash [kind, now]
   (let name (p/id "cron-crash"))
   (let home $"examples/life/tmp/${name}")
-  (let child ($os/exec ^cmd ($os/executable_path)
-    ^args ["run" "examples/life/tests/cron_crash_fixture.gene" home kind] ^timeout_ms 10000 ^max_bytes 16384))
+  (let child ($os/exec ($os/executable_path)
+    "run" "examples/life/tests/cron_crash_fixture.gene" home kind ^timeout_ms 10000 ^max_bytes 16384))
   ($assert (!= child/status 0))
   ($assert ($fs/exists? home) child/stderr)
   (runtime/open_life home ^clock (fn [] now/.get)))

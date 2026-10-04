@@ -25,7 +25,7 @@
         (command .push "--passC:-fno-omit-frame-pointer")
         (command .push "--passL:-fsanitize=thread")))
     (command .push "tests/test_atomic_generation_retirement.nim")
-    (let build (await ($os/exec_async ^cmd "nim" ^args command
+    (let build (await ($os/exec_async "nim" command...
       ^timeout_ms 600000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-build.log" ($to_str build/stdout build/stderr))
     ($assert (&& (== build/status 0) (! build/truncated)) $"build failed: ${output}-build.log")
@@ -41,7 +41,7 @@
        "owner dependent native cleanup defers a draining collector"
        "last owner SDK cleanup runs outside the admission lock"
        "foreign SDK callbacks can finish after Scope edges detach"] []))
-    (let run (await ($os/exec_async ^cmd output ^args filters
+    (let run (await ($os/exec_async output filters...
       ^timeout_ms 180000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-run.log" ($to_str run/stdout run/stderr))
     (let sha ($crypto/sha256 ($fs/read_bytes output)))

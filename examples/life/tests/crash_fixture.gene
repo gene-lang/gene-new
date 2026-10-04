@@ -7,7 +7,7 @@
 (import * : organization ^from "../src/code/organization")
 
 (fn die []
-  ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))]))
+  ($os/exec "/bin/kill" "-KILL" ($to_str ($os/process_id))))
 (fn main [args]
   (let home args/0)
   (let phase args/1)

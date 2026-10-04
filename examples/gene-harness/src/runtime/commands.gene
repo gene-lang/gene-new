@@ -124,7 +124,7 @@
   (let shell (?? ($os/env? "SHELL") "/bin/sh"))
   (let channel ($channel ^capacity 128))
   (let process
-    ($os/exec_stream_async ^cmd shell ^args ["-c" ctx/raw] ^^merge_stderr ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
+    ($os/exec_stream_async shell "-c" ctx/raw ^^merge_stderr ^stdout_chan channel ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_bytes 1048576))
   (let output
     (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output ($to_str line "\n"))) catch ChannelClosed nil)))
   (let result (try (await process) ensure process/.cancel (if_not process/.done? process/.join)))

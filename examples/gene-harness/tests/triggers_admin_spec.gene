@@ -25,7 +25,7 @@
         (for command in [["triggers" "list"] ["triggers" "occurrences"] ["triggers" "create" plain]]
           (let options ["run" entry "--workspace" root "--script" script])
           (for value in command (options .push value))
-          (let result (await ($os/exec_async ^cmd ($os/executable_path) ^args options ^timeout_ms 15000)))
+          (let result (await ($os/exec_async ($os/executable_path) options... ^timeout_ms 15000)))
           ($assert (== result/status 0) $"trigger administration failed: ${result/stderr}"))
         (let reopened (open_runtime root "default" (baseline_profile)))
         (let again (new_round_controller reopened (fn [request] "")))

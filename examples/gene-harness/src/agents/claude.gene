@@ -109,7 +109,7 @@
 (fn claude_completion [config, system : Str, user : Str] : Str
   (var spec (claude_request config system user))
   (var task
-    (try (exec_async ^cmd spec/cmd ^args spec/args ^timeout_ms 180000 ^max_bytes 2000000)
+    (try (exec_async spec/cmd spec/args... ^timeout_ms 180000 ^max_bytes 2000000)
       catch Any (fail (HarnessError ^message "Cannot start Claude Code; install or update claude"))))
   (var response
     (try (await task)

@@ -68,7 +68,7 @@
   # The parent checks both this marker and status 137; an ordinary Gene error
   # or a timeout must never masquerade as a successful crash-window test.
   ($fs/write_text_atomic $"${home}/crash-point.data" phase)
-  ($os/exec ^cmd "/bin/kill" ^args ["-KILL" ($to_str ($os/process_id))])
+  ($os/exec "/bin/kill" "-KILL" ($to_str ($os/process_id)))
   (p/problem "SIGKILL unexpectedly returned"))
 
 (fn main [args]

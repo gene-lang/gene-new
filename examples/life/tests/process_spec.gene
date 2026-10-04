@@ -6,8 +6,8 @@
 (fn crash [phase]
   (let name (p/id "crash"))
   (let home $"examples/life/tmp/${name}")
-  (let result ($os/exec ^cmd ($os/executable_path)
-    ^args ["run" "examples/life/tests/crash_fixture.gene" home phase] ^timeout_ms 10000))
+  (let result ($os/exec ($os/executable_path)
+    "run" "examples/life/tests/crash_fixture.gene" home phase ^timeout_ms 10000))
   ($assert (!= result/status 0) "Fixture must exit unexpectedly")
   ($assert ($fs/exists? home) result/stderr)
   (runtime/open_life home ^clock (fn [] 3601000)))

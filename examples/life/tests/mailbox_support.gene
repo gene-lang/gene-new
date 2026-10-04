@@ -13,8 +13,8 @@
   ($fs/make_dir directory)
   (let ready $"${directory}/ready.data")
   (if ($fs/exists? ready) ($fs/remove ready))
-  (let task ($os/exec_async ^cmd ($os/executable_path)
-    ^args ["run" "examples/life/tests/mailbox_fixture.gene" directory] ^dir root
+  (let task ($os/exec_async ($os/executable_path)
+    "run" "examples/life/tests/mailbox_fixture.gene" directory ^dir root
     ^timeout_ms 120000 ^max_bytes 16384))
   (var started false)
   (try

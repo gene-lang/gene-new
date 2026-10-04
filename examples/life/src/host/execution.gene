@@ -27,8 +27,8 @@
     ^custom_context (== selected/context true) ^attention (== selected/attention true)
     ^ownership (== selected/ownership true)
     ^root root ^rpc_path rpc ^result_path result}))
-  (let task ($os/exec_async ^cmd ($os/executable_path)
-    ^args ["run" host/worker request] ^dir root
+  (let task ($os/exec_async ($os/executable_path)
+    "run" host/worker request ^dir root
     ^timeout_ms 3000 ^max_bytes 16384))
   (let done ($cell nil))
   (let monitor (spawn ^lane root (done .set task/.join)))

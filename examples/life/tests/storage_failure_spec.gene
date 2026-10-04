@@ -5,7 +5,7 @@
 (import * : brain ^from "../src/brain")
 
 (fn chmod [home, mode]
-  (let result ($os/exec ^cmd "/bin/chmod" ^args [mode home]))
+  (let result ($os/exec "/bin/chmod" mode home))
   ($assert (== result/status 0) result/stderr))
 (fn fixture []
   (let name (p/id "write-failure"))

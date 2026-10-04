@@ -3,9 +3,9 @@
 (describe "Native sampling report accounting"
   (it "counts recursive publication once and excludes the idle worker" []
     (let directory ($path/parent this_mod/.path))
-    (let process (await ($os/exec_async ^cmd ($os/executable_path)
-      ^args ["run" ($path/join directory "summarize_sample.gene")
-        ($path/join directory "fixtures/sample-recursive.txt")]
+    (let process (await ($os/exec_async ($os/executable_path)
+      "run" ($path/join directory "summarize_sample.gene")
+        ($path/join directory "fixtures/sample-recursive.txt")
       ^timeout_ms 10000 ^max_bytes 65536)))
     (assert_equal process/status 0 process/stderr)
     (let result ($json/parse process/stdout))

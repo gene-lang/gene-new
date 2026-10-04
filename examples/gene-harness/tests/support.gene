@@ -14,8 +14,8 @@
   (if_not ($absent? selected) (return (body selected)))
   (let workspace ($path/join package_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)
-  (let result (await ($os/exec_async ^cmd ($os/executable_path)
-    ^args ["run" spec_path workspace name] ^dir package_root
+  (let result (await ($os/exec_async ($os/executable_path)
+    "run" spec_path workspace name ^dir package_root
     ^timeout_ms 120000 ^max_bytes 1048576)))
   (assert_equal result/status 0
     $"Isolated spec failed. Workspace: ${workspace}\n${result/stdout}${result/stderr}")

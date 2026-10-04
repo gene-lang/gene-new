@@ -19,7 +19,7 @@
         (let lines ($channel ^capacity 128))
         (let console_seen ($cell false))
         (let process
-          ($os/exec_stream_async ^cmd gene_binary ^args ["run" entry "scripted" "--script" script "--workspace" ($path/join directory "workspace")] ^stdin_pipe stdin/0 ^stdout_chan lines ^timeout_ms 10000 ^max_bytes 1048576))
+          ($os/exec_stream_async gene_binary "run" entry "scripted" "--script" script "--workspace" ($path/join directory "workspace") ^stdin_pipe stdin/0 ^stdout_chan lines ^timeout_ms 10000 ^max_bytes 1048576))
         (scope
           (let writer
             (spawn ^lane root (do

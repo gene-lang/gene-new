@@ -511,8 +511,8 @@ when defined(geneRcStats):
           (let endpoints ($io/pipe))
           (let reader endpoints/0)
           (let writer endpoints/1)
-          (let task ($os/exec_stream_async ^cmd "printf"
-            ^args ["abc"] ^stdout_pipe writer))
+          (let task ($os/exec_stream_async "printf"
+            "abc" ^stdout_pipe writer))
           (await task)
           (await (reader .AsyncReader:read 3))
           (await (reader .AsyncReader:read 3))
@@ -528,8 +528,8 @@ when defined(geneRcStats):
           (let IoResource $io/IoResource)
           (let stdout ($io/pipe))
           (let stderr ($io/pipe))
-          (let task ($os/exec_stream_async ^cmd "sh"
-            ^args ["-c" "printf o; printf e >&2"]
+          (let task ($os/exec_stream_async "sh"
+            "-c" "printf o; printf e >&2"
             ^stdout_pipe stdout/1 ^stderr_pipe stderr/1))
           (await task)
           (await (stdout/0 .AsyncReader:read 1))
@@ -552,7 +552,7 @@ when defined(geneRcStats):
           (let IoResource $io/IoResource)
           (let input ($io/pipe))
           (let output ($io/pipe))
-          (let task ($os/exec_stream_async ^cmd "cat"
+          (let task ($os/exec_stream_async "cat"
             ^stdin_pipe input/0 ^stdout_pipe output/1))
           (await (input/1 .AsyncWriter:write ($binary/from_str "abc")))
           (input/1 .IoResource:close)

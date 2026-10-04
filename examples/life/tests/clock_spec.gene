@@ -3,6 +3,6 @@
 
 (describe "Life wall clock"
   (it "matches Unix time for the current local timezone" []
-    (let response ($os/exec ^cmd "/bin/date" ^args ["+%s"]))
+    (let response ($os/exec "/bin/date" "+%s"))
     (let expected (* ($json/parse ($str/trim response/stdout)) 1000))
     ($assert (< ($math/abs (- (wall_ms) expected)) 2000))))

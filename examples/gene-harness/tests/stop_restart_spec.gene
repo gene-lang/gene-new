@@ -66,8 +66,8 @@
         ensure
           (close_runtime reopened))
         (let entry ($path/join ($path/parent ($path/parent this_mod/.path)) "src/main.gene"))
-        (let direct (await ($os/exec_async ^cmd ($os/executable_path)
-          ^args ["run" entry "chat" "/restart" "--workspace" $"${root}/direct"] ^timeout_ms 15000)))
+        (let direct (await ($os/exec_async ($os/executable_path)
+          "run" entry "chat" "/restart" "--workspace" $"${root}/direct" ^timeout_ms 15000)))
         ($assert (== direct/status 0) $"direct restart did not exit normally: ${direct/stderr}")
         ($assert ($str/contains? direct/stdout "Direct gene run cannot restart") "direct restart omitted its terminal instruction")
         ($println "restart: direct invocation stops normally and explains terminal restart")))))

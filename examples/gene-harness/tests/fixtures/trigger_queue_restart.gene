@@ -17,6 +17,6 @@
   (for [id watcher] in controller/watchers/.get watcher/.join)
   (tick_triggers manager ^now 1200)
   (tick_triggers manager ^now 1300)
-  ($os/exec ^cmd "/bin/kill" ^args ["-9" ($to_str ($os/process_id))])
+  ($os/exec "/bin/kill" "-9" ($to_str ($os/process_id)))
   ($sleep 60000))
 (fn main [args] (child args/0))

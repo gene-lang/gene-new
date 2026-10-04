@@ -12,7 +12,7 @@
       (fn [workspace]
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
-        (await ($os/exec_async ^cmd ($os/executable_path) ^args ["run" (fixture_path "trigger_queue_restart") root] ^timeout_ms 30000))
+        (await ($os/exec_async ($os/executable_path) "run" (fixture_path "trigger_queue_restart") root ^timeout_ms 30000))
         (let runtime (open_runtime root "default" (baseline_profile)))
         (let calls ($cell 0))
         (let controller (new_round_controller runtime (fn [request]

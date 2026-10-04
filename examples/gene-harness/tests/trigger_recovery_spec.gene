@@ -16,7 +16,7 @@
         (let fixture (fixture_path "trigger_recovery"))
         (for point in ["due" "session" "admitted" "started" "running"]
           (let workspace $"${root}/${point}")
-          (let killed (await ($os/exec_async ^cmd executable ^args ["run" fixture workspace point] ^timeout_ms 30000)))
+          (let killed (await ($os/exec_async executable "run" fixture workspace point ^timeout_ms 30000)))
           ($assert (!= killed/status 0) "crash child unexpectedly succeeded")
           (let runtime (open_runtime workspace "default" (baseline_profile)))
           (let calls ($cell 0))

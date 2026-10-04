@@ -30,11 +30,11 @@
           (let cancelled (wait_command manager slow/id))
           ($assert (== cancelled/status "cancelled") "command ignored cancellation")
           (for pid in [parent child]
-            (var alive ($os/exec ^cmd "/bin/kill" ^args ["-0" pid]))
+            (var alive ($os/exec "/bin/kill" "-0" pid))
             (let reap_deadline (+ ($os/monotonic_ms) 2000))
             (while (&& (== alive/status 0) (< ($os/monotonic_ms) reap_deadline))
               ($sleep 10)
-              (set alive ($os/exec ^cmd "/bin/kill" ^args ["-0" pid])))
+              (set alive ($os/exec "/bin/kill" "-0" pid)))
             ($assert (!= alive/status 0) $"cancel retained process ${pid}"))
           ($fs/make_dir "folder")
           ($fs/write_bytes "binary" ($binary/from_list [0 1 255]))

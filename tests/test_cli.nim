@@ -2573,7 +2573,7 @@ int64_t native_answer(int64_t value) { return value + DELTA; }
  ^applications [(application "cli" ^entry "src/main.gene")]}
 """)
       writeBuildFixture(root / "src/main.gene",
-        "(fn main [args] ($os/exec ^cmd \"/bin/sleep\" ^args [\"2\"] " &
+        "(fn main [args] ($os/exec \"/bin/sleep\" \"2\" " &
         "^timeout_ms 5000) ($println \"done\"))")
       var ran = runGene(["pkg", "resolve", "--package-root", root])
       if ran.exitCode != 0: checkpoint ran.output

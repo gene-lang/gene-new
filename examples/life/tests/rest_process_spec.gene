@@ -6,8 +6,8 @@
 (fn crash [stage, point]
   (let name (p/id "rest-crash"))
   (let home $"examples/life/tmp/${name}")
-  (let result ($os/exec ^cmd ($os/executable_path)
-    ^args ["run" "examples/life/tests/rest_crash_fixture.gene" home stage point]
+  (let result ($os/exec ($os/executable_path)
+    "run" "examples/life/tests/rest_crash_fixture.gene" home stage point
     ^timeout_ms 10000 ^max_bytes 16384))
   ($assert (!= result/status 0) "Crash fixture did not exit unexpectedly")
   ($assert ($fs/exists? home) result/stderr)

@@ -13,14 +13,14 @@
       (fn [workspace]
         ($fs/make_dir workspace)
         (let root ($fs/real_path workspace))
-        (let child ($os/exec_async ^cmd ($os/executable_path)
-          ^args ["run" (fixture_path "patch_crash_process") root] ^timeout_ms 15000))
+        (let child ($os/exec_async ($os/executable_path)
+          "run" (fixture_path "patch_crash_process") root ^timeout_ms 15000))
         (try
           (let marker ($path/join root "owner-pid"))
           (let deadline (+ ($os/monotonic_ms) 10000))
           (while (&& (! ($fs/exists? marker)) (< ($os/monotonic_ms) deadline)) ($sleep 5))
           ($assert ($fs/exists? marker) "patch did not reach the first commit rename")
-          (let killed (await ($os/exec_async ^cmd "/bin/kill" ^args ["-9" ($str/trim ($fs/read_text marker))])))
+          (let killed (await ($os/exec_async "/bin/kill" "-9" ($str/trim ($fs/read_text marker)))))
           ($assert (== killed/status 0) "patch child could not be killed")
           (await child)
           (let reopened (open_runtime root "default" (baseline_profile)))

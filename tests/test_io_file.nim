@@ -474,8 +474,8 @@ when compileOption("threads") and defined(posix):
         (let endpoints ($io/pipe))
         (let reader endpoints/0)
         (let writer endpoints/1)
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "dd if=/dev/zero bs=4096 count=64 2>/dev/null"]
+        (let task ($os/exec_stream_async "sh"
+          "-c" "dd if=/dev/zero bs=4096 count=64 2>/dev/null"
           ^stdout_pipe writer))
         (var total 0)
         (while true
@@ -503,8 +503,8 @@ when compileOption("threads") and defined(posix):
         (let endpoints ($io/pipe))
         (let reader endpoints/0)
         (let writer endpoints/1)
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "sleep 2; printf x"] ^stdout_pipe writer))
+        (let task ($os/exec_stream_async "sh"
+          "-c" "sleep 2; printf x" ^stdout_pipe writer))
         (spawn ^lane root (do ($sleep 50) (task .cancel)))
         (let cancelled (match (task .join)
           (when TaskOutcome/cancelled true)))
@@ -528,8 +528,8 @@ when compileOption("threads") and defined(posix):
         (let writer endpoints/1)
         (let caught (try
           (scope
-            ($os/exec_stream_async ^cmd "sh"
-              ^args ["-c" "sleep 2; printf x"] ^stdout_pipe writer)
+            ($os/exec_stream_async "sh"
+              "-c" "sleep 2; printf x" ^stdout_pipe writer)
             (fail (RuntimeError ^message "stop")))
           catch RuntimeError true))
         (let eof (await (reader .AsyncReader:read 16)))
@@ -547,8 +547,8 @@ when compileOption("threads") and defined(posix):
         (let endpoints ($io/pipe))
         (let reader endpoints/0)
         (let writer endpoints/1)
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "dd if=/dev/zero bs=4096 count=256 2>/dev/null"]
+        (let task ($os/exec_stream_async "sh"
+          "-c" "dd if=/dev/zero bs=4096 count=256 2>/dev/null"
           ^stdout_pipe writer))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
@@ -567,7 +567,7 @@ when compileOption("threads") and defined(posix):
         (let writer endpoints/1)
         (let lines ($channel ^capacity 1))
         (let rejected (try
-          ($os/exec_stream_async ^cmd "true"
+          ($os/exec_stream_async "true"
             ^stdout_chan lines ^stdout_pipe writer)
           false catch Any true))
         (writer .IoResource:close)
@@ -585,8 +585,8 @@ when compileOption("threads") and defined(posix):
         (let endpoints ($io/pipe))
         (let reader endpoints/0)
         (let writer endpoints/1)
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "printf 'a\\000b' >&2"] ^stderr_pipe writer))
+        (let task ($os/exec_stream_async "sh"
+          "-c" "printf 'a\\000b' >&2" ^stderr_pipe writer))
         (let data (await (reader .AsyncReader:read 16)))
         (let eof (await (reader .AsyncReader:read 16)))
         (let result (await task))
@@ -612,8 +612,8 @@ when compileOption("threads") and defined(posix):
         (let stderr ($io/pipe))
         (let outTask (spawn ^lane root (count_bytes stdout/0)))
         (let errTask (spawn ^lane root (count_bytes stderr/0)))
-        (let process ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "dd if=/dev/zero bs=4096 count=64 2>/dev/null & dd if=/dev/zero bs=4096 count=64 >&2 2>/dev/null & wait"]
+        (let process ($os/exec_stream_async "sh"
+          "-c" "dd if=/dev/zero bs=4096 count=64 2>/dev/null & dd if=/dev/zero bs=4096 count=64 >&2 2>/dev/null & wait"
           ^stdout_pipe stdout/1 ^stderr_pipe stderr/1))
         (let outCount (await outTask))
         (let errCount (await errTask))
@@ -638,7 +638,7 @@ when compileOption("threads") and defined(posix):
         (let reader endpoints/0)
         (let writer endpoints/1)
         (let rejected (try
-          ($os/exec_stream_async ^cmd "true"
+          ($os/exec_stream_async "true"
             ^stdout_pipe writer ^stderr_pipe 1)
           false catch TypeError true))
         (await (writer .IoResource:wait_closed))
@@ -656,8 +656,8 @@ when compileOption("threads") and defined(posix):
         (let IoResource $io/IoResource)
         (let stderr ($io/pipe))
         (let lines ($channel ^capacity 2))
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "printf 'line\\n'; printf err >&2"]
+        (let task ($os/exec_stream_async "sh"
+          "-c" "printf 'line\\n'; printf err >&2"
           ^stdout_chan lines ^stderr_pipe stderr/1))
         (let result (await task))
         (let line (lines .recv))
@@ -676,7 +676,7 @@ when compileOption("threads") and defined(posix):
         (let IoResource $io/IoResource)
         (let input ($io/pipe))
         (let output ($io/pipe))
-        (let process ($os/exec_stream_async ^cmd "cat"
+        (let process ($os/exec_stream_async "cat"
           ^stdin_pipe input/0 ^stdout_pipe output/1))
         (await (input/1 .AsyncWriter:write ($binary/from_list [97 0 98])))
         (input/1 .IoResource:close)
@@ -701,7 +701,7 @@ when compileOption("threads") and defined(posix):
         (let IoResource $io/IoResource)
         (let input ($io/pipe))
         (let output ($io/pipe))
-        (let process ($os/exec_stream_async ^cmd "cat"
+        (let process ($os/exec_stream_async "cat"
           ^stdin_pipe input/0 ^stdout_pipe output/1))
         (let sending (spawn ^lane root
           (do (await ($io/write_all input/1 payload))
@@ -729,7 +729,7 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let input ($io/pipe))
-        (let process ($os/exec_stream_async ^cmd "true"
+        (let process ($os/exec_stream_async "true"
           ^stdin_pipe input/0))
         (let result (await process))
         (await (input/0 .IoResource:wait_closed))
@@ -745,8 +745,8 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let input ($io/pipe))
-        (let process ($os/exec_stream_async ^cmd "sleep"
-          ^args ["2"] ^stdin_pipe input/0))
+        (let process ($os/exec_stream_async "sleep"
+          "2" ^stdin_pipe input/0))
         (spawn ^lane root (do ($sleep 50) (process .cancel)))
         (let cancelled (match (process .join)
           (when TaskOutcome/cancelled true)))
