@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
 C
 
 echo "Compiling generated C..."
-"$CC_BIN" -std=c11 -O3 -Wall -Werror -o "$BIN" "$GEN_C"
+"$ROOT/tools/with_c_sdk" "$CC_BIN" -std=c11 -O3 -Wall -Werror -o "$BIN" "$GEN_C"
 
 echo
 echo "Running benchmark..."

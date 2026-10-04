@@ -41,7 +41,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   undefined_flag="-undefined dynamic_lookup"
 fi
 # shellcheck disable=SC2086
-"$CC" -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC $undefined_flag \
+"$root/tools/with_c_sdk" "$CC" -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC $undefined_flag \
   "$out/fib.c" -o "$out/libfib.dylib"
 
 echo "==> running benchmark"

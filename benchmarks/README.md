@@ -96,6 +96,11 @@ a fixed-representation typed function, compiles that C with the host compiler,
 and times the resulting binary. This is useful as an AOT/JIT target signal; it
 does not exercise runtime VM dispatch into native code.
 
+On macOS, the AOT scripts use `tools/with_c_sdk` to probe the selected C compiler.
+If the default SDK cannot link a trivial program, they select the newest installed
+SDK that can. An explicit `SDKROOT` is preserved. This also covers the separate C
+link step, which cannot inherit an SDK chosen internally by Nim's `config.nims`.
+
 For that, use `examples/native/bench_fib.sh`, which builds the same function as
 a loadable AOT library and calls it from Gene through the `aot/load` boundary.
 It reports both halves of the trade: compiled fib runs far ahead of the VM once

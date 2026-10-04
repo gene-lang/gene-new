@@ -41,7 +41,7 @@ echo "==> generating C from sqlite_rows.gene"
 "$GENE" compile --target c "$here/sqlite_rows.gene" > "$out/sqlite_rows.c"
 
 echo "==> compiling"
-"$CC" -std=c11 -O2 -Wall "${sqlite_cflags[@]}" \
+"$root/tools/with_c_sdk" "$CC" -std=c11 -O2 -Wall "${sqlite_cflags[@]}" \
   "$out/sqlite_rows.c" "$here/main.c" \
   -o "$out/sqlite_example" "${sqlite_libs[@]}"
 
@@ -60,7 +60,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   undefined_flag="-undefined dynamic_lookup"
 fi
 # shellcheck disable=SC2086
-"$CC" -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC $undefined_flag \
+"$root/tools/with_c_sdk" "$CC" -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC $undefined_flag \
   "$out/scaled.c" -o "$out/libscaled.dylib"
 
 echo "==> built $out/libscaled.dylib"

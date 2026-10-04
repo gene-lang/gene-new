@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bootstrap an external C compiler before Gene/native artifacts can run.
+# Match config.nims's SDK fallback for C commands outside the Nim process.
+# Usage: tools/with_c_sdk CC [compiler arguments...]
+if [[ $# -eq 0 ]]; then
+  echo "Usage: $0 CC [compiler arguments...]" >&2
+  exit 2
+fi
+
+if [[ "$(uname -s)" == "Darwin" && -z "${SDKROOT:-}" ]]; then
+  gene_default_sdk="$(xcrun --show-sdk-path 2>/dev/null || true)"
+  if [[ -n "$gene_default_sdk" ]]; then
+    gene_sdk_probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/gene-c-sdk.XXXXXX")"
+    trap 'rm -rf "$gene_sdk_probe_dir"' EXIT
+
+    gene_sdk_links() {
+      printf 'int main(void) { return 0; }\n' |
+        SDKROOT="$1" "$2" -x c - -o "$gene_sdk_probe_dir/probe" >/dev/null 2>&1
+    }
+
+    if ! gene_sdk_links "$gene_default_sdk" "$1"; then
+      gene_sdk_parent="$(dirname "$gene_default_sdk")"
+      gene_sdk_versions="$(
+        for gene_sdk_candidate in "$gene_sdk_parent"/MacOSX[0-9]*.sdk; do
+          [[ -d "$gene_sdk_candidate" ]] || continue
+          gene_sdk_version="${gene_sdk_candidate##*/MacOSX}"
+          gene_sdk_version="${gene_sdk_version%.sdk}"
+          if [[ "$gene_sdk_version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            printf '%s\n' "$gene_sdk_version"
+          fi
+        done | LC_ALL=C sort -t . -k1,1nr -k2,2nr -k3,3nr
+      )"
+      while IFS= read -r gene_sdk_version; do
+        [[ -n "$gene_sdk_version" ]] || continue
+        gene_sdk_candidate="$gene_sdk_parent/MacOSX$gene_sdk_version.sdk"
+        if gene_sdk_links "$gene_sdk_candidate" "$1"; then
+          export SDKROOT="$gene_sdk_candidate"
+          echo "Using compatible macOS SDK: $SDKROOT" >&2
+          break
+        fi
+      done <<< "$gene_sdk_versions"
+    fi
+
+    rm -rf "$gene_sdk_probe_dir"
+    trap - EXIT
+  fi
+fi
+
+exec "$@"
