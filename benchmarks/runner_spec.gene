@@ -1,5 +1,6 @@
 (import $test [describe it assert_equal assert_raises])
 (import [distribution] ^from "./run")
+(import [record_harness_sample] ^from "./run_harness")
 
 (describe "Benchmark distributions"
   (it "keeps execution order while computing an odd median" []
@@ -16,3 +17,21 @@
     (assert_equal result/p95 19))
   (it "refuses to summarize an empty capture" []
     (assert_raises (fn [] (distribution [])) AssertionError)))
+
+(describe "Harness benchmark samples"
+  (it "excludes warmup and records subsequent service and process times" []
+    (let variant {^checksum nil ^elapsed_ms [] ^wall_ms []})
+    (record_harness_sample variant {^record_checksum 15100 ^elapsed_ms 30} 40 0)
+    (assert_equal variant/checksum 15100)
+    (assert_equal variant/elapsed_ms [])
+    (assert_equal variant/wall_ms [])
+    (record_harness_sample variant {^record_checksum 15100 ^elapsed_ms 10} 20 1)
+    (assert_equal variant/elapsed_ms [10])
+    (assert_equal variant/wall_ms [20]))
+  (it "rejects a changed checksum before retaining the sample" []
+    (let variant {^checksum 15100 ^elapsed_ms [] ^wall_ms []})
+    (assert_raises
+      (fn [] (record_harness_sample variant {^record_checksum 99 ^elapsed_ms 10} 20 1))
+      AssertionError)
+    (assert_equal variant/elapsed_ms [])
+    (assert_equal variant/wall_ms [])))

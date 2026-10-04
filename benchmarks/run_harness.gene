@@ -3,6 +3,14 @@
 # GENE_BENCH_SAMPLES defaults to 3; each executable gets one excluded warmup.
 (import [capture distribution] ^from "./run")
 
+(fn record_harness_sample [variant result wall round]
+  (if (== round 0)
+    (then (variant .put "checksum" result/record_checksum))
+    (else
+      ($assert (== result/record_checksum variant/checksum) "record checksum changed")
+      (variant/elapsed_ms .push result/elapsed_ms)
+      (variant/wall_ms .push wall))))
+
 (fn main [args] : Int
   (let arguments args/body)
   ($assert (>= ($size arguments) 2) "expected output directory and Gene executable(s)")
@@ -45,12 +53,7 @@
         $"harness ${index}, round ${round} failed; inspect raw logs")
       (let result ($json/parse process/stdout))
       ($assert (== result/turns 100) "unexpected work count")
-      (if (== round 0)
-        (variant .put "checksum" result/record_checksum)
-        (else
-          ($assert (== result/record_checksum variant/checksum) "record checksum changed")
-          (variant/elapsed_ms .push result/elapsed_ms)
-          (variant/wall_ms .push wall)))
+      (record_harness_sample variant result wall round)
       ($println $"completed executable ${index}, round ${round}, wall ${wall} ms")))
   (let summary [])
   (for variant in variants
