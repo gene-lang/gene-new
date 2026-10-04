@@ -27,8 +27,8 @@
   (let result
     (try
       (if (== dir "")
-        ($os/exec ^cmd program ^args argv ^timeout_ms timeout_ms ^max_bytes output_cap)
-        ($os/exec ^cmd program ^args argv ^timeout_ms timeout_ms ^max_bytes output_cap ^dir dir))
+        ($os/exec program argv... ^timeout_ms timeout_ms ^max_bytes output_cap)
+        ($os/exec program argv... ^timeout_ms timeout_ms ^max_bytes output_cap ^dir dir))
     catch Any
       (fail (RenderError ^code "missing_dependency" ^stage stage
         ^message $"${stage}: could not start ${cmd}: ${$err/message}" ^detail cmd))))

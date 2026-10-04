@@ -54,12 +54,12 @@
   (if (|| (!= ($head through_year) Int) (< through_year 2038) (> through_year 2500))
     (problem "Timezone horizon must be between 2038 and 2500"))
   (if (== name "UTC") (return (parse_intervals name "-\t-\t+00\n" through_year)))
-  (let exists ($os/exec ^cmd "/bin/test" ^args ["-f" $"/usr/share/zoneinfo/${name}"] ^timeout_ms 1000))
+  (let exists ($os/exec "/bin/test" "-f" $"/usr/share/zoneinfo/${name}" ^timeout_ms 1000))
   (if_not (== exists/status 0) (problem $"Unknown installed timezone: ${name}"))
   (let range $"1970,${(+ through_year 1)}")
   (var text nil)
   (for executable in ["/usr/sbin/zdump" "/usr/bin/zdump"]
-    (let response (try ($os/exec ^cmd executable ^args ["-i" "-c" range name]
+    (let response (try ($os/exec executable "-i" "-c" range name
       ^timeout_ms 2000 ^max_bytes 262144) catch Any nil))
     (if_yes (&& (! ($absent? response)) (== response/status 0) (! response/timed_out))
       (set text response/stdout)

@@ -3,7 +3,7 @@
 # GENE_BENCH_SAMPLES defaults to 5. Round zero warms each binary and is excluded.
 
 (fn capture [executable arguments]
-  (await ($os/exec_async ^cmd executable ^args arguments ^timeout_ms 600000 ^max_bytes 4194304)))
+  (await ($os/exec_async executable arguments... ^timeout_ms 600000 ^max_bytes 4194304)))
 
 (fn distribution [values]
   (let ordered ($order/sort values))

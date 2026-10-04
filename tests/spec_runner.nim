@@ -8563,10 +8563,18 @@ suite "spec — task context":
     check_eval("(let ticks ($cell 0)) (let calls ($cell 0)) (let stop ($cell false)) " &
       "(scope (let ticker (spawn ^lane root " &
       " (while (not (stop .get)) ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
-      " (let worker (spawn ^lane root ($os/exec ^cmd " &
-      "   (do (calls .set (+ (calls .get) 1)) \"sleep\") ^args [\"1\"]))) " &
+      " (let worker (spawn ^lane root ($os/exec " &
+      "   (do (calls .set (+ (calls .get) 1)) \"sleep\") " &
+      "   (do (calls .set (+ (calls .get) 1)) \"0.2\")))) " &
       " (let result (await worker)) (stop .set true) (await ticker) " &
-      " [result/status (> (ticks .get) 10) (calls .get)])", "[0 true 1]")
+      " [result/status (> (ticks .get) 10) (calls .get)])", "[0 true 2]")
+
+  test "full-command subprocess calls evaluate once across fiber suspension":
+    check_eval("(let calls ($cell 0)) " &
+      "(scope (let task (spawn ^lane root ($os/exec ^^full " &
+      " (do (calls .set (+ (calls .get) 1)) \"sleep 0.05; printf done\")))) " &
+      " (let result (await task)) [result/status result/stdout (calls .get)])",
+      "[0 \"done\" 1]")
 
   test "collection callbacks can await and preserve eager receiver shapes":
     check_eval("(scope (let worker (spawn ^lane root " &
@@ -8586,7 +8594,8 @@ suite "spec — task context":
 
   test "cancelling callback and subprocess work remains responsive":
     for expression in ["($map [1] (fn [x] (while true nil)))",
-                       "($os/exec ^cmd \"sleep\" ^args [\"5\"])"]:
+                       "($os/exec \"sleep\" \"5\")",
+                       "($os/exec ^^full \"exec sleep 5\")"]:
       check_eval("(scope (let task (spawn ^lane root " & expression & ")) " &
         " ($sleep 20) (let start ($os/monotonic_ms)) (task .cancel) " &
         " (let outcome (task .join)) " &
@@ -10768,18 +10777,82 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec runs a program, captures output, and enforces timeout":
     check_eval("(import $os [exec]) " &
-               "(var r (exec ^cmd \"echo\" ^args [\"hi\"])) " &
+               "(var r (exec \"echo\" \"hi\")) " &
                "[r/status r/timed_out]",
                "[0 false]")
     check_eval("(import $os [exec]) " &
-               "(var r (exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
+               "(var r (exec \"sleep\" \"5\" ^timeout_ms 150)) " &
                "r/timed_out",
                "true")
 
     check_eval("(import $os [exec]) " &
-               "(var r (exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
+               "(var r (exec \"printf\" \"abcdef\" ^max_bytes 3)) " &
                "[r/stdout r/stdout_truncated r/truncated]",
                "[\"abc\" true true]")
+
+  test "os/exec preserves literal argument boundaries and supports argument spreading":
+    let arguments = @["two words", "", "*", "$HOME", "$(printf unwanted)",
+                      "; printf unwanted", "a'b", "\"quoted\"", "line\nbreak"]
+    let packed = "[" & arguments.mapIt(geneString(it)).join(" ") & "]"
+    let expected = newList(@[newInt(0), newStr(arguments.join("\n") & "\n")]).print()
+    check_eval("(let args " & packed & ") " &
+      "(let r ($os/exec \"printf\" \"%s\\n\" args...)) [r/status r/stdout]", expected)
+    check_eval("(let r ($os/exec \"true\")) [r/status r/stdout]", "[0 \"\"]")
+    check_eval("(let r ($os/exec \"printf\" \"%s\" \"$HOME\" ^full false)) r/stdout", "\"$HOME\"")
+    check_eval("(let r ($os/exec ^cmd \"printf\" ^args [\"%s\" \"legacy\"])) r/stdout", "\"legacy\"")
+
+  test "os/exec full commands use shell quoting, pipelines, redirection and exit status":
+    let directory = createTempDir("gene exec full ", "")
+    defer:
+      if fileExists(directory / "out.txt"): removeFile(directory / "out.txt")
+      removeDir(directory)
+    let command = "printf '%s' 'two words' | tr a-z A-Z > out.txt; cat out.txt; printf err >&2; exit 7"
+    check_eval("(let r ($os/exec ^^full " & geneString(command) &
+      " ^dir " & geneString(directory) & ")) [r/status r/stdout r/stderr r/timed_out]",
+      "[7 \"TWO WORDS\" \"err\" false]")
+    check readFile(directory / "out.txt") == "TWO WORDS"
+    check_eval("(let r ($os/exec ^^full \"printf abcdef\" ^max_bytes 3)) " &
+      "[r/stdout r/truncated]", "[\"abc\" true]")
+    check_eval("(let r ($os/exec ^^full \"exec sleep 5\" ^timeout_ms 50)) r/timed_out", "true")
+
+  test "exec rejects ambiguous command forms and invalid full flags before launching":
+    for invocation in [
+      "($os/exec)", "($os/exec \"\")", "($os/exec ^^full)",
+      "($os/exec ^^full \"\")", "($os/exec ^^full \"echo hi\" \"extra\")",
+      "($os/exec \"echo\" ^cmd \"echo\")", "($os/exec \"echo\" ^args [])",
+      "($os/exec ^^full ^cmd \"echo hi\")", "($os/exec ^args [])",
+      "($os/exec \"true\" ^full 1)", "($os/exec \"true\" ^full \"yes\")",
+      "($os/exec \"true\" ^unknown true)"]:
+      check_eval("(import $os [OsError]) (try " & invocation & " catch OsError true)", "true")
+    check_eval_error("($os/exec 1)", "command expects a Str")
+    check_eval_error("($os/exec \"echo\" 1)", "argument 1 expects a Str")
+    for args in [geneString("bad\0command"), "\"printf\" " & geneString("bad\0argument"),
+                 "^^full " & geneString("printf good\0ignored")]:
+      check_eval_error("($os/exec " & args & ")", "must not contain NUL")
+
+  when defined(posix):
+    test "positional exec preserves spaces in executable paths":
+      let directory = createTempDir("gene exec argv ", "")
+      let program = directory / "tool with spaces"
+      createSymlink(findExe("printf"), program)
+      defer:
+        removeFile(program)
+        removeDir(directory)
+      check_eval("(let r ($os/exec " & geneString(program) & " \"%s\" \"ok\")) r/stdout", "\"ok\"")
+
+  test "async and streaming exec variants share positional and full command forms":
+    check_eval("(let r (await ($os/exec_async \"printf\" \"%s\" \"two words\"))) r/stdout", "\"two words\"")
+    check_eval("(let r (await ($os/exec_async ^^full \"printf lower | tr a-z A-Z\"))) r/stdout", "\"LOWER\"")
+    check_eval("(let lines ($cell [])) " &
+      "(let r ($os/exec_stream ^^full \"printf 'one\\ntwo\\n'\" " &
+      " ^stdout_line (fn [line] (lines/.get .push line)))) [r/status lines/.get]",
+      "[0 [\"one\" \"two\"]]")
+    check_eval("(let r ($os/exec_stream \"printf\" \"ok\")) r/stdout", "\"ok\"")
+    check_eval("(let ch ($channel ^capacity 4)) " &
+      "(let task ($os/exec_stream_async \"printf\" \"hi\\n\" ^stdout_chan ch)) " &
+      "(let r (await task)) [(ch .recv) r/status]", "[\"hi\" 0]")
+    check_eval("($os/exec_stdio ^^full \"exit 7\")", "7")
+    check_eval("(await ($os/exec_stdio_async ^^full \"exit 8\"))", "8")
 
   test "os/exec_stream invokes stdout callbacks while retaining captured output":
     check_eval("(import $os [exec_stream]) " &
@@ -10793,7 +10866,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stdio runs with parent streams and returns status":
     check_eval("(import $os [exec_stdio]) " &
-               "(exec_stdio ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
+               "(exec_stdio \"sh\" \"-c\" \"exit 7\")",
                "7")
 
   test "os/exec_stdio_async inherits streams without blocking the scheduler":
@@ -10901,8 +10974,8 @@ suite "spec — os and json from ai-agent plan":
     test "async exec cancellation stops the shell's background process group":
       let observed = run(compileSource("""
         (let channel ($channel ^capacity 2))
-        (let task ($os/exec_stream_async ^cmd "sh"
-          ^args ["-c" "echo $$; sleep 60 & echo $!; wait"]
+        (let task ($os/exec_stream_async ^^full
+          "echo $$; sleep 60 & echo $!; wait"
           ^stdout_chan channel ^timeout_ms 5000))
         (let shell ($parse/parse_int (channel .recv)))
         (let child ($parse/parse_int (channel .recv)))

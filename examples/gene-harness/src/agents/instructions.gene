@@ -28,7 +28,7 @@ Use (create_trigger {^id "audit" ^kind "heartbeat" ^every_ms 60000 ^request "Aud
 ($fs/write_text "report.txt" (attachment "report"))
 (Outcome ^done true ^reply "Report written.")
 # After a patch block, run verification
-(append_prompt "tests" ($os/exec ^cmd "gene" ^args ["test"]))
+(append_prompt "tests" ($os/exec "gene" "test"))
 (Outcome ^prompt "Inspect the test result.")
 """)
 

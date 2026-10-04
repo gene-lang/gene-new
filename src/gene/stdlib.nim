@@ -2160,15 +2160,81 @@ proc biOsSetCwd(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 const osExecDefaultOutputCap = 1024 * 1024
 const osExecPollMs = 5
 
+proc osExecText(name: string, value: Value, scope: Scope): string =
+  requireStr(name, value)
+  result = value.strVal
+  if '\0' in result:
+    raiseOsError(name & " must not contain NUL", scope)
+
+proc parseOsExecCommand(name: string, args: openArray[Value],
+                        call: ptr NativeCall): tuple[cmd: string, args: seq[string], full: bool] =
+  ## Positional argv is literal. Shell parsing requires an explicit ^^full and
+  ## exactly one command string. Keep the named form for existing callers, but
+  ## do not guess how to combine it with positional arguments.
+  let scope = if call == nil: nil else: call.dispatchScope
+  var namedCmd, namedArgs, full = false
+  if call != nil:
+    for i, key in call.namedNames:
+      let value = call.namedValues[i]
+      case key
+      of "cmd":
+        namedCmd = true
+        result.cmd = osExecText(name & " ^cmd", value, scope)
+      of "args":
+        namedArgs = true
+        if value.kind != vkList:
+          raiseOsError(name & " ^args must be a List of Str", scope)
+        for item in value.listItems:
+          result.args.add osExecText(name & " ^args item", item, scope)
+      of "full":
+        if value.kind != vkBool:
+          raiseOsError(name & " ^full expects Bool", scope)
+        full = value.boolVal
+      else: discard # Each exec variant validates its own remaining options.
+  if namedCmd or namedArgs:
+    if args.len != 0 or full:
+      raiseOsError(name & " cannot combine ^cmd/^args with positional arguments or ^^full", scope)
+    if not namedCmd or result.cmd.len == 0:
+      raiseOsError(name & " requires a non-empty command", scope)
+    return
+  if args.len == 0:
+    raiseOsError(name & " requires a command followed by string arguments", scope)
+  if full and args.len != 1:
+    raiseOsError(name & " ^^full expects exactly one command string", scope)
+  result.cmd = osExecText(name & " command", args[0], scope)
+  if result.cmd.len == 0:
+    raiseOsError(name & " requires a non-empty command", scope)
+  if full:
+    result.full = true
+    when defined(windows):
+      result.args = @["/d", "/s", "/c", result.cmd]
+      result.cmd = getEnv("COMSPEC", "cmd.exe")
+    else:
+      result.args = @["-c", result.cmd]
+      result.cmd = "/bin/sh"
+  else:
+    for i in 1 ..< args.len:
+      result.args.add osExecText(name & " argument " & $i, args[i], scope)
+
+proc startOsExecProcess(cmd, workingDir: string, args: seq[string], full: bool,
+                         options: set[ProcessOption]): Process =
+  when defined(windows):
+    if full:
+      # cmd.exe parses its command tail itself. Normal argv quoting would add
+      # backslashes around embedded quotes, changing the user's shell command.
+      # On Windows poEvalCommand supplies CreateProcess with a raw command line.
+      return startProcess(quoteShellWindows(cmd) & " /d /s /c \"" & args[^1] & "\"",
+        workingDir = workingDir, options = options + {poEvalCommand})
+  startProcess(cmd, workingDir = workingDir, args = args, options = options)
+
 proc biOsExecAsyncImpl(name: string, wantChan, inheritStdio: bool,
                        args: openArray[Value], call: ptr NativeCall): Value
 
 proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess and return {^status ^stdout ^stderr ^timed_out}.
-  ## `^cmd` is the program, `^args` a list of Str arguments (no shell parsing
-  ## unless the caller passes a shell explicitly), `^timeout_ms` bounds the run,
-  ## and captured output is truncated at `^max_bytes`. Never uses a shell to
-  ## split the command, so injection through argument values is not possible.
+  ## The program and its arguments are positional Str values. ^^full selects
+  ## one shell command string. ^timeout_ms bounds the run and captured output
+  ## is truncated at ^max_bytes; ^cmd/^args remains a compatibility form.
   when compileOption("threads"):
     if activeVmFiber != nil:
       if activeVmFiber.nativeTask.kind != vkTask:
@@ -2176,12 +2242,10 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         activeVmFiber.nativeTask = task
         call.dispatchScope.registerOwnedTask(task)
       return finishNativeTask()
-  if args.len != 0:
-    raise newException(GeneError, "os/exec expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  var cmd = ""
-  var cmdSet = false
-  var procArgs: seq[string]
+  let command = parseOsExecCommand("os/exec", args, call)
+  let cmd = command.cmd
+  let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
   var workdir = ""
@@ -2189,16 +2253,7 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd":
-        requireStr("os/exec ^cmd", v)
-        cmd = v.strVal
-        cmdSet = true
-      of "args":
-        if v.kind != vkList:
-          raiseOsError("os/exec ^args must be a List of Str", scope)
-        for item in v.listItems:
-          requireStr("os/exec ^args item", item)
-          procArgs.add item.strVal
+      of "cmd", "args", "full": discard
       of "timeout_ms": timeoutMs = int(requireInt64("os/exec ^timeout_ms", v))
       of "max_bytes": maxBytes = int(requireInt64("os/exec ^max_bytes", v))
       of "dir":
@@ -2206,14 +2261,11 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         workdir = v.strVal
       else:
         raiseOsError("os/exec got unexpected named argument: " & name, scope)
-  if not cmdSet or cmd.len == 0:
-    raiseOsError("os/exec requires a non-empty ^cmd", scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
   var process: Process
   try:
-    process = startProcess(cmd, workingDir = workdir, args = procArgs,
-                           options = {poUsePath})
+    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath})
   except OSError as e:
     raiseOsError("os/exec could not start '" & cmd & "': " & e.msg, scope)
   var outText = ""
@@ -2299,13 +2351,10 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   ## arrives: ^stdout receives raw chunks and ^stdout_line receives complete
   ## stdout lines without the trailing newline. The final return value keeps the
   ## same captured-output shape as os/exec.
-  if args.len != 0:
-    raise newException(GeneError,
-      "os/exec_stream expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  var cmd = ""
-  var cmdSet = false
-  var procArgs: seq[string]
+  let command = parseOsExecCommand("os/exec_stream", args, call)
+  let cmd = command.cmd
+  let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
   var workdir = ""
@@ -2316,16 +2365,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd":
-        requireStr("os/exec_stream ^cmd", v)
-        cmd = v.strVal
-        cmdSet = true
-      of "args":
-        if v.kind != vkList:
-          raiseOsError("os/exec_stream ^args must be a List of Str", scope)
-        for item in v.listItems:
-          requireStr("os/exec_stream ^args item", item)
-          procArgs.add item.strVal
+      of "cmd", "args", "full": discard
       of "timeout_ms": timeoutMs = int(requireInt64("os/exec_stream ^timeout_ms", v))
       of "max_bytes": maxBytes = int(requireInt64("os/exec_stream ^max_bytes", v))
       of "dir":
@@ -2339,15 +2379,12 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
         stderrCb = v
       else:
         raiseOsError("os/exec_stream got unexpected named argument: " & name, scope)
-  if not cmdSet or cmd.len == 0:
-    raiseOsError("os/exec_stream requires a non-empty ^cmd", scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
 
   var process: Process
   try:
-    process = startProcess(cmd, workingDir = workdir, args = procArgs,
-                           options = {poUsePath})
+    process = startOsExecProcess(cmd, workdir, procArgs, command.full, {poUsePath})
   except OSError as e:
     raiseOsError("os/exec_stream could not start '" & cmd & "': " & e.msg, scope)
 
@@ -2520,41 +2557,27 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
   ## its exit status. This is for terminal handoff cases where captured
   ## `os/exec` would break interactive behavior.
-  if args.len != 0:
-    raise newException(GeneError,
-      "os/exec_stdio expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  var cmd = ""
-  var cmdSet = false
-  var procArgs: seq[string]
+  let command = parseOsExecCommand("os/exec_stdio", args, call)
+  let cmd = command.cmd
+  let procArgs = command.args
   var workdir = ""
   if call != nil:
     for i, name in call[].namedNames:
       let v = call[].namedValues[i]
       case name
-      of "cmd":
-        requireStr("os/exec_stdio ^cmd", v)
-        cmd = v.strVal
-        cmdSet = true
-      of "args":
-        if v.kind != vkList:
-          raiseOsError("os/exec_stdio ^args must be a List of Str", scope)
-        for item in v.listItems:
-          requireStr("os/exec_stdio ^args item", item)
-          procArgs.add item.strVal
+      of "cmd", "args", "full": discard
       of "dir":
         requireStr("os/exec_stdio ^dir", v)
         workdir = v.strVal
       else:
         raiseOsError("os/exec_stdio got unexpected named argument: " & name, scope)
-  if not cmdSet or cmd.len == 0:
-    raiseOsError("os/exec_stdio requires a non-empty ^cmd", scope)
   when compileOption("threads"):
     acquire(osExecStdioLock)
   var process: Process
   try:
-    process = startProcess(cmd, workingDir = workdir, args = procArgs,
-                           options = {poUsePath, poParentStreams})
+    process = startOsExecProcess(cmd, workdir, procArgs, command.full,
+                                {poUsePath, poParentStreams})
   except OSError as e:
     when compileOption("threads"):
       release(osExecStdioLock)
@@ -2623,6 +2646,7 @@ when compileOption("threads"):
       procArgs: ptr SharedExecArg
       workdir: SharedExecText
       inheritStdio: bool
+      full: bool
       mergeStderr: bool
       timeoutMs: int
       maxBytes: int
@@ -2938,7 +2962,7 @@ close_fail:
       finished: bool
       exitStatus: int
     proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string], mergeStderr: bool): CapturedOsExecProcess =
+                            args: seq[string], mergeStderr, full: bool): CapturedOsExecProcess =
       let executable = if cmd.contains(DirSep): cmd else: findExe(cmd)
       if executable.len == 0:
         raiseOSError(OSErrorCode(ENOENT), "command not found: " & cmd)
@@ -2978,10 +3002,10 @@ close_fail:
   else:
     type CapturedOsExecProcess = Process
     proc startCapturedOsExec(cmd, workingDir: string,
-                            args: seq[string], mergeStderr: bool): CapturedOsExecProcess =
-      startProcess(cmd, workingDir = workingDir, args = args,
-                   options = if mergeStderr: {poUsePath, poDaemon, poStdErrToStdOut}
-                             else: {poUsePath, poDaemon})
+                            args: seq[string], mergeStderr, full: bool): CapturedOsExecProcess =
+      startOsExecProcess(cmd, workingDir, args, full,
+        if mergeStderr: {poUsePath, poDaemon, poStdErrToStdOut}
+        else: {poUsePath, poDaemon})
 
   proc stopOsExecGroup(process: CapturedOsExecProcess) =
     ## Captured children own a process group, so shells cannot leave pipeline
@@ -3294,9 +3318,8 @@ close_fail:
             return
           var process: Process
           try:
-            process = startProcess(nativeCmd, workingDir = nativeWorkdir,
-                                   args = nativeArgs,
-                                   options = {poUsePath, poParentStreams})
+            process = startOsExecProcess(nativeCmd, nativeWorkdir, nativeArgs,
+                                         ctx.full, {poUsePath, poParentStreams})
           except CatchableError as e:
             settleFail(nativeName & " could not start '" & nativeCmd & "': " &
                        e.msg)
@@ -3344,7 +3367,8 @@ close_fail:
         return
       var groupSlot: cint = -1
       try:
-        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs, ctx.mergeStderr)
+        process = startCapturedOsExec(nativeCmd, nativeWorkdir, nativeArgs,
+                                     ctx.mergeStderr, ctx.full)
       except CatchableError as e:
         discard finishCapturedSpawn(0)
         settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
@@ -3589,13 +3613,10 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        inheritStdio: bool,
                        args: openArray[Value],
                        call: ptr NativeCall): Value =
-  if args.len != 0:
-    raise newException(GeneError,
-      name & " expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  var cmd = ""
-  var cmdSet = false
-  var procArgs: seq[string]
+  let command = parseOsExecCommand(name, args, call)
+  let cmd = command.cmd
+  let procArgs = command.args
   var timeoutMs = -1
   var maxBytes = osExecDefaultOutputCap
   var workdir = ""
@@ -3608,16 +3629,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
       case argName
-      of "cmd":
-        requireStr(name & " ^cmd", v)
-        cmd = v.strVal
-        cmdSet = true
-      of "args":
-        if v.kind != vkList:
-          raiseOsError(name & " ^args must be a List of Str", scope)
-        for item in v.listItems:
-          requireStr(name & " ^args item", item)
-          procArgs.add item.strVal
+      of "cmd", "args", "full": discard
       of "timeout_ms":
         if inheritStdio:
           raiseOsError(name & " got unexpected named argument: timeout_ms", scope)
@@ -3654,8 +3666,6 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
       else:
         raiseOsError(name & " got unexpected named argument: " & argName,
                      scope)
-  if not cmdSet or cmd.len == 0:
-    raiseOsError(name & " requires a non-empty ^cmd", scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
   if wantChan and lineChan.kind == vkNil and stdoutPipe.kind == vkNil and
@@ -3680,6 +3690,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     ctx.cmd = sharedExecText(cmd)
     ctx.workdir = sharedExecText(workdir)
     ctx.inheritStdio = inheritStdio
+    ctx.full = command.full
     ctx.mergeStderr = mergeStderr
     ctx.timeoutMs = timeoutMs
     ctx.maxBytes = maxBytes

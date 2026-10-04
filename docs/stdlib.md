@@ -92,6 +92,39 @@ filesystem paths subsequently resolve there; `$os/launch_dir` still reports
 the directory captured when the application started. Applications sharing one
 process should set their working directory at boot.
 
+`($os/exec command arg1 arg2 ...)` runs a program with separate **Str** arguments
+and returns a map with `status`, `stdout`, `stderr`, `timed_out`, and the output
+truncation flags. Arguments are passed literally, including spaces, empty strings,
+wildcards and shell metacharacters. Use the existing spread syntax for an argv list:
+
+```gene
+($os/exec "git" "status" "--short")
+(let args ["log" "--oneline" "-5"])
+($os/exec "git" args... ^dir "/path/to/project" ^timeout_ms 5000)
+```
+
+`($os/exec ^^full command_text)` instead accepts exactly one **Str** containing a
+complete shell command. It uses `/bin/sh -c` on POSIX and `cmd.exe /d /s /c` on
+Windows, so quoting, expansion, pipelines and redirection belong to the shell:
+
+```gene
+($os/exec ^^full "printf 'hello world\\n' | tr a-z A-Z")
+```
+
+Both forms accept the existing `^dir`, `^timeout_ms` and `^max_bytes` options.
+Only `^^full` requests shell interpretation; a single positional string such as
+`"git status"` is otherwise treated as an executable name. Commands cannot be
+empty, and commands/arguments cannot contain NUL. `^full false` selects literal
+argv behavior. The named form `($os/exec ^cmd command ^args argv)` remains
+available for compatibility; combining it with positional arguments or `^^full`
+is an error.
+
+The `exec_async`, `exec_stream`, `exec_stream_async`, `exec_stdio` and
+`exec_stdio_async` variants accept the same command forms. Their existing options
+and return types remain: async variants return Tasks; captured variants return
+result maps; inherited-stdio variants return exit statuses (through a Task for
+`exec_stdio_async`).
+
 Inside a scheduled fiber, synchronous `$os/exec`, `$fs/read_text`, and
 `$fs/write_text` park the fiber while their asynchronous adapters do the I/O.
 They retain their synchronous results. Other sessions and cancellation can
