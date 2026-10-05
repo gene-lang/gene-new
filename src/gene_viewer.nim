@@ -18,6 +18,7 @@ proc parseViewCli(): viewer_app.ViewerOptions =
     case arg
     of "--readonly": result.readonly = true
     of "--no-color": result.noColor = true
+    of "--raw": result.rawMode = true
     of "--editor", "--path", "--line":
       inc i
       if i > paramCount():

@@ -20,7 +20,9 @@ proc buildGeneCli() =
   if dirExists(cliArtifactStore):
     makeMaterializedTreeWritable(cliArtifactStore)
     removeDir(cliArtifactStore)
-  let build = execCmdEx("nim c -d:geneDebug --path:src --hints:off -o:" & geneExe & " src/gene.nim")
+  let build = execCmdEx("nim c -d:geneDebug --path:src --hints:off " &
+    "--nimcache:" & (cliDir / "nimcache-gene") & " -o:" & geneExe &
+    " src/gene.nim")
   if build.exitCode != 0:
     checkpoint build.output
   check build.exitCode == 0
@@ -29,8 +31,9 @@ proc buildGeneCli() =
   # them means the delegation path itself is under test, not stubbed.
   for (module, exe) in [("gene_fmt", "gene-fmt"), ("gene_lsp", "gene-lsp"),
                         ("gene_viewer", "gene-viewer")]:
-    let toolBuild = execCmdEx("nim c -d:geneDebug --path:src --hints:off -o:" &
-                              (cliDir / exe) & " src/" & module & ".nim")
+    let toolBuild = execCmdEx("nim c -d:geneDebug --path:src --hints:off " &
+      "--nimcache:" & (cliDir / ("nimcache-" & module)) & " -o:" &
+      (cliDir / exe) & " src/" & module & ".nim")
     if toolBuild.exitCode != 0:
       checkpoint toolBuild.output
     check toolBuild.exitCode == 0
@@ -66,7 +69,8 @@ proc execCmdOnce(cmd: string): tuple[output: string, exitCode: int] =
   ## the same capture behavior without masking crashes through retries.
   execCmdEx(cmd)
 
-proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
+proc runGene(args: openArray[string], workingDir = ""):
+    tuple[output: string, exitCode: int] =
   buildGeneCli()
   var command = shellQuote(geneExe)
   for arg in args:
@@ -75,7 +79,7 @@ proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
   let savedStore = getEnv("GENE_ARTIFACT_STORE")
   putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
   try:
-    result = execCmdEx(command)
+    result = execCmdEx(command, workingDir = workingDir)
   finally:
     if hadStore: putEnv("GENE_ARTIFACT_STORE", savedStore)
     else: delEnv("GENE_ARTIFACT_STORE")
@@ -1115,10 +1119,41 @@ suite "cli — gene eval":
     check ran.exitCode == 0
     check ran.output.strip == "5"
 
-  test "uses eval authority rules instead of ambient imports":
-    let ran = runGene(["eval", "(import [x] ^from \"./missing\") x"])
+  test "imports from cwd with the ordinary module loader":
+    let root = cliDir / "eval_imports"
+    createDir(root)
+    createDir(root / "nested")
+    writeFile(root / "helper.gene",
+      "(var answer 42) (fn plus_one [value] (+ value 1)) " &
+      "(macro twice [value] `(+ %value %value))")
+    writeFile(root / "nested" / "child.gene",
+      "(import [plus_one] ^from \"../helper\") " &
+      "(fn plus_two [value] (plus_one (plus_one value)))")
+    for (source, expected) in [
+      ("(import [answer] ^from \"./helper\") answer", "42"),
+      ("(import * ^from \"./helper\") (plus_one answer)", "43"),
+      ("(import * : helper ^from \"./helper\") helper/answer", "42"),
+      ("(import [twice] ^from \"./helper\") (twice 21)", "42"),
+      ("(import [plus_two] ^from \"./nested/child\") (plus_two 40)", "42"),
+      ("(import $str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+    ]:
+      let ran = runGene(["eval", source], workingDir = root)
+      check ran.exitCode == 0
+      check ran.output.strip == expected
+    var virtualFiles = 0
+    for _ in walkFiles(root / ".gene-eval-*.gene"):
+      inc virtualFiles
+    check virtualFiles == 0
+
+  test "cwd is the eval module's package boundary":
+    let root = cliDir / "eval_boundary"
+    createDir(root)
+    writeFile(cliDir / "eval_outside.gene", "(var secret 1)")
+    let ran = runGene(["eval",
+      "(import [secret] ^from \"../eval_outside\") secret"],
+      workingDir = root)
     check ran.exitCode == 1
-    check "eval cannot use import; add imports to Env" in ran.output
+    check "module path escapes package root" in ran.output
 
   test "eval errors include source location":
     let ran = runGene(["eval", "(missing)"])

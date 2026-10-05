@@ -12,7 +12,7 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, build_info, compiler, diagnostics, gir, install, native_managed, package,
+import gene/[build, build_info, diagnostics, gir, install, native_managed, package,
              printer, reader, registry_config, registry_publish, repl,
              system_dependency, types, vm, web]
 # native_managed installs the owned byte-ingress adapter for this executable.
@@ -61,7 +61,7 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene --version         print version, build mode and runtime check settings"
-  echo "  gene eval \"<source>\"   evaluate a source string and print the result"
+  echo "  gene eval \"<source>\"   evaluate a source string from cwd, with imports"
   echo "  gene eval --errors-mode dynamic|warn|strict \"<source>\""
   echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
@@ -130,7 +130,7 @@ proc cmdEval(src: string, errorsMode = "") =
   if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
   let scope = newGlobalScope(app)
   try:
-    let chunk = compileEvalSource(src, sourceName = "<eval>", errorsMode = errorsMode)
+    let chunk = app.compileEvalModuleSource(src)
     reportPipelineWarnings(chunk)
     echo run(chunk, scope).print()
   except ReadError as e:

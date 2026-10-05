@@ -17,6 +17,13 @@ gene run hello.gene Ada
 gene eval '(+ 1 2)'
 ```
 
+`gene eval` accepts the same imports as a file module. It treats the supplied
+source as an in-memory module located in the current working directory, so
+`^from "./helper"` loads `helper.gene` there, including exported macros and
+wildcards. No source file is created. The current directory is its ad-hoc
+package boundary. Language-level `(eval …)` and the REPL retain their separate
+Env-based import rules.
+
 `main` may return nil for success or an integer exit code. Program arguments
 are strings.
 
@@ -149,6 +156,17 @@ inspect the current binary. If you built only
 | `gene compile file.gene` | Inspect compiled GIR. |
 | `gene lsp` | Start the language server over stdio. |
 | `gene view file.gene` | Open the structural source viewer. |
+
+For a `(serde_v1 …)` file, `gene view` opens at the data payload instead of
+the serialization envelope. Lists and maps remain navigable, and escaped
+`serde_map`, `serde_set`, and `serde_data_node` forms expose their logical
+children. The bottom preview shows the selected source value; press `v` for a
+scrollable full-value view, then `v` or Escape to return. `--path` selects a
+data path (for example `--path 12/payload/name`); keys containing spaces or
+slashes can use existing Gene string syntax, such as
+`--path '(path 12 "odd key")'`. Use `--raw` to inspect the envelope and
+encoding tags as ordinary source. This view only reads source; it does not
+deserialize or execute stored values.
 
 Use two-space indentation, snake_case names, and ordinary names for mutation
 methods such as `push` or `put`. A trailing `!` is reserved for fexprs. The

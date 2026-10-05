@@ -1,6 +1,6 @@
 ## Native curses frontend for `gene view`.
 
-import std/[options, os]
+import std/[options, os, unicode]
 import ../source_index
 import ../../gene/ext/term/tui
 import ./[editor, model]
@@ -14,6 +14,7 @@ type
     line*: int
     col*: int
     noColor*: bool
+    rawMode*: bool
 
 proc kindName(kind: SyntaxKind): string =
   case kind
@@ -43,6 +44,8 @@ proc renderHelp(terminal: Terminal, bodyFirst, bodyRows: int) =
     "  g                   document root",
     "",
     "File",
+    "  v                   show full selected value",
+    "  In value view: j/k, PgUp/PgDn scroll; v/Esc return",
     "  e                   external editor at selection",
     "  r, F5               reload and restore Gene path",
     "  q, F10              quit",
@@ -51,10 +54,40 @@ proc renderHelp(terminal: Terminal, bodyFirst, bodyRows: int) =
   for i in 0 ..< min(bodyRows, help.len):
     terminal.drawLine(bodyFirst + i, help[i])
 
+proc wrappedPage(value: string, width, first, count: int):
+    tuple[lines: seq[string], total: int] =
+  let columns = max(width, 1)
+  var line = ""
+  var cells = 0
+  var index = 0
+  template finishLine() =
+    if index >= first and index < first + count:
+      result.lines.add line
+    inc index
+    line.setLen(0)
+    cells = 0
+  for rune in value.runes:
+    if rune.int32 == 10:
+      finishLine()
+      continue
+    let glyph = if rune.int32 == 9: "  " else: rune.toUTF8
+    let size = max(1, textWidth(glyph))
+    if cells > 0 and cells + size > columns:
+      finishLine()
+    line.add glyph
+    cells += size
+  finishLine()
+  result.total = index
+
+proc listViewport(sizeRows: int, state: ViewerState): int =
+  let previewRows = if state.serialized and sizeRows >= 12 and not state.showHelp and
+      not state.showValue: 4 else: 0
+  max(1, sizeRows - 3 - previewRows)
+
 proc render(terminal: Terminal, state: var ViewerState, options: ViewerOptions) =
   let size = terminal.dimensions()
   let bodyFirst = 2
-  let bodyRows = max(1, size.rows - 3)
+  let bodyRows = listViewport(size.rows, state)
   state.normalize(bodyRows)
   let count = state.rowCount()
   let selected = state.selectedRow()
@@ -63,12 +96,24 @@ proc render(terminal: Terminal, state: var ViewerState, options: ViewerOptions) 
     selectedPath.add selected.get.path
   terminal.clear()
   let validity = if state.document.diagnostics.len == 0: "valid" else: "invalid"
-  terminal.drawLine(0, "File: " & state.document.path & "  " &
-    $state.document.source.len & " bytes  " & validity)
+  let mode = if state.serialized: "Serialized data" else: "Source"
+  terminal.drawLine(0, mode & " · " & $state.document.source.len &
+    " bytes · " & validity & " · " & extractFilename(state.document.path))
   terminal.drawLine(1, "Path: " & pathText(selectedPath))
 
+  var valueTotal = 0
   if state.showHelp:
     terminal.renderHelp(bodyFirst, bodyRows)
+  elif state.showValue:
+    let raw = state.selectedRaw()
+    let page = wrappedPage(raw, size.cols, state.valueFirst, bodyRows)
+    valueTotal = page.total
+    state.valueFirst = min(max(state.valueFirst, 0),
+                           max(0, page.total - bodyRows))
+    let shown = if state.valueFirst == 0: page else:
+      wrappedPage(raw, size.cols, state.valueFirst, bodyRows)
+    for index, line in shown.lines:
+      terminal.drawLine(bodyFirst + index, line)
   else:
     if count == 0 and state.document.diagnostics.len > 0:
       let diagnostic = state.document.diagnostics[0]
@@ -82,9 +127,17 @@ proc render(terminal: Terminal, state: var ViewerState, options: ViewerOptions) 
       for offset, item in items:
         let index = first + offset
         let marker = if index == state.frame().selectedChild: "> " else: "  "
-        let container = if item.syntax.isContainer: "▸ " else: "  "
+        let container = if state.browsable(item.syntax): "▸ " else: "  "
         terminal.drawLine(bodyFirst + index - first,
-          marker & fitLabel(item.label, 18) & container & item.summary)
+          marker & fitLabel(item.label, 18) & container & state.rowSummary(item))
+    if state.serialized and size.rows >= 12:
+      let preview = wrappedPage(state.selectedExcerpt(max(512, size.cols * 3)),
+                                size.cols, 0, 2)
+      terminal.drawLine(bodyFirst + bodyRows,
+        "Selected value · " & $state.selectedByteLength() &
+        " bytes · v full view")
+      for index, line in preview.lines:
+        terminal.drawLine(bodyFirst + bodyRows + 1 + index, line)
 
   let syntax = if selected.isSome: selected.get.syntax else: state.frame().container
   let location = state.document.lineCol(syntax)
@@ -97,6 +150,9 @@ proc render(terminal: Terminal, state: var ViewerState, options: ViewerOptions) 
     status.add " · e editor  r reload  ? help  q quit"
   if options.readonly:
     status.add " · readonly"
+  if state.showValue:
+    status = "Value · line " & $(state.valueFirst + 1) & "/" & $valueTotal &
+      " · j/k scroll  v return  q quit"
   terminal.drawLine(size.rows - 1, status)
   terminal.present()
 
@@ -138,7 +194,7 @@ proc validateFile(path: string) =
 
 proc runViewer*(options: ViewerOptions): int =
   validateFile(options.path)
-  var state = newViewerState(loadSourceDocument(options.path))
+  var state = newViewerState(loadSourceDocument(options.path), options.rawMode)
   if options.initialPath.len > 0:
     let requested = parseSourcePath(options.initialPath)
     if not state.selectPath(requested):
@@ -154,10 +210,30 @@ proc runViewer*(options: ViewerOptions): int =
     var running = true
     while running:
       let size = terminal.dimensions()
-      let viewportRows = max(1, size.rows - 3)
+      let viewportRows = listViewport(size.rows, state)
       terminal.render(state, options)
       let event = terminal.readEvent()
       state.status.setLen(0)
+      if state.showValue:
+        case event.kind
+        of tekUp, tekScrollUp: state.valueFirst = max(0, state.valueFirst - 1)
+        of tekDown, tekScrollDown: inc state.valueFirst
+        of tekPageUp: state.valueFirst = max(0, state.valueFirst - viewportRows)
+        of tekPageDown: state.valueFirst += viewportRows
+        of tekHome: state.valueFirst = 0
+        of tekEnd: state.valueFirst = high(int) div 2
+        of tekLeft, tekBackspace, tekEscape: state.showValue = false
+        of tekQuit, tekEof: running = false
+        of tekText:
+          case event.text
+          of "q": running = false
+          of "v", "h": state.showValue = false
+          of "j": inc state.valueFirst
+          of "k": state.valueFirst = max(0, state.valueFirst - 1)
+          of "g": state.valueFirst = 0
+          else: discard
+        else: discard
+        continue
       case event.kind
       of tekUp: state.move(-1, viewportRows)
       of tekDown: state.move(1, viewportRows)
@@ -189,6 +265,9 @@ proc runViewer*(options: ViewerOptions): int =
         of "g": state.root()
         of "r": state.reloadDocument(options, viewportRows)
         of "e": terminal.editSelection(state, options, viewportRows)
+        of "v":
+          state.showValue = true
+          state.valueFirst = 0
         of "?": state.showHelp = not state.showHelp
         of "i": state.status = "inline editing is deferred; use e"
         of "/": state.status = "search is deferred"

@@ -69,6 +69,20 @@ suite "source index — reader-backed occurrences":
     check path[3].index == -1
     check pathText(path) == "prop/0/x/-1"
 
+  test "viewer paths quote serialized map keys that are not path symbols":
+    let path = @[propertySegment("a/b"), propertySegment("odd key"),
+                 propertySegment("quote\"line\n"), indexSegment(2)]
+    let text = pathText(path)
+    check text == "(path \"a/b\" \"odd key\" \"quote\\\"line\\n\" 2)"
+    let parsed = parseSourcePath(text)
+    check parsed.len == path.len
+    for i in 0 ..< path.len:
+      check parsed[i].kind == path[i].kind
+      if path[i].kind == spsProperty:
+        check parsed[i].name == path[i].name
+      else:
+        check parsed[i].index == path[i].index
+
   test "shared positions cover bytes and UTF-16":
     let source = "aπ😀\nnext"
     let starts = lineStarts(source)

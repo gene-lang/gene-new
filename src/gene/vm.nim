@@ -32398,6 +32398,32 @@ proc compileFileModule*(app: Application, path: string): Chunk =
   app.adoptEntryModule(absPath)
   compileModuleArtifact(app, absPath).chunk
 
+proc compileEvalModuleSource*(app: Application, source: string,
+                              sourceName = "<eval>"): Chunk =
+  ## Give a CLI source string the same import and macro compilation path as a
+  ## file module, without writing an artificial file. Its virtual file lives
+  ## directly in the launch directory, so ./ imports resolve from the caller's
+  ## cwd. This is an application entry point; language-level `eval` keeps its
+  ## explicit Env authority rules.
+  var suffix = 0
+  var absPath: string
+  var identity: string
+  while true:
+    absPath = normalizedPath(absolutePath(
+      ".gene-eval-" & $suffix & ".gene", app.launchDir))
+    identity = app.moduleCompileCacheIdentity(absPath)
+    if not fileExists(absPath) and
+        not app.moduleCompileHeaders.hasKey(identity) and
+        not app.moduleCompileArtifacts.hasKey(identity):
+      break
+    inc suffix
+  app.requireEntryWithinPackage(absPath)
+  let unit = readAllWithLocs(source, sourceName)
+  app.moduleCompileHeaders[identity] = ModuleCompileHeader(
+    path: absPath, unit: unit,
+    compileInterface: buildCompileInterface(unit.forms, sourceName))
+  result = app.compileModuleArtifact(absPath).chunk
+
 proc compileFileModuleBundle*(app: Application, path,
                               packageId: string,
                               includeLibraryModules = false): ExecutableGir =

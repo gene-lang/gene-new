@@ -1,6 +1,7 @@
 ## Terminal-independent structural viewer state.
 
-import std/options
+import std/[options, strutils]
+import ../../gene/reader
 import ../source_index
 
 type
@@ -9,27 +10,162 @@ type
     selectedChild*: int
     firstVisible*: int
     path*: seq[SourcePathSegment]
+    logicalRows: seq[SourceRow]
+    hasLogicalRows: bool
 
   ViewerState* = object
     document*: SourceDocument
     frames*: seq[ViewFrame]
     status*: string
     showHelp*: bool
+    rawMode*: bool
+    serialized*: bool
+    showValue*: bool
+    valueFirst*: int
 
-proc newViewerState*(document: SourceDocument): ViewerState =
-  ViewerState(document: document,
-              frames: @[ViewFrame(container: document.root)])
+proc serdeTag(document: SourceDocument, syntax: SyntaxRef): string =
+  if syntax.kind != skNode:
+    return
+  let children = document.childPage(syntax, 0, 1)
+  if children.len == 1 and children[0].label == "head" and
+      children[0].syntax.kind == skAtom:
+    result = children[0].summary
+
+proc serializedPayload(document: SourceDocument): Option[SyntaxRef] =
+  if document.diagnostics.len > 0 or
+      serdeTag(document, document.root) != "serde_v1":
+    return none(SyntaxRef)
+  let children = document.children(document.root)
+  if children.len == 2 and children[1].label == "0":
+    some(children[1].syntax)
+  else:
+    none(SyntaxRef)
+
+proc logicalChildren(document: SourceDocument, syntax: SyntaxRef):
+    Option[seq[SourceRow]] =
+  let tag = serdeTag(document, syntax)
+  if tag in ["serde_sym", "serde_float", "serde_range",
+             "serde_timezone", "serde_duration"]:
+    return some(newSeq[SourceRow]())
+  if tag == "serde_set":
+    let children = document.children(syntax)
+    if children.len < 1:
+      return none(seq[SourceRow])
+    return some(children[1 .. ^1])
+  if tag == "serde_map":
+    let children = document.children(syntax)
+    if children.len != 3 or children[2].syntax.kind != skList:
+      return none(seq[SourceRow])
+    let pairs = document.children(children[2].syntax)
+    if pairs.len mod 2 != 0:
+      return none(seq[SourceRow])
+    var entries: seq[SourceRow]
+    for index in countup(0, pairs.high, 2):
+      let key = pairs[index].syntax
+      if key.kind != skAtom or key.startToken >= document.tokens.len or
+          document.tokens[key.startToken].kind != tkString:
+        return none(seq[SourceRow])
+      let name = document.tokens[key.startToken].lexeme
+      var value = pairs[index + 1]
+      value.label = name
+      value.path = @[propertySegment(name)]
+      entries.add value
+    return some(entries)
+  if tag == "serde_data_node":
+    let children = document.children(syntax)
+    if children.len < 5:
+      return none(seq[SourceRow])
+    var entries: seq[SourceRow]
+    for index, name in ["head", "props", "meta"]:
+      var item = children[index + 2]
+      item.label = name
+      item.path = @[propertySegment(name)]
+      entries.add item
+    for index in 5 ..< children.len:
+      var item = children[index]
+      item.label = $(index - 5)
+      item.path = @[indexSegment((index - 5).int64)]
+      entries.add item
+    return some(entries)
+  none(seq[SourceRow])
+
+proc viewFrame(document: SourceDocument, syntax: SyntaxRef,
+               path: seq[SourcePathSegment], serialized: bool): ViewFrame =
+  result = ViewFrame(container: syntax, path: path)
+  if serialized:
+    let rows = logicalChildren(document, syntax)
+    if rows.isSome:
+      result.logicalRows = rows.get
+      result.hasLogicalRows = true
+
+proc newViewerState*(document: SourceDocument, rawMode = false): ViewerState =
+  let payload = if rawMode: none(SyntaxRef) else: serializedPayload(document)
+  let root = if payload.isSome: payload.get else: document.root
+  ViewerState(document: document, rawMode: rawMode, serialized: payload.isSome,
+              frames: @[viewFrame(document, root, @[], payload.isSome)])
 
 proc frame*(state: ViewerState): ViewFrame = state.frames[^1]
 
 proc rows*(state: ViewerState): seq[SourceRow] =
-  state.document.children(state.frames[^1].container)
+  let current = state.frames[^1]
+  if current.hasLogicalRows: current.logicalRows
+  else: state.document.children(current.container)
 
 proc rowCount*(state: ViewerState): int =
-  state.document.childCount(state.frames[^1].container)
+  let current = state.frames[^1]
+  if current.hasLogicalRows: current.logicalRows.len
+  else: state.document.childCount(current.container)
 
 proc rowPage*(state: ViewerState, first, count: int): seq[SourceRow] =
-  state.document.childPage(state.frames[^1].container, first, count)
+  let current = state.frames[^1]
+  if current.hasLogicalRows:
+    let start = min(max(first, 0), current.logicalRows.len)
+    let finish = min(start + max(count, 0), current.logicalRows.len)
+    current.logicalRows[start ..< finish]
+  else:
+    state.document.childPage(current.container, first, count)
+
+proc rowSummary*(state: ViewerState, item: SourceRow): string =
+  if not state.serialized or not item.syntax.isContainer:
+    return item.summary
+  let tag = serdeTag(state.document, item.syntax)
+  case tag
+  of "serde_set": "Set · " & $max(0, state.document.childCount(item.syntax) - 1) & " items"
+  of "serde_map":
+    let children = state.document.children(item.syntax)
+    if children.len == 3 and children[2].syntax.kind == skList:
+      "Map · " & $(state.document.childCount(children[2].syntax) div 2) & " entries"
+    else: item.summary
+  of "serde_data_node":
+    "Node · " & $max(0, state.document.childCount(item.syntax) - 5) & " body items"
+  of "serde_sym", "serde_float", "serde_range", "serde_timezone",
+     "serde_duration":
+    let children = state.document.children(item.syntax)
+    var values: seq[string]
+    for index in 1 ..< children.len:
+      values.add children[index].summary
+    let kind = case tag
+      of "serde_sym": "Symbol"
+      of "serde_float": "Float"
+      of "serde_range": "Range"
+      of "serde_timezone": "Timezone"
+      else: "Duration"
+    kind & " · " & values.join(" ")
+  else:
+    case item.syntax.kind
+    of skList: "List · " & $state.document.childCount(item.syntax) & " items"
+    of skPropMap: "Map · " & $state.document.childCount(item.syntax) & " fields"
+    of skGeneralMap: "Map · " & $state.document.childCount(item.syntax) & " entries"
+    else: item.summary
+
+proc browsable*(state: ViewerState, syntax: SyntaxRef): bool =
+  if not syntax.isContainer:
+    return false
+  if state.serialized and serdeTag(state.document, syntax) in
+      ["serde_sym", "serde_float", "serde_range", "serde_timezone",
+       "serde_duration"]:
+    return false
+  true
 
 proc selectedRow*(state: ViewerState): Option[SourceRow] =
   let count = state.rowCount()
@@ -42,6 +178,29 @@ proc selectedRow*(state: ViewerState): Option[SourceRow] =
 proc selectedSyntax*(state: ViewerState): SyntaxRef =
   let selected = state.selectedRow()
   if selected.isSome: selected.get.syntax else: state.frames[^1].container
+
+proc selectedBounds(state: ViewerState): tuple[start, finish: int] =
+  let syntax = state.selectedSyntax()
+  let start = min(max(syntax.span.startByte, 0), state.document.source.len)
+  let finish = min(max(syntax.span.endByte, start), state.document.source.len)
+  (start: start, finish: finish)
+
+proc selectedByteLength*(state: ViewerState): int =
+  let bounds = state.selectedBounds()
+  bounds.finish - bounds.start
+
+proc selectedExcerpt*(state: ViewerState, maxBytes = 256): string =
+  let bounds = state.selectedBounds()
+  var finish = min(bounds.finish, bounds.start + max(maxBytes, 0))
+  if finish < bounds.finish:
+    while finish > bounds.start and
+        (ord(state.document.source[finish]) and 0xC0) == 0x80:
+      dec finish
+  state.document.source[bounds.start ..< finish]
+
+proc selectedRaw*(state: ViewerState): string =
+  let bounds = state.selectedBounds()
+  state.document.source[bounds.start ..< bounds.finish]
 
 proc currentPath*(state: ViewerState): seq[SourcePathSegment] =
   result = state.frames[^1].path
@@ -86,11 +245,12 @@ proc last*(state: var ViewerState, viewportRows: int) =
 
 proc enter*(state: var ViewerState): bool =
   let selected = state.selectedRow()
-  if selected.isNone or not selected.get.syntax.isContainer:
+  if selected.isNone or not state.browsable(selected.get.syntax):
     return false
   var path = state.frames[^1].path
   path.add selected.get.path
-  state.frames.add ViewFrame(container: selected.get.syntax, path: path)
+  state.frames.add viewFrame(state.document, selected.get.syntax, path,
+                             state.serialized)
   true
 
 proc leave*(state: var ViewerState): bool =
@@ -156,7 +316,12 @@ proc reload*(state: var ViewerState, document: SourceDocument,
              viewportRows = 20) =
   let anchor = state.currentPath()
   state.document = document
-  state.frames = @[ViewFrame(container: document.root)]
+  let payload = if state.rawMode: none(SyntaxRef)
+                else: serializedPayload(document)
+  state.serialized = payload.isSome
+  let root = if payload.isSome: payload.get else: document.root
+  state.frames = @[viewFrame(document, root, @[], state.serialized)]
+  state.valueFirst = 0
   if not state.selectPath(anchor, viewportRows):
     state.status = "reloaded; nearest surviving parent selected"
   else:
@@ -179,5 +344,5 @@ proc selectOffset*(state: var ViewerState, offset: int,
       return state.frames.len > 1
     state.frames[^1].selectedChild = best
     state.normalize(viewportRows)
-    if not items[best].syntax.isContainer or not state.enter():
+    if not state.browsable(items[best].syntax) or not state.enter():
       return true

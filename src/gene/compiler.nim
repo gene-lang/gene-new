@@ -10981,7 +10981,8 @@ proc compileEvalSource*(src: string, useLocalSlots = true,
                         history: seq[Value] = @[],
                         existingValues: seq[string] = @[],
                         persistentMacros = false): Chunk =
-  ## CLI/REPL eval receives source text but still uses eval authority rules.
+  ## REPL and language-level eval receive source text but still use explicit
+  ## Env authority rules. The `gene eval` CLI compiles as an in-memory module.
   compileSourceUnit(readAllWithLocs(src, sourceName),
                     allowAmbientImports = false,
                     useLocalSlots = useLocalSlots, errorsMode = errorsMode,

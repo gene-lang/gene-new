@@ -67,9 +67,50 @@ proc `$`*(segment: SourcePathSegment): string =
   of spsProperty: segment.name
   of spsIndex: $segment.index
 
+proc simplePathName(name: string): bool =
+  if name.len == 0 or name[0] notin {'a'..'z', 'A'..'Z', '_'}:
+    return false
+  for ch in name:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '_', '-'}:
+      return false
+  true
+
+proc quotedPathName(name: string): string =
+  result = "\""
+  for ch in name:
+    case ch
+    of '\\': result.add "\\\\"
+    of '"': result.add "\\\""
+    of '\n': result.add "\\n"
+    of '\r': result.add "\\r"
+    of '\t': result.add "\\t"
+    of '\0': result.add "\\0"
+    else:
+      if ord(ch) < 32 or ord(ch) == 127:
+        const hex = "0123456789abcdef"
+        result.add "\\u00" & hex[ord(ch) shr 4] & hex[ord(ch) and 15]
+      else:
+        result.add ch
+  result.add '"'
+
 proc pathText*(path: openArray[SourcePathSegment]): string =
   if path.len == 0:
     return "/"
+  var needsQuoted = false
+  for segment in path:
+    if segment.kind == spsProperty and not simplePathName(segment.name):
+      needsQuoted = true
+      break
+  if needsQuoted:
+    result = "(path"
+    for segment in path:
+      result.add ' '
+      if segment.kind == spsProperty:
+        result.add quotedPathName(segment.name)
+      else:
+        result.add $segment.index
+    result.add ')'
+    return
   var parts = newSeq[string](path.len)
   for i, segment in path:
     parts[i] = $segment
@@ -484,13 +525,14 @@ proc parseSourcePath*(text: string): seq[SourcePathSegment] =
   if value.kind == vkNode and value.head.kind == vkSymbol and
       value.head.symVal in ["path", "select"]:
     parts = value.body
-  elif value.kind in {vkSymbol, vkInt}:
+  elif value.kind in {vkSymbol, vkInt, vkString}:
     parts = @[value]
   else:
     raise newException(ValueError, "view path must use static Gene path segments")
   for part in parts:
     case part.kind
     of vkSymbol: result.add propertySegment(part.symVal)
+    of vkString: result.add propertySegment(part.strVal)
     of vkInt:
       if not part.intFitsInt64:
         raise newException(ValueError, "view path index must fit in int64")
