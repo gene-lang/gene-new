@@ -498,6 +498,24 @@ suite "compiler — GIR emission":
       sawTailCall = sawTailCall or inst.tail
     check sawTailCall
 
+  test "GIR retains standalone and inline impl source locations":
+    let chunk = compileSource(
+      "(protocol P (message m [] : Str))\n" &
+      "(type T ^props {} (impl P (message m [] : Str \"inline\")))\n" &
+      "(type U ^props {})\n" &
+      "(impl P for U (message m [] : Str \"standalone\"))",
+      sourceName = "impls.gene")
+    let artifact = ExecutableGir(entryIdentity: "test/impl-locations",
+      modules: @[CompiledModule(identity: "test/impl-locations", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let restored = decodeExecutableGir(encodeExecutableGir(artifact))
+    let decoded = restored.modules[0].chunk
+    check decoded.implProtos[0].loc.sourceName == "impls.gene"
+    check decoded.implProtos[0].loc.line == 4
+    check decoded.typeProtos[0].inlineImpls[0].loc.line == 2
+
   test "GIR rejects runtime Self binding state at encoding and decoding":
     for field in ["annotationSelfBits", "contractResolved", "signatureHadSelf"]:
       let chunk = compileSource("(fn f [x] x)")

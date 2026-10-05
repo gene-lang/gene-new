@@ -11,18 +11,20 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   requirements/defaults must meet the universal-contract restrictions.
 - Protocol inheritance flattens qualified message identities. Satisfaction may
   walk the inheritance closure; dispatch uses the qualified message identity.
-- Every effective impl covers the full inherited message closure. A complete
-  impl uses local bodies and protocol defaults. An impl with literal
-  `^override true` (or `^^override`) inherits applicable ancestor bodies for
-  omitted messages, then uses protocol defaults for remaining identities.
-  Local bodies replace the corresponding entries. This mode requires at least
-  one ancestor message provider; arbitrary same-receiver impl merging remains
-  disallowed. The flag belongs on the impl, including inline impls, and is
-  invalid on its individual messages.
+- Every effective impl covers the full inherited message closure. For each
+  message identity, a local body wins; otherwise the nearest applicable
+  ancestor body wins; otherwise a protocol default fills the omission. An
+  omitted required message with no ancestor body or default is an error.
+  This rule also applies to identities inherited from another protocol.
+  Impl-level `^^override` is accepted temporarily as a redundant legacy
+  spelling; the native compiler warns about it. It does not change body
+  selection or require an ancestor provider.
+  It remains invalid on an individual impl message. Arbitrary same-receiver
+  impl merging remains disallowed.
 - Each non-universal protocol identity retains a separate conformance `Self`
   binding. Nominal inheritance preserves established bindings; newly introduced
   identities bind to the introducing receiver. Requirements and defaults use
-  their declaring protocol's binding. Both impl modes preserve inherited exact
+  their declaring protocol's binding. Impls preserve inherited exact
   signatures; newly supplied replacements cannot use contextual `Self` in
   their signatures. Universal requirement/default closures must be independent
   of abstract `Self`.
@@ -35,7 +37,7 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   fallback. Computed, conditional, and generated registration paths count only
   when executed; module and eval visibility/publication rules remain distinct.
 - Deriving a child protocol runs only that protocol's derive handler, which
-  emits one complete impl for its own protocol.
+  emits one impl for its own protocol.
 - Required `^impl` constraints are checked after forward impls in their
   declaration unit. Eval impls remain overlay-local. Module activation validates
   and publishes impls transactionally.
@@ -52,10 +54,13 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   positional; the old positional `from "path"` clause is rejected. No other
   named properties are accepted.
 - Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
-  there is no protocol or lexical fallback. Protocol sends use `P:msg`.
+  there is no protocol or lexical fallback. A failed bare send may list
+  published, visible protocol-qualified candidates as a diagnostic hint;
+  that lookup never changes dispatch. Protocol sends use `P:msg`.
   The native VM's selected equality, hash, numeric-index, size, and ordering
   operations have sealed core witnesses; they do not change ordinary send
   resolution. See [value operations](../proposals/value-operations.md).
 - Only protocols qualify messages. Type-direct messages are sent bare and use
   the reserved `Self:msg` spelling when a message value is required; `T:msg`
-  is a `CallKindError` expecting `Protocol`.
+  is a `CallKindError` naming type `T` and explaining the bare or `Self:msg`
+  alternatives.

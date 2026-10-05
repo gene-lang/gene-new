@@ -7,7 +7,7 @@
 #   - inherited type-direct messages and explicit message overrides
 #   - inline impls, protocol inheritance, and same-named message identities
 #   - declaration-bound Self in parameters, results, and nested functions
-#   - inheriting impls (^^override) versus complete impls (no flag)
+#   - local impl bodies, inherited omissions, and protocol defaults
 #   - per-protocol Self bindings and default-body result checks
 #   - universal defaults and callable message values
 #
@@ -87,23 +87,22 @@
   (message greet [] : Str ^^override
     $"${(super .greet)}, then wags"))
 
-# An inheriting impl supplies replacements and copies omitted ancestor bodies.
+# A child impl supplies a replacement and keeps omitted ancestor bodies.
 # Eq.Self is still Dog. The supplied replacement names Dog explicitly; Self is
 # allowed inside its body and means the new body's declaring receiver, Pup.
-(impl Eq for Pup ^^override
+(impl Eq for Pup
   (message eq [other : Dog] : Bool
     (let current : Self self)
     (== current/name other/name)))
 
 (type GrandPup : Pup ^props {})
-(impl Eq for GrandPup ^^override) # An empty inheriting impl reuses every body.
+(impl Eq for GrandPup) # An empty impl reuses every ancestor body.
 
-(type CompletePup : Dog ^props {})
-# Without ^^override, every message must have a local body or a protocol default.
-# Dog's label body is not copied, so this impl uses Eq's default label.
-# This is a new body set, but the established Eq.Self binding still remains Dog.
-(impl Eq for CompletePup
-  (message eq [other : Dog] : Bool (== self/name other/name)))
+# A separate root family has no ancestor Eq body, so its omitted label uses
+# the protocol default. The child impls above keep Dog's label instead.
+(type Defaulted ^props {^name Str})
+(impl Eq for Defaulted
+  (message eq [other : Self] : Bool (== self/name other/name)))
 
 (fn compare_dogs [left : Dog right : Dog] : Bool (left .Eq:eq right))
 
@@ -134,10 +133,10 @@
 
 # Copyable.Self stays Dog; the newly introduced Duplicable.Self becomes Pup.
 # The reused copy body returns the actual Pup, satisfying duplicate's result.
-(impl Duplicable for Pup ^^override)
+(impl Duplicable for Pup)
 
 (type FaultyPup : Dog ^props {})
-(impl Duplicable for FaultyPup ^^override
+(impl Duplicable for FaultyPup
   # Returning Dog satisfies the inherited Copyable contract. It cannot satisfy
   # Duplicable's new Self = FaultyPup promise when the default calls this body.
   (message Copyable:copy [] : Dog
@@ -161,7 +160,7 @@
 (let fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
 (let puppy (Pup ^name "Rex" ^breed "Labrador" ^weight 12))
 (let grand_puppy (GrandPup ^name "Rex" ^breed "Labrador" ^weight 8))
-(let complete_puppy (CompletePup ^name "Rex" ^breed "Labrador" ^weight 12))
+(let defaulted (Defaulted ^name "Rex"))
 (let faulty_puppy (FaultyPup ^name "Rex" ^breed "Labrador" ^weight 12))
 (let point (Point ^x 3 ^y 4))
 
@@ -178,10 +177,9 @@
 (show "All Dog/Pup pairs retain the Dog input contract"
   [(compare_dogs rex rex) (compare_dogs rex puppy)
    (compare_dogs puppy rex) (compare_dogs puppy puppy)]) # [true true true true]
-(show "Inheriting impl copies the ancestor label" puppy/.Eq:label) # Dog implementation
-(show "Empty inheriting impl" grand_puppy/.Eq:label)               # Dog implementation
-(show "Complete impl uses the protocol default" complete_puppy/.Eq:label) # protocol default
-(show "Complete impl still accepts Dog" (complete_puppy .Eq:eq rex)) # true
+(show "Child impl keeps the ancestor label" puppy/.Eq:label) # Dog implementation
+(show "Empty child impl keeps the ancestor label" grand_puppy/.Eq:label) # Dog implementation
+(show "Root impl uses the protocol default" defaulted/.Eq:label) # protocol default
 (show "Unrelated conformance" (point .Eq:eq (Point ^x 3 ^y 4)))       # true
 
 (let held_eq : (Callable [Dog Dog] Bool) Eq:eq)
@@ -199,11 +197,9 @@
 
 # Declaration mistakes to try separately (each would stop module initialization):
 #
-# (impl Eq for CompletePup)                      # Missing eq; complete mode cannot copy Dog's body.
-# (impl Eq for Point ^^override)                 # No ancestor provider; a default is not a target.
-# (impl Eq for Pup ^^override
+# (impl Eq for Pup
 #   (message eq [other : Self] : Bool true))     # Replacement signatures cannot use contextual Self.
-# (impl Eq for Pup ^^override
+# (impl Eq for Pup
 #   (message eq [other : Pup] : Bool true))      # Explicit narrowing also violates the inherited Dog contract.
 # (type UnmarkedPup : Dog ^props {}
 #   (message greet [] : Str "hello"))           # A direct replacement requires ^^override on the message.

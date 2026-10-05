@@ -121,7 +121,8 @@ proc maybeReplOnError(scope: Scope, app: Application = nil) =
 proc reportPipelineWarnings(chunk: Chunk) =
   for diagnostic in chunk.compilerDiagnostics:
     if diagnostic.message.startsWith("unused lazy pipeline:") or
-        diagnostic.message.startsWith("error checking:"):
+        diagnostic.message.startsWith("error checking:") or
+        diagnostic.message.startsWith("deprecated impl-level ^override:"):
       stderr.writeLine formatDiagnostic("Warning", diagnostic.message,
                                          diagnostic.loc)
 

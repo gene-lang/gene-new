@@ -415,12 +415,17 @@ signature keeps its declaring type. A direct replacement requires `^^override`:
 ((Dog ^name "Rex") .speak) # "Rex: woof"
 ```
 
-For protocol impls, `^^override` belongs on the impl. It reuses applicable
-ancestor bodies for omitted messages. Without the flag, the impl must cover
-the protocol using its own bodies and protocol defaults. Replacement signatures
-preserve inherited contracts and cannot use contextual Self; body-local Self
-still means the new declaring receiver. See the runnable
-[protocol demo](../examples/protocol_demo.gene) for complete examples.
+For protocol impls, each local body takes precedence. An omitted message
+reuses the nearest applicable ancestor body, then a protocol default if no
+ancestor provides one. The old impl-level `^^override` spelling is accepted
+temporarily and the native compiler warns, but it has no effect. Type-direct
+replacements still require it on the message. Replacement signatures preserve
+inherited contracts and cannot use contextual Self; body-local Self still
+means the new declaring receiver.
+See the runnable [protocol demo](../examples/protocol_demo.gene) for examples.
+`Self:msg` is the reserved message qualifier for the receiver's own
+type-direct message; it can be used as a message value even outside a type
+declaration.
 
 ## Collections and streams
 

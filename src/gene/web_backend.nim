@@ -1956,10 +1956,8 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
         (if identity.universal: nil else: receiver))
       analysis.protocolImplTargets.incl(identity.sourceName & "\x1f" & impl.targetName)
     impl.methods = @[]
-    var hasAncestor = false
     for message in protocol.messages:
       let ancestor = inheritedWebMethod(analysis, parentName, message.identity)
-      if ancestor != nil: hasAncestor = true
       let bound = impl.bindings.getOrDefault(message.ownerIdentity, receiver)
       let requiredParams = bindWebParams(message.params, bound)
       let requiredResult = bindWebSelf(message.returnType, bound)
@@ -1973,7 +1971,7 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
           local.returnType = bindWebSelf(local.returnType, receiver)
           local.annotationSelf = receiver
           selected = local
-      if selected == nil and impl.inheritBodies and ancestor != nil:
+      if selected == nil and ancestor != nil:
         selected = WebImplMethod(protocolName: impl.protocolName, targetName: impl.targetName,
           message: message, params: ancestor.params, returnType: ancestor.returnType,
           sourceForm: ancestor.sourceForm, inheritedTargetName: parentName,
@@ -1995,8 +1993,6 @@ proc resolveWebImplementations(analysis: WebAnalysis) =
           selected.returnType, ancestor.sourceForm, selected.sourceForm, impl.loc,
           ancestor.annotationSelf, selected.annotationSelf, "inherited message " & message.sourceName)
       impl.methods.add selected
-    if impl.inheritBodies and not hasAncestor:
-      raise webError(impl.loc, "inheriting impl has no applicable ancestor message provider")
     if analysis.typeDecls.hasKey(impl.targetName):
       let typ = analysis.typeDecls[impl.targetName]
       for methodDecl in impl.methods:

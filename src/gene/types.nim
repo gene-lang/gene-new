@@ -400,6 +400,8 @@ type
   ProtocolSelfBinding* = object
     protocol*: Value
     selfType*: Value # NIL means abstract Self is unavailable (universal)
+    originProtocol*: Value
+    originReceiver*: Value
 
   ImplBodySource* = object
     message*: Value
@@ -2929,6 +2931,8 @@ proc scopeOwnedReferences(owner: Scope, target: uint64): int =
     for binding in impl.selfBindings:
       count(binding.protocol)
       count(binding.selfType)
+      count(binding.originProtocol)
+      count(binding.originReceiver)
     for source in impl.bodySources:
       count(source.message)
       count(source.protocol)
@@ -3297,6 +3301,8 @@ proc expandRetireScope(g: var RetireGraph, idx: int, counting: static bool) =
       for binding in impl.selfBindings:
         value(binding.protocol)
         value(binding.selfType)
+        value(binding.originProtocol)
+        value(binding.originReceiver)
       for source in impl.bodySources:
         value(source.message)
         value(source.protocol)

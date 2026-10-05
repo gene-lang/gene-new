@@ -410,6 +410,8 @@ type
     initialized: bool
     published: bool
     candidate: ProtocolImpl
+    blocker: StaticImplDeclaration
+    blockerScope: Scope
 
   ImplAssembly = ref object of RootObj
     scope: Scope
@@ -5921,7 +5923,8 @@ proc dispatchGenericForward(name: string, receiver: Value,
   let recvTypeName =
     if recvType.kind == vkType: recvType.typeName
     else: declarationKind(receiver)
-  raiseMessageError(name, recvTypeName, scope, false)
+  raiseMessageError(name, recvTypeName, scope, false,
+                    receiverValue = recvType)
 
 proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biFilterMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -8902,6 +8905,11 @@ proc markImplValuesShared(impl: ProtocolImpl,
     for entry in impl.messages:
       markSharedValue(entry.message, publication)
       markSharedValue(entry.fn, publication)
+    for binding in impl.selfBindings:
+      markSharedValue(binding.protocol, publication)
+      markSharedValue(binding.selfType, publication)
+      markSharedValue(binding.originProtocol, publication)
+      markSharedValue(binding.originReceiver, publication)
 
 proc markImplValuesShared(impl: ProtocolImpl) =
   var publication: SharedValuePublication
@@ -12657,21 +12665,32 @@ proc conformanceSelfBindings(protocol, receiver: Value,
                              ancestors: openArray[ProtocolImpl]): seq[ProtocolSelfBinding] =
   for identity in protocolIdentities(protocol):
     var bound = if identity.protocolUniversal: NIL else: receiver
+    var originProtocol = protocol
+    var originReceiver = receiver
     var found = false
     for ancestor in ancestors:
       if not ancestor.protocol.protocolIsOrInherits(identity):
         continue
       var inherited = if identity.protocolUniversal: NIL else: ancestor.receiver
+      var inheritedOriginProtocol = ancestor.protocol
+      var inheritedOriginReceiver = ancestor.receiver
       for binding in ancestor.selfBindings:
         if same(binding.protocol, identity):
           inherited = binding.selfType
+          if binding.originProtocol.kind == vkProtocol:
+            inheritedOriginProtocol = binding.originProtocol
+            inheritedOriginReceiver = binding.originReceiver
           break
       if found and not same(bound, inherited):
         raise newException(GeneError,
           "incompatible inherited Self bindings for " & identity.protocolName)
+      if not found:
+        originProtocol = inheritedOriginProtocol
+        originReceiver = inheritedOriginReceiver
       found = true
       bound = inherited
-    result.add ProtocolSelfBinding(protocol: identity, selfType: bound)
+    result.add ProtocolSelfBinding(protocol: identity, selfType: bound,
+      originProtocol: originProtocol, originReceiver: originReceiver)
 
 proc bindingFor(bindings: openArray[ProtocolSelfBinding], protocol: Value): Value =
   for binding in bindings:
@@ -12821,13 +12840,10 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
   entries = @[]
   var sources: seq[ImplBodySource]
   var resolvedLocals: seq[ImplMessage]
-  var hasAncestor = false
-  # Completeness is keyed by message identity. An explicit impl establishes
-  # conformance; shared defaults fill only messages omitted by that impl.
+  # Completeness is keyed by message identity. A local body wins, then the
+  # nearest applicable ancestor body, then the protocol default.
   for message in protocol.protocolClosure:
     let inherited = inheritedImplMessage(ancestors, message)
-    if inherited.fn.kind != vkNil:
-      hasAncestor = true
     let boundSelf = bindings.bindingFor(message.protocolMessageProtocol)
     let rawSignature = message.protocolMessageSignatureFn
     let signatureFn = if rawSignature.kind != vkNil:
@@ -12847,7 +12863,7 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
             " message " & qualifiedMessageName(message))
     if count == 0:
       let defaultFn = message.protocolMessageDefaultFn
-      if inheritBodies and inherited.fn.kind != vkNil:
+      if inherited.fn.kind != vkNil:
         entries.add ImplMessage(message: message, fn: inherited.fn)
         sources.add inherited.source
       elif defaultFn.kind != vkNil:
@@ -12864,10 +12880,6 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
   for entry in entries:
     if entry.message.protocolMessageProtocol.isErrorProtocol:
       validateDefaultErrorBacking(receiver, entry.fn, scope)
-  if inheritBodies and not hasAncestor:
-    raise newException(GeneError,
-      "impl " & protocol.protocolName & " for " & receiver.typeName &
-      " declares ^override but has no applicable ancestor message provider")
   if exported and visibility != ivScoped:
     let label = if visibility == ivCanonical: "canonical" else: "overlay"
     raise newException(GeneError, label & " impls cannot be exported")
@@ -12938,16 +12950,6 @@ proc recomposeImplSets(app: Application, canonical: seq[ProtocolImpl],
       if not same(old.selfType, fresh):
         raise newException(GeneError,
           "cannot rebind established Self for " & old.protocol.protocolName &
-          " on " & impl.receiver.typeName)
-    for old in impl.bodySources:
-      var present = false
-      for fresh in result.bodySources:
-        if same(old.message, fresh.message):
-          present = true
-          break
-      if not present:
-        raise newException(GeneError,
-          "lost inherited body source for " & qualifiedMessageName(old.message) &
           " on " & impl.receiver.typeName)
     # The protocol's immutable default template and its binding did not
     # change. Keep its existing wrapper so identical imports remain identical.
@@ -13090,7 +13092,8 @@ proc prepareImplAssembly(scope: Scope, chunk: Chunk) =
         declarations.add StaticImplDeclaration(sourceKey: cast[pointer](typ),
           inlineIndex: i, inlineReceiver: true,
           proto: ImplProto(protocolExpr: inline.protocolExpr, receiverExpr: newSym(typ.name),
-            staticTopLevel: true, staticOperands: true, inheritBodies: inline.inheritBodies))
+            staticTopLevel: true, staticOperands: true,
+            inheritBodies: inline.inheritBodies, loc: inline.loc))
   for typ in chunk.enumProtos:
     if not typ.staticTopLevel:
       continue
@@ -13099,7 +13102,8 @@ proc prepareImplAssembly(scope: Scope, chunk: Chunk) =
         declarations.add StaticImplDeclaration(sourceKey: cast[pointer](typ),
           inlineIndex: i, inlineReceiver: true,
           proto: ImplProto(protocolExpr: inline.protocolExpr, receiverExpr: newSym(typ.name),
-            staticTopLevel: true, staticOperands: true, inheritBodies: inline.inheritBodies))
+            staticTopLevel: true, staticOperands: true,
+            inheritBodies: inline.inheritBodies, loc: inline.loc))
   if declarations.len == 0 and chunk.typeProtos.len == 0:
     return
   let assembly = ImplAssembly(scope: scope, chunk: chunk, declarations: declarations)
@@ -13177,8 +13181,9 @@ proc declarationVisible(scope: Scope, assembly: ImplAssembly,
     assembly.scope.classifyStandaloneImpl(protocol, receiver, declaration.proto)
   visibility == ivCanonical
 
-proc hasPendingAncestor(scope: Scope, protocol, receiver: Value,
-                        skip: StaticImplDeclaration = nil): bool =
+proc pendingAncestor(scope: Scope, protocol, receiver: Value,
+                     skip: StaticImplDeclaration = nil):
+                     tuple[declaration: StaticImplDeclaration, owner: Scope] =
   for assembly in relevantImplAssemblies(scope):
     for declaration in assembly.declarations:
       if declaration == skip or declaration.published:
@@ -13196,8 +13201,11 @@ proc hasPendingAncestor(scope: Scope, protocol, receiver: Value,
             overlap = true
         if not overlap:
           continue
-      return true
-  false
+      return (declaration, assembly.scope)
+
+proc hasPendingAncestor(scope: Scope, protocol, receiver: Value,
+                        skip: StaticImplDeclaration = nil): bool =
+  scope.pendingAncestor(protocol, receiver, skip).declaration != nil
 
 proc validateProspectiveImplPeers(scope: Scope, protocol, receiver: Value,
                                   skip: StaticImplDeclaration = nil) =
@@ -13308,7 +13316,11 @@ proc resolveImplAssembly(assembly: ImplAssembly) =
         continue
       let raw = declaration.candidate
       validateProspectiveImplPeers(assembly.scope, raw.protocol, raw.receiver, declaration)
-      if hasPendingAncestor(assembly.scope, raw.protocol, raw.receiver, declaration):
+      let blocker = pendingAncestor(assembly.scope, raw.protocol,
+                                    raw.receiver, declaration)
+      declaration.blocker = blocker.declaration
+      declaration.blockerScope = blocker.owner
+      if blocker.declaration != nil:
         continue
       var resolved: ProtocolImpl
       try:
@@ -15492,6 +15504,36 @@ proc collectProtocolMatches(scope: Scope, recvType, message: Value,
         matches.setLen(0)
       matches.add entry.fn
 
+proc pendingImplDiagnostic(declaration: StaticImplDeclaration,
+                           protocolName, receiverName: string): string =
+  result = "declaration not ready: " & protocolName & " for " & receiverName
+  let blocker = declaration.blocker
+  if blocker == nil:
+    return
+  let protocolText = blocker.proto.protocolExpr.print()
+  let receiverText = blocker.proto.receiverExpr.print()
+  result.add " is held until (impl " & protocolText & " for " &
+    receiverText & ")"
+  let loc = blocker.proto.loc
+  if loc.hasSourceLoc:
+    result.add " at " & loc.sourceName & ":" & $loc.line
+  result.add " is resolved"
+  if declaration.blockerScope != nil:
+    let blockerReceiver = declaration.blockerScope.staticImplOperand(
+      blocker.proto.receiverExpr)
+    let blockerProtocol = declaration.blockerScope.staticImplOperand(
+      blocker.proto.protocolExpr)
+    if blockerReceiver.kind != vkType:
+      result.add "; its receiver " & receiverText & " is not bound yet"
+      if blocker.proto.receiverExpr.kind == vkSymbol:
+        result.add "; move this send below that impl, or bind " &
+          receiverText & " before this send"
+    elif blockerProtocol.kind != vkProtocol:
+      result.add "; its protocol " & protocolText & " is not bound yet"
+    if "move this send below that impl" notin result:
+      result.add "; if it is declared later in this unit, " &
+        "move this send below that impl"
+
 iterator superBodyChunks(chunk: Chunk): Chunk =
   for body in chunk.subchunks: yield body
   for loop in chunk.forLoops: yield loop.body
@@ -15689,7 +15731,7 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
       let receiverName = if operands.receiver.kind == vkType:
         operands.receiver.typeName else: declaration.proto.receiverExpr.print()
       raise newException(GeneError,
-        "declaration not ready: " & protocolName & " for " & receiverName)
+        pendingImplDiagnostic(declaration, protocolName, receiverName))
   matches.dedupeProtocolMatches()
   if matches.len > 1:
     let protocol = message.protocolMessageProtocol
@@ -15775,8 +15817,13 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
       let recvTypeName =
         if recvType.kind == vkType: recvType.typeName
         else: declarationKind(receiver)
-      raiseMessageError(name, recvTypeName, scope, false)
+      raiseMessageError(name, recvTypeName, scope, false,
+                        receiverValue = recvType)
   else:
+    if qualifier.kind == vkType:
+      raiseCallKindError("message qualifier", "Protocol",
+        "type " & qualifier.typeName, qualifier, scope,
+        "type-direct messages are sent bare, (receiver .name), or held as Self:name")
     raiseCallKindError("message send", "Protocol",
                        freezeRejectName(qualifier), qualifier, scope)
 
@@ -16162,6 +16209,82 @@ proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
                                                              frames[i].ip))
       appendTailTracesAtDepth(i)
   appendTraceFrames(e, traceFrames)
+
+proc annotateDefaultReturnFailure(error: ref GeneError, proto: FunctionProto,
+                                  callScope: Scope,
+                                  callers: openArray[Frame]) =
+  ## Recover optional context only after a default's return contract fails.
+  ## No message/impl pointer is kept in the hot call frame. Function identity
+  ## guards against reporting a newer impl if the visible set changed mid-call.
+  if error == nil or proto == nil or callScope == nil or callers.len == 0 or
+      proto.params.len == 0 or proto.params[0] != "self" or
+      proto.positionalSlots.len == 0:
+    return
+  let slot = proto.positionalSlots[0]
+  if slot < 0 or slot >= callScope.slots.len or not callScope.slotDefined(slot):
+    return
+  let recvType = callScope.slots[slot].receiverType
+  if recvType.kind != vkType:
+    return
+  let callSite = instructionLocBefore(callers[^1].chunk, callers[^1].ip)
+  var selected: ProtocolImpl
+  var bestDepth = high(int)
+  var matches = 0
+  var visible = callers[^1].scope
+  while visible != nil:
+    for impl in visible.impls:
+      if not impl.managedContract:
+        continue
+      let depth = recvType.receiverDistance(impl.receiver)
+      if depth < 0 or depth > bestDepth:
+        continue
+      for entry in impl.messages:
+        if entry.fn.kind != vkFunction or
+            entry.fn.fnCodeAddr != cast[pointer](proto):
+          continue
+        var isDefault = true
+        for local in impl.localMessages:
+          if same(local.message, entry.message): isDefault = false
+        for inherited in impl.bodySources:
+          if same(inherited.message, entry.message): isDefault = false
+        if not isDefault:
+          continue
+        if depth < bestDepth:
+          selected = impl
+          bestDepth = depth
+          matches = 1
+        elif depth == bestDepth and
+            (matches == 0 or not same(selected.protocol, impl.protocol) or
+             not same(selected.receiver, impl.receiver)):
+          inc matches
+    visible = visible.parent
+  if matches != 1:
+    return
+  if callSite.hasSourceLoc:
+    error.msg.add "\n  called at " & callSite.locationText()
+  var firstSelf = NIL
+  var mixed = false
+  for binding in selected.selfBindings:
+    if binding.selfType.kind == vkNil: continue
+    if firstSelf.kind == vkNil: firstSelf = binding.selfType
+    elif not same(firstSelf, binding.selfType): mixed = true
+  if not mixed:
+    if error.hasErrVal and error.errVal.kind == vkNode:
+      error.errVal.setNodeProp("message", newStr(error.msg))
+    return
+  error.msg.add "\n  conformance Self bindings:"
+  for binding in selected.selfBindings:
+    if binding.selfType.kind != vkType or binding.protocol.kind != vkProtocol:
+      continue
+    error.msg.add "\n    " & binding.protocol.protocolName & ".Self = " &
+      binding.selfType.typeName
+    if binding.originProtocol.kind == vkProtocol and
+        binding.originReceiver.kind == vkType:
+      error.msg.add " (introduced by impl " &
+        binding.originProtocol.protocolName & " for " &
+        binding.originReceiver.typeName & ")"
+  if error.hasErrVal and error.errVal.kind == vkNode:
+    error.errVal.setNodeProp("message", newStr(error.msg))
 
 proc appendNativeTrace(e: ref GeneError, calleeName: string,
                        proto: FunctionProto) =
@@ -17336,7 +17459,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "return from '" & curFnName & "'"
             else:
               returnLabel
-          retValue = adaptBoundary(label, returnType, retValue, scope)
+          try:
+            retValue = adaptBoundary(label, returnType, retValue, scope)
+          except GeneError as error:
+            annotateDefaultReturnFailure(error, chunk.owner, scope, frames)
+            raise
     finishFrameReturn(retValue)
 
   template frameReturnBareInt(rawValue: Value) =
@@ -19062,7 +19189,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let recvTypeName =
               if recvType.kind == vkType: recvType.typeName
               else: declarationKind(receiver)
-            raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint)
+            raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint,
+                              receiverValue = recvType)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -20640,6 +20768,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow binding message")
           let qualifier = spop()
           if qualifier.kind notin {vkProtocol, vkNil}:
+            if qualifier.kind == vkType:
+              raiseCallKindError("message qualifier", "Protocol",
+                "type " & qualifier.typeName, qualifier, scope,
+                "type-direct messages are sent bare, (receiver .name), or held as Self:name")
             raiseCallKindError("message value", "Protocol",
                                freezeRejectName(qualifier), qualifier, scope)
           var protocolBits = 0'u64
@@ -23070,7 +23202,11 @@ proc nativeRuntimeError*(scope: Scope, kind, message: string): ref GeneError =
 
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "") =
-  var message = where & " expected " & expected & ", got " & actual
+  var message =
+    if where == "message qualifier":
+      "message qualifier must be a " & expected & ", got " & actual
+    else:
+      where & " expected " & expected & ", got " & actual
   if hint.len > 0:
     message = message & "; " & hint
   var props = initPropTable()
@@ -23091,6 +23227,86 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   e.hasErrVal = true
   raise e
 
+proc visibleProtocolMessageHints(scope: Scope, recvType: Value,
+                                 message: string): seq[string] =
+  ## A diagnostic-only walk. `tryResolveProtocolMessage` would publish pending
+  ## assemblies and can raise while answering; a failed bare send must not.
+  if scope == nil or recvType.kind != vkType:
+    return
+  var names = initHashSet[string]()
+  var qualifiers: seq[tuple[value: Value, path: string]]
+  var scannedNamespaces = initHashSet[uint64]()
+  var pending: seq[tuple[value: Value, path: string]]
+  var visibleRoots = initHashSet[string]()
+  var current = scope
+  while current != nil:
+    for index, name in current.slotNames:
+      if name in visibleRoots or index >= current.slots.len or
+          not current.slotDefined(index):
+        continue
+      visibleRoots.incl name
+      pending.add (value: current.slots[index], path: name)
+    for name, value in current.vars:
+      if name notin visibleRoots:
+        visibleRoots.incl name
+        pending.add (value: value, path: name)
+    current = current.parent
+  var next = 0
+  while next < pending.len:
+    let item = pending[next]
+    inc next
+    if item.value.kind == vkProtocol:
+      var found = false
+      for entry in qualifiers.mitems:
+        if same(entry.value, item.value):
+          if item.path < entry.path: entry.path = item.path
+          found = true
+          break
+      if not found:
+        qualifiers.add item
+    elif item.value.kind in {vkNamespace, vkModule}:
+      let ns = if item.value.kind == vkModule:
+        item.value.moduleRootNamespace else: item.value
+      if ns.kind != vkNamespace or scannedNamespaces.containsOrIncl(ns.bits):
+        continue
+      let owner = ns.nsScope
+      var seen = initHashSet[string]()
+      for index, name in owner.slotNames:
+        if name in owner.exportExcludedNames or index >= owner.slots.len or
+            not owner.slotDefined(index):
+          continue
+        seen.incl name
+        pending.add (value: owner.slots[index], path: item.path & "/" & name)
+      for name, value in owner.vars:
+        if name notin seen and name notin owner.exportExcludedNames:
+          pending.add (value: value, path: item.path & "/" & name)
+  proc usableQualifier(protocolMessage: Value): seq[string] =
+    for qualifier in qualifiers:
+      let candidates = qualifier.value.protocolClosureByName(message)
+      if candidates.len == 1 and same(candidates[0], protocolMessage):
+        result.add qualifier.path & ":" & message
+  current = scope
+  while current != nil:
+    for impl in current.impls:
+      if recvType.receiverDistance(impl.receiver) < 0:
+        continue
+      for entry in impl.messages:
+        if entry.fn.kind == vkNil or
+            entry.message.protocolMessageName != message:
+          continue
+        for name in usableQualifier(entry.message):
+          names.incl name
+    current = current.parent
+  for qualifier in qualifiers:
+    if qualifier.value.protocolUniversal:
+      let candidates = qualifier.value.protocolClosureByName(message)
+      if candidates.len == 1 and
+          candidates[0].protocolMessageDefaultFn.kind != vkNil:
+        names.incl(qualifier.path & ":" & message)
+  for name in names:
+    result.add name
+  result.sort()
+
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
                        missingImpl = false,
@@ -23110,13 +23326,18 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   if lexicalHint:
     full = full & "; '" & message &
       "' is a function — did you mean to call it, not send it?"
-  elif missingImpl and protocolValue.kind == vkProtocol and
+  if missingImpl and protocolValue.kind == vkProtocol and
       receiverValue.kind == vkType and scope != nil:
     # Same visibility advice the boundary path gives. Failure path only.
     let hint = hiddenImplHint(scope.application(), protocolValue,
                               receiverValue, scope)
     if hint.len > 0:
       full = full & "; " & hint
+  if not missingImpl and protocol.len == 0:
+    let hints = visibleProtocolMessageHints(scope, receiverValue, message)
+    if hints.len > 0:
+      full.add "; protocol messages visible here: " & hints.join(", ") &
+        " — use a qualified send"
   var props = initPropTable()
   props["message"] = newStr(full)
   props["where"] = newStr("message send")
@@ -24871,6 +25092,10 @@ proc pathQualifiedMessageValue(text: string, scope: Scope): Value =
       if qualifier.kind == vkVoid:
         raiseUndefinedSymbol(names[0 .. i].join("/"))
     if qualifier.kind != vkProtocol:
+      if qualifier.kind == vkType:
+        raiseCallKindError("message qualifier", "Protocol",
+          "type " & qualifier.typeName, qualifier, scope,
+          "type-direct messages are sent bare, (receiver .name), or held as Self:name")
       raiseCallKindError("message value", "Protocol",
                          freezeRejectName(qualifier), qualifier, scope)
   newBoundMessage(qualifier, member[at + 1 .. ^1],

@@ -58,7 +58,7 @@ types can provide:
 # "Ada"
 ```
 
-Direct messages belong to the type; qualified messages identify a protocol.
+Type-direct messages belong to the type; qualified messages identify a protocol.
 Nominal inheritance preserves existing contracts. `Self` in an inherited
 signature keeps the type where that contract was declared:
 
@@ -72,8 +72,9 @@ signature keeps the type where that contract was declared:
 # true: the inherited argument contract is still Dog
 ```
 
-Replacing inherited behavior requires explicit override intent. This makes
-changes to a type family visible at the declaration.
+Replacing a type-direct message requires explicit override intent. A protocol
+impl's local message body expresses its replacement intent; omitted messages
+keep the nearest applicable ancestor body.
 
 ## Absence has two meanings
 

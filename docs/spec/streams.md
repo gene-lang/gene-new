@@ -60,8 +60,8 @@ bodies retain their execution kind and run with the actual receiver:
     (for n in (super .values) (yield (+ n self/offset)))))
 ```
 
-An inheriting `impl ... ^^override` keeps omitted messages, including their
-generator bodies. The flag is local to each message definition: a replacement
+An impl keeps omitted ancestor messages, including their generator bodies.
+The `^^generator` flag is local to each message definition: a replacement
 with an absent flag or `^generator false` is ordinary, even when the parent
 implementation or protocol default is a generator. A replacement using yield
 must declare `^^generator` itself. Both bodies may satisfy the same inherited

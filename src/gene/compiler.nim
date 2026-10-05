@@ -8683,9 +8683,20 @@ proc literalOverride(node: Value): bool =
     raise newException(GeneError, "^override requires a literal Bool")
   flag.boolVal
 
+proc legacyImplOverride(c: var Compiler, node: Value): bool =
+  result = literalOverride(node)
+  if node.props.hasKey("override"):
+    c.chunk.diagnostics.add CompileDiagnostic(
+      message: "deprecated impl-level ^override: omitted messages now inherit " &
+        "ancestor bodies automatically; remove the flag",
+      loc: c.sourceLocFor(node))
+
 proc implMessageProto(c: var Compiler, node: Value,
                       aotSelfRepr = AotRepr(),
                       typeDirect = false): ImplMessageProto =
+  let savedLoc = c.currentLoc
+  c.currentLoc = c.sourceLocFor(node)
+  defer: c.currentLoc = savedLoc
   if not typeDirect and node.props.hasKey("override"):
     raise newException(GeneError,
       "^override belongs on the impl, not on a protocol message")
@@ -8847,7 +8858,8 @@ proc compileType(c: var Compiler, node: Value) =
     compileExpr(c, item.body[0])
     inlineImpls.add InlineImplProto(messages: implMessages,
                                     protocolExpr: item.body[0],
-                                    inheritBodies: literalOverride(item))
+                                    inheritBodies: legacyImplOverride(c, item),
+                                    loc: c.sourceLocFor(item))
   c.superType = savedSuperType
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
@@ -8981,7 +8993,8 @@ proc compileEnum(c: var Compiler, node: Value) =
     compileExpr(c, item.body[0])
     inlineImpls.add InlineImplProto(messages: implMessages,
                                     protocolExpr: item.body[0],
-                                    inheritBodies: literalOverride(item))
+                                    inheritBodies: legacyImplOverride(c, item),
+                                    loc: c.sourceLocFor(item))
 
   let hasBacking = node.props.hasKey("backing")
   let backingType = if hasBacking: node.props["backing"] else: NIL
@@ -9307,7 +9320,8 @@ proc compileImpl(c: var Compiler, node: Value) =
                                       staticTopLevel: staticTopLevel,
                                       staticOperands: staticOperands,
                                       exported: exported,
-                                      inheritBodies: literalOverride(node)))
+                                      inheritBodies: legacyImplOverride(c, node),
+                                      loc: c.sourceLocFor(node)))
   discard c.emit(opMakeImpl, idx)
 
 proc moduleRefName(node: Value, expectedBodyLen: int): string =

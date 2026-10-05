@@ -808,6 +808,7 @@ type
     exported*: bool
 
     inheritBodies*: bool
+    loc*: SourceLoc
 
   ## An (impl P (message ...) ...) block inside a type body; the receiver is
   ## the enclosing type (docs/spec/protocols.md). The protocol expression is compiled
@@ -816,6 +817,7 @@ type
     messages*: seq[ImplMessageProto]
     inheritBodies*: bool
     protocolExpr*: Value
+    loc*: SourceLoc
 
   ## One `(web_module name ...)` block, captured verbatim by the compiler and
   ## compiled to a web asset by the runtime while its containing module loads.

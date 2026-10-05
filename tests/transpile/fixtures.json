@@ -1133,6 +1133,16 @@
       }
     },
     {
+      "id": "protocol.child_impl_keeps_ancestor_body",
+      "source": "(protocol P (message p [self] : Str \"default\")) (type Dog ^props {}) (impl P for Dog (message p [self] : Str \"ancestor\")) (protocol Q ^inherit [P] (message q [self] : Str \"q\")) (type Pup : Dog ^props {}) (impl Q for Pup) ((Pup) .P:p)",
+      "web_source": "(mod protocol_child_impl_keeps_ancestor_body ^profile web) (protocol P (message p [self] : Str \"default\")) (type Dog ^props {}) (impl P for Dog (message p [self] : Str \"ancestor\")) (protocol Q ^inherit [P] (message q [self] : Str \"q\")) (type Pup : Dog ^props {}) (impl Q for Pup) (fn run [] : Str ((Pup) .P:p))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "ancestor"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "protocol.super_chain",
       "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($to_str \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
       "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($to_str \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
@@ -3961,9 +3971,9 @@
       }
     },
     {
-      "id": "self.impl_modes",
-      "source": "(protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited ^^override (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)]) (run)",
-      "web_source": "(mod self_impl_modes ^profile web) (protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited ^^override (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)])",
+      "id": "self.impl_inheritance",
+      "source": "(protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)]) (run)",
+      "web_source": "(mod self_impl_inheritance ^profile web) (protocol P (message value [other : Self] : Int) (message label [] : Int 9))\n(type Base ^props {}) (impl P for Base (message value [other : Self] : Int 1) (message label [] : Int 2))\n(type Inherited : Base ^props {}) (type Fresh : Base ^props {})\n(impl P for Inherited (message value [other : Base] : Int 3))\n(impl P for Fresh (message value [other : Base] : Int 5)) (fn run [] : (List Int) [((Inherited) .P:value (Base)) ((Inherited) .P:label) ((Fresh) .P:value (Base)) ((Fresh) .P:label)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3982,7 +3992,7 @@
           },
           {
             "kind": "int",
-            "value": "9"
+            "value": "2"
           }
         ]
       },

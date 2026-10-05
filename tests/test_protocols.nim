@@ -289,7 +289,16 @@ suite "protocols — declarations and dispatch":
        "((User ^name \"Ada\") .HasLabel:label)",
        "\"generated\""
 
-  test "deriving a child runs only the child's derive and emits one complete impl":
+  test "a derived child impl keeps an omitted ancestor body":
+    ck "(protocol P (message value [] : Str \"default\") " &
+       "  (derive [t req] `(impl P for %t))) " &
+       "(type Dog ^props {}) " &
+       "(impl P for Dog (message value [] : Str \"dog\")) " &
+       "(type Pup : Dog ^props {} ^derive [P]) " &
+       "((Pup) .P:value)",
+       "\"dog\""
+
+  test "deriving a child runs only the child's derive and emits one impl":
     ck "(protocol A " &
        "  (message a [self] : Str) " &
        "  (derive [t req] " &
@@ -390,7 +399,15 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol P (message fallback [self] : Str \"default\")) " &
                      "(type T ^props {}) ((T) .P:fallback)")
 
-  test "inherited defaults fill one complete child impl":
+  test "legacy impl override is redundant and diagnosed":
+    let chunk = compileSource("(protocol P (message value [] : Int 1)) " &
+      "(type T ^props {}) (impl P for T ^^override) ((T) .P:value)")
+    check chunk.diagnostics.len == 1
+    check chunk.diagnostics[0].message.startsWith(
+      "deprecated impl-level ^override")
+    check run(chunk, newGlobalScope()).print() == "1"
+
+  test "protocol defaults fill omissions when no ancestor body exists":
     ck "(protocol A (message a [self] : Str \"a\")) " &
        "(protocol B ^inherit [A] (message b [self] : Str)) " &
        "(type T ^props {}) " &
@@ -574,6 +591,16 @@ suite "protocols — ^inherit and qualified message identity":
        "\"ok\""
 
 suite "types — type-direct messages and sends":
+  test "a type qualifier names the type rather than an internal value kind":
+    var diagnostic = ""
+    try:
+      discard runStr("(type N ^props {} (message tag [] : Str \"n\")) " &
+        "(N:tag (N))")
+    except GeneError as error:
+      diagnostic = error.msg
+    check diagnostic.contains("message qualifier must be a Protocol, got type N")
+    check diagnostic.contains("type-direct messages are sent bare")
+
   test "type-direct messages are bare sends and have a Self value spelling":
     # Static impl selection is `super` only. A type-direct message is sent bare;
     # `Self:msg` supplies its dispatching value spelling.
@@ -604,6 +631,51 @@ suite "types — type-direct messages and sends":
       message = e.msg
     check message.contains("no message 'second' on List")
     ck "(var xs [1 2 3]) (fn second [l] l/1) (second xs)", "2"
+
+  test "bare-send errors list visible qualified protocol candidates":
+    let message = runStr("(protocol P (message label [] : Str)) " &
+      "(protocol Q (message label [] : Str)) " &
+      "(type M ^props {}) " &
+      "(impl P for M (message label [] : Str \"p\")) " &
+      "(impl Q for M (message label [] : Str \"q\")) " &
+      "(try ((M) .label) catch MessageError $err/message)").strVal
+    check message.contains("no message 'label' on M")
+    check message.contains("P:label, Q:label")
+    check message.contains("use a qualified send")
+
+  test "pending protocol impls do not become visible to a bare-send hint":
+    let message = runStr("(protocol P (message label [] : Str)) " &
+      "(type M ^props {}) " &
+      "(let observed (try ((M) .label) catch MessageError $err/message)) " &
+      "(impl P for M (message label [] : Str \"p\")) observed").strVal
+    check message.contains("no message 'label' on M")
+    check not message.contains("P:label")
+
+  test "bare-send hints respect scoped impl visibility":
+    ck "(protocol P (message label [] : Str)) " &
+      "(type M ^props {}) " &
+      "(fn inside [] " &
+      "  (impl P for M (message label [] : Str \"p\")) " &
+      "  (try ((M) .label) catch MessageError " &
+      "    ($str/contains? $err/message \"P:label\"))) " &
+      "[(inside) (try ((M) .label) catch MessageError " &
+      "  ($str/contains? $err/message \"P:label\"))]",
+      "[true false]"
+
+  test "bare-send hints include visible universal defaults":
+    let message = runStr("(protocol Greeting ^^universal " &
+      "  (message hello [] : Str \"hi\")) " &
+      "(type T ^props {}) " &
+      "(try ((T) .hello) catch MessageError $err/message)").strVal
+    check message.contains("Greeting:hello")
+
+  test "bare-send hints use a reachable protocol qualifier":
+    let message = runStr("(ns api (protocol Labelled " &
+      "  (message label [] : Str))) " &
+      "(type M ^props {}) " &
+      "(impl api/Labelled for M (message label [] : Str \"ok\")) " &
+      "(try ((M) .label) catch MessageError $err/message)").strVal
+    check message.contains("api/Labelled:label")
 
   test "implicit-self sends resolve in the receiver's context":
     ck "(type Box ^props {^val Int} (message get [self] self/val)) " &

@@ -96,7 +96,7 @@ In the REPL, macro definitions commit when their input compiles successfully.
 Runtime failure retains that compiler state; compilation failure leaves the
 previous macro context intact.
 
-## Direct message calls and checked callable signatures
+## Call-form message sends and checked callable signatures
 
 `(P:msg receiver args...)` normalizes to `(receiver .P:msg args...)`.
 `(Self:msg receiver args...)` normalizes to `(receiver .msg args...)`.

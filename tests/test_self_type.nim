@@ -34,16 +34,33 @@ suite "Self — forward declaration readiness":
       (impl P for Pup ^^override)
       (let early (try ((Pup) .P:value) catch RuntimeError $err/message))
       (impl P for Dog (message value [] : Int 7))
-      [(== early "declaration not ready: P for Pup") ((Pup) .P:value)]
-    """) == "[true 7]"
+      [($str/starts_with? early "declaration not ready: P for Pup is held until")
+       ($str/contains? early "impl P for Dog")
+       ((Pup) .P:value)]
+    """) == "[true true 7]"
 
-  test "unexecuted branches are not forward ancestor targets":
-    selfTypeError("""
+  test "pending diagnostics name the actual later blocker and source line":
+    let source = "(protocol P (message m [] : Str))\n" &
+      "(type A ^props {})\n" &
+      "(impl P for A (message m [] : Str \"a\"))\n" &
+      "(let observed (try ((A) .P:m) catch RuntimeError $err/message))\n" &
+      "(type B ^props {})\n" &
+      "(impl P for B (message m [] : Str \"b\"))\n" &
+      "observed"
+    let message = run(compileSource(source, sourceName = "pending.gene"),
+                      newGlobalScope()).strVal
+    check message.contains("P for A is held until (impl P for B)")
+    check message.contains("at pending.gene:6")
+    check message.contains("move this send below that impl")
+
+  test "unexecuted branches do not create ancestor providers":
+    check selfTypeEval("""
       (protocol P (message value [] : Int))
       (type Dog ^props {}) (type Pup : Dog ^props {})
       (if false (impl P for Dog (message value [] : Int 1)))
       (impl P for Pup ^^override (message value [] : Int 2))
-    """, "ancestor")
+      ((Pup) .P:value)
+    """) == "2"
 
   test "prospective duplicate providers never expose an intermediate body":
     let scope = newGlobalScope()
@@ -138,8 +155,8 @@ suite "Self — declaration contracts":
       ((Pup) .accepts (Dog))
     """) == "false"
 
-suite "Self — complete and inheriting impls":
-  test "inheriting omissions reuse ancestor bodies; complete omissions use defaults":
+suite "Self — inherited impl bodies":
+  test "omissions reuse ancestor bodies with or without the legacy marker":
     let declarations = """
       (protocol Eq
         (message eq [other : Self] : Bool)
@@ -159,22 +176,35 @@ suite "Self — complete and inheriting impls":
       (impl Eq for Pup
         (message eq [other : Dog] : Bool false))
       [((Pup) .Eq:eq (Dog)) ((Pup) .Eq:label)]
-    """) == "[false \"default\"]"
+    """) == "[false \"ancestor\"]"
 
-  test "complete impls never borrow missing ancestor bodies":
-    selfTypeError("""
+  test "omitted required messages borrow an ancestor body":
+    check selfTypeEval("""
       (protocol P (message value [] : Int))
       (type Dog ^props {}) (impl P for Dog (message value [] : Int 1))
       (type Pup : Dog ^props {}) (impl P for Pup)
-    """, "missing")
+      ((Pup) .P:value)
+    """) == "1"
 
-  test "inheriting impls require an actual ancestor provider":
-    selfTypeError("""
+  test "legacy impl marker has no ancestor requirement":
+    check selfTypeEval("""
       (protocol P (message value [] : Int 1))
       (type Dog ^props {}) (impl P for Dog ^^override)
-    """, "ancestor")
+      ((Dog) .P:value)
+    """) == "1"
 
-  test "complete impls do not get a fresh Self when replacing ancestor behavior":
+  test "child protocol impl preserves an ancestor's parent-protocol body":
+    check selfTypeEval("""
+      (protocol P (message value [] : Str "default"))
+      (type Dog ^props {})
+      (impl P for Dog (message value [] : Str "ancestor"))
+      (protocol Q ^inherit [P] (message extra [] : Int 1))
+      (type Pup : Dog ^props {})
+      (impl Q for Pup)
+      [((Pup) .P:value) ((Pup) .Q:extra)]
+    """) == "[\"ancestor\" 1]"
+
+  test "local replacements do not get a fresh Self":
     for mode in ["", "^^override"]:
       selfTypeError("""
         (protocol Eq (message eq [other : Self] : Bool))
@@ -232,13 +262,13 @@ suite "Self — declaration metadata":
     """) == "7"
 
 suite "Self — live overlay dependencies":
-  test "a captured inheriting impl refreshes when a nearer ancestor appears":
+  test "a captured child impl refreshes when a nearer ancestor appears":
     check selfTypeEval("""
       (protocol P (message value [] : Int))
       (type Base ^props {}) (type Mid : Base ^props {}) (type Leaf : Mid ^props {})
       (impl P for Base (message value [] : Int 1))
       (fn make_reader []
-        (impl P for Leaf ^^override)
+        (impl P for Leaf)
         (fn [] ((Leaf) .P:value)))
       (let reader (make_reader))
       (let before (reader))
@@ -334,6 +364,51 @@ suite "Self — shared nested signature comparison":
     """) == "true"
 
 suite "Self — conformance boundary coherence":
+  test "mixed bindings explain the default contract and both origins":
+    let source = "(type Dog ^props {^name Str})\n" &
+      "(protocol Copyable (message copy [] : Self))\n" &
+      "(impl Copyable for Dog (message copy [] : Self self))\n" &
+      "(protocol Duplicable ^inherit [Copyable]\n" &
+      "  (message duplicate [] : Self self/.Copyable:copy))\n" &
+      "(type FaultyPup : Dog ^props {})\n" &
+      "(impl Duplicable for FaultyPup\n" &
+      "  (message Copyable:copy [] : Dog (Dog ^name self/name)))\n" &
+      "((FaultyPup ^name \"x\") .Duplicable:duplicate)"
+    var diagnostic = ""
+    var line = 0
+    try:
+      discard run(compileSource(source, sourceName = "mixed.gene"),
+                  newGlobalScope())
+    except GeneError as error:
+      diagnostic = error.msg
+      line = error.loc.line
+      check error.errVal.props["message"].strVal.contains("Copyable.Self = Dog")
+    check line == 5
+    check diagnostic.contains("called at mixed.gene:9")
+    check diagnostic.contains("Duplicable.Self = FaultyPup")
+    check diagnostic.contains("introduced by impl Duplicable for FaultyPup")
+    check diagnostic.contains("Copyable.Self = Dog")
+    check diagnostic.contains("introduced by impl Copyable for Dog")
+
+  test "an inherited Self origin names the child protocol that introduced it":
+    var diagnostic = ""
+    try:
+      discard selfTypeEval("""
+        (protocol P (message copy [] : Self))
+        (protocol Ord ^inherit [P] (message compare [] : Int 0))
+        (type Dog ^props {})
+        (impl Ord for Dog (message copy [] : Self self))
+        (protocol Q ^inherit [P]
+          (message duplicate [] : Self self/.P:copy))
+        (type Pup : Dog ^props {})
+        (impl Q for Pup (message P:copy [] : Dog (Dog)))
+        ((Pup) .Q:duplicate)
+      """)
+    except GeneError as error:
+      diagnostic = error.msg
+    check diagnostic.contains("P.Self = Dog")
+    check diagnostic.contains("introduced by impl Ord for Dog")
+
   test "a captured protocol boundary rejects a newly conflicting ancestor":
     check selfTypeEval("""
       (protocol P (message accepts [x : Self] : Bool))

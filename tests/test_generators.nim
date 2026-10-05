@@ -118,7 +118,7 @@ suite "explicit generator declarations":
     """), newGlobalScope())
     check value.print == "[0 7 1 false]"
 
-  test "an inheriting impl retains omitted generator messages":
+  test "a child impl retains omitted ancestor generator messages":
     let value = run(compileSource("""
       (protocol Items
         (message values [] : (Stream Int Never))

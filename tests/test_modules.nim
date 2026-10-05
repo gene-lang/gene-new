@@ -897,7 +897,7 @@ suite "modules — file imports":
     writeModule("self_child.gene", """
       (import [P Base Child] ^from "./self_base")
       (import_impl P for Base ^from "./self_parent")
-      (impl P for Child ^^override ^export true)
+      (impl P for Child ^export true)
     """)
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
