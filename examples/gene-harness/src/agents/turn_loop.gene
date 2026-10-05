@@ -151,6 +151,17 @@
             " in this round; "
             budget/remaining
             " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")))
+      # Opt-in capture of exact model requests and raw replies. The event
+      # transcript records execution results, but assembled instructions
+      # change as plugins activate and would otherwise be lost.
+      (if (== ($os/env? "GENE_HARNESS_CAPTURE_REQUESTS") "1")
+        (then
+          (let directory $"${runtime/state_root}/model_requests")
+          ($fs/make_dir directory)
+          ($fs/write_text_atomic ^^owner_only
+            $"${directory}/${($crypto/sha256 session)}-${number}.json"
+            ($json/stringify {^session session ^round round/id ^turn number
+              ^messages messages}))))
       (let text
         (provider
           {
@@ -160,6 +171,10 @@
             ^budget budget
             ^config config
             ^messages messages}))
+      (if (== ($os/env? "GENE_HARNESS_CAPTURE_REQUESTS") "1")
+        ($fs/write_text_atomic ^^owner_only
+          $"${runtime/state_root}/model_requests/${($crypto/sha256 session)}-${number}.response.txt"
+          text))
       (let elided
         (try
           (elide_response runtime session number text)
