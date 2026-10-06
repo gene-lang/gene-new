@@ -99,7 +99,7 @@
     (p/abort execution/tx/.get))
   (if execution/cancelled/.get
     (return {^status (?? execution/cancel_status "interrupted") ^result "Execution cancelled"}))
-  (match done
+  (match done ^exhaustive false
     (when (TaskOutcome/ok result)
       (if (&& (== result/status 0) ($fs/exists? execution/result))
         (then

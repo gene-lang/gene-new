@@ -4177,10 +4177,18 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "match":
     if value.body.len < 2:
       raise webError(loc, "web match expects a value and at least one arm")
+    var requireExhaustive = true
+    for key, prop in value.props:
+      if key != "exhaustive":
+        raise webError(loc, "web match only accepts ^exhaustive")
+      if prop.kind != vkBool:
+        raise webError(loc, "web match ^exhaustive requires a literal Bool")
+      requireExhaustive = prop.boolVal
     let matched = analysis.analyzeExpr(value.body[0], bindings)
     result = WebExpr(kind: wekMatch, loc: loc, children: @[matched])
     var resultType: WebType = nil
     var hasElse = false
+    var hasCatchAll = false
     for i in 1 ..< value.body.len:
       let arm = value.body[i]
       if arm.kind != vkNode or arm.head.kind != vkSymbol:
@@ -4193,6 +4201,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if arm.head.symVal == "when":
         if arm.body.len < 2:
           raise webError(loc, "web match when requires a pattern and body")
+        if arm.body[0].kind == vkSymbol:
+          hasCatchAll = true
         result.patterns.add analysis.normalizeWebPattern(arm.body[0])
         result.keys.add "when"
         bindPattern(analysis, arm.body[0], matched.typ, armBindings)
@@ -4215,6 +4225,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       result.children.add analyzed
       resultType = if resultType == nil: analyzed.typ
                    else: unionType(resultType, analyzed.typ)
+    if requireExhaustive and not hasElse and not hasCatchAll:
+      raise webError(loc,
+        "web match is not exhaustive; add (else ...), a binding arm, or ^exhaustive false")
     result.typ = if resultType == nil: webType(wtkNever) else: resultType
     return
   if name == "return":

@@ -90,7 +90,7 @@ when compileOption("threads") and defined(posix):
         (let pending (rows .next))
         (let busy (try (rows .next) false catch CsvError true))
         (rows .IoResource:close)
-        (let cancelled (match (pending .join)
+        (let cancelled (match (pending .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (rows .IoResource:wait_closed))
         (await (pipe/1 .AsyncWriter:write ($binary/from_str "x")))
@@ -111,7 +111,7 @@ when compileOption("threads") and defined(posix):
         (let pending (rows .next))
         (let waiting (rows .IoResource:wait_closed))
         (rows .IoResource:close)
-        (let cancelled (match (pending .join)
+        (let cancelled (match (pending .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await waiting)
         (await (rows .IoResource:wait_closed))

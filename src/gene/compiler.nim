@@ -8177,10 +8177,18 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
 
 proc compileMatch(c: var Compiler, node: Value, tail = false) =
   let body = node.body
-  if body.len == 0:
-    raise newException(GeneError, "match requires a value")
+  if body.len < 2:
+    raise newException(GeneError, "match requires a value and at least one arm")
+  var requireExhaustive = true
+  for key, value in node.props:
+    if key != "exhaustive":
+      raise newException(GeneError, "match only accepts ^exhaustive")
+    if value.kind != vkBool:
+      raise newException(GeneError, "match ^exhaustive requires a literal Bool")
+    requireExhaustive = value.boolVal
   compileExpr(c, body[0])
   let mp = MatchProto(clauses: @[], elseBody: nil, tailResult: tail)
+  var hasCatchAll = false
   for i in 1 ..< body.len:
     let clause = body[i]
     if clause.kind != vkNode or clause.head.kind != vkSymbol:
@@ -8189,6 +8197,8 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
     of "when":
       if clause.body.len == 0:
         raise newException(GeneError, "when requires a pattern")
+      if clause.body[0].kind == vkSymbol:
+        hasCatchAll = true
       var branchBody: seq[Value]
       for j in 1 ..< clause.body.len:
         branchBody.add clause.body[j]
@@ -8198,11 +8208,16 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
                                                          scoped = true,
                                                          tail = tail))
     of "else":
+      if i != body.high:
+        raise newException(GeneError, "match else must be the final arm")
       mp.elseBody = c.compileSubBody(clause.body, scoped = true, tail = tail)
       break
     else:
       raise newException(GeneError, "match requires when/else clauses; " &
         "macro calls are only expanded in expression positions (got " & clause.head.symVal & ")")
+  if requireExhaustive and mp.elseBody == nil and not hasCatchAll:
+    raise newException(GeneError,
+      "match is not exhaustive; add (else ...), a binding arm, or ^exhaustive false")
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =

@@ -106,7 +106,7 @@ line two"""
 # Compact conditions, guard sequences, and full clauses.
 
 (fn status_text [status : Status] : Str
-  (match status
+  (match ^exhaustive false status
     (when Status/pending "pending")
     (when Status/active "active")
     (when (Status/failed message)

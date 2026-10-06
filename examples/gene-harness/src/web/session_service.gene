@@ -120,7 +120,7 @@
   nil)
 
 (fn handle_harness_event [service, event]
-  (match event
+  (match event ^exhaustive false
     (when (record : DurableRecord)
       (if (== record/scope "session")
         (publish_transcript service record/stream record/envelope)))
@@ -327,7 +327,7 @@
           task/.join)
         deadline/.cancel
         deadline/.join)))
-  (match outcome
+  (match outcome ^exhaustive false
     (when (TaskOutcome/ok value)
       (bounded_component_view value))
     (when (TaskOutcome/error error)

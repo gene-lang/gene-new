@@ -47,7 +47,7 @@
   $"/run ${code}")
 
 (fn handle_repl_event [selected, answers, shown, event]
-  (match event
+  (match event ^exhaustive false
     (when (changed : RoundChanged)
       (let id changed/session)
       (let receipt changed/receipt)

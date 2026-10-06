@@ -56,7 +56,7 @@
   $"${date/year}-${(two_digits date/month)}-${(two_digits date/day)} ${(two_digits hour)}:${(two_digits minute)} ${zone}")
 
 (fn next_time [definition, after]
-  (match definition/kind
+  (match definition/kind ^exhaustive false
     (when "heartbeat" (+ after definition/every_ms))
     (when "scheduled" nil)
     (when "cron" (cron/next definition/pattern definition/rules after))))

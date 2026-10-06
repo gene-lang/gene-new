@@ -1103,9 +1103,27 @@
       }
     },
     {
+      "id": "match.exhaustiveness_required",
+      "source": "(match 1 (when 1 11))",
+      "web_source": "(mod match_exhaustiveness_required ^profile web) (fn run [] : Int (match 1 (when 1 11)))",
+      "expected_error": "not exhaustive",
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "match requires coverage by default", "diagnostic": "not exhaustive"}
+    },
+    {
+      "id": "match.partial_opt_out",
+      "source": "(match 1 ^exhaustive false (when 1 11))",
+      "web_source": "(mod match_partial_opt_out ^profile web) (fn run [] : Int (match 1 ^exhaustive false (when 1 11)))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "11"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "enum.payload_match",
-      "source": "(enum Result (ok Int) (err Str)) (match (Result/ok 9) (when (Result/ok value) value) (when (Result/err message) 0))",
-      "web_source": "(mod enum_payload_match ^profile web) (enum Result (ok Int) (err Str)) (fn run [] : Int (match (Result/ok 9) (when (Result/ok value) value) (when (Result/err message) 0)))",
+      "source": "(enum Result (ok Int) (err Str)) (match (Result/ok 9) ^exhaustive false (when (Result/ok value) value) (when (Result/err message) 0))",
+      "web_source": "(mod enum_payload_match ^profile web) (enum Result (ok Int) (err Str)) (fn run [] : Int (match (Result/ok 9) ^exhaustive false (when (Result/ok value) value) (when (Result/err message) 0)))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",

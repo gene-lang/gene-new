@@ -1222,7 +1222,7 @@
 
 (fn invoke_supervised [callable, args, limits : ExecutionLimits]
   (let outcome (supervised_call callable args limits))
-  (match outcome
+  (match outcome ^exhaustive false
     (when (TaskOutcome/ok value)
       value)
     (when (TaskOutcome/error error)

@@ -46,7 +46,7 @@ when compileOption("threads") and defined(posix):
         (let reader (await ($io/open_read path)))
         (let bytes (await (reader .AsyncReader:read 4)))
         (listener .IoResource:close)
-        (let cancelled (match (accepting .join)
+        (let cancelled (match (accepting .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
@@ -65,7 +65,7 @@ when compileOption("threads") and defined(posix):
         (let first (listener .accept))
         (let busy (try (listener .accept) false catch IoBusy true))
         (listener .IoResource:close)
-        (let cancelled (match (first .join)
+        (let cancelled (match (first .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (listener .IoResource:wait_closed))
         (let stats ($runtime/gc_stats))
@@ -81,7 +81,7 @@ when compileOption("threads") and defined(posix):
         (let listener (await ($io/tcp_listen "127.0.0.1" 0)))
         (let first (listener .accept))
         (first .cancel)
-        (let cancelled (match (first .join)
+        (let cancelled (match (first .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (var second nil)
         (var attempts 0)
@@ -118,7 +118,7 @@ when compileOption("threads") and defined(posix):
         (let server (await accepting))
         (let first (client .AsyncReader:read 1))
         (first .cancel)
-        (let cancelled (match (first .join)
+        (let cancelled (match (first .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (var second nil)
         (var attempts 0)
@@ -158,9 +158,9 @@ when compileOption("threads") and defined(posix):
         (client .IoResource:close)
         (server .IoResource:close)
         (listener .IoResource:close)
-        (let cancelled1 (match (first .join)
+        (let cancelled1 (match (first .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
-        (let cancelled2 (match (second .join)
+        (let cancelled2 (match (second .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (client .IoResource:wait_closed))
         (await (server .IoResource:wait_closed))
@@ -200,7 +200,7 @@ when compileOption("threads") and defined(posix):
         (let file (await ($io/open_read path)))
         (let data (await (file .AsyncReader:read 4)))
         (client .IoResource:close)
-        (let stopped (match (sending .join)
+        (let stopped (match (sending .join) ^exhaustive false
           (when TaskOutcome/cancelled true)
           (when (TaskOutcome/error _) true)))
         (server .IoResource:close)

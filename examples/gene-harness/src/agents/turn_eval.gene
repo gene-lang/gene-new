@@ -101,7 +101,7 @@
                 (do ($sleep timeout_ms) (expired .set true) task/.cancel)))
               (try task/.join
                 ensure deadline/.cancel deadline/.join)))
-            (match outcome
+            (match outcome ^exhaustive false
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))

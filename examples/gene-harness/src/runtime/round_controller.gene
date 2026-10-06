@@ -114,7 +114,7 @@
 
 (fn finish_round_unlocked [controller : RoundController, session : Str, receipt, outcome]
   (let saved (copy_data receipt))
-  (match outcome
+  (match outcome ^exhaustive false
     (when (TaskOutcome/ok result)
       (for [name value] in result
         (saved .put name value)))

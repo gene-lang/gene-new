@@ -286,11 +286,26 @@ collects remaining list elements.
 
 ```gene runnable
 (fn first_label [values] : Str
-  (match values
+  (match values ^exhaustive false
     (when [] "empty")
     (when [first rest...] $"first=${first}")))
 (first_label [10 20 30]) # "first=10"
 ```
+
+`match` requires a final `else` or an unconditional binding arm such as
+`(when _ ...)` or `(when value ...)`. The compiler cannot prove coverage from
+literal, typed, structural, or enum-variant arms alone. To deliberately leave
+a match partial, write `^exhaustive false` on `match`; an unmatched value then
+raises `MatchError` at runtime:
+
+```gene
+(match value ^exhaustive false
+  (when 1 "one")
+  (when 2 "two"))
+```
+
+The formatter places the flag before the matched value:
+`(match ^exhaustive false value ...)`.
 
 Patterns also work with property maps, nodes, enum variants, and typed values.
 A requested property must exist; a missing optional field does not bind nil.

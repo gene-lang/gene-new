@@ -12,8 +12,18 @@ suite "match — scalars and selection":
     ck "(match 2 (when 1 \"one\") (when 2 \"two\") (else \"other\"))", "\"two\""
   test "else runs when nothing matches":
     ck "(match 5 (when 1 \"one\") (else \"other\"))", "\"other\""
-  test "no clause and no else raises MatchError":
-    expect MatchError: discard runStr("(match 9 (when 1 \"one\"))")
+  test "non-exhaustive match needs an explicit opt-out":
+    expect GeneError: discard compileSource("(match 9 (when 1 \"one\"))")
+    expect MatchError:
+      discard runStr("(match 9 ^exhaustive false (when 1 \"one\"))")
+    ck "(match 1 ^exhaustive false (when 1 \"one\"))", "\"one\""
+    ck "(match ^exhaustive false 1 (when 1 \"one\"))", "\"one\""
+    expect GeneError:
+      discard compileSource("(match 1 ^exhaustive 1 (when _ 1))")
+    expect GeneError:
+      discard compileSource("(match 1 ^unknown true (when _ 1))")
+    expect GeneError:
+      discard compileSource("(match 1 (else 1) (when _ 2))")
   test "bare name binds the whole value":
     ck "(match 7 (when x (* x x)))", "49"
   test "wildcard matches anything":
@@ -24,27 +34,27 @@ suite "match — scalars and selection":
 
 suite "match — structural patterns":
   test "list pattern binds positionally":
-    ck "(match [1 2 3] (when [a b c] (+ a b c)))", "6"
+    ck "(match [1 2 3] ^exhaustive false (when [a b c] (+ a b c)))", "6"
   test "list arity must match without a rest":
     ck "(match [1 2] (when [a b c] \"3\") (else \"no\"))", "\"no\""
   test "rest pattern captures the tail":
-    ck "(match [1 2 3 4] (when [head rest...] rest))", "[2 3 4]"
-    ck "(match [1 2 3 4] (when [head rest...] head))", "1"
+    ck "(match [1 2 3 4] ^exhaustive false (when [head rest...] rest))", "[2 3 4]"
+    ck "(match [1 2 3 4] ^exhaustive false (when [head rest...] head))", "1"
   test "map pattern is open and binds fields":
-    ck "(match {^type \"circle\" ^r 5} (when {^type \"circle\" ^r r} r))", "5"
+    ck "(match {^type \"circle\" ^r 5} ^exhaustive false (when {^type \"circle\" ^r r} r))", "5"
   test "map pattern fails on a missing key":
     ck "(match {^a 1} (when {^b b} \"yes\") (else \"no\"))", "\"no\""
   test "ordinary node patterns ignore meta":
-    ck "(match (quote (x @line 7 ^a 1)) (when (x ^a a) a))", "1"
+    ck "(match (quote (x @line 7 ^a 1)) ^exhaustive false (when (x ^a a) a))", "1"
   test "meta patterns match explicit node meta":
-    ck "(match (quote (x @line 7 ^name \"Ada\")) " &
+    ck "(match (quote (x @line 7 ^name \"Ada\")) ^exhaustive false " &
        "(when (@ {^line l} (x ^name n)) [l n]))",
        "[7 \"Ada\"]"
     ck "(match (quote (x @line 7)) " &
        "(when (@ {^line 8} x) \"bad\") (else \"ok\"))",
        "\"ok\""
   test "meta patterns treat scalars as empty meta":
-    ck "(match 42 (when (@ {} n) n))", "42"
+    ck "(match 42 ^exhaustive false (when (@ {} n) n))", "42"
   test "meta patterns require meta and value patterns":
     expect GeneError: discard runStr("(match 1 (when (@ {}) 1))")
 
@@ -54,7 +64,7 @@ suite "match — typed patterns":
     ck "(match 1 (when (s : Str) s) (else \"no\"))", "\"no\""
     ck "(match \"hi\" (when (_ : Str) \"str\") (else \"no\"))", "\"str\""
   test "typed patterns adapt streams lazily":
-    ck "(try (match ($to_stream [\"bad\"]) " &
+    ck "(try (match ($to_stream [\"bad\"]) ^exhaustive false " &
        "       (when (s : (Stream Int Never)) (s .next))) " &
        "catch TypeError $err/where)",
        "\"Stream/next item\""
@@ -70,11 +80,11 @@ suite "match — combinators":
     ck "(match 3 (when (| 1 2 3) \"small\") (else \"big\"))", "\"small\""
     ck "(match 9 (when (| 1 2 3) \"small\") (else \"big\"))", "\"big\""
   test "alternation branches must bind the same names":
-    ck "(match [2 7] (when (| [1 a] [2 a]) a))", "7"
+    ck "(match [2 7] ^exhaustive false (when (| [1 a] [2 a]) a))", "7"
     expect GeneError: discard runStr("(match [1] (when (| [a] [b]) a))")
     expect GeneError: discard runStr("(match [1] (when (| [a] [_]) a))")
   test "conjunction requires all and binds":
-    ck "(match 5 (when (& x (| 4 5 6)) x))", "5"
+    ck "(match 5 ^exhaustive false (when (& x (| 4 5 6)) x))", "5"
   test "negation matches the complement":
     ck "(match 7 (when (not 0) \"nonzero\") (else \"zero\"))", "\"nonzero\""
   test "negation must not bind names":
@@ -88,7 +98,7 @@ suite "match — branch scope":
     expect GeneError:
       discard runStr("(match 1 (when x (var y x) y)) y")
   test "branch bodies can update outer bindings":
-    ck "(var total 0) (match [1 2] (when [a b] (set total (+ a b)))) total", "3"
+    ck "(var total 0) (match [1 2] ^exhaustive false (when [a b] (set total (+ a b)))) total", "3"
 
 suite "destructuring — var":
   test "list destructuring":

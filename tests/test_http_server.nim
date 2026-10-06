@@ -964,7 +964,7 @@ suite "net/http server e2e":
     (fail (Boom ^message "worker boom"))
     (do
       (var ev (failures .try_recv))
-      (match ev
+      (match ev ^exhaustive false
         (when TryRecv/empty
           (reply .send (text "no-failures")))
         (when (TryRecv/value failure)

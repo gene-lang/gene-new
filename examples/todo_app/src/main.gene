@@ -178,7 +178,7 @@
   (if (== flt void) TodoFilter/all flt))
 
 (fn keep? [flt : TodoFilter]
-  (match flt
+  (match flt ^exhaustive false
     (when TodoFilter/active (fn [t] (! (done? t))))
     (when TodoFilter/done   done?)
     (when TodoFilter/all    (fn [t] true))))

@@ -520,7 +520,7 @@
       # A binding captures this invocation scope. Release the local edge after
       # joining, including failed calls, instead of leaving a closure cycle.
       (set wrapper nil)))
-  (match outcome
+  (match outcome ^exhaustive false
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
     (when (TaskOutcome/panic message)
@@ -2032,7 +2032,7 @@
     catch Any
       (cordis_failure HookDispatchError $"hook ${hook/id} payload validation failed" $err)))
   (var handlers (hook_snapshot context hook subject))
-  (match hook/mode
+  (match hook/mode ^exhaustive false
     (when HookMode/emit
       (dispatch_emit handlers checked))
     (when HookMode/parallel
@@ -2047,7 +2047,7 @@
 # --- snapshots and shutdown ----------------------------------------------
 
 (fn state_name [state] : Str ^^private
-  (match state
+  (match state ^exhaustive false
     (when InstanceState/pending "pending")
     (when InstanceState/loading "loading")
     (when InstanceState/active "active")
@@ -3243,7 +3243,7 @@
     (cordis_failure CompositionError "a publication participant requires staged reconciliation"))
   (if (&& (! (absent? loader/options/retirement)) (!= selected_mode ReconcileMode/staged))
     (cordis_failure CompositionError "deferred retirement requires staged reconciliation"))
-  (match selected_mode
+  (match selected_mode ^exhaustive false
     (when ReconcileMode/incremental
       (loader_reconcile_incremental loader manifest rows))
     (when ReconcileMode/staged

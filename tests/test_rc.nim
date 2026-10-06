@@ -1037,7 +1037,7 @@ when defined(geneRcStats):
         check repeatedBodyLeak("(fn body [] (var hs []) " &
           "(for x in [1 2 3] (hs .push (fn [] x))) (hs/0))") == 0
         check repeatedBodyLeak("(fn body [] (var f nil) " &
-          "(match [3] (when [x] (set f (fn [] x)))) (f))") == 0
+          "(match [3] ^exhaustive false (when [x] (set f (fn [] x)))) (f))") == 0
         check repeatedBodyLeak("(fn other [a] (var b a) b) " &
           "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (other 1))") == 0
         # The Int fast return, an explicit return from inside the loop, and an

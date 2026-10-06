@@ -51,7 +51,7 @@ when compileOption("threads") and defined(posix):
         (let reading (reader .AsyncReader:read 4))
         (reader .IoResource:close)
         (let before ($runtime/gc_stats))
-        (let cancelled (match (reading .join)
+        (let cancelled (match (reading .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (reader .IoResource:wait_closed))
         (let after ($runtime/gc_stats))
@@ -75,7 +75,7 @@ when compileOption("threads") and defined(posix):
           ($sleep 1)
           (set attempts (+ attempts 1))
           (set stats ($runtime/gc_stats)))
-        [(match (opening .join) (when TaskOutcome/cancelled true))
+        [(match (opening .join) ^exhaustive false (when TaskOutcome/cancelled true))
          stats/io_cleanup_leases stats/io_root_cleanup_tasks
          stats/io_file_open_resources]
       """), scope)
@@ -170,7 +170,7 @@ when compileOption("threads") and defined(posix):
         (let busy (try (writer .AsyncWriter:flush) false catch IoBusy true))
         (writer .IoResource:close)
         (let before ($runtime/gc_stats))
-        (let cancelled (match (operation .join)
+        (let cancelled (match (operation .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (writer .IoResource:wait_closed))
         (let after ($runtime/gc_stats))
@@ -263,7 +263,7 @@ when compileOption("threads") and defined(posix):
         (let busy (try (reader .AsyncReader:read 1)
                         false catch IoBusy true))
         (reader .IoResource:close)
-        (let cancelled (match (reading .join)
+        (let cancelled (match (reading .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (reader .IoResource:wait_closed))
         (writer .IoResource:close)
@@ -366,7 +366,7 @@ when compileOption("threads") and defined(posix):
         (let pipe ($io/pipe))
         (let first (pipe/0 .AsyncReader:read 1))
         (first .cancel)
-        (let cancelled (match (first .join)
+        (let cancelled (match (first .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (var second nil)
         (var attempts 0)
@@ -506,7 +506,7 @@ when compileOption("threads") and defined(posix):
         (let task ($os/exec_stream_async "sh"
           "-c" "sleep 2; printf x" ^stdout_pipe writer))
         (spawn ^lane root (do ($sleep 50) (task .cancel)))
-        (let cancelled (match (task .join)
+        (let cancelled (match (task .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (let eof (await (reader .AsyncReader:read 16)))
         (await (writer .IoResource:wait_closed))
@@ -748,7 +748,7 @@ when compileOption("threads") and defined(posix):
         (let process ($os/exec_stream_async "sleep"
           "2" ^stdin_pipe input/0))
         (spawn ^lane root (do ($sleep 50) (process .cancel)))
-        (let cancelled (match (process .join)
+        (let cancelled (match (process .join) ^exhaustive false
           (when TaskOutcome/cancelled true)))
         (await (input/0 .IoResource:wait_closed))
         (input/1 .IoResource:close)

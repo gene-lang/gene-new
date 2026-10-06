@@ -30,7 +30,7 @@
     (await pending)))
 
 (fn describe [choice : Choice] : Str
-  (match choice
+  (match choice ^exhaustive false
     (when Choice/none "none")
     (when (Choice/some value)
       ($json/stringify {^value value}))))

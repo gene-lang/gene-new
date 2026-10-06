@@ -682,12 +682,12 @@ suite "spec — enums from design":
 
   test "tuple variants construct payload values and match by tag":
     check_eval("(enum Shape (circle Int) (rect Int Int)) " &
-               "(match (Shape/circle 5) " &
+               "(match (Shape/circle 5) ^exhaustive false " &
                "  (when (Shape/circle r) r) " &
                "  (when (Shape/rect w h) (* w h)))",
                "5")
     check_eval("(enum Result (ok Int) (err Str)) " &
-               "(match (Result/err \"bad\") " &
+               "(match (Result/err \"bad\") ^exhaustive false " &
                "  (when (Result/ok v) v) " &
                "  (when (Result/err e) e))",
                "\"bad\"")
@@ -699,15 +699,15 @@ suite "spec — enums from design":
                "blue")
     check_eval("(enum Option [T] none (some T)) " &
                "[(Option/some 7) (Option/some \"x\") " &
-               " (match Option/none (when Option/none \"none\"))]",
+               " (match Option/none ^exhaustive false (when Option/none \"none\"))]",
                "[(Option/some 7) (Option/some \"x\") \"none\"]")
     check_eval("(enum Option [T] none (some T)) " &
                "(fn unwrap [o : (Option Int)] " &
-               "  (match o (when (Option/some v) v) (when Option/none 0))) " &
+               "  (match o ^exhaustive false (when (Option/some v) v) (when Option/none 0))) " &
                "(unwrap (Option/some 9))",
                "9")
     check_eval("(enum Tree leaf (node Tree Tree)) " &
-               "(match (Tree/node Tree/leaf Tree/leaf) " &
+               "(match (Tree/node Tree/leaf Tree/leaf) ^exhaustive false " &
                "  (when (Tree/node left right) [left right]))",
                "[Tree/leaf Tree/leaf]")
 
@@ -871,7 +871,7 @@ suite "spec — macros from design":
 
   test "macro match binders retain their ordinary arm scope":
     check_eval("(macro first_of [x] " &
-               "  `(match %x (when [tmp] tmp))) " &
+               "  `(match %x ^exhaustive false (when [tmp] tmp))) " &
                "(var tmp 100) [(first_of [1]) tmp]",
                "[1 100]")
 
@@ -888,7 +888,7 @@ suite "spec — macros from design":
       "(var x 10) [((mk (+ x 1)) 5) x]", "[6 10]")
     check_eval("(macro each3 [body] `(for i in [1 2 3] %body)) " &
       "(var i 99) (var total 0) (each3 (set total (+ total i))) [total i]", "[6 99]")
-    check_eval("(macro first_or [x d] `(match %x (when [tmp] %d))) " &
+    check_eval("(macro first_or [x d] `(match %x ^exhaustive false (when [tmp] %d))) " &
       "(var tmp 100) [(first_or [1] tmp) tmp]", "[1 100]")
     check_eval("(macro swap [a b] `(do (var tmp %a) (set %a %b) (set %b tmp))) " &
       "(fn f [] (var tmp 1) (var y 2) (swap tmp y) [tmp y]) (f)", "[1 2]")
@@ -5117,19 +5117,19 @@ suite "spec — pattern destructuring from design":
     # to the runtime global, not the sibling's pattern binding — the
     # false positive the previous compile-time cross-check had was
     # rejecting exactly this case.
-    check_eval("(match [1] " &
+    check_eval("(match [1] ^exhaustive false " &
                "  (when [a] $map) " &
                "  (when [map] $map))",
                "(native-fn map)")
     # Arm 1 doesn't match `[9]` (2-tuple needed, 1-tuple given); arm 2
     # matches and references `map`. Sibling-leak would surface as
     # something else; runtime isolation gives us the global.
-    check_eval("(match [9] " &
+    check_eval("(match [9] ^exhaustive false " &
                "  (when [a b] \"first\") " &
                "  (when [c] $map))",
                "(native-fn map)")
     # Arm 1 matches `[1]` and returns the literal; arm 2 never runs.
-    check_eval("(match [1] " &
+    check_eval("(match [1] ^exhaustive false " &
                "  (when [a] \"first\") " &
                "  (when [c] $map))",
                "\"first\"")
@@ -5269,18 +5269,18 @@ suite "spec — pattern destructuring from design":
                "[0 nil]")
 
   test "alternation alternatives bind the same names":
-    check_eval("(match [2 7] (when (| [1 a] [2 a]) a))", "7")
+    check_eval("(match [2 7] ^exhaustive false (when (| [1 a] [2 a]) a))", "7")
     expect GeneError:
-      discard run(compileSource("(match [1] (when (| [a] [b]) a))"),
+      discard run(compileSource("(match [1] ^exhaustive false (when (| [a] [b]) a))"),
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(match 1 (when (not x) \"no\") (else \"ok\"))"),
                   newGlobalScope())
   test "meta patterns opt into matching meta":
-    check_eval("(match (quote (x @line 7 ^name \"Ada\")) " &
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^exhaustive false " &
                "  (when (@ {^line l} (x ^name n)) [l n]))",
                "[7 \"Ada\"]")
-    check_eval("(match (quote (x @line 7 ^name \"Ada\")) " &
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^exhaustive false " &
                "  (when (x ^name n) n))",
                "\"Ada\"")
   test "typed patterns bind and require the declared type":
@@ -5646,19 +5646,19 @@ suite "spec — implicit self in message bodies from design §10":
   test "the canonical representation is what the pattern engine matches":
     # design §1.3/§8: a cell `c` holding `v` matches `(Cell p)` and binds `p`
     # to the current value; the bind is a read-only snapshot.
-    check_eval("(match ($cell 5) (when (Cell v) (* v 2)))", "10")
+    check_eval("(match ($cell 5) ^exhaustive false (when (Cell v) (* v 2)))", "10")
     check_eval("(match ($cell 5) (when (Cell 5) \"five\") (else \"no\"))",
                "\"five\"")
-    check_eval("(try (match ($cell 5) (when (Cell) x)) " &
+    check_eval("(try (match ($cell 5) ^exhaustive false (when (Cell) x)) " &
                "  catch MatchError \"arity\")",
                "\"arity\"")
     check_eval("(var c ($cell 1)) " &
-               "(var v (match c (when (Cell x) x))) " &
+               "(var v (match c ^exhaustive false (when (Cell x) x))) " &
                "(c .set 2) " &
                "[v (c .get)]",
                "[1 2]")
     check_eval("(var cs [($cell 1) ($cell 2)]) " &
-               "(match cs (when [(Cell a) (Cell b)] (+ a b)))",
+               "(match cs ^exhaustive false (when [(Cell a) (Cell b)] (+ a b)))",
                "3")
     # Head-only canonical nodes match arity-zero patterns; a function has no
     # registered type identity and matches no node pattern at all. Rest shapes
@@ -6111,7 +6111,7 @@ suite "spec — implicit self in message bodies from design §10":
                "  (message up [] : (Task Str Error) " &
                "    (spawn ^lane root (do (var out \"\") " &
                "      (for x in [1] (try " &
-               "        (match x (when 1 (set out (super .m)))) ensure nil)) " &
+               "        (match x ^exhaustive false (when 1 (set out (super .m)))) ensure nil)) " &
                "      out)))) C) " &
                "(let C1 (make A)) (let C2 (make B)) " &
                "[(await ((C1) .up)) (await ((C2) .up)) (await ((C1) .up))]",
@@ -6734,7 +6734,7 @@ suite "spec — binding forms from design §12.1":
 
   test "a match-arm binding shadowing an outer let stays rebindable":
     check_eval("(let z 1) " &
-               "[(match [7] (when [z] (do (set z (+ z 1)) z))) z]",
+               "[(match [7] ^exhaustive false (when [z] (do (set z (+ z 1)) z))) z]",
                "[8 1]")
 
   test "typed let checks its value at the boundary":
@@ -7190,7 +7190,7 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns exhausted when empty":
     check_eval("(var s ($to_stream [])) " &
-               "(match (s .try_next) " &
+               "(match (s .try_next) ^exhaustive false " &
                "  (when TryNext/exhausted true) " &
                "  (when (TryNext/value _) false) " &
                "  (when (TryNext/error _) false))",
@@ -7198,30 +7198,30 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns value for each item then exhausted":
     check_eval("(var s ($to_stream [1 2])) " &
-               "[(match (s .try_next) " &
+               "[(match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s .try_next) " &
+               " (match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s .try_next) " &
+               " (match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0))]",
                "[1 2 0]")
 
   test "Stream/try_next preserves nil as a distinct value":
     check_eval("(var s ($to_stream [nil 9])) " &
-               "[(match (s .try_next) " &
+               "[(match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty)) " &
-               " (match (s .try_next) " &
+               " (match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty))]",
                "[nil 9]")
 
   test "Stream/try_next returns error for producer errors":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
-               "(match (s .try_next) " &
+               "(match (s .try_next) ^exhaustive false " &
                "  (when (TryNext/error e) true) " &
                "  (when (TryNext/value _) false) " &
                "  (when TryNext/exhausted false))",
@@ -7229,11 +7229,11 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns exhausted after a producer error":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
-               "[(match (s .try_next) " &
+               "[(match (s .try_next) ^exhaustive false " &
                "    (when (TryNext/error _) true) " &
                "    (when (TryNext/value _) false) " &
                "    (when TryNext/exhausted false)) " &
-               " (match (s .try_next) " &
+               " (match (s .try_next) ^exhaustive false " &
                "    (when TryNext/exhausted true) " &
                "    (when (TryNext/value _) false) " &
                "    (when (TryNext/error _) false))]",
@@ -7242,7 +7242,7 @@ suite "spec — streams from design":
   test "TryNext can be used as an annotation type":
     check_eval("(fn next_or [s : Stream] : (TryNext Int Error) " &
                "  (s .try_next)) " &
-               "(match (next_or ($to_stream [42])) " &
+               "(match (next_or ($to_stream [42])) ^exhaustive false " &
                "  (when (TryNext/value v) v) " &
                "  (when TryNext/exhausted 0))",
                "42")
@@ -7596,8 +7596,8 @@ suite "spec — structured tasks from design":
     check_eval("(var t (spawn 42)) " &
                "(var first (t .join)) " &
                "(var second (t .join)) " &
-               "[(match first (when (TaskOutcome/ok v) v)) " &
-               " (match second (when (TaskOutcome/ok v) v)) " &
+               "[(match first ^exhaustive false (when (TaskOutcome/ok v) v)) " &
+               " (match second ^exhaustive false (when (TaskOutcome/ok v) v)) " &
                " (await t)]",
                "[42 42 42]")
 
@@ -7613,9 +7613,9 @@ suite "spec — structured tasks from design":
                "(impl Error for Boom) " &
                "(var failed (spawn (fail (Boom ^message \"boom\")))) " &
                "(var panicked (spawn (panic \"crash\"))) " &
-               "[(match (failed .join) " &
+               "[(match (failed .join) ^exhaustive false " &
                "   (when (TaskOutcome/error e) e/message)) " &
-               " (match (panicked .join) " &
+               " (match (panicked .join) ^exhaustive false " &
                "   (when (TaskOutcome/panic message) message))]",
                "[\"boom\" \"\\\"crash\\\"\"]")
 
@@ -7635,7 +7635,7 @@ suite "spec — structured tasks from design":
     let payload = repeat('x', 5000)
     check_eval("(import $str [byte_size ends_with?]) " &
                "(var task (spawn (panic \"" & payload & "\"))) " &
-               "(match (task .join) " &
+               "(match (task .join) ^exhaustive false " &
                "  (when (TaskOutcome/panic message) " &
                "    [(byte_size message) (ends_with? message \"[truncated]\")]))",
                "[4096 true]")
@@ -7647,7 +7647,7 @@ suite "spec — structured tasks from design":
                "  (try (ch .recv) ensure (cleaned .set true)))) " &
                "($sleep 0) " &
                "(t .cancel) " &
-               "[(match (t .join) (when TaskOutcome/cancelled true)) " &
+               "[(match (t .join) ^exhaustive false (when TaskOutcome/cancelled true)) " &
                " (cleaned .get)]",
                "[true true]")
 
@@ -7655,7 +7655,7 @@ suite "spec — structured tasks from design":
     check_eval("(scope (var ch ($channel ^capacity 1)) " &
                "  (var producer (spawn ^lane root (do (ch .recv) 21))) " &
                "  (var joiner (spawn ^lane root " &
-               "    (match (producer .join) " &
+               "    (match (producer .join) ^exhaustive false " &
                "      (when (TaskOutcome/ok value) (* value 2))))) " &
                "  (ch .send 1) " &
                "  (await joiner))",
@@ -7666,7 +7666,7 @@ suite "spec — structured tasks from design":
                "  (var target (spawn ^lane root (do (ch .recv) 42))) " &
                "  (var joiner (spawn ^lane root (target .join))) " &
                "  ($sleep 0) (joiner .cancel) " &
-               "  (match (joiner .join) (when TaskOutcome/cancelled nil)) " &
+               "  (match (joiner .join) ^exhaustive false (when TaskOutcome/cancelled nil)) " &
                "  (ch .send 1) (await target))",
                "42")
 
@@ -7811,7 +7811,7 @@ suite "spec — bounded channels from design":
                "[(ch .try_send 1) " &
                " (ch .try_send 2) " &
                " (ch .recv) " &
-               " (match (ch .try_recv) " &
+               " (match (ch .try_recv) ^exhaustive false " &
                "   (when TryRecv/empty true) " &
                "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
@@ -7822,17 +7822,17 @@ suite "spec — bounded channels from design":
                "(ch .send void) " &
                "(ch .send nil) " &
                "(ch .send 9) " &
-               "[(match empty (when TryRecv/empty `empty)) " &
-               " (match (ch .try_recv) " &
+               "[(match empty ^exhaustive false (when TryRecv/empty `empty)) " &
+               " (match (ch .try_recv) ^exhaustive false " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch .try_recv) " &
+               " (match (ch .try_recv) ^exhaustive false " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch .try_recv) " &
+               " (match (ch .try_recv) ^exhaustive false " &
                "   (when (TryRecv/value v) v))]",
                "[empty void nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
                "  (ch .try_recv)) " &
-               "(match (poll ($channel)) (when TryRecv/empty true))",
+               "(match (poll ($channel)) ^exhaustive false (when TryRecv/empty true))",
                "true")
 
   test "typed channel boundaries check items before enqueue":
@@ -7986,7 +7986,7 @@ suite "spec — actors from design":
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send for Get) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
-               "  (match msg " &
+               "  (match msg ^exhaustive false " &
                "    (when (Get ^reply reply) " &
                "      (reply .send state) " &
                "      ($actor/continue state)))) " &
@@ -8032,7 +8032,7 @@ suite "spec — actors from design":
                "  (var counter : (ActorRef Get) " &
                "    ($actor/spawn ^init (fn [] 41) " &
                "      ^handle (fn [ctx state msg] " &
-               "        (match msg " &
+               "        (match msg ^exhaustive false " &
                "          (when (Get ^reply reply) " &
                "            (reply .send state) " &
                "            ($actor/continue state)))))) " &
@@ -8046,7 +8046,7 @@ suite "spec — actors from design":
                "(var ch ($channel ^capacity 1)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var got (ch .recv)) " &
-               "  (match msg " &
+               "  (match msg ^exhaustive false " &
                "    (when (Get ^reply reply) " &
                "      (reply .send (+ state got)) " &
                "      ($actor/continue state)))) " &
@@ -8099,7 +8099,7 @@ suite "spec — actors from design":
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (match msg " &
+               "      (match msg ^exhaustive false " &
                "        (when (Get ^reply reply) " &
                "          (reply .send \"bad\") " &
                "          ($actor/continue state)))))) " &
@@ -8115,7 +8115,7 @@ suite "spec — actors from design":
                                 "(scope " &
                                 "  (var a ($actor/spawn ^init (fn [] 41) " &
                                 "    ^handle (fn [ctx state msg] " &
-                                "      (match msg " &
+                                "      (match msg ^exhaustive false " &
                                 "        (when (Get ^reply reply) " &
                                 "          (reply .send state) " &
                                 "          ($actor/continue state)))))) " &
@@ -8240,7 +8240,7 @@ suite "spec — actors from design":
                "      (do ($sleep 1) (set tries (+ tries 1))) " &
                "      (set tries 100))) " &
                "  [seen/.get " &
-               "   (match event " &
+               "   (match event ^exhaustive false " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^panic p ^strategy s) " &
@@ -8260,7 +8260,7 @@ suite "spec — actors from design":
                "  (var event (dead .recv)) " &
                "  (var busy (events .recv)) " &
                "  [busy " &
-               "   (match event " &
+               "   (match event ^exhaustive false " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
@@ -8282,7 +8282,7 @@ suite "spec — actors from design":
                "  (var event (dead .recv)) " &
                "  (var busy (events .recv)) " &
                "  [busy dead-busy " &
-               "   (match event " &
+               "   (match event ^exhaustive false " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
@@ -8300,7 +8300,7 @@ suite "spec — actors from design":
                "  (a .send 2) " &
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
-               "  (match event " &
+               "  (match event ^exhaustive false " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
@@ -8317,7 +8317,7 @@ suite "spec — actors from design":
                "  (a .send 6) " &
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
-               "  (match event " &
+               "  (match event ^exhaustive false " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
@@ -8376,7 +8376,7 @@ suite "spec — actors from design":
                "    catch Boom $err/message)) " &
                "(var event (parent-events .recv)) " &
                "[outcome " &
-               " (match event " &
+               " (match event ^exhaustive false " &
                "   (when (ActorFailure ^failed_message failed " &
                "                       ^error (Boom ^message m) " &
                "                       ^strategy s) " &
@@ -9826,7 +9826,7 @@ suite "spec — native I/O lifecycle adapter":
       "(let waiter (writer .IoResource:wait_closed)) " &
       "($io/testing/complete_write writer 2) " &
       "(let after ($runtime/gc_stats)) " &
-      "[busy (match (operation .join) " &
+      "[busy (match (operation .join) ^exhaustive false " &
       "         (when TaskOutcome/cancelled true)) " &
       " closing/phase before/io_cleanup_leases " &
       " after/io_cleanup_leases after/io_open_resources (await waiter) " &
@@ -9839,7 +9839,7 @@ suite "spec — native I/O lifecycle adapter":
       "(let before ($runtime/gc_stats)) " &
       "($io/testing/complete_read reader ($binary/from_str \"a\")) " &
       "(let after ($runtime/gc_stats)) " &
-      "[(match (operation .join) (when TaskOutcome/cancelled true)) " &
+      "[(match (operation .join) ^exhaustive false (when TaskOutcome/cancelled true)) " &
       " before/io_cleanup_leases after/io_cleanup_leases]",
       "[true 2 0]")
 

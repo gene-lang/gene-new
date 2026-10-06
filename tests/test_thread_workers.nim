@@ -526,7 +526,7 @@ suite "threaded scheduler workers":
          "      (set stored (success .compare_exchange old (+ old 1))))) " &
          "  (fn recv_once [] " &
          "    (var got (ch .try_recv)) " &
-         "    (match got " &
+         "    (match got ^exhaustive false " &
          "      (when TryRecv/empty nil) " &
          "      (when (TryRecv/value _) (mark_success)))) " &
          "  (var a (spawn (recv_once))) " &
@@ -548,7 +548,7 @@ suite "threaded scheduler workers":
          "  (var ch ($channel ^capacity 1)) " &
          "  (ch .send 41) " &
          "  (var result (await (spawn (ch .try_recv)))) " &
-         "  (match result " &
+         "  (match result ^exhaustive false " &
          "    (when (TryRecv/value n) (+ n 1)) " &
          "    (when TryRecv/empty 0)))",
          "42"

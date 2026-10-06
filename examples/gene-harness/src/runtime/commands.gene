@@ -260,7 +260,7 @@
 
 (fn finish_command [manager, session : Str, record, lease, outcome]
   (try
-    (match outcome
+  (match outcome ^exhaustive false
       (when (TaskOutcome/ok value)
         (let result (if (== ($head value) CommandResult) value (CommandResult ^display value)))
         (let text
