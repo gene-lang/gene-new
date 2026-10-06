@@ -21,8 +21,8 @@ meta   information about the node, ignored by value semantics   (@key value)
 ($meta n)    # {^src "x" ^^gen}
 ```
 
-`^^flag` and `@@flag` are sugar for a `true` value, and `^!flag` for a `false`
-one. Ordinary `^prop` and `@meta` require a value. A property key that is not
+`^^flag` and `@@flag` are sugar for a `true` value, and `^!flag` and `@!flag`
+for a `false` one. Ordinary `^prop` and `@meta` require a value. A property key that is not
 a plain symbol is quoted, as in `^"content type" "text"`; `^"x"` is the same
 key as `^x`. Structural equality and hash ignore meta.
 

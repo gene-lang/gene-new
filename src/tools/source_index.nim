@@ -182,7 +182,7 @@ proc wrapEnd(doc: SourceDocument, start: int): tuple[endToken: int, closed: bool
     at = nextFormStart(doc, at)
     if at >= doc.tokens.len or doc.tokens[at].kind in
         {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret, tkCaretBang,
-         tkAt, tkAtAt,
+         tkAt, tkAtAt, tkAtBang,
          tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
       return (at, false)
     at = formEnd(doc, at)
@@ -323,7 +323,8 @@ proc scanChildren(doc: SourceDocument, syntax: SyntaxRef): seq[SourceRow] =
       continue
 
     if syntax.kind in {skNode, skPropMap} and
-        doc.tokens[at].kind in {tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt}:
+        doc.tokens[at].kind in {tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt,
+                                tkAtBang}:
       let marker = doc.tokens[at].kind
       let keyAt = significant(doc.tokens, at + 1)
       if keyAt >= bounds.last or
@@ -331,7 +332,7 @@ proc scanChildren(doc: SourceDocument, syntax: SyntaxRef): seq[SourceRow] =
         inc at
         continue
       let name = doc.tokens[keyAt].lexeme
-      let flag = marker in {tkCaretCaret, tkCaretBang, tkAtAt}
+      let flag = marker in {tkCaretCaret, tkCaretBang, tkAtAt, tkAtBang}
       var valueRef: SyntaxRef
       if flag:
         valueRef = SyntaxRef(kind: skAtom,
@@ -347,9 +348,9 @@ proc scanChildren(doc: SourceDocument, syntax: SyntaxRef): seq[SourceRow] =
                            endByte: doc.tokens[keyAt].endByte),
             startToken: at, endToken: keyAt + 1, closed: true)
           at = keyAt + 1
-          let label = if marker in {tkAt, tkAtAt}: "@" & name else: name
+          let label = if marker in {tkAt, tkAtAt, tkAtBang}: "@" & name else: name
           let segments =
-            if marker in {tkAt, tkAtAt}:
+            if marker in {tkAt, tkAtAt, tkAtBang}:
               @[propertySegment("meta"), propertySegment(name)]
             else:
               @[propertySegment(name)]
@@ -359,9 +360,9 @@ proc scanChildren(doc: SourceDocument, syntax: SyntaxRef): seq[SourceRow] =
           continue
         valueRef = formRef(doc, valueAt)
         at = valueRef.endToken
-      let label = if marker in {tkAt, tkAtAt}: "@" & name else: name
+      let label = if marker in {tkAt, tkAtAt, tkAtBang}: "@" & name else: name
       let segments =
-        if marker in {tkAt, tkAtAt}:
+        if marker in {tkAt, tkAtAt, tkAtBang}:
           @[propertySegment("meta"), propertySegment(name)]
         else:
           @[propertySegment(name)]

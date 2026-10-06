@@ -23,7 +23,7 @@ type
     tkRef, tkDeref,          # #Ref #Deref
     tkWrap,                 # #@ head argument -> (head argument)
     tkCaret, tkCaretCaret, tkCaretBang,   # ^ ^^ ^!
-    tkAt, tkAtAt,            # @ @@
+    tkAt, tkAtAt, tkAtBang,  # @ @@ @!
     tkTilde,                 # removed spaced ~ surface; the parser rejects it
     tkArrow,                 # -> value-pipeline delimiter
     tkFatArrow,              # => per-item value-pipeline delimiter
@@ -988,6 +988,10 @@ proc tokenizeImpl(r: var Reader,
       if r.nextChar() == '@':
         r.advance()
         r.addToken(tkAtAt, "@@", startLine, startCol, startByte)
+      elif r.nextChar() == '!':
+        # `@!k` is false-flag sugar for meta, as `^!k` is for props.
+        r.advance()
+        r.addToken(tkAtBang, "@!", startLine, startCol, startByte)
       else:
         r.addToken(tkAt, "@", startLine, startCol, startByte)
     of '.':
@@ -1112,6 +1116,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkCaretBang: "caret_bang"
   of tkAt: "at"
   of tkAtAt: "at_at"
+  of tkAtBang: "at_bang"
   of tkTilde: "tilde"
   of tkArrow: "arrow"
   of tkFatArrow: "fat_arrow"
@@ -1768,7 +1773,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       else:
         let afterKey = r.peekKind()
         if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                        tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi,
+                        tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkAtBang, tkComma, tkSemi,
                         tkTilde, tkArrow, tkFatArrow}:
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
@@ -1776,7 +1781,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       if props.hasKey(key) and r.options.rejectDuplicateProps:
         r.raiseReadErrorAt(keyTok, "duplicate property '^" & key & "'")
       props[key] = val
-    of tkAt, tkAtAt:
+    of tkAt, tkAtAt, tkAtBang:
       if not segmentLoc.hasSourceLoc:
         segmentLoc = sourceLoc(tok, r.sourceName)
       if r.tokIdx + 1 >= r.tokens.len or r.tokens[r.tokIdx + 1].kind != tkSymbol:
@@ -1794,10 +1799,12 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         var val: Value
         if tok.kind == tkAtAt:
           val = TRUE
+        elif tok.kind == tkAtBang:
+          val = FALSE
         else:
           let afterKey = r.peekKind()
           if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                          tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi,
+                          tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkAtBang, tkComma, tkSemi,
                           tkTilde, tkArrow, tkFatArrow}:
             r.raiseReadErrorAt(keyTok,
               "meta property '@" & key & "' requires a value")
@@ -1900,7 +1907,7 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
       discard r.next()
     let afterKey = r.peekKind()
     if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                    tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi}:
+                    tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkAtBang, tkComma, tkSemi}:
       r.raiseReadErrorAt(keyTok,
         "map property '^" & key & "' requires a value")
     val = r.parseForm()
@@ -2000,7 +2007,7 @@ proc parseWrapOperand(r: var Reader, marker: Token, label: string): Value =
       "#@ requires " & label, r.context.snapshot(r.sourceName))
   if r.peekKind() in {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret,
       tkCaretBang,
-      tkAt, tkAtAt, tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
+      tkAt, tkAtAt, tkAtBang, tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
     r.raiseReadErrorAt(r.peek(), "#@ requires " & label &
       "; use parentheses for multiple arguments or named properties")
   # A wrapper is an ordinary node even inside a flat parameter/list vector.
@@ -2153,9 +2160,15 @@ proc parseForm(r: var Reader, inList = false): Value =
     finish newNode(newSym("unquote"), body = @[inner])
   of tkCaret: finish newSym("^")
   of tkCaretCaret: finish newSym("^^")
-  of tkCaretBang: finish newSym("^!")
+  of tkCaretBang:
+    # Outside a node or map there is no property to set. The usual way to get
+    # here is a parameter list, which declares `^name` and takes no flag form.
+    r.raiseReadErrorAt(tok,
+      "'^!' sets a property to false and is only valid inside a node or " &
+      "map; in a parameter list declare '^name' with a default instead")
   of tkAt: finish newSym("@")
   of tkAtAt: finish newSym("@@")
+  of tkAtBang: finish newSym("@!")
   of tkColon: finish newSym(":")
   of tkEqual: finish newSym("=")
   of tkComma: finish newSym(",")

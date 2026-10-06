@@ -261,10 +261,12 @@ proc attributePrefixCount(v: Value, head: string): int =
     result = 1
 
 proc addProps(sb: var string, props: PropTable, sigil: string) =
-  for k, val in props:
+  for rawKey, val in props:
+    # Only `^` props have a quoted-key spelling; `@` meta keys print as is.
+    let k = if sigil == "^": propKeyText(rawKey) else: rawKey
     sb.add ' '
-    if val.kind == vkBool and val.boolVal:
-      sb.add sigil & sigil & k
+    if val.kind == vkBool:
+      sb.add sigil & (if val.boolVal: sigil else: "!") & k
     else:
       sb.add sigil & k & " " & oneLine(val)
 
@@ -464,7 +466,7 @@ proc oneLine(v: Value): string =
     for k, val in v.mapEntries:
       if not first: sb.add ' '
       first = false
-      if val.kind == vkBool and val.boolVal: sb.add "^^" & propKeyText(k)
+      if val.kind == vkBool: sb.add (if val.boolVal: "^^" else: "^!") & propKeyText(k)
       else: sb.add "^" & propKeyText(k) & " " & oneLine(val)
     sb & "}"
   of vkHashMap:
@@ -677,7 +679,7 @@ proc fmtValue(v: Value, indent: int): string =
     var sb = if v.mapImmutable: "#{" else: "{"
     for k, p in v.mapEntries:
       sb.add "\n" & pad
-      if p.kind == vkBool and p.boolVal: sb.add "^^" & propKeyText(k)
+      if p.kind == vkBool: sb.add (if p.boolVal: "^^" else: "^!") & propKeyText(k)
       else: sb.add "^" & propKeyText(k) & " " & fmtValue(p, indent + 2 + k.len + 2)
     sb & "}"
   else:

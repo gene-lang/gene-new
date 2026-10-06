@@ -138,8 +138,9 @@ proc printProps(sb: var string, props: PropTable, sigil: string) =
     # Only `^` props have a quoted-key spelling; `@` meta keys print as is.
     let k = if sigil == "^": propKeyText(rawKey) else: rawKey
     sb.add ' '
-    if val.kind == vkBool and val.boolVal:
-      sb.add sigil & sigil & k          # ^^flag / @@flag
+    if val.kind == vkBool:
+      # ^^flag / @@flag for true, ^!flag / @!flag for false
+      sb.add sigil & (if val.boolVal: sigil else: "!") & k
     else:
       sb.add sigil & k
       sb.add ' '
@@ -324,8 +325,8 @@ proc print*(v: Value): string =
     for k, val in v.mapEntries:
       if not first: sb.add ' '
       first = false
-      if val.kind == vkBool and val.boolVal:
-        sb.add "^^" & propKeyText(k)
+      if val.kind == vkBool:
+        sb.add (if val.boolVal: "^^" else: "^!") & propKeyText(k)
       else:
         sb.add "^" & propKeyText(k) & " " & print(val)
     sb.add '}'

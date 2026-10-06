@@ -45,7 +45,8 @@ Common values:
 
 `#` starts a line comment. `#< ... >#` is a block comment. The special `#[...]`
 and `#{...}` forms are literals, not comments. `^^active` is shorthand for
-`^active true`, and `^!active` for `^active false`. A property key that is not
+`^active true`, and `^!active` for `^active false`; `@@` and `@!` do
+the same for meta. A property key that is not
 a plain symbol is quoted: `^"content type" "text"`. The flag forms take a
 quoted key too: `^^"a b"`, `^!"a b"`.
 

@@ -153,7 +153,7 @@ suite "reader — sugars":
   test "prop and meta flags consume no values":
     check_read("(x ^^ready false @@generated nil)",
                "(x @@generated ^^ready false nil)")
-    check_read("{^^ready ^value false}", "{^^ready ^value false}")
+    check_read("{^^ready ^value false}", "{^^ready ^!value}")
   test "bare at can be a node head":
     check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")
     check_read("(x @line 7)", "(x @line 7)")
@@ -515,14 +515,15 @@ suite "reader — malformed input is rejected":
 
 suite "reader — false flags and quoted property keys":
   test "^!key is false-flag sugar in maps and node props":
-    check_read("{^!ready}", "{^ready false}")
-    check_read("{^!ready ^^done ^n 1}", "{^ready false ^^done ^n 1}")
-    check_read("(x ^!ready 1)", "(x ^ready false 1)")
+    check_read("{^!ready}", "{^!ready}")
+    check_read("{^ready false}", "{^!ready}")
+    check_read("{^!ready ^^done ^n 1}", "{^!ready ^^done ^n 1}")
+    check_read("(x ^!ready 1)", "(x ^!ready 1)")
 
   test "a quoted key names the same key as the bare symbol":
     check_read("{^\"x\" 1}", "{^x 1}")
     check_read("{^^\"x\"}", "{^^x}")
-    check_read("{^!\"x\"}", "{^x false}")
+    check_read("{^!\"x\"}", "{^!x}")
     check_read("(x ^\"n\" 1)", "(x ^n 1)")
     check_read("{^\"content-type\" 1 ^\"a/b\" 2 ^\"P:m\" 3}",
                "{^content-type 1 ^a/b 2 ^P:m 3}")
@@ -549,3 +550,15 @@ suite "reader — false flags and quoted property keys":
     check "^\"!x\" 2" in formatted
     check "^plain 3" in formatted
     check formatSource(formatted) == formatted
+
+  test "@!key is false-flag sugar for meta":
+    check_read("(x @!generated 1)", "(x @!generated 1)")
+    check_read("(x @generated false 1)", "(x @!generated 1)")
+    check_read("(x @@generated @!checked ^!ready)",
+               "(x @@generated @!checked ^!ready)")
+
+  test "^! outside a node or map is a read error":
+    expect ReadError:
+      discard read("[^!x]")
+    expect ReadError:
+      discard read("^!x")

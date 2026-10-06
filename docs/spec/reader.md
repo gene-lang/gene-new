@@ -36,14 +36,17 @@
   preserves separate forms: `(g) /a`. Bare `/` and `//` operators and the `...`
   spread are unaffected. Interpolation uses the same rule.
 - Ordinary `^prop` and `@meta` require values; `^^flag` and `@@flag` mean true.
-- `^!flag` means `^flag false`. Like `^^flag` it consumes no value.
-- A property key is a symbol or a string. `^"x"` names the same key as `^x`,
+- `^!flag` means `^flag false`, and `@!flag` means `@flag false`. Like the
+  true forms they consume no value. `^!` is valid only inside a node or map;
+  elsewhere, including a parameter list, it is a read error.
+- A property key is a symbol or a string; a meta key is a symbol only. `^"x"` names the same key as `^x`,
   and the flag forms accept it: `^^"x"`, `^!"x"`. The printer and the
   formatter quote a key that would not read back bare: an empty key; one that
   starts with `^`, `!`, `$`, `%`, `:`, `@` or a digit; and one that contains
   whitespace or any of ``( ) [ ] { } " # ' , ; ` ``. A key that itself starts
   with `!` is therefore written `^"!x"`.
-- The printer still writes a false property as `^flag false`.
+- The printer and the formatter write a false property or meta value as
+  `^!flag` and `@!flag`. `$serde/write_data` keeps writing `^flag false`.
 - `;` folds the preceding segment into the next segment's head and never
   substitutes `_`.
 - `->` and `=>` preserve a single-form initial expression plus ordered,
