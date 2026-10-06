@@ -66,10 +66,10 @@ Occurrence listings retain the configured recent terminal window; due/started
 and pinned/attention entries remain available. Historical occurrence events
 remain in the durable workspace transcript.
 
-## Wire protocol 4
+## Wire protocol 5
 
 The native host and Gene web-profile client share web/contract.gene.
-The current version is 4. A version mismatch stops interaction and asks for a
+The current version is 5. A version mismatch stops interaction and asks for a
 reload.
 
 Every WebSocket frame has protocol, epoch, decimal-text sequence, type,
@@ -89,6 +89,7 @@ session.
 | questions | Durable question batch |
 | console | Session console record, including its late flag |
 | command | Streaming chunk or final command record |
+| mode/state | Current input mode or nil; the frame also carries a change reason |
 | ready | Initial state delivery is complete |
 | stopped | Process stopped, or is restarting under supervision |
 | restarted | Reconnected process completed a supervised restart |
@@ -100,7 +101,7 @@ provisional command output without dropping the command's console.
 
 ### HTTP endpoints
 
-All API paths use /api/v4.
+All API paths use /api/v5.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -117,6 +118,8 @@ All API paths use /api/v4.
 | POST /sessions/ID/answers | Answer/dismiss a question batch |
 | POST /sessions/ID/cancel | Cancel a round |
 | POST /sessions/ID/commands | Submit a slash command |
+| POST /sessions/ID/mode/input | Submit `{instance, input_id, text}` to the current input mode |
+| POST /sessions/ID/mode/leave | Close the named mode instance through the host |
 | GET /triggers | List definitions |
 | POST /triggers | Create a definition |
 | DELETE /triggers/ID | Disable/delete a definition |
@@ -132,6 +135,23 @@ submission/revision conflict, unknown session or invalid answer. They do not
 become model requests.
 
 ## Commands and submission recovery
+
+`/repl` enters a persistent Gene input mode. Its label, hint and Eval button
+come from the plugin row. While it is open, all composer input is code and
+the command picker is hidden. Exit/quit or the Leave control returns to chat.
+The action button becomes Stop during a REPL input and cancels that command;
+it becomes Stop during a chat round and cancels that round. Enter still sends
+slash commands during a chat round. A short guard after completion prevents
+a late Stop click from submitting a draft.
+
+Snapshots include `mode` with its instance and running command id. Input and
+leave requests name that instance; `mode_open` and `mode_closed` return 409
+with the current state when the browser and server disagree. Mode input ids
+are persisted with command records. An unknown outcome keeps its id in browser
+storage and is resolved from snapshots or a manual resubmission of the same
+id; it is never retried automatically. Incomplete input retains its draft.
+Reload/reconnect within the 60-second viewer grace retains bindings and lets
+Stop cancel an input already running. Process restart reports no mode.
 
 A registered initial /name is a command; its raw argument string is preserved.
 Unknown names report a closest match. Initial // escapes a literal slash.
@@ -171,7 +191,7 @@ RoundController. web/push.gene routes ordered frames and viewer lifetimes.
 The same runtime runs CLI and browser rounds; there is no per-session plugin
 activation or browser-only model loop.
 
-The package's `gene test` specs cover protocol-4 service delivery, live
+The package's `gene test` specs cover protocol-5 service delivery, live
 records before completion, console routing, custom question validation,
 metadata revisions/attention, command execution, restart authentication,
 concurrent sessions and shutdown. Responsiveness specs run CPU loops,

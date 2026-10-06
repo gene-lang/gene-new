@@ -147,7 +147,7 @@ proc cmdEval(src: string, errorsMode = "") =
     quit(1)
 
 proc cmdRepl(errorsMode = "") =
-  let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
+  let app = newApplication(getCurrentDir())
   if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
   let scope = newGlobalScope(app)
   let code = runRepl(scope)

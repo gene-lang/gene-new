@@ -10,6 +10,139 @@
 (import [submit_command command_receipt] ^from "../../src/runtime/commands")
 
 (describe "Harness CLI"
+  (it "closes an open REPL when stdin ends during a continuation" []
+    (isolated this_mod/.path "closes an open REPL when stdin ends during a continuation"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let script $"${root}/responses.gene")
+        ($fs/write_text script ($to_str ["(Outcome ^done true ^reply \"unused\")"]))
+        (let stdin (pipe))
+        (let process ($os/exec_stream_async ($os/executable_path)
+          "run" (package_path "src/main.gene") "chat" "--script" script
+          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
+          ^timeout_ms 30000 ^max_bytes 1048576))
+        (try
+          (await (write_all stdin/1 ($binary/from_str "/repl\n(var retained 42)\n(do\n")))
+          stdin/1/.IoResource:close
+          (let result (await process))
+          ($assert (== result/status 0) result/stderr)
+          ($assert ($str/contains? result/stdout "default gene> ") result/stdout)
+          ($assert ($str/contains? result/stdout "... ") result/stdout)
+          ($assert (! ($str/contains? result/stdout "unused")) result/stdout)
+          (let reopened (open_session_service ^workspace $"${root}/workspace" ^^offline))
+          (close_session_service reopened)
+        ensure (if_not process/.done? process/.cancel process/.join)))))
+
+  (it "keeps questions pending while REPL input owns the prompt and asks after exit" []
+    (isolated this_mod/.path "keeps questions pending while REPL input owns the prompt and asks after exit"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let script $"${root}/responses.gene")
+        ($fs/write_text script ($to_str [
+          "($sleep 500) ($fs/write_text \"question-ready\" \"yes\") (Outcome ^questions [{^id \"name\" ^prompt \"What is your name?\"}])"
+          "(Outcome ^done true ^reply \"answer accepted\")"]))
+        (let stdin (pipe))
+        (let lines ($channel ^capacity 128))
+        (let process ($os/exec_stream_async ($os/executable_path)
+          "run" (package_path "src/main.gene") "chat" "--script" script
+          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
+          ^stdout_chan lines ^timeout_ms 30000 ^max_bytes 1048576))
+        (try
+          (scope
+            (let writer (spawn ^lane root
+              (do
+                (await (write_all stdin/1 ($binary/from_str "ask\n/repl\n")))
+                (let due (+ ($os/monotonic_ms) 20000))
+                (while (&& (! ($fs/exists? $"${root}/workspace/question-ready")) (< ($os/monotonic_ms) due))
+                  ($sleep 1))
+                ($assert ($fs/exists? $"${root}/workspace/question-ready") "question response did not start")
+                (await (write_all stdin/1 ($binary/from_str
+                  "(do ($sleep 500) ($println \"input still in REPL\") 42)\nexit\nGene\n")))
+                stdin/1/.IoResource:close)))
+            (let output [])
+            (try (loop (output .push lines/.recv)) catch ChannelClosed nil)
+            (let result (await process))
+            (await writer)
+            (let text ($str/join output "\n"))
+            ($assert (== result/status 0) $"${text}\n${result/stderr}")
+            ($assert (! ($str/contains? text "Questions:")) text)
+            (let parts ($str/split text "What is your name?"))
+            ($assert (== parts/.size 2) text)
+            ($assert ($str/contains? parts/0 "input still in REPL") text)
+            ($assert ($str/contains? text "answer accepted") text))
+        ensure (if_not process/.done? process/.cancel process/.join)))))
+
+  (it "cancels REPL evaluation on SIGINT and retains its bindings" []
+    (isolated this_mod/.path "cancels REPL evaluation on SIGINT and retains its bindings"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let script $"${root}/responses.gene")
+        ($fs/write_text script ($to_str ["(Outcome ^done true ^reply \"chat\")"]))
+        (let stdin (pipe))
+        (let lines ($channel ^capacity 128))
+        (let stopped ($cell false))
+        (let process ($os/exec_stream_async ($os/executable_path)
+          "run" (package_path "src/main.gene") "chat" "--script" script
+          "--workspace" $"${root}/workspace" ^stdin_pipe stdin/0
+          ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
+        (try
+          (scope
+            (let writer (spawn ^lane root
+              (do
+                (await (write_all stdin/1 ($binary/from_str
+                  "/repl\n(var retained 42) ($fs/write_text \"pid\" ($to_str ($os/process_id)))\n(fn spin [] ($fs/write_text \"entered\" \"yes\") (while true nil))\n(spin)\n")))
+                (let ready (+ ($os/monotonic_ms) 30000))
+                (while (&& (! ($fs/exists? $"${root}/workspace/entered")) (< ($os/monotonic_ms) ready))
+                  ($sleep 1))
+                ($assert ($fs/exists? $"${root}/workspace/entered") "CLI REPL did not enter evaluation")
+                (let pid ($str/trim ($fs/read_text $"${root}/workspace/pid")))
+                (let signal (await ($os/exec_async "/bin/kill" "-INT" pid)))
+                ($assert (== signal/status 0))
+                (let due (+ ($os/monotonic_ms) 10000))
+                (while (&& (! stopped/.get) (< ($os/monotonic_ms) due)) ($sleep 1))
+                ($assert stopped/.get "SIGINT did not cancel the REPL input")
+                (await (write_all stdin/1 ($binary/from_str "retained\nexit\n")))
+                stdin/1/.IoResource:close)))
+            (let output [])
+            (try
+              (loop
+                (let line lines/.recv)
+                (output .push line)
+                (if ($str/contains? line "Stopped.") (stopped .set true)))
+              catch ChannelClosed nil)
+            (let result (await process))
+            (await writer)
+            (let text ($str/join output "\n"))
+            ($assert (== result/status 0) $"exit ${result/status}; timed out ${result/timed_out}\n${text}\n${result/stderr}")
+            ($assert ($str/contains? text "/repl retained\n42") text))
+        ensure (if_not process/.done? process/.cancel process/.join)))))
+
+  (it "routes persistent and multiline REPL inputs and returns to chat after exit" []
+    (isolated this_mod/.path "routes persistent and multiline REPL inputs and returns to chat after exit"
+      (fn [workspace]
+        (let root ($fs/real_path workspace))
+        (let script $"${root}/responses.gene")
+        ($fs/write_text script ($to_str ["(Outcome ^done true ^reply \"chat resumed\")"]))
+        (let input (pipe))
+        (let lines ($channel ^capacity 128))
+        (let process ($os/exec_stream_async ($os/executable_path) "run" (package_path "src/main.gene")
+          "chat" "--script" script "--workspace" $"${root}/workspace"
+          ^stdin_pipe input/0 ^stdout_chan lines ^timeout_ms 45000 ^max_bytes 1048576))
+        (try
+          (await (write_all input/1 ($binary/from_str
+            "/repl\n(var count 40)\n(do\n (+ count 2))\n/help\nexit\nhello\n")))
+          input/1/.IoResource:close
+          (let output [])
+          (try (loop (output .push lines/.recv)) catch ChannelClosed nil)
+          (let result (await process))
+          (let text ($str/join output "\n"))
+          ($assert (== result/status 0) result/stderr)
+          ($assert ($str/contains? text "default gene> ") text)
+          ($assert ($str/contains? text "42") text)
+          ($assert ($str/contains? text "Path") text)
+          ($assert ($str/contains? text "chat resumed") text)
+        ensure (if_not process/.done? process/.cancel process/.join)))))
+
   (it "keeps stdin responsive and supports multiline run, cancel and stop commands" []
     (isolated this_mod/.path "keeps stdin responsive and supports multiline run, cancel and stop commands"
       (fn [workspace]

@@ -1,6 +1,6 @@
 (mod harness_web_contract ^profile web)
 
-(const protocol_version 4)
+(const protocol_version 5)
 (const prompt_limit 65536)
 (const receipt_limit 128)
 (const history_page_limit 200)
@@ -16,5 +16,6 @@
         (if (== code "receipt_expired") 410
           (if (== code "too_large") 413
             (if (|| (== code "busy") (== code "session_busy")
-                    (== code "revision_conflict") (== code "submission_conflict")) 409
+                    (== code "revision_conflict") (== code "submission_conflict")
+                    (== code "mode_open") (== code "mode_closed")) 409
               (if (|| (== code "unavailable") (== code "recovery_required")) 503 400))))))))

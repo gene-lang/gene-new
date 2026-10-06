@@ -3,6 +3,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../agents/harness_turn" [answer_validators])
 (import ^from "./composition" [acquire_snapshot release_snapshot])
+(import ^from "./input_modes" [require_chat])
 (import ^from "../agents/history"
   [
     append_message
@@ -196,6 +197,7 @@
             text))))))
 
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil]
+  (require_chat controller/runtime/modes session)
   (if controller/runtime/stopping/.get
     (fail (RoundError ^code "stopped" ^message "workspace is stopping")))
   (let state (round_state controller session))

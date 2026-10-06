@@ -940,6 +940,7 @@ type
     chunk: Chunk
     scope: Scope
     label: string
+    validateImpls: bool
 
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
 # parks on blocking channel/actor operations. Root-level channel use keeps its
@@ -8545,7 +8546,8 @@ proc runReplSessionForEnv*(env: Value,
                            writeOut: ReplWrite,
                            writeErr: ReplWrite,
                            options: ReplOptions): int
-proc incrementalReplScopeForEnv*(env: Value): Scope
+proc incrementalReplScopeForEnv*(env: Value, app: Application = nil): Scope
+proc abandonReplInput(scope: Scope, chunk: Chunk, requiredTypesLen: int)
 proc run*(chunk: Chunk, scope: Scope,
           validateImplRequirements = true): Value
 
@@ -10281,7 +10283,8 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
       activeVmBudget[]
     else: nil
   let boundPolicy = if proto == nil: nil else: proto.boundExecutionPolicy
-  if callerBudget != nil or entersPolicy or boundPolicy != nil:
+  if callerBudget != nil or entersPolicy or boundPolicy != nil or
+      boundScope.evalBudget != nil:
     if boundScope == lexicalScope:
       boundScope = newScope(lexicalScope)
     boundScope.evalBudget = callerBudget
@@ -10307,6 +10310,8 @@ proc canBypassCallBudget(proto: FunctionProto, calleeScope,
   ## boundary the budget code would have applied.
   if proto == nil or proto.boundExecutionPolicy != nil or
       calleeScope == nil or callerScope == nil:
+    return false
+  if callerScope.evalBudget != calleeScope.evalBudget:
     return false
   let calleeRoot = calleeScope.moduleRootAddr()
   calleeRoot != nil and calleeRoot == callerScope.moduleRootAddr()
@@ -15423,10 +15428,10 @@ proc materializeEvalParent(env: Value, app: Application = nil,
     current = bindingScope
   current
 
-proc incrementalReplScopeForEnv*(env: Value): Scope =
+proc incrementalReplScopeForEnv*(env: Value, app: Application = nil): Scope =
   if env.kind != vkEnv:
     raise newException(GeneError, "repl/open expects an Env")
-  result = newScope(materializeEvalParent(env))
+  result = newScope(materializeEvalParent(env, app))
   result.compilerMacros = evalMacroBindings(env)
   result.implOverlayRoot = true
   result.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
@@ -18826,7 +18831,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             value = applyCall(callee, [], NamedArgs(), scope, site,
                               instructionLocAt(chunk, ip - 1))
           except NativeFrameRequest as request:
-            enterBytecodeCall(request.chunk, request.scope, false, false,
+            enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
               NIL, "", false, @[], request.label, sp, false)
           except SuspendError as se:
             if not se.timer or se.retry:
@@ -19049,7 +19054,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           instructionLocAt(chunk, ip - 1))
           except NativeFrameRequest as request:
             strunc(argsStart)
-            enterBytecodeCall(request.chunk, request.scope, false, false,
+            enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
               NIL, "", false, @[], request.label, argsStart, false)
           except SuspendError as se:
             if not se.timer or se.retry:
@@ -19504,7 +19509,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           instructionLocAt(chunk, ip - 1))
           except NativeFrameRequest as request:
             strunc(calleeIndex)
-            enterBytecodeCall(request.chunk, request.scope, false, false,
+            enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
               NIL, "", false, @[], request.label, calleeIndex, false)
           except SuspendError as se:
             if not se.timer or se.retry:
@@ -19708,7 +19713,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           authoredLoc)
           except NativeFrameRequest as request:
             strunc(calleeIndex)
-            enterBytecodeCall(request.chunk, request.scope, false, false,
+            enterBytecodeCall(request.chunk, request.scope, false, request.validateImpls,
               NIL, "", false, @[], request.label, calleeIndex, false)
           except SuspendError as se:
             if not se.timer or se.retry:
@@ -21095,6 +21100,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       fiber.waitDeadline = se.deadline
       return RunStop(kind: rskSuspend, value: NIL)
 
+proc abandonReplInput(scope: Scope, chunk: Chunk, requiredTypesLen: int) =
+  ## An input's failed declaration assembly must not poison later inputs.
+  ## Other fibers' assemblies belong to their own scope/chunk and stay live.
+  let app = scope.application()
+  var retained: seq[ImplAssembly]
+  for assembly in app.activeImplAssemblies:
+    if assembly.scope == scope and assembly.chunk == chunk:
+      assembly.finished = true
+      assembly.scope = nil
+      if scope.implAssembly == assembly: scope.implAssembly = nil
+    else:
+      retained.add assembly
+  app.activeImplAssemblies = retained
+  if scope.implAssembly != nil:
+    let assembly = ImplAssembly(scope.implAssembly)
+    if assembly.chunk == chunk:
+      assembly.finished = true
+      assembly.scope = nil
+      scope.implAssembly = nil
+  if scope.requiredImplTypes.len > requiredTypesLen:
+    scope.requiredImplTypes.setLen(requiredTypesLen)
+
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   defer:
     if macroContextRetirementHook != nil: macroContextRetirementHook()
@@ -21216,10 +21243,9 @@ proc runReplSession*(scope: Scope,
         for index, name in scope.slotNames:
           if index notin scope.privateSlots and name notin existingValues:
             existingValues.add name
-        let chunk = compileEvalSource(source, useLocalSlots = false,
-          sourceName = "<repl>", macros = context,
+        let chunk = compileReplSource(source, macros = context,
           history = if context != nil: context.history else: @[],
-          existingValues = existingValues, persistentMacros = true)
+          existingValues = existingValues)
         for diagnostic in chunk.compilerDiagnostics:
           if diagnostic.message.startsWith("unused lazy pipeline:") or
               diagnostic.message.startsWith("error checking:"):

@@ -40,6 +40,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | --- | --- |
 | `functions` | `{^name ^doc ^fn}`; response code and `/run` bind it by name |
 | `commands` | `{^name ^usage ^doc ^run}`; an operator slash command |
+| `input_modes` | `{^name ^label ^hint ^submit_label ^prompt ^classify ^run ^close}`; a transient operator input mode |
 | `prompt` | `{^name ^text}` or `{^name ^render}`; an instruction section |
 | `docs` | `{^name ^text}` or `{^name ^path}`; read with `(doc name)` |
 | `providers` | `{^name ^doc ^available ^configure ^prepare ^send}`; a model adapter selected by the profile or configuration |
@@ -52,6 +53,30 @@ the instruction. `prepare` on a provider row returns plain model-visible data
 without credentials; `send` adds transport authentication and makes one
 attempt. A provider row is inert until selected. Callback limits apply to
 generated provider and hook rows just as to other plugin callbacks.
+
+### Provide an operator input mode
+
+An operator command enters a mode by returning `CommandResult ^mode "name"`.
+Its plugin contributes an `input_modes` row of that name. The display fields
+are non-empty strings. `classify` takes input text and returns `input`,
+`incomplete`, `ignored` or `leave`; `run` takes the ordinary CommandContext;
+`close` takes the session id and a reason. All three callbacks are bounded.
+The built-in `repl` plugin provides the persistent Gene REPL through this API.
+
+The host owns mode state, instance ids, serialized input admission, durable
+command receipts and cancellation. Input records retain the client input id
+for deduplication. A `run` result should use `^attached false` for activity
+that belongs only to the operator transcript. Model response code cannot
+enter a mode by returning a CommandResult; mode entry is handled only by
+operator command completion.
+
+Keep native handles and other transient mode resources in activation memory,
+not durable PluginHost state. The host calls `close` before session removal,
+when the last browser viewer has been absent for 60 seconds, and when the
+entered registry row is withdrawn or replaced. It cancels the running input
+first and always clears the mode even if cleanup fails. An operator can leave
+through the host control regardless of what `classify` returns. Deactivation
+should release any resources left as a backstop.
 
 ### Shape a request or compaction decision
 

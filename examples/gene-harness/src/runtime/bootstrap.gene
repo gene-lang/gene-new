@@ -15,7 +15,7 @@
 (import ^from "../agents/provider_selection" [readiness_report])
 (import ^from "../plugin_api" [ExecutionLimits response_execution_limits])
 
-(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any})
+(type HarnessRuntime ^props {^root Str ^state_root Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^commands Any ^triggers Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^stdin_task Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^modes Any?})
 (type RuntimeCleanupError ^props {^message Str} ^impl [Error])
 (impl Error for RuntimeCleanupError)
 

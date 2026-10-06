@@ -1,0 +1,52 @@
+(mod repl_sessions)
+(import [CommandResult] ^from "../plugin_api")
+(import [doc] ^from "../kernel")
+
+(type LiveReplFunction ^^private ^props {^name Str}
+  (impl Callable
+    (message apply [self call]
+      (let context ($runtime/context))
+      (for record in (?? (context/snapshot/registries .get "functions") [])
+        (if_yes (== record/payload/name self/name)
+          (let invoke ($runtime/bind_call ^named call/named record/payload/fn call/body))
+          (return (invoke))))
+      (fail $"Plugin function ${self/name} is no longer available."))))
+
+(fn classify_repl [text : Str]
+  (let trimmed ($str/trim text))
+  (if (["exit" "quit" ":exit" ":quit"] .contains? trimmed) (return "leave"))
+  (if (== trimmed "") (return "ignored"))
+  (if ($parse/incomplete? text) "incomplete" "input"))
+
+(fn evaluate_repl [sessions, ctx]
+  (var state (sessions/.get .get ctx/session))
+  (if_yes ($absent? state)
+    (let h ctx/runtime/h)
+    (let environment (env ^bindings
+      {^session_id ctx/session ^workspace_root ctx/runtime/root
+       ^doc (fn [name : Str] (doc h name))}))
+    (set state {^handle ($repl/open environment) ^names {}})
+    (sessions/.get .put ctx/session state))
+  (for record in (?? (ctx/snapshot/registries .get "functions") [])
+    (let name record/payload/name)
+    (if_yes ($absent? (state/names .get name))
+      # Carry the Callable witness into the closed Env; it exposes bindings
+      # without importing this helper module's private implementation scope.
+      (let forwarder : Callable (LiveReplFunction ^name name))
+      ($repl/bind state/handle name forwarder)
+      (state/names .put name true)))
+  (let value ($repl/eval state/handle ctx/raw))
+  (CommandResult ^display ($repl/format value) ^attached false ^status "done"))
+
+(fn close_repl [sessions, session : Str]
+  (let state (sessions/.get .get session))
+  (if_not ($absent? state)
+    ($repl/close state/handle)
+    (sessions/.get .delete session))
+  nil)
+
+(fn close_repls [sessions]
+  (let ids [])
+  (for [id state] in sessions/.get (ids .push ($to_str id)))
+  (for id in ids (close_repl sessions id))
+  nil)

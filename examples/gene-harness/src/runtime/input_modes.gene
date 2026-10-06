@@ -1,0 +1,195 @@
+(mod input_modes)
+(import [ModeChanged publish] ^from "../kernel")
+(import [retain_snapshot release_snapshot] ^from "./composition")
+(import [with_session_gate require_record] ^from "./sessions")
+
+(type ModeError ^props {^code Str ^message Str ^mode Any?} ^impl [Error])
+(impl Error for ModeError)
+(type InputModes ^props {^runtime Any ^states Any ^jobs Any ^closed Any
+                        ^submit Any ^cancel Any ^records Any})
+
+(fn mode_record [snapshot, name : Str]
+  (for record in (?? (snapshot/registries .get "input_modes") [])
+    (if (== record/payload/name name) (return record)))
+  nil)
+
+(fn same_mode_row? [previous, current]
+  (if ($absent? current) (return false))
+  (if (&& (! ($absent? previous/cleanup_state)) (! previous/cleanup_state/.get))
+    (return false))
+  (if (== previous/row_id current/row_id) (return true))
+  # Reconciliation can stage a fresh activation of an unchanged descriptor.
+  # A true replacement has a different Plugin identity and closes the mode.
+  (&& (! ($absent? previous/plugin)) (! ($absent? current/plugin))
+      (== previous/owner current/owner) (== previous/key current/key)
+      (same? previous/plugin current/plugin)))
+
+(fn mode_state [manager, session : Str]
+  (if ($absent? manager) (return nil))
+  (let state (manager/states/.get .get session))
+  (if ($absent? state) (return nil))
+  (let row state/row/payload)
+  {^name row/name ^instance state/instance ^running state/running
+   ^label row/label ^hint row/hint ^submit_label row/submit_label
+   ^prompt row/prompt ^closing state/closing})
+
+(fn changed [manager, session : Str, reason : Str]
+  (let state (mode_state manager session))
+  (publish manager/runtime/h
+    (ModeChanged ^session session ^mode state ^instance (?? state/instance nil)
+      ^running (?? state/running nil) ^reason reason))
+  nil)
+
+(fn problem [manager, session : Str, code : Str, message : Str]
+  (fail (ModeError ^code code ^message message ^mode (mode_state manager session))))
+
+(fn require_chat [manager, session : Str]
+  (if_not ($absent? (mode_state manager session))
+    (problem manager session "mode_open" "Leave the input mode before sending a model prompt.")))
+
+(fn enter_mode [manager, session : Str, name : Str, snapshot]
+  (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
+    (require_record manager/runtime/sessions session)
+    (if (|| manager/closed/.get manager/runtime/stopping/.get)
+      (problem manager session "stopped" "Workspace is stopping."))
+    (let previous (manager/states/.get .get session))
+    (if_not ($absent? previous)
+      (if (&& (! previous/closing) (== previous/row/payload/name name))
+        (return (mode_state manager session)))
+      (problem manager session "busy" "This session already has an input mode."))
+    (let selected (mode_record snapshot name))
+    (let live (mode_record manager/runtime/h/snapshots/current/.get name))
+    (if (|| ($absent? selected) (! (same_mode_row? selected live)))
+      (problem manager session "mode_closed" "The requested input mode is unavailable."))
+    (manager/states/.get .put session
+      {^row live ^instance ($crypto/random_hex 16) ^running nil
+       ^completed ($cell true) ^closing false ^last_left nil})
+    (changed manager session "opened")
+    (mode_state manager session))))
+
+# Called with round/ID held, including by session removal. The command watcher
+# signals completed after persisting its result and releasing its lease, before
+# it takes this gate to clear running. Waiting here therefore cannot deadlock it.
+(fn close_mode_locked [manager, session : Str, reason : Str]
+  (let state (manager/states/.get .get session))
+  (if ($absent? state) (return nil))
+  (state .put "closing" true)
+  (try
+    (if_not ($absent? state/running)
+      (manager/cancel session state/running)
+      (while (! state/completed/.get) ($sleep 1)))
+    (scope
+      (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
+      (match cleanup/.join
+        (when (TaskOutcome/ok value) nil)
+        (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/message}"))
+        (when (TaskOutcome/panic message) ($println $"Input mode cleanup panic: ${message}"))
+        (else ($println "Input mode cleanup was cancelled."))))
+  ensure
+    (manager/states/.get .delete session)
+    (changed manager session reason))
+  nil)
+
+(fn close_mode [manager, session : Str, reason : Str, ^instance instance = nil]
+  (if ($absent? manager) (return nil))
+  (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
+    (let state (manager/states/.get .get session))
+    (if (&& (! ($absent? instance))
+             (|| ($absent? state) (!= state/instance instance)))
+      (problem manager session "mode_closed" "This input mode has already closed."))
+    (close_mode_locked manager session reason)))
+  {^closed true})
+
+(fn submit_mode_input [manager, session : Str, instance : Str, input_id : Str, text : Str]
+  (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
+    (let state (manager/states/.get .get session))
+    (if (|| ($absent? state) state/closing (!= state/instance instance))
+      (problem manager session "mode_closed" "This input belongs to a closed mode."))
+    (if (|| (== input_id "") (> ($str/byte_size input_id) 128))
+      (problem manager session "invalid_request" "An input needs an id of at most 128 bytes."))
+    (for record in (manager/records session)
+      (if_yes (&& (== record/mode_instance instance) (== record/input_id input_id))
+        (if (!= record/raw text)
+          (problem manager session "submission_conflict" "Input identity has different content."))
+        (return record)))
+    (let kind (state/row/payload/classify text))
+    (if_yes (== kind "leave")
+      (close_mode_locked manager session "left")
+      (return {^closed true}))
+    (if (== kind "incomplete") (return {^incomplete true}))
+    (if (== kind "ignored") (return {^ignored true}))
+    (if (!= kind "input")
+      (problem manager session "invalid_request" "The input mode returned an invalid classification."))
+    (if_not ($absent? state/running)
+      (problem manager session "busy" "An input is already running."))
+    (manager/submit session
+      {^kind "command" ^name state/row/payload/name ^raw text
+       ^handler state/row/payload/run ^mode_instance instance ^input_id input_id
+       ^on_admit (fn [record]
+         (state .put "running" record/id)
+         (state/completed .set false)
+         (changed manager session "running"))}))))
+
+(fn mode_command_finished [manager, session : Str, record]
+  (if ($absent? record/mode_instance) (return nil))
+  (let state (manager/states/.get .get session))
+  (if (|| ($absent? state) (!= state/instance record/mode_instance)
+          (!= state/running record/id)) (return nil))
+  (state/completed .set true)
+  (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
+    (let current (manager/states/.get .get session))
+    (if_yes (&& (same? current state) (== state/running record/id))
+      (state .put "running" nil)
+      (changed manager session "finished"))))
+  nil)
+
+(fn expire_modes [manager, ^now now = nil]
+  (let instant (?? now ($os/monotonic_ms)))
+  (let due [])
+  (for [session state] in manager/states/.get
+    (let loaded (manager/runtime/sessions/loaded/.get .get session))
+    (if (|| ($absent? loaded) (== loaded/viewers/.get 0))
+      (then
+        (if ($absent? state/last_left) (state .put "last_left" instant))
+        (if (>= (- instant state/last_left) 60000) (due .push [($to_str session) state/instance])))
+      (else (state .put "last_left" nil))))
+  (for entry in due
+    (try (close_mode ^instance entry/1 manager entry/0 "viewers_left")
+      catch ModeError nil))
+  nil)
+
+(fn publication_changed [manager, previous, snapshot]
+  (let withdrawn [])
+  (for [session state] in manager/states/.get
+    (let live (mode_record snapshot state/row/payload/name))
+    (if (same_mode_row? state/row live)
+      (state .put "row" live)
+      (withdrawn .push [($to_str session) state/instance])))
+  (for entry in withdrawn
+    # Keep the old close callback alive only during this close transition.
+    (let lease (retain_snapshot manager/runtime/h/snapshots previous))
+    (let job (spawn ^lane root
+      (try
+        (try (close_mode ^instance entry/1 manager entry/0 "withdrawn")
+          catch ModeError nil)
+      ensure (release_snapshot manager/runtime/h/snapshots lease))))
+    (manager/jobs/.get .push job))
+  (manager/jobs .set ($filter manager/jobs/.get (fn [task] (! task/.done?))))
+  nil)
+
+(fn new_input_modes [runtime, submit, cancel, records]
+  (let manager (InputModes ^runtime runtime ^states ($cell {}) ^jobs ($cell [])
+    ^closed ($cell false) ^submit submit ^cancel cancel ^records records))
+  (set runtime/h/snapshots/on_publish
+    (fn [previous snapshot] (publication_changed manager previous snapshot)))
+  manager)
+
+(fn close_input_modes [manager]
+  (if (manager/closed .swap true) (return nil))
+  (set manager/runtime/h/snapshots/on_publish nil)
+  (let sessions [])
+  (for [session state] in manager/states/.get (sessions .push ($to_str session)))
+  (for session in sessions (close_mode manager session "shutdown"))
+  (for task in manager/jobs/.get task/.join)
+  (manager/jobs .set [])
+  nil)

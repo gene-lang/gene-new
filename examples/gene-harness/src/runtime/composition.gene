@@ -2,7 +2,7 @@
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^publishing Any ^mutating Any})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^publishing Any ^mutating Any ^on_publish Any?})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -85,6 +85,16 @@
   (drain_retirements state)
   nil)
 
+# Publication observers can retain the previous revision while they close a
+# withdrawn resource. Call before publication's retirement drain.
+(fn retain_snapshot [state : CompositionState, snapshot] : SnapshotLease
+  (require_open state)
+  (let counter (state/counts/.get .get ($to_str snapshot/id)))
+  (if ($absent? counter)
+    (fail (CompositionClosed ^message "snapshot has already retired")))
+  (adjust_count counter 1)
+  (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false)))
+
 (fn queue_composition_change [state : CompositionState, change]
   (require_open state)
   (let context ($runtime/context))
@@ -136,6 +146,7 @@
     (state/publishing .set false)))
 
 (fn publish_snapshot_serial [state : CompositionState, registries, instances, ^plugins plugins = []] : CompositionSnapshot
+  (let previous state/current/.get)
   (let id (state/next_id .swap (+ state/next_id/.get 1)))
   (let snapshot ($freeze_shallow
     (CompositionSnapshot ^id id ^registries (immutable_view registries)
@@ -144,6 +155,7 @@
   (state/counts/.get .put ($to_str id) ($atomic_cell 0))
   # Publication itself is one native Cell operation and cannot yield.
   (state/current .set snapshot)
+  (if_not ($absent? state/on_publish) (state/on_publish previous snapshot))
   (drain_retirements state)
   snapshot)
 

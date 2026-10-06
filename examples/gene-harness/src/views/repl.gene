@@ -1,8 +1,9 @@
 (mod repl)
-(import ^from "../runtime/commands" [parse_submission submit_command])
+(import ^from "../runtime/commands" [parse_submission submit_command cancel_command])
+(import [mode_state mode_record submit_mode_input close_mode] ^from "../runtime/input_modes")
 (import ^from "../runtime/round_controller" [submit_round round_state answer_round])
 (import ^from "../runtime/sessions" [load_session])
-(import ^from "../kernel" [HarnessEvent RoundChanged CommandChanged])
+(import ^from "../kernel" [HarnessEvent RoundChanged CommandChanged ModeChanged])
 
 (fn print_question [question]
   ($println question/prompt)
@@ -46,8 +47,26 @@
       (else (return nil))))
   $"/run ${code}")
 
-(fn handle_repl_event [selected, answers, shown, event]
+(fn handle_repl_event [runtime, selected, answers, shown, interrupts, event]
   (match event ^exhaustive false
+    (when (changed : ModeChanged)
+      (if_yes (== changed/session selected/.get)
+        (if ($absent? changed/mode)
+          (then
+            (if_yes interrupts/.get
+              ($os/end_interrupt)
+              (interrupts .set false))
+            # Removal publishes this event while its load gate may be held.
+            (let loaded (runtime/sessions/loaded/.get .get selected/.get))
+            (let round loaded/round/.get)
+            (if_yes (== round/state "waiting")
+              (let saved (answers/.get .get selected/.get))
+              (let index (?? saved/index 0))
+              (print_question round/questions/questions/%index)))
+          (else
+            (if_not interrupts/.get
+              (interrupts .set ($os/begin_interrupt))))))
+      nil)
     (when (changed : RoundChanged)
       (let id changed/session)
       (let receipt changed/receipt)
@@ -63,8 +82,9 @@
           (answers
             .get
             ; .put id {^batch receipt/questions/id ^index 0 ^values {}})
-          ($println $"[${id}] Questions:")
-          (print_question receipt/questions/questions/0)))
+          (if ($absent? (mode_state runtime/modes id))
+            (do ($println $"[${id}] Questions:")
+                (print_question receipt/questions/questions/0)))))
       ($io/flush_stdout)
       nil)
     (when (changed : CommandChanged)
@@ -85,12 +105,31 @@
   (let session ($cell selected))
   (let answers ($cell {}))
   (let shown ($cell {}))
+  (let interrupts ($cell false))
+  (let interrupted ($cell false))
+  (let polling ($cell true))
+  (let poller (spawn ^lane root
+    (while polling/.get
+      ($sleep 5)
+      (if_yes (&& interrupts/.get ($os/take_interrupt))
+        (interrupted .set true)
+        (let mode (mode_state runtime/modes session/.get))
+        (if ($absent? mode/running)
+          (then
+            (let reader runtime/stdin_task/.get)
+            (if_not ($absent? reader) reader/.cancel))
+          (else (cancel_command runtime/commands session/.get mode/running)))))))
   (let subscription
     (runtime/h/bus .subscribe HarnessEvent
-      (fn [event] (handle_repl_event session answers shown event))))
-  (while (! runtime/stopping/.get)
+      (fn [event] (handle_repl_event runtime session answers shown interrupts event))))
+  (try
+   (while (! runtime/stopping/.get)
     (let selected_id session/.get)
-    ($print $"${selected_id}> ")
+    (let current_mode (mode_state runtime/modes selected_id))
+    ($print (if ($absent? current_mode) $"${selected_id}> "
+      $"${selected_id} ${current_mode/prompt}> "))
+    ($io/flush_stdout)
+    (interrupted .set false)
     (let input ($os/read_line_async))
     (runtime/stdin_task .set input)
     (let outcome input/.join)
@@ -101,17 +140,42 @@
       (when (TaskOutcome/ok value)
         (set text value))
       (when TaskOutcome/cancelled
-        (set halt true))
+        (set halt (! (&& interrupts/.get interrupted/.get))))
       (else
         ($println outcome)
         (set halt true)))
     (if halt (break))
+    (if (&& interrupts/.get interrupted/.get) (continue))
     (if ($absent? text)
       (then
+        (close_mode runtime/modes selected_id "eof")
         (for [id watcher] in controller/watchers/.get
           watcher/.join)
         (break)))
     (try
+      (let mode (mode_state runtime/modes selected_id))
+      (if_yes (! ($absent? mode))
+        (var code text)
+        (var eof false)
+        (while ($parse/incomplete? code)
+          ($print "... ")
+          ($io/flush_stdout)
+          (let reader ($os/read_line_async))
+          (runtime/stdin_task .set reader)
+          (let next reader/.join)
+          (runtime/stdin_task .set nil)
+          (match next
+            (when (TaskOutcome/ok line)
+              (if ($absent? line) (set eof true) (set code $"${code}\n${line}")))
+            (else (set eof (! interrupted/.get))))
+          (if (|| eof interrupted/.get) (break)))
+        (if_yes eof (close_mode runtime/modes selected_id "eof") (break))
+        (if interrupted/.get (continue))
+        (let record (submit_mode_input runtime/modes selected_id mode/instance
+          ($crypto/random_hex 16) code))
+        (if_not ($absent? record/id)
+          (runtime/commands/watchers/.get .get $"${selected_id}:${record/id}"; .join))
+        (continue))
       (let state (load_session runtime/sessions selected_id))
       (let round state/round/.get)
       (if_yes (&& (! ($absent? round)) (== round/state "waiting") (== text "/dismiss"))
@@ -122,7 +186,9 @@
         (then
           (let command (if (== parsed/name "run") (read_run_command runtime parsed/raw) text))
           (if ($absent? command) (break))
-          (submit_command runtime/commands selected_id command))
+          (let record (submit_command runtime/commands selected_id command))
+          (if_not ($absent? (mode_record runtime/h/snapshots/current/.get parsed/name))
+            (runtime/commands/watchers/.get .get $"${selected_id}:${record/id}"; .join)))
         (else (if (&& (! ($absent? round)) (== round/state "waiting"))
           (then
             (var current (answers .get; .get selected_id))
@@ -152,5 +218,11 @@
               parsed/text)))))
     catch Any
       ($println $err/message)))
-  subscription/.cancel
+  ensure
+    (polling .set false)
+    poller/.cancel
+    poller/.join
+    subscription/.cancel
+    (if interrupts/.get ($os/end_interrupt))
+    (close_mode runtime/modes session/.get "cli_closed"))
   runtime/exit_code/.get)

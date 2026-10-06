@@ -1,0 +1,48 @@
+# Tests src/builtin/repl.gene and live per-input function bindings.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [create_session close_session_service] ^from "../../../src/web/session_service")
+(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
+(import [mode_state submit_mode_input] ^from "../../../src/runtime/input_modes")
+(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+
+(fn provider_functions [version]
+  (Plugin ^id "repl_functions" ^provides [["functions" "calc"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "functions"
+        {^name "calc" ^doc "Return this revision plus an increment."
+         ^fn (fn [^increment increment : Int = 0] (+ version increment))})
+      (if (== version 2)
+        (host .PluginHost:contribute "functions"
+          {^name "extra" ^doc "A new function." ^fn (fn [] 99)})))))
+
+(fn run_input [service session id text]
+  (let mode (mode_state service/runtime/modes session))
+  (let record (submit_mode_input service/runtime/modes session mode/instance id text))
+  (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (command_receipt service/runtime/commands session record/id))
+
+(describe "Harness REPL plugin"
+  (it "refreshes saved function forwarders and new names while keeping user shadowing" []
+    (isolated this_mod/.path "refreshes saved function forwarders and new names while keeping user shadowing"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          (put_cordis_plugin service/runtime/h (provider_functions 1)
+            {^host true ^limits service/runtime/profile/limits})
+          (let session (create_session service))
+          (let opened (submit_command service/runtime/commands session/id "/repl"))
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${opened/id}"; .join)
+          (let saved (run_input service session/id "save" "(var saved calc) (saved ^increment 3)"))
+          ($assert (&& (== saved/status "done") ($str/contains? saved/display "4")) saved/display)
+          (put_cordis_plugin ^^replace service/runtime/h (provider_functions 2)
+            {^host true ^limits service/runtime/profile/limits})
+          (let refreshed (run_input service session/id "refresh" "[(saved ^increment 3) (extra)]"))
+          ($assert (&& (== refreshed/status "done") ($str/contains? refreshed/display "[5 99]")) refreshed/display)
+          (let shadowed (run_input service session/id "shadow" "(var calc 7) [calc (saved)]"))
+          ($assert (&& (== shadowed/status "done") ($str/contains? shadowed/display "[7 2]")) shadowed/display)
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

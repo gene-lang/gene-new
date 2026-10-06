@@ -209,6 +209,54 @@ return false. A CLI can collect more input without evaluating partial code.
 # ["response" 2 1 3]
 ```
 
+## Persistent REPL evaluation (native host)
+
+`($repl/open environment)` opens an in-memory evaluation session over an
+`Env`. `($repl/eval session source)` reads and compiles a complete input and
+returns its value. Variables, functions, types, standard-library imports and
+macros remain available to later inputs. `gene repl` permits imports too;
+relative module paths in its inputs resolve from cwd. Modules imported by
+those files resolve their own relative imports from their source directory.
+Compilation follows `gene repl`,
+including persistent macros and compiler warnings. Read, compile and runtime
+errors and panics propagate to the caller. Completed effects and declarations
+are not rolled back when a later expression fails.
+
+Evaluation runs on the calling task's VM frames: CPU work yields, asynchronous
+operations can park, and cancellation stops the input. Each input uses the
+caller's current execution budget and task context, including its output sink.
+The session releases that budget after the input, including failure and
+cancellation. An application supplying per-input budgets should open an Env
+without a policy and invoke each input through `$runtime/bind_call ^policy`.
+The application owns any task scope used to join work spawned by an input.
+
+`($repl/bind session name value)` adds or replaces a base binding, underneath
+the session's declarations. This permits refreshing host functions while a
+user's own variable of the same name continues to shadow them. Evaluation is
+exclusive: an overlapping eval, bind or close fails while an input is running.
+After cancellation, join the task before evaluating again or closing.
+
+`($repl/close session)` releases the session and is idempotent. Sessions cannot
+be serialized or resumed after process exit. `$parse/incomplete?` lets a host
+retain an unfinished draft without evaluating or buffering it in the session.
+`($repl/format value)` returns the same reader-syntax rendering used by the
+command-line REPL, including quotes around strings.
+
+```gene runnable
+(let session ($repl/open (env ^bindings {^base 40})))
+($repl/eval session "(var count base) (fn next [] (set count (+ count 1)))")
+($repl/bind session "base" 100)
+(let values ($repl/eval session "[(next) (next) base]"))
+($repl/close session)
+values
+# [41 42 100]
+```
+
+The older `$repl/eval_source` buffers incomplete input and returns a
+`{^status ^text}` map. It uses a synchronous evaluator and is unsuitable for
+hosts that require task suspension, cooperative execution and cancellation;
+use `$repl/eval` for those hosts.
+
 ## File recipes
 
 `($fs/info path)` returns `{^kind "file" ^size bytes}` or

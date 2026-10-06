@@ -70,7 +70,7 @@
           (let waiting (receipt service session/id round/id))
           ($assert (== waiting/state "waiting") $"web round failed: ${waiting}")
           (let view (snapshot service session/id))
-          ($assert (== view/protocol 4) "snapshot retained protocol 3")
+          ($assert (== view/protocol 5) "snapshot retained an older protocol")
           ($assert (== view/questions/questions/.size 1) "web snapshot lost the batch")
           (answer service session/id waiting/questions/id {^^ok})
           (service/controller/watchers
@@ -88,7 +88,7 @@
             catch Any
               true)
             "conflicting answer retry was accepted")
-          ($println "web turn loop: protocol 4 service, code-only provider, questions and reply dedupe")
+          ($println "web turn loop: protocol 5 service, code-only provider, questions and reply dedupe")
         ensure
           (close_session_service service))))))
 

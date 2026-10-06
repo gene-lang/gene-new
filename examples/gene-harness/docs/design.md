@@ -365,14 +365,16 @@ the host; a plugin keeps the host for later callbacks.
 | `subscribe`, `emit_event` | Observe the event bus; emit the plugin's own event types |
 | `state`, `update_state` | Workspace state, or per-session state with `^session` |
 
-The registries are `functions`, `commands`, `prompt`, `docs`, `providers`,
-`views`, `interactions`, `event_types`, `subscriptions`, `seams` and `triggers`. A
+The registries are `functions`, `commands`, `input_modes`, `prompt`, `docs`,
+`providers`, `hooks`, `views`, `interactions`, `web_components`, `event_types`,
+`subscriptions`, `seams` and `triggers`. A
 `functions` row is `{^name ^fn ^doc}`. Names are unique across the workspace,
 and the instructions list each with its `$runtime/signature` and doc. A
 `prompt` row has `^name` and exactly one of `^text` or callable `^render`;
 `docs` rows have `^name` and `^text` or `^path`. The core reserves command
 names by owner: `core_commands` owns `/help`, `/run`, `/sh` and `/view`, while
-the loop owns `/cancel`, `/stop` and `/restart`. `plugin_api` also exports
+the loop owns `/cancel`, `/stop` and `/restart`, and `repl` owns `/repl`.
+`plugin_api` also exports
 `append_prompt`, which forwards to the current turn and labels the item
 `fn <name>`. Outside an open turn it raises TurnClosed.
 
@@ -538,6 +540,28 @@ tasks use the workspace directory, console routing and execution budgets.
 Their results attach only to the next user request, never to an intermediate
 turn or a trigger request. File views attach a pointer.
 
+The `repl` plugin contributes `/repl` and an `input_modes` row. A command
+returning `CommandResult ^mode` enters the named mode. The host owns transient
+mode state, an instance id, one running command and a closing transition.
+Mode and round admission share the session gate. A stale instance refuses
+input, and repeated client input ids return retained command receipts.
+Mode inputs use ordinary command tasks and budgets; REPL activity never
+attaches to model history. The browser Leave control closes a mode without
+consulting its classifier.
+
+REPL environments persist declarations across inputs using `$repl/eval` on
+task frames. Plugin function bindings are forwarders that resolve from each
+input's leased composition. No lease is held between inputs. Exit, EOF,
+session unload/deletion, plugin row withdrawal/replacement and shutdown close
+the environment. The last browser viewer leaving starts a 60-second grace
+period. Close stops admission, cancels and joins evaluation, releases plugin
+resources, clears host state and publishes ModeChanged. A short retirement
+lease keeps the old close callback alive during publication-driven cleanup.
+
+The browser uses one Send/Eval/Stop action button. CLI Ctrl-C while the REPL
+is open cancels its input or discards continuation lines. REPL state is never
+restored after process restart.
+
 Stop disables new rounds, commands and trigger starts, cancels running rounds,
 and preserves pending questions/due occurrences. Cancellation receipts and a
 shutdown marker become durable before cleanup. A five-second watchdog ends
@@ -583,5 +607,6 @@ The Harness relies on general runtime features, documented in
 | Patch preflight/commit/recovery | runtime/patch |
 | Built-in contributions | builtin/gene_reference, builtin/plugin_admin, builtin/core_commands, builtin/triggers, builtin/provider_* |
 | Commands, triggers and supervisor | runtime/commands, runtime/triggers, runtime/supervisor |
+| Operator modes and persistent REPL | runtime/input_modes, runtime/repl_sessions, builtin/repl |
 | Durable streams and catalog | storage/state, events.catalog |
 | Browser service/transport/UI | web/session_service, web/push, web/server, client/ |

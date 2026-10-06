@@ -26,6 +26,7 @@
 (import ^from "../runtime/sessions" [unload_idle_sessions])
 (import ^from "../runtime/sessions" [SessionError])
 (import ^from "../runtime/commands" [CommandError])
+(import [submit_mode_input close_mode expire_modes ModeError] ^from "../runtime/input_modes")
 (import ^from "../runtime/questions" [QuestionError])
 (import ^from "../runtime/triggers"
   [list_triggers create_trigger delete_trigger list_occurrences TriggerError])
@@ -98,9 +99,11 @@
                (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions")
                (header ^class "topbar"
                  (button ^id "menu" ^class "mobile_only quiet" ^type "button" ^aria-label "Open conversations" "☰")
-                 (div ^class "heading"
+               (div ^class "heading"
                    (h1 ^id "conversation_title" "New conversation")
-                   (div ^id "mode" ^class "mode" "Local workspace"))
+                   (div ^id "mode" ^class "mode" "Local workspace")
+                   (span ^id "input_mode_label" ^class "mode"))
+               (button ^id "leave_mode" ^class "quiet" ^type "button" ^^hidden "Leave REPL")
                  (button ^id "rename_session" ^class "quiet" ^type "button" "Rename")
                  (button ^id "pin_session" ^class "quiet" ^type "button" "Pin"))
                (div ^id "web_toolbar" ^class "web_components web_toolbar")
@@ -133,8 +136,7 @@
                  (form ^id "composer" ^class "composer"
                    (textarea ^id "prompt" ^rows "2" ^placeholder "Ask a question or describe a task…" ^aria-label "Message Gene")
                    (div ^class "composer_actions"
-                     (span ^class "hint" "Shift+Enter for a new line · / for commands")
-                     (button ^id "stop" ^class "stop" ^type "button" ^^hidden "Stop")
+                     (span ^id "composer_hint" ^class "hint" "Shift+Enter for a new line · / for commands")
                      (button ^id "send" ^class "send" ^type "submit" "Send")))
                  (div ^id "notice" ^class "notice" ^role "status" ^aria-live "polite")
                  (button ^id "resolve_submission" ^class "resolve" ^type "button" ^^hidden "Resolve submission")))
@@ -306,7 +308,7 @@
       (return (redirect "/about/")))
     (if_yes (&& (== request/method "GET") (== request/path "/about/"))
       (return (html about_page)))
-    (if_yes (&& (== request/method "POST") (== request/path "/api/v4/auth/exchange"))
+    (if_yes (&& (== request/method "POST") (== request/path "/api/v5/auth/exchange"))
       (var data (request_data request))
       (var token (field data "token"))
       (if (|| (== bootstrap/.get "") (!= token bootstrap/.get)
@@ -324,18 +326,18 @@
     (if_yes (!= request/method "GET")
       (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
         (fail_request "forbidden" "Refresh this page before making a change.")))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v4/status"))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v5/status"))
       (var result (host_status host))
       (result .put "csrf" browser/csrf)
       (return (response 200 result)))
-    (if_yes (&& (== request/method "GET") (== request/path "/api/v4/events"))
+    (if_yes (&& (== request/method "GET") (== request/path "/api/v5/events"))
       (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
       (var watched (field request/params "session" ^default ""))
       (if (> ($str/byte_size watched) 128) (fail_request "invalid_request" "Invalid session."))
       (return (ws_accept request
         ^on_open (fn [connection] (add_peer push connection watched (+ (monotonic_ms) ($math/max 0 (- browser/expires ($os/wall_ms))))))
         ^on_close (fn [connection] (remove_peer push connection)))))
-    (if_yes (== request/path "/api/v4/sessions")
+    (if_yes (== request/path "/api/v5/sessions")
       (if (== request/method "GET")
         (return (response 200 (list_sessions host
           ^after (field request/params "after" ^default "")
@@ -351,19 +353,19 @@
         (return (response 201 (create_session host
           ^title (field (request_data request) "title" ^default "New conversation"))))))
     (var parts ($str/split request/path "/"))
-    (if (== request/path "/api/v4/triggers")
+    (if (== request/path "/api/v5/triggers")
       (then
         (if (== request/method "GET")
           (return (response 200 {^triggers (list_triggers host/runtime/triggers)})))
         (if (== request/method "POST")
           (return (response 201 (create_trigger host/runtime/triggers (request_data request)))))))
-    (if_yes (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v4") (== parts/3 "triggers"))
+    (if_yes (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 "v5") (== parts/3 "triggers"))
       (if (&& (== parts/.size 5) (== request/method "DELETE"))
         (return (response 200 (delete_trigger host/runtime/triggers parts/4))))
       (if (&& (== parts/.size 6) (== parts/5 "occurrences") (== request/method "GET"))
         (return (response 200 {^occurrences (list_occurrences host/runtime/triggers ^trigger parts/4)}))))
     (if_yes (&& (>= parts/.size 5) (== parts/1 "api")
-                (== parts/2 "v4") (== parts/3 "sessions"))
+                (== parts/2 "v5") (== parts/3 "sessions"))
       (var id parts/4)
       (if_yes (&& (== parts/.size 5) (== request/method "PATCH"))
         (var data (request_data request))
@@ -386,6 +388,17 @@
       (if_yes (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "POST"))
         (var data (request_data request))
         (return (response 202 (command host id (field data "text")))))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "mode")
+                   (== parts/6 "input") (== request/method "POST"))
+        (let data (request_data request))
+        (let result (submit_mode_input host/runtime/modes id
+          (field data "instance") (field data "input_id") (field data "text")))
+        (return (response (if ($absent? result/id) 200 202) result)))
+      (if_yes (&& (== parts/.size 7) (== parts/5 "mode")
+                   (== parts/6 "leave") (== request/method "POST"))
+        (let data (request_data request))
+        (return (response 200 (close_mode ^instance (field data "instance")
+          host/runtime/modes id "left"))))
       (if_yes (&& (== parts/.size 8) (== parts/5 "commands") (== parts/7 "cancel") (== request/method "POST"))
         (return (response 200 (cancel_operator_command host id parts/6))))
       (if_yes (&& (== parts/.size 6) (== parts/5 "cancel") (== request/method "POST"))
@@ -401,6 +414,8 @@
   (fn safe_handle [request]
     (secure_response
       (try (handle request)
+        catch ModeError (response (error_status $err/code)
+          {^code $err/code ^message $err/message ^mode $err/mode})
         catch RoundError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch TriggerError (response (error_status $err/code) {^code $err/code ^message $err/message})
         catch CommandError (response (error_status $err/code) {^code $err/code ^message $err/message})
@@ -422,7 +437,7 @@
       ^max_body_bytes 400000 ^request_timeout_ms 10000
       ^tick_ms 1000
       ^on_tick (fn []
-        (expire_peers push) (unload_idle_sessions host/sessions)
+        (expire_peers push) (expire_modes host/runtime/modes) (unload_idle_sessions host/sessions)
         (if host/runtime/stopping/.get
           (then
             (let restarting (== host/runtime/exit_code/.get 75))

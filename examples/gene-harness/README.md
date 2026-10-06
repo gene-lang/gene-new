@@ -148,6 +148,7 @@ Commands run without the model in their own tasks, with per-session ids.
 | --- | --- |
 | /help [name] | List commands or show documentation |
 | /run code | Evaluate Gene code; display its bounded value, errors and console |
+| /repl | Open a persistent Gene REPL for this session |
 | /sh command | Run a shell command, stream output and show exit status |
 | /view path[:from-to] | View a file/range, list a directory, or inspect binary metadata |
 | /cancel | Cancel this session's current round or pending questions |
@@ -171,6 +172,33 @@ Shutdown gives cancellation a five-second grace period; an uncooperative
 cleanup cannot hold the process indefinitely. Cancelled receipts and pending
 questions survive the next start. Direct gene run treats /restart as stop and
 tells the operator to start it again from a terminal.
+
+## Persistent operator REPL
+
+`/repl` opens a persistent Gene environment in the current session. Variables,
+functions, types, imports and macros remain available to subsequent inputs.
+While it is open, every submitted line is Gene code, including text beginning
+with `/`. Enter `exit`, `quit`, `:exit` or `:quit` to return to chat. The browser
+also provides a Leave control. Incomplete forms keep their draft; the CLI
+collects continuation lines with `... `.
+
+REPL inputs use the command execution budget and appear in the transcript,
+with streamed console output and reader-syntax values. They do not attach to
+the next model request. Plugin functions follow the composition leased by
+each input; saved function references see replacements on the next input.
+
+The browser action button reads Eval while idle and Stop while an input runs.
+Stop cancels that input and retains earlier bindings. In the CLI, Ctrl-C
+cancels an input or discards continuation lines; outside the REPL it ends the
+process. Only one input may run per session.
+
+REPL state lives in memory. It closes on exit, session unload/deletion,
+plugin disable/replacement or process shutdown. The last browser viewer
+leaving starts a 60-second grace period, so ordinary reconnects preserve
+bindings. Restarting the process closes every REPL. Unknown browser input
+outcomes are resolved through recorded input ids and are never automatically
+re-evaluated. The `repl` built-in plugin can be disabled independently of
+`core_commands`.
 
 ## Code responses
 

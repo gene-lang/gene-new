@@ -143,6 +143,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .run_error { color: #a04332; }
 .outcome_message { color: var(--muted); }
 .edit_retry { font-size: .72rem; padding: .2rem .5rem; }
+.input_mode #prompt { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .older_messages { display: block; margin: 0 auto 1.5rem; border: 0; font-size: .78rem; color: var(--muted); }
 .new_output { align-self: center; margin: 0 0 .5rem; padding: .35rem .8rem; background: var(--surface); border-radius: 2rem; font-size: .78rem; }
 

@@ -9,10 +9,12 @@
 (import ^from "../storage/state"
   [core_state record_core_state flush_event_store next_sequence stream_key])
 (import ^from "./sessions" [create_session list_sessions load_session])
+(import ^from "./input_modes"
+  [new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished])
 
 (type CommandError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for CommandError)
-(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^interface Str})
+(type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^cancel Any ^stop Any ^accepting Any ^closed Any ^interface Str ^modes Any?})
 
 (fn command_state [runtime, session : Str]
   (let ref (core_state runtime/events "session" session "commands"))
@@ -219,7 +221,16 @@
 
 (fn new_command_manager [runtime, ^cancel cancel = nil, ^stop stop = nil]
   (install_control_commands runtime)
-  (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
+  (let manager (CommandManager ^runtime runtime ^active ($cell {}) ^watchers ($cell {}) ^gate ($cell false) ^cancel cancel ^stop stop ^accepting ($cell true) ^closed ($cell false) ^interface "cli"))
+  (set manager/modes (new_input_modes runtime
+    (fn [session parsed]
+      (with_body_use runtime (fn [] (submit_routed_command manager session parsed))))
+    (fn [session id] (cancel_command manager session id))
+    (fn [session] (/records (command_state runtime session)))))
+  (set runtime/modes manager/modes)
+  (set runtime/sessions/before_remove
+    (fn [session reason] (close_mode_locked manager/modes session reason)))
+  manager)
 
 (fn command_changed [manager, session : Str, record]
   (publish manager/runtime/h (CommandChanged ^session session ^record record))
@@ -262,7 +273,13 @@
   (try
   (match outcome ^exhaustive false
       (when (TaskOutcome/ok value)
-        (let result (if (== ($head value) CommandResult) value (CommandResult ^display value)))
+        (var result (if (== ($head value) CommandResult) value (CommandResult ^display value)))
+        (if_not ($absent? result/mode)
+          (try
+            (enter_mode manager/modes session result/mode lease/snapshot)
+          catch Any
+            (set result (CommandResult ^status "failed" ^display $err/message))
+            (record .put "error_code" (?? $err/code "mode_closed"))))
         (let text
           (if ($absent? result/display)
             ""
@@ -335,9 +352,11 @@ Stopped."""))))
   (with_body_use manager/runtime (fn [] (submit_command_impl manager session text))))
 
 (fn submit_command_impl [manager, session : Str, text : Str]
+  (submit_routed_command manager session (parse_submission manager/runtime/h text)))
+
+(fn submit_routed_command [manager, session : Str, parsed]
   (if (! manager/accepting/.get)
     (fail (CommandError ^code "stopped" ^message "workspace is stopping")))
-  (let parsed (parse_submission manager/runtime/h text))
   (if_not (== parsed/kind "command")
     (fail (CommandError ^code "invalid_request" ^message "expected a command")))
   (load_session manager/runtime/sessions session)
@@ -358,11 +377,15 @@ Stopped."""))))
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
+      (for key in ["mode_instance" "input_id"]
+        (let value (parsed .get key))
+        (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
       (save_command_state manager/runtime session state)
       allocated
     ensure
       (manager/gate .set false)))
+  (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
   (let lease (acquire_snapshot manager/runtime/h/snapshots))
   (let sink (fn [output] (append_command_output manager session record output)))
   (let ctx
@@ -382,7 +405,12 @@ Stopped."""))))
     ; .put $"${session}:${record/id}" task)
   (let deadline (spawn ^lane root (do ($sleep timeout) task/.cancel)))
   (let watcher
-    (spawn ^lane root (do (try (let outcome (try task/.join ensure deadline/.cancel deadline/.join)) (finish_command manager session record lease outcome) ensure (release_body_use manager/runtime)))))
+    (spawn ^lane root
+      (try
+        (let outcome (try task/.join ensure deadline/.cancel deadline/.join))
+        (try (finish_command manager session record lease outcome)
+          ensure (mode_command_finished manager/modes session record))
+      ensure (release_body_use manager/runtime))))
   (manager/watchers
     .get
     ; .put $"${session}:${record/id}" watcher)
@@ -418,6 +446,7 @@ Stopped."""))))
 (fn close_command_manager [manager]
   (if (manager/closed .swap true) (return nil))
   (manager/accepting .set false)
+  (if_not ($absent? manager/modes) (close_input_modes manager/modes))
   (for [id task] in manager/active/.get
     task/.cancel)
   (for [id watcher] in manager/watchers/.get

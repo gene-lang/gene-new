@@ -4931,13 +4931,15 @@ include ./ext/term/stdlib_term
 
 # --- repl: reusable interactive evaluator ---
 
-type IncrementalReplSession = ref object
+type IncrementalReplSession = ref object of RootObj
   scope: Scope
   pendingSource: string
   pendingError: string
   closed: bool
+  busy: bool
 
-var incrementalReplSessions: seq[IncrementalReplSession]
+var incrementalReplSessions = initTable[int, IncrementalReplSession]()
+var nextIncrementalReplId = 0
 
 proc incrementalReplId(name: string, value: Value, scope: Scope,
                        requireOpen = true): int =
@@ -4946,12 +4948,12 @@ proc incrementalReplId(name: string, value: Value, scope: Scope,
   let id = value.props.getOrDefault("id", VOID)
   let closed = value.props.getOrDefault("closed", VOID)
   if id.kind != vkInt or closed.kind != vkCell or id.intVal <= 0 or
-      id.intVal > incrementalReplSessions.len:
+      id.intVal > nextIncrementalReplId:
     raise newException(GeneError, name & " received an invalid repl/Session")
-  result = int(id.intVal) - 1
-  let session = incrementalReplSessions[result]
-  if session == nil or (requireOpen and
-      (session.closed or closed.cellValue.isTruthy)):
+  result = int(id.intVal)
+  let session = incrementalReplSessions.getOrDefault(result)
+  if (session == nil and (requireOpen or not closed.cellValue.isTruthy)) or
+      (requireOpen and (session.closed or closed.cellValue.isTruthy)):
     raise newException(GeneError, name & ": Session is closed")
 
 proc replEvalResult(status, text: string): Value =
@@ -4960,17 +4962,128 @@ proc replEvalResult(status, text: string): Value =
   props["text"] = newStr(text)
   newMap(props)
 
+proc biReplFormat(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("repl/format", args)
+  newStr(args[0].print())
+
 proc biReplOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("repl/open", args)
   if args[0].kind != vkEnv:
     raise newException(GeneError, "repl/open expects an Env")
   let dispatchScope = if call == nil: nil else: call[].dispatchScope
-  let evalScope = incrementalReplScopeForEnv(args[0])
+  let evalScope = incrementalReplScopeForEnv(args[0],
+    if dispatchScope == nil: nil else: dispatchScope.application())
   let session = IncrementalReplSession(scope: evalScope)
-  incrementalReplSessions.add session
+  inc nextIncrementalReplId
+  incrementalReplSessions[nextIncrementalReplId] = session
   newNativeWrapper(builtInTypeHead(dispatchScope, "ReplSession"),
-    {"id": newInt(incrementalReplSessions.len),
+    {"id": newInt(nextIncrementalReplId),
      "closed": newCell(FALSE)})
+
+when not defined(geneWasm):
+  type ReplFrameCall = ref object of RootObj
+    session: IncrementalReplSession
+    chunk: Chunk
+    requiredTypesLen: int
+    successful: bool
+
+  proc finishReplFrame(context: RootRef, args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+    let state = ReplFrameCall(context)
+    if not state.successful:
+      abandonReplInput(state.session.scope, state.chunk, state.requiredTypesLen)
+    state.session.scope.evalBudget = nil
+    state.session.busy = false
+    NIL
+
+  proc succeedReplFrame(context: RootRef, args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+    ReplFrameCall(context).successful = true
+    NIL
+
+  proc executeReplFrame(context: RootRef, args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+    let state = ReplFrameCall(context)
+    state.session.scope.prepareChunkScope(state.chunk)
+    var request: ref NativeFrameRequest
+    new(request)
+    request.chunk = state.chunk
+    request.scope = state.session.scope
+    request.label = "repl input"
+    request.validateImpls = true
+    raise request
+
+  proc biReplEvalFrame(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 2:
+      raise newException(GeneError, "repl/eval expects (repl/Session, Str)")
+    let caller = if call == nil: nil else: call[].dispatchScope
+    let id = incrementalReplId("repl/eval", args[0], caller)
+    requireStr("repl/eval source", args[1])
+    let session = incrementalReplSessions[id]
+    if session.busy:
+      raise newException(GeneError, "repl/eval: Session is busy")
+    let wrapper = newScope(caller)
+    let wrapperChunk = compileEvalSource(
+      "(try (let value (repl_execute)) (repl_success) value ensure (repl_finish))",
+      useLocalSlots = false)
+    session.scope.evalBudget =
+      if activeVmBudget != nil: activeVmBudget[]
+      elif caller != nil: caller.evalBudget
+      else: nil
+    var compiled: Chunk
+    let context = scopeMacroBindings(session.scope)
+    var existingValues: seq[string]
+    for name in session.scope.vars.keys: existingValues.add name
+    for index, name in session.scope.slotNames:
+      if index notin session.scope.privateSlots and name notin existingValues:
+        existingValues.add name
+    session.busy = true
+    try:
+      compiled = compileReplSource(args[1].strVal, macros = context,
+        history = if context != nil: context.history else: @[],
+        existingValues = existingValues)
+      for diagnostic in compiled.compilerDiagnostics:
+        if diagnostic.message.startsWith("unused lazy pipeline:") or
+            diagnostic.message.startsWith("error checking:"):
+          stderr.writeLine(formatDiagnostic("Warning", diagnostic.message,
+                                            diagnostic.loc))
+    except:
+      session.scope.evalBudget = nil
+      session.busy = false
+      raise
+    let state = ReplFrameCall(session: session, chunk: compiled,
+      requiredTypesLen: session.scope.requiredImplTypes.len)
+    wrapper.define("repl_execute", newNativeContextFn("repl/execute", state,
+      executeReplFrame, acceptsNamed = false))
+    wrapper.define("repl_finish", newNativeContextFn("repl/finish", state,
+      finishReplFrame, acceptsNamed = false))
+    wrapper.define("repl_success", newNativeContextFn("repl/success", state,
+      succeedReplFrame, acceptsNamed = false))
+    var request: ref NativeFrameRequest
+    new(request)
+    request.chunk = wrapperChunk
+    request.scope = wrapper
+    request.label = "repl eval"
+    raise request
+
+  proc biReplBind(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 3:
+      raise newException(GeneError, "repl/bind expects (repl/Session, Str, Any)")
+    let caller = if call == nil: nil else: call[].dispatchScope
+    let id = incrementalReplId("repl/bind", args[0], caller)
+    requireStr("repl/bind name", args[1])
+    let session = incrementalReplSessions[id]
+    if session.busy:
+      raise newException(GeneError, "repl/bind: Session is busy")
+    session.scope.parent.defineOverlay(args[1].strVal, args[2])
+    NIL
+else:
+  proc biReplEvalFrame(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+    raise newException(GeneError, "repl/eval requires a native host")
+  proc biReplBind(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    raise newException(GeneError, "repl/bind requires a native host")
 
 proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -4980,6 +5093,8 @@ proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let id = incrementalReplId("repl/eval_source", args[0], dispatchScope)
   requireStr("repl/eval_source source", args[1])
   let session = incrementalReplSessions[id]
+  if session.busy:
+    raise newException(GeneError, "repl/eval_source: Session is busy")
   let source =
     if session.pendingSource.len == 0: args[1].strVal
     else: session.pendingSource & "\n" & args[1].strVal
@@ -5021,12 +5136,15 @@ proc biReplClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                              requireOpen = false)
   let closed = args[0].props["closed"]
   if not closed.cellValue.isTruthy:
-    let session = incrementalReplSessions[id]
+    let session = incrementalReplSessions.getOrDefault(id)
     if session != nil:
+      if session.busy:
+        raise newException(GeneError, "repl/close: Session is busy")
       session.closed = true
       session.scope = nil
       session.pendingSource.setLen(0)
       session.pendingError.setLen(0)
+      incrementalReplSessions.del(id)
     closed.setCellValue(TRUE)
   NIL
 
@@ -11118,6 +11236,11 @@ proc registerStdlibNamespaces(root: Scope) =
   replScope.define("Session", replSessionType)
   replScope.define("open", builtinNativeCallFn("repl/open", biReplOpen,
                                             acceptsNamed = false))
+  replScope.define("eval", builtinNativeCallFn("repl/eval", biReplEvalFrame,
+                                            acceptsNamed = false))
+  replScope.define("bind", builtinNativeCallFn("repl/bind", biReplBind,
+                                            acceptsNamed = false))
+  replScope.define("format", builtinNativeFn("repl/format", biReplFormat))
   replScope.define("eval_source",
     builtinNativeCallFn("repl/eval_source", biReplEval,
                     acceptsNamed = false))

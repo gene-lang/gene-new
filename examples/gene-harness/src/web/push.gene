@@ -19,6 +19,7 @@
   (var frame {^protocol protocol_version ^epoch hub/host/epoch
     ^sequence ($to_str peer/sequence) ^type message/type
     ^session message/session ^data message/data})
+  (if_not ($absent? message/reason) (frame .put "reason" message/reason))
   (try
     (if_yes (!= (ws_send peer/connection ($json/stringify frame)) 0)
       # A dropped frame invalidates the stream. Reconnect gets a fresh snapshot.

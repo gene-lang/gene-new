@@ -21,7 +21,7 @@
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
-(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any})
+(type SessionManager ^props {^runtime Any ^events Any ^state_root Str ^index Any ^loaded Any ^idle_timeout_ms Int ^closed Any ^mutating Any ^index_writing Any ^gates Any ^gate_mutex Any ^before_remove Any?})
 
 (fn with_session_gate [manager, key : Str, thunk]
   (while (manager/gate_mutex .swap true) ($sleep 1))
@@ -324,6 +324,7 @@
   (let state (manager/loaded .get; .get id))
   (if ($absent? state) (return false))
   (if (|| (session_running? state) (> state/viewers/.get 0)) (return false))
+  (if_not ($absent? manager/before_remove) (manager/before_remove id "unloaded"))
   (flush_event_store manager/events)
   (unload_event_stream manager/events "session" id)
   (manager/loaded
@@ -343,6 +344,9 @@
   count)
 
 (fn delete_session [manager : SessionManager, id : Str] : Bool
+  (with_session_gate manager $"round/${id}" (fn [] (delete_session_locked manager id))))
+
+(fn delete_session_locked [manager : SessionManager, id : Str] : Bool
   (require_open manager)
   (while (manager/mutating .swap true) ($sleep 1))
   (try
@@ -351,6 +355,7 @@
     (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)
             (&& (! ($absent? loaded)) (> loaded/viewers/.get 0)))
       (return false))
+    (if_not ($absent? manager/before_remove) (manager/before_remove id "deleted"))
     (let tombstone (copy_data record))
     (tombstone .put "deleted" true)
     (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" tombstone)

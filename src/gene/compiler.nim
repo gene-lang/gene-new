@@ -1084,7 +1084,10 @@ proc prepareMacroContext(c: var Compiler, forms: openArray[Value]) =
     c.macroSession.rootContext = c.macroContext
 
 proc nextTemp(c: var Compiler, prefix: string): string =
-  "__gene_" & prefix & "_" & $c.nextGensym()
+  # Earlier REPL inputs may still own generated bindings in this scope.
+  while true:
+    result = "__gene_" & prefix & "_" & $c.nextGensym()
+    if result notin c.ownValueNames: return
 
 proc containsYield(value: Value): bool =
   case value.kind
@@ -11017,6 +11020,16 @@ proc compileEvalSource*(src: string, useLocalSlots = true,
                     useLocalSlots = useLocalSlots, errorsMode = errorsMode,
                     macros = macros, history = history, existingValues = existingValues,
                     persistentMacros = persistentMacros)
+
+proc compileReplSource*(src: string, macros: MacroBindings = nil,
+                        history: seq[Value] = @[],
+                        existingValues: seq[string] = @[]): Chunk =
+  ## A REPL is a sequence of declaration-bearing inputs, including imports.
+  ## Ordinary eval retains its explicit Env import contract.
+  compileSourceUnit(readAllWithLocs(src, "<repl>"),
+                    allowAmbientImports = true, useLocalSlots = false,
+                    macros = macros, history = history,
+                    existingValues = existingValues, persistentMacros = true)
 
 proc compileSource*(src: string, sourceName = "",
                     useLocalSlots = true, errorsMode = ""): Chunk =

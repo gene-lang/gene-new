@@ -270,6 +270,8 @@
         {
           ^row_id record/row_id
           ^owner record/owner
+          ^plugin (?? (h/plugins/.get .get record/owner) nil)
+          ^cleanup_state (?? record/cleanup_state nil)
           ^registry record/registry
           ^key record/key
           ^payload (immutable_view record/payload)
@@ -401,7 +403,8 @@
           "core_commands"
           (if (["cancel" "stop" "restart"] .contains? payload/name)
             "core"
-            (if (["new" "sessions"] .contains? payload/name) "cli" nil))))
+            (if (["new" "sessions"] .contains? payload/name) "cli"
+              (if (== payload/name "repl") "repl" nil)))))
       (if (&& (! ($absent? reserved_owner))
               (!= owner reserved_owner))
         (fail (HarnessError ^message
@@ -438,6 +441,11 @@
       (let callback (checked .get field))
       (if_not ($absent? callback)
         (guarded .put field (guard_callback h owner callback false))))
+    (set checked guarded))
+  (if_yes (== registry_name "input_modes")
+    (let guarded ($thaw ($freeze_shallow checked)))
+    (for field in ["classify" "run" "close"]
+      (guarded .put field (guard_callback h owner (checked .get field) false)))
     (set checked guarded))
   (if_yes (== registry_name "hooks")
     (let guarded ($thaw ($freeze_shallow checked)))
@@ -702,6 +710,16 @@
     (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
   candidate)
 
+(fn validate_input_mode_row [candidate]
+  (for field in ["name" "label" "hint" "submit_label" "prompt"]
+    (let value (candidate .get field))
+    (if (|| (!= ($head value) Str) (== value ""))
+      (fail (HarnessError ^message $"an input mode needs a non-empty ${field}"))))
+  (for field in ["classify" "run" "close"]
+    (if_not ($runtime/callable? (candidate .get field))
+      (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
+  candidate)
+
 (fn validate_provider_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "")
           ($absent? candidate/doc)
@@ -789,6 +807,7 @@
 (type HarnessFlushed : HarnessEvent ^props {^through Int})
 (type RoundChanged : HarnessEvent ^props {^session Str ^receipt Any})
 (type CommandChanged : HarnessEvent ^props {^session Str ^record Any})
+(type ModeChanged : HarnessEvent ^props {^session Str ^mode Any ^instance Any ^running Any ^reason Str})
 (type SessionChanged : HarnessEvent ^props {^record Any})
 
 (type PluginInstalled : HarnessEvent ^props {^plugin Str})
@@ -816,6 +835,7 @@
              ^plugin_depth ($cell 0) ^workspace workspace))
   (registry h "seams" ^unique true ^schema validate_seam_row)
   (registry h "commands" ^unique true ^schema validate_command_row)
+  (registry h "input_modes" ^unique true ^schema validate_input_mode_row)
   (registry h "functions" ^unique true ^schema validate_function_row)
   (registry h "providers" ^unique true ^schema validate_provider_row)
   (registry h "hooks" ^unique true ^ordered true ^schema validate_hook_row)

@@ -1,0 +1,31 @@
+(mod repl)
+(import [Plugin PluginHost CommandResult] ^from "../plugin_api")
+(import [classify_repl evaluate_repl close_repl close_repls] ^from "../runtime/repl_sessions")
+
+(fn repl [] : Plugin
+  (let activations [])
+  (let sessions ($cell {}))
+  (Plugin ^id "repl" ^provides [["commands" "repl"] ["input_modes" "repl"]]
+    ^activate (fn [host]
+      (let active {^host host ^active ($cell false)})
+      (activations .push active)
+      (host .PluginHost:contribute "commands"
+        {^name "repl" ^usage "/repl" ^doc "Open a persistent Gene REPL for this session."
+         ^^raw_input ^run (fn [ctx]
+           (if (!= ($str/trim ctx/raw) "") (fail "/repl takes no arguments."))
+           (CommandResult ^display "REPL open. Enter exit or quit to leave."
+             ^attached false ^mode "repl"))})
+      (host .PluginHost:contribute "input_modes"
+        {^name "repl" ^label "REPL" ^hint "REPL · exit or quit to leave"
+         ^submit_label "Eval" ^prompt "gene"
+         ^classify classify_repl
+         ^run (fn [ctx] (evaluate_repl sessions ctx))
+         ^close (fn [session reason] (close_repl sessions session))})
+      (active/active .set true))
+    ^deactivate (fn [host]
+      (for active in activations
+        (if (same? active/host host) (active/active .set false)))
+      (let remains ($cell false))
+      (for active in activations
+        (if active/active/.get (remains .set true)))
+      (if_not remains/.get (close_repls sessions)))))

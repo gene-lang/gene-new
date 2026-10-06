@@ -8396,6 +8396,109 @@ suite "spec — actors from design":
                   newGlobalScope())
 
 suite "spec — Env and eval from design":
+  test "a captured function does not retain an expired defining budget":
+    check_eval("""
+      (let make ($runtime/bind_call ^policy {^timeout_ms 100}
+        (fn [] (eval (quote (fn [] 42)) ^in (env))) []))
+      (let callback (make))
+      ($sleep 150)
+      (callback)
+    """, "42")
+
+  test "persistent REPL uses its creating Application's protocol registry":
+    let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
+    let scope = newGlobalScope(app)
+    check run(compileSource("""
+      (type Increment
+        (impl Callable
+          (message apply [self call] (+ call/body/0 1))))
+      (let session ($repl/open (env ^bindings {^increment (Increment)})))
+      (let result ($repl/eval session "(increment 41)"))
+      ($repl/close session)
+      result
+    """), scope).print() == "42"
+
+  test "persistent REPL eval keeps declarations, imports, macros and base shadowing":
+    check_eval("""
+      (let s ($repl/open (env ^bindings {^base 40})))
+      ($repl/eval s "(import $math [max]) (var x base) (fn plus [n] (+ x n)) (type Point ^props {^x Int})")
+      ($repl/eval s "(macro twice [x] `(+ %x %x))")
+      ($repl/bind s "base" 41)
+      (let first ($repl/eval s "[(plus 2) (max 3 4) (/x (Point ^x 7)) (twice 3) base]"))
+      ($repl/eval s "(var base 99)")
+      ($repl/bind s "base" 42)
+      (let second ($repl/eval s "base"))
+      (try ($repl/eval s "(var kept 8) missing") catch Any nil)
+      (try ($repl/eval s "(type Broken ^props {^message Str} ^impl [Error])") catch Any nil)
+      (scope
+        (let panicked (spawn ^lane root ($repl/eval s "($panic \"probe\")")))
+        ($assert (== ($head panicked/.join) TaskOutcome/panic)))
+      (let third ($repl/eval s "kept"))
+      ($repl/close s)
+      ($repl/close s)
+      [first second third]
+    """, "[[42 4 7 6 41] 99 8]")
+
+  test "persistent REPL eval parks and shares the execution quantum":
+    check_eval("""
+      (let ticks ($cell 0))
+      (let finished ($cell false))
+      (let s ($repl/open (env)))
+      (scope
+        (let ticker (spawn ^lane root
+          (while (! finished/.get)
+            (ticks .set (+ ticks/.get 1))
+            ($sleep 1))))
+        (let work (spawn ^lane root
+          ($repl/eval s "(var n 0) (repeat 500000 (set n (+ n 1))) ($sleep 5) (await (spawn ^lane root (+ n 1)))")))
+        (let result (await work))
+        (finished .set true)
+        (await ticker)
+        ($assert (== result 500001))
+        ($assert (> ticks/.get 1)))
+      ($repl/close s)
+      true
+    """, "true")
+
+  test "persistent REPL eval cancels saved functions and remains usable":
+    check_eval("""
+      (let entered ($cell false))
+      (let s ($repl/open (env ^bindings {^entered entered})))
+      ($repl/eval s "(var retained 42) (fn spin [] (entered .set true) (while true nil))")
+      (let result (scope
+        (let task (spawn ^lane root ($repl/eval s "(spin)")))
+        (while (! entered/.get) ($sleep 1))
+        task/.cancel
+        task/.join))
+      ($assert (== ($head result) TaskOutcome/cancelled))
+      (let value ($repl/eval s "retained"))
+      ($repl/close s)
+      value
+    """, "42")
+
+  test "persistent REPL eval takes fresh caller budgets and output context":
+    check_eval("""
+      (let s ($repl/open (env)))
+      (let first ($cell []))
+      (let second ($cell []))
+      (let define ($runtime/bind_call ^policy {^timeout_ms 100}
+        (fn [] ($repl/eval s "(fn report [] ($println \"fresh\") 42)")) []))
+      ($runtime/with_context {^output (fn [text] (first/.get .push text))} define)
+      ($sleep 150)
+      (let invoke ($runtime/bind_call ^policy {^timeout_ms 100 ^max_steps 2000}
+        (fn [] ($repl/eval s "(report) (repeat 30 (+ 1 2)) 42")) []))
+      (repeat 20
+        ($assert (== ($runtime/with_context
+          {^output (fn [text] (second/.get .push text))} invoke) 42)))
+      (let slow ($runtime/bind_call ^policy {^timeout_ms 10}
+        (fn [] ($repl/eval s "(while true nil)")) []))
+      (let failed (try (slow) false catch Any true))
+      ($assert failed)
+      (let value ($repl/eval s "(+ 20 22)"))
+      ($repl/close s)
+      [first/.get/.size second/.get/.size value]
+    """, "[0 20 42]")
+
   test "incremental REPL sessions retain declarations and incomplete source":
     check_eval("(import $repl [open eval_source close]) " &
                "(var s (open (env ^bindings {^base 40}))) " &

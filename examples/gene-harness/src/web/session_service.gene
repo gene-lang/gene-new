@@ -33,6 +33,8 @@
    RoundChanged CommandChanged SessionChanged DurableRecord])
 (import ^from "../agents/instructions" [reference_root])
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
+(import [mode_state] ^from "../runtime/input_modes")
+(import [ModeChanged] ^from "../kernel")
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "./component_spec" [bounded_component_view WebComponentError])
 (import ^from "../runtime/triggers" ^^export
@@ -53,9 +55,12 @@
   (copy .put "last_round" loaded/round/.get)
   copy)
 
-(fn publish_message [service, kind : Str, session : Str, data]
+(fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
   (let publisher service/publisher/.get)
-  (if_not ($absent? publisher) (publisher {^type kind ^session session ^data data}))
+  (if_not ($absent? publisher)
+    (let message {^type kind ^session session ^data data})
+    (if_not ($absent? reason) (message .put "reason" reason))
+    (publisher message))
   nil)
 
 (fn event_record [session : Str, event]
@@ -121,6 +126,8 @@
 
 (fn handle_harness_event [service, event]
   (match event ^exhaustive false
+    (when (changed : ModeChanged)
+      (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (record : DurableRecord)
       (if (== record/scope "session")
         (publish_transcript service record/stream record/envelope)))
@@ -277,6 +284,11 @@
         ^role "assistant"
         ^phase "command"
         ^kind "command"
+        ^command_id record/id
+        ^input_id (?? record/input_id nil)
+        ^mode_instance (?? record/mode_instance nil)
+        ^name record/name
+        ^raw record/raw
         ^text (?? record/display record/output)
         ^status record/status
         ^view (?? record/view nil)
@@ -300,6 +312,7 @@
     ^rounds rounds/receipts
     ^next_submission_seq ($to_str rounds/next_seq)
     ^round loaded/round/.get
+    ^mode (mode_state service/runtime/modes id)
     ^status (host_status ^session id service)
     ^questions (if (== metadata/status "waiting")
                  ((Path "questions") loaded/round/.get)

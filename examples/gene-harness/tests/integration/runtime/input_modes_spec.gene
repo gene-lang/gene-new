@@ -1,0 +1,234 @@
+# Tests src/runtime/input_modes.gene and its admission/lifecycle integration.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service create_session submit snapshot] ^from "../../../src/web/session_service")
+(import [submit_command command_receipt command_state] ^from "../../../src/runtime/commands")
+(import [mode_state submit_mode_input close_mode expire_modes ModeError] ^from "../../../src/runtime/input_modes")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace")
+(import [contribute put_cordis_plugin] ^from "../../../src/kernel")
+(import [CommandResult] ^from "../../../src/plugin_api")
+(import [repl : repl_plugin] ^from "../../../src/builtin/repl")
+(import [create_trigger list_occurrences delete_trigger] ^from "../../../src/runtime/triggers")
+(import [cancel_command] ^from "../../../src/runtime/commands")
+(import [unload_session view_session leave_session delete_session] ^from "../../../src/runtime/sessions")
+
+(fn command [service, session, text]
+  (let record (submit_command service/runtime/commands session text))
+  (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+  (command_receipt service/runtime/commands session record/id))
+
+(fn input [service, session, id, text]
+  (let mode (mode_state service/runtime/modes session))
+  (let record (submit_mode_input service/runtime/modes session mode/instance id text))
+  (if_not ($absent? record/id)
+    (service/runtime/commands/watchers/.get .get $"${session}:${record/id}"; .join)
+    (return (command_receipt service/runtime/commands session record/id)))
+  record)
+
+(describe "Harness input modes"
+  (it "cancels busy inputs while other sessions and heartbeats progress and closes on replacement" []
+    (isolated this_mod/.path "cancels busy inputs while other sessions and heartbeats progress and closes on replacement"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (let entered ($cell false))
+        (try
+          (contribute service/runtime/h "core" "functions"
+            {^name "mark_entered" ^doc "Mark evaluation entry." ^fn (fn [] (entered .set true))})
+          (let session (create_session service))
+          (let other (create_session service))
+          (command service session/id "/repl")
+          (input service session/id "declare" "(var x 42) (fn spin [] (mark_entered) (while true nil))")
+          (let mode (mode_state service/runtime/modes session/id))
+          (let busy (submit_mode_input service/runtime/modes session/id mode/instance "spin" "(spin)"))
+          (let until (+ ($os/monotonic_ms) 5000))
+          (while (&& (! entered/.get) (< ($os/monotonic_ms) until)) ($sleep 1))
+          ($assert entered/.get "REPL evaluation did not enter")
+          ($assert (try (submit_mode_input service/runtime/modes session/id mode/instance "busy" "x") false
+            catch ModeError (== $err/code "busy")))
+          (submit service other/id "other" 1 "finish")
+          (service/controller/watchers/.get .get other/id; .join)
+          (create_trigger service/runtime/triggers
+            {^id "repl_tick" ^kind "heartbeat" ^every_ms 20 ^request "tick"})
+          (var fired false)
+          (let due (+ ($os/monotonic_ms) 10000))
+          (while (&& (! fired) (< ($os/monotonic_ms) due))
+            (for occurrence in (list_occurrences service/runtime/triggers ^trigger "repl_tick")
+              (if (== occurrence/state "finished") (set fired true)))
+            ($sleep 1))
+          ($assert fired "REPL evaluation blocked a heartbeat")
+          (delete_trigger service/runtime/triggers "repl_tick")
+          (cancel_command service/runtime/commands session/id busy/id)
+          (service/runtime/commands/watchers/.get .get $"${session/id}:${busy/id}"; .join)
+          ($assert (== (/status (command_receipt service/runtime/commands session/id busy/id)) "cancelled"))
+          ($assert ($str/contains? (/display (input service session/id "read" "x")) "42"))
+          (entered .set false)
+          (submit_mode_input service/runtime/modes session/id mode/instance "again" "(spin)")
+          (while (! entered/.get) ($sleep 1))
+          (put_cordis_plugin ^^replace service/runtime/h (repl_plugin)
+            {^host true ^limits service/runtime/profile/limits})
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (command service session/id "/repl")
+          ($assert (! ($absent? (mode_state service/runtime/modes session/id))))
+          (input service session/id "declare_again" "(fn spin [] (mark_entered) (while true nil))")
+          (entered .set false)
+          (let reopened (mode_state service/runtime/modes session/id))
+          (submit_mode_input service/runtime/modes session/id reopened/instance "withdraw" "(spin)")
+          (while (! entered/.get) ($sleep 1))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" false)
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" true)
+          (command service session/id "/repl")
+          (put_cordis_plugin ^^replace service/runtime/h (repl_plugin)
+            {^host true ^limits service/runtime/profile/limits})
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+        ensure (close_session_service service)))))
+
+  (it "keeps the scope after a deadline and cancels active input before shutdown" []
+    (isolated this_mod/.path "keeps the scope after a deadline and cancels active input before shutdown"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (let session (create_session service))
+        (let shutdown_id ($cell nil))
+        (try
+          (command service session/id "/repl")
+          (input service session/id "declare" "(var retained 42) (fn wait [] ($sleep 10000))")
+          (let config_path $"${service/runtime/state_root}/config.gene")
+          (let config ($serde/read_data ($fs/read_text config_path)))
+          (config .put "response_budget" {^timeout_ms 200 ^max_memory_mb 1024})
+          ($fs/write_text config_path ($serde/write_data config))
+          (let started ($os/monotonic_ms))
+          (let expired (input service session/id "deadline" "(wait)"))
+          # The execution policy can expire just before the deadline cancels.
+          ($assert (|| (== expired/status "cancelled")
+            (&& (== expired/status "failed") ($str/contains? expired/display "eval timeout exceeded"))) expired/display)
+          ($assert (< (- ($os/monotonic_ms) started) 2000) "REPL input exceeded its response deadline")
+          ($assert ($str/contains? (/display (input service session/id "read" "retained")) "42"))
+          (config .put "response_budget" {^timeout_ms 600000 ^max_memory_mb 1024})
+          ($fs/write_text config_path ($serde/write_data config))
+          (let mode (mode_state service/runtime/modes session/id))
+          (let active (submit_mode_input service/runtime/modes session/id mode/instance "shutdown" "(wait)"))
+          (shutdown_id .set active/id)
+          ($sleep 10)
+          (close_session_service service)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+        ensure (close_session_service service))
+        (let reopened (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          ($assert ($absent? (/mode (snapshot reopened session/id))))
+          ($assert (== (/status (command_receipt reopened/runtime/commands session/id shutdown_id/.get)) "cancelled"))
+        ensure (close_session_service reopened)))))
+
+  (it "lets the host leave a mode whose classifier refuses and whose cleanup panics" []
+    (isolated this_mod/.path "lets the host leave a mode whose classifier refuses and whose cleanup panics"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          (contribute service/runtime/h "core" "input_modes"
+            {^name "sticky" ^label "Sticky" ^hint "Custom mode" ^submit_label "Run" ^prompt "sticky"
+             ^classify (fn [text] "input") ^run (fn [ctx] (CommandResult ^display ctx/raw))
+             ^close (fn [session reason] ($panic "cleanup probe"))})
+          (contribute service/runtime/h "core" "commands"
+            {^name "sticky" ^doc "Open a test mode." ^usage "/sticky"
+             ^run (fn [ctx] (CommandResult ^mode "sticky"))})
+          (let session (create_session service))
+          (command service session/id "/sticky")
+          (let mode (mode_state service/runtime/modes session/id))
+          ($assert (/closed (close_mode ^instance mode/instance service/runtime/modes session/id "left")))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+        ensure (close_session_service service)))))
+
+  (it "preserves REPL declarations, routes slash paths and never attaches activity" []
+    (isolated this_mod/.path "preserves REPL declarations, routes slash paths and never attaches activity"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          ($assert (== (/status (command service session/id "/repl")) "done"))
+          ($assert (== (/name (mode_state service/runtime/modes session/id)) "repl"))
+          (let declared (input service session/id "declare" "(var x 41)"))
+          ($assert (== declared/status "done") declared/display)
+          (let used (input service session/id "use" "(+ x 1)"))
+          ($assert (&& (== used/status "done") ($str/contains? used/display "42")) used/display)
+          ($assert ($str/contains? (/display (input service session/id "path" "/help")) "Path"))
+          ($assert ($str/contains? (/display (input service session/id "string" "\"hi\"")) "\"hi\""))
+          (let before (/records (command_state service/runtime session/id)))
+          ($assert (/incomplete (input service session/id "partial" "(do")))
+          (let after (/records (command_state service/runtime session/id)))
+          ($assert (== after/.size before/.size))
+          ($assert (== (/attached (command_state service/runtime session/id)) []))
+          ($assert (try (submit service session/id "prompt" 1 "hello") false
+            catch ModeError (== $err/code "mode_open")))
+          ($assert (/closed (input service session/id "exit" "exit")))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (submit service session/id "prompt" 1 "hello")
+          (service/controller/watchers/.get .get session/id; .join)
+        ensure (close_session_service service)))))
+
+  (it "rejects stale instances and returns one receipt for each input identity" []
+    (isolated this_mod/.path "rejects stale instances and returns one receipt for each input identity"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          (command service session/id "/repl")
+          (let first (mode_state service/runtime/modes session/id))
+          (input service session/id "init" "(var count 0)")
+          (let a (input service session/id "once" "(set count (+ count 1))"))
+          (let b (input service session/id "once" "(set count (+ count 1))"))
+          ($assert (== a/id b/id))
+          ($assert ($str/contains? (/display (input service session/id "count" "count")) "1"))
+          (close_mode ^instance first/instance service/runtime/modes session/id "left")
+          (command service session/id "/repl")
+          ($assert (try
+            (submit_mode_input service/runtime/modes session/id first/instance "stale" "42") false
+            catch ModeError (== $err/code "mode_closed")))
+          ($assert (try
+            (close_mode ^instance first/instance service/runtime/modes session/id "stale") false
+            catch ModeError (== $err/code "mode_closed")))
+        ensure (close_session_service service)))))
+
+  (it "closes modes on viewer grace, session removal and plugin withdrawal" []
+    (isolated this_mod/.path "closes modes on viewer grace, session removal and plugin withdrawal"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+        (try
+          (let session (create_session service))
+          (view_session service/sessions session/id)
+          (command service session/id "/repl")
+          (input service session/id "declare" "(var x 42)")
+          (leave_session service/sessions session/id)
+          (expire_modes ^now 0 service/runtime/modes)
+          (expire_modes ^now 59999 service/runtime/modes)
+          ($assert (! ($absent? (mode_state service/runtime/modes session/id))))
+          (view_session service/sessions session/id)
+          (expire_modes ^now 60000 service/runtime/modes)
+          ($assert ($str/contains? (/display (input service session/id "read" "x")) "42"))
+          (leave_session service/sessions session/id)
+          (expire_modes ^now 60001 service/runtime/modes)
+          (expire_modes ^now 120001 service/runtime/modes)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (command service session/id "/repl")
+          ($assert (unload_session service/sessions session/id))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (command service session/id "/repl")
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" false)
+          (for job in service/runtime/modes/jobs/.get job/.join)
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" true)
+          (command service session/id "/repl")
+          ($assert (delete_session service/sessions session/id))
+          ($assert ($absent? (mode_state service/runtime/modes session/id)))
+        ensure (close_session_service service)))))
+)
+
+(fn main [args] : Int (run_spec args))

@@ -85,7 +85,7 @@ proc runGene(args: openArray[string], workingDir = ""):
     else: delEnv("GENE_ARTIFACT_STORE")
 
 proc runGeneInput(args: openArray[string],
-                  input: string): tuple[output: string, exitCode: int] =
+                  input: string, workingDir = ""): tuple[output: string, exitCode: int] =
   buildGeneCli()
   var command = shellQuote(geneExe)
   for arg in args:
@@ -94,7 +94,7 @@ proc runGeneInput(args: openArray[string],
   let savedStore = getEnv("GENE_ARTIFACT_STORE")
   putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
   try:
-    result = execCmdEx(command, input = input)
+    result = execCmdEx(command, input = input, workingDir = workingDir)
   finally:
     if hadStore: putEnv("GENE_ARTIFACT_STORE", savedStore)
     else: delEnv("GENE_ARTIFACT_STORE")
@@ -1258,11 +1258,38 @@ suite "cli — gene repl":
     check ran.exitCode == 1
     check "unknown repl option: --bogus" in ran.output
 
-  test "uses eval authority rules for each input line":
+  test "REPL imports persist and resolve relative to cwd":
+    let root = cliDir / "repl-import-cwd"
+    createDir(root / "lib")
+    writeFile(root / "lib" / "values.gene", "(mod values) (var value 41)")
+    writeFile(root / "sample.gene", "(mod sample) " &
+      "(import [value] ^from \"./lib/values\") (fn answer [] (+ value 1))")
+    let ran = runGeneInput(["repl"],
+      "(import $math [max])\n" &
+      "(import [answer] ^from \"./sample\")\n" &
+      "[(answer) (max 7 9)]\n:quit\n", workingDir = root)
+    check ran.exitCode == 0
+    check "[42 9]" in ran.output
+    check "Error:" notin ran.output
+
+  test "a missing REPL import reports an error and leaves the session usable":
     let ran = runGeneInput(["repl"], "(import [x] ^from \"./missing\")\n(+ 1 2)\n")
     check ran.exitCode == 0
-    check "eval cannot use import; add imports to Env" in ran.output
+    check "Error:" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
+
+  test "REPL cwd remains the import base inside a package subdirectory":
+    let root = cliDir / "repl-package-cwd"
+    createDir(root / "nested")
+    writeFile(root / "package.gene",
+      "{^format 1 ^name \"test/repl_cwd\" ^version \"0.1.0\"}")
+    writeFile(root / "sample.gene", "(mod sample) (var value 7)")
+    writeFile(root / "nested" / "sample.gene", "(mod sample) (var value 42)")
+    let ran = runGeneInput(["repl"],
+      "(import [value] ^from \"./sample\")\nvalue\n:quit\n",
+      workingDir = root / "nested")
+    check ran.exitCode == 0
+    check ran.output.strip.splitLines[^1] == "42"
 
   test "REPL_ON_ERROR enters repl after eval errors":
     buildGeneCli()

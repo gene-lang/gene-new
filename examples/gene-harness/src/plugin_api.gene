@@ -11,7 +11,7 @@
   ^props {^scope Str ^stream Str ^name Str ^envelope Any})
 
 (type CommandContext ^props {^manager Any ^runtime Any ^session Str ^raw Str ^id Str ^output Any ^snapshot Any})
-(type CommandResult ^props {^display Any? ^status Str? ^attached Bool? ^exit Int? ^view Any? ^selected Str? ^stop Int?})
+(type CommandResult ^props {^display Any? ^status Str? ^attached Bool? ^exit Int? ^view Any? ^selected Str? ^stop Int? ^mode Str?})
 
 # Inert input to descriptor construction. It deliberately implements no host
 # protocol: preflight and boot see only immutable identity, never live registry
