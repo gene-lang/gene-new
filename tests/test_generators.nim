@@ -26,7 +26,7 @@ suite "explicit generator declarations":
   test "unmarked executable yield requires the declaration flag":
     for source in ["(fn plain [] (yield 1))",
                    "(fn ^^generator outer [] (fn inner [] (yield 1)))",
-                   "(fn plain ^generator false [] (yield 1))"]:
+                   "(fn plain ^!generator [] (yield 1))"]:
       try:
         discard compileSource(source)
         check false
@@ -36,7 +36,7 @@ suite "explicit generator declarations":
   test "generator flag values are literal booleans":
     expect GeneError:
       discard compileSource("(fn bad ^generator 1 [] 42)")
-    check run(compileSource("(fn ordinary* ^generator false [] 42) (ordinary*)"),
+    check run(compileSource("(fn ordinary* ^!generator [] 42) (ordinary*)"),
       newGlobalScope()).intVal == 42
 
   test "known incompatible result contracts fail during compilation":
@@ -159,7 +159,7 @@ suite "explicit generator declarations":
       (lazy .close)
       [at_call first before_pull inherited ($size events)]
     """
-    for flag in ["", "^generator false"]:
+    for flag in ["", "^!generator"]:
       let value = run(compileSource(source.replace("CHILD_FLAG", flag)), newGlobalScope())
       check value.print == "[1 2 1 1 2]"
     expect GeneError:

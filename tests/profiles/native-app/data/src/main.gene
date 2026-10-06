@@ -8,7 +8,7 @@
 
 (fn main [args] : Int
   (let source (await (open_read args/0)))
-  (let rows (reader source ^headers true ^own_reader true))
+  (let rows (reader source ^^headers ^^own_reader))
   (var totals {})
   (var result [])
   (var parser_peak 0)
@@ -37,7 +37,7 @@
   (await rows/.IoResource:wait_closed)
   (let after_close ($runtime/gc_stats))
   ($println ($json/stringify
-    {^workload "data" ^ok true ^groups result
+    {^workload "data" ^^ok ^groups result
      ^parser_peak_bytes parser_peak
      ^parser_retained_at_eof parser_at_eof
      ^parser_retained_after_close after_close/csv_parser_retained_bytes

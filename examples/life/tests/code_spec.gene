@@ -7,7 +7,7 @@
 (describe "Life immutable module code"
   (it "loads normal modules and pinned imports in a fresh process after restart" []
     (let name (p/id "modules"))
-    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)))
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)))
     (let tx (p/begin host/store "module-fixture"))
     (let revision (code/module_bundle tx "math" {
       ^main.gene "(mod saved) (import [double] ^from \"./helper\") (fn answer [x] (+ (double x) 1))"
@@ -40,7 +40,7 @@
 
   (it "retains symbols and quoted Gene data without evaluating memory contents" []
     (let name (p/id "gene-data"))
-    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)
       ^decisions [(brain/response "Retain ordinary Gene data"
         "(do
           (store .put \"custom/datum\" {^kind (quote observation) ^source (quote (state .put \"executed\" true))})

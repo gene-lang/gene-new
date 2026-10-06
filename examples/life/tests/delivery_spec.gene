@@ -12,14 +12,14 @@
 (let shapes
   [{^label "HTTP delivery" ^prefix "delivery/"
     ^record {^id "d-1" ^destination {^adapter "http" ^connector "mailbox" ^conversation "garden" ^thread "main"}
-             ^text "hello" ^status "pending" ^attempts 0 ^needs_reconciliation false ^owner nil}}
+             ^text "hello" ^status "pending" ^attempts 0 ^!needs_reconciliation ^owner nil}}
    {^label "world request" ^prefix "world_op/"
     ^record {^id "op-1" ^operation "test.echo" ^contract_version 1 ^input {^n 1} ^preconditions []
-             ^status "pending" ^attempts 0 ^needs_reconciliation false ^owner nil}}])
+             ^status "pending" ^attempts 0 ^!needs_reconciliation ^owner nil}}])
 
 (fn with_store [callback]
   (let name (p/id "delivery"))
-  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)))
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)))
   (try (callback host) ensure (runtime/close_life host)))
 
 (fn stored [host, shape] (p/get host/store $"${shape/prefix}${shape/record/id}"))
@@ -74,6 +74,6 @@
     (let third (delivery_state/next_item records at "send"))
     (assert_equal [third/record/id third/lane] ["d" "receipt"])
     # Paused sending still reconciles; an empty lane leaves the other alone.
-    (let paused (delivery_state/next_item records at "receipt" ^sending false))
+    (let paused (delivery_state/next_item records at "receipt" ^!sending))
     (assert_equal [paused/record/id paused/lane] ["d" "receipt"])
     (assert_equal (delivery_state/next_item [{^id "x" ^status "delivered"}] at nil) nil)))

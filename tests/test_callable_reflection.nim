@@ -316,7 +316,7 @@ suite "language callable reflection":
     reflectionCheck """
       [(try ($runtime/signature Self:no_such_message nil) false catch MessageError true)
        (try ($runtime/signature + nil) false catch Error true)
-       (try ($runtime/signature + ^unexpected true) false catch Error true)]
+       (try ($runtime/signature + ^^unexpected) false catch Error true)]
     """, "[true true true]"
 
   test "direct type signatures describe inherited closed props and body schemas":
@@ -326,7 +326,7 @@ suite "language callable reflection":
         (ctor [] (set constructed 1)))
       (type Child : Parent ^props {^active Bool} ^body [Str...])
       (let s ($runtime/signature Child))
-      (let b ($runtime/bind_shape s [1 "two"] {^name "n" ^active true}))
+      (let b ($runtime/bind_shape s [1 "two"] {^name "n" ^^active}))
       (let args b/positional) (let named b/named)
       (let value (Child args ... named ...))
       [constructed s/category s/construction s/minimum_positional s/rest/type

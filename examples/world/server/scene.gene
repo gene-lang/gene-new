@@ -198,7 +198,7 @@
       {^core/transform {^schema 1 ^x_mm 31500 ^y_mm 1000 ^z_mm 11500}
        ^core/appearance {^schema 1 ^shape "box" ^tile "commons:watering_can"
                          ^size_mm [320 300 320]}
-       ^core/portable {^schema 1 ^unique true}
+       ^core/portable {^schema 1 ^^unique}
        ^core/label {^schema 1 ^text "Watering can"}}}])
 
 (fn avatar_entity [entity_id : Str participant_id : Str display_name : Str

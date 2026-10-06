@@ -131,5 +131,5 @@ suite "runtime bound calls":
     check evalBoundCall("(fn target [] 1) " &
       "[(try ($runtime/bind_call target [] ^policy {^max_steps -1}) " &
       " false catch Any true) " &
-      " (try ($runtime/bind_call target [] ^policy {^allow_ffi false}) " &
+      " (try ($runtime/bind_call target [] ^policy {^!allow_ffi}) " &
       " false catch Any true)]").print() == "[true true]"

@@ -87,10 +87,10 @@
           ($assert (== (composition_revision enabled/workspace) (+ disabled_revision/.get 1))
             "enable did not make exactly one composition change")
           (let result (evaluate_harness_turn enabled/h 1 root
-            "(Outcome ^done true ^reply (marker))"))
+            "(Outcome ^^done ^reply (marker))"))
           ($assert (== result/validated/outcome/reply "built")
             "recovery enable did not restore the default")
-          (let stored (register_plugin ^replace true enabled/workspace enabled/h "built" replacement))
+          (let stored (register_plugin ^^replace enabled/workspace enabled/h "built" replacement))
           ($assert (== stored/status "ready") "stored replacement did not activate")
           (let restored_turn (evaluate_harness_turn enabled/h 2 root
             "(append_prompt \"restore\" (restore_plugin \"built\")) (Outcome ^prompt \"continue\")"))
@@ -110,7 +110,7 @@
         (let final_runtime (open_runtime root "default" profile))
         (try
           (let final_result (evaluate_harness_turn final_runtime/h 2 root
-            "(Outcome ^done true ^reply (marker))"))
+            "(Outcome ^^done ^reply (marker))"))
           ($assert (== final_result/validated/outcome/reply "built")
             "restored default did not survive restart")
         ensure
@@ -155,9 +155,9 @@
               (register_plugin first/workspace first/h "web" replacement)
               false
             catch Any
-              ($str/contains? $err/message "use ^replace true"))
+              ($str/contains? $err/message "use ^^replace"))
             "profile id was claimed without explicit replacement")
-          (let replaced (register_plugin ^replace true first/workspace first/h "web" replacement))
+          (let replaced (register_plugin ^^replace first/workspace first/h "web" replacement))
           ($assert (== replaced/status "ready") $"explicit replacement failed: ${replaced}")
           (let added (register_plugin first/workspace first/h "other" sibling))
           ($assert (== added/status "ready") $"sibling registration failed: ${added}")
@@ -166,7 +166,7 @@
         (let restarted (open_runtime root "default" profile))
         (try
           (let result (evaluate_harness_turn restarted/h 1 root
-            "(Outcome ^done true ^reply ($to_str [(marker) (sibling)]))"))
+            "(Outcome ^^done ^reply ($to_str [(marker) (sibling)]))"))
           ($assert
             (&& ($str/contains? result/validated/outcome/reply "stored")
                 ($str/contains? result/validated/outcome/reply "other"))
@@ -186,7 +186,7 @@
         (let collided (open_runtime root "default" profile))
         (try
           (let legacy_result (evaluate_harness_turn collided/h 2 root
-            "(Outcome ^done true ^reply ($to_str [(marker) (sibling)]))"))
+            "(Outcome ^^done ^reply ($to_str [(marker) (sibling)]))"))
           ($assert
             (&& ($str/contains? legacy_result/validated/outcome/reply "profile")
                 ($str/contains? legacy_result/validated/outcome/reply "other"))
@@ -258,19 +258,19 @@
           ($assert
             (== queued/composition_changes/0/status "ready")
             "root queue did not publish registration")
-          (let next (evaluate_harness_turn runtime/h 3 root "(Outcome ^done true ^reply (ping))"))
+          (let next (evaluate_harness_turn runtime/h 3 root "(Outcome ^^done ^reply (ping))"))
           ($assert
             (== next/validated/outcome/reply "pong")
             "next turn did not receive the queued function")
           (let inspection (evaluate_harness_turn runtime/h 4 root
-            "(Outcome ^done true ^reply ($to_str [(plugin_states) (inspect_plugin \"queued\") session_id]))"))
+            "(Outcome ^^done ^reply ($to_str [(plugin_states) (inspect_plugin \"queued\") session_id]))"))
           ($assert ($str/contains? inspection/validated/outcome/reply "queued") $"plugin inspection failed: ${inspection/validated/outcome/reply}; ${inspection/error}")
-          (let disabled (evaluate_harness_turn runtime/h 5 root "(disable_plugin \"queued\") (Outcome ^done true ^reply \"disabled\")"))
+          (let disabled (evaluate_harness_turn runtime/h 5 root "(disable_plugin \"queued\") (Outcome ^^done ^reply \"disabled\")"))
           (let hidden (evaluate_harness_turn runtime/h 6 root "(append_prompt \"state\" (inspect_plugin \"queued\")) (ping)"))
           ($assert (== hidden/kind "error") "disabled plugin function stayed visible")
           ($assert ($str/contains? hidden/request "disabled") "disabled plugin disappeared from inspection")
-          (evaluate_harness_turn runtime/h 7 root "(enable_plugin \"queued\") (Outcome ^done true ^reply \"enabled\")")
-          (let restored (evaluate_harness_turn runtime/h 8 root "(Outcome ^done true ^reply (ping))"))
+          (evaluate_harness_turn runtime/h 7 root "(enable_plugin \"queued\") (Outcome ^^done ^reply \"enabled\")")
+          (let restored (evaluate_harness_turn runtime/h 8 root "(Outcome ^^done ^reply (ping))"))
           ($assert (== restored/validated/outcome/reply "pong") $"enable_plugin did not restore function: ${restored/error}")
           (set entries (composition_entries runtime/workspace))
           (let obsolete ($serde/read_data ($serde/write_data entries/0)))
@@ -304,7 +304,7 @@
           (let code
             ($to_str "(append_prompt \"registration\" (register_plugin \"example\" (quote "
               source
-              "))) (Outcome ^done true ^reply \"installed\")"))
+              "))) (Outcome ^^done ^reply \"installed\")"))
           (let result (evaluate_harness_turn runtime/h 1 root code))
           ($assert (== result/kind "continue") "queued installation ended the round")
           ($assert (== result/validated/rejected_done true)
@@ -323,7 +323,7 @@
                        (! ($str/contains? result/request "^interfaces")))
             "publication notice dumped internal composition metadata")
           (let next (evaluate_harness_turn runtime/h 2 root
-            "(Outcome ^done true ^reply (ping))"))
+            "(Outcome ^^done ^reply (ping))"))
           ($assert (== next/validated/outcome/reply "pong")
             "next turn could not use the committed plugin")
           (let broken_source
@@ -344,7 +344,7 @@
           ($assert ($str/contains? broken_result/request "activation failed")
             $"quarantine notice omitted the activation error: ${broken_result/request}")
           (let healthy_replacement
-            (register_plugin ^replace true runtime/workspace runtime/h
+            (register_plugin ^^replace runtime/workspace runtime/h
               "example" source))
           ($assert (== healthy_replacement/status "ready")
             "quarantined sibling blocked a healthy replacement")
@@ -354,7 +354,7 @@
           (Profile ^name "test" ^plugins [(plugin_admin)])))
         (try
           (let after_restart (evaluate_harness_turn ^session "other" restarted/h 3 root
-            "(Outcome ^done true ^reply (ping))"))
+            "(Outcome ^^done ^reply (ping))"))
           ($assert (== after_restart/validated/outcome/reply "pong")
             "a different session lost the plugin after restart")
           ($assert ($str/contains? ($to_str (doctor restarted/workspace))
@@ -380,12 +380,12 @@
                 (fn init [descriptor]
                   (Plugin ^id "example" ^activate (fn [host]
                     (fail "replacement failed"))))))))
-          (let replacement (register_plugin ^replace true
+          (let replacement (register_plugin ^^replace
             runtime/workspace runtime/h "example" broken))
           ($assert (== replacement/state "quarantined")
             "failed replacement did not report quarantine")
           (let retained (evaluate_harness_turn runtime/h 4 root
-            "(Outcome ^done true ^reply (ping))"))
+            "(Outcome ^^done ^reply (ping))"))
           ($assert (== retained/validated/outcome/reply "pong")
             "failed replacement retired the last active callable")
         ensure
@@ -412,7 +412,7 @@
           task/.cancel
           task/.join
           (evaluate_harness_turn runtime/h 2 root
-            "(Outcome ^done true ^reply \"next\")")
+            "(Outcome ^^done ^reply \"next\")")
           ($assert (== (row runtime/h "functions" "ping") void)
             "another turn published the cancelled registration")
           ($assert (== (composition_entries runtime/workspace) [])

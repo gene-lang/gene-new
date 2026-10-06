@@ -20,7 +20,7 @@
           ($assert (== (row runtime/h "functions" "create_trigger") void)
             "pending trigger callable was visible")
           (provide runtime/h "core" "loop"
-            (fn [] {^runtime runtime ^controller controller ^start false ^boot false}))
+            (fn [] {^runtime runtime ^controller controller ^!start ^!boot}))
           (let active_status (status_of runtime/h "triggers"))
           ($assert (== active_status "ready")
             $"loop seam did not activate triggers: ${active_status}; ${runtime/h/plugin_errors/.get}")

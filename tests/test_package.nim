@@ -146,9 +146,9 @@ suite "package manager — format 1 workspace graph":
 {^format 1 ^name "acme/app" ^version "1.0.0"
  ^workspace {^members ["packages/*"]}
  ^applications [(application "app" ^entry "src/main.gene")]
- ^dependencies {^runtime_lib (dep "acme/runtime_lib" "1.0.0" ^workspace true)}
- ^dev_dependencies {^test_tool (dep "acme/test_tool" "1.0.0" ^workspace true)}
- ^build_dependencies {^generator (dep "acme/generator" "1.0.0" ^workspace true)}}
+ ^dependencies {^runtime_lib (dep "acme/runtime_lib" "1.0.0" ^^workspace)}
+ ^dev_dependencies {^test_tool (dep "acme/test_tool" "1.0.0" ^^workspace)}
+ ^build_dependencies {^generator (dep "acme/generator" "1.0.0" ^^workspace)}}
 """)
     writePackageFile(root / "src/main.gene", "(fn main [] 0)")
     for name in ["runtime_lib", "test_tool", "generator"]:
@@ -270,7 +270,7 @@ suite "package manager — format 1 workspace graph":
  ^workspace {^members ["packages/*"]}
  ^applications [(application "app" ^entry "src/main.gene")]
  ^dependencies {
-   ^pkg1 (dep "acme/pkg1" "1.0.0" ^workspace true)}}
+   ^pkg1 (dep "acme/pkg1" "1.0.0" ^^workspace)}}
 """)
     writePackageFile(root / "src/main.gene", "(fn main [] 0)")
     writePackageFile(root / "packages/pkg1/package.gene", """
@@ -537,7 +537,7 @@ suite "package manager — format 1 workspace graph":
  ^workspace {^members ["packages/*"]}
  ^applications [(application "app" ^entry "src/main.gene")]
  ^dependencies {
-   ^tool (dep "acme/tool" "1.0.0" ^workspace true)}}
+   ^tool (dep "acme/tool" "1.0.0" ^^workspace)}}
 """)
     writePackageFile(root / "src/main.gene", "(fn main [] 0)")
     writePackageFile(root / "packages/tool/package.gene", """
@@ -659,7 +659,7 @@ suite "package manager — format 1 workspace graph":
  ^version "1.0.0"
  ^library {^entry "src/index.gene"}
  ^dependencies {
-   ^helper (dep "acme/helper" "1.0.0" ^optional true)}
+   ^helper (dep "acme/helper" "1.0.0" ^^optional)}
  ^features {^extra ["dep:helper"]}}
 """)
     writePackageFile(registry / "acme/plugin/1.0.0/src/index.gene", "")
@@ -689,7 +689,7 @@ suite "package manager — format 1 workspace graph":
     for version in ["1.0.0", "2.0.0"]:
       writePackageFile(registry / "acme/single" / version / "package.gene",
         "{^format 1 ^name \"acme/single\" ^version \"" & version &
-        "\" ^singleton true ^library {^entry \"src/index.gene\"}}")
+        "\" ^^singleton ^library {^entry \"src/index.gene\"}}")
       writePackageFile(registry / "acme/single" / version / "src/index.gene", "")
     check raisedPackageClass(proc () =
       discard manager.resolve(ResolveRequest(startDir: appRoot))) ==

@@ -224,7 +224,7 @@ For example:
 ```
 
 The marker uses existing boolean-property syntax: `^^macro_result` means
-`^macro_result true`. It lives in the node's props, not its metadata; a boolean
+`^^macro_result`. It lives in the node's props, not its metadata; a boolean
 metadata field would use `@@macro_result`. Keep the selected `^^` spelling.
 Plain unmarked `do` retains its existing behavior. The earlier `^^create_scope`
 idea is not required by this macro contract.

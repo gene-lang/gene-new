@@ -115,7 +115,7 @@
 
 (fn finish_round_unlocked [controller : RoundController, session : Str, receipt, outcome]
   (let saved (copy_data receipt))
-  (match outcome ^exhaustive false
+  (match outcome ^!exhaustive
     (when (TaskOutcome/ok result)
       (for [name value] in result
         (saved .put name value)))
@@ -143,7 +143,7 @@
         ^reason (if (== saved/state "cancelled")
                   "cancelled"
                   "error")
-        ^synthetic false}))
+        ^!synthetic}))
   (if_not (== saved/state "waiting") (saved .put "finished_at" ($to_str ($now))))
   (if (&& (== saved/state "waiting") (!= saved/initiator "user"))
     (saved .put "remaining_ms" ($math/max 0 (- saved/deadline_ms ($os/wall_ms)))))

@@ -52,7 +52,7 @@
 (fn component_command [client : Client, text : Str] : Void
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
   (if_yes (!= client/selected "")
-    (send_command ^clear false client text)
+    (send_command ^!clear client text)
     (return))
   (var draft ($dom/input_value client/prompt))
   (set client/sending true)
@@ -70,7 +70,7 @@
           (select_session client id)
           ($dom/set_input_value client/prompt draft)
           (remember_draft client)
-          (send_command ^clear false client text))
+          (send_command ^!clear client text))
         (else
           (show_error client data)))
       (update_controls client))))
@@ -114,7 +114,7 @@
     (if_yes (== tab/id id) (return tab)))
   (var empty : (List Any) [])
   (var tab
-    (SessionTab ^id id ^title "Loading…" ^socket nil ^socket_epoch 0 ^sequence 0 ^connected false ^closed false ^expanded [] ^server_epoch "" ^cache {^session {^id id ^title "Loading…" ^revision "0"} ^records empty ^preview empty ^rounds empty ^cursor "" ^next_submission_seq "1" ^round nil ^questions nil ^has_older false}))
+    (SessionTab ^id id ^title "Loading…" ^socket nil ^socket_epoch 0 ^sequence 0 ^!connected ^!closed ^expanded [] ^server_epoch "" ^cache {^session {^id id ^title "Loading…" ^revision "0"} ^records empty ^preview empty ^rounds empty ^cursor "" ^next_submission_seq "1" ^round nil ^questions nil ^!has_older}))
   (client/tabs .push tab)
   tab)
 
@@ -379,7 +379,7 @@
     (set index (+ index 1)))
   (send_input_reply
     client
-    {^session client/selected ^batch_id client/input_id ^answers answers ^dismiss false}))
+    {^session client/selected ^batch_id client/input_id ^answers answers ^!dismiss}))
 
 (fn render_sessions [client : Client] : Void
   ($dom/clear client/list)
@@ -1191,7 +1191,7 @@
       ^text text
       ^status status
       ^view data/view
-      ^durable false})
+      ^!durable})
   (if_yes (!= status "running") (resolve_mode_receipt client [data]))
   (var error_code : Str (string_or data/error_code ""))
   (if_yes (== error_code "confirmation_required")
@@ -1599,7 +1599,7 @@
                     ^text output
                     ^status data/status
                     ^view data/view
-                    ^durable false}])
+                    ^!durable}])
               true)))))
     (render_tabs client)
   catch Any
@@ -1653,7 +1653,7 @@
 
 (fn main [root : EventTarget] : Void
   (var client
-    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^ready false ^sending false ^connected false ^server_busy false ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^busy false ^^autoscroll ^generation 0 ^has_older false ^loading_older false ^socket_epoch 0 ^viewing_history false ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^answering false ^round nil ^mode nil ^mode_pending nil ^action_cooldown false ^was_executing false ^pending nil ^status nil ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
+    (Client ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^trigger_selected "" ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title")))
   ($dom/add_event_listener
     ($dom/element "composer")
     "submit"

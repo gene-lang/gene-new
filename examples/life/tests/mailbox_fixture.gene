@@ -156,7 +156,7 @@
     (let state (if ($fs/exists? path) ($serde/read_data ($fs/read_text path))
       {^cursor 0 ^floor 0 ^messages [] ^deliveries {} ^sent []
        ^sends 0 ^effects 0 ^polls 0 ^receipts 0
-       ^unknown_receipts false ^drop_send_response false ^delay_ms {^poll 0 ^send 0}}))
+       ^!unknown_receipts ^!drop_send_response ^delay_ms {^poll 0 ^send 0}}))
     (let server (bind_listener))
     (let fixture {^home home ^server server ^state ($cell state)})
     (try

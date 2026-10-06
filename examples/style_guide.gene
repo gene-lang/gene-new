@@ -106,7 +106,7 @@ line two"""
 # Compact conditions, guard sequences, and full clauses.
 
 (fn status_text [status : Status] : Str
-  (match ^exhaustive false status
+  (match ^!exhaustive status
     (when Status/pending "pending")
     (when Status/active "active")
     (when (Status/failed message)
@@ -234,6 +234,6 @@ line two"""
 
 (fn main []
   (var users
-    [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^active false "Grace")])
+    [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^!active "Grace")])
   ($println (join (active_names users) ", "))
   nil)

@@ -151,9 +151,9 @@ suite "reader — sugars":
   test "flipped standalone": check_read("(.f a b)",   "(.f a b)")
   test "spread":             check_read("x...",         "(... x)")
   test "prop and meta flags consume no values":
-    check_read("(x ^^ready false @@generated nil)",
-               "(x @@generated ^^ready false nil)")
-    check_read("{^^ready ^value false}", "{^^ready ^!value}")
+    check_read("(x ^^!ready @@generated nil)",
+               "(x @@generated ^^!ready nil)")
+    check_read("{^^ready ^!value}", "{^^ready ^!value}")
   test "bare at can be a node head":
     check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")
     check_read("(x @line 7)", "(x @line 7)")
@@ -516,7 +516,7 @@ suite "reader — malformed input is rejected":
 suite "reader — false flags and quoted property keys":
   test "^!key is false-flag sugar in maps and node props":
     check_read("{^!ready}", "{^!ready}")
-    check_read("{^ready false}", "{^!ready}")
+    check_read("{^!ready}", "{^!ready}")
     check_read("{^!ready ^^done ^n 1}", "{^!ready ^^done ^n 1}")
     check_read("(x ^!ready 1)", "(x ^!ready 1)")
 

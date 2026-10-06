@@ -6,7 +6,7 @@
 
 (fn fixture []
   (let name (p/id "execution-boundary"))
-  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet start" "nil")]))
   (runtime/settle host)
   host)

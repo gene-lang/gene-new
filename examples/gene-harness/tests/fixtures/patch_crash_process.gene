@@ -14,7 +14,7 @@
   ($fs/write_text "a.txt" "a0\n")
   ($fs/write_text "b.txt" "b0\n")
   (evaluate_harness_turn runtime/h 1 root
-    "(Outcome ^done true ^reply \"patched\")\n*** Begin Patch\n*** Update File: a.txt\n@@\n-a0\n+a1\n*** Update File: b.txt\n@@\n-b0\n+b1\n*** End Patch\n"
+    "(Outcome ^^done ^reply \"patched\")\n*** Begin Patch\n*** Update File: a.txt\n@@\n-a0\n+a1\n*** Update File: b.txt\n@@\n-b0\n+b1\n*** End Patch\n"
     ^record (fn [kind data]
       (if (== kind "turn/response")
         (then

@@ -99,7 +99,7 @@
         (let remote (mailbox/call fixture "/inspect" {}))
         (assert_equal remote/sends 1)
         (assert_equal remote/effects 1)
-        (mailbox/call fixture "/configure" {^unknown_receipts false ^drop_send_response false}))
+        (mailbox/call fixture "/configure" {^!unknown_receipts ^!drop_send_response}))
       (check_completion host fixture before attempts)
     ensure (support/close_host host))
     # A second recovery must retain the receipt and transcript without even an
@@ -129,7 +129,7 @@
     (try
       (let home (crash fixture "delivery_before_send"))
       (let before (snapshot home))
-      (mailbox/call fixture "/configure" {^unknown_receipts true})
+      (mailbox/call fixture "/configure" {^^unknown_receipts})
       (let host (runtime/open_life home ^clock (fn [] 1000)))
       (try
         (support/wait_for host (fn [] (let remote (mailbox/call fixture "/inspect" {}))
@@ -144,7 +144,7 @@
         (let transcript (support/transcript host before/saved/destination))
         (assert_equal transcript/messages/.size 1)
         (assert_equal transcript/pending [before/saved/event_id])
-        (mailbox/call fixture "/configure" {^unknown_receipts false})
+        (mailbox/call fixture "/configure" {^!unknown_receipts})
         (check_completion host fixture before 2)
       ensure (support/close_host host))
     ensure (mailbox/stop fixture)))

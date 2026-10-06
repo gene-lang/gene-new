@@ -231,7 +231,7 @@ suite "I/O cleanup leases — structured scope":
       (ready .recv)
       (target .cancel)
       (release .send 1)
-      [(match (target .join) ^exhaustive false (when TaskOutcome/cancelled true))
+      [(match (target .join) ^!exhaustive (when TaskOutcome/cancelled true))
        (cleanup_retired?)]
     """), scope)
     check value.print() == "[true true]"

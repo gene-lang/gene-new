@@ -17,7 +17,7 @@
         (let label (evaluate_turn 2 root "# goal\n(let label \"value\")\n(append_prompt label 1)"))
         ($assert ($str/contains? label/request "[2.error] line 3:") "dynamic label lacked its response line")
         ($assert ($str/contains? label/request "literal label") "dynamic label lacked an explanation")
-        (let prose (evaluate_turn 3 root "I’ll inspect the files.\n# goal\n(Outcome ^done true ^reply \"done\")"))
+        (let prose (evaluate_turn 3 root "I’ll inspect the files.\n# goal\n(Outcome ^^done ^reply \"done\")"))
         ($assert ($str/contains? prose/request "[3.error] line 1:") "prose preamble lacked its response line")
         ($assert ($str/contains? prose/request "# comments") "prose error lacked a format hint")
         (let scalar (evaluate_turn 4 root "42"))
@@ -47,7 +47,7 @@
         (let path $"${root}/asset.txt")
         ($fs/write_text path "original")
         (let code ($to_str "($fs/write_text " ($json/stringify path)
-          " (attachment \"asset\"))\n(Outcome ^done true ^reply \"written\")\n"
+          " (attachment \"asset\"))\n(Outcome ^^done ^reply \"written\")\n"
           "<<<asset ELIDED\n[elided 2048 bytes; (recall \"14.attachment.asset\")]\nELIDED\n"))
         (let result (evaluate_turn 15 root code))
         ($assert (== result/kind "error") "copied history placeholder was executed")
@@ -94,7 +94,7 @@
         ($assert (< (- ($os/monotonic_ms) before) 100) "turn budget waited for a slow child")
         (let pieces [])
         (repeat i in 1024 (pieces .push "x"))
-        (let noisy (evaluate_turn 12 root "(repeat 300 ($print chunk)) (Outcome ^done true ^reply \"done\")"
+        (let noisy (evaluate_turn 12 root "(repeat 300 ($print chunk)) (Outcome ^^done ^reply \"done\")"
           ^bindings {^chunk ($str/join pieces "")}))
         ($assert (== noisy/kind "done") $"noisy response failed: ${noisy/error}")
         (var console_bytes 0)

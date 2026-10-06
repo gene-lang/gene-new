@@ -40,7 +40,7 @@ gene run world run                          # http://127.0.0.1:8096/
 - `$db/sqlite/open_file` — incremental, disk-backed SQLite (owner-only files, `^create`, `^busy_timeout_ms`); `SqliteDb` gained an optional `storage` field.
 - `$net/http` `ws_accept ^subprotocol` (RFC 6455 selection) and `ws_queued` (bytes a peer has not accepted).
 - Web profile `$ws/connect_protocol url protocol`.
-- `$json/parse ^strict true ^max_depth N` (duplicate keys rejected).
+- `$json/parse ^^strict ^max_depth N` (duplicate keys rejected).
 - `$os/wall_ms` (Unix epoch ms, for session expiry that survives restarts).
 
 Tests: `tests/spec_runner.nim` ("sqlite open_file …", "json/parse ^strict …"),
@@ -120,8 +120,8 @@ position.
 
 ### Platform changes this milestone needed (outside `examples/world`)
 
-- `$fs/write_text_atomic ^owner_only true` — the credential file.
-- `$json/parse ^strict true` rejects text that is not valid UTF-8, so a native
+- `$fs/write_text_atomic ^^owner_only` — the credential file.
+- `$json/parse ^^strict` rejects text that is not valid UTF-8, so a native
   client's binary frames and a browser's text frames meet one decoder (F23).
 - `genex/websocket` `connect_protocol`: offers one subprotocol and fails
   unless the server selects it (the 101's headers are `CURLH_1XX`); its

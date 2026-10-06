@@ -9,7 +9,7 @@
   (let csv_path (?? args/2 ($path/join root "people.csv")))
   (let files ($into ($map ($fs/walk root) /relative_path) []))
   (let record ($json/parse ($fs/read_text input)))
-  (let rows ($csv/parse_rows ($fs/read_text csv_path) ^headers true))
+  (let rows ($csv/parse_rows ($fs/read_text csv_path) ^^headers))
   (var total 0)
   (for row in rows
     (set total (+ total ($parse/parse_int row/count))))

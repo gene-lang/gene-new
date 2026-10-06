@@ -96,12 +96,12 @@
         (let was before_body/1)
         (let now after_body/1)
         (changes .push
-          `(changed ^id %id ^kind %kind ^field %field ^aspect %aspect ^pixel true
+          `(changed ^id %id ^kind %kind ^field %field ^aspect %aspect ^^pixel
              ^before %was ^after %now)))
       (if_yes (!= other/parent entry/parent)
         (let was other/parent)
         (let now entry/parent)
-        (changes .push `(reparented ^id %id ^before %was ^after %now ^pixel true)))))
+        (changes .push `(reparented ^id %id ^before %was ^after %now ^^pixel)))))
   # Paint order: for each container present on both sides, compare the order
   # of the children the two sides share.
   (for parent in (container_parents after_index)
@@ -111,7 +111,7 @@
       (let before ($filter before_all (fn [id] (after_all .contains? id))))
       (let after ($filter after_all (fn [id] (before_all .contains? id))))
       (if (!= before after)
-        (changes .push `(reordered ^parent %parent ^before %before ^after %after ^pixel true)))))
+        (changes .push `(reordered ^parent %parent ^before %before ^after %after ^^pixel)))))
   (var pixel_changes 0)
   (var semantic_changes 0)
   (for change in changes

@@ -227,7 +227,7 @@
       ^created now
       ^last_active now
       ^last_active_ms ($os/wall_ms)
-      ^attention false
+      ^!attention
       ^pinned pinned
       ^trigger trigger
       ^occurrence occurrence
@@ -305,7 +305,7 @@
     (loaded/viewers .set (+ loaded/viewers/.get 1))
     loaded)))
   (let record (require_record manager id))
-  (if record/attention (update_session manager id {^attention false}))
+  (if record/attention (update_session manager id {^!attention}))
   state)
 
 (fn leave_session [manager : SessionManager, id : Str]

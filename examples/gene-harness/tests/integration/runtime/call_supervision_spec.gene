@@ -17,7 +17,7 @@
         (let code ($cell ""))
         (let ticks ($cell 0))
         (let service (test_service ^workspace workspace ^provider (fn [context]
-          (if (== context/session "busy") code/.get "(Outcome ^done true ^reply \"done\")"))))
+          (if (== context/session "busy") code/.get "(Outcome ^^done ^reply \"done\")"))))
         (contribute service/runtime/h "core" "functions"
           {^name "entered" ^doc "Mark response entry." ^fn (fn [] (entered .set true))})
         (contribute service/runtime/h "core" "functions"
@@ -37,7 +37,7 @@
           (for scenario in [
             "(entered) (while true (work_tick))"
             "(entered) ($map [1] (fn [n] (while true (work_tick))))"
-            "(entered) ($os/exec \"sleep\" \"30\") (Outcome ^done true ^reply \"done\")"]
+            "(entered) ($os/exec \"sleep\" \"30\") (Outcome ^^done ^reply \"done\")"]
             (set sequence (+ sequence 1))
             (entered .set false)
             (code .set scenario)

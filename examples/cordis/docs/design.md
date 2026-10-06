@@ -1082,12 +1082,12 @@ The default format is one Gene data value, never evaluated:
     ^config {}}
 
    {^id "tenant_a"
-    ^group true
+    ^^group
     ^children [
       {^id "database"
        ^module "./plugins/sqlite.gene"
        ^config {^path "tenant-a.db"}
-       ^isolate {^database true}}
+       ^isolate {^^database}}
 
       {^id "api"
        ^module "./plugins/api.gene"
@@ -1451,7 +1451,7 @@ callbacks.
  ]
  ^services [
    {^service "clock" ^realm "default"
-    ^provider 3 ^generation 1 ^active true}
+    ^provider 3 ^generation 1 ^^active}
  ]
  ^realms [...]
  ^hooks [...]

@@ -7,7 +7,7 @@
 (import [invoke_effect_owner spawn_effect_call] ^from "./runtime")
 
 (type GuardedActorHandler
-  ^private true
+  ^^private
   ^props {^owner Any ^callable Any}
   (impl Callable
     (message apply [self, call]

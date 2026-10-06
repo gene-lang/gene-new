@@ -112,7 +112,7 @@ The turn function takes an id and source, with optional `^dependencies` and
 
 ```gene
 (register_plugin "counter" ($fs/read_text "counter.gene"))
-(register_plugin ^replace true "counter" ($fs/read_text "counter.gene"))
+(register_plugin ^^replace "counter" ($fs/read_text "counter.gene"))
 ```
 
 Save source in the workspace before registration. Publication is queued until
@@ -120,7 +120,7 @@ the turn closes; verify the contributions on the next turn. Registration
 accepts source text or a quoted module. The shared API import is virtual inside
 generated modules; its repository file is
 `examples/gene-harness/src/plugin_api.gene`.
-Updating an already registered id requires explicit `^replace true`.
+Updating an already registered id requires explicit `^^replace`.
 
 Command handlers receive `ctx/raw` (the text after the command name) and
 `ctx/session` (the current conversation id). A handler returns `CommandResult`,

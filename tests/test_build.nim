@@ -71,7 +71,7 @@ suite "build engine — pure Gene targets":
    (application "cli" ^entry "src/cli.gene")
    (application "admin" ^entry "src/admin.gene")]
  ^dependencies {
-   ^math (dep "acme/math" "1.0.0" ^workspace true)}}
+   ^math (dep "acme/math" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "src/index.gene", "(var package_name \"app\")")
     writeBuildFile(root / "src/unused.gene", "((unterminated")
@@ -87,12 +87,12 @@ suite "build engine — pure Gene targets":
  ^version "1.0.0"
  ^library {^entry "src/index.gene"}
  ^dependencies {
-   ^core (dep "acme/core" "1.0.0" ^workspace true)}}
+   ^core (dep "acme/core" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "packages/math/src/index.gene", """
 (import [base] ^from "." ^pkg "core")
 (var answer base)
-(fn expand_twice ^private true [x] `(+ %x %x))
+(fn expand_twice ^^private [x] `(+ %x %x))
 (macro twice [x] (expand_twice x))
 """)
     writeBuildFile(root / "packages/core/package.gene", """
@@ -207,9 +207,9 @@ suite "build engine — pure Gene targets":
      ^inherits release
      ^optimization size
      ^debug_info none
-     ^assertions false
+     ^!assertions
      ^sealing sealed
-     ^lto true)}}
+     ^^lto)}}
 """)
     writeBuildFile(root / "src/main.gene", "(fn main [] 0)")
     let manager = newPackageManager(root / "package_store")
@@ -276,7 +276,7 @@ suite "build engine — pure Gene targets":
  ^version "1.0.0"
  ^workspace {^members ["packages/*"]}
  ^applications [(application "cli" ^entry "src/main.gene")]
- ^dependencies {^math (dep "acme/math" "1.0.0" ^workspace true)}}
+ ^dependencies {^math (dep "acme/math" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "src/main.gene",
       "(import [answer] ^from \".\" ^pkg \"math\") (fn main [] answer)")
@@ -344,8 +344,8 @@ suite "build engine — pure Gene targets":
  ^workspace {^members ["packages/*"]}
  ^applications [(application "app" ^entry "src/main.gene")]
  ^dependencies {
-   ^one (dep "acme/one" "1.0.0" ^workspace true)
-   ^two (dep "acme/two" "1.0.0" ^workspace true)}}
+   ^one (dep "acme/one" "1.0.0" ^^workspace)
+   ^two (dep "acme/two" "1.0.0" ^^workspace)}}
 """)
       writeBuildFile(root / "src/main.gene", "(fn main [] 0)")
       for name in ["one", "two"]:

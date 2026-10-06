@@ -14,7 +14,7 @@
   (message throttle [callback, delay_ms : Int] : Any)
   (message debounce [callback, delay_ms : Int] : Any))
 
-(type TimerProvider ^private true ^props {^owner Any}
+(type TimerProvider ^^private ^props {^owner Any}
   (impl Timer
     (message timeout [callback, delay_ms : Int] : Disposable
       (timeout self/owner callback delay_ms))
@@ -28,7 +28,7 @@
       (debounce self/owner callback delay_ms))))
 
 (type BoundTimer
-  ^private true
+  ^^private
   ^props {^owner Any}
   (impl Timer
     (message timeout [callback, delay_ms : Int] : Disposable
@@ -43,7 +43,7 @@
       (debounce self/owner callback delay_ms))))
 
 (type ScheduledCallable
-  ^private true
+  ^^private
   ^props {^owner Any ^callback Any ^delay_ms Int ^kind Str ^trailing Bool
           ^active Any ^task Any ^busy Any ^pending Any}
   (message dispose [] : Nil (scheduled_dispose self))

@@ -136,7 +136,7 @@ pages use the existing complete-list commitment, semantic-version ordering,
 changes the commitment and the client refuses the inconsistent snapshot.
 
 `POST /v1/yank/<owner>/<name>/<version>` takes
-`{^yank_format 1 ^yanked true}` (or false), under the same owner authentication.
+`{^yank_format 1 ^^yanked}` (or false), under the same owner authentication.
 It atomically changes discovery metadata, while locked release/object URLs stay
 available. This is not signature revocation. `/health` returns `ok`.
 

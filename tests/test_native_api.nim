@@ -517,7 +517,7 @@ suite "native api — roots and trampoline":
     # A borrowed pointer fails the declared field type, and the ctor's own
     # owned handle count is untouched because it never installed one.
     check "field 'handle' for Blob" in run(compileSource(
-      "(try (new Blob ^borrowed true) catch TypeError $err/where)"),
+      "(try (new Blob ^^borrowed) catch TypeError $err/where)"),
       scope).print()
     check releasedPointers == releasedAfterOwned
 

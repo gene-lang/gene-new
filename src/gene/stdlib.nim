@@ -5655,7 +5655,7 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
 
 proc biFsWriteTextAtomicSync(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
-  ## (fs/write_text_atomic path text ^owner_only false). `^owner_only true`
+  ## (fs/write_text_atomic path text ^!owner_only). `^^owner_only`
   ## restricts the staged file to its owner before any content is written, so
   ## a secret is never readable by others, even briefly.
   if args.len != 2:
@@ -5867,7 +5867,7 @@ type JsonParser = object
   input: string
   pos: int
   scope: Scope
-  # `^strict true` rejects a repeated object key instead of keeping the last
+  # `^^strict` rejects a repeated object key instead of keeping the last
   # one: a peer's message then means exactly one thing to every parser.
   strict: bool
   maxDepth: int
@@ -6048,10 +6048,10 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
     NIL
 
 proc biParseReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (parse/read_all text ^source "" ^locs false ^max_depth 0
-  ##                 ^reject_duplicate_props false)
+  ## (parse/read_all text ^source "" ^!locs ^max_depth 0
+  ##                 ^!reject_duplicate_props)
   ## The reader as a data boundary. Without the last two options this is the
-  ## root `read_all`. `^reject_duplicate_props true` refuses a repeated
+  ## root `read_all`. `^^reject_duplicate_props` refuses a repeated
   ## property, map key, or metadata key, which the reader otherwise resolves
   ## by keeping the last value; `^max_depth` bounds nesting. Both are for text
   ## from an untrusted peer, such as a model response read as domain data.
@@ -6099,7 +6099,7 @@ proc biParseReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimca
                      e.sourceName, e.line, e.col, e.contextFrames)
 
 proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (json/parse text ^strict false ^max_depth 200). `^strict true` rejects
+  ## (json/parse text ^!strict ^max_depth 200). `^^strict` rejects
   ## duplicate object keys and text that is not valid UTF-8 (RFC 8259 §8.1),
   ## so bytes from a binary WebSocket frame and a text frame meet the same
   ## decoder; `^max_depth` lowers the nesting limit for input from an
@@ -7724,7 +7724,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
         "data only)", r.path)
     if not r.limits.allowRestore:
       raiseSerdeError(r.scope,
-        "serde_hooked requires ^policy (SerdePolicy ^allow_restore true) — " &
+        "serde_hooked requires ^policy (SerdePolicy ^^allow_restore) — " &
         "restore hooks execute user code during deserialization", r.path)
     if v.props.len > 0 or v.meta.len > 0 or v.body.len != 2:
       raiseSerdeError(r.scope, "serde_hooked expects (type-ref state)", r.path)
@@ -8321,7 +8321,7 @@ proc sqliteCreateOwnerOnly(path: string) =
       setFilePermissions(path, {fpUserRead, fpUserWrite})
 
 proc biSqliteOpenFile(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (sqlite/open_file path ^create false ^busy_timeout_ms 5000) — an
+  ## (sqlite/open_file path ^!create ^busy_timeout_ms 5000) — an
   ## incremental, disk-backed connection. `sqlite/open` loads the file into
   ## memory and republishes the whole image on every commit; this opens the
   ## file itself, so a commit writes only its changed pages through SQLite's
@@ -8361,7 +8361,7 @@ proc biSqliteOpenFile(args: openArray[Value], call: ptr NativeCall): Value {.nim
   if not fileExists(databasePath):
     if not create:
       raiseDbError("sqlite/open_file: no database at " & databasePath &
-                   " (pass ^create true to make one)", scope)
+                   " (pass ^^create to make one)", scope)
     try:
       sqliteCreateOwnerOnly(databasePath)
     except CatchableError as error:

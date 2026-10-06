@@ -157,7 +157,7 @@
     self/.IoResource:close
     (let cleanup self/cleanup/.get)
     (spawn ^lane root
-      (match cleanup/.join ^exhaustive false
+      (match cleanup/.join ^!exhaustive
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
         (when (TaskOutcome/panic message) (panic message))
@@ -298,7 +298,7 @@
     self/.IoResource:close
     (let cleanup self/cleanup/.get)
     (spawn ^lane root
-      (match cleanup/.join ^exhaustive false
+      (match cleanup/.join ^!exhaustive
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
         (when (TaskOutcome/panic message) (panic message))

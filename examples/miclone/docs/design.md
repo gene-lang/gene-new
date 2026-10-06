@@ -744,7 +744,7 @@ both backends refuse the same source.
 
 **14. Explicit public re-exports. Implemented.**
 
-`(import [names] ^from "./module.gene" ^export true)` exposes a curated facade
+`(import [names] ^from "./module.gene" ^^export)` exposes a curated facade
 on both backends. Types, protocols, functions, and constants retain their
 origin identity through aliases and re-export chains. Ordinary imports remain
 private. `core/api.gene` now exports the mod vocabulary, `mods/default` uses
@@ -1907,8 +1907,8 @@ content module; the engine gets its game from `load_mods` (compiled in) or
                          "miclone:dirt"])
   (register_node game "miclone:water" ^tiles ["miclone:water"]
                  ^drawtype draw_liquid
-                 ^solid false
-                 ^propagates_light true))
+                 ^!solid
+                 ^^propagates_light))
 
 (fn setup_drops [game : Game] : Nil
   (register_drop_rule game "miclone:grass" ^item "miclone:dirt"))

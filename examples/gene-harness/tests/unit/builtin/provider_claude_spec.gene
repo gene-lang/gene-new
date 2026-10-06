@@ -13,7 +13,7 @@
           {
             ^status 0
             ^stdout ($json/stringify
-                      {^type "result" ^subtype "success" ^is_error false ^result text})})))))
+                      {^type "result" ^subtype "success" ^!is_error ^result text})})))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

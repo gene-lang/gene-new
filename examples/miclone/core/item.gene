@@ -30,7 +30,7 @@
 #
 # `register_node` calls `auto_register_item` for every node, so a mod that
 # defines a node can hold it, drop it and place it without a second
-# registration. `^is_item false` opts out, for a node that should never be in a
+# registration. `^!is_item` opts out, for a node that should never be in a
 # hand — upstream's `air` and `ignore`, and any node a mod places only from
 # code. §1's three reserved ids take that path.
 #

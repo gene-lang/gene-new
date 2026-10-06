@@ -26,7 +26,7 @@ suite "web module import syntax":
     for source in [
       "(import [from : value] ^from \"./provider.gene\")",
       "(import ^from \"./provider.gene\" [from : value])",
-      "(import ^export true [from : value] ^from \"./provider.gene\")"
+      "(import ^^export [from : value] ^from \"./provider.gene\")"
     ]:
       writeFile(root / "entry.gene", "(mod entry ^profile web) " & source &
         " (fn run [] : Int value)")
@@ -42,7 +42,7 @@ suite "web module import syntax":
       ("(import [Thing] ^from 42)", "^from must be a path string"),
       ("(import [Thing] ^from nil)", "^from must be a path string"),
       ("(import [Thing] ^^from)", "^from must be a path string"),
-      ("(import [Thing] ^from \"./provider.gene\" ^form true)", "unexpected named argument: form")
+      ("(import [Thing] ^from \"./provider.gene\" ^^form)", "unexpected named argument: form")
     ]:
       checkpoint source
       checkWebExportRejection(source, "Thing", expected)
@@ -56,7 +56,7 @@ suite "web module export boundaries":
 
   test "explicit false keeps an import private":
     checkWebExportRejection(
-      "(import [Thing] ^from \"./provider.gene\" ^export false)", "Thing",
+      "(import [Thing] ^from \"./provider.gene\" ^!export)", "Thing",
       "no exported declaration: Thing")
 
   test "export policy must be a literal boolean":

@@ -6844,7 +6844,7 @@ proc compileFfiSignature(c: var Compiler, node: Value,
   if kind == fskCallback:
     if proto.escaping:
       raise newException(GeneError,
-        "ffi/callback ^escaping true is not supported yet")
+        "ffi/callback ^^escaping is not supported yet")
     for param in proto.params:
       validateFfiFnParamType(context, param.name, param.typeExpr)
     validateFfiFnReturnType(context, proto.returnType, "")
@@ -8220,7 +8220,7 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
         "macro calls are only expanded in expression positions (got " & clause.head.symVal & ")")
   if requireExhaustive and mp.elseBody == nil and not hasCatchAll:
     raise newException(GeneError,
-      "match is not exhaustive; add (else ...), a binding arm, or ^exhaustive false")
+      "match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive")
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =

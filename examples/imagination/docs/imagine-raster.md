@@ -102,7 +102,7 @@ A `RasterPainting` value contains canvas configuration, immutable resource defin
         (C 690 745 760 540 650 390)
         (C 560 330 420 330 330 390) (Z))))
   (layer ^id "apple" ^label "Apple" ^role "subject"
-    ^opacity 1 ^blend "source_over" ^visible true
+    ^opacity 1 ^blend "source_over" ^^visible
     (fill_mask ^id "apple-base" ^mask "apple-shape"
       ^paint "apple-light" ^opacity 1)
     (stroke ^id "apple-highlight" ^brush "soft-round"

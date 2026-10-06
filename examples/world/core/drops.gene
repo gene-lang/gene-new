@@ -69,7 +69,7 @@
   (if (declared? t id) (t/item .get id) (item_of_node items id)))
 
 # A node with no item of its own — §1's reserved ids, or one a mod opted out of
-# with `^is_item false` — yields nothing, whatever the count says. Without this
+# with `^!is_item` — yields nothing, whatever the count says. Without this
 # a dig on such a node would add `no_item` to the hotbar and the hotbar would
 # hold a stack of -1.
 (fn drop_count [t : DropTable items : ItemRegistry id : F64] : F64

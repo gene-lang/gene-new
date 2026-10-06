@@ -419,12 +419,12 @@ For example, both helpers below omit `^errors`:
 (type ConfigError ^props {^message Str})
 (impl Error for ConfigError)
 
-(fn decode ^private true [bad : Bool] : Str
+(fn decode ^^private [bad : Bool] : Str
   (if bad
     (fail (ConfigError ^message "Invalid configuration"))
     "ready"))
 
-(fn load_config ^private true [bad : Bool] : Str
+(fn load_config ^^private [bad : Bool] : Str
   (decode bad))
 
 (fn start [bad : Bool] : Str ^errors []

@@ -69,7 +69,7 @@
   {^phase "disconnected" ^socket nil ^transport nil ^generation nil ^epoch nil
    ^next_connect_ms 0 ^backoff_ms 0 ^in_flight nil ^last_lane nil ^attempted {}
    ^window_start 0 ^window_count 0 ^send_after_ms 0 ^last_heartbeat_ms 0
-   ^refresh false ^last_error nil ^connects 0 ^batch [] ^gap nil ^sync nil
+   ^!refresh ^last_error nil ^connects 0 ^batch [] ^gap nil ^sync nil
    ^messages_in 0 ^commands_sent 0 ^queries_sent 0 ^commands_per_second commands_per_second})
 
 (fn initialize [host, tx]
@@ -130,7 +130,7 @@
   (binding .put "endpoint" endpoint)
   (binding .put "bound_at" (host/clock))
   (p/tx_put tx "world_binding" binding)
-  ($fs/write_text_atomic (credential_path host) secret ^owner_only true)
+  ($fs/write_text_atomic (credential_path host) secret ^^owner_only)
   (p/commit tx)
   binding)
 
@@ -240,7 +240,7 @@
   (let cursor (p/get host/store "world_cursor"))
   (send_json host state {^kind "hello" ^role "controller" ^life_id binding/life_id
     ^credential credential ^world_id binding/world_id ^history_id binding/history_id
-    ^telemetry false ^view "structured"
+    ^!telemetry ^view "structured"
     ^resume {^after_event_seq $"${cursor/received}"}}))
 
 (fn tick [host]
@@ -275,7 +275,7 @@
     (set n (+ n 1))
     (state .put "messages_in" (+ state/messages_in 1))
     (if (> ($str/byte_size text) max_message_bytes) (p/problem "World message exceeds the size limit"))
-    (let message (try ($json/parse text ^strict true ^max_depth 32)
+    (let message (try ($json/parse text ^^strict ^max_depth 32)
       catch Any (p/problem "World sent a message that is not valid JSON")))
     (require (&& (== ($head message) Map) (== message/v 1)) "World sent an unsupported message")
     (if (== message/kind "event")
@@ -677,7 +677,7 @@
     {^operation_id op_id ^action_id details/action_id ^reason (?? details/reason nil)
      ^progress (?? details/progress nil) ^position (?? details/position nil)
      ^destination (?? op/input nil) ^status_revision revision}
-    $"world-suspended:${details/action_id}:${revision}" ^wake true))
+    $"world-suspended:${details/action_id}:${revision}" ^^wake))
 
 # Route one operation's terminal result: ready its continuation, settle a chat
 # delivery it carries, or — with nothing waiting — keep an unsuccessful

@@ -416,11 +416,11 @@ suite "protocols — declarations and dispatch":
        "[\"a\" \"b\"]"
 
   test "universal conformance must be explicit and fully defaulted":
-    ck "(protocol P ^universal true (message value [self] : Int 7)) " &
+    ck "(protocol P ^^universal (message value [self] : Int 7)) " &
        "(type T ^props {} ^impl [P]) ((T) .P:value)",
        "7"
     expect GeneError:
-      discard runStr("(protocol P ^universal true (message value [self] : Int))")
+      discard runStr("(protocol P ^^universal (message value [self] : Int))")
     expect GeneError:
       discard runStr("(protocol P ^universal 1)")
 

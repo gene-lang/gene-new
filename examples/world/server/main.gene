@@ -104,7 +104,7 @@
         (let made (provision_life store words/2 (rest_of words 3)))
         # The credential goes to one owner-only file, never to the terminal or
         # a log; the operator hands that file to the Life (§4.4, §9.4).
-        ($fs/write_text_atomic credential_out made/credential ^owner_only true)
+        ($fs/write_text_atomic credential_out made/credential ^^owner_only)
         ($println (if made/created
                     $"world: life ${words/2} added as ${made/participant_id} with avatar ${made/entity_id}"
                     $"world: life ${words/2} exists; issued a new connection credential"))

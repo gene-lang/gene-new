@@ -922,9 +922,9 @@
 (fn main [root : EventTarget] : Void
   (var bench
     (Bench ^token ($dom/text ($dom/element "imagination_token")) ^project "" ^line "main"
-      ^viewing "" ^follow true ^show_trials true ^vector false ^last_seq 0 ^socket nil
-      ^socket_epoch 0 ^job "" ^data nil ^history nil ^revision nil ^refresh_queued false
-      ^busy false ^dropped false ^phase "" ^phase_from 0.0 ^run_from 0.0 ^ticking false
+      ^viewing "" ^^follow ^^show_trials ^!vector ^last_seq 0 ^socket nil
+      ^socket_epoch 0 ^job "" ^data nil ^history nil ^revision nil ^!refresh_queued
+      ^!busy ^!dropped ^phase "" ^phase_from 0.0 ^run_from 0.0 ^!ticking
       ^canvas ($dom/element "canvas_image") ^notice ($dom/element "notice")))
   ($dom/add_event_listener ($dom/element "project_select") "change"
     (fn [event : Any] : Void

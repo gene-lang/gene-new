@@ -148,7 +148,7 @@
   (if_not ($fs/exists? root) ($fs/make_dir root))
   (let claim (acquire_claim root))
   (try
-    (let db (open_file $"${root}/${database_name}" ^create true ^busy_timeout_ms 5000))
+    (let db (open_file $"${root}/${database_name}" ^^create ^busy_timeout_ms 5000))
     (try
       (apply_durability db)
       (db .Db:transaction (fn [tx]
@@ -207,7 +207,7 @@
   (store/db .Db:transaction (fn [tx] (body))))
 
 (fn encode [value] : Str ($json/stringify value))
-(fn decode [text : Str] ($json/parse text ^strict true))
+(fn decode [text : Str] ($json/parse text ^^strict))
 
 # --- meta --------------------------------------------------------------------
 

@@ -54,7 +54,7 @@ The streamed-response Task succeeds on final headers, not on complete body recei
 
 ## NET-2: server streaming and first HTTPS deployment
 
-Add `serve ^body_mode "stream"` alongside existing buffered mode. Parse/validate headers and acquire request admission before accepting an unbounded body. Stream-mode requests expose a reader implementing AsyncReader/IoResource; buffered-mode request/body retains today's shape. `($net/http/stream reader)` or `($net/http/stream status reader ^content_length n ^max_bytes limit ^own_reader false)` selects a bounded AsyncReader response, using chunked framing when content length is unknown. Existing `bytes` and text response helpers retain their shapes.
+Add `serve ^body_mode "stream"` alongside existing buffered mode. Parse/validate headers and acquire request admission before accepting an unbounded body. Stream-mode requests expose a reader implementing AsyncReader/IoResource; buffered-mode request/body retains today's shape. `($net/http/stream reader)` or `($net/http/stream status reader ^content_length n ^max_bytes limit ^!own_reader)` selects a bounded AsyncReader response, using chunked framing when content length is unknown. Existing `bytes` and text response helpers retain their shapes.
 
 Bound incomplete headers, body bytes, request queue, and socket writes. Enforce monotonic header/body-idle/total deadlines. A slow socket parks its task rather than holding the root loop. Unexpected EOF and oversized input fail the request; partial output cannot be replaced with a fictional complete error response. Early body close either bounded-drains or closes the connection. WebSocket upgrade retains its existing validated handshake and queue rules and is not a generic body reader.
 

@@ -1806,7 +1806,7 @@ suite "types — declaration and construction":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) (== A B)", "false"
   test "type declarations reject unsupported props":
     expect GeneError:
-      discard compileSource("(type T ^sealed true ^props {})")
+      discard compileSource("(type T ^^sealed ^props {})")
     expect GeneError:
       discard compileSource("(type T ^unknown 1 ^props {})")
 
@@ -1875,19 +1875,19 @@ suite "types — single inheritance":
 suite "types — pattern matching":
   test "instances match a node-shape pattern by type":
     ck "(type Task ^props {^id Int ^title Str}) " &
-       "(match (Task ^id 7 ^title \"a\") ^exhaustive false (when (Task ^id n) n))", "7"
+       "(match (Task ^id 7 ^title \"a\") ^!exhaustive (when (Task ^id n) n))", "7"
   test "instances match parent type patterns":
     ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
-       "(match (Dog ^name \"Rex\" ^breed \"Lab\") ^exhaustive false (when (Animal ^name n) n))",
+       "(match (Dog ^name \"Rex\" ^breed \"Lab\") ^!exhaustive (when (Animal ^name n) n))",
        "\"Rex\""
   test "a different type does not match":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) " &
        "(match (B ^x 1) (when (A ^x v) \"a\") (else \"other\"))", "\"other\""
   test "typed binders match nominal types":
     ck "(type Task ^props {^id Int}) " &
-       "(match (Task ^id 7) ^exhaustive false (when (t : Task) t/id))", "7"
+       "(match (Task ^id 7) ^!exhaustive (when (t : Task) t/id))", "7"
     ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
-       "(match (Dog ^name \"Rex\" ^breed \"Lab\") ^exhaustive false (when (a : Animal) a/name))",
+       "(match (Dog ^name \"Rex\" ^breed \"Lab\") ^!exhaustive (when (a : Animal) a/name))",
        "\"Rex\""
 
 suite "types — function boundaries":

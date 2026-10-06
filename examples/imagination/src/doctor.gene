@@ -72,7 +72,7 @@
       (set profile (open_profile work_dir))
       $"rsvg-convert ${profile/rsvg_version} at ${profile/rsvg}; Poppler ${profile/poppler_version} at ${profile/pdftocairo}"))
   (if ($absent? profile)
-    (return {^ok false ^checks checks ^manifest nil}))
+    (return {^!ok ^checks checks ^manifest nil}))
 
   (attempt "flags"
     (fn []
@@ -125,7 +125,7 @@
       $"PNG header reports ${size/0} x ${size/1}"))
 
   (if ($absent? transport)
-    (checks .push {^name "image_transport" ^ok true ^skipped true
+    (checks .push {^name "image_transport" ^^ok ^^skipped
                    ^detail "skipped: no model is configured (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, or run codex login)"})
     (attempt "image_transport" transport))
 

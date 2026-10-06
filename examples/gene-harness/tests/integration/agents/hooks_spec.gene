@@ -29,8 +29,8 @@
     (isolated this_mod/.path "skips a failure, preserves protocol records and honors the lease"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"done\")"
-                             "(Outcome ^done true ^reply \"done again\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"done\")"
+                             "(Outcome ^^done ^reply \"done again\")"])))
         (let controller (new_round_controller runtime))
         (try
           (let old_lease (acquire_snapshot runtime/h/snapshots))
@@ -105,7 +105,7 @@
     (isolated this_mod/.path "skips a timed-out listener and runs the next one"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"done\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"done\")"])))
         (try
           (let slow
             (Plugin ^id "aaa_slow_hook" ^activate (fn [host]
@@ -113,7 +113,7 @@
                 {^point "request/prepare" ^name "slow"
                  ^run (fn [context, next] ($sleep 5000) (next context))}))))
           (let installed (put_cordis_plugin runtime/h slow
-            {^host true
+            {^^host
              ^limits (ExecutionLimits ^max_steps 1000000
                ^max_memory_mb 64 ^timeout_ms 1000)}))
           (let activation_error (plugin_error runtime/h "aaa_slow_hook"))
@@ -157,7 +157,7 @@
     (isolated this_mod/.path "runs downstream listeners once when a hook calls next twice"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"done\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"done\")"])))
         (let calls ($cell 0))
         (try
           (contribute ^priority -20 runtime/h "core" "hooks"
@@ -196,7 +196,7 @@
     (isolated this_mod/.path "skips a panicking plugin listener"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"done\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"done\")"])))
         (try
           (let panicking
             (Plugin ^id "aaa_panic_hook" ^activate (fn [host]
@@ -204,7 +204,7 @@
                 {^point "request/prepare" ^name "panic"
                  ^run (fn [context, next] ($panic "hook panic probe"))}))))
           ($assert (== (put_cordis_plugin runtime/h panicking
-            {^host true ^limits (ExecutionLimits ^max_steps 1000000
+            {^^host ^limits (ExecutionLimits ^max_steps 1000000
               ^max_memory_mb 64 ^timeout_ms 1000)}) "ready")
             "panic probe plugin did not activate")
           (let lease (acquire_snapshot runtime/h/snapshots))

@@ -244,10 +244,10 @@
          (h3 ^id "view_result_title" ^class "view_title" "3. Result")
          (p ^class "view_text"
            "The tool call, the counts it returned, and the report it wrote through fs.write.")
-         %(code_block "result_command" "Tool call" scan_command ^wrap true)
+         %(code_block "result_command" "Tool call" scan_command ^^wrap)
          %(result_table)
          (div ^class "two_up"
-           %(code_block "result_value" "Tool result" summary ^lang "gene" ^wrap true)
+           %(code_block "result_value" "Tool result" summary ^lang "gene" ^^wrap)
            %(code_block "result_report" "audit-report.md" report))
          (ul ^class "evidence"
            (li "The report was read back through the browser client and checked against the source files.")
@@ -259,8 +259,8 @@
            (div ^class "disclosure_body"
              (p ^class "view_text"
                "A scan that names a missing file returns a structured error with the stage and path that failed. No report is written, and project_audit.last still returns the previous summary.")
-             %(code_block "failure_command" "Tool call" missing_command ^wrap true)
-             %(code_block "failure_result" "Tool result" missing ^lang "gene" ^wrap true))))
+             %(code_block "failure_command" "Tool call" missing_command ^^wrap)
+             %(code_block "failure_result" "Tool result" missing ^lang "gene" ^^wrap))))
        (p ^class "view_text" (a ^href %fixtures "Browse the example fixtures")))))
 
 # --- Written in Gene ------------------------------------------------------------------
@@ -341,7 +341,7 @@
              (h3 "Ask for a tool")
              (p "Ordinary text goes to the model; " (code "/help")
                 " lists the commands that run without it. A first prompt to try:")
-             %(code_block "run_prompt" "Prompt" prompt ^wrap true))
+             %(code_block "run_prompt" "Prompt" prompt ^^wrap))
            (li ^class "run_step"
              (h3 "Point it at your project")
              (p "Two directories matter. Choose each with a flag.")

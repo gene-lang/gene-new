@@ -10,7 +10,7 @@
 (fn at [date, time] (* (calendar/local_seconds date time) 1000))
 (fn fixture [now]
   (let name (p/id "scheduler"))
-  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] now/.get)
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] now/.get)
     ^decisions [(brain/response "Quiet" "nil")]))
   (runtime/settle host)
   host)
@@ -157,7 +157,7 @@
     (let id (p/get host/store "state/schedule"))
     (let initial (p/get host/store $"schedule/${id}"))
     (try
-      (decide host "(scheduler .timezone \"UTC\" ^refresh true ^through_year 2110)")
+      (decide host "(scheduler .timezone \"UTC\" ^^refresh ^through_year 2110)")
       (let head (p/get host/store "timezone_selection/UTC"))
       ($assert (!= head initial/timezone/revision))
       (let retained (p/get host/store $"schedule/${id}"))
@@ -195,7 +195,7 @@
     (let now ($cell (at "2026-01-01" "00")))
     (let host (fixture now))
     (let result (decide host "(do
-      (let zone (scheduler .timezone \"UTC\" ^refresh true ^through_year 2038))
+      (let zone (scheduler .timezone \"UTC\" ^^refresh ^through_year 2038))
       (state .put \"schedule\" (scheduler .cron \"0 9 * * *\" zone ^missed \"coalesce_once\")))"))
     (assert_equal result/status "succeeded" result/result)
     (now .set (at "2039-01-01" "12"))

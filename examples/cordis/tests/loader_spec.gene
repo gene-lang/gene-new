@@ -93,7 +93,7 @@
     (var invalid
       {^format 1
        ^entries [{^id "provider" ^module "provider.gene" ^config 99
-                  ^unknown true}]})
+                  ^^unknown}]})
     (assert_raises (fn [] (loader .reconcile invalid)) CompositionError
       "the complete manifest must validate before reconciliation")
     (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 40
@@ -146,7 +146,7 @@
     (var disabled
       {^format 1
        ^entries [
-         {^id "group" ^group true ^disabled true
+         {^id "group" ^^group ^^disabled
           ^children [{^id "provider" ^module "provider.gene" ^config 1}]}
        ]})
     (var third (loader .reconcile disabled))
@@ -238,7 +238,7 @@
       (runtime .loader
         (LoaderOptions ^plugin_root "fixtures/plugins" ^shared []
           ^max_namespaces [] ^default_limits nil ^reload_policy nil
-          ^allow_failed true
+          ^^allow_failed
           ^retirement (fn [ticket] (loader_cell/.get .retire ticket)))))
     (loader_cell .set loader)
     (let healthy

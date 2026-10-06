@@ -137,7 +137,7 @@
     (view .put "quality" "unreviewed")
     (write_revision self view)
     (self .DrawingSession:event "revision_published"
-      {^revision view/id ^quality "unreviewed" ^reason "No review arrived." ^line_advanced false})
+      {^revision view/id ^quality "unreviewed" ^reason "No review arrived." ^!line_advanced})
     view)
 
   (message record_review [revision, evaluation] : Nil

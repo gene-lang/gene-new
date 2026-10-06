@@ -9,7 +9,7 @@
   ($assert (== result/status 0) result/stderr))
 (fn fixture []
   (let name (p/id "write-failure"))
-  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet first start" "nil")]))
   (runtime/settle host)
   host)

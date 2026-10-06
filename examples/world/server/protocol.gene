@@ -61,7 +61,7 @@
     (protocol_problem "message_too_large"
       $"Messages are limited to ${max_message_bytes} bytes."))
   (let message
-    (try ($json/parse text ^strict true ^max_depth max_depth)
+    (try ($json/parse text ^^strict ^max_depth max_depth)
       catch Any (protocol_problem "invalid_json" "The message is not one valid JSON object.")))
   (if_not (== ($head message) Map)
     (protocol_problem "invalid_message" "A message must be a JSON object."))

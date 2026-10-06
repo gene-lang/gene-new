@@ -11,9 +11,9 @@
     (let result (match outcome
       (when (TaskOutcome/ok response)
         (if (&& (== response/status 200) (! response/truncated))
-          (try {^ok true ^value ($json/parse response/body)} catch Any {^ok false})
-          {^ok false}))
-      (else {^ok false})))
+          (try {^^ok ^value ($json/parse response/body)} catch Any {^!ok})
+          {^!ok}))
+      (else {^!ok})))
     (done .set result))))
   {^task task ^monitor monitor ^done done})
 

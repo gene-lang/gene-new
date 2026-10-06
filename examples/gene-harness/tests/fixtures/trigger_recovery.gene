@@ -13,8 +13,8 @@
   (let controller (test_controller runtime (fn [request]
     ($fs/write_text "side-effect.txt" "ran")
     (if (== point "running") (crash))
-    "(Outcome ^done true ^reply \"done\")")))
-  (let manager (open_trigger_manager runtime controller ^start false ^now 1000
+    "(Outcome ^^done ^reply \"done\")")))
+  (let manager (open_trigger_manager runtime controller ^!start ^now 1000
     ^hook (fn [boundary occurrence] (if (== boundary point) (crash)))))
   (create_trigger manager {^id "once" ^kind "scheduled" ^at 2000 ^request "inspect"} ^now 1000)
   (tick_triggers manager ^now 2000)

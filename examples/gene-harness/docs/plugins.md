@@ -65,7 +65,7 @@ The built-in `repl` plugin provides the persistent Gene REPL through this API.
 
 The host owns mode state, instance ids, serialized input admission, durable
 command receipts and cancellation. Input records retain the client input id
-for deduplication. A `run` result should use `^attached false` for activity
+for deduplication. A `run` result should use `^!attached` for activity
 that belongs only to the operator transcript. Model response code cannot
 enter a mode by returning a CommandResult; mode entry is handled only by
 operator command completion.
@@ -122,7 +122,7 @@ or hook fails.
 `disable_plugin` and `enable_plugin` work on stored and built-in ids.
 `restore_plugin id` removes a stored override only when the profile has a
 default for that id. Replacing any taken id with `register_plugin` requires
-`^replace true`. The CLI recovery commands `doctor`, `enable ID`,
+`^^replace`. The CLI recovery commands `doctor`, `enable ID`,
 `disable ID` and `restore ID` do not activate plugins. A quarantined entry
 remains durable and visible to repair commands; it does not supply functions
 until it can activate. `doctor` does not commit a composition generation; it

@@ -62,7 +62,7 @@ Unicode case mapping is deliberately absent from these operations.
 ```
 
 JSON supports objects, arrays, scalars, and escapes. Invalid input raises
-JsonError. For input from an untrusted peer, `(parse text ^strict true
+JsonError. For input from an untrusted peer, `(parse text ^^strict
 ^max_depth 16)` also rejects a repeated object key and text that is not valid
 UTF-8 (so bytes from a binary WebSocket frame meet the same decoder as a text
 frame), and bounds nesting. Unsupported values, cycles, and non-finite floats are rejected.
@@ -115,7 +115,7 @@ Windows, so quoting, expansion, pipelines and redirection belong to the shell:
 Both forms accept the existing `^dir`, `^timeout_ms` and `^max_bytes` options.
 Only `^^full` requests shell interpretation; a single positional string such as
 `"git status"` is otherwise treated as an executable name. Commands cannot be
-empty, and commands/arguments cannot contain NUL. `^full false` selects literal
+empty, and commands/arguments cannot contain NUL. `^!full` selects literal
 argv behavior. The named form `($os/exec ^cmd command ^args argv)` remains
 available for compatibility; combining it with positional arguments or `^^full`
 is an error.
@@ -136,7 +136,7 @@ or timing out the Task sends TERM to the group, waits for the child to exit,
 then sends KILL to remaining descendants before completing the Task. Inherited
 stdio execution retains the caller's terminal behavior.
 Captured execution supplies EOF when `stdin_pipe` is omitted. Use
-`^merge_stderr true` to send both output streams through stdout and its line
+`^^merge_stderr` to send both output streams through stdout and its line
 channel. Live captured groups are cleaned up on process signals and exit;
 existing signal handlers are called after cleanup. `($os/stdout_tty?)` tests
 the output terminal independently of `stdin_tty?`.
@@ -185,13 +185,13 @@ relative imports stay inside that directory; package paths explicitly listed
 in `shared` resolve to the application's existing module identities. Loading
 external sources does not change the application's package or entry module.
 
-`($parse/read_all text ^source "response" ^locs true)` returns a Stream of
+`($parse/read_all text ^source "response" ^^locs)` returns a Stream of
 forms with `@source`, `@line`, and `@col` metadata on nodes, including nested
 nodes. Lines and columns start at 1. `eval` honors this metadata when reporting
 errors. Without `^locs`, the forms retain the ordinary reader representation.
 
 For text from an untrusted peer, such as a model response read as domain
-data, `($parse/read_all text ^reject_duplicate_props true ^max_depth 32)`
+data, `($parse/read_all text ^^reject_duplicate_props ^max_depth 32)`
 refuses a repeated property, map key, or metadata key (which the reader
 otherwise resolves by keeping the last value) and bounds nesting. Failures are
 `ParseError`. These options cannot be combined with `^locs`. Reading never
@@ -202,7 +202,7 @@ unfinished forms, strings or comments; complete input and malformed input
 return false. A CLI can collect more input without evaluating partial code.
 
 ```gene runnable
-(let forms ($parse/read_all "\n(+ 1 2)" ^source "response" ^locs true))
+(let forms ($parse/read_all "\n(+ 1 2)" ^source "response" ^^locs))
 (let form (forms .next))
 (let location ($node/meta form))
 [location/source location/line location/col (eval form ^in (env))]
@@ -264,7 +264,7 @@ use `$repl/eval` for those hosts.
 raise `OsError`. This lets file viewers select directory, text, and binary
 handling without attempting a directory listing as a type test.
 The result also includes permission `mode` and `symlink`; links include their
-exact `link_target`. `^follow false` inspects a link itself, including a
+exact `link_target`. `^!follow` inspects a link itself, including a
 dangling link. `($fs/set_mode path mode)` sets permission bits (0–4095 on
 POSIX), and `($fs/create_symlink target path)` creates a symbolic link.
 
@@ -302,7 +302,7 @@ gene eval '($fs/write_text "greeting.txt" "Hello from Gene")'
 ```
 
 `write_text_atomic` stages and synchronizes a regular file, then publishes it in
-the same directory. `^owner_only true` restricts the file to its owner before
+the same directory. `^^owner_only` restricts the file to its owner before
 any content is written, for a secret such as a connection credential. For byte-oriented I/O use `read_bytes` / `write_bytes`;
 `write_bytes_atomic` is the staged, synchronized, renamed form for Bytes, for
 example when publishing immutable blobs.
@@ -366,16 +366,16 @@ per-directory, and total entry limits. Close a partially consumed Stream.
 ```
 
 `$csv/parse_rows` is the bounded, eager convenience operation. Fields remain
-strings; `^headers true` yields property maps, and malformed rows raise typed
+strings; `^^headers` yields property maps, and malformed rows raise typed
 `CsvError` with offset, record, and field positions. The parser accepts LF or
 CRLF records, quoted newlines, and a UTF-8 BOM at the start. Experimental
 `$csv/reader` accepts a qualified `AsyncReader`; each concrete `.next` returns
 a Task yielding one row or nil. Close it through `IoResource`. Pass
-`^own_reader true` when the wrapper should close the upstream reader too.
+`^^own_reader` when the wrapper should close the upstream reader too.
 
 ```gene runnable
 (import $csv [parse_rows encode_row])
-[(parse_rows "name,count\nAda,3\n" ^headers true)
+[(parse_rows "name,count\nAda,3\n" ^^headers)
  ($binary/to_str (encode_row ["a,b" "two"]))]
 # [[{^name "Ada" ^count "3"}] "\"a,b\",two\r\n"]
 ```
@@ -383,7 +383,7 @@ a Task yielding one row or nil. Close it through `IoResource`. Pass
 ```gene
 (import $io [open_read IoResource])
 (let rows ($csv/reader (await (open_read "large.csv"))
-                        ^headers true ^own_reader true))
+                        ^^headers ^^own_reader))
 (try
   (let row (await (rows .next)))
   (if ($nil? row) nil row/name)
@@ -567,7 +567,7 @@ Content-Length or final chunk/trailer arrived completely. This mode accepts
 Content-Length or `Transfer-Encoding: chunked` with task-per-request dispatch;
 `^body_idle_ms` sets its body idle timeout (default 10000). Buffered `Request`
 bodies and responses keep their existing shapes. For output, `(stream reader)`
-or `(stream status reader ^own_reader true ^content_length n)` sends a bounded
+or `(stream status reader ^^own_reader ^content_length n)` sends a bounded
 `AsyncReader` response with Content-Length when known, otherwise chunked
 framing. A handler can return `(stream request/body)` to echo a streamed upload
 before that upload finishes. See the [response contract](spec/http-stream-response.md) and the
@@ -643,12 +643,12 @@ pages it changed, and nothing is republished.
 
 ```gene
 (import $db/sqlite [open_file Db])
-(let db (open_file "world.sqlite" ^create true ^busy_timeout_ms 5000))
+(let db (open_file "world.sqlite" ^^create ^busy_timeout_ms 5000))
 (db .Db:query_one "PRAGMA journal_mode=WAL")   # durability settings are yours
 (db .Db:exec "PRAGMA synchronous=FULL")
 ```
 
-A missing file is an error unless `^create true`; a created file (and its WAL
+A missing file is an error unless `^^create`; a created file (and its WAL
 and journal sidecars) is owner-only. Connections share the same `Db` protocol
 and report `db/storage` as `"file"`. The Commons world store
 (`examples/world/server/persistence.gene`) is the worked example.

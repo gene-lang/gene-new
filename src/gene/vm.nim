@@ -12521,7 +12521,7 @@ proc resolveTypeContract(scope: Scope, pending: PendingTypeContract) =
     if (inherited.kind != vkNil) != message.declaresOverride:
       raise newException(GeneError,
         "type message " & proto.name & "/" & message.name &
-        (if inherited.kind != vkNil: " requires ^override true"
+        (if inherited.kind != vkNil: " requires ^^override"
          else: " declares ^override but has no inherited target"))
     let resolved = resolveMessageContract(messages[message.name], typ,
       rejectSelf = inherited.kind != vkNil, declarationScope = annotationScope)
@@ -13636,7 +13636,7 @@ proc hiddenImplHint(app: Application, protocol, receiver: Value,
       protocol.protocolName & " or " & receiver.typeName & " to make it canonical"
   if not best.exported:
     return "an impl " & pair & " exists in \"" & best.originPath &
-      "\" but is scoped and not exported; add ^export true, then import it" &
+      "\" but is scoped and not exported; add ^^export, then import it" &
       (if addressable: " into \"" & target & "\"" else: " where this is checked")
   if not addressable:
     return "an impl " & pair & " exists in \"" & best.originPath &

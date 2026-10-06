@@ -92,7 +92,7 @@
         ($binary/from_str "stream-ok")))
       endpoints/1/.IoResource:close
       (await endpoints/1/.IoResource:wait_closed)
-      (return (stream endpoints/0 ^content_length 9 ^own_reader true))))
+      (return (stream endpoints/0 ^content_length 9 ^^own_reader))))
   (if (== request/path "/stop")
     (do
       (stop server)
@@ -102,7 +102,7 @@
 (fn main [args] : Int
   (let port ($parse/parse_int args/0))
   (let database args/1)
-  (set db (open_file database ^create true))
+  (set db (open_file database ^^create))
   (db .Db:exec "create table hits (v integer not null)")
   (set server (listen ^host "127.0.0.1" ^port port))
   ($println ($json/stringify {^event "ready" ^port port}))
@@ -111,7 +111,7 @@
   db/.Db:close
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
-    {^event "stopped" ^ok true ^max_heartbeat_gap_ms max_tick_gap_ms
+    {^event "stopped" ^^ok ^max_heartbeat_gap_ms max_tick_gap_ms
      ^max_heartbeat_at_ms max_tick_at_ms
      ^max_heartbeat_active_connections max_tick_active_connections
      ^max_heartbeat_in_flight max_tick_in_flight

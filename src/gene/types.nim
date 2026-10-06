@@ -1144,7 +1144,7 @@ type
     ## would invoke the handler twice for a value matching both.
     handler*: Value
     selectors*: seq[EventSubscriptionSelector]
-    once*: bool              # `^once true`
+    once*: bool              # `^^once`
     active*: bool
     consumed*: bool          # one-shot already delivered (marked before the call)
 

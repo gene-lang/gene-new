@@ -46,10 +46,10 @@ suite "strict reading":
 
   test "reject_duplicate_props refuses a repeated property":
     let message = dataError(
-      "(($parse/read_all \"(a ^x 1 ^x 2)\" ^reject_duplicate_props true) .next)")
+      "(($parse/read_all \"(a ^x 1 ^x 2)\" ^^reject_duplicate_props) .next)")
     check "duplicate property '^x'" in message
     check evalData("(($parse/read_all \"(a ^x 1 (b ^y 2))\" " &
-                   "^reject_duplicate_props true) .next)").print() ==
+                   "^^reject_duplicate_props) .next)").print() ==
       "(a ^x 1 (b ^y 2))"
 
   test "max_depth bounds nesting":
@@ -60,14 +60,14 @@ suite "strict reading":
 
   test "a strict read failure is a catchable ParseError":
     check evalData("(try (($parse/read_all \"(a ^x 1 ^x 2)\" " &
-                   "^reject_duplicate_props true) .next) " &
+                   "^^reject_duplicate_props) .next) " &
                    "catch ParseError \"caught\")").print() == "\"caught\""
 
   test "unknown and conflicting options are refused":
     check "unexpected named argument: depth" in
       dataError("($parse/read_all \"(a)\" ^depth 2)")
     check "^locs is not available" in
-      dataError("($parse/read_all \"(a)\" ^locs true ^max_depth 2)")
+      dataError("($parse/read_all \"(a)\" ^^locs ^max_depth 2)")
 
 suite "atomic byte files":
   test "write_bytes_atomic replaces a file with exactly the given bytes":

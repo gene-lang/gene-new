@@ -26,7 +26,7 @@
 (fn initialize [host]
   (let tx (p/begin host/store "create"))
   (let seed "Curiosity about the surroundings and interest in tending a small garden")
-  (p/tx_put tx "meta" {^id (p/id "life") ^version 1 ^mode "running" ^clean false
+  (p/tx_put tx "meta" {^id (p/id "life") ^version 1 ^mode "running" ^!clean
     ^disposition seed ^organization "starter@1" ^model {^provider "fake"}
     ^model_calls_per_hour 100 ^last_wall (host/clock) ^world_profile host/world_profile})
   (p/tx_put tx "organization/starter@1" {^id "starter@1" ^roots ["state/" "memory/"]
@@ -246,8 +246,8 @@
     (try
       (host/calls .set (+ host/calls/.get 1))
       (let raw (if ($absent? host/brain) (brain/fake host/decisions snapshot) (host/brain snapshot)))
-      (done .set {^ok true ^raw raw})
-      catch Any (done .set {^ok false ^error $err/message}))))
+      (done .set {^^ok ^raw raw})
+      catch Any (done .set {^!ok ^error $err/message}))))
   (host/thought .set {^cycle cycle ^task task ^done done ^started ($os/monotonic_ms)}))
 
 (fn poll_thought [host]
@@ -260,7 +260,7 @@
     (return nil))
   (if_yes (> (- ($os/monotonic_ms) thought/started) 30000)
     thought/task/.cancel
-    (thought/done .set {^ok false ^error "Brain deadline exceeded"}))
+    (thought/done .set {^!ok ^error "Brain deadline exceeded"}))
   (let reply thought/done/.get)
   (if ($absent? reply) (return nil))
   (let cycle (p/get host/store $"cycle/${thought/cycle/id}"))
@@ -300,7 +300,7 @@
   (for thought in host/late/.get
     (if_yes (> (- ($os/monotonic_ms) thought/started) 30000)
       thought/task/.cancel
-      (thought/done .set {^ok false ^error "Superseded request deadline exceeded"}))
+      (thought/done .set {^!ok ^error "Superseded request deadline exceeded"}))
     (let reply thought/done/.get)
     (if_yes ($absent? reply) (remaining .push thought) (continue))
     (let cycle (p/get host/store $"cycle/${thought/cycle/id}"))
@@ -489,7 +489,7 @@
         (if (|| (! (body/valid_basis tx record)) (!= record/organization meta/organization)
                 (! (routines/admitted? tx record)))
           (then (finish host record prefix "invalidated" "Ownership or organization changed") (continue)))
-        (let admission (scheduler/inadmissible tx record (host/clock) ^dispatch true))
+        (let admission (scheduler/inadmissible tx record (host/clock) ^^dispatch))
         (if_not ($absent? admission)
           (finish host record prefix admission "Schedule changed or its dispatch window expired")
           (continue))

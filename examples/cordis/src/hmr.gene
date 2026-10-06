@@ -6,7 +6,7 @@
 (import $fs [watch real_path WatcherClosed])
 (import [Disposable] ^from "./model")
 (import [hmr_reloaded register_loader_watcher] ^from "./runtime"
-  ^export true)
+  ^^export)
 
 (type LoaderWatcher
   ^props {^loader Any ^watcher Any ^root Str ^task Any ^active Any

@@ -30,7 +30,7 @@
     (isolated this_mod/.path "cancels busy inputs while other sessions and heartbeats progress and closes on replacement"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (let entered ($cell false))
         (try
           (contribute service/runtime/h "core" "functions"
@@ -66,7 +66,7 @@
           (submit_mode_input service/runtime/modes session/id mode/instance "again" "(spin)")
           (while (! entered/.get) ($sleep 1))
           (put_cordis_plugin ^^replace service/runtime/h (repl_plugin)
-            {^host true ^limits service/runtime/profile/limits})
+            {^^host ^limits service/runtime/profile/limits})
           (for job in service/runtime/modes/jobs/.get job/.join)
           ($assert ($absent? (mode_state service/runtime/modes session/id)))
           (command service session/id "/repl")
@@ -82,7 +82,7 @@
           (set_plugin_enabled service/runtime/workspace service/runtime/h "repl" true)
           (command service session/id "/repl")
           (put_cordis_plugin ^^replace service/runtime/h (repl_plugin)
-            {^host true ^limits service/runtime/profile/limits})
+            {^^host ^limits service/runtime/profile/limits})
           (for job in service/runtime/modes/jobs/.get job/.join)
           ($assert ($absent? (mode_state service/runtime/modes session/id)))
         ensure (close_session_service service)))))
@@ -91,7 +91,7 @@
     (isolated this_mod/.path "keeps the scope after a deadline and cancels active input before shutdown"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (let session (create_session service))
         (let shutdown_id ($cell nil))
         (try
@@ -118,7 +118,7 @@
           ($assert ($absent? (mode_state service/runtime/modes session/id)))
         ensure (close_session_service service))
         (let reopened (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           ($assert ($absent? (/mode (snapshot reopened session/id))))
           ($assert (== (/status (command_receipt reopened/runtime/commands session/id shutdown_id/.get)) "cancelled"))
@@ -128,7 +128,7 @@
     (isolated this_mod/.path "lets the host leave a mode whose classifier refuses and whose cleanup panics"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           (contribute service/runtime/h "core" "input_modes"
             {^name "sticky" ^label "Sticky" ^hint "Custom mode" ^submit_label "Run" ^prompt "sticky"
@@ -148,7 +148,7 @@
     (isolated this_mod/.path "preserves REPL declarations, routes slash paths and never attaches activity"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           (let session (create_session service))
           ($assert (== (/status (command service session/id "/repl")) "done"))
@@ -176,7 +176,7 @@
     (isolated this_mod/.path "rejects stale instances and returns one receipt for each input identity"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           (let session (create_session service))
           (command service session/id "/repl")
@@ -200,7 +200,7 @@
     (isolated this_mod/.path "closes modes on viewer grace, session removal and plugin withdrawal"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           (let session (create_session service))
           (view_session service/sessions session/id)

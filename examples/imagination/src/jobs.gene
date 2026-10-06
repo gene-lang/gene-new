@@ -320,5 +320,5 @@
       (let head (/head (line_row evolution row/line)))
       (let line_id row/line)
       (append_event project "run_started" run_id head
-        `(event ^run %run_id ^line %line_id ^head %head ^resumed true))))
+        `(event ^run %run_id ^line %line_id ^head %head ^^resumed))))
   (run_row evolution run_id))

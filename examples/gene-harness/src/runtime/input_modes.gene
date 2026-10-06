@@ -63,7 +63,7 @@
       (problem manager session "mode_closed" "The requested input mode is unavailable."))
     (manager/states/.get .put session
       {^row live ^instance ($crypto/random_hex 16) ^running nil
-       ^completed ($cell true) ^closing false ^last_left nil})
+       ^completed ($cell true) ^!closing ^last_left nil})
     (changed manager session "opened")
     (mode_state manager session))))
 
@@ -98,7 +98,7 @@
              (|| ($absent? state) (!= state/instance instance)))
       (problem manager session "mode_closed" "This input mode has already closed."))
     (close_mode_locked manager session reason)))
-  {^closed true})
+  {^^closed})
 
 (fn submit_mode_input [manager, session : Str, instance : Str, input_id : Str, text : Str]
   (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
@@ -115,9 +115,9 @@
     (let kind (state/row/payload/classify text))
     (if_yes (== kind "leave")
       (close_mode_locked manager session "left")
-      (return {^closed true}))
-    (if (== kind "incomplete") (return {^incomplete true}))
-    (if (== kind "ignored") (return {^ignored true}))
+      (return {^^closed}))
+    (if (== kind "incomplete") (return {^^incomplete}))
+    (if (== kind "ignored") (return {^^ignored}))
     (if (!= kind "input")
       (problem manager session "invalid_request" "The input mode returned an invalid classification."))
     (if_not ($absent? state/running)

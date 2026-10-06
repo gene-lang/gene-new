@@ -17,7 +17,7 @@ channel suites in `tests/spec_runner.nim` and `tests/test_vm.nim`.
 ((count_to 3) -> $into []) # [0 1 2]
 ```
 
-The marker is the ordinary sugar for `^generator true`. An absent marker or
+The marker is the ordinary sugar for `^^generator`. An absent marker or
 literal false declares an ordinary callable; other values are declaration
 errors. Names, return annotations, and caller expectations do not select
 execution kind. A trailing `*` is optional. Constructors and fexprs cannot be
@@ -62,7 +62,7 @@ bodies retain their execution kind and run with the actual receiver:
 
 An impl keeps omitted ancestor messages, including their generator bodies.
 The `^^generator` flag is local to each message definition: a replacement
-with an absent flag or `^generator false` is ordinary, even when the parent
+with an absent flag or `^!generator` is ordinary, even when the parent
 implementation or protocol default is a generator. A replacement using yield
 must declare `^^generator` itself. Both bodies may satisfy the same inherited
 Stream return contract. Generator kind is not an additional

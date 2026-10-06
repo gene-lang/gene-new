@@ -9,7 +9,7 @@
   (it "retains events and maintenance after the budget is used, and admits fresh context after restart in a new window" []
     (let name (p/id "budget"))
     (let now ($cell 1000))
-    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] now/.get)
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] now/.get)
       ^decisions [(brain/response "First admission" "nil")]))
     (budget/configure host 2)
     (runtime/settle host)

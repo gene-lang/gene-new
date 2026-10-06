@@ -24,7 +24,7 @@
 (fn attach [^fault fault = nil ^thinking thinking = false]
   (let name (p/id "world"))
   (let home $"examples/life/tmp/${name}")
-  (let host (runtime/open_life home ^create true ^profile "network" ^clock (fn [] 1000) ^fault fault))
+  (let host (runtime/open_life home ^^create ^profile "network" ^clock (fn [] 1000) ^fault fault))
   (let meta (p/get host/store "meta"))
   # No model calls unless asked: then the network profile and its executor
   # run alone. With `thinking`, the deterministic fake brain decides.
@@ -257,7 +257,7 @@
       # The world commits the operation, then the connection drops before the
       # receipt arrives (§10.4).
       (peer .put "drop_receipts" 1)
-      (let lost (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^lost true}}))))
+      (let lost (group host (fn [tx] (apply host tx "world_operation" {^operation "test.echo" ^input {^^lost}}))))
       (peer .put "unknown_status" true)
       (wait_for host (fn [] (== (op_status host lost/operation_id) "needs_reconciliation")) "uncertain")
       # `unknown` keeps it uncertain: no new ID, no resend, no inferred failure.
@@ -279,7 +279,7 @@
     (let a (attach))
     (let peer a/peer)
     (peer .put "down" true)
-    (let staged (group a/host (fn [tx] (apply a/host tx "world_operation" {^operation "test.echo" ^input {^kept true}}))))
+    (let staged (group a/host (fn [tx] (apply a/host tx "world_operation" {^operation "test.echo" ^input {^^kept}}))))
     # No clean stop: the process just ends.
     (runtime/abandon a/host)
     (let host (reopen a/home peer))
@@ -294,7 +294,7 @@
       # after restart; the world's authoritative absence returns the same ID
       # and bytes to the send lane.
       (let tx (p/begin host/store "test-attempt"))
-      (let second (apply host tx "world_operation" {^operation "test.echo" ^input {^second true}}))
+      (let second (apply host tx "world_operation" {^operation "test.echo" ^input {^^second}}))
       (let record (p/tx_get tx $"world_op/${second/operation_id}"))
       (record .put "status" "attempting")
       (record .put "attempts" 1)
@@ -386,8 +386,8 @@
     (let peer a/peer)
     (try
       (wait_for host (fn [] (ready? host)) "ready")
-      (world_peer/emit peer "garden.rain" {^mm 3} ^required false)
-      (world_peer/emit peer "garden.frost" {^depth 2} ^required true)
+      (world_peer/emit peer "garden.rain" {^mm 3} ^!required)
+      (world_peer/emit peer "garden.frost" {^depth 2} ^^required)
       (world_peer/emit peer "object.put_down" {^object_id "object-watering-can" ^by_entity_id "avatar-someone"
         ^x_mm 1 ^y_mm 1 ^z_mm 1})
       (wait_for host (fn [] (== (field host "world_cursor" "received") 3)) "stored")
@@ -450,7 +450,7 @@
       (peer .put "down" true)
       (world_peer/disconnect peer)
       (let unsent (group host (fn [tx] (apply host tx "world_operation"
-        {^operation "test.echo" ^input {^never true} ^owner owner}))))
+        {^operation "test.echo" ^input {^^never} ^owner owner}))))
       (group host (fn [tx] (apply host tx "cancel_owner" {^id "errand"})))
       # The unsent request is cancelled here and never leaves; the running walk
       # gets a cancellation naming it and its semantic fingerprint.
@@ -492,7 +492,7 @@
       (world_peer/disconnect peer)
       # An attempt whose fate is unknown: it may or may not have arrived.
       (let tx (p/begin host/store "test-attempt"))
-      (let original (apply host tx "world_operation" {^operation "test.echo" ^input {^late true}}))
+      (let original (apply host tx "world_operation" {^operation "test.echo" ^input {^^late}}))
       (let record (p/tx_get tx $"world_op/${original/operation_id}"))
       (record .put "status" "needs_reconciliation")
       (record .put "attempts" 1)
@@ -628,7 +628,7 @@
       ensure (close host)))
 
   (it "brings a walk suspended while it was away to the Life's own decision, which resumes it without a second walk" []
-    (let a (attach ^thinking true))
+    (let a (attach ^^thinking))
     (let host a/host)
     (let peer a/peer)
     (try
@@ -641,7 +641,7 @@
       # It is suspended while the Life is disconnected, and no event says so:
       # only the next snapshot does.
       (world_peer/disconnect peer)
-      (world_peer/suspend_walk peer walk_id ^event false)
+      (world_peer/suspend_walk peer walk_id ^!event)
       (wait_for host (fn [] (== ((world_peer/commands peer ^operation "movement.resume") .size) 1))
         "the Life resumed it" ^timeout_ms 30000)
       (assert_equal (p/count_where host/store "event/" (fn [e] (== e/kind "world_activity_suspended"))) 1)

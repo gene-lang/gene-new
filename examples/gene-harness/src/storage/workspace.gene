@@ -237,7 +237,7 @@
   text)
 
 (fn module_digest [source] : Str
-  $"sha256:${(sha256 (canonical_module_source ^require_init false source))}")
+  $"sha256:${(sha256 (canonical_module_source ^!require_init source))}")
 
 (fn relative_import_digest [path : Str]
   (if_yes (&& (starts_with? path "./") (ends_with? path ".gene"))
@@ -382,7 +382,7 @@
     ^digest entry/module_digest
     ^closure entry/closure
     ^init_limits (runtime_limits entry)
-    ^host false})
+    ^!host})
 
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
   (put_cordis_plugin ^^replace h descriptor (descriptor_entry_options workspace entry)))
@@ -434,7 +434,7 @@
   (if_not replace
     (if_not ($absent? (workspace/profile_plugins/.get .get id))
       (fail (CompositionError
-        ^message $"profile plugin ${id} already exists; use ^replace true")))
+        ^message $"profile plugin ${id} already exists; use ^^replace")))
     (var claimed (composition_entries workspace))
     (if_not (== (find_entry_index claimed id) -1)
       (fail (CompositionError
@@ -452,7 +452,7 @@
     (if ($absent? dependencies) (fresh_list) dependencies))
   (for dependency in dependency_sources
     (var dependency_text
-      (canonical_module_source (parse_plugin_source dependency) ^require_init false))
+      (canonical_module_source (parse_plugin_source dependency) ^!require_init))
     (var dependency_digest $"sha256:${(sha256 dependency_text)}")
     (if_yes (! (closure .contains? dependency_digest))
       (closure .push dependency_digest)
@@ -468,7 +468,7 @@
   (var entry
     {^id id ^module_digest digest ^closure closure
      ^interfaces (data_copy workspace/interfaces)
-     ^limits bounded ^disabled false
+     ^limits bounded ^!disabled
      ^by by ^model model ^at at
      ^session h/event_stream ^turn authenticated_turn})
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
@@ -729,7 +729,7 @@
     (if ($absent? (workspace/profile_plugins/.get .get id))
       (fail (CompositionError ^message $"composition entry ${id} does not exist"))
       (if disabled
-        (next_entries .push {^id id ^builtin true ^disabled true})
+        (next_entries .push {^id id ^^builtin ^^disabled})
         (return (composition_revision workspace)))))
   (if (== next_entries entries) (return (composition_revision workspace)))
   (var revision (commit_composition workspace next_entries))

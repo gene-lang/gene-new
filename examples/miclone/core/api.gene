@@ -40,11 +40,11 @@
 # private imports. A mod can use one API module, and the sandbox needs to share
 # that one module rather than expose each registry's implementation surface.
 (import [draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
-         draw_liquid] ^from "./registry.gene" ^export true)
-(import [tile_solid tile_ore tile_overlay] ^from "./tiles.gene" ^export true)
-(import [shape_scatter shape_sheet shape_blob] ^from "./ore.gene" ^export true)
-(import [abm_on_change abm_sampled] ^from "./abm.gene" ^export true)
-(import [World] ^from "./loaded.gene" ^export true)
+         draw_liquid] ^from "./registry.gene" ^^export)
+(import [tile_solid tile_ore tile_overlay] ^from "./tiles.gene" ^^export)
+(import [shape_scatter shape_sheet shape_blob] ^from "./ore.gene" ^^export)
+(import [abm_on_change abm_sampled] ^from "./abm.gene" ^^export)
+(import [World] ^from "./loaded.gene" ^^export)
 
 (import [Registry new_registry register id_of] ^from "./registry.gene")
 (import [content_unknown world_limit] ^from "./world.gene")

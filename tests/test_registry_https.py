@@ -526,7 +526,7 @@ class RegistryHttpsTests(unittest.TestCase):
                         invalid_config = base / "invalid-registries.gene"
                         invalid_config.write_text(config.read_text().replace(
                             "^registry_config_format 1",
-                            "^registry_config_format 1 ^unexpected true"))
+                            "^registry_config_format 1 ^^unexpected"))
                         self.assertNotEqual(pkg("resolve", config_path=invalid_config).returncode,
                                             0)
                         traversal_config = base / "traversal-registries.gene"

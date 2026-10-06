@@ -103,13 +103,13 @@
             (let id positional/1)
             (let before (composition_revision runtime/workspace))
             (let revision
-              (match command ^exhaustive false
+              (match command ^!exhaustive
                 (when "disable" (disable_entry ^h runtime/h runtime/workspace id))
                 (when "enable" (enable_entry ^h runtime/h runtime/workspace id))
                 (when "restore" (restore_entry ^h runtime/h runtime/workspace id))))
             (let changed (!= revision before))
             (let status
-              (match command ^exhaustive false
+              (match command ^!exhaustive
                 (when "disable" (if changed "disabled" "already disabled"))
                 (when "enable" (if changed "enabled" "already enabled"))
                 (when "restore" (if changed "restored" "already at profile default"))))

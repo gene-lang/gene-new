@@ -215,7 +215,7 @@
   (let who (if ($absent? review) "none" reviewer))
   ($freeze
     `(evaluation ^schema 1 ^revision %revision ^image %image ^goal %goal_id
-       ^render_profile %profile ^structural_valid true ^reviewer %who
+       ^render_profile %profile ^^structural_valid ^reviewer %who
        %children...)))
 
 (fn result_of [evaluation, requirement : Str] : Str
@@ -252,9 +252,9 @@
     (if (< (rank after) (rank before))
       (regressed .push $"${item/id} went from ${before} to ${after}")))
   (if (> regressed/.size 0)
-    {^accepted false
+    {^!accepted
      ^reason $"Rejected: ${($str/join regressed \"; \")}. The working revision is unchanged."}
-    {^accepted true ^reason "Accepted: no requirement is worse than on the preceding accepted revision."}))
+    {^^accepted ^reason "Accepted: no requirement is worse than on the preceding accepted revision."}))
 
 # [hard requirements passed, total rank]: larger is better.
 (fn score [goal, evaluation] : Any

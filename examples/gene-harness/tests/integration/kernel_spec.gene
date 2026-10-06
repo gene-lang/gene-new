@@ -46,7 +46,7 @@
             (let turn
               (spawn ^lane root (do (response .set (evaluate_harness_turn ^bindings {^entered entered ^resume resume} h 1 root "(var before (count ^increment 4)) (entered .send nil) resume/.recv (append_prompt \"version\" [before (count)]) (report \"from plugin\") (Outcome ^prompt \"continue\")")))))
             entered/.recv
-            (put_cordis_plugin ^^replace h (plugin 2) {^host false})
+            (put_cordis_plugin ^^replace h (plugin 2) {^!host})
             ($assert (== closed/.get []) "replacement disposed a leased activation")
             (resume .send nil)
             (await turn))
@@ -60,7 +60,7 @@
             "plugin prompt lost its function name")
           ($assert (== closed/.get [1]) "lease release did not retire the old activation")
           (let next
-            (evaluate_harness_turn h 2 root "(Outcome ^done true ^reply ($to_str (count)))"))
+            (evaluate_harness_turn h 2 root "(Outcome ^^done ^reply ($to_str (count)))"))
           ($assert (== next/validated/outcome/reply "2") "new turn did not see the replacement")
           (let sibling
             (Plugin ^id "sibling" ^provides [] ^requires [] ^activate (fn [host] (host .PluginHost:create_registry {^name "custom" ^^unique}) (host .PluginHost:contribute "custom" {^name "entry" ^value 42}) (host .PluginHost:contribute "functions" {^name "sibling" ^doc "Independent function." ^fn (fn [] 42)}))))
@@ -69,7 +69,7 @@
             (== (status_of h "sibling") "ready")
             "adding a sibling failed to rebuild the registry candidate")
           (let sibling_result
-            (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (sibling)))"))
+            (evaluate_harness_turn h 3 root "(Outcome ^^done ^reply ($to_str (sibling)))"))
           ($assert
             (== sibling_result/validated/outcome/reply "42")
             "sibling function was not published")
@@ -78,15 +78,15 @@
           (install h duplicate)
           ($assert (== (status_of h "duplicate") "error") "duplicate function name was accepted")
           (let unchanged
-            (evaluate_harness_turn h 3 root "(Outcome ^done true ^reply ($to_str (count)))"))
+            (evaluate_harness_turn h 3 root "(Outcome ^^done ^reply ($to_str (count)))"))
           ($assert
             (== unchanged/validated/outcome/reply "2")
             "failed contribution changed the published functions")
           (let broken
             (Plugin ^id "count" ^provides [] ^requires [] ^activate (fn [host] ($assert false "activation failure"))))
-          (put_cordis_plugin ^^replace h broken {^host false})
+          (put_cordis_plugin ^^replace h broken {^!host})
           (let retained
-            (evaluate_harness_turn h 4 root "(Outcome ^done true ^reply ($to_str (count)))"))
+            (evaluate_harness_turn h 4 root "(Outcome ^^done ^reply ($to_str (count)))"))
           ($assert
             (== retained/validated/outcome/reply "2")
             $"failed replacement lost the old function: ${retained/error}")
@@ -95,7 +95,7 @@
               h
               5
               root
-              "(spawn ^lane root ($sleep 1000)) (Outcome ^done true ^reply \"done\")"))
+              "(spawn ^lane root ($sleep 1000)) (Outcome ^^done ^reply \"done\")"))
           ($assert
             (== timed_out/error "response budget timed out")
             "turn did not cancel and join its child")
@@ -124,9 +124,9 @@
                 (while (! release/.get) ($sleep 1))
                 "queued")}))))
           (let task (spawn ^lane root (evaluate_harness_turn runtime/h 1 runtime/root
-            "(add_later) (Outcome ^done true ^reply session_id)" ^session "a")))
+            "(add_later) (Outcome ^^done ^reply session_id)" ^session "a")))
           (while (! entered/.get) ($sleep 1))
-          (let other (evaluate_harness_turn runtime/h 1 runtime/root "(Outcome ^done true ^reply \"other\")" ^session "b"))
+          (let other (evaluate_harness_turn runtime/h 1 runtime/root "(Outcome ^^done ^reply \"other\")" ^session "b"))
           ($assert ($absent? (row runtime/h "functions" "later")) "another turn published the still-open origin's queue")
           (release .set true)
           (let result (await task))
@@ -136,7 +136,7 @@
             "rejected done did not explain the continuation")
           ($assert (! ($absent? (row runtime/h "functions" "later")))
             $"turn boundary did not publish contribution: ${result/composition_changes}; pending ${($size runtime/h/snapshots/pending/.get)}")
-          (let next (evaluate_harness_turn runtime/h 2 runtime/root "(Outcome ^done true ^reply (later))"))
+          (let next (evaluate_harness_turn runtime/h 2 runtime/root "(Outcome ^^done ^reply (later))"))
           ($assert (== next/validated/outcome/reply "later") "next turn could not call new function")
           ($println "mid-turn contribution: immutable visibility, origin-owned queue and next-turn publication")
         ensure

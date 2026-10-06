@@ -75,7 +75,7 @@ field. These remain ordinary stored Gene data interpreted by the selected code.
    ^module revision
    ^code [revision]
    ^roots ["mind/"]
-   ^context true
+   ^^context
    ^documentation "Visitor document and a shared working document."}
   ^migration (quote
     (do
@@ -113,7 +113,7 @@ Queued-work policy is explicit:
 | `compatible` | Reassign admitted work to the new organization while retaining its original organization; the definition must explicitly list the old ID in `compatible`. |
 
 A still-valid in-flight response finishes under the old organization first.
-`^invalidate_inflight true` instead invalidates its authority. Its later output
+`^^invalidate_inflight` instead invalidates its authority. Its later output
 is retained as a diagnostic and cannot perform effects. A fresh cycle uses the
 new organization. Running foreground effects settle before selection, and local
 movement pauses at its committed checkpoint while selection is pending.

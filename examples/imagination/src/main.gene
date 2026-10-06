@@ -441,7 +441,7 @@ New direction: ${direction}" goal_id))
 (fn runtime_problem [] : Any
   (try
     ($base64/encode "check")
-    (($parse/read_all "(a)" ^reject_duplicate_props true ^max_depth 4) .next)
+    (($parse/read_all "(a)" ^^reject_duplicate_props ^max_depth 4) .next)
     ($fs/write_bytes_atomic ($path/join ($path/parent this_mod/.path) ".runtime-check")
       ($binary/from_list [1]))
     ($fs/remove ($path/join ($path/parent this_mod/.path) ".runtime-check"))

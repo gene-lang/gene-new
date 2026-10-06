@@ -25,8 +25,8 @@
         (let calls ($cell []))
         (let controller (test_controller runtime (fn [request]
           (calls/.get .push request/session)
-          "(Outcome ^done true ^reply \"checked\")")))
-        (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
+          "(Outcome ^^done ^reply \"checked\")")))
+        (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
         (try
           (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect"} ^now 1000)
           (tick_triggers manager ^now 1100)
@@ -66,8 +66,8 @@
         (let release ($cell false))
         (let controller (test_controller runtime (fn [request]
           (while (! release/.get) ($sleep 1))
-          "(Outcome ^done true ^reply \"nothing to do\")")))
-        (let manager (open_trigger_manager runtime controller ^start false ^now 1000))
+          "(Outcome ^^done ^reply \"nothing to do\")")))
+        (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
         (try
           (create_trigger manager {^id "queue" ^kind "heartbeat" ^every_ms 100 ^request "check" ^overlap "queue_one" ^retention {^keep 1}} ^now 1000)
           (tick_triggers manager ^now 1100)
@@ -119,8 +119,8 @@
       (fn [workspace]
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (let root runtime/root)
-        (let controller (test_controller runtime (fn [request] "(Outcome ^done true ^reply \"unexpected\")")))
-        (let manager (open_trigger_manager runtime controller ^start false ^boot false ^now 0))
+        (let controller (test_controller runtime (fn [request] "(Outcome ^^done ^reply \"unexpected\")")))
+        (let manager (open_trigger_manager runtime controller ^!start ^!boot ^now 0))
         (let definition (create_trigger manager {^id "hb" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^missed "once"} ^now 0))
         (record_due manager definition 1000)
         (close_trigger_manager manager)
@@ -128,7 +128,7 @@
         (close_runtime runtime)
         (let entry (package_path "src/main.gene"))
         (let script $"${root}/responses.gene")
-        ($fs/write_text script ($to_str ["(Outcome ^done true ^reply \"unexpected\")"]))
+        ($fs/write_text script ($to_str ["(Outcome ^^done ^reply \"unexpected\")"]))
         (let plain $"${root}/new-trigger.gene")
         ($fs/write_text plain $"{^id \"new\" ^kind \"scheduled\" ^at ${(+ ($os/wall_ms) 60000)} ^request \"later\"}")
         (for command in [["triggers" "list"] ["triggers" "occurrences"] ["triggers" "create" plain]]
@@ -138,7 +138,7 @@
           ($assert (== result/status 0) $"trigger administration failed: ${result/stderr}"))
         (let reopened (open_runtime root "default" (baseline_profile)))
         (let again (test_controller reopened (fn [request] "")))
-        (let read (open_trigger_manager reopened again ^start false ^boot false))
+        (let read (open_trigger_manager reopened again ^!start ^!boot))
         (try
           (let occurrences (list_occurrences read ^trigger "hb"))
           ($assert (== occurrences/.size 1) "read-only trigger commands scheduled new occurrences")
@@ -163,8 +163,8 @@
           (let calls ($cell 0))
           (let controller (test_controller runtime (fn [request]
             (calls .set (+ calls/.get 1))
-            "(Outcome ^done true ^reply \"recovered\")")))
-          (let manager (open_trigger_manager runtime controller ^start false ^now 2000))
+            "(Outcome ^^done ^reply \"recovered\")")))
+          (let manager (open_trigger_manager runtime controller ^!start ^now 2000))
           (try
             (for [id watcher] in controller/watchers/.get watcher/.join)
             (tick_triggers manager ^now 2000)
@@ -200,8 +200,8 @@
         (let calls ($cell 0))
         (let controller (test_controller runtime (fn [request]
           (calls .set (+ calls/.get 1))
-          "(Outcome ^done true ^reply \"resumed\")")))
-        (let manager (open_trigger_manager runtime controller ^start false ^now 1300))
+          "(Outcome ^^done ^reply \"resumed\")")))
+        (let manager (open_trigger_manager runtime controller ^!start ^now 1300))
         (try
           (let queued (list_occurrences manager))
           ($assert (== queued/.size 3) "restart duplicated occurrences")
@@ -241,9 +241,9 @@
         (config .put "body_gc_interval_ms" 1)
         ($fs/write_text $"${runtime/state_root}/config.gene" ($serde/write_data config))
         (let controller (test_controller runtime (fn [request] "")))
-        (let manager (open_trigger_manager runtime controller ^start false ^boot false ^now 0))
+        (let manager (open_trigger_manager runtime controller ^!start ^!boot ^now 0))
         (try
-          (let definition (create_trigger manager {^id "bounded" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^enabled false} ^now 0))
+          (let definition (create_trigger manager {^id "bounded" ^kind "heartbeat" ^every_ms 1000 ^request "work" ^!enabled} ^now 0))
           (repeat index in 20
             (let occurrence (record_due manager definition (* (+ index 1) 1000)))
             (occurrence .put "state" "finished")
@@ -272,7 +272,7 @@
         ensure (close_trigger_manager manager) (close_round_controller controller) (close_runtime runtime))
         (let reopened (open_runtime root "default" (baseline_profile)))
         (let again (test_controller reopened (fn [request] "")))
-        (let restored (open_trigger_manager reopened again ^start false ^boot false))
+        (let restored (open_trigger_manager reopened again ^!start ^!boot))
         (try
           ($assert (== ($size (list_occurrences restored)) 3) "pruned occurrences returned after restart")
           (let restored_definition (restored/definitions/.get .get "bounded"))
@@ -285,10 +285,10 @@
     (isolated this_mod/.path "leaves a due trigger occurrence unadmitted while the profile is unready"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"unused\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"unused\")"])))
         (let controller (new_round_controller runtime))
         (let manager (open_trigger_manager runtime controller
-          ^start false ^boot false ^now 0))
+          ^!start ^!boot ^now 0))
         (try
           (create_trigger manager
             {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "work"}

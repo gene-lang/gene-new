@@ -10,4 +10,4 @@
            {^model "offline" ^effort "none" ^timeout_ms timeout})
          ^prepare (fn [call] {})
          ^send (fn [prepared]
-           {^text "# Finish\n(Outcome ^done true ^reply \"Scripted response.\")"})}))))
+           {^text "# Finish\n(Outcome ^^done ^reply \"Scripted response.\")"})}))))

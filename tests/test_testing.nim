@@ -120,8 +120,8 @@ suite "testing — example lifecycle":
           (before_each [t] (t/items .push number))
           (it "has a value" [t] ($assert (== t/items [7])) (set calls (+ calls 1)))))
       (let before calls)
-      (let first (run ^report false))
-      (let second (run ^report false))
+      (let first (run ^!report))
+      (let second (run ^!report))
       [before calls first/passed second/passed second/exit_code]
     """, "[0 4 2 2 0]"
 
@@ -139,7 +139,7 @@ suite "testing — example lifecycle":
           (after_each [] (events .push "ia"))
           (it "body" [] (events .push "body")))
         (it "sibling" [] (events .push "sibling")))
-      (run ^report false)
+      (run ^!report)
       events
     """, "[\"b1\" \"b2\" \"ib\" \"body\" \"ia\" \"a2\" \"a1\" " &
       "\"b1\" \"b2\" \"sibling\" \"a2\" \"a1\"]"
@@ -155,7 +155,7 @@ suite "testing — example lifecycle":
         (context "inner"
           (after_each [] (events .push "unentered cleanup"))
           (it "body" [] (events .push "unreached body"))))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [events result/failed result/exit_code result/examples/0/diagnostics/0/phase]
     """, "[[\"outer cleanup\"] 1 1 \"before_each\"]"
 
@@ -169,7 +169,7 @@ suite "testing — example lifecycle":
         (after_each [] ($assert false "cleanup failure"))
         (it "fails" [] ($assert false "body failure")))
       (describe "next" (it "passes" [] (events .push "next")))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [events result/passed result/failed result/errors result/exit_code
        (result/examples/0/diagnostics .size)]
     """, "[[\"cleanup\" \"next\"] 1 0 1 1 3]"
@@ -183,7 +183,7 @@ suite "testing — example lifecycle":
         (it "later" [] ^skip "not ready" ($assert false))
         (it "false is a value" [] false)
         (it "return is local" [] (return nil) ($assert false)))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [calls result/passed result/skipped result/exit_code]
     """, "[2 2 1 0]"
 
@@ -191,8 +191,8 @@ suite "testing — example lifecycle":
     testingCheck """
       (import $test [describe it run])
       (describe "math" (it "adds" [] nil) (it "subtracts" [] nil))
-      (let selected (run ^name "math adds" ^report false))
-      (let empty (run ^name "missing" ^report false))
+      (let selected (run ^name "math adds" ^!report))
+      (let empty (run ^name "missing" ^!report))
       [selected/passed selected/examples/0/name empty/exit_code]
     """, "[1 \"math adds\" 2]"
 
@@ -202,16 +202,16 @@ suite "testing — example lifecycle":
       (var called false)
       (describe "ready" (it "must not run" [] (set called true)))
       (try (it "outside" [] nil) catch Error nil)
-      (let result (run ^report false))
+      (let result (run ^!report))
       [called result/exit_code (result/diagnostics .size)]
     """, "[false 1 1]"
     for source in [
       "(describe \"x\" (it \"bad\" [a b] nil))",
-      "(describe \"x\" (it \"bad\" [] ^skip true nil))",
+      "(describe \"x\" (it \"bad\" [] ^^skip nil))",
       "(describe \"x\" (it \"bad\" [] ^skip nil nil))",
       "(describe \"x\" (it \"bad\" [] ^skip \"\" nil))",
       "(describe \"x\" (let why \"later\") (it \"bad\" [] ^skip why nil))",
-      "(describe \"x\" (it \"bad\" [] ^unknown true nil))",
+      "(describe \"x\" (it \"bad\" [] ^^unknown nil))",
       "(before_each [] nil)"]:
       expect GeneError:
         discard testingEval("(import $test [describe it before_each]) " & source)
@@ -221,15 +221,15 @@ suite "testing — example lifecycle":
       (import $test [describe it run])
       (describe "group"
         (it "register" [] (describe "late" (it "late" [] nil)))
-        (it "nested run" [] (run ^report false)))
-      (let result (run ^report false))
+        (it "nested run" [] (run ^!report)))
+      (let result (run ^!report))
       [result/errors (result/examples .size)]
     """, "[2 2]"
 
   test "example source locations survive macro expansion":
     let value = testingEval("(import $test [describe it run])\n" &
       "(describe \"group\"\n  (it \"fails\" []\n    ($assert false)))\n" &
-      "(run ^report false)")
+      "(run ^!report)")
     let example = value.props["examples"].listItems[0].mapEntries
     check example["location"].mapEntries["line"].intVal == 3
     let diagnostic = example["diagnostics"].listItems[0].mapEntries
@@ -241,7 +241,7 @@ suite "testing — example lifecycle":
       (var cycle [])
       (cycle .push cycle)
       (describe "report" (it "cycle" [] (assert_equal cycle nil)))
-      (run ^report false)
+      (run ^!report)
     """)
     let report = formatTestReport(value)
     check "<cycle>" in report
@@ -250,7 +250,7 @@ suite "testing — example lifecycle":
     check "1 failed" in report
     let huge = testingEval("(import $test [describe it run assert_equal]) " &
       "(describe \"report\" (it \"large\" [] (assert_equal \"" &
-      repeat('x', 5000) & "\" nil))) (run ^report false)")
+      repeat('x', 5000) & "\" nil))) (run ^!report)")
     check formatTestReport(huge).len < 1800
 
   test "panic aborts after cleanup and registry run state is restored":
@@ -282,7 +282,7 @@ suite "testing — example lifecycle":
       (describe "local impl"
         (impl Label for Item (message label [] : Int 7))
         (it "visible in its closure" [] ($assert (== ((Item) .Label:label) 7))))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [result/passed result/errors]
     """, "[1 0]"
 
@@ -293,7 +293,7 @@ suite "testing — example lifecycle":
         (before_each [t] (set t/items []))
         (after_each [t] (t/items .push 99))
         (it "fails" [t] (assert_equal t/items [1])))
-      (let result (run ^report false))
+      (let result (run ^!report))
       result/examples/0/diagnostics/0/actual
     """, "\"[]\""
 
@@ -302,9 +302,9 @@ suite "testing — example lifecycle":
       (import $test [describe it run assert_equal])
       (describe "details"
         (it "absent" []
-          (fail (AssertionError ^message "custom" ^has_comparison true)))
+          (fail (AssertionError ^message "custom" ^^has_comparison)))
         (it "present" [] (assert_equal void nil)))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [result/failed result/examples/0/diagnostics/0/actual
        result/examples/1/diagnostics/0/actual result/examples/1/diagnostics/0/expected]
     """, "[2 \"<unavailable>\" \"void\" \"nil\"]"
@@ -319,7 +319,7 @@ suite "testing — example lifecycle":
             ($assert (== (await task) 7))))
         (it "does not drain" []
           ($map ($to_stream [1]) (fn [x] ($assert false)))))
-      (let result (run ^report false))
+      (let result (run ^!report))
       [result/passed result/errors result/failed]
     """, "[2 0 0]"
 

@@ -123,7 +123,7 @@ suite "modules — file imports":
       "(ffi/struct CTimespec " &
       "  ^fields [[tv_sec C/Long] [tv_nsec C/Long]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true})")
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable})")
     writeModule("native_layout_user.gene",
       "(import [Timespec] ^from \"./native_layout\") " &
       "(fn seconds [t : Timespec] : I64 t/tv_sec)")
@@ -199,7 +199,7 @@ suite "modules — file imports":
       "(ffi/struct CRecord ^fields [[value C/Int64]]) " &
       "(type Record ^native {^abi CRecord ^lifecycle manual})")
     writeModule("native_reexport_mid.gene",
-      "(import [Record] ^from \"./native_reexport_base\" ^export true)")
+      "(import [Record] ^from \"./native_reexport_base\" ^^export)")
     writeModule("native_reexport_user.gene",
       "(import [Record] ^from \"./native_reexport_mid\") " &
       "(fn value [p : Record] : I64 p/value)")
@@ -327,7 +327,7 @@ suite "modules — file imports":
         "(import * : m ^from \"./wild_conditional\"))")
     expect GeneError:
       discard runProgram("(if true " &
-        "(import [answer] ^from \"./wild_conditional\" ^export true))")
+        "(import [answer] ^from \"./wild_conditional\" ^^export))")
 
   test "namespace wildcard and alias use the static namespace interface":
     writeModule("nested.gene",
@@ -361,7 +361,7 @@ suite "modules — file imports":
 
   test "macro bodies resolve private definition helpers through imports":
     writeModule("macro_helpers.gene",
-      "(fn helper ^private true [x] (* x 100)) " &
+      "(fn helper ^^private [x] (* x 100)) " &
       "(macro computed [x] (helper x)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_helper_user.gene",
@@ -374,12 +374,12 @@ suite "modules — file imports":
 
   test "aliases and re-exports preserve body lookup and caller syntax lookup":
     writeModule("macro_lookup_origin.gene",
-      "(fn helper ^private true [x] (* x 100)) " &
+      "(fn helper ^^private [x] (* x 100)) " &
       "(macro computed [x] (helper x)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_lookup_reexport.gene",
       "(import [computed : calculate emitted : invoke] " &
-      "^from \"./macro_lookup_origin\" ^export true)")
+      "^from \"./macro_lookup_origin\" ^^export)")
     writeModule("macro_lookup_user.gene", "(import * : library ^from \"./macro_lookup_reexport\") " &
       "(import [calculate : selected] ^from \"./macro_lookup_reexport\") " &
       "(fn helper [x] (+ x 1)) " &
@@ -396,7 +396,7 @@ suite "modules — file imports":
 
   test "generated helper macro calls require caller visibility":
     writeModule("macro_callsite_helpers.gene",
-      "(macro helper ^private true [x] `(* %x 100)) " &
+      "(macro helper ^^private [x] `(* %x 100)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_callsite_user.gene",
       "(import [emitted] ^from \"./macro_callsite_helpers\") " &
@@ -413,7 +413,7 @@ suite "modules — file imports":
 
   test "macro definition modules retain identity without dependency source":
     writeModule("macro_identity.gene",
-      "(mod original) (fn helper ^private true [x] (+ x 1)) " &
+      "(mod original) (fn helper ^^private [x] (+ x 1)) " &
       "(macro module_name [] this_mod/.name) " &
       "(macro computed [x] (helper x))")
     let compilerApp = newApplication(modDir)
@@ -506,23 +506,23 @@ suite "modules — file imports":
 
   test "Env module imports expose public macros including re-exports":
     writeModule("env_macros.gene",
-      "(macro twice [x] `(+ %x %x)) (macro secret ^private true [] 99)")
+      "(macro twice [x] `(+ %x %x)) (macro secret ^^private [] 99)")
     writeModule("env_macro_mid.gene",
-      "(import [twice] ^from \"./env_macros\" ^export true)")
+      "(import [twice] ^from \"./env_macros\" ^^export)")
     check runProgram("(let e (env ^imports [\"./env_macro_mid\"])) " &
       "(eval (quote (twice 3)) ^in e)").print() == "6"
     check runProgram("(let e (env ^imports [\"./env_macros\"])) " &
       "(try (eval (quote (secret)) ^in e) catch Any \"private\")").print() == "\"private\""
     writeModule("env_macro_alias_mid.gene",
-      "(import * : tools ^from \"./env_macros\" ^export true)")
+      "(import * : tools ^from \"./env_macros\" ^^export)")
     check runProgram("(let e (env ^imports [\"./env_macro_alias_mid\"])) " &
       "(eval (quote (tools/twice 3)) ^in e)").print() == "6"
 
   test "private declarations stay out of selections and wildcard interfaces":
     writeModule("private_exports.gene",
-      "(var public 1) (var hidden ^private true 2) " &
-      "(var visible ^private false 4) " &
-      "(ns secret ^private true (var value 3))")
+      "(var public 1) (var hidden ^^private 2) " &
+      "(var visible ^!private 4) " &
+      "(ns secret ^^private (var value 3))")
     writeModule("private_user.gene",
       "(import * ^from \"./private_exports\") (var observed public)")
     let app = newApplication(modDir)
@@ -547,7 +547,7 @@ suite "modules — file imports":
     writeModule("reexport_base.gene",
       "(var answer 42) (macro twice [x] `(+ %x %x))")
     writeModule("reexport_mid.gene",
-      "(import [answer twice] ^from \"./reexport_base\" ^export true)")
+      "(import [answer twice] ^from \"./reexport_base\" ^^export)")
     writeModule("reexport_user.gene",
       "(import * ^from \"./reexport_mid\") " &
       "(var observed [(twice answer) answer])")
@@ -559,7 +559,7 @@ suite "modules — file imports":
   test "explicit alias re-exports retain their namespace interface":
     writeModule("alias_reexport_base.gene", "(var answer 42)")
     writeModule("alias_reexport_mid.gene",
-      "(import * : base ^from \"./alias_reexport_base\" ^export true)")
+      "(import * : base ^from \"./alias_reexport_base\" ^^export)")
     writeModule("alias_reexport_user.gene",
       "(import * ^from \"./alias_reexport_mid\") " &
       "(var observed base/answer)")
@@ -707,7 +707,7 @@ suite "modules — file imports":
     writeModule("json_ext.gene",
       "(import [ToJson] ^from \"./json\") " &
       "(import [User] ^from \"./model\") " &
-      "(impl ToJson for User ^export true " &
+      "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str self/name))")
     for source in [
       "(import_impl ToJson for User ^from \"./json_ext\") ",
@@ -724,7 +724,7 @@ suite "modules — file imports":
     writeModule("macro_extension.gene",
       "(import [Label] ^from \"./macro_label\") " &
       "(import [Item] ^from \"./macro_item\") " &
-      "(impl Label for Item ^export true (message label [self] : Str \"local\"))")
+      "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
     check runProgram("(import [Label] ^from \"./macro_label\") " &
       "(import [Item] ^from \"./macro_item\") " &
       "(macro with_label [body...] `(do " &
@@ -744,7 +744,7 @@ suite "modules — file imports":
       ("(import_impl P for T ^from 42)", "^from must be a path string"),
       ("(import_impl P for T ^from nil)", "^from must be a path string"),
       ("(import_impl P for T ^^from)", "^from must be a path string"),
-      ("(import_impl P for T ^from \"./provider\" ^export true)", "unexpected option: ^export"),
+      ("(import_impl P for T ^from \"./provider\" ^^export)", "unexpected option: ^export"),
       ("(import_impl P ^for T ^from \"./provider\")", "unexpected option: ^for")
     ]:
       var diagnostic = ""
@@ -760,7 +760,7 @@ suite "modules — file imports":
       "(protocol P (message value [self])) (type T ^props {})")
     writeModule("canonical_export.gene",
       "(protocol P (message value [self])) (type T ^props {}) " &
-      "(impl P for T ^export true (message value [self] 1))")
+      "(impl P for T ^^export (message value [self] 1))")
     expect GeneError:
       discard runProgram("(import * : bad ^from \"./canonical_export\")")
 
@@ -774,7 +774,7 @@ suite "modules — file imports":
     writeModule("overlay_export.gene",
       "(import [P T] ^from \"./export_base\") " &
       "(fn install [] " &
-      "  (impl P for T ^export true (message value [self] 1))) " &
+      "  (impl P for T ^^export (message value [self] 1))) " &
       "(install)")
     expect GeneError:
       discard runProgram("(import * : bad ^from \"./overlay_export\")")
@@ -785,7 +785,7 @@ suite "modules — file imports":
       "(type User ^props {^name Str})")
     writeModule("typed_ext.gene",
       "(import [Named User] ^from \"./typed_base\") " &
-      "(impl Named for User ^export true " &
+      "(impl Named for User ^^export " &
       "  (message name [self] : Str self/name))")
     writeModule("typed_lib.gene",
       "(import [Named] ^from \"./typed_base\") " &
@@ -814,12 +814,12 @@ suite "modules — file imports":
     writeModule("json_ext_a.gene",
       "(import [ToJson] ^from \"./json\") " &
       "(import [User] ^from \"./model\") " &
-      "(impl ToJson for User ^export true " &
+      "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str self/name))")
     writeModule("json_ext_b.gene",
       "(import [ToJson] ^from \"./json\") " &
       "(import [User] ^from \"./model\") " &
-      "(impl ToJson for User ^export true " &
+      "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str \"other\"))")
     expect GeneError:
       discard runProgram("(import [ToJson] ^from \"./json\") " &
@@ -833,7 +833,7 @@ suite "modules — file imports":
       "(type Item ^props {})")
     writeModule("reload_ext.gene",
       "(import [Render Item] ^from \"./reload_base\") " &
-      "(impl Render for Item ^export true " &
+      "(impl Render for Item ^^export " &
       "  (message render [self] : Str \"one\"))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
@@ -844,7 +844,7 @@ suite "modules — file imports":
     let before = app.implActivationEpoch
     writeModule("reload_ext.gene",
       "(import [Render Item] ^from \"./reload_base\") " &
-      "(impl Render for Item ^export true " &
+      "(impl Render for Item ^^export " &
       "  (message render [self] : Str \"two\"))")
     discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == before + 1
@@ -892,12 +892,12 @@ suite "modules — file imports":
     """)
     writeModule("self_parent.gene", """
       (import [P Base] ^from "./self_base")
-      (impl P for Base ^export true (message value [] : Int 1))
+      (impl P for Base ^^export (message value [] : Int 1))
     """)
     writeModule("self_child.gene", """
       (import [P Base Child] ^from "./self_base")
       (import_impl P for Base ^from "./self_parent")
-      (impl P for Child ^export true)
+      (impl P for Child ^^export)
     """)
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
@@ -909,7 +909,7 @@ suite "modules — file imports":
     check run(compileSource("(use_child)"), scope).print() == "1"
     writeModule("self_parent.gene", """
       (import [P Base] ^from "./self_base")
-      (impl P for Base ^export true (message value [] : Int 2))
+      (impl P for Base ^^export (message value [] : Int 2))
     """)
     let epoch = app.implActivationEpoch
     discard app.reloadFileModule(modDir / "self_parent.gene")
@@ -1004,7 +1004,7 @@ suite "modules — file imports":
       "(type T ^props {}) " &
       "(impl Render for T (message render [self] : Str \"interface\"))")
     writeModule("interface_mid.gene",
-      "(import [Render T] ^from \"./interface_base\" ^export true)")
+      "(import [Render T] ^from \"./interface_base\" ^^export)")
     check runProgram("(import * : base ^from \"./interface_base\") " &
       "((base/T) .base/Render:render)").print() == "\"interface\""
     check runProgram("(import [Render T] ^from \"./interface_mid\") " &
@@ -1184,11 +1184,11 @@ suite "modules — impl activation across module paths":
       "(type U ^props {})")
     writeModule("impl_one.gene",
       "(import [Show2 U] ^from \"./conflict_shared\") " &
-      "(impl Show2 for U ^export true " &
+      "(impl Show2 for U ^^export " &
       "  (message show2 [self] : Str \"one\"))")
     writeModule("impl_two.gene",
       "(import [Show2 U] ^from \"./conflict_shared\") " &
-      "(impl Show2 for U ^export true " &
+      "(impl Show2 for U ^^export " &
       "  (message show2 [self] : Str \"two\"))")
     expect GeneError:
       discard runProgram("(import [Show2 U] ^from \"./conflict_shared\") " &

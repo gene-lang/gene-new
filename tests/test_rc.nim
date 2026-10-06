@@ -321,8 +321,8 @@ when defined(geneRcStats):
     test "inferred returned-callable proofs release their source scopes":
       check leakedManaged("""
         (mod checked ^errors_mode strict)
-        (fn source ^private true [] 1)
-        (fn factory ^private true [] (fn [] (source)))
+        (fn source ^^private [] 1)
+        (fn factory ^^private [] (fn [] (source)))
         (fn client [] ^errors [] ((factory)))
         (client)
       """) == 0
@@ -333,7 +333,7 @@ when defined(geneRcStats):
         var scope = newGlobalScope()
         saved = run(compileSource("""
           (mod checked ^errors_mode strict)
-          (fn factory ^private true []
+          (fn factory ^^private []
             (fn callback [] ^errors [] 1)
             callback)
           (factory)
@@ -359,7 +359,7 @@ when defined(geneRcStats):
           (protocol P (message value [] : Int ^errors []))
           (type Item ^props {})
           (impl P for Item (message value [] : Int ^errors [] 7))
-          (fn factory ^private true [unused : Int] P:value)
+          (fn factory ^^private [unused : Int] P:value)
           [(factory 1) (Item)]
         """), scope)
         scope = nil
@@ -571,7 +571,7 @@ when defined(geneRcStats):
         check leakedManaged("""
           (let IoResource $io/IoResource)
           (let pipe ($io/pipe))
-          (let rows ($csv/reader pipe/0 ^own_reader true))
+          (let rows ($csv/reader pipe/0 ^^own_reader))
           (await ($io/write_all pipe/1 ($binary/from_str "a,b\n")))
           (pipe/1 .IoResource:close)
           (await (pipe/1 .IoResource:wait_closed))
@@ -1037,7 +1037,7 @@ when defined(geneRcStats):
         check repeatedBodyLeak("(fn body [] (var hs []) " &
           "(for x in [1 2 3] (hs .push (fn [] x))) (hs/0))") == 0
         check repeatedBodyLeak("(fn body [] (var f nil) " &
-          "(match [3] ^exhaustive false (when [x] (set f (fn [] x)))) (f))") == 0
+          "(match [3] ^!exhaustive (when [x] (set f (fn [] x)))) (f))") == 0
         check repeatedBodyLeak("(fn other [a] (var b a) b) " &
           "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (other 1))") == 0
         # The Int fast return, an explicit return from inside the loop, and an

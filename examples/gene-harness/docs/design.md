@@ -237,7 +237,7 @@ events capped at 256 KiB per turn with a truncation marker.
                        ^attention Bool?})
 ```
 
-`^attention true` flags the session for the operator. A round may take 24
+`^^attention` flags the session for the operator. A round may take 24
 turns, or 12 in a trigger session; reaching the limit fails the round and shows
 the last request.
 
@@ -269,7 +269,7 @@ trigger's request text prefixed with `[trigger <id> occurrence <occurrence>]`.
 
 A batch holds one to eight questions. Each has a unique `^id` and a non-empty
 `^prompt`. `^choices` is optional; without it the answer is free text.
-`^multi true` allows several choices, `^kind "confirm"` asks yes or no, and
+`^^multi` allows several choices, `^kind "confirm"` asks yes or no, and
 `^recommended` must be one of the choices. Plugins add question kinds as rows
 of the `interactions` registry, which validate both the question and its
 answer.
@@ -307,7 +307,7 @@ The profile is a set of built-in plugin defaults. The composition store has
 at most one record per id: no record uses the profile default; a disabled
 built-in record removes it; an enabled stored module replaces it; a disabled
 stored record leaves the id inactive. Replacing a taken id requires
-`^replace true`. `restore_plugin` drops a stored record only when the profile
+`^^replace`. `restore_plugin` drops a stored record only when the profile
 has a default for that id. `doctor`, `enable`, `disable` and `restore` work
 without activating plugins. A failed activation is quarantined and cannot
 block inspection or repair of the workspace.
@@ -378,7 +378,7 @@ the loop owns `/cancel`, `/stop` and `/restart`, and `repl` owns `/repl`.
 `append_prompt`, which forwards to the current turn and labels the item
 `fn <name>`. Outside an open turn it raises TurnClosed.
 
-`(register_plugin id source ^dependencies [...] ^replace false)` takes a quoted
+`(register_plugin id source ^dependencies [...] ^!replace)` takes a quoted
 `mod` form, or text such as an attachment that reads as one form. It
 validates the source, preflights `init` under its bounded budget, stores
 content-addressed module blobs, and queues the composition change for the turn
@@ -580,7 +580,7 @@ The Harness relies on general runtime features, documented in
 | --- | --- |
 | `$runtime/with_context`, `$runtime/context`; spawned tasks inherit the context | Current turn and session for plugin append_prompt and lookups |
 | Task-context `^output` sink for `$print`/`$println` | Per-session console routing, including late output |
-| `$parse/read_all ^locs true`, `$node/rebuild` | Response lines for headers and error locations |
+| `$parse/read_all ^^locs`, `$node/rebuild` | Response lines for headers and error locations |
 | `$os/set_cwd` | The workspace becomes the working directory |
 | Execution quantum, including callbacks run by native higher-order builtins | Parallel sessions stay responsive during CPU-bound code |
 | Fiber-aware `$os/exec`, `$fs/read_text`, `$fs/write_text` | Blocking calls park the fiber instead of the lane |

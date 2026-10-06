@@ -229,7 +229,7 @@
   (var i_dirt (add_item items "t:dirt" "Dirt" d default_stack_max))
   (var i_leaves (add_item items "t:leaves" "Leaves" l default_stack_max))
   (var i_lump (add_item items "t:lump" "Lump" no_node default_stack_max))
-  # `t:bedrock` deliberately gets no item, which is `^is_item false`.
+  # `t:bedrock` deliberately gets no item, which is `^!is_item`.
 
   (var t (new_drop_table))
 

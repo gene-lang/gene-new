@@ -351,7 +351,7 @@ suite "spec — reader surface from design":
 
   test "ordinary props require values and flags are explicit":
     check_read("(x ^^ready @@generated false)",
-               "(x @@generated ^^ready false)")
+               "(x @@generated ^^!ready)")
     check_read("{^^ready ^value nil}", "{^^ready ^value nil}")
     for source in ["(x ^name)", "(x @doc)", "{^name}", "#{^name}"]:
       expect ReadError:
@@ -682,12 +682,12 @@ suite "spec — enums from design":
 
   test "tuple variants construct payload values and match by tag":
     check_eval("(enum Shape (circle Int) (rect Int Int)) " &
-               "(match (Shape/circle 5) ^exhaustive false " &
+               "(match (Shape/circle 5) ^!exhaustive " &
                "  (when (Shape/circle r) r) " &
                "  (when (Shape/rect w h) (* w h)))",
                "5")
     check_eval("(enum Result (ok Int) (err Str)) " &
-               "(match (Result/err \"bad\") ^exhaustive false " &
+               "(match (Result/err \"bad\") ^!exhaustive " &
                "  (when (Result/ok v) v) " &
                "  (when (Result/err e) e))",
                "\"bad\"")
@@ -699,15 +699,15 @@ suite "spec — enums from design":
                "blue")
     check_eval("(enum Option [T] none (some T)) " &
                "[(Option/some 7) (Option/some \"x\") " &
-               " (match Option/none ^exhaustive false (when Option/none \"none\"))]",
+               " (match Option/none ^!exhaustive (when Option/none \"none\"))]",
                "[(Option/some 7) (Option/some \"x\") \"none\"]")
     check_eval("(enum Option [T] none (some T)) " &
                "(fn unwrap [o : (Option Int)] " &
-               "  (match o ^exhaustive false (when (Option/some v) v) (when Option/none 0))) " &
+               "  (match o ^!exhaustive (when (Option/some v) v) (when Option/none 0))) " &
                "(unwrap (Option/some 9))",
                "9")
     check_eval("(enum Tree leaf (node Tree Tree)) " &
-               "(match (Tree/node Tree/leaf Tree/leaf) ^exhaustive false " &
+               "(match (Tree/node Tree/leaf Tree/leaf) ^!exhaustive " &
                "  (when (Tree/node left right) [left right]))",
                "[Tree/leaf Tree/leaf]")
 
@@ -871,7 +871,7 @@ suite "spec — macros from design":
 
   test "macro match binders retain their ordinary arm scope":
     check_eval("(macro first_of [x] " &
-               "  `(match %x ^exhaustive false (when [tmp] tmp))) " &
+               "  `(match %x ^!exhaustive (when [tmp] tmp))) " &
                "(var tmp 100) [(first_of [1]) tmp]",
                "[1 100]")
 
@@ -888,7 +888,7 @@ suite "spec — macros from design":
       "(var x 10) [((mk (+ x 1)) 5) x]", "[6 10]")
     check_eval("(macro each3 [body] `(for i in [1 2 3] %body)) " &
       "(var i 99) (var total 0) (each3 (set total (+ total i))) [total i]", "[6 99]")
-    check_eval("(macro first_or [x d] `(match %x ^exhaustive false (when [tmp] %d))) " &
+    check_eval("(macro first_or [x d] `(match %x ^!exhaustive (when [tmp] %d))) " &
       "(var tmp 100) [(first_or [1] tmp) tmp]", "[1 100]")
     check_eval("(macro swap [a b] `(do (var tmp %a) (set %a %b) (set %b tmp))) " &
       "(fn f [] (var tmp 1) (var y 2) (swap tmp y) [tmp y]) (f)", "[1 2]")
@@ -1213,7 +1213,7 @@ int main(void) {
       (fn consume [x : I64 y : I64] : I64 x)
       (fn arguments [x : I64] : I64 (consume (+ x 1) (tick 2)))
       (ffi/struct CBox ^fields [[value C/Int64] [letter C/Char]])
-      (type Box ^native {^abi CBox ^lifecycle manual ^mutable true})
+      (type Box ^native {^abi CBox ^lifecycle manual ^^mutable})
       (fn before_store [box : Box?] : I64 (set box/value (tick 3)))
       (fn char_as_int [box : Box] : I64 box/letter)
       (fn float_cmp [x : F64 y : F64] : I64 (if (< x y) 1 2))
@@ -1421,7 +1421,7 @@ int main(void) {
       (ffi/struct CLeaf ^fields [[value C/Int64]])
       (type Leaf ^native {^abi CLeaf ^lifecycle manual})
       (ffi/struct CBox ^fields [[child (C/Ptr Leaf)] [text C/CStr]])
-      (type Box ^native {^abi CBox ^lifecycle manual ^mutable true})
+      (type Box ^native {^abi CBox ^lifecycle manual ^^mutable})
       (fn copy_child [dst : Box src : Box] : I64 (set dst/child src/child) 1)
       (fn copy_text [dst : Box src : Box] : I64 (set dst/text src/text) 1)
       (ffi/fn badstr ^symbol "checked_badstr" [] : C/CStr)
@@ -1464,7 +1464,7 @@ int main(void) {
       "(ffi/struct CTimespec " &
       "  ^fields [[tv_sec C/Long] [tv_nsec C/Long]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable}) " &
       "(fn seconds [t : Timespec] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
     checkNativeSignature(c, "seconds", @["CTimespec *"], "int64_t")
@@ -1534,7 +1534,7 @@ int main(void) {
     ## A private namespace is absent from the parent interface, so this path
     ## builds one at the namespace's own path — identities stay qualified.
     let chunk = compileSource(
-      "(ns geom ^private true " &
+      "(ns geom ^^private " &
       "  (fn value_of [node : Node] : I64 node/value) " &
       "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
       "  (type Node ^native {^abi CNode ^lifecycle manual}))")
@@ -1547,7 +1547,7 @@ int main(void) {
       "(ffi/struct CTimespec " &
       "  ^fields [[tv_sec C/Int64] [tv_nsec C/Int64]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable}) " &
       "(fn set_seconds [t : Timespec value : I64] : I64 " &
       "  (do (set t/tv_sec value) value))")
     let c = chunk.emitExperimentalC()
@@ -1559,7 +1559,7 @@ int main(void) {
     check_compile_error(
       "(ffi/struct CByte ^fields [[value C/UInt8]]) " &
       "(type BytePtr " &
-      "  ^native {^abi CByte ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CByte ^lifecycle manual ^^mutable}) " &
       "(fn set_byte [p : BytePtr value : I64] : I64 " &
       "  (set p/value value))",
       "typed_native function set_byte cannot lower its body statically")
@@ -1837,7 +1837,7 @@ int main(void) {
     check_compile_error(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable}) " &
       "(fn bad [t : Timespec] : I64 (t .missing))",
       "typed_native function bad cannot lower its body statically")
 
@@ -2411,7 +2411,7 @@ void point_free(CPoint *p) { free(p); }
     let chunk = compileSource(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable}) " &
       "(ffi/fn read_seconds ^symbol \"read_seconds\" " &
       "  [t : Timespec] : C/Long) " &
       "(fn seconds_via_call [t : Timespec] : I64 (read_seconds t))")
@@ -2522,7 +2522,7 @@ int main(void) {
       "(ffi/struct CNode " &
       "  ^fields [[next (C/NullablePtr Node)] [value C/Int64]]) " &
       "(type Node " &
-      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CNode ^lifecycle manual ^^mutable}) " &
       "(fn next_node [node : Node] : Node? node/next) " &
       "(fn set_next [node : Node child : Node] : Node " &
       "  (do (set node/next child) child))")
@@ -2545,7 +2545,7 @@ int main(void) {
       writeFile(result / "lib.gene",
         "(ffi/struct CNode " &
         "  ^fields [[next (C/NullablePtr Node)] [value C/Int64]])\n" &
-        "(type Node ^native {^abi CNode ^lifecycle manual ^mutable true})\n")
+        "(type Node ^native {^abi CNode ^lifecycle manual ^^mutable})\n")
 
     proc emitFor(dir, name, source: string): string =
       writeFile(dir / name, source)
@@ -2688,7 +2688,7 @@ int main(void) {
       "{^abi CPoint ^lifecycle manual ^wrapper handle " &
       " ^release \"other_free\" ^copy \"point_copy\"}") != base
     check contractFp(
-      "{^abi CPoint ^lifecycle manual ^wrapper handle ^mutable true " &
+      "{^abi CPoint ^lifecycle manual ^wrapper handle ^^mutable " &
       " ^release \"point_free\" ^copy \"point_copy\"}") != base
 
     ## A layout change still moves it, because the contract hash nests the
@@ -2756,7 +2756,7 @@ int main(void) {
       "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &
       "(ffi/struct COther ^fields [[value C/Int64]]) " &
       "(type Node " &
-      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CNode ^lifecycle manual ^^mutable}) " &
       "(type Other ^native {^abi COther ^lifecycle manual}) " &
       "(fn lie [node : Node child : Node] : Other " &
       "  (set node/next child))",
@@ -3344,7 +3344,7 @@ int main(void) {
     let chunk = compileSource(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable false}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^!mutable}) " &
       "(fn maybe_seconds [t : Timespec?] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
     checkNativeSignature(c, "maybe_seconds", @["CTimespec *"], "int64_t")
@@ -3376,7 +3376,7 @@ int main(void) {
     let chunk = compileSource(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Int64]]) " &
       "(type Timespec " &
-      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^^mutable}) " &
       "(fn maybe_set [value : I64 t : Timespec?] : I64 " &
       "  (set t/tv_sec value))")
     let c = chunk.emitExperimentalC()
@@ -3388,7 +3388,7 @@ int main(void) {
     let chunk = compileSource(
       "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &
       "(type Node " &
-      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "  ^native {^abi CNode ^lifecycle manual ^^mutable}) " &
       "(fn maybe_next [node : Node?] : Node? node/next) " &
       "(fn maybe_set_next [child : Node node : Node?] : Node " &
       "  (set node/next child))")
@@ -3754,7 +3754,7 @@ int main(void) {
       discard compileSource("(ffi/callback BadPtrShape " &
                             "[p : (C/Ptr C/Char C/Int)] : C/Void)")
     expect GeneError:
-      discard compileSource("(ffi/callback Escaping ^escaping true " &
+      discard compileSource("(ffi/callback Escaping ^^escaping " &
                             "[p : (C/Ptr C/Void)] : C/Void)")
     expect GeneError:
       discard compileSource("(ffi/callback BadAbi ^abi Rust " &
@@ -4085,7 +4085,7 @@ suite "spec — nominal types from design":
 
   test "type layout promises are reserved":
     expect GeneError:
-      discard compileSource("(type Packed ^sealed true ^props {})")
+      discard compileSource("(type Packed ^^sealed ^props {})")
 
 suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "new invokes the type constructor unless its head collides":
@@ -4384,7 +4384,7 @@ suite "spec — native wrapper types (design §16.6)":
     expect GeneError:
       discard compileSource("(type T ^repr packed ^props {^n Int})")
     expect GeneError:
-      discard compileSource("(type T ^sealed true ^props {^n Int})")
+      discard compileSource("(type T ^^sealed ^props {^n Int})")
 
   test "in-tree native surfaces are wrapper types":
     check_eval("(try (SqliteDb) catch Error $err/message)",
@@ -5001,7 +5001,7 @@ suite "spec — type aliases from design §7.4.1":
       discard run(compileSource("(alias U (| Int Str)) (U)"), newGlobalScope())
 
   test "an alias may be marked ^private":
-    check_eval("(alias Id ^private true Str) (var x : Id \"ok\") x", "\"ok\"")
+    check_eval("(alias Id ^^private Str) (var x : Id \"ok\") x", "\"ok\"")
 
   test "a cyclic alias raises rather than crashing":
     expect GeneError:
@@ -5117,19 +5117,19 @@ suite "spec — pattern destructuring from design":
     # to the runtime global, not the sibling's pattern binding — the
     # false positive the previous compile-time cross-check had was
     # rejecting exactly this case.
-    check_eval("(match [1] ^exhaustive false " &
+    check_eval("(match [1] ^!exhaustive " &
                "  (when [a] $map) " &
                "  (when [map] $map))",
                "(native-fn map)")
     # Arm 1 doesn't match `[9]` (2-tuple needed, 1-tuple given); arm 2
     # matches and references `map`. Sibling-leak would surface as
     # something else; runtime isolation gives us the global.
-    check_eval("(match [9] ^exhaustive false " &
+    check_eval("(match [9] ^!exhaustive " &
                "  (when [a b] \"first\") " &
                "  (when [c] $map))",
                "(native-fn map)")
     # Arm 1 matches `[1]` and returns the literal; arm 2 never runs.
-    check_eval("(match [1] ^exhaustive false " &
+    check_eval("(match [1] ^!exhaustive " &
                "  (when [a] \"first\") " &
                "  (when [c] $map))",
                "\"first\"")
@@ -5269,18 +5269,18 @@ suite "spec — pattern destructuring from design":
                "[0 nil]")
 
   test "alternation alternatives bind the same names":
-    check_eval("(match [2 7] ^exhaustive false (when (| [1 a] [2 a]) a))", "7")
+    check_eval("(match [2 7] ^!exhaustive (when (| [1 a] [2 a]) a))", "7")
     expect GeneError:
-      discard run(compileSource("(match [1] ^exhaustive false (when (| [a] [b]) a))"),
+      discard run(compileSource("(match [1] ^!exhaustive (when (| [a] [b]) a))"),
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(match 1 (when (not x) \"no\") (else \"ok\"))"),
                   newGlobalScope())
   test "meta patterns opt into matching meta":
-    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^exhaustive false " &
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^!exhaustive " &
                "  (when (@ {^line l} (x ^name n)) [l n]))",
                "[7 \"Ada\"]")
-    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^exhaustive false " &
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^!exhaustive " &
                "  (when (x ^name n) n))",
                "\"Ada\"")
   test "typed patterns bind and require the declared type":
@@ -5646,19 +5646,19 @@ suite "spec — implicit self in message bodies from design §10":
   test "the canonical representation is what the pattern engine matches":
     # design §1.3/§8: a cell `c` holding `v` matches `(Cell p)` and binds `p`
     # to the current value; the bind is a read-only snapshot.
-    check_eval("(match ($cell 5) ^exhaustive false (when (Cell v) (* v 2)))", "10")
+    check_eval("(match ($cell 5) ^!exhaustive (when (Cell v) (* v 2)))", "10")
     check_eval("(match ($cell 5) (when (Cell 5) \"five\") (else \"no\"))",
                "\"five\"")
-    check_eval("(try (match ($cell 5) ^exhaustive false (when (Cell) x)) " &
+    check_eval("(try (match ($cell 5) ^!exhaustive (when (Cell) x)) " &
                "  catch MatchError \"arity\")",
                "\"arity\"")
     check_eval("(var c ($cell 1)) " &
-               "(var v (match c ^exhaustive false (when (Cell x) x))) " &
+               "(var v (match c ^!exhaustive (when (Cell x) x))) " &
                "(c .set 2) " &
                "[v (c .get)]",
                "[1 2]")
     check_eval("(var cs [($cell 1) ($cell 2)]) " &
-               "(match cs ^exhaustive false (when [(Cell a) (Cell b)] (+ a b)))",
+               "(match cs ^!exhaustive (when [(Cell a) (Cell b)] (+ a b)))",
                "3")
     # Head-only canonical nodes match arity-zero patterns; a function has no
     # registered type identity and matches no node pattern at all. Rest shapes
@@ -6111,7 +6111,7 @@ suite "spec — implicit self in message bodies from design §10":
                "  (message up [] : (Task Str Error) " &
                "    (spawn ^lane root (do (var out \"\") " &
                "      (for x in [1] (try " &
-               "        (match x ^exhaustive false (when 1 (set out (super .m)))) ensure nil)) " &
+               "        (match x ^!exhaustive (when 1 (set out (super .m)))) ensure nil)) " &
                "      out)))) C) " &
                "(let C1 (make A)) (let C2 (make B)) " &
                "[(await ((C1) .up)) (await ((C2) .up)) (await ((C1) .up))]",
@@ -6371,7 +6371,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
       "(type Derived : Base ^props {})\n")
     writeFile(result / "provider.gene",
       "(import [Shown Widget] ^from \"./proto\")\n" &
-      "(impl Shown for Widget ^export true (message show [] : Str \"w\"))\n")
+      "(impl Shown for Widget ^^export (message show [] : Str \"w\"))\n")
     writeFile(result / "unexported.gene",
       "(import [Shown Base] ^from \"./proto\")\n" &
       "(impl Shown for Base (message show [] : Str \"b\"))\n")
@@ -6418,7 +6418,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
       "(import [] ^from \"./unexported\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Base))\n")
-    check "^export true" in msg
+    check "^^export" in msg
     check "import_impl" notin msg
 
   test "a hidden impl found through ancestry names its own pair":
@@ -6427,7 +6427,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     let dir = hintDir()
     writeFile(dir / "baseprov.gene",
       "(import [Shown Base] ^from \"./proto\")\n" &
-      "(impl Shown for Base ^export true (message show [] : Str \"b\"))\n")
+      "(impl Shown for Base ^^export (message show [] : Str \"b\"))\n")
     let msg = loadError(dir, "main.gene",
       "(import [Shown Base Derived] ^from \"./proto\")\n" &
       "(import [] ^from \"./baseprov\")\n" &
@@ -6521,7 +6521,7 @@ suite "spec — binding forms from design §12.1":
   test "binding shape checks preserve omitted values and typed constants":
     check_eval("(let v) (var w) [v w]", "[nil nil]")
     check_eval("(let v : Int 1) (const K : Int 7) [v K]", "[1 7]")
-    check_eval("(var x ^private true 1) x", "1")
+    check_eval("(var x ^^private 1) x", "1")
     check_eval_error("(const K : Int \"wrong\")", "Int")
 
   test "let binds a fixed value; var is rebindable":
@@ -6734,7 +6734,7 @@ suite "spec — binding forms from design §12.1":
 
   test "a match-arm binding shadowing an outer let stays rebindable":
     check_eval("(let z 1) " &
-               "[(match [7] ^exhaustive false (when [z] (do (set z (+ z 1)) z))) z]",
+               "[(match [7] ^!exhaustive (when [z] (do (set z (+ z 1)) z))) z]",
                "[8 1]")
 
   test "typed let checks its value at the boundary":
@@ -7190,7 +7190,7 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns exhausted when empty":
     check_eval("(var s ($to_stream [])) " &
-               "(match (s .try_next) ^exhaustive false " &
+               "(match (s .try_next) ^!exhaustive " &
                "  (when TryNext/exhausted true) " &
                "  (when (TryNext/value _) false) " &
                "  (when (TryNext/error _) false))",
@@ -7198,30 +7198,30 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns value for each item then exhausted":
     check_eval("(var s ($to_stream [1 2])) " &
-               "[(match (s .try_next) ^exhaustive false " &
+               "[(match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s .try_next) ^exhaustive false " &
+               " (match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s .try_next) ^exhaustive false " &
+               " (match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0))]",
                "[1 2 0]")
 
   test "Stream/try_next preserves nil as a distinct value":
     check_eval("(var s ($to_stream [nil 9])) " &
-               "[(match (s .try_next) ^exhaustive false " &
+               "[(match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty)) " &
-               " (match (s .try_next) ^exhaustive false " &
+               " (match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty))]",
                "[nil 9]")
 
   test "Stream/try_next returns error for producer errors":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
-               "(match (s .try_next) ^exhaustive false " &
+               "(match (s .try_next) ^!exhaustive " &
                "  (when (TryNext/error e) true) " &
                "  (when (TryNext/value _) false) " &
                "  (when TryNext/exhausted false))",
@@ -7229,11 +7229,11 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns exhausted after a producer error":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
-               "[(match (s .try_next) ^exhaustive false " &
+               "[(match (s .try_next) ^!exhaustive " &
                "    (when (TryNext/error _) true) " &
                "    (when (TryNext/value _) false) " &
                "    (when TryNext/exhausted false)) " &
-               " (match (s .try_next) ^exhaustive false " &
+               " (match (s .try_next) ^!exhaustive " &
                "    (when TryNext/exhausted true) " &
                "    (when (TryNext/value _) false) " &
                "    (when (TryNext/error _) false))]",
@@ -7242,7 +7242,7 @@ suite "spec — streams from design":
   test "TryNext can be used as an annotation type":
     check_eval("(fn next_or [s : Stream] : (TryNext Int Error) " &
                "  (s .try_next)) " &
-               "(match (next_or ($to_stream [42])) ^exhaustive false " &
+               "(match (next_or ($to_stream [42])) ^!exhaustive " &
                "  (when (TryNext/value v) v) " &
                "  (when TryNext/exhausted 0))",
                "42")
@@ -7260,13 +7260,13 @@ suite "spec — streams from design":
                "[((Path ^default fallback \"name\") {^age 37}) " &
                " ((Path ^default fallback \"name\") {^name nil})]",
                "[\"unknown\" nil]")
-    check_eval("(try ((Path ^strict true \"name\") {^age 37}) " &
+    check_eval("(try ((Path ^^strict \"name\") {^age 37}) " &
                "catch Any $err/message)",
                "\"Path lookup failed at segment: \\\"name\\\"\"")
-    check_eval("(try ((Path ^strict true ^default \"unknown\" \"name\") {^age 37}) " &
+    check_eval("(try ((Path ^^strict ^default \"unknown\" \"name\") {^age 37}) " &
                "catch Any $err/message)",
                "\"Path lookup failed at segment: \\\"name\\\"\"")
-    check_eval("(try ((Path ^strict true \"name\") {^age 37}) " &
+    check_eval("(try ((Path ^^strict \"name\") {^age 37}) " &
                "catch PathMissing $err/segment)",
                "\"name\"")
 
@@ -7279,9 +7279,9 @@ suite "spec — streams from design":
     check_eval("(fn size [xs] xs/.size) (size [1 2 3])", "3")
 
   test "complex selector stages adapt stream helpers":
-    check_eval("(var users [{^name \"Ada\" ^adult true} " &
-               "            {^name \"Tim\" ^adult false} " &
-               "            {^name \"Bob\" ^adult true}]) " &
+    check_eval("(var users [{^name \"Ada\" ^^adult} " &
+               "            {^name \"Tim\" ^!adult} " &
+               "            {^name \"Bob\" ^^adult}]) " &
                "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
                "[(names .next) " &
                " (names .next) " &
@@ -7596,8 +7596,8 @@ suite "spec — structured tasks from design":
     check_eval("(var t (spawn 42)) " &
                "(var first (t .join)) " &
                "(var second (t .join)) " &
-               "[(match first ^exhaustive false (when (TaskOutcome/ok v) v)) " &
-               " (match second ^exhaustive false (when (TaskOutcome/ok v) v)) " &
+               "[(match first ^!exhaustive (when (TaskOutcome/ok v) v)) " &
+               " (match second ^!exhaustive (when (TaskOutcome/ok v) v)) " &
                " (await t)]",
                "[42 42 42]")
 
@@ -7613,9 +7613,9 @@ suite "spec — structured tasks from design":
                "(impl Error for Boom) " &
                "(var failed (spawn (fail (Boom ^message \"boom\")))) " &
                "(var panicked (spawn (panic \"crash\"))) " &
-               "[(match (failed .join) ^exhaustive false " &
+               "[(match (failed .join) ^!exhaustive " &
                "   (when (TaskOutcome/error e) e/message)) " &
-               " (match (panicked .join) ^exhaustive false " &
+               " (match (panicked .join) ^!exhaustive " &
                "   (when (TaskOutcome/panic message) message))]",
                "[\"boom\" \"\\\"crash\\\"\"]")
 
@@ -7635,7 +7635,7 @@ suite "spec — structured tasks from design":
     let payload = repeat('x', 5000)
     check_eval("(import $str [byte_size ends_with?]) " &
                "(var task (spawn (panic \"" & payload & "\"))) " &
-               "(match (task .join) ^exhaustive false " &
+               "(match (task .join) ^!exhaustive " &
                "  (when (TaskOutcome/panic message) " &
                "    [(byte_size message) (ends_with? message \"[truncated]\")]))",
                "[4096 true]")
@@ -7647,7 +7647,7 @@ suite "spec — structured tasks from design":
                "  (try (ch .recv) ensure (cleaned .set true)))) " &
                "($sleep 0) " &
                "(t .cancel) " &
-               "[(match (t .join) ^exhaustive false (when TaskOutcome/cancelled true)) " &
+               "[(match (t .join) ^!exhaustive (when TaskOutcome/cancelled true)) " &
                " (cleaned .get)]",
                "[true true]")
 
@@ -7655,7 +7655,7 @@ suite "spec — structured tasks from design":
     check_eval("(scope (var ch ($channel ^capacity 1)) " &
                "  (var producer (spawn ^lane root (do (ch .recv) 21))) " &
                "  (var joiner (spawn ^lane root " &
-               "    (match (producer .join) ^exhaustive false " &
+               "    (match (producer .join) ^!exhaustive " &
                "      (when (TaskOutcome/ok value) (* value 2))))) " &
                "  (ch .send 1) " &
                "  (await joiner))",
@@ -7666,7 +7666,7 @@ suite "spec — structured tasks from design":
                "  (var target (spawn ^lane root (do (ch .recv) 42))) " &
                "  (var joiner (spawn ^lane root (target .join))) " &
                "  ($sleep 0) (joiner .cancel) " &
-               "  (match (joiner .join) ^exhaustive false (when TaskOutcome/cancelled nil)) " &
+               "  (match (joiner .join) ^!exhaustive (when TaskOutcome/cancelled nil)) " &
                "  (ch .send 1) (await target))",
                "42")
 
@@ -7811,7 +7811,7 @@ suite "spec — bounded channels from design":
                "[(ch .try_send 1) " &
                " (ch .try_send 2) " &
                " (ch .recv) " &
-               " (match (ch .try_recv) ^exhaustive false " &
+               " (match (ch .try_recv) ^!exhaustive " &
                "   (when TryRecv/empty true) " &
                "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
@@ -7822,17 +7822,17 @@ suite "spec — bounded channels from design":
                "(ch .send void) " &
                "(ch .send nil) " &
                "(ch .send 9) " &
-               "[(match empty ^exhaustive false (when TryRecv/empty `empty)) " &
-               " (match (ch .try_recv) ^exhaustive false " &
+               "[(match empty ^!exhaustive (when TryRecv/empty `empty)) " &
+               " (match (ch .try_recv) ^!exhaustive " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch .try_recv) ^exhaustive false " &
+               " (match (ch .try_recv) ^!exhaustive " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch .try_recv) ^exhaustive false " &
+               " (match (ch .try_recv) ^!exhaustive " &
                "   (when (TryRecv/value v) v))]",
                "[empty void nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
                "  (ch .try_recv)) " &
-               "(match (poll ($channel)) ^exhaustive false (when TryRecv/empty true))",
+               "(match (poll ($channel)) ^!exhaustive (when TryRecv/empty true))",
                "true")
 
   test "typed channel boundaries check items before enqueue":
@@ -7986,7 +7986,7 @@ suite "spec — actors from design":
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send for Get) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
-               "  (match msg ^exhaustive false " &
+               "  (match msg ^!exhaustive " &
                "    (when (Get ^reply reply) " &
                "      (reply .send state) " &
                "      ($actor/continue state)))) " &
@@ -8032,7 +8032,7 @@ suite "spec — actors from design":
                "  (var counter : (ActorRef Get) " &
                "    ($actor/spawn ^init (fn [] 41) " &
                "      ^handle (fn [ctx state msg] " &
-               "        (match msg ^exhaustive false " &
+               "        (match msg ^!exhaustive " &
                "          (when (Get ^reply reply) " &
                "            (reply .send state) " &
                "            ($actor/continue state)))))) " &
@@ -8046,7 +8046,7 @@ suite "spec — actors from design":
                "(var ch ($channel ^capacity 1)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var got (ch .recv)) " &
-               "  (match msg ^exhaustive false " &
+               "  (match msg ^!exhaustive " &
                "    (when (Get ^reply reply) " &
                "      (reply .send (+ state got)) " &
                "      ($actor/continue state)))) " &
@@ -8099,7 +8099,7 @@ suite "spec — actors from design":
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (match msg ^exhaustive false " &
+               "      (match msg ^!exhaustive " &
                "        (when (Get ^reply reply) " &
                "          (reply .send \"bad\") " &
                "          ($actor/continue state)))))) " &
@@ -8115,7 +8115,7 @@ suite "spec — actors from design":
                                 "(scope " &
                                 "  (var a ($actor/spawn ^init (fn [] 41) " &
                                 "    ^handle (fn [ctx state msg] " &
-                                "      (match msg ^exhaustive false " &
+                                "      (match msg ^!exhaustive " &
                                 "        (when (Get ^reply reply) " &
                                 "          (reply .send state) " &
                                 "          ($actor/continue state)))))) " &
@@ -8240,7 +8240,7 @@ suite "spec — actors from design":
                "      (do ($sleep 1) (set tries (+ tries 1))) " &
                "      (set tries 100))) " &
                "  [seen/.get " &
-               "   (match event ^exhaustive false " &
+               "   (match event ^!exhaustive " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^panic p ^strategy s) " &
@@ -8260,7 +8260,7 @@ suite "spec — actors from design":
                "  (var event (dead .recv)) " &
                "  (var busy (events .recv)) " &
                "  [busy " &
-               "   (match event ^exhaustive false " &
+               "   (match event ^!exhaustive " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
@@ -8282,7 +8282,7 @@ suite "spec — actors from design":
                "  (var event (dead .recv)) " &
                "  (var busy (events .recv)) " &
                "  [busy dead-busy " &
-               "   (match event ^exhaustive false " &
+               "   (match event ^!exhaustive " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
@@ -8300,7 +8300,7 @@ suite "spec — actors from design":
                "  (a .send 2) " &
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
-               "  (match event ^exhaustive false " &
+               "  (match event ^!exhaustive " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
@@ -8317,7 +8317,7 @@ suite "spec — actors from design":
                "  (a .send 6) " &
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
-               "  (match event ^exhaustive false " &
+               "  (match event ^!exhaustive " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
@@ -8376,7 +8376,7 @@ suite "spec — actors from design":
                "    catch Boom $err/message)) " &
                "(var event (parent-events .recv)) " &
                "[outcome " &
-               " (match event ^exhaustive false " &
+               " (match event ^!exhaustive " &
                "   (when (ActorFailure ^failed_message failed " &
                "                       ^error (Boom ^message m) " &
                "                       ^strategy s) " &
@@ -8563,8 +8563,8 @@ suite "spec — Env and eval from design":
                "                         ^allow_ffi Bool? " &
                "                         ^allow_native_compile Bool?}) " &
                "(var p (EvalPolicy ^max_steps 20 " &
-               "                   ^allow_ffi false " &
-               "                   ^allow_native_compile false)) " &
+               "                   ^!allow_ffi " &
+               "                   ^!allow_native_compile)) " &
                "(eval (quote (+ 1 2)) ^in (env ^policy p))",
                "3")
     check_eval("(try (eval (quote (while true nil)) " &
@@ -8582,7 +8582,7 @@ suite "spec — Env and eval from design":
                "catch Any $err/message)",
                "\"eval memory limit exceeded\"")
     expect GeneError:
-      discard run(compileSource("(env ^policy {^allow_ffi true})"),
+      discard run(compileSource("(env ^policy {^^allow_ffi})"),
                   newGlobalScope())
 
   test "eval step limits remain active across imported callable boundaries":
@@ -8716,7 +8716,7 @@ suite "spec — task context":
     let path = getTempDir() / "gene-fiber-file-content"
     defer: removeFile(path)
     check_eval("(scope (let task (spawn ^lane root (do " &
-      " ($fs/write_text_atomic " & geneString(path) & " \"initial\" ^owner_only true) " &
+      " ($fs/write_text_atomic " & geneString(path) & " \"initial\" ^^owner_only) " &
       " ($fs/write_bytes " & geneString(path) & " ($binary/from_list [0 255 97])) " &
       " [($binary/to_list ($fs/read_bytes " & geneString(path) & ")) " &
       "  (try ($fs/read_text " & geneString(path & "-missing") & " ) false " &
@@ -8761,7 +8761,7 @@ suite "spec — task context":
       check_eval("($fs/set_mode " & geneString(path) & " 493) " &
         "($fs/create_symlink \"script\" " & geneString(link) & ") " &
         "(let target ($fs/info " & geneString(link) & ")) " &
-        "(let alias ($fs/info " & geneString(link) & " ^follow false)) " &
+        "(let alias ($fs/info " & geneString(link) & " ^!follow)) " &
         "[target/mode alias/symlink alias/link_target alias/kind]",
         "[493 true \"script\" \"symlink\"]")
 
@@ -8829,21 +8829,21 @@ suite "spec — parser helpers from design":
 
   test "located reading exposes metadata and eval preserves nested error locations":
     check_eval("(let forms ($parse/read_all \"\\n(+ 1\\n  (missing))\" " &
-               "^source \"turn-57\" ^locs true)) " &
+               "^source \"turn-57\" ^^locs)) " &
                "(let form (forms .next)) " &
                "(let m ($node/meta form)) [m/source m/line m/col]",
                "[\"turn-57\" 2 1]")
     let scope = newGlobalScope()
     try:
       discard run(compileSource("(let forms ($parse/read_all " &
-        "\"\\n(+ 1\\n  (missing))\" ^source \"turn-57\" ^locs true)) " &
+        "\"\\n(+ 1\\n  (missing))\" ^source \"turn-57\" ^^locs)) " &
         "(eval (forms .next) ^in (env))"), scope)
       check false
     except GeneError as error:
       check error.loc.sourceName == "turn-57"
       check error.loc.line == 3
       check error.loc.col == 3
-    check_eval("(try ($parse/read_all \"(\" ^source \"turn-58\" ^locs true) " &
+    check_eval("(try ($parse/read_all \"(\" ^source \"turn-58\" ^^locs) " &
                "false catch ParseError [$err/source $err/line $err/col])",
                "[\"turn-58\" 1 2]")
 
@@ -8851,7 +8851,7 @@ suite "spec — parser helpers from design":
     let scope = newGlobalScope()
     try:
       discard run(compileSource("(let forms ($parse/read_all " &
-        "\"\\n(do\\n  (var))\" ^source \"turn-59\" ^locs true)) " &
+        "\"\\n(do\\n  (var))\" ^source \"turn-59\" ^^locs)) " &
         "(eval (forms .next) ^in (env))"), scope)
       check false
     except GeneError as error:
@@ -8938,7 +8938,7 @@ suite "spec — packages (docs/workflows.md)":
       discard loadPackageAt(root, poEntry)) == pecManifestInvalid
     writeIn(root, "package.gene",
       "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
-      "^library {^entry \"src/index.gene\" ^surprise true}}")
+      "^library {^entry \"src/index.gene\" ^^surprise}}")
     check packageErrorClass(proc () =
       discard loadPackageAt(root, poEntry)) == pecManifestInvalid
 
@@ -8962,7 +8962,7 @@ suite "spec — packages (docs/workflows.md)":
       "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
       "^workspace {^members [\"packages/*\"]} " &
       "^applications [(application \"app\" ^entry \"src/main.gene\")] " &
-      "^dependencies {^tool (dep \"acme/tool\" \"1.0.0\" ^workspace true)}}")
+      "^dependencies {^tool (dep \"acme/tool\" \"1.0.0\" ^^workspace)}}")
     writeIn(root, "packages/tool/package.gene",
       "{^format 1 ^name \"acme/tool\" ^version \"1.0.0\" " &
       "^library {^entry \"src/index.gene\"}}")
@@ -9929,7 +9929,7 @@ suite "spec — native I/O lifecycle adapter":
       "(let waiter (writer .IoResource:wait_closed)) " &
       "($io/testing/complete_write writer 2) " &
       "(let after ($runtime/gc_stats)) " &
-      "[busy (match (operation .join) ^exhaustive false " &
+      "[busy (match (operation .join) ^!exhaustive " &
       "         (when TaskOutcome/cancelled true)) " &
       " closing/phase before/io_cleanup_leases " &
       " after/io_cleanup_leases after/io_open_resources (await waiter) " &
@@ -9942,7 +9942,7 @@ suite "spec — native I/O lifecycle adapter":
       "(let before ($runtime/gc_stats)) " &
       "($io/testing/complete_read reader ($binary/from_str \"a\")) " &
       "(let after ($runtime/gc_stats)) " &
-      "[(match (operation .join) ^exhaustive false (when TaskOutcome/cancelled true)) " &
+      "[(match (operation .join) ^!exhaustive (when TaskOutcome/cancelled true)) " &
       " before/io_cleanup_leases after/io_cleanup_leases]",
       "[true 2 0]")
 
@@ -10311,7 +10311,7 @@ suite "spec — store persistence protocol":
     writeFile(path, "old")
     setFilePermissions(path, {fpUserRead, fpUserWrite, fpGroupRead, fpOthersRead})
     check_eval_at("(import $fs [write_text_atomic read_text]) " &
-               "(write_text_atomic " & geneString(path) & " \"s3cret\" ^owner_only true) " &
+               "(write_text_atomic " & geneString(path) & " \"s3cret\" ^^owner_only) " &
                "(read_text " & geneString(path) & ")",
                "\"s3cret\"", dir)
     check getFilePermissions(path) == {fpUserRead, fpUserWrite}
@@ -10448,7 +10448,7 @@ suite "spec — store persistence protocol":
     check not fileExists(path)
     check_eval_at("""
       (import $db/sqlite [open_file Db])
-      (let db (open_file """ & geneString(path) & """ ^create true))
+      (let db (open_file """ & geneString(path) & """ ^^create))
       (let mode (db .Db:query_one "pragma journal_mode=wal"))
       (db .Db:exec "pragma synchronous=full")
       (db .Db:exec "create table t (x integer)")
@@ -10761,7 +10761,7 @@ suite "spec — filesystem watching":
     check_eval_at(
       "(import $fs [watch make_dir write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
-      "\" ^recursive true)) " &
+      "\" ^^recursive)) " &
       "(var writer (spawn ^lane root (do ($sleep 30) " &
       "  (make_dir \"" & child.replace("\\", "/") & "\") " &
       "  (write_text \"" & item.replace("\\", "/") & "\" \"x\")))) " &
@@ -10786,7 +10786,7 @@ suite "spec — filesystem watching":
     check_eval_at(
       "(import $fs [watch write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
-      "\" ^recursive true)) " &
+      "\" ^^recursive)) " &
       "(spawn ^lane root (do ($sleep 30) " &
       "  (write_text \"" & outsideFile.replace("\\", "/") & "\" \"x\") " &
       "  ($sleep 50) (watcher .close))) " &
@@ -10901,7 +10901,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(let args " & packed & ") " &
       "(let r ($os/exec \"printf\" \"%s\\n\" args...)) [r/status r/stdout]", expected)
     check_eval("(let r ($os/exec \"true\")) [r/status r/stdout]", "[0 \"\"]")
-    check_eval("(let r ($os/exec \"printf\" \"%s\" \"$HOME\" ^full false)) r/stdout", "\"$HOME\"")
+    check_eval("(let r ($os/exec \"printf\" \"%s\" \"$HOME\" ^!full)) r/stdout", "\"$HOME\"")
     # Keep one explicit compatibility check; regular callers use positional argv.
     check_eval("(let r ($os/exec ^cmd \"printf\" ^args [\"%s\" \"legacy\"])) r/stdout", "\"legacy\"")
 
@@ -10926,7 +10926,7 @@ suite "spec — os and json from ai-agent plan":
       "($os/exec \"echo\" ^cmd \"echo\")", "($os/exec \"echo\" ^args [])",
       "($os/exec ^^full ^cmd \"echo hi\")", "($os/exec ^args [])",
       "($os/exec \"true\" ^full 1)", "($os/exec \"true\" ^full \"yes\")",
-      "($os/exec \"true\" ^unknown true)"]:
+      "($os/exec \"true\" ^^unknown)"]:
       check_eval("(import $os [OsError]) (try " & invocation & " catch OsError true)", "true")
     check_eval_error("($os/exec 1)", "command expects a Str")
     check_eval_error("($os/exec \"echo\" 1)", "argument 1 expects a Str")
@@ -11226,11 +11226,11 @@ suite "spec — os and json from ai-agent plan":
                "(var m (parse \"{\\\"a\\\":1,\\\"a\\\":2}\")) m/a",
                "2")
     check_eval("(import $json [parse JsonError]) " &
-               "(try (parse \"{\\\"a\\\":1,\\\"a\\\":2}\" ^strict true) " &
+               "(try (parse \"{\\\"a\\\":1,\\\"a\\\":2}\" ^^strict) " &
                "catch JsonError \"duplicate\")",
                "\"duplicate\"")
     check_eval("(import $json [parse]) " &
-               "(var m (parse \"{\\\"a\\\":{\\\"a\\\":1}}\" ^strict true)) m/a/a",
+               "(var m (parse \"{\\\"a\\\":{\\\"a\\\":1}}\" ^^strict)) m/a/a",
                "1")
     check_eval("(import $json [parse JsonError]) " &
                "(try (parse \"[[[1]]]\" ^max_depth 2) catch JsonError \"deep\")",
@@ -11245,11 +11245,11 @@ suite "spec — os and json from ai-agent plan":
                "($str/byte_size (parse ($str/from_utf8 ($buffer U8 [34 255 34]))))",
                "1")
     check_eval("(import $json [parse JsonError]) " &
-               "(try (parse ($str/from_utf8 ($buffer U8 [34 255 34])) ^strict true) " &
+               "(try (parse ($str/from_utf8 ($buffer U8 [34 255 34])) ^^strict) " &
                "catch JsonError \"invalid\")",
                "\"invalid\"")
     check_eval("(import $json [parse]) " &
-               "(parse ($str/from_utf8 ($buffer U8 [34 195 169 34])) ^strict true)",
+               "(parse ($str/from_utf8 ($buffer U8 [34 195 169 34])) ^^strict)",
                "\"é\"")
 
   test "json/stringify raises JsonError for unsupported values":
@@ -11895,7 +11895,7 @@ suite "spec — Tier 0 HTML renderer (transpile proposal P0)":
   test "html/render handles boolean attrs, void tags, and raw-text elements":
     check_eval(
       "(import $html [render]) " &
-      "(render `(div ^^hidden ^draggable false ^data-ok true " &
+      "(render `(div ^^hidden ^!draggable ^data-ok true " &
       "(input ^^required ^value \"x\") " &
       "(style \"a>b&c\") " &
       "(script \"if (a < b) x = \\\"</script>\\\";\")))",
@@ -12169,7 +12169,7 @@ suite "spec — application event bus (docs/stdlib.md)":
       "  (hits .set (+ hits/.get 1)) " &
       "  (if (< hits/.get 3) " &
       "    (bus .publish (order/Placed ^order_id \"nested\")))) " &
-      "(bus .subscribe order/Placed warm ^once true) " &
+      "(bus .subscribe order/Placed warm ^^once) " &
       "(bus .publish (order/Placed ^order_id \"o1\")) " &
       "[hits/.get bus/.subscription_count]",
       "[1 0]")
@@ -12475,12 +12475,12 @@ suite "spec — bounded filesystem walking":
       createDir(dir / "a")
       createSymlink(dir, dir / "a" / "back")
       check_eval("(try (($fs/walk " & geneString(dir) &
-                 " ^follow_symlinks true) -> $into []) false " &
+                 " ^^follow_symlinks) -> $into []) false " &
                  " catch FsError true)", "true")
 
 suite "spec — CSV data library":
   test "headers and quoted records preserve only string field values":
-    check_eval("($csv/parse_rows \"name,count\\r\\nAda,3\\r\\n\" ^headers true)",
+    check_eval("($csv/parse_rows \"name,count\\r\\nAda,3\\r\\n\" ^^headers)",
                "[{^name \"Ada\" ^count \"3\"}]")
     check_eval("($csv/parse_rows \"\\\"a,b\\\",\\\"c\\\"\\\"d\\\"\\n\\n\")",
                "[[\"a,b\" \"c\\\"d\"] [\"\"]]")
@@ -12494,7 +12494,7 @@ suite "spec — CSV data library":
     check_eval("(try ($csv/parse_rows \"\\\"a\\\"x\") false " &
                " catch CsvError [$err/offset $err/record $err/field])",
                "[4 1 1]")
-    check_eval("(try ($csv/parse_rows \"a,a\\n1,2\" ^headers true) false " &
+    check_eval("(try ($csv/parse_rows \"a,a\\n1,2\" ^^headers) false " &
                " catch CsvError true)", "true")
     check_eval("(try ($csv/parse_rows \"abcd\" ^max_record_bytes 2) false " &
                " catch CsvError true)", "true")

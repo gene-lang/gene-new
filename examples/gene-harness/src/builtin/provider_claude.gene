@@ -8,7 +8,7 @@
   (if (>= (+ ($str/byte_size system) ($str/byte_size user)) 131072)
     (fail (HarnessError ^message
       "Claude CLI prompt exceeds 128 KiB; use the anthropic provider for larger contexts")))
-  (let settings {^disableAllHooks true})
+  (let settings {^^disableAllHooks})
   (if (== config/effort "none")
     (settings .put "alwaysThinkingEnabled" false))
   (let args ["--print" "--output-format" "json"
@@ -58,7 +58,7 @@
         {^name "claude" ^doc "Use the local Claude Code CLI."
          ^configure (fn [model, effort, timeout]
            (let configured
-             (configure_model ^minimal_is_low true model effort timeout "sonnet"))
+             (configure_model ^^minimal_is_low model effort timeout "sonnet"))
            (configured .put "command"
              (?? (nonempty ($os/env? "GENE_HARNESS_CLAUDE_COMMAND")) "claude"))
            configured)

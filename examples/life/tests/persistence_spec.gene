@@ -5,7 +5,7 @@
   (it "commits snapshots and retains immutable revisions" []
     (let name (p/id "store"))
     (let home $"examples/life/tmp/${name}")
-    (let store (p/open_store home ^create true))
+    (let store (p/open_store home ^^create))
     (try
       (let value {^nested [1]})
       (let revisions (p/put store "custom" value))
@@ -30,7 +30,7 @@
 
   (it "rejects an optimistic conflict without publishing either grouped record" []
     (let name (p/id "conflict"))
-    (let store (p/open_store $"examples/life/tmp/${name}" ^create true))
+    (let store (p/open_store $"examples/life/tmp/${name}" ^^create))
     (try
       (p/put store "a" 1)
       (let tx (p/begin store "old-view"))

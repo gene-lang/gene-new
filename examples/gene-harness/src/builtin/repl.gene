@@ -14,7 +14,7 @@
          ^^raw_input ^run (fn [ctx]
            (if (!= ($str/trim ctx/raw) "") (fail "/repl takes no arguments."))
            (CommandResult ^display "REPL open. Enter exit or quit to leave."
-             ^attached false ^mode "repl"))})
+             ^!attached ^mode "repl"))})
       (host .PluginHost:contribute "input_modes"
         {^name "repl" ^label "REPL" ^hint "REPL · exit or quit to leave"
          ^submit_label "Eval" ^prompt "gene"

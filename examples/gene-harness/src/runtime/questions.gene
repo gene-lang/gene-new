@@ -3,7 +3,7 @@
 
 (type QuestionError ^props {^message Str} ^impl [Error])
 (impl Error for QuestionError)
-(var answer_gate ^private true ($cell false))
+(var answer_gate ^^private ($cell false))
 
 (fn validate_questions [questions, ^validators validators = {}]
   (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))

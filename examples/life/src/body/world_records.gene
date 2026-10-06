@@ -154,7 +154,7 @@
   (let op {^id op_id ^operation operation ^contract_version 1 ^input input
     ^preconditions preconditions ^owner owner ^cause record/id
     ^organization (?? record/organization nil) ^target_operation_id target
-    ^delivery_id delivery_id ^status "pending" ^needs_reconciliation false ^attempts 0
+    ^delivery_id delivery_id ^status "pending" ^!needs_reconciliation ^attempts 0
     ^last_error nil ^created_at (host/clock)})
   (if_not ($absent? previous)
     (require (== (semantic previous) (semantic op)) "World operation ID reused with a different request")
@@ -178,10 +178,10 @@
   (let op (p/tx_get tx $"world_op/${op_id}"))
   (if ($absent? op) (p/problem "Unknown world operation"))
   (if (== op/status "cancelled")
-    (return {^operation_id op_id ^operation op/operation ^status "cancelled" ^terminal true
+    (return {^operation_id op_id ^operation op/operation ^status "cancelled" ^^terminal
              ^reason "withdrawn_before_send" ^sources ["local"]}))
   # Sent but unconfirmed stays uncertain; never guessed into a failure.
-  {^operation_id op_id ^operation op/operation ^terminal false
+  {^operation_id op_id ^operation op/operation ^!terminal
    ^status (if (== op/status "pending") "pending" "unknown") ^sources []})
 
 # Merge one observation into the canonical result. `observation` has
@@ -194,7 +194,7 @@
   (let key $"world_result/${op_id}")
   (let current (p/tx_get tx key))
   (let result (?? current {^operation_id op_id ^operation op/operation ^status "pending"
-    ^terminal false ^admission nil ^action_id nil ^sources [] ^conflicts []}))
+    ^!terminal ^admission nil ^action_id nil ^sources [] ^conflicts []}))
   (let incoming observation/status)
   (let sources (take_last result/sources 7))
   (sources .push source)
@@ -209,7 +209,7 @@
         (result .put "sources" sources)
         (p/tx_put tx key result))
       (settle tx op)
-      (return {^result result ^became_terminal false})))
+      (return {^result result ^!became_terminal})))
   (let incoming_revision observation/status_revision)
   (let known_revision result/status_revision)
   (if_yes (&& (! ($absent? incoming_revision)) (! ($absent? known_revision)))
@@ -224,7 +224,7 @@
       (result .put "sources" sources)
       (p/tx_put tx key result)
       (settle tx op)
-      (return {^result result ^became_terminal false})))
+      (return {^result result ^!became_terminal})))
   (for field in ["admission" "action_id" "reason" "detail" "result" "world_revision" "status_revision"]
     (if_not ($absent? (observation .get field)) (result .put field (observation .get field))))
   (result .put "status" incoming)

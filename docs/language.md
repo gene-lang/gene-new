@@ -125,7 +125,7 @@ A node combines a head, named properties, and positional body values. Quote
 keeps a form as data instead of calling its head:
 
 ```gene runnable
-(let task (quote (task ^done false "Write docs")))
+(let task (quote (task ^!done "Write docs")))
 [($head task) task/done ($body task)]
 # [task false ["Write docs"]]
 ```
@@ -289,7 +289,7 @@ collects remaining list elements.
 
 ```gene runnable
 (fn first_label [values] : Str
-  (match values ^exhaustive false
+  (match values ^!exhaustive
     (when [] "empty")
     (when [first rest...] $"first=${first}")))
 (first_label [10 20 30]) # "first=10"
@@ -298,17 +298,17 @@ collects remaining list elements.
 `match` requires a final `else` or an unconditional binding arm such as
 `(when _ ...)` or `(when value ...)`. The compiler cannot prove coverage from
 literal, typed, structural, or enum-variant arms alone. To deliberately leave
-a match partial, write `^exhaustive false` on `match`; an unmatched value then
+a match partial, write `^!exhaustive` on `match`; an unmatched value then
 raises `MatchError` at runtime:
 
 ```gene
-(match value ^exhaustive false
+(match value ^!exhaustive
   (when 1 "one")
   (when 2 "two"))
 ```
 
 The formatter places the flag before the matched value:
-`(match ^exhaustive false value ...)`.
+`(match ^!exhaustive value ...)`.
 
 Patterns also work with property maps, nodes, enum variants, and typed values.
 A requested property must exist; a missing optional field does not bind nil.

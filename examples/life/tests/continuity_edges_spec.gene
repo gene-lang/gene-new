@@ -7,7 +7,7 @@
 
 (fn fixture [clock = nil]
   (let name (p/id "continuity-edge"))
-  (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true
+  (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create
     ^clock (?? clock (fn [] 1000)) ^decisions [(brain/response "Quiet" "nil")]))
   (runtime/settle host)
   host)

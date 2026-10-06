@@ -211,21 +211,21 @@ re-evaluated. The `repl` built-in plugin can be disabled independently of
 
 ```gene
 # Finish
-(Outcome ^done true ^reply "Finished.")
+(Outcome ^^done ^reply "Finished.")
 ```
 
 The last value steers the loop:
 
 | Last value | Effect |
 | --- | --- |
-| `(Outcome ^done true ^reply r)` | Finish the round and show `r` |
+| `(Outcome ^^done ^reply r)` | Finish the round and show `r` |
 | `(Outcome ^prompt p)` | Take another turn; an optional `^reply` is progress text |
 | `(Outcome ^questions [...])` | Ask the operator, then continue with the answers |
 | any other value | Continue, with the value as `[N.result]` |
 | error, timeout or read error | Continue, with the diagnostic as `[N.error]` |
 
 A done Outcome requires a non-empty reply and drops appended prompt items.
-`^attention true` flags the session for the operator. Printing reaches the
+`^^attention` flags the session for the operator. Printing reaches the
 operator's console and never becomes model history.
 
 The next request lists its items in a fixed order: patch result, append_prompt
@@ -243,7 +243,7 @@ report written; smoke output above
 Labels are literal strings matching `[a-z0-9_]+`; a repeated label becomes
 `smoke#2`. A plugin function's items read `fn name` instead of a line.
 
-Questions take up to eight items. Choices are optional, `^multi true` allows
+Questions take up to eight items. Choices are optional, `^^multi` allows
 several, and `^kind "confirm"` asks yes or no:
 
 ```gene
@@ -263,7 +263,7 @@ Attachments preserve raw bytes:
 ```text
 # Write a file from its attachment
 ($fs/write_text "report.txt" (attachment "report"))
-(Outcome ^done true ^reply "Report written.")
+(Outcome ^^done ^reply "Report written.")
 <<<report END
 Raw text, including quotes and \d.
 END

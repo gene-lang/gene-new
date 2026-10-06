@@ -71,7 +71,7 @@
     (do
       (in_transaction store (fn [] (login_put store player_id (hash_secret code) now)))
       (return {^participant_id existing/participant_id ^entity_id existing/entity_id
-               ^code code ^created false})))
+               ^code code ^!created})))
   (let participant_id (participant_id_for player_id))
   (let entity_id (entity_id_for player_id))
   # Participant ids are one namespace across kinds: a player id must not land
@@ -89,7 +89,7 @@
     (participant_put store participant)
     (entity_put store (avatar_entity entity_id participant_id name count))
     (login_put store player_id (hash_secret code) now)))
-  {^participant_id participant_id ^entity_id entity_id ^code code ^created true})
+  {^participant_id participant_id ^entity_id entity_id ^code code ^^created})
 
 (fn find_by_player [store : WorldStore player_id : Str]
   (var found nil)
@@ -150,7 +150,7 @@
         (life_credential_put store life_id existing/participant_id (hash_secret credential) now)))
       (let participant (find_participant store existing/participant_id))
       (return {^participant_id existing/participant_id ^entity_id participant/entity_id
-               ^credential credential ^created false})))
+               ^credential credential ^!created})))
   (if_not ($absent? (find_participant store participant_id))
     (participant_problem "participant_exists"
       $"Participant ${participant_id} already exists as another registration."))
@@ -165,7 +165,7 @@
     (participant_put store participant)
     (entity_put store (avatar_entity entity_id participant_id name count ^kind "actor/life"))
     (life_credential_put store life_id participant_id (hash_secret credential) now)))
-  {^participant_id participant_id ^entity_id entity_id ^credential credential ^created true})
+  {^participant_id participant_id ^entity_id entity_id ^credential credential ^^created})
 
 # The participant a Life credential belongs to, or nil. Every failure looks the
 # same to the caller: an unknown life id and a wrong credential are one answer.

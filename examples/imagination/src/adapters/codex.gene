@@ -70,7 +70,7 @@
    ^body {^model config/model ^instructions input/system
           ^input [{^role "user" ^content content}]
           ^reasoning {^effort config/effort}
-          ^store false ^stream true}})
+          ^!store ^^stream}})
 
 (fn count_of [value] : Int
   (if (== ($head value) Int) value 0))

@@ -107,7 +107,7 @@ property-value   := scalar | '[' scalar* ']'
 scalar           := '*' | string | integer | boolean
 ```
 
-Whitespace separates components. Properties may be interleaved with positional body values. The reader retains the ordered body and named properties separately. `^^name` is the ordinary boolean-flag spelling of `^name true`, not a second permission language.
+Whitespace separates components. Properties may be interleaved with positional body values. The reader retains the ordered body and named properties separately. `^^name` is the ordinary boolean-flag spelling of `^^name`, not a second permission language.
 
 For version 1, property lists are flat. Lists as positional values, nested property lists, arbitrary nested nodes, and maps are excluded. Body values must be validated as a whole by the selected provider.
 
@@ -116,7 +116,7 @@ For version 1, property lists are flat. Lists as positional values, nested prope
 | Capability identifier | A catalog identifier such as `fs/Read`, or terminal namespace selector such as `fs/*`. |
 | Body value | `*`, strings, integers, booleans. |
 | Provider property | An admitted `^name` whose value satisfies that provider's schema. |
-| Core admission property | `^optional true`, `^optional false`, or `^^optional`, only in request contexts. |
+| Core admission property | `^^optional`, `^!optional`, or `^^optional`, only in request contexts. |
 | Property value | A permitted scalar or a flat list of permitted scalars. |
 
 ### 2.2 Inert names and values
@@ -153,7 +153,7 @@ A launcher configuration may have a wrapper containing a capabilities field. Tha
 
 Unknown names, unknown properties, unsupported body shapes, and invalid values are errors. Validate every entry before simplification, even when another entry is unrestricted or the invalid entry is marked optional.
 
-The reader must detect duplicate properties before ordinary node/map construction can overwrite them. `^optional true ^^optional` is a duplicate, as are repeated provider fields. Reader extensions, macros, constructors, and evaluation do not run while reading capability data.
+The reader must detect duplicate properties before ordinary node/map construction can overwrite them. `^^optional ^^optional` is a duplicate, as are repeated provider fields. Reader extensions, macros, constructors, and evaluation do not run while reading capability data.
 
 ### 2.3 Unrestricted and empty forms
 
@@ -188,11 +188,11 @@ The token `*` and the string `"*"` are distinct. The token is unrestricted in th
 
 ```gene
 (net/Http ^^optional)
-(net/Http ^optional true)
-(net/Http * ^optional true)
+(net/Http ^^optional)
+(net/Http * ^^optional)
 ```
 
-All three describe an unrestricted HTTP request that is optional at admission. `^optional false` is equivalent to omitting the flag in a request: the entry is mandatory. Only literal booleans are valid; `^optional *`, `^optional "true"`, and `^optional [true]` are errors.
+All three describe an unrestricted HTTP request that is optional at admission. `^!optional` is equivalent to omitting the flag in a request: the entry is mandatory. Only literal booleans are valid; `^optional *`, `^optional "true"`, and `^optional [true]` are errors.
 
 `optional` belongs to the capability core. It is removed from provider properties before provider schema validation. Providers cannot redefine it, ignore it as an unknown field, or interpret it as a permission restriction.
 
@@ -691,7 +691,7 @@ The effective HTTP permission is still exactly the host/method restriction in th
 
 Optionality does not suppress malformed literals, unknown identities, schema errors, execution limits, provider initialization errors, or errors raised while doing real work. It only removes that entry's full-admission precondition. A provider outage is not a missing permission, and neither is proof of permission a promise of resource availability.
 
-`^optional false` restores the mandatory-entry obligation. Namespace expansion preserves the flag on each expanded requested entry and still validates every selected provider.
+`^!optional` restores the mandatory-entry obligation. Namespace expansion preserves the flag on each expanded requested entry and still validates every selected provider.
 
 ### 7.4 Optional checks and reporting
 
@@ -1739,8 +1739,8 @@ Test the policy parser, admission procedure, provider matchers, and real guard p
 | L04 | `C`, `(C)`, `(C *)` | Equivalent policy coverage. |
 | L05 | Omitted startup source versus explicit `[]` | Defaults only for omission; explicit empty selects no application authority. |
 | L06 | Token `*` versus string `"*"` | Domain-unrestricted token is not silently a string pattern or numeric value. |
-| L07 | `^^optional` and `^optional true` | Same request metadata; flag removed before provider checks. |
-| L08 | `^optional false` | Mandatory request entry. |
+| L07 | `^^optional` and `^^optional` | Same request metadata; flag removed before provider checks. |
+| L08 | `^!optional` | Mandatory request entry. |
 | L09 | Optional unknown provider, unknown property, malformed body, or invalid boolean | Rejected before admission. |
 | L10 | Optional flag in root grant, pure bound, admin ceiling, or operation facts | Rejected, not ignored. |
 | L11 | Duplicate `^optional`/`^^optional` | Reader error before property overwrite. |

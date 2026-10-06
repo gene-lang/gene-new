@@ -60,7 +60,7 @@
      ^io_read_guards stats/io_read_guards
      ^scheduler_runnable_fibers stats/scheduler_runnable_fibers
      ^scheduler_waiting_fibers stats/scheduler_waiting_fibers
-     ^retained_control_checked true ^cleanup_runs cleanups
+     ^^retained_control_checked ^cleanup_runs cleanups
      ^nested_cleanup_runs nested_cleanups})))
 
 (fn main [args] : Int

@@ -125,7 +125,7 @@
                                      "output_text" "input_text")
                             ^text message/content}]}))
               ^reasoning {^effort settings/effort}
-              ^store false ^stream true}
+              ^!store ^^stream}
             ^timeout_ms settings/timeout_ms})
          ^send (fn [prepared]
            (let credentials (codex_credentials (auth_file)))

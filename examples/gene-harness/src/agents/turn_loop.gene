@@ -133,7 +133,7 @@
       (if_not ($absent? ready_message)
         (finish_turn runtime session
           {^type "turn/end" ^turn number ^round round/id
-           ^reason "not_ready" ^text ready_message ^synthetic false})
+           ^reason "not_ready" ^text ready_message ^!synthetic})
         (flush_event_store runtime/events)
         (return {^state "failed" ^message ready_message
           ^turn_count count ^last_turn number}))
@@ -243,7 +243,7 @@
       (if started
         (finish_turn runtime session
           {^type "turn/end" ^turn number ^round round/id
-           ^reason "error" ^stage stage ^text message ^synthetic false}))
+           ^reason "error" ^stage stage ^text message ^!synthetic}))
       (flush_event_store runtime/events)
       (return {^state "failed" ^message message ^stage stage
         ^turn_count count ^last_turn number})
@@ -271,7 +271,7 @@
     (finish_turn
       runtime
       session
-      {^type "turn/end" ^turn number ^round round/id ^reason result/kind ^synthetic false})
+      {^type "turn/end" ^turn number ^round round/id ^reason result/kind ^!synthetic})
     (if (== result/kind "done")
       (then
         (flush_event_store runtime/events)

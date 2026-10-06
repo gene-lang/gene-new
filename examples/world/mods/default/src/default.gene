@@ -144,8 +144,8 @@
   (register_node game "commons:sand" ^tiles ["commons:sand"])
   (register_node game "commons:water" ^tiles ["commons:water"]
                  ^drawtype draw_liquid
-                 ^solid false
-                 ^propagates_light true)
+                 ^!solid
+                 ^^propagates_light)
   (register_node game "commons:gravel" ^tiles ["commons:gravel"])
   (register_node game "commons:snow" ^tiles ["commons:snow"])
   (register_node game "commons:sandstone" ^tiles ["commons:sandstone"])
@@ -175,9 +175,9 @@
   # nothing, so it is not drawn. §5 has the number.
   (register_node game "commons:leaves" ^description "Leaves"
                  ^tiles ["commons:leaves"]
-                 ^opaque false
-                 ^merges_same true
-                 ^propagates_light true)
+                 ^!opaque
+                 ^^merges_same
+                 ^^propagates_light)
   (register_node game "commons:lamp" ^tiles ["commons:lamp"]
                  ^light_source 14.0))
 
@@ -455,7 +455,7 @@
 # entity kind, and its picture is a node's picture.
 #
 # It stays an item — the default — because §8.3's draw path is item -> node ->
-# tile, and `^is_item false` would leave a player entity with nothing to look
+# tile, and `^!is_item` would leave a player entity with nothing to look
 # up. Nobody can obtain one: it is not generated, not dropped by anything, and
 # not in a recipe. That is a smaller oddity than a second lookup path in the
 # renderer for one kind of entity.

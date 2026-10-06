@@ -153,7 +153,7 @@ kept`,
 (import $json [stringify])
 (import $str [join lower])
 
-(var user {^name "Ada" ^langs ["Gene" "Nim"] ^active true})
+(var user {^name "Ada" ^langs ["Gene" "Nim"] ^^active})
 ($println (lower (join user/langs ", ")))
 (stringify user)`,
       match:

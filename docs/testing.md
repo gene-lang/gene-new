@@ -164,7 +164,7 @@ a `TestResult` with `passed`, `failed`, `errors`, `skipped`, and `exit_code` fie
 plus per-example results and run-level diagnostics. It does not exit the process.
 A second run uses the same declarations with fresh fixtures; it does not reload
 modules. `^name "text"` selects a substring of the full description;
-`^report false` returns results without printing.
+`^!report` returns results without printing.
 
 `examples` is a list of records with `name`, `status`, `location`, `diagnostics`,
 and an optional skip `reason`. A diagnostic records `error_type`, `message`,

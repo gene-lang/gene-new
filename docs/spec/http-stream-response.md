@@ -27,7 +27,7 @@ An upstream read failure, empty Bytes result, declared-length mismatch,
 byte-limit overrun, timeout, or peer disconnect after headers closes the
 connection. Partial output is never replaced with a fictional complete error
 response, and an incomplete chunked body never receives a final zero chunk.
-`^own_reader true` requests close and awaits physical retirement on successful
+`^^own_reader` requests close and awaits physical retirement on successful
 completion; an unowned reader remains the caller's responsibility. The
 server cancels its pending read on abort without claiming to undo bytes
 already sent.

@@ -271,7 +271,7 @@
 
 (fn finish_command [manager, session : Str, record, lease, outcome]
   (try
-  (match outcome ^exhaustive false
+  (match outcome ^!exhaustive
       (when (TaskOutcome/ok value)
         (var result (if (== ($head value) CommandResult) value (CommandResult ^display value)))
         (if_not ($absent? result/mode)
@@ -373,7 +373,7 @@ Stopped."""))))
           ^name parsed/name
           ^raw parsed/raw
           ^status "running"
-          ^attached false
+          ^!attached
           ^output ""
           ^started_ms ($os/wall_ms)
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})

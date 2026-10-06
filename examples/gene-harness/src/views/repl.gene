@@ -48,7 +48,7 @@
   $"/run ${code}")
 
 (fn handle_repl_event [runtime, selected, answers, shown, interrupts, event]
-  (match event ^exhaustive false
+  (match event ^!exhaustive
     (when (changed : ModeChanged)
       (if_yes (== changed/session selected/.get)
         (if ($absent? changed/mode)

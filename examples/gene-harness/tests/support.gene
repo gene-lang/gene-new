@@ -36,7 +36,7 @@
   (if_not ($absent? callback)
     (let cell ($cell callback))
     (put_cordis_plugin ^^replace runtime/h (callback_plugin cell)
-      {^host true ^limits runtime/profile/limits})
+      {^^host ^limits runtime/profile/limits})
     (callback_cells/.get .put runtime/root cell)
     (set runtime/profile/provider "test"))
   (production_controller runtime))

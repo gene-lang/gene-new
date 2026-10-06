@@ -2086,7 +2086,7 @@ proc validateDirectWebMethods(analysis: WebAnalysis, declarations: seq[WebTypeDe
       if (inherited != nil) != methodDecl.declaresOverride:
         raise webError(methodDecl.loc, methodDecl.sourceName &
           (if inherited == nil: " declares ^override but has no inherited target"
-           else: " requires ^override true"))
+           else: " requires ^^override"))
       if inherited != nil:
         if analysis.signatureUsesSelf(methodDecl.sourceForm):
           raise webError(methodDecl.loc, "Self is forbidden in a replacement signature")
@@ -4227,7 +4227,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                    else: unionType(resultType, analyzed.typ)
     if requireExhaustive and not hasElse and not hasCatchAll:
       raise webError(loc,
-        "web match is not exhaustive; add (else ...), a binding arm, or ^exhaustive false")
+        "web match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive")
     result.typ = if resultType == nil: webType(wtkNever) else: resultType
     return
   if name == "return":

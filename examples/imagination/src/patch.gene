@@ -286,7 +286,7 @@
       (if (!= entry/kind "text")
         (reject "unknown_field" $"${entry/id} is a ${entry/kind}; only text has content"
           ^index index ^target entry/id ^field ["content"]))
-      (return {^name "content" ^type "content" ^aspect "text" ^required true})))
+      (return {^name "content" ^type "content" ^aspect "text" ^^required})))
   (let field (field_spec entry/kind name))
   (if (|| ($absent? field)
           (&& (== entry/where "clip_shape")

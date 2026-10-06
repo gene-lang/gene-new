@@ -36,7 +36,7 @@
       ($repl/bind state/handle name forwarder)
       (state/names .put name true)))
   (let value ($repl/eval state/handle ctx/raw))
-  (CommandResult ^display ($repl/format value) ^attached false ^status "done"))
+  (CommandResult ^display ($repl/format value) ^!attached ^status "done"))
 
 (fn close_repl [sessions, session : Str]
   (let state (sessions/.get .get session))

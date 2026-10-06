@@ -34,15 +34,15 @@
   # `^limits` is the one deployment-wide knob a profile carries. A callback
   # budget states what callbacks do in this deployment, and it is also the
   # ceiling every plugin's limits narrow from. Every plugin a profile lists is a
-  # host plugin (`^host true`) and receives the Harness itself.
+  # host plugin (`^^host`) and receives the Harness itself.
   (let limits (?? supplied p/limits))
   (var admissions [])
   (for plugin in p/plugins
     (admissions .push
       {^plugin plugin
        ^options (if ($absent? limits)
-         {^host true}
-         {^host true ^limits limits})}))
+         {^^host}
+         {^^host ^limits limits})}))
   admissions)
 
 (fn boot [p : Profile, ^h supplied = nil] : Harness

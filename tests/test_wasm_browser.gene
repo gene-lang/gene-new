@@ -66,7 +66,7 @@
           ($fs/write_text $"${build}/browser.stderr.log" process/stderr))
         (else nil)))
   (if (== report nil)
-    (set report {^ok false ^error "browser did not complete" ^progress progress}))
+    (set report {^!ok ^error "browser did not complete" ^progress progress}))
   (set report/browser version/stdout)
   (set report/profile profile)
   (set report/shutdown shutdown)

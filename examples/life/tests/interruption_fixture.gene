@@ -9,7 +9,7 @@
   (let home args/0)
   (let kind args/1)
   (let armed ($cell false))
-  (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
+  (let host (runtime/open_life home ^^create ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet" "nil")]
     ^fault (fn [phase]
       (if_yes (&& armed/.get (== kind "queued-job") (== phase "after_commit")) (die)))))

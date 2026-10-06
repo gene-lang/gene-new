@@ -564,13 +564,13 @@
     (let event records/%index)
     (if (&& (== event/type "turn/end")
             (== event/payload/turn payload/turn))
-      (return {^event event ^created false}))
+      (return {^event event ^!created}))
     (if (&& (== event/type "turn/start")
             (== event/payload/turn payload/turn))
       (break))
     (set index (- index 1)))
   {^event (append_core_event events "session" session payload)
-   ^created true})
+   ^^created})
 
 (fn repair_interrupted_turns [events : EventStore, ^session session = nil, ^reason reason : Str = "interrupted"] : Int
   (if_not ($absent? session)
@@ -614,13 +614,13 @@
        ^attempt pending/attempt
        ^turn requested/payload/turn ^round requested/payload/round
        ^purpose requested/payload/purpose
-       ^outcome "interrupted" ^final true ^timing_ms 0
+       ^outcome "interrupted" ^^final ^timing_ms 0
        ^error "process stopped before the provider outcome was recorded"}))
   (for started in repairs
     (append_turn_end_once events ($to_str started/stream)
       {^type "turn/end" ^turn started/payload/turn
        ^round (?? started/payload/round "")
-       ^reason reason ^synthetic true}))
+       ^reason reason ^^synthetic}))
   (if (|| (> repairs/.size 0) (> interrupted_calls/.size 0))
     (flush_event_store events))
   repairs/.size)

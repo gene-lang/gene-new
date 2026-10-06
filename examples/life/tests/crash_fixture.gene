@@ -12,7 +12,7 @@
   (let home args/0)
   (let phase args/1)
   (if_yes (["migration_staged" "selection_before_commit" "selection_after_commit"] .contains? phase)
-    (let selected_host (runtime/open_life home ^create true ^clock (fn [] 1000)
+    (let selected_host (runtime/open_life home ^^create ^clock (fn [] 1000)
       ^decisions [(brain/response "Initial quiet" "nil")]
       ^fault (fn [at] (if_yes (== at phase) (die)))))
     (runtime/settle selected_host)
@@ -22,7 +22,7 @@
     (let source ($fs/read_text "examples/life/src/organizations/visitor_memory.gene"))
     (let revision (code/module_bundle tx "visitor memory" {^main.gene source} "main.gene"))
     (organization/request tx {^id "visitors@2" ^module revision ^code [revision] ^roots ["mind/"]
-      ^context true ^documentation "Visitor document with retained provenance"}
+      ^^context ^documentation "Visitor document with retained provenance"}
       "(do
         (let preference (store .get \"state/preference\" ^tx input/tx))
         (store .put \"mind/visitor\" {^preference preference ^source \"visitor-event\"} ^tx input/tx)
@@ -39,7 +39,7 @@
     "(store .commit (fn [tx]
       (let job (body/world .start_walk \"garden\" ^tx tx))
       (state .put \"activity\" job/id ^tx tx)))"))
-  (let host (runtime/open_life home ^create true ^clock (fn [] 1000)
+  (let host (runtime/open_life home ^^create ^clock (fn [] 1000)
     ^decisions [(brain/response "Crash fixture" source)]
     ^fault (fn [at] (if_yes (== at phase) (die)))))
   (runtime/settle host)

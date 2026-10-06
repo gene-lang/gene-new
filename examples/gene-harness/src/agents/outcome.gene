@@ -91,7 +91,7 @@
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if turn/composition_queued/.get
         (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply)
-          ^questions nil ^rejected_done true}))
+          ^questions nil ^^rejected_done}))
       (if (> ($size turn/items/.get) 0)
         (then
           (if_not ($absent? turn/console)

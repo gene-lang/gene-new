@@ -169,8 +169,8 @@ Serialize values first. The helper returns an HTTP Response with JSON content
 type and status 200. Its two-argument form takes the status code first.
 
 ```gene
-($net/http/json ($json/stringify {^ok true}))
-($net/http/json 201 ($json/stringify {^ok true}))
+($net/http/json ($json/stringify {^^ok}))
+($net/http/json 201 ($json/stringify {^^ok}))
 ```
 
 ## Type message surfaces

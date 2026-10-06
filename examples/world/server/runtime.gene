@@ -195,7 +195,7 @@
             ^last_checkpoint_sim_ms meta/committed_sim_time_ms
             ^next_action meta/next_action
             ^server_epoch $"boot-$($crypto/random_hex 4)"
-            ^live_seq 0 ^status "running" ^moved false
+            ^live_seq 0 ^status "running" ^!moved
             ^commit_count 0 ^commit_ms_total 0 ^commit_ms_max 0})
     # Restart policy: a walk that was running when the process stopped is
     # suspended until its controller reconciles (§6.3).
@@ -338,7 +338,7 @@
 (fn owner_event [w : Map action : Map type : Str payload : Map] : List
   [action/participant_id
    {^world_id w/world_id ^history_id w/history_id ^type type ^schema_version 1
-    ^required true ^operation_id action/operation_id
+    ^^required ^operation_id action/operation_id
     ^payload (do (payload .put "status_revision" (?? action/status_revision 0)) payload)}])
 
 # An observation everyone currently attached can see, plus the actor. Only the
@@ -356,7 +356,7 @@
     (if_yes (== (seen .get pid) void)
       (seen .put pid true)
       (out .push [pid {^world_id w/world_id ^history_id w/history_id ^type type
-                       ^schema_version 1 ^required true
+                       ^schema_version 1 ^^required
                        ^operation_id (if (== pid actor_pid) operation_id nil)
                        ^payload payload}])))
   out)
@@ -472,7 +472,7 @@
   ((conn .get "send") text))
 
 # Register a freshly upgraded socket. `conn` carries ^id ^participant_id and the
-# host's ^send/^close/^queued functions. A native connection (^native true) has
+# host's ^send/^close/^queued functions. A native connection (^^native) has
 # no participant until its `hello` authenticates.
 (fn connection_opened [w : Map conn : Map]
   (if_yes ($absent? conn/native) (conn .put "native" false))
@@ -597,7 +597,7 @@
         # person observe or explicitly take over (§4.4, §9.4).
         (return (send w conn (error_message "controlled_elsewhere"
                                "This avatar is already controlled from another tab or device."
-                               {^can_take_over true ^can_observe true}))))
+                               {^^can_take_over ^^can_observe}))))
       # Explicit takeover: fence the old controller before this one is ready.
       (let holder (w/connections .get holder_id))
       (if_yes (!= holder void)
@@ -633,7 +633,7 @@
               ^heartbeat_ms 15000 ^expiry_ms heartbeat_expiry_ms}
      ^sim {^status w/status ^step_ms step_ms ^sim_time_ms (str_of_int w/sim_time_ms)
            ^committed_sim_time_ms (str_of_int w/committed_sim_time_ms)}
-     ^sync_required true}))
+     ^^sync_required}))
   (synchronize w conn (?? msg/resume nil))
   (conn .put "ready" true)
   (send w conn (message "ready"
@@ -692,7 +692,7 @@
    ^places places
    ^entities entities
    ^self {^entity_id participant/entity_id
-          ^inventory (inventory_of w participant/entity_id ^committed true)}
+          ^inventory (inventory_of w participant/entity_id ^^committed)}
    ^actions (open_actions_of w participant/participant_id)
    ^receipts {^items latest ^through_seq (str_of_int top)
               ^from_seq (str_of_int oldest) ^complete (<= top snapshot_receipts)}})
@@ -777,7 +777,7 @@
                   # this world revision, not a reservation (§8.2 `refresh`).
                   (let owner (w/participants .get pid))
                   (snapshot_of w owner $"view-${w/server_epoch}-$($crypto/random_hex 3)"
-                               (- owner/next_event_seq 1) ^structured true)
+                               (- owner/next_event_seq 1) ^^structured)
                   (fault "unknown_query" "This world does not answer that query.")))))))
       catch WorldFault
         (return (send w conn (error_message $err/code $err/message {^request_id request_id})))))
@@ -824,12 +824,12 @@
    ^interactions
      [{^interaction_id "take" ^label "Pick up" ^operation "object.pick_up"
        ^contract_version 1 ^target {^object_id object_id} ^form {^kind "confirm"}
-       ^availability (if ($absent? check_take) {^enabled true}
-                       {^enabled false ^reason check_take})}
+       ^availability (if ($absent? check_take) {^^enabled}
+                       {^!enabled ^reason check_take})}
       {^interaction_id "put_down" ^label "Put down" ^operation "object.put_down"
        ^contract_version 1 ^target {^object_id object_id} ^form {^kind "confirm"}
-       ^availability (if ($absent? check_drop) {^enabled true}
-                       {^enabled false ^reason check_drop})}]})
+       ^availability (if ($absent? check_drop) {^^enabled}
+                       {^!enabled ^reason check_drop})}]})
 
 # --- commands (§10.2, §10.3) -----------------------------------------------------------
 
@@ -1203,7 +1203,7 @@
   (let events [])
   (for other_pid in heard
     (events .push [other_pid {^world_id w/world_id ^history_id w/history_id
-                              ^type "conversation.said" ^schema_version 1 ^required true
+                              ^type "conversation.said" ^schema_version 1 ^^required
                               ^operation_id (if (== other_pid pid) op_id nil)
                               ^payload payload}]))
   {^admission "accepted" ^action_status "completed"

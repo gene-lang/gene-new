@@ -270,7 +270,7 @@
   (if_yes (== props/background "none")
     (set matte "#ffffff")
     (pdf_to_png profile/pdftocairo pdf_path ($path/join out_dir "transparent") size/0 size/1
-      ^transparent true ^timeout_ms (remaining))
+      ^^transparent ^timeout_ms (remaining))
     (artifacts .push (artifact_node "transparent.png" ($path/join out_dir "transparent.png")
       {^width size/0 ^height size/1}))
     (finished "transparent"))

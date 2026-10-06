@@ -16,7 +16,7 @@
       (requirement ^id \"balance\" ^strength \"soft\" ^check \"visual\" \"The circle is centered.\"))" ^head "goal")))
 
 (fn new_run [] : Any
-  (create_run (scratch "run") (test_profile) (goal) ^width 256 ^height 256 ^quiet true))
+  (create_run (scratch "run") (test_profile) (goal) ^width 256 ^height 256 ^^quiet))
 
 (fn review [circle : Str, balance : Str] : Str
   $"(review (check ^requirement \"circle\" ^result \"${circle}\" ^evidence \"seen\") (check ^requirement \"balance\" ^result \"${balance}\" ^evidence \"seen\"))")

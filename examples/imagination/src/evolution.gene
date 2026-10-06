@@ -338,7 +338,7 @@
     (build_evaluation (goal_of evolution line/goal) candidate/id candidate/image
       evolution/profile/id result/scene nil))
   (publish evolution candidate ^line line_id ^expected_head line/head ^evaluation evaluation
-    ^accepted true ^reason "Applied by hand."))
+    ^^accepted ^reason "Applied by hand."))
 
 # ── lines, goals, selection ────────────────────────────────────────────────
 

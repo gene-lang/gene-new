@@ -540,7 +540,7 @@
   (if_not record/cleanup_state/.get (return nil))
   (record/cleanup_state .set false)
   (try
-    (remove_registry_row h record/row_id ^cleanup false)
+    (remove_registry_row h record/row_id ^!cleanup)
   ensure
     # Publication may already have removed this ID from discovery. Its owned
     # cleanup still runs once with the captured old payload and registry hook.
@@ -640,7 +640,7 @@
 # activate into. Activations contribute to the live tables and each revision's
 # single deferred cleanup removes exactly its rows and callbacks, so reconciles
 # need no registry draft and an unchanged plugin stays live across them.
-(type CordisRegistryHost ^private true
+(type CordisRegistryHost ^^private
   ^props {^h Harness}
   (impl RegistryHost
     (message activate [thunk] : Any
@@ -650,7 +650,7 @@
           ^output (fn [text]
             (if_not ($absent? self/h/event_store)
               (append_core_event self/h/event_store "workspace" "workspace"
-                {^type "console" ^turn 0 ^text text ^late false ^^ignorable}))
+                {^type "console" ^turn 0 ^text text ^!late ^^ignorable}))
             ($runtime/with_context nil (fn [] ($print text))))} thunk)
       ensure (publication .set false)))
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
@@ -833,20 +833,20 @@
              ^event_scope event_scope ^event_stream event_stream
              ^plugin_policies ($cell (fresh_map))
              ^plugin_depth ($cell 0) ^workspace workspace))
-  (registry h "seams" ^unique true ^schema validate_seam_row)
-  (registry h "commands" ^unique true ^schema validate_command_row)
-  (registry h "input_modes" ^unique true ^schema validate_input_mode_row)
-  (registry h "functions" ^unique true ^schema validate_function_row)
-  (registry h "providers" ^unique true ^schema validate_provider_row)
-  (registry h "hooks" ^unique true ^ordered true ^schema validate_hook_row)
-  (registry h "triggers" ^unique true ^schema validate_trigger_row)
-  (registry h "interactions" ^unique true ^schema validate_interaction_row)
-  (registry h "prompt" ^unique false ^ordered true ^schema validate_prompt_row)
-  (registry h "docs" ^unique true ^schema validate_docs_row)
-  (registry h "views" ^unique true ^schema validate_view_row)
-  (registry h "web_components" ^unique true ^ordered true ^schema validate_web_component)
-  (registry h "event_types" ^unique true ^schema validate_event_type_row)
-  (registry h "subscriptions" ^unique false
+  (registry h "seams" ^^unique ^schema validate_seam_row)
+  (registry h "commands" ^^unique ^schema validate_command_row)
+  (registry h "input_modes" ^^unique ^schema validate_input_mode_row)
+  (registry h "functions" ^^unique ^schema validate_function_row)
+  (registry h "providers" ^^unique ^schema validate_provider_row)
+  (registry h "hooks" ^^unique ^^ordered ^schema validate_hook_row)
+  (registry h "triggers" ^^unique ^schema validate_trigger_row)
+  (registry h "interactions" ^^unique ^schema validate_interaction_row)
+  (registry h "prompt" ^!unique ^^ordered ^schema validate_prompt_row)
+  (registry h "docs" ^^unique ^schema validate_docs_row)
+  (registry h "views" ^^unique ^schema validate_view_row)
+  (registry h "web_components" ^^unique ^^ordered ^schema validate_web_component)
+  (registry h "event_types" ^^unique ^schema validate_event_type_row)
+  (registry h "subscriptions" ^!unique
     ^on_remove cancel_subscription_row)
   (for event in core_event_types
     (contribute h "core" "event_types" event))
@@ -897,7 +897,7 @@
 (fn hide_owner_rows [h : Harness, owner : Str]
   (let ids (copy_list (?? (h/ledger .get; .get owner) [])))
   (for id in ids
-    (remove_registry_row ^cleanup false h id))
+    (remove_registry_row ^!cleanup h id))
   nil)
 
 (fn reconcile_cordis_harness_serial [h : Harness]
@@ -935,7 +935,7 @@
   (for name in departed_registries
     (let registry (registry_named h name))
     (for record in (copy_list registry/rows/.get)
-      (remove_registry_row h record/row_id ^cleanup false))
+      (remove_registry_row h record/row_id ^!cleanup))
     (h/registries/.get .delete name))
   (var plugins (fresh_list))
   (var failed (fresh_list))
@@ -1155,7 +1155,7 @@
   (if_not (seam_bound h seam)
     (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
   (contribute h id "seams" {^name seam ^value value}
-    ^key seam ^replace true)
+    ^key seam ^^replace)
   (if_not h/publishing/.get (reconcile_cordis_harness h))
   seam)
 
@@ -1242,7 +1242,7 @@
 
 (fn invoke_supervised [callable, args, limits : ExecutionLimits]
   (let outcome (supervised_call callable args limits))
-  (match outcome ^exhaustive false
+  (match outcome ^!exhaustive
     (when (TaskOutcome/ok value)
       value)
     (when (TaskOutcome/error error)
@@ -1460,7 +1460,7 @@
 (fn install [h : Harness, p : Plugin] : Str
   # Installing registers the plugin and reconciles the composition. A failed
   # activation is a state (`error`) the caller reads, not an exception.
-  (var state (put_cordis_plugin h p {^host true}))
+  (var state (put_cordis_plugin h p {^^host}))
   (log_append h "lifecycle" $"installed ${p/id} (${state})")
   $"installed ${p/id} (${state})")
 
@@ -1487,7 +1487,7 @@
     (fail (HarnessError ^message $"plugin ${id} is not in error")))
   (var p (h/plugins/.get .get id))
   (var options (h/composition_entries/.get .get id))
-  (var state (put_cordis_plugin h p options ^replace true))
+  (var state (put_cordis_plugin h p options ^^replace))
   $"retried ${id} (${state})")
 
 (fn shutdown_harness [h : Harness]

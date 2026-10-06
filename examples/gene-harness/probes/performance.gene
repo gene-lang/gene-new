@@ -14,7 +14,7 @@
   ($assert (&& (> turns 0) (<= turns 10000)) "turn count must be in 1..10000")
   (let service (open_session_service ^workspace absolute ^provider
     (fn [request]
-      ($to_str "(Outcome ^done true ^reply \"Patched.\")\n"
+      ($to_str "(Outcome ^^done ^reply \"Patched.\")\n"
         "*** Begin Patch\n*** Add File: result-" request/turn ".txt\n"
         "+profile result\n*** End Patch\n"))))
   (try

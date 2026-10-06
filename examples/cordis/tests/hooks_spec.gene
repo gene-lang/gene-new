@@ -71,7 +71,7 @@
       (var private_context (ctx .derive {^isolate [subject_key]}))
       (private_context_cell .set private_context)
       (private_context .on emit_key private_scoped)
-      (ctx .on emit_key global_handler {^global true})
+      (ctx .on emit_key global_handler {^^global})
       (ctx .on parallel_key slow_parallel)
       (ctx .on parallel_key fast_parallel)
       (ctx .on parallel_error_key panic_parallel)

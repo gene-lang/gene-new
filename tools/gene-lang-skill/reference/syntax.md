@@ -142,7 +142,7 @@ drains its upstream for effect and the pipeline answers `nil`:
 
 ```gene
 (rows => save)                              # per row, for effect; nil
-(rows => parse ^strict true -> $into [])    # lazy through parse; into collects
+(rows => parse ^^strict -> $into [])    # lazy through parse; into collects
 (producer => step -> $take 5 -> $into [])   # endless producer, bounded result
 ```
 

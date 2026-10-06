@@ -222,7 +222,7 @@ suite "VM — proper tail calls":
       "(var saved nil) " &
       "(fn retain [f] (set saved f) 0) " &
       "(fn outer [x] " &
-      "  (match true ^exhaustive false " &
+      "  (match true ^!exhaustive " &
       "    (when true " &
       "      (var inner (fn [] x)) " &
       "      (set x (+ x 0)) " &
@@ -878,11 +878,11 @@ suite "compiler — GIR emission":
     expect GeneError:
       discard compileSource("(spawn ^lane worker 1)")
     expect GeneError:
-      discard compileSource("(spawn ^unknown true 1)")
+      discard compileSource("(spawn ^^unknown 1)")
 
   test "emits slots for match branch bindings and outer updates":
     let chunk = compileSource(
-      "(var total 0) (match [1 2] ^exhaustive false (when [a b] (set total (+ a b))))")
+      "(var total 0) (match [1 2] ^!exhaustive (when [a b] (set total (+ a b))))")
     check chunk.localNames == @["total"]
     let body = chunk.matches[0].clauses[0].body
     check body.localNames == @["a", "b"]
@@ -911,7 +911,7 @@ suite "compiler — GIR emission":
     check sawLoadB
 
   test "emits one branch slot for typed pattern binders":
-    let chunk = compileSource("(match \"hi\" ^exhaustive false (when (s : Str) s))")
+    let chunk = compileSource("(match \"hi\" ^!exhaustive (when (s : Str) s))")
     let body = chunk.matches[0].clauses[0].body
     check body.localNames == @["s"]
     check body.instructions[0].op == opLoadLocal
@@ -1671,7 +1671,7 @@ suite "vm — macros":
     ck "[(do ^^macro_result (let x 1) x) " &
        " (do ^^macro_result (let x 2) x) " &
        " (try x catch Any \"hidden\")]", "[1 2 \"hidden\"]"
-    ck "(do ^macro_result false (let x 1)) " &
+    ck "(do ^!macro_result (let x 1)) " &
        "(do ^macro_result 7 (let y 2)) (+ x y)", "3"
     ck "(macro identity [x] `%x) " &
        "[(identity [(let inside 1) inside]) " &
@@ -1877,7 +1877,7 @@ suite "vm — macros":
 
   test "result marking preserves shared argument syntax and node annotations":
     let unit = readAllWithLocs("(macro identity [x] x) " &
-      "(identity #(do ^macro_result false ^label 7 @note kept (quote (do 1))))")
+      "(identity #(do ^!macro_result ^label 7 @note kept (quote (do 1))))")
     let argument = unit.forms[1].body[0]
     let before = argument.print()
     let expanded = expandSourceUnitMacros(unit).expanded.forms[0]
@@ -1940,7 +1940,7 @@ suite "vm — macros":
       let bad = "(macro member [] `(message value [self] : Int 1)) " & form
       expect GeneError: discard compileSource(bad)
       expect GeneError: discard expandSourceUnitMacros(readAllWithLocs(bad))
-    ck "(let value 90) [(match (quote (quote 4)) ^exhaustive false " &
+    ck "(let value 90) [(match (quote (quote 4)) ^!exhaustive " &
        "(when (quote value) value)) value]", "[4 90]"
     let metadata = "(macro explode [] (panic \"metadata was executed\")) " &
       "(+ 1 2 @note (explode)) (1 -> + 2 @note (explode)) " &
@@ -2225,7 +2225,7 @@ suite "vm — functions and closures":
        "  (acc .push (fn [] (+ n x y))))) (acc .map (fn [f] (f)))) (run 100)",
        "[111 121 112 122]"
     ck "(fn outer [a] (fn [b] (fn [] (+ a b)))) (((outer 1) 2))", "3"
-    ck "(fn run [] (match [5 6] ^exhaustive false (when [a b] (fn [] (* a b))))) ((run))", "30"
+    ck "(fn run [] (match [5 6] ^!exhaustive (when [a b] (fn [] (* a b))))) ((run))", "30"
     ck "(var top 10) (fn run [a] (var g nil) " &
        "  (for x in [1] (set g (fn [] (+ top a x)))) g) " &
        "(var h (run 5)) (set top 20) (h)", "26"
@@ -2439,9 +2439,9 @@ suite "vm — Paths":
        "((Path ^default fallback \"name\") {^age 37})",
        "\"unknown\""
     ck "((Path ^default \"unknown\" \"name\") {^name nil})", "nil"
-    ck "(try ((Path ^strict true \"name\") {^age 37}) catch Any $err/message)",
+    ck "(try ((Path ^^strict \"name\") {^age 37}) catch Any $err/message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
-    ck "(try ((Path ^strict true ^default \"unknown\" \"name\") {^age 37}) " &
+    ck "(try ((Path ^^strict ^default \"unknown\" \"name\") {^age 37}) " &
        "catch Any $err/message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
     expect GeneError:
@@ -2509,9 +2509,9 @@ suite "vm — dynamic Paths":
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
   test "complex selector stages adapt stream helpers":
-    ck "(var users [{^name \"Ada\" ^adult true} " &
-       "            {^name \"Tim\" ^adult false} " &
-       "            {^name \"Bob\" ^adult true}]) " &
+    ck "(var users [{^name \"Ada\" ^^adult} " &
+       "            {^name \"Tim\" ^!adult} " &
+       "            {^name \"Bob\" ^^adult}]) " &
        "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
@@ -2784,8 +2784,8 @@ suite "vm — env and eval":
        "                         ^allow_ffi Bool? " &
        "                         ^allow_native_compile Bool?}) " &
        "(var p (EvalPolicy ^max_steps 20 " &
-       "                   ^allow_ffi false " &
-       "                   ^allow_native_compile false)) " &
+       "                   ^!allow_ffi " &
+       "                   ^!allow_native_compile)) " &
        "(eval (quote (+ 1 2)) ^in (env ^policy p))",
        "3"
     ck "(try (eval (quote (while true nil)) " &
@@ -2835,9 +2835,9 @@ suite "vm — env and eval":
     expect GeneError:
       discard runStr("(env ^policy {^timeout_ms -1})")
     expect GeneError:
-      discard runStr("(env ^policy {^allow_ffi true})")
+      discard runStr("(env ^policy {^^allow_ffi})")
     expect GeneError:
-      discard runStr("(env ^policy {^allow_native_compile true})")
+      discard runStr("(env ^policy {^^allow_native_compile})")
     expect GeneError:
       discard runStr("(env ^policy {^allow_ffi 1})")
     expect GeneError:
@@ -2960,7 +2960,7 @@ suite "vm — channels":
        "[(ch .try_send 1) " &
        " (ch .try_send 2) " &
        " (ch .recv) " &
-       " (match (ch .try_recv) ^exhaustive false " &
+       " (match (ch .try_recv) ^!exhaustive " &
        "   (when TryRecv/empty true) " &
        "   (when (TryRecv/value _) false))]",
        "[true false 1 true]"
@@ -2971,10 +2971,10 @@ suite "vm — channels":
        "(ch .send void) " &
        "(ch .send nil) " &
        "(ch .send 7) " &
-       "[(match empty-result ^exhaustive false (when TryRecv/empty `empty)) " &
-       " (match (ch .try_recv) ^exhaustive false (when (TryRecv/value v) v)) " &
-       " (match (ch .try_recv) ^exhaustive false (when (TryRecv/value v) v)) " &
-       " (match (ch .try_recv) ^exhaustive false (when (TryRecv/value v) v))]",
+       "[(match empty-result ^!exhaustive (when TryRecv/empty `empty)) " &
+       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
+       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
+       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v))]",
        "[empty void nil 7]"
 
   test "closed channels drain buffered values before ChannelClosed":
@@ -3096,7 +3096,7 @@ suite "vm — cooperative scheduler":
        "  (await t))", "42"
   test "suspension preserves match, for, and catch sub-bodies":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var t (spawn (match 1 ^exhaustive false " &
+       "  (var t (spawn (match 1 ^!exhaustive " &
        "                  (when 1 (ch .recv))))) " &
        "  (spawn (ch .send 7)) " &
        "  (await t))", "7"
@@ -3496,7 +3496,7 @@ suite "vm — cooperative scheduler":
        "(var ch ($channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
        "  (var got (ch .recv)) " &
-       "  (match msg ^exhaustive false " &
+       "  (match msg ^!exhaustive " &
        "    (when (Get ^reply reply) " &
        "      (reply .send (+ state got)) " &
        "      ($actor/continue state)))) " &
@@ -3510,7 +3510,7 @@ suite "vm — cooperative scheduler":
        "(scope " &
        "  (var a ($actor/spawn ^init (fn [] 41) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (match msg ^exhaustive false " &
+       "      (match msg ^!exhaustive " &
        "        (when (Get ^reply reply) " &
        "          (reply .send state) " &
        "          ($actor/continue state)))))) " &
@@ -3563,7 +3563,7 @@ suite "vm — cooperative scheduler":
                      "(impl Send for Tick) " &
                      "(var ch ($channel ^capacity 1)) " &
                      "(fn handle [ctx state msg] " &
-                     "  (match msg ^exhaustive false " &
+                     "  (match msg ^!exhaustive " &
                      "    (when (Get ^reply reply) " &
                      "      (var got (ch .recv)) " &
                      "      (reply .send got) " &
@@ -3604,7 +3604,7 @@ suite "vm — cooperative scheduler":
                      "(scope " &
                      "  (var a ($actor/spawn ^init (fn [] 41) " &
                      "    ^handle (fn [ctx state msg] " &
-                     "      (match msg ^exhaustive false " &
+                     "      (match msg ^!exhaustive " &
                      "        (when (Get ^reply reply) " &
                      "          (reply .send state) " &
                      "          ($actor/continue state)))))) " &
@@ -3755,7 +3755,7 @@ suite "vm — actors":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
        "(fn handle [ctx state msg] : (ActorStep Int) " &
-       "  (match msg ^exhaustive false " &
+       "  (match msg ^!exhaustive " &
        "    (when (Get ^reply reply) " &
        "      (reply .send state) " &
        "      ($actor/continue state)))) " &
@@ -3769,7 +3769,7 @@ suite "vm — actors":
        "  (var a : (ActorRef Get) " &
        "    ($actor/spawn ^init (fn [] 41) " &
        "      ^handle (fn [ctx state msg] " &
-       "        (match msg ^exhaustive false " &
+       "        (match msg ^!exhaustive " &
        "          (when (Get ^reply reply) " &
        "            (reply .send state) " &
        "            ($actor/continue state)))))) " &
@@ -3785,7 +3785,7 @@ suite "vm — actors":
        "(var a : (ActorRef Get) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (match msg ^exhaustive false " &
+       "      (match msg ^!exhaustive " &
        "        (when (Get ^reply reply) " &
        "          (reply .send \"bad\") " &
        "          ($actor/continue state)))))) " &
@@ -3896,7 +3896,7 @@ suite "vm — actors":
        "      (do ($sleep 1) (set tries (+ tries 1))) " &
        "      (set tries 100))) " &
        "  [(seen .get) " &
-       "   (match event ^exhaustive false " &
+       "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^message m) " &
        "                         ^panic p ^strategy s) " &
@@ -3916,7 +3916,7 @@ suite "vm — actors":
        "  (var event (dead .recv)) " &
        "  (var busy (events .recv)) " &
        "  [busy " &
-       "   (match event ^exhaustive false " &
+       "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^message m) " &
        "                         ^strategy s) " &
@@ -3938,7 +3938,7 @@ suite "vm — actors":
        "  (var event (dead .recv)) " &
        "  (var busy (events .recv)) " &
        "  [busy dead-busy " &
-       "   (match event ^exhaustive false " &
+       "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^message m) " &
        "                         ^strategy s) " &
@@ -3956,7 +3956,7 @@ suite "vm — actors":
        "  (var busy (events .recv)) " &
        "  (var event (events .recv)) " &
        "  [busy " &
-       "   (match event ^exhaustive false " &
+       "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^message m) " &
        "                         ^strategy s) " &
@@ -3974,7 +3974,7 @@ suite "vm — actors":
        "  (a .send 2) " &
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
-       "  (match event ^exhaustive false " &
+       "  (match event ^!exhaustive " &
        "    (when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^message m) " &
        "                        ^strategy s) " &
@@ -3991,7 +3991,7 @@ suite "vm — actors":
        "  (a .send 6) " &
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
-       "  (match event ^exhaustive false " &
+       "  (match event ^!exhaustive " &
        "    (when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^message m) " &
        "                        ^strategy s) " &
@@ -4057,7 +4057,7 @@ suite "vm — actors":
        "    catch Boom $err/message)) " &
        "(var event (parent-events .recv)) " &
        "[outcome " &
-       " (match event ^exhaustive false " &
+       " (match event ^!exhaustive " &
        "   (when (ActorFailure ^failed_message failed " &
        "                       ^error (Boom ^message m) " &
        "                       ^strategy s) " &

@@ -520,7 +520,7 @@
       # A binding captures this invocation scope. Release the local edge after
       # joining, including failed calls, instead of leaving a closure cycle.
       (set wrapper nil)))
-  (match outcome ^exhaustive false
+  (match outcome ^!exhaustive
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
     (when (TaskOutcome/panic message)
@@ -2032,7 +2032,7 @@
     catch Any
       (cordis_failure HookDispatchError $"hook ${hook/id} payload validation failed" $err)))
   (var handlers (hook_snapshot context hook subject))
-  (match hook/mode ^exhaustive false
+  (match hook/mode ^!exhaustive
     (when HookMode/emit
       (dispatch_emit handlers checked))
     (when HookMode/parallel
@@ -2047,7 +2047,7 @@
 # --- snapshots and shutdown ----------------------------------------------
 
 (fn state_name [state] : Str ^^private
-  (match state ^exhaustive false
+  (match state ^!exhaustive
     (when InstanceState/pending "pending")
     (when InstanceState/loading "loading")
     (when InstanceState/active "active")
@@ -2492,7 +2492,7 @@
         source/plugin
         row/config
         row/id)))
-  (LoaderEntryRecord ^id row/id ^parent_id row/parent_id ^data row ^group false ^disabled false ^context context ^context_signature "" ^module_path row/module ^plugin source/plugin ^module source/module ^instance installed ^generation source/generation ^graph source/graph))
+  (LoaderEntryRecord ^id row/id ^parent_id row/parent_id ^data row ^!group ^!disabled ^context context ^context_signature "" ^module_path row/module ^plugin source/plugin ^module source/module ^instance installed ^generation source/generation ^graph source/graph))
 
 (fn failure_text ^^private [error]
   # A wrapped failure names its cause, which carries the plugin's own error.
@@ -2600,7 +2600,7 @@
         (var disabled_entry
           (LoaderEntryRecord
             ^id row/id ^parent_id row/parent_id ^data row ^group row/group
-            ^disabled true ^context disabled_context
+            ^^disabled ^context disabled_context
             ^context_signature signature ^module_path row/module
             ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil))
         (next_entries .put row/id disabled_entry)
@@ -2613,8 +2613,8 @@
             (var created
               (if row/group
                 (LoaderEntryRecord
-                  ^id row/id ^parent_id row/parent_id ^data row ^group true
-                  ^disabled false ^context context
+                  ^id row/id ^parent_id row/parent_id ^data row ^^group
+                  ^!disabled ^context context
                   ^context_signature signature ^module_path nil ^plugin nil
                   ^module nil ^instance nil ^generation nil ^graph nil)
                 # Entries fail individually, as in upstream Cordis: the failure
@@ -2625,8 +2625,8 @@
                     (install_host_loader_entry loader row context host_plugin))
                 catch Any
                   (LoaderEntryRecord
-                    ^id row/id ^parent_id row/parent_id ^data row ^group false
-                    ^disabled false ^context context
+                    ^id row/id ^parent_id row/parent_id ^data row ^!group
+                    ^!disabled ^context context
                     ^context_signature signature ^module_path row/module
                     ^plugin nil ^module nil ^instance nil ^generation nil
                     ^graph nil ^error $err))))
@@ -2717,7 +2717,7 @@
         ^module existing/module
         ^plugin existing/plugin
         ^graph existing/graph
-        ^prepared false}))
+        ^!prepared}))
   (var prepared (prepare_loader_entry loader row transaction))
   {
     ^generation prepared/generation
@@ -2768,8 +2768,8 @@
                            source/plugin row/config row/id))
         (set entry
           (LoaderEntryRecord
-            ^id row/id ^parent_id row/parent_id ^data row ^group false
-            ^disabled false ^context context
+            ^id row/id ^parent_id row/parent_id ^data row ^!group
+            ^!disabled ^context context
             ^context_signature signature ^module_path row/module
             ^plugin source/plugin ^module source/module ^instance instance
             ^generation source/generation ^graph source/graph))))
@@ -3243,7 +3243,7 @@
     (cordis_failure CompositionError "a publication participant requires staged reconciliation"))
   (if (&& (! (absent? loader/options/retirement)) (!= selected_mode ReconcileMode/staged))
     (cordis_failure CompositionError "deferred retirement requires staged reconciliation"))
-  (match selected_mode ^exhaustive false
+  (match selected_mode ^!exhaustive
     (when ReconcileMode/incremental
       (loader_reconcile_incremental loader manifest rows))
     (when ReconcileMode/staged
@@ -3367,7 +3367,7 @@
       "stop_start replacement activated but old cleanup failed"
       teardown_errors))
   ($freeze {^status "reloaded_stop_start" ^affected affected
-            ^reduced_guarantee true}))
+            ^^reduced_guarantee}))
 
 (fn entry_root_digests [loader, ids] ^^private
   (var out (fresh_list))

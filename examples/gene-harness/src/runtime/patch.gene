@@ -56,14 +56,14 @@
           (operation .put "added" (+ operation/added 1)))
         (elif ($str/starts_with? content "@@")
           (let anchor (if (== content "@@") "" (suffix content "@@ ")))
-          (set hunk {^old [] ^new [] ^anchor anchor ^eof false})
+          (set hunk {^old [] ^new [] ^anchor anchor ^!eof})
           (operation/hunks .push hunk))
         (elif (== content "*** End of File")
           (if ($absent? hunk) (patch_error $"${path}: missing hunk before End of File"))
           (hunk .put "eof" true))
         (else
           (if_yes ($absent? hunk)
-            (set hunk {^old [] ^new [] ^anchor "" ^eof false})
+            (set hunk {^old [] ^new [] ^anchor "" ^!eof})
             (operation/hunks .push hunk))
           (if (== content "")
             (then (hunk/old .push "") (hunk/new .push ""))
@@ -163,7 +163,7 @@
         (then
           (let path ($path/join root relative))
           (let exists ($fs/exists? path))
-          (let info (if exists ($fs/info path ^follow false) nil))
+          (let info (if exists ($fs/info path ^!follow) nil))
           (let linked (== info/symlink true))
           (if (&& exists (! linked) (!= info/kind "file"))
             (patch_error $"${relative}: patch requires a file"))
@@ -252,7 +252,7 @@
             (else ($fs/remove ($path/join plan/root operation/path))))
           (changed .push {^relative operation/path ^physical ($path/join plan/root operation/path)}))))
     (cleanup_temporaries plan)
-    {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^attention false}
+    {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^!attention}
     catch Any
       (let reason $err/message)
       (let restored [])
@@ -278,14 +278,14 @@
       (let partial_names ($str/join partial ", "))
       (if (== partial/.size 0)
         {^status "failed" ^text $"failed writing ${current}: ${reason}; restored ${restored_names}"
-         ^files plan/files ^attention false}
+         ^files plan/files ^!attention}
         {^status "partial" ^text $"partial: changed paths ${partial_names}; failed writing ${current}: ${reason}"
-         ^files partial ^attention true})))
+         ^files partial ^^attention})))
 
 (fn apply_patch [root : Str, text : Str, ^fail_after_renames fail_after_renames : Int = -1]
   (try
     (commit_patch (prepare_patch root text) ^fail_after_renames fail_after_renames)
-    catch Any {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^attention false}))
+    catch Any {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention}))
 
 (fn recover_patch_temporaries [root : Str, files]
   (for relative in files

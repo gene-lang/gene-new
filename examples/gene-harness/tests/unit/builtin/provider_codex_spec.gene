@@ -37,7 +37,7 @@
     "selects phased final answers when completed SSE output arrives as separate items"
     []
     (let code """# goal
-(Outcome ^done true ^reply "done")""")
+(Outcome ^^done ^reply "done")""")
     (let messages
       [
         {

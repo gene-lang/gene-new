@@ -10,7 +10,7 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let pipe ($io/pipe))
-        (let rows ($csv/reader pipe/0 ^headers true ^own_reader true))
+        (let rows ($csv/reader pipe/0 ^^headers ^^own_reader))
         (await ($io/write_all pipe/1 payload))
         (pipe/1 .IoResource:close)
         (await (pipe/1 .IoResource:wait_closed))
@@ -66,7 +66,7 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let pipe ($io/pipe))
-        (let rows ($csv/reader pipe/0 ^headers true))
+        (let rows ($csv/reader pipe/0 ^^headers))
         (await ($io/write_all pipe/1 ($binary/from_str "a,a\n1,2\n")))
         (pipe/1 .IoResource:close)
         (let failed (try (await (rows .next)) false catch CsvError true))
@@ -90,7 +90,7 @@ when compileOption("threads") and defined(posix):
         (let pending (rows .next))
         (let busy (try (rows .next) false catch CsvError true))
         (rows .IoResource:close)
-        (let cancelled (match (pending .join) ^exhaustive false
+        (let cancelled (match (pending .join) ^!exhaustive
           (when TaskOutcome/cancelled true)))
         (await (rows .IoResource:wait_closed))
         (await (pipe/1 .AsyncWriter:write ($binary/from_str "x")))
@@ -107,11 +107,11 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let pipe ($io/pipe))
-        (let rows ($csv/reader pipe/0 ^own_reader true))
+        (let rows ($csv/reader pipe/0 ^^own_reader))
         (let pending (rows .next))
         (let waiting (rows .IoResource:wait_closed))
         (rows .IoResource:close)
-        (let cancelled (match (pending .join) ^exhaustive false
+        (let cancelled (match (pending .join) ^!exhaustive
           (when TaskOutcome/cancelled true)))
         (await waiting)
         (await (rows .IoResource:wait_closed))
@@ -133,7 +133,7 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoResource $io/IoResource)
         (let source (await ($io/open_read path)))
-        (let rows ($csv/reader source ^own_reader true))
+        (let rows ($csv/reader source ^^own_reader))
         (var count 0)
         (while true
           (let row (await (rows .next)))
@@ -153,7 +153,7 @@ when compileOption("threads") and defined(posix):
         (let IoResource $io/IoResource)
         (let source ($io/testing/new))
         ($io/testing/fail_close source "broken")
-        (let rows ($csv/reader source ^own_reader true))
+        (let rows ($csv/reader source ^^own_reader))
         (rows .IoResource:close)
         [(try (await (rows .IoResource:wait_closed)) false catch IoError true)
          (try (await (rows .IoResource:wait_closed)) false catch IoError true)]

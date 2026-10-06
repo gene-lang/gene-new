@@ -115,7 +115,7 @@
     (reject "too_large" $"the response exceeds ${limits/response_bytes} bytes"))
   (var forms
     (try
-      ($into ($parse/read_all text ^reject_duplicate_props true ^max_depth limits/reader_depth) [])
+      ($into ($parse/read_all text ^^reject_duplicate_props ^max_depth limits/reader_depth) [])
     catch Any
       (reject "unreadable" $"the response is not readable Gene data: ${$err/message}")))
   (if (!= forms/.size 1)

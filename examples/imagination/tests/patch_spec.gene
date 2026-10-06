@@ -51,7 +51,7 @@
 
   (it "rejects unknown operations, properties, and an empty or oversized batch" []
     (assert_equal (code "(explode ^target \"cat\")") "unknown_operation")
-    (assert_equal (code "(remove ^target \"cat\" ^force true)") "unknown_field")
+    (assert_equal (code "(remove ^target \"cat\" ^^force)") "unknown_field")
     (assert_equal (code "(set ^target \"cat\" ^field [\"id\"] ^value \"dog\")") "immutable_field")
     (assert_equal (code "(set ^target \"cat\" ^field [\"children\"] ^value [])") "unknown_field")
     (assert_equal (code "") "empty_patch")

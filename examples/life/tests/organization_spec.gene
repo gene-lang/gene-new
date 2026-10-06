@@ -8,14 +8,14 @@
 
 (fn fixture [^provider provider = nil]
   (let name (p/id "organization"))
-  (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+  (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)
     ^decisions [(brain/response "Quiet first start" "nil")] ^brain provider))
 (fn candidate [host, name = "visitors@2"]
   (let tx (p/begin host/store "candidate"))
   (let source ($fs/read_text "examples/life/src/organizations/visitor_memory.gene"))
   (let revision (code/module_bundle tx "visitor memory" {^main.gene source} "main.gene"))
   (p/commit tx)
-  {^id name ^module revision ^code [revision] ^roots ["mind/"] ^context true
+  {^id name ^module revision ^code [revision] ^roots ["mind/"] ^^context
    ^documentation "A visitor document, episode list and a shared working document; provenance remains with each observation."})
 (fn migration []
   "(do
@@ -124,7 +124,7 @@
     (p/put host/store "state/preference" "shade")
     (let thought host/thought/.get)
     (let definition (candidate host))
-    (request host definition (migration) ^invalidate true)
+    (request host definition (migration) ^^invalidate)
     (try
       (await_selected host definition/id)
       (assert_equal release/.get false)
@@ -219,7 +219,7 @@
       "(mod bad) (fn bind [api] {}) (fn context [api basis] (panic \"broken context\"))"} "main.gene"))
     (p/commit tx)
     (request host {^id "broken@2" ^module revision ^code [revision] ^roots ["state/"]
-      ^context true ^documentation "Broken candidate fixture"} "nil")
+      ^^context ^documentation "Broken candidate fixture"} "nil")
     (runtime/settle host)
     (assert_equal (selected host) "broken@2")
     (body/receive host "Latest conversation survives repair")
@@ -227,7 +227,7 @@
     (runtime/pause host)
     (let repair (p/begin host/store "operator-repair"))
     (let request_id (organization/request repair {^id "repaired@3" ^roots ["state/" "memory/"]
-      ^code [] ^documentation "Restore starter access against latest retained data"} "nil" "invalidate" true ^recovery true))
+      ^code [] ^documentation "Restore starter access against latest retained data"} "nil" "invalidate" true ^^recovery))
     (p/commit repair)
     (try
       (await_selected host "repaired@3")
@@ -258,7 +258,7 @@
          {^observations basis/observations ^focus basis/focus ^first first ^second second})"} "main.gene"))
     (p/commit tx)
     (request host {^id "snapshot@2" ^module revision ^code [revision] ^roots ["state/"]
-      ^context true ^documentation "Snapshot context fixture"} "nil")
+      ^^context ^documentation "Snapshot context fixture"} "nil")
     (await_selected host "snapshot@2")
     (let deadline (+ ($os/monotonic_ms) 5000))
     (var building nil)

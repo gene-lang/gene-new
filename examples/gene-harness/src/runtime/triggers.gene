@@ -56,7 +56,7 @@
   $"${date/year}-${(two_digits date/month)}-${(two_digits date/day)} ${(two_digits hour)}:${(two_digits minute)} ${zone}")
 
 (fn next_time [definition, after]
-  (match definition/kind ^exhaustive false
+  (match definition/kind ^!exhaustive
     (when "heartbeat" (+ after definition/every_ms))
     (when "scheduled" nil)
     (when "cron" (cron/next definition/pattern definition/rules after))))
@@ -67,7 +67,7 @@
   (if_not (["heartbeat" "scheduled" "cron"] .contains? definition/kind) (invalid "Invalid trigger kind"))
   (if (|| (!= ($head definition/request) Str) (== ($str/trim definition/request) ""))
     (invalid "A trigger needs a request"))
-  (for [key default] in {^missed "skip" ^overlap "skip" ^continue_session false ^enabled true}
+  (for [key default] in {^missed "skip" ^overlap "skip" ^!continue_session ^^enabled}
     (if ($absent? (definition .get key)) (definition .put key default)))
   (if_not (["skip" "once"] .contains? definition/missed) (invalid "Invalid missed policy"))
   (if_not (["skip" "queue_one"] .contains? definition/overlap) (invalid "Invalid overlap policy"))
@@ -410,7 +410,7 @@
     ^last_gc ($cell 0) ^gc_interval gc_interval
     ^mutating ($cell false) ^hook hook ^last_retention ($cell 0)))
   (set runtime/triggers manager)
-  (if boot (tick_triggers manager ^boot true ^now now))
+  (if boot (tick_triggers manager ^^boot ^now now))
   (if start
     (manager/task .set (spawn ^lane root
       (while (! manager/closed/.get)

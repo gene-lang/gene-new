@@ -201,7 +201,7 @@
 (type Counter ^props {^reply (ReplyTo Int)} ^impl [Send])
 
 (fn ask_handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
-  (match msg ^exhaustive false
+  (match msg ^!exhaustive
     (when (Counter ^reply reply)
       (reply .send state)
       ($actor/continue state))))

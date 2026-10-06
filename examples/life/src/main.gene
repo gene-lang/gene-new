@@ -94,8 +94,8 @@
         (if_yes ($fs/exists? reply_path) ($fs/remove path) (continue))
         (let request ($json/parse ($fs/read_text path)))
         (if_yes (== request/op "stop") (set running false) (continue))
-        (let reply (try {^ok true ^value (command host request)}
-          catch Any {^ok false ^error $err/message}))
+        (let reply (try {^^ok ^value (command host request)}
+          catch Any {^!ok ^error $err/message}))
         ($fs/write_text_atomic reply_path ($json/stringify reply))
         ($fs/remove path))
       (if_not running (break))
@@ -111,7 +111,7 @@
       (let path $"${home}/inbox/${name}")
       (let request ($json/parse ($fs/read_text path)))
       (if_yes (== request/op "stop")
-        ($fs/write_text_atomic $"${home}/replies/${name}" ($json/stringify {^ok true ^value "stopped"}))
+        ($fs/write_text_atomic $"${home}/replies/${name}" ($json/stringify {^^ok ^value "stopped"}))
         ($fs/remove path)))
     ($println "Life stopped; progress saved.")
     catch Any
@@ -133,7 +133,7 @@
     (if (== action "create")
       (then
         (let network (== (?? args/2 "") "--network"))
-        (let host (runtime/open_life home ^create true ^profile (if network "network" "local")))
+        (let host (runtime/open_life home ^^create ^profile (if network "network" "local")))
         (let meta (p/get host/store "meta"))
         (runtime/close_life host)
         ($println ($json/stringify {^id meta/id ^home home ^world_profile meta/world_profile}))))

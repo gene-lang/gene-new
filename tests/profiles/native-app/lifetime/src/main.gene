@@ -4,7 +4,7 @@
   (repeat count
     ($assert (== (eval ($read_one source) ^in (env)) 7)))
   (let stats ($runtime/gc_stats))
-  ($println ($json/stringify {^workload "lifetime" ^ok true
+  ($println ($json/stringify {^workload "lifetime" ^^ok
                              ^iterations count ^rc_stats stats/rc_stats?
                              ^live_managed stats/live_managed}))
   0)

@@ -42,12 +42,12 @@
                  (repeat 400 (pieces .push "x"))
                  (fail (ProviderError ^message ($str/join pieces "")))))
              (if (== mode/.get "timeout")
-               (return {^timeout true}))
+               (return {^^timeout}))
              (if (== mode/.get "cancel")
                (then
                  (entered .set true)
                  ($sleep 5000)))
-             {^text "(Outcome ^done true ^reply \"ok\")"})}
+             {^text "(Outcome ^^done ^reply \"ok\")"})}
         )
       )
     )]
@@ -169,7 +169,7 @@
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
           (scripted_profile ["Earlier work summarized."
-            "(Outcome ^done true ^reply \"done\")"])))
+            "(Outcome ^^done ^reply \"done\")"])))
         (let controller (new_round_controller runtime))
         (try
           (let settings ($serde/read_data
@@ -227,7 +227,7 @@
                    (if summary (unavailable .set true))
                    (if summary
                      {^text "Earlier work summarized."}
-                     {^text "(Outcome ^done true ^reply \"done\")"}))})
+                     {^text "(Outcome ^^done ^reply \"done\")"}))})
               (host .PluginHost:contribute "providers"
                 {^name "second" ^doc "Fallback provider." ^auto 1
                  ^configure (fn [model, effort, timeout]
@@ -235,7 +235,7 @@
                  ^prepare (fn [call]
                    {^purpose call/purpose ^messages call/messages})
                  ^send (fn [prepared]
-                   {^text "(Outcome ^done true ^reply \"wrong provider\")"})}))))
+                   {^text "(Outcome ^^done ^reply \"wrong provider\")"})}))))
         (let runtime (open_runtime workspace "default"
           (Profile ^name "test" ^plugins [provider (history_basic)])))
         (let controller (new_round_controller runtime))
@@ -282,7 +282,7 @@
              ^purpose "turn" ^provider "test" ^prepared {^prompt "go"}})
           (append_core_event runtime/events "session" "default"
             {^type "model/result" ^call "call-1" ^attempt 1
-             ^outcome "timeout" ^final false ^timing_ms 30})
+             ^outcome "timeout" ^!final ^timing_ms 30})
           (append_core_event runtime/events "session" "default"
             {^type "model/request" ^call "call-2" ^turn 1 ^round "r"
              ^purpose "turn" ^provider "test" ^prepared {^prompt "again"}})
@@ -322,7 +322,7 @@
           (repair_interrupted_turns ^session "default" reopened/events)
           (let after (append_turn_end_once reopened/events "default"
             {^type "turn/end" ^turn 1 ^round "r"
-             ^reason "error" ^synthetic false}))
+             ^reason "error" ^!synthetic}))
           ($assert (! after/created) "finalization wrote a duplicate turn end")
         ensure
           (close_runtime reopened))))))
@@ -494,7 +494,7 @@
            (if (== mode/.get "error")
              (fail (HttpClientError ^message "certificate rejected")))
            (if (|| (== mode/.get "timeout") (== calls/.get 1))
-             {^timeout true}
+             {^^timeout}
              {^text "complete response"}))})
       (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
         ^provider "retry")})
@@ -536,7 +536,7 @@
              ^prepare (fn [call] call/messages)
              ^send (fn [prepared]
                (let number (attempts .swap (+ attempts/.get 1)))
-               (if (== number 0) {^timeout true} {^text "recovered"}))})
+               (if (== number 0) {^^timeout} {^text "recovered"}))})
           (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
             ^provider "retry")})
           (let completion (call_model runtime

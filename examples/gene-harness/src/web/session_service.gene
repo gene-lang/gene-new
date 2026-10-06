@@ -125,7 +125,7 @@
   nil)
 
 (fn handle_harness_event [service, event]
-  (match event ^exhaustive false
+  (match event ^!exhaustive
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (record : DurableRecord)
@@ -148,8 +148,8 @@
         (publish_message service "console" session
           {^id $"${session}/${record/id}/console" ^seq "0"
            ^round_id "" ^turn 0 ^role "log" ^phase "console"
-           ^kind "console" ^text record/output ^late false
-           ^durable false})
+           ^kind "console" ^text record/output ^!late
+           ^!durable})
         (publish_message service "command" session record))
       (if ($absent? record/text)
         (queue_snapshot service session))))
@@ -189,7 +189,7 @@
       (fn [event] (handle_harness_event service event))))
   (set runtime/commands/interface "web")
   (provide runtime/h "core" "loop"
-    (fn [] {^runtime runtime ^controller service/controller ^start true ^boot true}))
+    (fn [] {^runtime runtime ^controller service/controller ^^start ^^boot}))
   service)
 
 (fn list_sessions [service, ^after after : Str = "", ^limit limit : Int = 100, ^kind kind = nil, ^status status = nil, ^attention attention = nil, ^trigger trigger = nil, ^q q : Str = "", ^since since : Str = "", ^until until : Str = ""]
@@ -226,7 +226,7 @@
 
 (fn acknowledge_attention [service, id : Str]
   (let record (require_record service/sessions id))
-  (if record/attention (update_session service/sessions id {^attention false}))
+  (if record/attention (update_session service/sessions id {^!attention}))
   {^^ok})
 
 (fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str]
@@ -272,7 +272,7 @@
           ^phase "console"
           ^kind "console"
           ^text record/output
-          ^late false
+          ^!late
           ^order (?? record/started_ms 0)
           ^^durable}))
     (records .push
@@ -340,7 +340,7 @@
           task/.join)
         deadline/.cancel
         deadline/.join)))
-  (match outcome ^exhaustive false
+  (match outcome ^!exhaustive
     (when (TaskOutcome/ok value)
       (bounded_component_view value))
     (when (TaskOutcome/error error)

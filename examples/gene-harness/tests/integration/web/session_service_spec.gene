@@ -59,7 +59,7 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^done true ^reply \"web done\")"))))
+          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}])" "# Finish\n(Outcome ^^done ^reply \"web done\")"))))
         (try
           (let session (create_session ^title "Web scripted" service))
           (let round (submit service session/id "web-1" 1 "start"))
@@ -83,7 +83,7 @@
           ($assert (== replay/id round/id) "answer retry changed the round")
           ($assert
             (try
-              (answer service session/id waiting/questions/id {^ok false})
+              (answer service session/id waiting/questions/id {^!ok})
               false
             catch Any
               true)
@@ -99,7 +99,7 @@
         (let service (open_session_service ^workspace workspace ^^offline))
         (try
           (let record (create_session service ^title "Initial"))
-          (let pinned (edit_session service record/id {^pinned true ^title "Changed"} 0))
+          (let pinned (edit_session service record/id {^^pinned ^title "Changed"} 0))
           ($assert pinned/pinned "pinning did not persist")
           ($assert (== pinned/title "Changed") "metadata edit lost title")
           ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Any true)
@@ -141,7 +141,7 @@
     (isolated this_mod/.path "runs concurrent isolated sessions and lists the index lazily"
       (fn [workspace]
         (let service (test_service ^workspace workspace
-          ^provider (fn [request] $"(Outcome ^done true ^reply \"${request/session}\")")))
+          ^provider (fn [request] $"(Outcome ^^done ^reply \"${request/session}\")")))
         (try
           (let runtime service/runtime)
           (let before (events_for service/events "workspace" "workspace"))
@@ -177,7 +177,7 @@
           (if (== request/turn 1)
             "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
             (do (entered .set true) (while (! release/.get) ($sleep 1))
-              "(Outcome ^done true ^reply \"Finished.\")")))))
+              "(Outcome ^^done ^reply \"Finished.\")")))))
         (let messages ($cell []))
         (service/publisher .set (fn [message] (messages/.get .push message)))
         (try
@@ -209,7 +209,7 @@
           (service/controller/watchers .get; .get record/id; .join)
           ($assert (== (/state (receipt service record/id custom/id)) "waiting") "custom interaction did not wait")
           ($assert (== validations/.get 1) "custom question was not validated under its turn lease")
-          (set_test_provider service/runtime (fn [request] "(Outcome ^done true ^reply \"answered\")"))
+          (set_test_provider service/runtime (fn [request] "(Outcome ^^done ^reply \"answered\")"))
           (let waiting (receipt service record/id custom/id))
           (answer service record/id waiting/questions/id {^choice "ok"})
           (service/controller/watchers .get; .get record/id; .join)
@@ -225,7 +225,7 @@
           (contribute service/runtime/h "core" "functions"
             {^name "noise" ^doc "Print bounded test output."
              ^fn (fn [] ($print huge/.get))})
-          (set_test_provider service/runtime (fn [request] "(noise) (Outcome ^done true ^reply \"bounded console\")"))
+          (set_test_provider service/runtime (fn [request] "(noise) (Outcome ^^done ^reply \"bounded console\")"))
           (let noisy (submit service record/id "noisy" 3 "print"))
           (service/controller/watchers .get; .get record/id; .join)
           ($assert (== (/state (receipt service record/id noisy/id)) "done") "large console output exceeded an event envelope")
@@ -254,7 +254,7 @@
 (try (append_prompt "late" "no") catch Any ($println $err/message)))))
 child/.detach
 (save_child child)
-(Outcome ^done true ^reply "done")""")))
+(Outcome ^^done ^reply "done")""")))
         (let child ($cell nil))
         (let release ($cell false))
         (let stages ($cell []))
@@ -302,7 +302,7 @@ child/.detach
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider (fn [request]
           """# Apply and finish
-(Outcome ^done true ^reply "Patched.")
+(Outcome ^^done ^reply "Patched.")
 *** Begin Patch
 *** Add File: added.txt
 +content
@@ -320,8 +320,8 @@ child/.detach
           ($assert ($str/contains? patches/0/text "applied") "patch result was not displayed")
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 2)
-              "(Outcome ^done true ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
-              "(Outcome ^done true ^reply \"Failure received.\")")))
+              "(Outcome ^^done ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
+              "(Outcome ^^done ^reply \"Failure received.\")")))
           (submit service session/id "bad" 2 "edit")
           (service/controller/watchers .get; .get session/id; .join)
           (let failed (snapshot service session/id))

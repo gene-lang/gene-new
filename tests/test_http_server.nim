@@ -491,7 +491,7 @@ suite "net/http server e2e":
 (import $io [open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
-  (stream 200 source ^content_length 3 ^own_reader true))
+  (stream 200 source ^content_length 3 ^^own_reader))
 (serve (Server ^host "127.0.0.1" ^port 8203) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -510,7 +510,7 @@ suite "net/http server e2e":
 (import $io [open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
-  (stream 200 source ^own_reader true))
+  (stream 200 source ^^own_reader))
 (serve (Server ^host "127.0.0.1" ^port 8204) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -528,7 +528,7 @@ suite "net/http server e2e":
 (import $io [open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
-  (stream 200 source ^content_length 3 ^own_reader true))
+  (stream 200 source ^content_length 3 ^^own_reader))
 (serve (Server ^host "127.0.0.1" ^port 8205) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -546,7 +546,7 @@ suite "net/http server e2e":
 (import $io [open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
-  (stream 200 source ^own_reader true ^max_bytes 4))
+  (stream 200 source ^^own_reader ^max_bytes 4))
 (serve (Server ^host "127.0.0.1" ^port 8207) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -564,7 +564,7 @@ suite "net/http server e2e":
 (import $io [open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
-  (stream 200 source ^content_length 3 ^own_reader true))
+  (stream 200 source ^content_length 3 ^^own_reader))
 (serve (Server ^host "127.0.0.1" ^port 8208) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
@@ -746,7 +746,7 @@ suite "net/http server e2e":
     (text "fast")
     (do
       (let source (await (open_read """ & geneQuotedPath(path) & """)))
-      (stream 200 source ^own_reader true))))
+      (stream 200 source ^^own_reader))))
 (serve (Server ^host "127.0.0.1" ^port 8206) handle ^max_requests 2)
 """)
     defer:
@@ -964,7 +964,7 @@ suite "net/http server e2e":
     (fail (Boom ^message "worker boom"))
     (do
       (var ev (failures .try_recv))
-      (match ev ^exhaustive false
+      (match ev ^!exhaustive
         (when TryRecv/empty
           (reply .send (text "no-failures")))
         (when (TryRecv/value failure)
@@ -1240,7 +1240,7 @@ suite "net/http server e2e":
   (fn [req]
     (if (== req/path "/stop")
       (do (stop srv) (text 200 "stopping"))
-      (stream (NeverClose) ^own_reader true)))
+      (stream (NeverClose) ^^own_reader)))
   ^drain_timeout_ms 100))
 ($println ($json/stringify report))
 """)

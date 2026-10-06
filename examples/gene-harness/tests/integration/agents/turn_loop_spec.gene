@@ -83,7 +83,7 @@ END
             ($assert
               (! active_metadata/attention)
               "continuation did not acknowledge the prior failure")
-            "(Outcome ^done true ^reply \"finished\" ^attention true)"))
+            "(Outcome ^^done ^reply \"finished\" ^^attention)"))
         (let controller (test_controller runtime provider))
         (try
           (let receipt (submit_round controller "default" "first" 1 prompt))
@@ -152,7 +152,7 @@ END
               ($json/stringify path)
               """ (attachment "asset"))
 """
-              """(Outcome ^done true ^reply "written")
+              """(Outcome ^^done ^reply "written")
 <<<asset END
 """
               body
@@ -201,12 +201,12 @@ END
                 """# Inspect
 (append_prompt "value" (+ 2 3)) (Outcome ^prompt "continue")"""
                 """# Finish
-(Outcome ^done true ^reply "a done")""")
+(Outcome ^^done ^reply "a done")""")
               (if (== count 1)
                 """# Ask
 (Outcome ^questions [{^id "name" ^prompt "Name?"}])"""
                 """# Finish
-(Outcome ^done true ^reply "b done")"""))))
+(Outcome ^^done ^reply "b done")"""))))
         (let controller (test_controller runtime provider))
         (try
           (create_session ^id "a" runtime/sessions)
@@ -247,7 +247,7 @@ END
     (isolated this_mod/.path "runs a scripted round through prepare and send"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"from row\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"from row\")"])))
         (let controller (new_round_controller runtime))
         (try
           (let accepted (submit_round controller "default" "scripted" 1 "go"))

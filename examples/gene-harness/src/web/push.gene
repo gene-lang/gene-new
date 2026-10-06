@@ -41,7 +41,7 @@
 
 (fn add_peer [hub : PushHub, connection, session : Str, expires : Int]
   (var peer {^connection connection ^session session ^expires expires
-    ^sequence 0 ^closed false ^viewing false})
+    ^sequence 0 ^!closed ^!viewing})
   (hub/peers/.get .push peer)
   (try
     (send_frame hub peer {^type "status" ^session "" ^data (host_status hub/host)})

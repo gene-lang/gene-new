@@ -62,7 +62,7 @@ budgets bound the second.
 - `SandboxGeneration/graph` is a deeply frozen, deterministically ordered
   snapshot with normalized module identities and paths, authenticated source
   and compile-interface digests, runtime/compile dependency phases, and
-  `^owned false` reference nodes for admitted shared modules.
+  `^!owned` reference nodes for admitted shared modules.
 - `$runtime/load_sandboxed` remains the non-transactional compatibility path.
   Its `grants` strings select namespace exposure.
   Sandboxed code cannot create or manage either kind of sandbox load, even when

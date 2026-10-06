@@ -90,8 +90,8 @@
   (if_yes (&& (! execution/cancelled/.get) ($fs/exists? execution/rpc))
     (let request ($serde/read_data ($fs/read_text execution/rpc)))
     ($fs/remove execution/rpc)
-    (let reply (try {^ok true ^value (operation host execution request)}
-      catch Any {^ok false ^error $err/message}))
+    (let reply (try {^^ok ^value (operation host execution request)}
+      catch Any {^!ok ^error $err/message}))
     ($fs/write_text_atomic $"${execution/rpc}.reply" ($serde/write_data reply)))
   (let done execution/done/.get)
   (if ($absent? done) (return nil))
@@ -99,7 +99,7 @@
     (p/abort execution/tx/.get))
   (if execution/cancelled/.get
     (return {^status (?? execution/cancel_status "interrupted") ^result "Execution cancelled"}))
-  (match done ^exhaustive false
+  (match done ^!exhaustive
     (when (TaskOutcome/ok result)
       (if (&& (== result/status 0) ($fs/exists? execution/result))
         (then

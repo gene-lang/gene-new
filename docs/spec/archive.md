@@ -31,8 +31,8 @@ and leaves the complete destination. Normal CLI return waits for registered
 I/O cleanup Tasks before process exit. A competing destination is never
 replaced.
 
-`gzip_reader source ^own_reader false` implements `AsyncReader` and
-`IoResource`; `gzip_writer sink ^own_writer false` implements `AsyncWriter` and
+`gzip_reader source ^!own_reader` implements `AsyncReader` and
+`IoResource`; `gzip_writer sink ^!own_writer` implements `AsyncWriter` and
 `IoResource`. Both use bounded 64 KiB zlib steps and reject overlapping
 operations. The reader accepts concatenated gzip members, verifies the trailer,
 and rejects truncation and trailing junk. Writer `flush` drains a sync marker

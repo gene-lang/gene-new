@@ -28,17 +28,17 @@
     (isolated this_mod/.path "refreshes saved function forwarders and new names while keeping user shadowing"
       (fn [workspace]
         (let service (test_service ^workspace workspace ^provider
-          (fn [request] "(Outcome ^done true ^reply \"chat\")")))
+          (fn [request] "(Outcome ^^done ^reply \"chat\")")))
         (try
           (put_cordis_plugin service/runtime/h (provider_functions 1)
-            {^host true ^limits service/runtime/profile/limits})
+            {^^host ^limits service/runtime/profile/limits})
           (let session (create_session service))
           (let opened (submit_command service/runtime/commands session/id "/repl"))
           (service/runtime/commands/watchers/.get .get $"${session/id}:${opened/id}"; .join)
           (let saved (run_input service session/id "save" "(var saved calc) (saved ^increment 3)"))
           ($assert (&& (== saved/status "done") ($str/contains? saved/display "4")) saved/display)
           (put_cordis_plugin ^^replace service/runtime/h (provider_functions 2)
-            {^host true ^limits service/runtime/profile/limits})
+            {^^host ^limits service/runtime/profile/limits})
           (let refreshed (run_input service session/id "refresh" "[(saved ^increment 3) (extra)]"))
           ($assert (&& (== refreshed/status "done") ($str/contains? refreshed/display "[5 99]")) refreshed/display)
           (let shadowed (run_input service session/id "shadow" "(var calc 7) [calc (saved)]"))

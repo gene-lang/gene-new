@@ -31,5 +31,5 @@
     (parse_response response)
   catch HttpClientError
     (if ($str/contains? ($str/lower $err/message) "timeout")
-      {^timeout true}
+      {^^timeout}
       (fail $err))))

@@ -36,7 +36,7 @@ Pure path functions never access disk, resolve symlinks, or make paths absolute 
 
 Filesystem APIs resolve relative paths against the application's captured launch directory. This rule applies to actual I/O, not to the pure functions above. Keep `$fs/real_path` as explicit symlink-aware resolution. Native-platform path conventions are supported on each qualified OS; parsing foreign Windows paths on POSIX is outside the initial surface.
 
-`($fs/walk root ^follow_symlinks false ^max_depth 64 ^max_entries_per_dir 10000)` returns a synchronous Stream. Emit children in depth-first preorder, excluding root, sorted lexically per directory; each entry has absolute path, relative_path, kind, and size (nil if unavailable for that kind). Depth 1 means root's immediate children. Do not silently truncate: exceeding either limit raises FsLimitError. Filesystem disappearance/permission errors raise FsError. Following links is opt-in and uses directory identity to detect cycles; it may visit targets outside root and is not a confinement primitive.
+`($fs/walk root ^!follow_symlinks ^max_depth 64 ^max_entries_per_dir 10000)` returns a synchronous Stream. Emit children in depth-first preorder, excluding root, sorted lexically per directory; each entry has absolute path, relative_path, kind, and size (nil if unavailable for that kind). Depth 1 means root's immediate children. Do not silently truncate: exceeding either limit raises FsLimitError. Filesystem disappearance/permission errors raise FsError. Following links is opt-in and uses directory identity to detect cycles; it may visit targets outside root and is not a confinement primitive.
 
 Close directory handles on normal exhaustion, early Stream close, and error. Bound one directory's materialized sort list and total traversal stack. Document that a blocking filesystem scan can stall its calling lane; service code uses an explicit worker adapter after IO-2. A synchronous generator does not make OS calls nonblocking.
 
@@ -44,14 +44,14 @@ Close directory handles on normal exhaustion, early Stream close, and error. Bou
 
 Pin the dialect to [RFC 4180](https://www.rfc-editor.org/info/rfc4180/) quoting, accepting CRLF and LF record endings. Default comma delimiter and doubled double-quote escaping. Only one ASCII non-newline delimiter is accepted. Strict UTF-8; consume one UTF-8 BOM only at the start. Preserve whitespace and embedded quoted newlines. Empty input yields zero records; a blank line is one empty field. EOF may terminate the last record without a newline.
 
-- `($csv/parse_rows text ^headers false)` returns a List for inputs up to 16 MiB.
+- `($csv/parse_rows text ^!headers)` returns a List for inputs up to 16 MiB.
 - With headers false, rows are Lists of Str. With headers true, the first row names property-map fields; duplicate/empty headers and mismatched row widths fail. Fields stay strings: no implicit numeric, nil, or void conversion.
 - `($csv/encode_row fields)` accepts a List of Str and returns Bytes with CRLF. No invented nil spelling; callers explicitly convert values.
 - Limits: `^max_field_bytes` defaults to 1 MiB, `^max_record_bytes` to 8 MiB, `^max_columns` to 4,096, and convenience-call `^max_bytes` to 16 MiB. Allow positive caller overrides within an explicit deployment budget. The incremental reader accepts the same record limits. Errors report byte offset and record/field indices.
 
 The engine consumes bounded Bytes chunks with incremental UTF-8 decoding and retains only the current incomplete record plus unconsumed chunk. Test splitting at every quote, CRLF, and multibyte boundary. It stops parsing when the consumer has no capacity; a feed call cannot accumulate all rows in a large chunk.
 
-APP-2 adds `($csv/reader byte_reader ^headers false ^own_reader false)`. Its concrete `.next` returns a fresh Task yielding one row or nil at EOF; it implements IoResource for close/wait_closed and calls qualified AsyncReader methods internally. One next may be pending. Close cancels its own pending read and closes the upstream only with own_reader true. The caller must give this wrapper exclusive read use until it closes. Existing synchronous Streams remain synchronous; do not await inside a Stream pull. A bounded Str/List convenience API and this adapter share the same parser and row rules.
+APP-2 adds `($csv/reader byte_reader ^!headers ^!own_reader)`. Its concrete `.next` returns a fresh Task yielding one row or nil at EOF; it implements IoResource for close/wait_closed and calls qualified AsyncReader methods internally. One next may be pending. Close cancels its own pending read and closes the upstream only with own_reader true. The caller must give this wrapper exclusive read use until it closes. Existing synchronous Streams remain synchronous; do not await inside a Stream pull. A bounded Str/List convenience API and this adapter share the same parser and row rules.
 
 ## APP-3: temporal arithmetic and tzdb
 

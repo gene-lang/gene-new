@@ -48,24 +48,24 @@
   (require_event_fields payload ["type" "turn"] "turn_start"))
 
 (var core_event_types
-  #[#{^name "lifecycle" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_text_event}
-    #{^name "trace" ^version 1 ^ignorable true ^origin "core" ^owner "core" ^schema validate_text_event}
-    #{^name "turn/start" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_start_event}
-    #{^name "turn/end" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_end_event}
-    #{^name "composition/changed" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_composition_changed_event}
-    #{^name "plugin/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_plugin_state_event}
-    #{^name "session/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "round/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "question/asked" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "question/answered" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "model/request" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_model_request_event}
-    #{^name "model/result" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_model_result_event}
-    #{^name "turn/response" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_response_event}
-    #{^name "turn/patch" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_patch_event}
-    #{^name "turn/request" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_turn_request_event}
-    #{^name "reply" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_reply_event}
-    #{^name "console" ^version 1 ^ignorable true ^origin "core" ^owner "core" ^schema validate_console_event}
-    #{^name "command" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "trigger/state" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "trigger/occurrence" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}
-    #{^name "history/summary" ^version 1 ^ignorable false ^origin "core" ^owner "core" ^schema validate_core_state_event}])
+  #[#{^name "lifecycle" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_text_event}
+    #{^name "trace" ^version 1 ^^ignorable ^origin "core" ^owner "core" ^schema validate_text_event}
+    #{^name "turn/start" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_turn_start_event}
+    #{^name "turn/end" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_turn_end_event}
+    #{^name "composition/changed" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_composition_changed_event}
+    #{^name "plugin/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_plugin_state_event}
+    #{^name "session/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "round/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "question/asked" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "question/answered" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "model/request" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_model_request_event}
+    #{^name "model/result" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_model_result_event}
+    #{^name "turn/response" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_turn_response_event}
+    #{^name "turn/patch" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_turn_patch_event}
+    #{^name "turn/request" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_turn_request_event}
+    #{^name "reply" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_reply_event}
+    #{^name "console" ^version 1 ^^ignorable ^origin "core" ^owner "core" ^schema validate_console_event}
+    #{^name "command" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "trigger/state" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "trigger/occurrence" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}
+    #{^name "history/summary" ^version 1 ^!ignorable ^origin "core" ^owner "core" ^schema validate_core_state_event}])

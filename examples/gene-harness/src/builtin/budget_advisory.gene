@@ -18,7 +18,7 @@
               ^value ($to_str "This is turn " context/round_turn " of "
                 context/limit " in this round; " remaining
                 " turns remain after this response. Prioritize implementation and verification; finish with Outcome when complete.")
-              ^settled false})
+              ^!settled})
            (next {^session context/session ^round context/round
                   ^turn context/turn ^round_turn context/round_turn
                   ^limit context/limit

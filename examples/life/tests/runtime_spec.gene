@@ -6,7 +6,7 @@
 
 (fn fresh [decisions = nil]
   (let name (p/id "life"))
-  (runtime/open_life $"examples/life/tmp/${name}" ^create true
+  (runtime/open_life $"examples/life/tmp/${name}" ^^create
     ^clock (fn [] 1000) ^decisions (?? decisions [])))
 (fn decide [host, source, note = "Test decision"]
   (host/decisions/.get .push (brain/response note source))
@@ -157,7 +157,7 @@
     (let started ($cell false))
     (let release ($cell false))
     (let name (p/id "controlled"))
-    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true ^clock (fn [] 1000)
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create ^clock (fn [] 1000)
       ^brain (fn [snapshot]
         (started .set true)
         (while (! release/.get) ($sleep 5))
@@ -208,7 +208,7 @@
   (it "sends delayed code to its saved conversation, cancels owned work, and expires late code" []
     (let now ($cell 1000))
     (let name (p/id "scheduled"))
-    (let host (runtime/open_life $"examples/life/tmp/${name}" ^create true
+    (let host (runtime/open_life $"examples/life/tmp/${name}" ^^create
       ^clock (fn [] now/.get) ^decisions [(brain/response "Quiet" "nil")]))
     (try
       (runtime/settle host)

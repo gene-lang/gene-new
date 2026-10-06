@@ -109,11 +109,11 @@
   (var n ($size chars))
   (if_yes (&& (>= n 2) (== chars/1 " ")
               (|| (== chars/0 "-") (== chars/0 "*") (== chars/0 "+")))
-    (return {^ordered false ^text (slice_text chars 2 n)}))
+    (return {^!ordered ^text (slice_text chars 2 n)}))
   (var i 0)
   (while (&& (< i n) (str/contains? "0123456789" chars/%i)) (set i (+ i 1)))
   (if_yes (&& (> i 0) (< (+ i 1) n) (== chars/%i ".") (== (text_at chars (+ i 1)) " "))
-    (return {^ordered true ^text (slice_text chars (+ i 2) n)}))
+    (return {^^ordered ^text (slice_text chars (+ i 2) n)}))
   nil)
 
 (fn markdown_view [text : Str] : EventTarget

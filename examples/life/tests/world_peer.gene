@@ -15,23 +15,23 @@
    ^participant_id $"participant-${life_id}" ^entity_id $"avatar-${life_id}"
    ^stream_id $"events-participant-${life_id}" ^rules_revision "rules-test"
    ^epoch 0 ^generation 0 ^events [] ^ops {} ^actions {} ^next_action 1 ^revision 1
-   ^can_holder nil ^connection nil ^down false ^inbound [] ^applied 0
-   ^drop_receipts 0 ^unknown_status false ^replay_from nil ^skip_next_seq false
-   ^refuse_credential false})
+   ^can_holder nil ^connection nil ^!down ^inbound [] ^applied 0
+   ^drop_receipts 0 ^!unknown_status ^replay_from nil ^!skip_next_seq
+   ^!refuse_credential})
 
 # --- transport ---------------------------------------------------------------------
 
 (fn transport [peer]
   {^open (fn [endpoint]
      (if (peer .get "down") (fail "connection refused"))
-     (let connection {^out [] ^open true ^ready false})
+     (let connection {^out [] ^^open ^!ready})
      (let previous (peer .get "connection"))
      (if_not ($absent? previous) (previous .put "open" false))
      (peer .put "connection" connection)
      connection)
    ^send (fn [connection text]
      (if_not connection/open (fail "socket closed"))
-     (receive_from peer connection ($json/parse text ^strict true)))
+     (receive_from peer connection ($json/parse text ^^strict)))
    ^receive (fn [connection]
      (if_not connection/open (fail "peer closed the WebSocket"))
      (if (== connection/out/.size 0) (return nil))
@@ -77,7 +77,7 @@
                             ^core/label {^schema 1 ^text "Tester"}}}]
    ^places {^garden {^label "The garden beds" ^cell {^x 28 ^z 7}}}
    ^actions (open_actions peer)
-   ^receipts {^items [] ^through_seq "0" ^from_seq "1" ^complete true}})
+   ^receipts {^items [] ^through_seq "0" ^from_seq "1" ^^complete}})
 
 (fn open_actions [peer]
   (let out [])
@@ -156,7 +156,7 @@
     ^entity_id (peer .get "entity_id") ^control_generation (str (peer .get "generation"))
     ^stream_id (peer .get "stream_id") ^rules_revision (peer .get "rules_revision")
     ^features {^core {^version 1}} ^catalogue [{^operation "movement.walk_to" ^contract_version 1}]
-    ^sync_required true})
+    ^^sync_required})
   (let events (peer .get "events"))
   (let cut events/.size)
   (let resume (?? message/resume/after_event_seq "0"))
@@ -202,7 +202,7 @@
               ^world_revision (str (bump_revision peer)) ^rules_revision (peer .get "rules_revision")}})
   (let staged [])
   (for event in (?? outcome/events [])
-    (staged .push (emit peer event/type event/payload ^operation_id event/operation_id ^deliver false)))
+    (staged .push (emit peer event/type event/payload ^operation_id event/operation_id ^!deliver)))
   # A committed operation whose reply is lost with its connection (§10.4):
   # replay after reconnecting supplies its events; a query, its receipt.
   (if_yes (> (peer .get "drop_receipts") 0)
@@ -267,7 +267,7 @@
       (let ops (peer .get "ops"))
       (let found (ops .get target))
       (if_yes (|| ($absent? found) (== found void))
-        (ops .put target {^tombstone true ^fingerprint input/fingerprint ^semantic nil
+        (ops .put target {^^tombstone ^fingerprint input/fingerprint ^semantic nil
           ^receipt {^world_id (peer .get "world_id") ^history_id (peer .get "history_id")
                     ^operation_id target ^admission "cancelled" ^reason "cancelled_before_admission"}})
         (return {^admission "accepted" ^action_status "completed" ^result {^outcome "tombstoned"}}))

@@ -33,7 +33,7 @@ key”.
 - Successful validation clears the marker; failures run ordinary ensure/error
   unwinding without publishing the partial value.
 - Single nominal inheritance preserves parent field schemas. Type-direct
-  overrides require literal `^override true` (or `^^override`) on the message
+  overrides require literal `^^override` (or `^^override`) on the message
   and preserve the inherited callable signature exactly in the MVP. The flag
   on a message without an inherited target is an error.
   Type-position `Self` binds to the declaring receiver's identity and is

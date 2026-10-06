@@ -64,7 +64,7 @@
       (try
         (set plan (prepare_patch workspace_root response/patch))
         catch Any
-          (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^attention false})))
+          (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention})))
     # Durability precedes staging. The caller records body stubs/blob refs.
     (if_not ($absent? record)
       (record "turn/response" {^turn number ^response response
@@ -101,7 +101,7 @@
                 (do ($sleep timeout_ms) (expired .set true) task/.cancel)))
               (try task/.join
                 ensure deadline/.cancel deadline/.join)))
-            (match outcome ^exhaustive false
+            (match outcome ^!exhaustive
               (when (TaskOutcome/ok value) (set validated (validate_outcome turn value ^validators validators)))
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/message))

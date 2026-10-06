@@ -594,7 +594,7 @@ The adapter owns authentication, image transport, bounded retries, timeouts, and
   ^image "sha256:IMAGE_DIGEST"
   ^goal "goal-01"
   ^render_profile "inkscape-pdf-poppler/v1"
-  ^structural_valid true
+  ^^structural_valid
   (check ^requirement "subject" ^result "pass"
     ^evidence "One sitting cat is visible in the foreground.")
   (check ^requirement "window" ^result "pass"

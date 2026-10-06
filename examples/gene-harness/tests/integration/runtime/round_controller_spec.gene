@@ -14,8 +14,8 @@
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace")
 
 (fn attempt [controller, id]
-  (try {^accepted true ^receipt (submit_round controller "race" id 1 "ask")}
-    catch RoundError {^accepted false ^code $err/code}))
+  (try {^^accepted ^receipt (submit_round controller "race" id 1 "ask")}
+    catch RoundError {^!accepted ^code $err/code}))
 
 (describe "Harness rounds"
   (it "refuses busy sessions while allowing independent rounds and cancellation" []
@@ -30,7 +30,7 @@
               (if_yes (== request/session "slow")
                 (entered .set true)
                 ($sleep 5000))
-              "(Outcome ^done true ^reply \"done\")")))
+              "(Outcome ^^done ^reply \"done\")")))
         (try
           (create_session ^id "slow" runtime/sessions)
           (create_session ^id "fast" runtime/sessions)
@@ -83,7 +83,7 @@
         (let controller (test_controller runtime (fn [request]
           (let n (calls .swap (+ calls/.get 1)))
           (if (== n 0) "(Outcome ^questions [{^id \"q\" ^prompt \"Answer?\"}])"
-            "(Outcome ^done true ^reply \"answered\")"))))
+            "(Outcome ^^done ^reply \"answered\")"))))
         (try
           (create_session runtime/sessions ^id "race")
           (append_message runtime "race" "user" "stored before the first load")
@@ -115,7 +115,7 @@
             (if (== event/type "turn/start") (set starts (+ starts 1))))
           ($assert (== starts 2) "concurrent admission wrote duplicate turn starts")
           (create_session runtime/sessions ^id "stop")
-          (set_test_provider runtime (fn [request] ($sleep 5000) "(Outcome ^done true ^reply \"late\")"))
+          (set_test_provider runtime (fn [request] ($sleep 5000) "(Outcome ^^done ^reply \"late\")"))
           (let slow (submit_round controller "stop" "stop" 1 "wait"))
           (request_stop controller "stop" 0 true)
           (controller/watchers .get; .get "stop"; .join)
@@ -164,7 +164,7 @@
     (isolated this_mod/.path "refuses a round missing instructions or its selected provider"
       (fn [workspace]
         (let runtime (open_runtime workspace "default"
-          (scripted_profile ["(Outcome ^done true ^reply \"ready\")"])))
+          (scripted_profile ["(Outcome ^^done ^reply \"ready\")"])))
         (let controller (new_round_controller runtime))
         (try
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" false)
@@ -212,7 +212,7 @@
         (let runtime (open_runtime workspace "default"
           (scripted_profile [
             "(disable_plugin \"provider_scripted\") (Outcome ^prompt \"continue\")"
-            "(Outcome ^done true ^reply \"should not run\")"])))
+            "(Outcome ^^done ^reply \"should not run\")"])))
         (let controller (new_round_controller runtime))
         (try
           (let accepted (submit_round controller "default" "first" 1 "go"))

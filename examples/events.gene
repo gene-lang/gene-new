@@ -11,7 +11,7 @@
 #
 # Conventions:
 #   ($event/Bus)              a new bus; ^error_policy and ^nesting_limit
-#   (bus .subscribe sel h)   returns an event/Subscription; ^once true
+#   (bus .subscribe sel h)   returns an event/Subscription; ^^once
 #   (bus .publish event)     returns event/PublishResult
 #   bus/.close                cancel every subscription, release handlers
 #   sub/.cancel               explicit, idempotent
@@ -174,7 +174,7 @@ union_sub/.cancel
   ($println "   warming cache (once)"))
 
 (var ready_bus ($event/Bus))
-(ready_bus .subscribe ApplicationReady warm_cache ^once true)
+(ready_bus .subscribe ApplicationReady warm_cache ^^once)
 (ready_bus .publish (ApplicationReady))
 (ready_bus .publish (ApplicationReady))
 ($println $"   after two publishes, subscriptions left: ${ready_bus/.subscription_count}")

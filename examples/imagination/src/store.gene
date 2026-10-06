@@ -150,7 +150,7 @@
 
 (fn remove_tree [path : Str] : Nil
   (if_not ($fs/exists? path) (return nil))
-  (let info ($fs/info path ^follow false))
+  (let info ($fs/info path ^!follow))
   (if_yes (== info/kind "directory")
     (for name in ($fs/list_dir path) (remove_tree ($path/join path name))))
   ($fs/remove path)

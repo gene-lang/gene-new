@@ -5,7 +5,7 @@
 (const response_format """
 Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
 Start with a # goal comment and comment each step for your future self.
-The last value is the outcome. (Outcome ^done true ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
+The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
 (Outcome ^prompt value ^reply "optional progress") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
 (append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}]) waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
@@ -15,7 +15,7 @@ Use (recall "N.label") for elided bodies.
 Each round has a turn budget, shown in the latest request as [harness_budget]. Plan exploration, implementation and verification within it. A continuation message starts another round with the existing files and history.
 
 # Finish
-(Outcome ^done true ^reply "Finished.")
+(Outcome ^^done ^reply "Finished.")
 # Inspect and continue
 (append_prompt "files" ($fs/list_dir workspace_root))
 (Outcome ^prompt "Review the files above.")
@@ -23,7 +23,7 @@ Each round has a turn budget, shown in the latest request as [harness_budget]. P
 (Outcome ^questions [{^id "db" ^prompt "Which database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}])
 # Create from a raw attachment
 ($fs/write_text "report.txt" (attachment "report"))
-(Outcome ^done true ^reply "Report written.")
+(Outcome ^^done ^reply "Report written.")
 # After a patch block, run verification
 (append_prompt "tests" ($os/exec "gene" "test"))
 (Outcome ^prompt "Inspect the test result.")

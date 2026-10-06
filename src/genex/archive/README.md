@@ -29,7 +29,7 @@ return also waits for this cleanup obligation if the Task was not awaited.
 The Task returns the verified entry count; if cancellation arrives after the
 exclusive rename, the complete destination and success result win.
 
-`gzip_reader source ^own_reader false` and `gzip_writer sink ^own_writer false`
+`gzip_reader source ^!own_reader` and `gzip_writer sink ^!own_writer`
 implement the standard qualified I/O protocols. The reader accepts multiple
 gzip members and verifies end-of-stream; the writer distinguishes `.flush`
 from `.finish`, and `IoResource:close` aborts without producing a false

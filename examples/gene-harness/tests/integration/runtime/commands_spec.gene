@@ -35,7 +35,7 @@
             runtime
             (fn [request]
               (seen .set request/messages)
-              "(Outcome ^done true ^reply \"done\")")))
+              "(Outcome ^^done ^reply \"done\")")))
         (try
           (let parsed
             (parse_submission
@@ -186,7 +186,7 @@ three""")
           ($fs/write_text "file:123" "literal\n")
           ($assert (== (/display (command runtime "/view file:123")) "literal") "existing numeric-colon filename was parsed as a range")
           (let channel ($channel ^capacity 4))
-          (let process ($os/exec_stream_async "/bin/sh" "-c" "printf 'out\\n'; printf 'err\\n' >&2" ^stdout_chan channel ^merge_stderr true))
+          (let process ($os/exec_stream_async "/bin/sh" "-c" "printf 'out\\n'; printf 'err\\n' >&2" ^stdout_chan channel ^^merge_stderr))
           (let lines [])
           (try (loop (lines .push channel/.recv)) catch ChannelClosed nil)
           (let result (await process))

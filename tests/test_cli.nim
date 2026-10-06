@@ -631,7 +631,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (var screen (open))
 (try
   (do
-    (var input (read_input screen ^prompt "" ^multiline true))
+    (var input (read_input screen ^prompt "" ^^multiline))
     (close screen)
     ($println $"CURSES-PASTE:${input}"))
   ensure
@@ -677,7 +677,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
                   ^history ["first command" "second command"]))
     (close screen)
     ($println $"CURSES-HISTORY:${input}"))
@@ -721,7 +721,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "MAIN-TRANSCRIPT"
         ^panes [{^title "ext 1" ^output "EXTENSION-ONE\nready"}
                 {^title "ext 2" ^output "EXTENSION-TWO\ndone"}]))
@@ -767,7 +767,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "MAIN-TRANSCRIPT"
         ^panes [{^title "ext"
                  ^output "PANE-SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nPANE-SCROLL-BOTTOM"
@@ -811,10 +811,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "MAIN-HIDDEN"
         ^panes [{^title "shell" ^output "FOCUSED-NARROW"
-                 ^focused true}]))
+                 ^^focused}]))
     (close screen)
     ($println $"CURSES-FOCUSED:${input}"))
   ensure
@@ -856,7 +856,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     (while (! found)
       ($sleep 25)
       (set found (escape_pressed? screen)))
-    (var input (read_input screen ^prompt "" ^multiline true
+    (var input (read_input screen ^prompt "" ^^multiline
                            ^history ["old "]))
     (close screen)
     ($println $"CURSES-ESCAPE:${found}:${input}"))
@@ -963,7 +963,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nSCROLL-BOTTOM"))
     (close screen)
     ($println $"CURSES-SCROLL:${input}"))
@@ -1004,7 +1004,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "MOUSE-SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nMOUSE-SCROLL-BOTTOM"))
     (close screen)
     ($println $"CURSES-MOUSE-SCROLL:${input}"))
@@ -1051,7 +1051,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (try
   (do
     (var input
-      (read_input screen ^prompt "" ^multiline true
+      (read_input screen ^prompt "" ^^multiline
         ^output "assistant|WRAP-BEGIN alpha beta gamma delta epsilon zeta eta theta WRAP-END"))
     (close screen)
     ($println $"CURSES-WRAP:${input}"))
@@ -1823,7 +1823,7 @@ suite "cli — gene parse/fmt/compile":
   (ctor [start] ($println "COUNTER-CTOR-RAN") (self .set_prop `n start)))
 (type Conn ^props {^host Str ^live Bool}
   (message serde_state [self] {^host self/host})
-  (message serde_restore [state] (Conn ^host state/host ^live true)))
+  (message serde_restore [state] (Conn ^host state/host ^^live)))
 (type Handle ^repr native_wrapper ^props {^host Str}
   (ctor [host : Str] (set self/host host))
   (message serde_state [self] {^host self/host})
@@ -1876,19 +1876,19 @@ suite "cli — gene parse/fmt/compile":
 (var c2 (read (write c)))
 (check "inst-no-ctor" (&& (== c c2) (== 7 c2/n)))
 # stage 5: Serde hooks behind ^allow_restore
-(var conn (Conn ^host "db" ^live false))
+(var conn (Conn ^host "db" ^!live))
 (var ht (write conn))
 (check "hooked-form" (&& (contains? ht "serde_hooked") (! (contains? ht "live"))))
 (check "hooked-no-allow"
   (try (do (read ht) false) catch SerdeError (contains? $err/message "allow_restore")))
-(var conn2 (read ht ^policy (SerdePolicy ^allow_restore true)))
+(var conn2 (read ht ^policy (SerdePolicy ^^allow_restore)))
 (check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
 # native wrappers (design §16.6): reopened by their own restore hook, never
 # reconstructed as data — and a blob can never forge one
 (var handle (new Handle "db"))
 (var wt (write handle))
 (check "wrapper-hooked-form" (contains? wt "serde_hooked"))
-(var handle2 (read wt ^policy (SerdePolicy ^allow_restore true)))
+(var handle2 (read wt ^policy (SerdePolicy ^^allow_restore)))
 (check "wrapper-hooked-restore" (== "db" handle2/host))
 (check "wrapper-no-hook-reject"
   (try (do (write (new Opaque "db")) false)
@@ -2789,7 +2789,7 @@ suite "cli — gene pkg (docs/workflows.md)":
  ^workspace {^members ["packages/*"]}
  ^applications [(application "app" ^entry "src/main.gene")]
  ^dependencies {
-   ^tool (dep "acme/tool" "1.0.0" ^workspace true)}}
+   ^tool (dep "acme/tool" "1.0.0" ^^workspace)}}
 """)
     writePkgFile(root / "app/src/main.gene", "(fn main [] 0)")
     writePkgFile(root / "app/packages/tool/package.gene", """

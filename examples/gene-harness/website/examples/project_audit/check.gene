@@ -62,7 +62,7 @@
   (var commands (fixture_data "commands.gene"))
   (var summary ($str/trim (fixture "expected/summary.gene")))
 
-  (var build (open_runtime home "website_check_build" (browser_profile ^offline true)
+  (var build (open_runtime home "website_check_build" (browser_profile ^^offline)
     ^project_root project))
   (try
     (var registered (register_plugin build/workspace build/h "project_audit"
@@ -80,7 +80,7 @@
     (expect "last after the failure" (tool_result build/h commands/last) summary)
   ensure (close_runtime build))
 
-  (var fresh (open_runtime home "website_check_fresh" (browser_profile ^offline true)
+  (var fresh (open_runtime home "website_check_fresh" (browser_profile ^^offline)
     ^project_root project))
   (try
     (expect "last in a new conversation" (tool_result fresh/h commands/last) summary)

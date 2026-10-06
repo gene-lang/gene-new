@@ -378,7 +378,7 @@ suite "errors — static catch or declare":
 
   test "macro-local callable bindings do not replace caller error contracts":
     let setup = "(type HiddenError ^props {^message Str}) (impl Error for HiddenError) " &
-      "(fn risky ^private true [] ^errors [HiddenError] (fail (HiddenError ^message \"bad\"))) " &
+      "(fn risky ^^private [] ^errors [HiddenError] (fail (HiddenError ^message \"bad\"))) " &
       "(macro locally [] `(do (let risky (fn [] nil)) nil)) "
     expect GeneError:
       discard strictErrorCompile(setup & "(fn bad [] ^errors [] (locally) (risky))")
@@ -395,16 +395,16 @@ suite "errors — static catch or declare":
 
   test "strict public functions require explicit rows while private helpers infer":
     expect GeneError: discard strictErrorCompile("(fn public [] 1)")
-    discard strictErrorCompile("(fn helper ^private true [] 1) " &
+    discard strictErrorCompile("(fn helper ^^private [] 1) " &
       "(fn public [] ^errors [] (helper))")
 
   test "strict checking follows unannotated helper chains":
     let helpers = """
       (type ConfigError ^props {^message Str})
       (impl Error for ConfigError)
-      (fn decode ^private true [bad : Bool] : Str
+      (fn decode ^^private [bad : Bool] : Str
         (if bad (fail (ConfigError ^message "bad")) "ready"))
-      (fn load_config ^private true [bad : Bool] : Str (decode bad))
+      (fn load_config ^^private [bad : Bool] : Str (decode bad))
     """
     try:
       discard strictErrorCompile(helpers & "(fn start [bad : Bool] ^errors [] (load_config bad))")
@@ -446,7 +446,7 @@ suite "errors — static catch or declare":
       "(try (callback) catch Known \"handled\"))")
 
   test "recovery and cleanup introduce their own errors":
-    let helper = "(fn failure ^private true [] ($assert false)) "
+    let helper = "(fn failure ^^private [] ($assert false)) "
     for expression in ["(try (failure) catch Error ($assert false))",
                        "(try (failure) catch Error nil ensure ($assert false))"]:
       expect GeneError:
@@ -560,9 +560,9 @@ suite "errors — static catch or declare":
 
   test "recursive inference converges without hiding an error":
     let source = """
-      (fn left ^private true [n : Int]
+      (fn left ^^private [n : Int]
         (if (== n 0) ($assert false) (right (- n 1))))
-      (fn right ^private true [n : Int] (left n))
+      (fn right ^^private [n : Int] (left n))
     """
     expect GeneError:
       discard strictErrorCompile(source & "(fn start [] ^errors [] (left 3))")
@@ -602,13 +602,13 @@ suite "errors — static catch or declare":
     expect GeneError:
       discard strictErrorCompile("(later) (fn later [] ^errors [] 1)")
     expect GeneError:
-      discard strictErrorCompile("(fn first ^private true [] (later)) " &
-        "(first) (fn later ^private true [] 1)")
+      discard strictErrorCompile("(fn first ^^private [] (later)) " &
+        "(first) (fn later ^^private [] 1)")
     expect GeneError:
-      discard strictErrorCompile("(fn first ^private true [] (later/helper)) " &
+      discard strictErrorCompile("(fn first ^^private [] (later/helper)) " &
         "(first) (ns later (fn helper [] ^errors [] 1))")
-    discard strictErrorCompile("(fn first ^private true [] 1) (first)")
-    discard strictErrorCompile("(fn first ^private true [] 1) (let result (first))")
+    discard strictErrorCompile("(fn first ^^private [] 1) (first)")
+    discard strictErrorCompile("(fn first ^^private [] 1) (let result (first))")
 
   test "public message and constructor contracts are explicit":
     expect GeneError:
@@ -825,7 +825,7 @@ suite "errors — module summaries":
     writeFile(root / "dep.gene", """
       (type ConfigError ^props {^message Str})
       (impl Error for ConfigError)
-      (fn decode ^private true [] (fail (ConfigError ^message "dependency")))
+      (fn decode ^^private [] (fail (ConfigError ^message "dependency")))
       (fn load [] (decode))
     """)
     writeFile(root / "good.gene", """
@@ -968,7 +968,7 @@ suite "errors — module summaries":
     writeFile(root / "renamed_client.gene", """
       (mod renamed ^errors_mode strict)
       (import [Original : Expected produce] ^from "./renamed_provider.gene")
-      (fn helper ^private true [] (produce))
+      (fn helper ^^private [] (produce))
       (fn run [] : Str ^errors []
         (try (helper) "wrong" catch Expected $err_msg))
     """)
@@ -986,7 +986,7 @@ suite "errors — module summaries":
       (type Base ^props {} (message same [] : Self ^errors [] self))
       (type Child : Base ^props {})
       (fn ready [] : Bool ^errors [] (not false))
-      (fn factory ^private true [] (fn [] ^errors [] 1))
+      (fn factory ^^private [] (fn [] ^errors [] 1))
       (fn client [] ^errors [] ((factory)))
       (fn native_factory [] ^errors [] $assert)
       (fn type_factory [] ^errors [] Child)
@@ -1090,18 +1090,18 @@ suite "errors — retained strict assumptions":
     for expression in ["(+ (factory) 1)", "($into (factory) [])"]:
       expect GeneError:
         discard strictErrorCompile("""
-          (fn factory ^private true [] 1)
+          (fn factory ^^private [] 1)
           (fn client [] ^errors [] EXPRESSION)
         """.replace("EXPRESSION", expression))
     expect GeneError:
       discard strictErrorCompile("""
-        (fn factory ^private true [] [1])
+        (fn factory ^^private [] [1])
         (fn client [] ^errors [] ($into (factory) []))
       """)
     let app = newApplication()
     let scope = newGlobalScope(app)
     check run(strictErrorCompile("""
-      (fn factory ^private true [] : Int 1)
+      (fn factory ^^private [] : Int 1)
       (fn client [] ^errors [] (+ (factory) 1))
       (client)
     """), scope).intVal == 2
@@ -1113,7 +1113,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] $assert)
+      (fn factory ^^private [] $assert)
       (fn client [] ^errors []
         (try ((factory) true) catch AssertionError nil))
     """), scope)
@@ -1134,7 +1134,7 @@ suite "errors — retained strict assumptions":
     discard run(strictErrorCompile("""
       (type Item ^props {})
       (type Other ^props {})
-      (fn factory ^private true [] Item)
+      (fn factory ^^private [] Item)
       (fn client [] ^errors [] ((factory)))
     """), scope)
     let instance = run(compileSource("(client)"), scope)
@@ -1151,7 +1151,7 @@ suite "errors — retained strict assumptions":
       check run(strictErrorCompile("""
         (type Base ^props {} (message value [] : Int ^errors [] 7))
         (type Other ^props {})
-        (fn factory ^private true [] (type Local : Base ^props {}) Local)
+        (fn factory ^^private [] (type Local : Base ^props {}) Local)
         (fn client [] ^errors [] ((factory)))
         (client)
       """), scope).head.typeName == "Local"
@@ -1167,7 +1167,7 @@ suite "errors — retained strict assumptions":
       (protocol P (message value [] : Int ^errors []))
       (type Item ^props {})
       (impl P for Item (message value [] : Int ^errors [] 7))
-      (fn factory ^private true [] P:value)
+      (fn factory ^^private [] P:value)
       (fn client [] ^errors [MessageError] ((factory) (Item)))
       (fn saved [] ^errors [MessageError] (let held (factory)) (held (Item)))
       (fn sent [] ^errors [MessageError] (let held (factory)) ((Item) .%held))
@@ -1192,7 +1192,7 @@ suite "errors — retained strict assumptions":
         (fn invalid [] ^errors [] (let held P:value) (held 1))
       """)
     check run(strictErrorCompile("""
-      (fn factory ^private true [] Error:message)
+      (fn factory ^^private [] Error:message)
       (fn text [error : Error] : Str ^errors [MessageError] ((factory) error))
       (try (text (AssertionError ^message "bound error")) catch MessageError "wrong")
     """), newGlobalScope(newApplication())).strVal == "bound error"
@@ -1201,7 +1201,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] (fn [] ^errors [] 1))
+      (fn factory ^^private [] (fn [] ^errors [] 1))
       (fn client [] ^errors [] ((factory)))
     """), scope)
     let broader = run(compileSource("""
@@ -1224,9 +1224,9 @@ suite "errors — retained strict assumptions":
       let app = newApplication()
       let scope = newGlobalScope(app)
       discard run(strictErrorCompile("""
-        (fn callback ^private true [] 1)
-        (fn helper ^private true [] (fn [] ^errors [] 1))
-        (fn factory ^private true [] BODY)
+        (fn callback ^^private [] 1)
+        (fn helper ^^private [] (fn [] ^errors [] 1))
+        (fn factory ^^private [] BODY)
         (fn client [] ^errors [] ((factory)))
       """.replace("BODY", body)), scope)
       let widerHelper = run(strictErrorCompile("""
@@ -1247,7 +1247,7 @@ suite "errors — retained strict assumptions":
       let initial = if kind == "task": "(spawn 1)" else: "($to_stream [1])"
       let consume = if kind == "task": "(await (factory))" else: "($into (factory) [])"
       discard run(strictErrorCompile("""
-        (fn factory ^private true [] INITIAL)
+        (fn factory ^^private [] INITIAL)
         (fn client [] ^errors [] CONSUME)
       """.replace("INITIAL", initial).replace("CONSUME", consume)), scope)
       let changed = if kind == "task": "(spawn ($assert false))"
@@ -1260,7 +1260,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] (spawn 1))
+      (fn factory ^^private [] (spawn 1))
       (fn client [] ^errors [] (await (factory)))
     """), scope)
     let replacement = run(strictErrorCompile("""
@@ -1273,8 +1273,8 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn helper ^private true [] (spawn 1))
-      (fn factory ^private true [] (helper))
+      (fn helper ^^private [] (spawn 1))
+      (fn factory ^^private [] (helper))
       (fn client [] ^errors [] (await (factory)))
     """), scope)
     let replacement = run(strictErrorCompile("""
@@ -1289,9 +1289,9 @@ suite "errors — retained strict assumptions":
       let app = newApplication()
       let scope = newGlobalScope(app)
       discard run(strictErrorCompile("""
-        (fn factory ^private true [] ($to_stream [1]))
-        (fn callback ^private true [value] value)
-        (fn forward ^private true [] ($map (factory) callback))
+        (fn factory ^^private [] ($to_stream [1]))
+        (fn callback ^^private [value] value)
+        (fn forward ^^private [] ($map (factory) callback))
         (fn client [] ^errors [] ($into SOURCE []))
       """.replace("SOURCE", wrap)), scope)
       let broader = run(compileSource("(fn [value] ^errors [AssertionError] ($assert false))"),
@@ -1308,7 +1308,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] ($to_stream [1]))
+      (fn factory ^^private [] ($to_stream [1]))
       (fn callback [value] ^errors [AssertionError] ($assert false))
       (fn ignore [] ^errors [] ($map ($map (factory) callback) callback) nil)
     """), scope)
@@ -1325,12 +1325,12 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] (fn [] ^errors [] 1))
+      (fn factory ^^private [] (fn [] ^errors [] 1))
       (fn client [] ^errors [] ((factory)))
     """), scope)
     let replacementScope = newGlobalScope(app)
     let replacement = run(strictErrorCompile("""
-      (fn callback ^private true [] 2)
+      (fn callback ^^private [] 2)
       (fn [] callback)
     """), replacementScope)
     scope.assign("factory", replacement)
@@ -1339,7 +1339,7 @@ suite "errors — retained strict assumptions":
     expect GeneError: replacementScope.assign("callback", wider)
     check run(compileSource("(client)"), scope).intVal == 2
     let unguarded = run(compileSource("""
-      (fn callback ^private true [] 3)
+      (fn callback ^^private [] 3)
       (fn [] callback)
     """, errorsMode = "warn"), newGlobalScope(app))
     expect GeneError: scope.assign("factory", unguarded)
@@ -1348,7 +1348,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] (fn [] ^errors [] 1))
+      (fn factory ^^private [] (fn [] ^errors [] 1))
       (fn client [] ^errors [] (factory) 7)
     """), scope)
     let replacement = run(compileSource("""
@@ -1361,7 +1361,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] (fn [] ^errors [] (fn [] ^errors [] 1)))
+      (fn factory ^^private [] (fn [] ^errors [] (fn [] ^errors [] 1)))
       (fn client [] ^errors [] (((factory))))
     """), scope)
     let replacement = run(strictErrorCompile("""
@@ -1374,7 +1374,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true []
+      (fn factory ^^private []
         (fn [] : (Callable [] Any ^errors []) ^errors []
           (fn [] ^errors [] 1)))
       (fn client [] ^errors [] (((factory))))
@@ -1390,9 +1390,9 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn first ^private true [] ^errors [] 1)
-      (fn second ^private true [] ^errors [] 2)
-      (fn factory ^private true [flag : Bool] (if flag first second))
+      (fn first ^^private [] ^errors [] 1)
+      (fn second ^^private [] ^errors [] 2)
+      (fn factory ^^private [flag : Bool] (if flag first second))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
     let replacement = run(compileSource("(fn [] ^errors [AssertionError] ($assert false))"),
@@ -1404,7 +1404,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn factory ^private true [flag : Bool]
+      (fn factory ^^private [flag : Bool]
         (if flag (fn [] ^errors [] 1) (fn [] ^errors [] 2)))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
@@ -1420,7 +1420,7 @@ suite "errors — retained strict assumptions":
     let app = newApplication()
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
-      (fn callback ^private true [value] value)
+      (fn callback ^^private [value] value)
       (fn mapped [] ^errors [] ($map [1] callback))
     """), scope)
     let broader = run(compileSource("(fn [value] ^errors [AssertionError] ($assert false))"),
@@ -1688,7 +1688,7 @@ suite "errors — retained strict assumptions":
     writeFile(root / "model.gene", "(type Local ^props {^code Int})")
     writeFile(root / "provider.gene", """
       (import [Local] ^from "./model.gene")
-      (impl Error for Local ^export true
+      (impl Error for Local ^^export
         (message message [] : Str ^errors [] "old formatter"))
     """)
     let app = newApplication(root)
@@ -1701,7 +1701,7 @@ suite "errors — retained strict assumptions":
     scope.define("held", held)
     writeFile(root / "provider.gene", """
       (import [Local] ^from "./model.gene")
-      (impl Error for Local ^export true
+      (impl Error for Local ^^export
         (message message [] : Str ^errors [] "new formatter"))
     """)
     discard app.reloadFileModule(root / "provider.gene")
@@ -1748,7 +1748,7 @@ suite "errors — retained strict assumptions":
     """)
     writeFile(root / "provider.gene", """
       (import [P Item] ^from "./model.gene")
-      (impl P for Item ^export true (message value [] : Int ^errors [] 1))
+      (impl P for Item ^^export (message value [] : Int ^errors [] 1))
     """)
     writeFile(root / "client.gene", """
       (mod client ^errors_mode strict)
@@ -1762,7 +1762,7 @@ suite "errors — retained strict assumptions":
     check run(compileSource("(value (Item))", useLocalSlots = false), scope).intVal == 1
     writeFile(root / "provider.gene", """
       (import [P Item] ^from "./model.gene")
-      (impl P for Item ^export true (message value [] : Int ^errors [] 2))
+      (impl P for Item ^^export (message value [] : Int ^errors [] 2))
     """)
     discard app.reloadFileModule(root / "provider.gene")
     check run(compileSource("(value (Item))", useLocalSlots = false), scope).intVal == 2
@@ -1770,7 +1770,7 @@ suite "errors — retained strict assumptions":
   test "a replacement must preserve the returned callback's own contract":
     let scope = newGlobalScope(newApplication())
     discard run(strictErrorCompile("""
-      (fn factory ^private true [] : (Callable [] Int ^errors []) ^errors []
+      (fn factory ^^private [] : (Callable [] Int ^errors []) ^errors []
         (fn [] : Int ^errors [] 1))
       (fn client [] : Int ^errors [] ((factory)))
     """), scope)
@@ -1810,7 +1810,7 @@ suite "errors — retained strict assumptions":
         (type Second ^props {^message Str})
         (impl Error for Second)
         (alias Caught First)
-        (fn failer ^private true [] (fail (First ^message "original")))
+        (fn failer ^^private [] (fail (First ^message "original")))
         (fn client [] ^errors [] (try (failer) catch Caught 7))
       """), scope)
       let replacement = run(compileSource("Second"), scope)
@@ -1820,7 +1820,7 @@ suite "errors — retained strict assumptions":
   test "widening a live provider is rejected before its binding changes":
     let scope = newGlobalScope(newApplication())
     discard run(strictErrorCompile("""
-      (fn provider ^private true [] ^errors [] 1)
+      (fn provider ^^private [] ^errors [] 1)
       (fn client [] ^errors [] (provider))
     """), scope)
     let replacement = gradualErrorEval("(fn [] ^errors [AssertionError] ($assert false))")
@@ -1833,7 +1833,7 @@ suite "errors — retained strict assumptions":
   test "retained callable values keep their assumptions alive until released":
     let scope = newGlobalScope(newApplication())
     var declarationResult = run(strictErrorCompile("""
-      (fn provider ^private true [] ^errors [] 1)
+      (fn provider ^^private [] ^errors [] 1)
       (fn client [] ^errors [] (provider))
     """), scope)
     # A named function declaration is itself a value. Release the escaped
@@ -1851,9 +1851,9 @@ suite "errors — retained strict assumptions":
   test "strict recursion executes with forward dependency declarations":
     errorContractCheck """
       (mod recursive ^errors_mode strict)
-      (fn left ^private true [n : Int] ^errors [AssertionError]
+      (fn left ^^private [n : Int] ^errors [AssertionError]
         (if (== n 0) ($assert false) (right (- n 1))))
-      (fn right ^private true [n : Int] ^errors [AssertionError] (left n))
+      (fn right ^^private [n : Int] ^errors [AssertionError] (left n))
       (fn main [] ^errors [] (try (left 3) catch AssertionError 7))
       (main)
     """, "7"

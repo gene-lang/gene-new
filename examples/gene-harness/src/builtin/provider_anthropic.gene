@@ -82,7 +82,7 @@
              "ANTHROPIC_API_KEY must be an API key, not a Claude Code token"
              nil))
          ^configure (fn [model, effort, timeout]
-           (configure_model ^minimal_is_low true model effort timeout
+           (configure_model ^^minimal_is_low model effort timeout
              "claude-sonnet-5"))
          ^prepare prepare_anthropic
          ^send (fn [prepared]

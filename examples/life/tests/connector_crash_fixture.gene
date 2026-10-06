@@ -9,7 +9,7 @@
 (fn open_host [fixture, ^home home = nil, ^clock clock = (fn [] 1000), ^fault fault = nil]
   (let name (p/id "connector"))
   (let directory (?? home $"examples/life/tmp/${name}"))
-  (let host (runtime/open_life directory ^create true ^clock clock ^fault fault))
+  (let host (runtime/open_life directory ^^create ^clock clock ^fault fault))
   (try
     (let meta (p/get host/store "meta"))
     (meta .put "model_calls_per_hour" 0)
@@ -86,7 +86,7 @@
   (if_yes (== phase "remote_sent_lost_response")
     # A 503 is returned only after the remote effect is durable. Unknown
     # receipts hold reconciliation open until the parent explicitly releases it.
-    (mailbox/call fixture "/configure" {^drop_send_response true ^unknown_receipts true}))
+    (mailbox/call fixture "/configure" {^^drop_send_response ^^unknown_receipts}))
   (let operation $"crash:${phase}")
   (let tx (p/begin host/store "crash-pending"))
   (let staged (chat/prepare host tx {^id "test" ^events [observation/id] ^owner nil}

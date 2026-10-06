@@ -345,7 +345,7 @@
 # ── request data ───────────────────────────────────────────────────────────
 
 (fn request_data [request] : Any
-  (let data (try ($json/parse request/body ^strict true ^max_depth 16)
+  (let data (try ($json/parse request/body ^^strict ^max_depth 16)
               catch Any (api_failure 400 "invalid_request" "The request must contain a JSON object.")))
   (if_not (== ($head data) Map) (api_failure 400 "invalid_request" "The request must contain a JSON object."))
   data)
@@ -823,7 +823,7 @@
       (return
         (ws_accept request
           ^on_open (fn [connection]
-            (let peer {^connection connection ^project name ^last last ^closed false})
+            (let peer {^connection connection ^project name ^last last ^!closed})
             (bench/peers/.get .push peer)
             (send_events bench peer))
           ^on_close (fn [connection]

@@ -42,7 +42,7 @@
           (count .set (+ count/.get 1))
           (let n count/.get)
           (if (== n 10)
-            "(Outcome ^done true ^reply \"done\")"
+            "(Outcome ^^done ^reply \"done\")"
             $"# response-${n}\n(append_prompt \"large\" \"${payload}\") (Outcome ^prompt \"next\")"))))
         (try
           (let session (create_session service))
