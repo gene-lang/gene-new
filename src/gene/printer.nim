@@ -116,8 +116,27 @@ proc printDateTime(v: Value): string =
   result.add fractionalMicros(v.dateTimeMicrosecond)
   result.add tz
 
+proc propKeyNeedsQuote*(k: string): bool =
+  ## True when `k` would not read back as one bare property key: it is empty,
+  ## starts like another form (`^^k`, `^!k`, a number, `$`, `%`, `:`, `@`), or
+  ## contains a character that ends or splits a symbol.
+  if k.len == 0: return true
+  if k[0] in {'^', '!', '$', '%', ':', '@', '0'..'9'}: return true
+  if k[0] in {'+', '-', '.'} and k.len > 1 and k[1] in {'0'..'9'}: return true
+  for c in k:
+    if c <= ' ' or c in {'(', ')', '[', ']', '{', '}', '"', '#', '\'', ',',
+                         ';', '`'}:
+      return true
+  false
+
+proc propKeyText*(k: string): string =
+  ## The spelling of a property key after `^`: bare, or quoted as `^"..."`.
+  if propKeyNeedsQuote(k): print(newStr(k)) else: k
+
 proc printProps(sb: var string, props: PropTable, sigil: string) =
-  for k, val in props:
+  for rawKey, val in props:
+    # Only `^` props have a quoted-key spelling; `@` meta keys print as is.
+    let k = if sigil == "^": propKeyText(rawKey) else: rawKey
     sb.add ' '
     if val.kind == vkBool and val.boolVal:
       sb.add sigil & sigil & k          # ^^flag / @@flag
@@ -306,9 +325,9 @@ proc print*(v: Value): string =
       if not first: sb.add ' '
       first = false
       if val.kind == vkBool and val.boolVal:
-        sb.add "^^" & k
+        sb.add "^^" & propKeyText(k)
       else:
-        sb.add "^" & k & " " & print(val)
+        sb.add "^" & propKeyText(k) & " " & print(val)
     sb.add '}'
     sb
   of vkSet:

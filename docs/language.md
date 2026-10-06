@@ -45,7 +45,9 @@ Common values:
 
 `#` starts a line comment. `#< ... >#` is a block comment. The special `#[...]`
 and `#{...}` forms are literals, not comments. `^^active` is shorthand for
-`^active true`.
+`^active true`, and `^!active` for `^active false`. A property key that is not
+a plain symbol is quoted: `^"content type" "text"`. The flag forms take a
+quoted key too: `^^"a b"`, `^!"a b"`.
 
 Int `/` truncates toward zero; `//` is the remainder, with the dividend's sign:
 `(/ -7 2)` is `-3`, and `(// -7 2)` is `-1`. For wrapping with a positive

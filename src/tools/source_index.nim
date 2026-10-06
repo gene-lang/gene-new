@@ -181,7 +181,8 @@ proc wrapEnd(doc: SourceDocument, start: int): tuple[endToken: int, closed: bool
   for _ in 0 ..< 2:
     at = nextFormStart(doc, at)
     if at >= doc.tokens.len or doc.tokens[at].kind in
-        {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret, tkAt, tkAtAt,
+        {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret, tkCaretBang,
+         tkAt, tkAtAt,
          tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
       return (at, false)
     at = formEnd(doc, at)
@@ -322,14 +323,15 @@ proc scanChildren(doc: SourceDocument, syntax: SyntaxRef): seq[SourceRow] =
       continue
 
     if syntax.kind in {skNode, skPropMap} and
-        doc.tokens[at].kind in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+        doc.tokens[at].kind in {tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt}:
       let marker = doc.tokens[at].kind
       let keyAt = significant(doc.tokens, at + 1)
-      if keyAt >= bounds.last or doc.tokens[keyAt].kind != tkSymbol:
+      if keyAt >= bounds.last or
+          doc.tokens[keyAt].kind notin {tkSymbol, tkString}:
         inc at
         continue
       let name = doc.tokens[keyAt].lexeme
-      let flag = marker in {tkCaretCaret, tkAtAt}
+      let flag = marker in {tkCaretCaret, tkCaretBang, tkAtAt}
       var valueRef: SyntaxRef
       if flag:
         valueRef = SyntaxRef(kind: skAtom,

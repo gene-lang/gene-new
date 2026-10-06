@@ -464,8 +464,8 @@ proc oneLine(v: Value): string =
     for k, val in v.mapEntries:
       if not first: sb.add ' '
       first = false
-      if val.kind == vkBool and val.boolVal: sb.add "^^" & k
-      else: sb.add "^" & k & " " & oneLine(val)
+      if val.kind == vkBool and val.boolVal: sb.add "^^" & propKeyText(k)
+      else: sb.add "^" & propKeyText(k) & " " & oneLine(val)
     sb & "}"
   of vkHashMap:
     var entries: seq[string]
@@ -677,8 +677,8 @@ proc fmtValue(v: Value, indent: int): string =
     var sb = if v.mapImmutable: "#{" else: "{"
     for k, p in v.mapEntries:
       sb.add "\n" & pad
-      if p.kind == vkBool and p.boolVal: sb.add "^^" & k
-      else: sb.add "^" & k & " " & fmtValue(p, indent + 2 + k.len + 2)
+      if p.kind == vkBool and p.boolVal: sb.add "^^" & propKeyText(k)
+      else: sb.add "^" & propKeyText(k) & " " & fmtValue(p, indent + 2 + k.len + 2)
     sb & "}"
   else:
     oneLine(v)

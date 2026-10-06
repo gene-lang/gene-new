@@ -21,8 +21,10 @@ meta   information about the node, ignored by value semantics   (@key value)
 ($meta n)    # {^src "x" ^^gen}
 ```
 
-`^^flag` and `@@flag` are sugar for a `true` value. Ordinary `^prop` and `@meta`
-require a value. Structural equality and hash ignore meta.
+`^^flag` and `@@flag` are sugar for a `true` value, and `^!flag` for a `false`
+one. Ordinary `^prop` and `@meta` require a value. A property key that is not
+a plain symbol is quoted, as in `^"content type" "text"`; `^"x"` is the same
+key as `^x`. Structural equality and hash ignore meta.
 
 **In code position a node is a call.** `(foo ^k 1)` evaluates `foo` and calls it.
 Reach for `quote` or quasiquote when you want the data:

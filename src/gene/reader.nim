@@ -22,7 +22,7 @@ type
     tkHashLBrace,            # #{
     tkRef, tkDeref,          # #Ref #Deref
     tkWrap,                 # #@ head argument -> (head argument)
-    tkCaret, tkCaretCaret,   # ^ ^^
+    tkCaret, tkCaretCaret, tkCaretBang,   # ^ ^^ ^!
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # removed spaced ~ surface; the parser rejects it
     tkArrow,                 # -> value-pipeline delimiter
@@ -976,6 +976,11 @@ proc tokenizeImpl(r: var Reader,
       if r.nextChar() == '^':
         r.advance()
         r.addToken(tkCaretCaret, "^^", startLine, startCol, startByte)
+      elif r.nextChar() == '!':
+        # `^!k` is false-flag sugar. A key that itself starts with `!` is
+        # written `^"!k"`.
+        r.advance()
+        r.addToken(tkCaretBang, "^!", startLine, startCol, startByte)
       else:
         r.addToken(tkCaret, "^", startLine, startCol, startByte)
     of '@':
@@ -1104,6 +1109,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkWrap: "wrap"
   of tkCaret: "caret"
   of tkCaretCaret: "caret_caret"
+  of tkCaretBang: "caret_bang"
   of tkAt: "at"
   of tkAtAt: "at_at"
   of tkTilde: "tilde"
@@ -1211,11 +1217,13 @@ proc skipDatumComments(r: var Reader) =
 
 proc parsePropKey(r: var Reader): string =
   r.skipDatumComments()
-  if r.peekKind() == tkSymbol:
+  # A quoted key, `^"a b"`, names the same key as the bare symbol would and is
+  # how a key that is not a plain symbol is written.
+  if r.peekKind() in {tkSymbol, tkString}:
     let idx = r.tokIdx
     r.tokIdx += 1
     return internName(r.tokens[idx].lexeme)
-  r.raiseReadErrorAt(r.peek(), "property key must be a symbol")
+  r.raiseReadErrorAt(r.peek(), "property key must be a symbol or a string")
 
 proc qualifiedMessageSplit*(lexeme: string): int =
   ## Index of a structural `:` in `lexeme`, or -1. `:` qualifies a protocol
@@ -1746,7 +1754,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     if k == closing or k == tkEof: break
     let tok = r.peek()
     case tok.kind
-    of tkCaret, tkCaretCaret:
+    of tkCaret, tkCaretCaret, tkCaretBang:
       if not segmentLoc.hasSourceLoc:
         segmentLoc = sourceLoc(tok, r.sourceName)
       discard r.next()
@@ -1755,10 +1763,12 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       var val: Value
       if tok.kind == tkCaretCaret:
         val = TRUE
+      elif tok.kind == tkCaretBang:
+        val = FALSE
       else:
         let afterKey = r.peekKind()
         if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                        tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
+                        tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi,
                         tkTilde, tkArrow, tkFatArrow}:
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
@@ -1787,7 +1797,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         else:
           let afterKey = r.peekKind()
           if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                          tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
+                          tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi,
                           tkTilde, tkArrow, tkFatArrow}:
             r.raiseReadErrorAt(keyTok,
               "meta property '@" & key & "' requires a value")
@@ -1871,17 +1881,18 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     let k = r.peekKind()
     if k == closing or k == tkEof: break
     let tok = r.peek()
-    if tok.kind notin {tkCaret, tkCaretCaret}:
+    if tok.kind notin {tkCaret, tkCaretCaret, tkCaretBang}:
       r.raiseReadErrorAt(tok,
-        "prop map entries must start with '^' or '^^'")
+        "prop map entries must start with '^', '^^' or '^!'")
     discard r.next()
     let keyTok = r.peek()
     let key = r.parsePropKey()
-    if tok.kind == tkCaretCaret:
-      # `^^k` is true-flag sugar, same as in node props; it consumes no value.
+    if tok.kind in {tkCaretCaret, tkCaretBang}:
+      # `^^k` and `^!k` are flag sugar, same as in node props; they consume no
+      # value.
       if r.options.rejectDuplicateProps and items.hasKey(key):
         r.raiseReadErrorAt(keyTok, "duplicate map property '^" & key & "'")
-      items[key] = TRUE
+      items[key] = (if tok.kind == tkCaretCaret: TRUE else: FALSE)
       if r.peekKind() == tkComma: discard r.next()
       continue
     var val: Value
@@ -1889,7 +1900,7 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
       discard r.next()
     let afterKey = r.peekKind()
     if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                    tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+                    tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkComma, tkSemi}:
       r.raiseReadErrorAt(keyTok,
         "map property '^" & key & "' requires a value")
     val = r.parseForm()
@@ -1988,6 +1999,7 @@ proc parseWrapOperand(r: var Reader, marker: Token, label: string): Value =
     raiseReadIncompleteAt(r.sourceName, marker.line, marker.col,
       "#@ requires " & label, r.context.snapshot(r.sourceName))
   if r.peekKind() in {tkRParen, tkRBracket, tkRBrace, tkCaret, tkCaretCaret,
+      tkCaretBang,
       tkAt, tkAtAt, tkColon, tkSemi, tkArrow, tkFatArrow, tkDotDotDot}:
     r.raiseReadErrorAt(r.peek(), "#@ requires " & label &
       "; use parentheses for multiple arguments or named properties")
@@ -2141,6 +2153,7 @@ proc parseForm(r: var Reader, inList = false): Value =
     finish newNode(newSym("unquote"), body = @[inner])
   of tkCaret: finish newSym("^")
   of tkCaretCaret: finish newSym("^^")
+  of tkCaretBang: finish newSym("^!")
   of tkAt: finish newSym("@")
   of tkAtAt: finish newSym("@@")
   of tkColon: finish newSym(":")

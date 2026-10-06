@@ -512,3 +512,40 @@ suite "reader — malformed input is rejected":
     expect ReadError: discard read("]")
   test "stray closing brace":
     expect ReadError: discard read("}")
+
+suite "reader — false flags and quoted property keys":
+  test "^!key is false-flag sugar in maps and node props":
+    check_read("{^!ready}", "{^ready false}")
+    check_read("{^!ready ^^done ^n 1}", "{^ready false ^^done ^n 1}")
+    check_read("(x ^!ready 1)", "(x ^ready false 1)")
+
+  test "a quoted key names the same key as the bare symbol":
+    check_read("{^\"x\" 1}", "{^x 1}")
+    check_read("{^^\"x\"}", "{^^x}")
+    check_read("{^!\"x\"}", "{^x false}")
+    check_read("(x ^\"n\" 1)", "(x ^n 1)")
+    check_read("{^\"content-type\" 1 ^\"a/b\" 2 ^\"P:m\" 3}",
+               "{^content-type 1 ^a/b 2 ^P:m 3}")
+
+  test "keys that are not plain symbols print quoted and read back":
+    for key in ["!x", "^y", "a b", "", "0", "12", "-1", "a#b", "$a", "%a",
+                ":a", "@a", "a,b", "a;b", "a'b", "a`b", "a\"b", "a(b", "a\nb"]:
+      let src = "{^" & print(newStr(key)) & " 1}"
+      check read(src).print() == src
+      let flag = "{^^" & print(newStr(key)) & "}"
+      check read(flag).print() == flag
+      let node = "(x ^" & print(newStr(key)) & " 1)"
+      check read(node).print() == node
+
+  test "a flag consumes no value and a bare ^ still requires one":
+    expect ReadError:
+      discard read("{^!x 1}")
+    expect ReadError:
+      discard read("{^x}")
+
+  test "the formatter quotes such keys and keeps them stable":
+    let formatted = formatSource("{^\"a b\" 1 ^\"!x\" 2 ^plain 3}")
+    check "^\"a b\" 1" in formatted
+    check "^\"!x\" 2" in formatted
+    check "^plain 3" in formatted
+    check formatSource(formatted) == formatted
