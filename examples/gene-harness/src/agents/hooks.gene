@@ -1,6 +1,9 @@
 (mod hooks)
 (import ^from "../storage/state" [append_core_event])
 
+(type HookDispatchError ^props {^message Str} ^impl [Error])
+(impl Error for HookDispatchError)
+
 (fn hook_rows [snapshot, point : Str]
   (let selected [])
   (for record in (?? (snapshot/registries .get "hooks") [])
@@ -24,6 +27,9 @@
     (let delegated ($cell nil))
     (let called ($cell false))
     (let next (fn [updated]
+      (if called/.get
+        (fail (HookDispatchError ^message
+          $"hook ${listener/name} called next more than once")))
       (called .set true)
       (let result
         ($runtime/with_context caller_context

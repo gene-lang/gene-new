@@ -3,6 +3,25 @@
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot take_composition_changes discard_composition_changes])
 (import ^from "./turn_eval" [evaluate_turn])
 (import ^from "../storage/workspace" [drain_workspace_changes])
+(import ^from "./history" [byte_prefix])
+
+(fn plugin_change_summary [changes]
+  (let lines [])
+  (for change in changes
+    (let id (?? change/id change/entry/id "plugin"))
+    (let state (?? change/state change/status "unknown"))
+    (let digest (?? change/digest change/entry/module_digest nil))
+    (let brief_digest
+      (if ($absent? digest) ""
+        (if (> ($str/byte_size digest) 24)
+          ($str/slice_bytes digest 0 24)
+          digest)))
+    (let message (?? change/message ""))
+    (lines .push
+      ($to_str id ": " state " (revision " (?? change/revision "?") ")"
+        (if (== brief_digest "") "" $"; ${brief_digest}")
+        (if (== message "") "" $"; ${(byte_prefix message 512)}"))))
+  ($str/join lines "\n"))
 
 # Bind the callable from the leased revision and preserve its argument shape.
 # The function name in context correlates plugin append_prompt calls with the
@@ -83,7 +102,7 @@
     (drained .set true)
     (let changes (?? result/composition_changes []))
     (if_not changes/.empty?
-      (append_boundary_item result number "plugins" ($to_str changes)))
+      (append_boundary_item result number "plugins" (plugin_change_summary changes)))
     (if (== result/validated/rejected_done true)
       (append_boundary_item result number "plugin_notice"
         "Done was deferred because this turn changed plugins. Read the publication result before finishing."))

@@ -5,7 +5,7 @@
 (import ^from "../src/builtin/provider_anthropic" [anthropic_text])
 (import ^from "../src/builtin/provider_claude" [claude_text])
 (import ^from "../src/builtin/provider_common" [configure_model http_json_attempt])
-(import ^from "../src/agents/provider_selection" [complete_messages])
+(import ^from "../src/agents/model_call" [call_model])
 (import ^from "../src/kernel" [new_harness shutdown_harness contribute])
 (import ^from "../src/profiles/profile" [Profile])
 (import ^from "./support" [isolated run_spec])
@@ -107,18 +107,19 @@
       (let request {^config {^provider_timeout_ms 1500}
         ^messages [{^role "system" ^content "rules"}
                    {^role "user" ^content "go"}]})
-      (assert_equal (complete_messages runtime request) "complete response")
+      (let recovered (call_model runtime request))
+      (assert_equal recovered/text "complete response")
       (assert_equal calls/.get 2)
       (calls .set 0)
       (mode .set "timeout")
-      (let exhausted (try (complete_messages runtime request) "accepted"
+      (let exhausted (try (call_model runtime request) "accepted"
         catch Any $err/message))
       (assert_equal calls/.get 2)
       ($assert ($str/contains? exhausted
         "retry model provider request exceeded 1.5 s (2 attempts)"))
       (calls .set 0)
       (mode .set "error")
-      (let other (try (complete_messages runtime request) "accepted"
+      (let other (try (call_model runtime request) "accepted"
         catch HttpClientError $err/message))
       (assert_equal calls/.get 1)
       (assert_equal other "certificate rejected")
@@ -152,7 +153,7 @@
           (spawn ^lane root (try
             (let failure
               (try
-                (complete_messages runtime
+                (call_model runtime
                   {^config {^provider_timeout_ms 30}
                    ^messages [{^role "system" ^content "rules"}
                               {^role "user" ^content "go"}]})

@@ -610,6 +610,7 @@
     (append_core_event events ($to_str requested/scope)
       ($to_str requested/stream)
       {^type "model/result" ^call requested/payload/call
+       ^at_ms ($os/wall_ms)
        ^attempt pending/attempt
        ^turn requested/payload/turn ^round requested/payload/round
        ^purpose requested/payload/purpose

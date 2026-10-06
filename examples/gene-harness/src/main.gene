@@ -5,7 +5,7 @@
 (import ^from "./runtime/triggers" [close_trigger_manager list_triggers create_trigger delete_trigger list_occurrences])
 (import ^from "./runtime/cli_driver" [ask])
 (import ^from "./runtime/commands" [install_cli_commands])
-(import ^from "./storage/workspace" [doctor prepare_workspace disable_entry enable_entry restore_entry])
+(import ^from "./storage/workspace" [doctor prepare_workspace disable_entry enable_entry restore_entry composition_revision])
 (import ^from "./views/repl" [chat])
 (import ^from "./kernel" [HarnessError DurableRecord provide withdraw_seam])
 
@@ -94,15 +94,26 @@
         (if (== command "doctor")
           (then
             (prepare_workspace runtime/workspace runtime/h)
-            (for finding in (doctor runtime/workspace)
-              ($println finding)))
+            (let findings (doctor runtime/workspace))
+            (if findings/.empty?
+              ($println "No composition problems found.")
+              (for finding in findings ($println finding))))
           (else
             (if (< positional/.size 2) (fail (HarnessError ^message $"${command} needs a plugin id")))
-            ($println
+            (let id positional/1)
+            (let before (composition_revision runtime/workspace))
+            (let revision
               (match command
-                (when "disable" (disable_entry ^h runtime/h runtime/workspace positional/1))
-                (when "enable" (enable_entry ^h runtime/h runtime/workspace positional/1))
-                (when "restore" (restore_entry ^h runtime/h runtime/workspace positional/1))))))
+                (when "disable" (disable_entry ^h runtime/h runtime/workspace id))
+                (when "enable" (enable_entry ^h runtime/h runtime/workspace id))
+                (when "restore" (restore_entry ^h runtime/h runtime/workspace id))))
+            (let changed (!= revision before))
+            (let status
+              (match command
+                (when "disable" (if changed "disabled" "already disabled"))
+                (when "enable" (if changed "enabled" "already enabled"))
+                (when "restore" (if changed "restored" "already at profile default"))))
+            ($println $"${id}: ${status} (revision ${revision})")))
         (return 0)))
     (if_not (["chat" "scripted" "triggers"] .contains? command) (fail (HarnessError ^message $"unknown command ${command}")))
     (set controller (new_round_controller runtime))

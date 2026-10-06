@@ -73,26 +73,3 @@
   (let timeout (?? settings/provider_timeout_ms 600000))
   (let effective (choice/row/configure model effort timeout))
   {^name choice/name ^row choice/row ^settings effective})
-
-(fn complete_messages [runtime, request] : Str
-  (let selected (select_provider runtime (?? request/config {})))
-  (let prepared (selected/row/prepare
-    {^purpose (?? request/purpose "turn")
-     ^session request/session ^round request/round ^turn request/turn
-     ^budget request/budget ^config request/config
-     ^messages request/messages
-     ^settings selected/settings
-     ^max_tokens request/max_tokens}))
-  (repeat attempt in 2
-    (let result (selected/row/send prepared))
-    (if (== result/timeout true)
-      (then
-        (if (== attempt 1)
-          (fail (HarnessError ^message
-            $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (2 attempts). Send a continuation message or increase provider_timeout_ms."))))
-      (else
-        (if_not (== ($head result/text) Str)
-          (fail (HarnessError ^message
-            $"${selected/name} provider returned invalid text content")))
-        (return result/text))))
-  "")

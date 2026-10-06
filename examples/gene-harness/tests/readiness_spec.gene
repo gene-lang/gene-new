@@ -26,6 +26,16 @@
                   ($str/contains? $err/message "prompt/gene_reference")))
             "missing reference prompt did not refuse admission")
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" true)
+          (set_plugin_enabled runtime/workspace runtime/h "history_basic" false)
+          ($assert
+            (try
+              (submit_round controller "default" "first" 1 "go")
+              false
+            catch RoundError
+              (&& (== $err/code "not_ready")
+                  ($str/contains? $err/message "hooks/history/compact/history_basic")))
+            "missing compaction policy did not refuse admission")
+          (set_plugin_enabled runtime/workspace runtime/h "history_basic" true)
           (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" false)
           ($assert
             (try

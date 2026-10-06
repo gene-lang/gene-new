@@ -3,9 +3,10 @@
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../src/profiles/profile" [Profile])
 (import ^from "../src/plugin_api" [Plugin PluginHost])
-(import ^from "../src/agents/model_call" [call_model load_part])
+(import ^from "../src/agents/model_call" [call_model store_part load_part])
 (import ^from "../src/agents/history" [append_message collect_unreferenced_bodies])
 (import ^from "../src/profiles/scripted" [scripted_profile])
+(import ^from "../src/builtin/history_basic" [history_basic])
 (import ^from "../src/runtime/round_controller"
   [new_round_controller submit_round round_receipt close_round_controller])
 (import ^from "../src/storage/state"
@@ -26,7 +27,8 @@
                  ^configure (fn [model, effort, timeout]
                    {^model "test" ^effort "none" ^timeout_ms timeout})
                  ^prepare (fn [call]
-                   {^messages call/messages ^timeout_ms call/settings/timeout_ms})
+                   {^messages call/messages ^timeout_ms call/settings/timeout_ms
+                    ^literal {^harness_blob "provider-literal"}})
                  ^send (fn [prepared]
                    (seen/.get .push prepared)
                    {^text "forward response" ^usage {^input_tokens 5}})})
@@ -46,6 +48,12 @@
           (open_runtime workspace "default"
             (Profile ^name "test" ^plugins [provider])))
         (try
+          (let literal
+            {^harness_blob "literal-digest"
+             ^nested [{^harness_blob "literal-reference"}
+                      {^harness_literal {^harness_blob "another-literal"}}]})
+          ($assert (== (load_part runtime (store_part runtime literal)) literal)
+            "literal blob marker maps changed during storage")
           (let shared_parts []) (let added_parts [])
           (repeat 400
             (shared_parts .push "x")
@@ -94,6 +102,8 @@
             ($assert (== results/%index/outcome "ok")
               "provider success was not recorded")
             ($assert results/%index/final "successful result was not final")
+            ($assert (&& (> request/at_ms 0) (> results/%index/at_ms 0))
+              "model events omitted wall-clock timestamps")
             (set index (+ index 1)))
           ($assert (== requests/2/purpose "history/summary")
             "summary call was not distinguished")
@@ -151,6 +161,67 @@
           (close_round_controller controller)
           (close_runtime runtime)))))
 
+  (it "uses one leased provider for summary and main calls" []
+    (isolated this_mod/.path "uses one leased provider for summary and main calls"
+      (fn [workspace]
+        (let unavailable ($cell false))
+        (let provider
+          (Plugin ^id "switching_providers"
+            ^provides [["providers" "first"] ["providers" "second"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "providers"
+                {^name "first" ^doc "Initially selected provider." ^auto 0
+                 ^available (fn [] (if unavailable/.get "unavailable" nil))
+                 ^configure (fn [model, effort, timeout]
+                   {^model "first" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   {^purpose call/purpose ^messages call/messages})
+                 ^send (fn [prepared]
+                   (let summary (== prepared/purpose "history/summary"))
+                   (if summary (unavailable .set true))
+                   (if summary
+                     {^text "Earlier work summarized."}
+                     {^text "(Outcome ^done true ^reply \"done\")"}))})
+              (host .PluginHost:contribute "providers"
+                {^name "second" ^doc "Fallback provider." ^auto 1
+                 ^configure (fn [model, effort, timeout]
+                   {^model "second" ^effort "none" ^timeout_ms timeout})
+                 ^prepare (fn [call]
+                   {^purpose call/purpose ^messages call/messages})
+                 ^send (fn [prepared]
+                   {^text "(Outcome ^done true ^reply \"wrong provider\")"})}))))
+        (let runtime (open_runtime workspace "default"
+          (Profile ^name "test" ^plugins [provider (history_basic)])))
+        (let controller (new_round_controller runtime))
+        (try
+          (let settings ($serde/read_data
+            ($fs/read_text $"${runtime/state_root}/config.gene")))
+          (settings .put "context_window" 10000)
+          ($fs/write_text_atomic $"${runtime/state_root}/config.gene"
+            ($serde/write_data settings))
+          (let pieces [])
+          (repeat 50000 (pieces .push "x"))
+          (append_message ^round "old" runtime "default" "user"
+            ($str/join pieces ""))
+          (append_message ^round "old" ^turn 1 runtime "default"
+            "assistant" "# prior work")
+          (let accepted (submit_round controller "default" "same-provider" 1 "go"))
+          (controller/watchers .get; .get "default"; .join)
+          (let receipt (round_receipt controller "default" accepted/id))
+          ($assert (== receipt/state "done")
+            $"summary round failed: ${receipt/message}")
+          (let requests [])
+          (for event in (events_for runtime/events "session" "default")
+            (if (== event/type "model/request")
+              (requests .push event/payload)))
+          ($assert (&& (== requests/.size 2)
+                       (== requests/0/provider "first")
+                       (== requests/1/provider "first"))
+            "summary and main call chose different providers")
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
   (it "repairs an in-flight retry with one unknown outcome and one turn end" []
     (isolated this_mod/.path "repairs an in-flight retry with one unknown outcome and one turn end"
       (fn [workspace]
@@ -192,6 +263,8 @@
           ($assert (== results/1/outcome "interrupted")
             "recovery claimed an unknown provider outcome")
           ($assert results/1/final "interrupted result was not final")
+          ($assert (> results/1/at_ms 0)
+            "recovery result omitted its wall-clock timestamp")
           ($assert (&& (== first_attempt/.size 1)
                        (== first_attempt/0/attempt 1)
                        (== first_attempt/0/outcome "interrupted")

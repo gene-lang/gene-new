@@ -106,6 +106,9 @@
 (fn harness_package_root [] : Str
   (module_dir (module_dir (module_dir this_mod/.path))))
 
+(fn active_revision_path [workspace : Workspace] : Str
+  $"${workspace/root}/ACTIVE")
+
 (fn open_workspace [root : Str, ^blob_root blob_root : Str = "", ^state_root state_root : Str = "", ^workspace_root workspace_root : Str = "", ^generated_dir generated_dir : Str = ""] : Workspace
   (var canonical_root (real_path root))
   (var canonical_blob_root
@@ -132,7 +135,16 @@
   (var interfaces (current_interfaces))
   (var workspace
     (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared ["src/plugin_api.gene"] ^interfaces interfaces ^core_interface interfaces/core ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map))))
-  (load_composition workspace))
+  (load_composition workspace)
+  (let marker (active_revision_path workspace))
+  (if ($fs/exists? marker)
+    (then
+      (let recorded (read_data (read_text marker)))
+      (if (|| (!= ($head recorded) Int) (< recorded 0))
+        (fail (CompositionError ^message
+          "composition ACTIVE marker must hold a non-negative revision")))
+      (workspace/active_revision .set recorded)))
+  workspace)
 
 (fn set_profile_plugins [workspace : Workspace, admissions]
   (let defaults (fresh_map))
@@ -158,6 +170,7 @@
     (fail (CompositionError ^message "composition mutation is already active")))
   (var actual workspace/revision/.get)
   (var checked (validate_entries (data_copy entries)))
+  (if (== checked workspace/entries/.get) (return actual))
   (var next (+ actual 1))
   (var manifest {^format 1 ^revision next ^entries checked})
   (workspace/busy .set true)
@@ -386,7 +399,12 @@
             (if (&& (== node/identity live/graph/root) (== node/source_digest desired/module_digest))
               (set matched true)))))
       (if_not matched (return nil))))
-  (workspace/active_revision .set (composition_revision workspace))
+  # Desired state is committed before admission. Advance ACTIVE only after
+  # reconciliation accepts the desired set, including valid pending entries.
+  (let desired (composition_revision workspace))
+  (if (!= workspace/active_revision/.get desired)
+    (write_text_atomic (active_revision_path workspace) (write_data desired)))
+  (workspace/active_revision .set desired)
   nil)
 
 (fn workspace_status [workspace : Workspace]
@@ -469,7 +487,7 @@
     (queue_composition_change h/snapshots
       {^kind "registration" ^id id
        ^apply (fn [] (publish_registration workspace h descriptor entry replace authenticated_turn))})
-    (return {^digest digest ^status "queued" ^entry entry}))
+    (return {^id id ^digest digest ^status "queued"}))
   (publish_registration workspace h descriptor entry replace authenticated_turn))
 
 (fn publish_registration [workspace : Workspace, h : Harness, descriptor, entry, replace : Bool, authenticated_turn : Str]
@@ -508,9 +526,10 @@
       "replaced"))
   (flush_harness h)
   (update_active_revision workspace h)
-  {^revision revision ^digest digest ^status status
+  {^id id ^revision revision ^digest digest ^status status
    ^state (if (== status "ready") "active"
      (if (== status "error") "quarantined" status))
+   ^message (if (== status "error") (workspace/errors/.get .get id) nil)
    ^entry entry})
 
 (fn drain_workspace_changes [workspace : Workspace, h : Harness, ^origin origin = nil]
@@ -683,6 +702,8 @@
       (if ($absent? active)
         $"${id}: ${message}"
         $"${id}: ${message} (desired ${desired}, active ${active})")))
+  (if (&& (== workspace/errors/.get #{}) ($absent? active) (> desired 0))
+    (out .push $"composition desired ${desired}: no successful activation revision recorded"))
   (if (&& (== workspace/errors/.get #{}) (! ($absent? active)) (!= desired active))
     (out .push $"composition desired ${desired}, active ${active}: reconciliation pending"))
   out)
@@ -700,7 +721,8 @@
             (if disabled (next_entries .push entry)))
           (else
             (let next_entry (data_copy entry))
-            (next_entry .put "disabled" disabled)
+            (if_not (== (entry_enabled? entry) (! disabled))
+              (next_entry .put "disabled" disabled))
             (next_entries .push next_entry))))
       (else (next_entries .push entry))))
   (if_not found
@@ -709,6 +731,7 @@
       (if disabled
         (next_entries .push {^id id ^builtin true ^disabled true})
         (return (composition_revision workspace)))))
+  (if (== next_entries entries) (return (composition_revision workspace)))
   (var revision (commit_composition workspace next_entries))
   (if_not ($absent? h)
     (var digest (previous_module_digest next_entries id))
@@ -746,13 +769,6 @@
     (flush_harness h))
   revision)
 
-(fn persist_registry_generation [workspace, h, owner : Str]
-  (commit_composition workspace (composition_entries workspace)))
-
-(fn record_registry_generation [workspace, h, owner : Str, revision]
-  (record_composition_change h owner nil nil revision "runtime" "contributed")
-  (flush_harness h))
-
 (fn set_plugin_enabled [workspace, h, id : Str, enabled : Bool]
   (let context ($runtime/context))
   (let apply (fn [] (run_composition_change h/snapshots (fn []
@@ -762,7 +778,7 @@
     (record_composition_change h id digest digest revision "runtime" (if enabled "enabled" "disabled"))
     (flush_harness h)
     (update_active_revision workspace h)
-    {^revision revision ^status (if enabled (status_of h id) "disabled")}))))
+    {^id id ^revision revision ^status (if enabled (status_of h id) "disabled")}))))
   (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply}) "queued")
     (else (apply))))
@@ -794,7 +810,7 @@
     (record_composition_change h id nil nil revision "runtime" "restored")
     (flush_harness h)
     (update_active_revision workspace h)
-    {^revision revision ^status (status_of h id)}))))
+    {^id id ^revision revision ^status (status_of h id)}))))
   (if (&& (! ($absent? context/turn)) (== context/turn/state/.get "open"))
     (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply}) "queued")
     (else (apply))))

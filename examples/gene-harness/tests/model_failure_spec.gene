@@ -7,7 +7,11 @@
   [new_round_controller submit_round round_receipt cancel_round close_round_controller])
 (import ^from "../src/storage/state" [events_for])
 (import ^from "../src/profiles/scripted" [scripted_profile])
-(import ^from "../src/agents/history" [append_message])
+(import ^from "../src/agents/history" [append_message collect_unreferenced_bodies])
+(import ^from "../src/agents/model_call" [call_model])
+
+(type ProviderError ^props {^message Str} ^impl [Error])
+(impl Error for ProviderError)
 
 (fn probe_profile [mode, attempts, entered]
   (Profile ^name "test" ^provider "probe"
@@ -25,6 +29,11 @@
              (attempts .set (+ attempts/.get 1))
              (if (== mode/.get "send_error")
                (fail "provider failed"))
+             (if (== mode/.get "large_error")
+               (then
+                 (let pieces [])
+                 (repeat 400 (pieces .push "x"))
+                 (fail (ProviderError ^message ($str/join pieces "")))))
              (if (== mode/.get "timeout")
                (return {^timeout true}))
              (if (== mode/.get "cancel")
@@ -44,6 +53,27 @@
   found)
 
 (describe "Model-call failure records"
+  (it "retains a large provider error referenced by a model result" []
+    (isolated this_mod/.path "retains a large provider error referenced by a model result"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (probe_profile ($cell "large_error") ($cell 0) ($cell false))))
+        (try
+          (try
+            (call_model runtime
+              {^session "default" ^round "r" ^turn 1
+               ^config {} ^messages []})
+          catch Any nil)
+          (let results (event_payloads runtime "model/result"))
+          ($assert (== results/.size 1) "large error lacked a model result")
+          (let digest results/0/error/harness_blob)
+          ($assert (! ($absent? digest)) "large error was not stored by digest")
+          (collect_unreferenced_bodies runtime)
+          ($assert ($fs/exists? $"${runtime/state_root}/blobs/${digest}")
+            "collection removed a recorded provider error")
+        ensure
+          (close_runtime runtime)))))
+
   (it "ends a pre-dispatch failure without inventing a model request" []
     (isolated this_mod/.path "ends a pre-dispatch failure without inventing a model request"
       (fn [workspace]

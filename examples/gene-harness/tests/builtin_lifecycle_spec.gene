@@ -6,7 +6,7 @@
 (import ^from "../src/plugin_api" [Plugin PluginHost])
 (import ^from "../src/kernel" [row])
 (import ^from "../src/storage/workspace"
-  [set_plugin_enabled restore_plugin register_plugin doctor enable_entry composition_entries])
+  [set_plugin_enabled restore_plugin register_plugin doctor enable_entry composition_entries composition_revision])
 (import ^from "../src/agents/harness_turn" [evaluate_harness_turn])
 
 (describe "Built-in plugin lifecycle"
@@ -32,10 +32,12 @@
                     ^activate (fn [host]
                       (host .PluginHost:contribute "functions"
                         {^name "marker" ^doc "Stored marker." ^fn (fn [] "stored")}))))))))
+        (let disabled_revision ($cell nil))
         (let first (open_runtime root "default" profile))
         (try
           ($assert (!= (row first/h "functions" "marker") void) "profile function missing")
           (let disabled (set_plugin_enabled first/workspace first/h "built" false))
+          (disabled_revision .set disabled/revision)
           ($assert (== disabled/status "disabled") "disable did not report its state")
           ($assert (== (row first/h "functions" "marker") void)
             "disabled built-in remained visible")
@@ -46,6 +48,8 @@
           (close_runtime first))
         (let restarted (open_runtime root "default" profile))
         (try
+          ($assert (== (composition_revision restarted/workspace) disabled_revision/.get)
+            "clean restart changed the desired composition")
           ($assert (== (row restarted/h "functions" "marker") void)
             "disabled built-in reappeared after restart")
           ($assert ($str/contains? ($to_str (doctor restarted/workspace)) "built-in disabled")
@@ -54,11 +58,21 @@
           (close_runtime restarted))
         (let recovery (open_runtime ^^activate root "default" profile))
         (try
+          ($assert (== (composition_revision recovery/workspace) disabled_revision/.get)
+            "recovery boot wrote a composition generation")
+          ($assert (! ($str/contains? ($to_str (doctor recovery/workspace))
+                        "reconciliation pending"))
+            "inactive doctor reported a false reconciliation gap")
           (enable_entry recovery/workspace "built")
+          ($assert ($str/contains? ($to_str (doctor recovery/workspace))
+                     "reconciliation pending")
+            "doctor missed a desired change awaiting activation")
         ensure
           (close_runtime recovery))
         (let enabled (open_runtime root "default" profile))
         (try
+          ($assert (== (composition_revision enabled/workspace) (+ disabled_revision/.get 1))
+            "enable did not make exactly one composition change")
           (let result (evaluate_harness_turn enabled/h 1 root
             "(Outcome ^done true ^reply (marker))"))
           ($assert (== result/validated/outcome/reply "built")

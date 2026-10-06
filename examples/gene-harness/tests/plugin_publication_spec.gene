@@ -44,6 +44,10 @@
           ($assert (&& ($str/contains? result/request "[1.plugins]")
                        ($str/contains? result/request "plugin_notice"))
             "next request omitted the publication result or reason for continuing")
+          ($assert (&& ($str/contains? result/request "example: active")
+                       (! ($str/contains? result/request "^closure"))
+                       (! ($str/contains? result/request "^interfaces")))
+            "publication notice dumped internal composition metadata")
           (let next (evaluate_harness_turn runtime/h 2 root
             "(Outcome ^done true ^reply (ping))"))
           ($assert (== next/validated/outcome/reply "pong")
@@ -54,7 +58,7 @@
                 (import ^from "src/plugin_api.gene" [Plugin])
                 (fn init [descriptor]
                   (Plugin ^id "broken" ^activate (fn [host]
-                    (fail "activation failed"))))))))
+                    ($panic "activation failed"))))))))
           (let broken_code
             ($to_str "(register_plugin \"broken\" (quote " broken_source
               ")) (Outcome ^prompt \"check publication\")"))
@@ -63,6 +67,8 @@
             "failed activation did not report quarantine")
           ($assert ($str/contains? broken_result/request "quarantined")
             "model did not see the failed boundary result")
+          ($assert ($str/contains? broken_result/request "activation failed")
+            $"quarantine notice omitted the activation error: ${broken_result/request}")
           (let healthy_replacement
             (register_plugin ^replace true runtime/workspace runtime/h
               "example" source))

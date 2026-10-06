@@ -12,7 +12,7 @@
     compact_history
     write_body])
 (import ^from "./history" [byte_prefix])
-(import ^from "./provider_selection" [readiness_report])
+(import ^from "./provider_selection" [readiness_report select_provider])
 (import ^from "./model_call" [call_model])
 (import ^from "./hooks" [history_policy request_prepare])
 (import ^from "../storage/state"
@@ -137,6 +137,11 @@
         (flush_event_store runtime/events)
         (return {^state "failed" ^message ready_message
           ^turn_count count ^last_turn number}))
+      (set stage "provider/select")
+      (let selected
+        ($runtime/with_context
+          {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+          (fn [] (select_provider runtime config))))
       (set stage "instructions")
       (let instructions
         ($runtime/with_context
@@ -163,7 +168,7 @@
             (request .put "round" round/id)
             (request .put "turn" number)
             (set stage "history/summary")
-            (let summary_call (call_model runtime request))
+            (let summary_call (call_model ^selected selected runtime request))
             (set stage "history/compact")
             summary_call/text)))
       (set stage "context")
@@ -171,7 +176,7 @@
       (let budget {^limit limit ^used count ^remaining (- limit count)})
       (set stage "model/call")
       (let completion
-        (call_model runtime
+        (call_model ^selected selected runtime
           {
             ^session session
             ^round round/id

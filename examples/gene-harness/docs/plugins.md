@@ -22,9 +22,10 @@ dependency closure.
 
 The call returns a digest and `queued`. After response evaluation, the
 Harness commits the desired composition generation, activates the candidate,
-and sends `[N.plugins]` with its id, revision and state (`active`, `pending`
-or `quarantined`). A turn that queued a plugin change cannot finish with
-`Outcome ^done`; its reply is progress and the next turn receives this
+and sends `[N.plugins]` with one short line per plugin: id, revision, state
+(`active`, `pending` or `quarantined`), digest prefix and any activation error.
+A turn that queued a plugin change cannot finish with `Outcome ^done`; its
+reply is progress and the next turn receives this
 result. Cancellation discards uncommitted queued changes. Once committed,
 the plugin belongs to the workspace: another session can use it, and startup
 loads it from the stored source after restart. Plugin state written through
@@ -59,12 +60,14 @@ round budget. Its `run` callback takes that context and `next`. Calling
 `next` delegates; returning without it decides. The loop writes the result
 as `turn/request`, then records the final provider-specific input as
 `model/request` immediately before `send`. A hook that fails or times out is
-skipped with a `trace` diagnostic.
+skipped with a `trace` diagnostic. A listener may call `next` once; a second
+call is diagnosed and does not rerun later listeners.
 
 `history/compact` takes the first valid policy containing `trigger_bytes`
 and `target_bytes`. The built-in `history_basic` policy applies the usual
-75% and 55% thresholds. Hook rows come from the turn's leased composition,
-so a concurrent plugin replacement does not change an in-progress turn.
+75% and 55% thresholds. The baseline profile requires it. Hook rows come from
+the turn's leased composition, so a concurrent plugin replacement does not
+change an in-progress turn.
 
 ### Observe durable facts
 
@@ -82,7 +85,10 @@ give its location and payload. The bus is for observation. Model calls have
 one `model/request` containing the frozen prepared value and one
 `model/result` per attempt, including timeout, error and interrupted
 outcomes. Large prepared strings use content-addressed blob references.
-The loop writes these facts even if an observer or hook fails.
+Literal maps with the same shape are escaped, so replay preserves the exact
+provider input. Model-call records include wall-clock time and attempt results
+also include elapsed timing. The loop writes these facts even if an observer
+or hook fails.
 
 ## Inspect and repair
 
@@ -94,4 +100,6 @@ default for that id. Replacing any taken id with `register_plugin` requires
 `^replace true`. The CLI recovery commands `doctor`, `enable ID`,
 `disable ID` and `restore ID` do not activate plugins. A quarantined entry
 remains durable and visible to repair commands; it does not supply functions
-until it can activate.
+until it can activate. `doctor` does not commit a composition generation; it
+uses the last successful activation marker to distinguish pending work from a
+clean workspace.

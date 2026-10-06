@@ -64,7 +64,9 @@
         (if (== event/type "model/request")
           (mark_body_references runtime event/payload/prepared live)
           (if (== event/type "model/result")
-            (mark_body_references runtime event/payload/output live)))))
+            (then
+              (mark_body_references runtime event/payload/output live)
+              (mark_body_references runtime event/payload/error live))))))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
     (let manifest runtime/events/last_manifest/.get)

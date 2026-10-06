@@ -57,7 +57,9 @@ using Codex OAuth, including continuation, verification and recovery.
 (default `default`), and `--script FILE` selects a scripted profile whose
 provider plugin owns the canned responses. `doctor`, `enable`, `disable` and
 `restore` are recovery commands: they open the workspace without activating
-plugins, so a broken plugin cannot block them.
+plugins, so a broken plugin cannot block them. `doctor` leaves the composition
+generation unchanged; the other commands report the action or that no change
+was needed, along with the revision.
 
 ## Providers and workspace settings
 
@@ -68,6 +70,8 @@ available provider row with the lowest automatic rank: OpenRouter,
 Anthropic, Codex. An explicit missing or unavailable provider makes the
 profile `not_ready`; it does not silently fall back. Model and effort use
 their environment values, then `config.gene`, then the selected row's default.
+The loop selects once per turn from its leased plugin composition and uses
+that row for both a compaction summary and the main call.
 
 Each provider is a plugin row with `available`, `configure`, `prepare` and
 `send` callbacks. `prepare` returns the complete model-visible input without
@@ -78,7 +82,8 @@ pin their own model-free provider plugins.
 Every provider invocation, including a compaction summary, writes a
 `model/request` with the exact prepared input before transport and a
 `model/result` for each attempt. Timeout, failure and unknown outcomes are
-recorded. Content-addressed blobs share unchanged history across requests;
+recorded with wall-clock and elapsed timing. Content-addressed blobs share
+unchanged history across requests; literal blob-marker maps are escaped;
 transport credentials are excluded. A successful main result is linked from
 the turn transcript.
 

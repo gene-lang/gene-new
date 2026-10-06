@@ -152,6 +152,45 @@
         ensure
           (close_runtime runtime)))))
 
+  (it "runs downstream listeners once when a hook calls next twice" []
+    (isolated this_mod/.path "runs downstream listeners once when a hook calls next twice"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default"
+          (scripted_profile ["(Outcome ^done true ^reply \"done\")"])))
+        (let calls ($cell 0))
+        (try
+          (contribute ^priority -20 runtime/h "core" "hooks"
+            {^point "request/prepare" ^name "double"
+             ^run (fn [context, next]
+               (next context)
+               (next context))})
+          (contribute ^priority -10 runtime/h "core" "hooks"
+            {^point "request/prepare" ^name "count"
+             ^run (fn [context, next]
+               (calls .set (+ calls/.get 1))
+               (next context))})
+          (let lease (acquire_snapshot runtime/h/snapshots))
+          (try
+            (let prepared (request_prepare runtime lease/snapshot
+              (prepare_context)))
+            ($assert (== calls/.get 1)
+              "calling next twice ran downstream hooks twice")
+            ($assert (== prepared/items/.size 1)
+              "a duplicate next call lost the prepared request")
+            (var diagnosed false)
+            (let traces [])
+            (for event in (events_for runtime/events "session" "default")
+              (if (== event/type "trace")
+                (then
+                  (traces .push event/payload/text)
+                  (if ($str/contains? event/payload/text "more than once")
+                    (set diagnosed true)))))
+            ($assert diagnosed $"duplicate next call was not diagnosed: ${traces}")
+          ensure
+            (release_snapshot runtime/h/snapshots lease))
+        ensure
+          (close_runtime runtime)))))
+
   (it "skips a panicking plugin listener" []
     (isolated this_mod/.path "skips a panicking plugin listener"
       (fn [workspace]

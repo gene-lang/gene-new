@@ -5,7 +5,8 @@
 (import ^from "../src/profiles/scripted" [scripted_profile])
 (import ^from "../src/profiles/offline" [offline_profile])
 (import ^from "../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../src/agents/provider_selection" [provider_choice select_provider complete_messages])
+(import ^from "../src/agents/provider_selection" [provider_choice select_provider])
+(import ^from "../src/agents/model_call" [call_model])
 
 (fn provider_row [name : Str, rank : Int, reason]
   {^name name ^doc "Synthetic provider." ^auto rank
@@ -105,10 +106,10 @@
                (if (== number 0) {^timeout true} {^text "recovered"}))})
           (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
             ^provider "retry")})
-          (let text (complete_messages runtime
+          (let completion (call_model runtime
             {^config {} ^messages [{^role "system" ^content "rules"}
                                     {^role "user" ^content "go"}]}))
-          ($assert (== text "recovered") "retry did not return the second result")
+          ($assert (== completion/text "recovered") "retry did not return the second result")
           ($assert (== attempts/.get 2) "timeout used more than one retry")
         ensure
           (shutdown_harness h))))))

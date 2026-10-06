@@ -107,7 +107,9 @@ by stop from work interrupted by a crash.
 
 A turn builds instructions and history, invokes the provider, reads the raw
 response, applies its patch, evaluates code, and interprets the final value.
-The loop owns every protocol record. Its order is:
+The provider row is selected once from the turn's leased composition, so a
+summary and main call use the same row. The loop owns every protocol record.
+Its order is:
 
 ```text
 request/prepare hook -> turn/request (full and settled next item)
@@ -122,9 +124,10 @@ provider row's `prepare`. The same value is passed to `send`; authentication
 and transport details may be added afterward, but model-visible content may
 not. Large strings in the prepared value are stored as content-addressed
 blobs, so unchanged history parts share blobs across calls. The request record
-is flushed before transport. Each logical call has one call id and one
-`model/result` per attempt. The loop retries one reported timeout; each result
-records outcome, finality, timing and any provider usage. The successful main
+is flushed before transport. Literal maps that resemble blob references are
+escaped. Each logical call has one call id and one `model/result` per attempt.
+The loop retries one reported timeout; each result records outcome, finality,
+wall-clock time, elapsed timing and any provider usage. The successful main
 result is linked from `turn/response`. Compaction summary calls use the same
 path and are marked `history/summary`.
 
@@ -308,6 +311,12 @@ stored record leaves the id inactive. Replacing a taken id requires
 has a default for that id. `doctor`, `enable`, `disable` and `restore` work
 without activating plugins. A failed activation is quarantined and cannot
 block inspection or repair of the workspace.
+The composition checkpoint records the desired generation. A separate
+`ACTIVE` marker advances only after that generation reconciles successfully;
+valid pending plugins may remain pending until their dependencies appear.
+Recovery commands do not advance it; `doctor` compares the two revisions and
+reports a pending activation only when they differ. A workspace predating the
+marker reports that activation history is unknown.
 
 `register_plugin` validates and stores content-addressed source, then returns
 `queued` inside a turn. That return is not an installation receipt. At the
@@ -396,8 +405,9 @@ callable. Calling `next` delegates to the following listener; returning
 without it decides the value. The built-in `budget_advisory` contributes the
 small item shown in the full request and omitted from its settled form.
 `history/compact` takes the first valid policy; `history_basic` supplies the
-75% trigger and 55% target. A failed or timed-out listener is skipped with a
-durable `trace` diagnostic. Hooks shape values before the loop records them;
+75% trigger and 55% target. The baseline profile requires that hook, so
+disabling it refuses a round at admission. A failed or timed-out listener is
+skipped with a durable `trace` diagnostic. Hooks shape values before the loop records them;
 they cannot alter or suppress `model/request`, `model/result` or `turn/end`.
 
 Every appended workspace or session event is also published on the bus as a
@@ -421,8 +431,8 @@ History is the model-facing view, with console excluded.
 | --- | --- | --- |
 | `round/state` | required | Receipt: id, initiator (`user` or `trigger:<id>`), state, turn range |
 | `turn/start`, `turn/end` | required | Session turn number and round; one ending per started turn, including failure stage or synthetic interruption |
-| `model/request` | required | Call id, purpose, provider, effective public settings and the provider's prepared input, with shared blob refs |
-| `model/result` | required | One transport attempt: call id, attempt number, outcome, finality, raw output/error, timing and reported usage |
+| `model/request` | required | Call id, wall-clock time, purpose, provider, effective public settings and the provider's prepared input, with shared blob refs |
+| `model/result` | required | One transport attempt: call id, wall-clock and elapsed timing, attempt number, outcome, finality, raw output/error and reported usage |
 | `turn/response` | required | Main response transcript view, with large blocks stubbed, patch file list and a link to the final model result |
 | `turn/patch` | required | Patch result |
 | `turn/request` | required | The next user or continuation item in full and settled forms; it is not the complete provider input |

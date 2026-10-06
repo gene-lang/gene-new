@@ -20,7 +20,12 @@
       (let parts {})
       (for [key item] in value
         (parts .put key (store_part runtime item)))
-      (return parts)))
+      (return
+        (if (&& (== ($size value) 1)
+                (|| (! ($absent? value/harness_blob))
+                    (! ($absent? value/harness_literal))))
+          {^harness_literal parts}
+          parts))))
   value)
 
 (fn load_part [runtime, value]
@@ -28,6 +33,12 @@
     (then
       (if (&& (== ($size value) 1) (! ($absent? value/harness_blob)))
         (return (read_body runtime value/harness_blob)))
+      (if (&& (== ($size value) 1) (! ($absent? value/harness_literal)))
+        (then
+          (let restored {})
+          (for [key item] in value/harness_literal
+            (restored .put key (load_part runtime item)))
+          (return restored)))
       (let restored {})
       (for [key item] in value
         (restored .put key (load_part runtime item)))
@@ -43,6 +54,7 @@
   (if ($absent? runtime/events) (return nil))
   (append_core_event runtime/events "session" request/session
     {^type "model/request" ^call call_id
+     ^at_ms ($os/wall_ms)
      ^turn (?? request/turn 0) ^round (?? request/round "")
      ^purpose (?? request/purpose "turn")
      ^provider selected/name ^settings selected/settings
@@ -56,6 +68,7 @@
   (if ($absent? runtime/events) (return nil))
   (append_core_event runtime/events "session" request/session
     {^type "model/result" ^call call_id ^attempt attempt
+     ^at_ms ($os/wall_ms)
      ^turn (?? request/turn 0) ^round (?? request/round "")
      ^purpose (?? request/purpose "turn")
      ^outcome outcome ^final final ^timing_ms elapsed
@@ -65,8 +78,10 @@
   (flush_event_store runtime/events)
   nil)
 
-(fn call_model [runtime, request]
-  (let selected (select_provider runtime (?? request/config {})))
+(fn call_model [runtime, request, ^selected supplied = nil]
+  (let selected (if ($absent? supplied)
+    (select_provider runtime (?? request/config {}))
+    supplied))
   (let input (selected/row/prepare
     {^purpose (?? request/purpose "turn")
      ^session request/session ^round request/round ^turn request/turn

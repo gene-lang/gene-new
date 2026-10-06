@@ -5,7 +5,6 @@
 (import ^from "../storage/state" [open_event_store close_event_store flush_event_store])
 (import ^from "../storage/workspace"
   [open_workspace close_workspace prepare_workspace activate_workspace_plan set_profile_plugins])
-(import ^from "../storage/workspace" [persist_registry_generation record_registry_generation])
 (import ^from "./workspace_lock" ^^export
   [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
 (import ^from "./sessions" [open_session_manager close_session_manager create_session load_session])
@@ -108,10 +107,6 @@
     (set_profile_plugins workspace (profile_admissions ^limits profile_limits profile))
     (set h
       (new_harness ^event_store events ^event_scope event_scope ^event_stream session ^workspace workspace ^limits profile_limits))
-    (set h/registry_commit (fn [owner] (persist_registry_generation workspace h owner)))
-    (set h/registry_record
-      (fn [owner revision]
-        (record_registry_generation workspace h owner revision)))
     (install_core_prompt_rows h)
     (if_yes activate
       (let prepared (prepare_workspace ^session session workspace h))

@@ -60,7 +60,7 @@
 
 (type RegistryRow ^props {^row_id Str ^owner Str ^registry Str ^key Str ^payload Any ^priority Int ^config_order Int ^acquired Int ^effects Any? ^cleanup_state Any?})
 
-(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any? ^registry_commit Any? ^registry_record Any?})
+(type Harness ^props {^plugins Any ^plugin_errors Any ^log Any ^log_hydrated Any ^bus Any ^registries Any ^ledger Any ^row_index Any ^next_row_id Any ^event_store Any ^event_scope Str ^event_stream Str ^plugin_policies Any ^plugin_depth Any ^workspace Any ^readiness Any? ^registry_observer Any? ^composition Any? ^composition_entries Any? ^snapshots Any? ^publishing Any? ^published_plugins Any?})
 
 (type Host ^props {^h Harness ^owner Str ^effects Any})
 
@@ -173,7 +173,7 @@
     (!= context/registry_step true)
     (! (&& (! ($absent? context/publication)) context/publication/.get))))
 
-(fn registry_change [h : Harness, owner : Str, thunk]
+(fn registry_change [h : Harness, thunk]
   (run_composition_change
     h/snapshots
     (fn []
@@ -185,11 +185,7 @@
       (try
         ($runtime/with_context
           scoped
-          (fn []
-            (let revision (if ($absent? h/registry_commit) nil (h/registry_commit owner)))
-            (let result (thunk))
-            (if_not ($absent? h/registry_record) (h/registry_record owner revision))
-            result))
+          thunk)
       ensure
         (publication .set false)))))
 
@@ -368,7 +364,7 @@
       (return true)))
   (if (serialize_registry_change? h)
     (return
-      (registry_change h record/owner (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
+      (registry_change h (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
   (var r (registry_named h record/registry))
   (var kept (fresh_list))
   (for candidate in r/rows/.get
@@ -397,7 +393,7 @@
         ^apply (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace))})
       (return $"queued:${owner}:${registry_name}")))
   (if (serialize_registry_change? h)
-    (return (registry_change h owner (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
+    (return (registry_change h (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
   (if (== registry_name "commands")
     (then
       (let reserved_owner
@@ -564,7 +560,7 @@
         {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
       (return [])))
   (if (serialize_registry_change? h)
-    (return (registry_change h owner (fn [] (remove_owner h owner)))))
+    (return (registry_change h (fn [] (remove_owner h owner)))))
   (var ledger h/ledger/.get)
   (var owned (?? (ledger .get owner) (fresh_list)))
   (var errors (fresh_list))
@@ -595,7 +591,7 @@
         {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
       (return [])))
   (if (serialize_registry_change? h)
-    (return (registry_change h r/owner (fn [] (remove_registry h name)))))
+    (return (registry_change h (fn [] (remove_registry h name)))))
   (var errors (fresh_list))
   (var records (copy_list r/rows/.get))
   (var i (- records/.size 1))
@@ -838,7 +834,6 @@
   # candidate that publishes as a whole, and every contribution belongs to the
   # exact activation revision that made it. `^limits` is the ceiling every
   # plugin's limits narrow from.
-  (if_not ($absent? workspace) (workspace/active_revision .set 0))
   (set h/composition_entries ($cell (fresh_map)))
   (var package_root (module_dir (module_dir this_mod/.path)))
   (set h/publishing ($cell false))

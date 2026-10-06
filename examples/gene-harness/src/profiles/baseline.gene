@@ -16,5 +16,6 @@
     ^plugins [(gene_reference) (plugin_admin) (core_commands) (triggers)
               (provider_codex) (provider_anthropic) (provider_claude)
               (provider_openrouter) (budget_advisory) (history_basic)]
-    ^requires [["prompt" "gene_reference"]]
+    ^requires [["prompt" "gene_reference"]
+               ["hooks" "history/compact/history_basic"]]
     ^limits (ExecutionLimits ^max_steps 9223372036854775807 ^max_memory_mb 1024 ^timeout_ms 600000)))
